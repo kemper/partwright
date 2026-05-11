@@ -13,6 +13,7 @@ import { streamLocalTurn, type StreamCallbacks as LocalStreamCallbacks } from '.
 import { recordUsage, putMessages } from './db';
 import { buildToolList, executeTool } from './tools';
 import { buildLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
+import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
 import { activeModel, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type TurnUsage } from './types';
 
@@ -58,9 +59,14 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   const tools = buildToolList(toggles);
   // The full ai.md is ~15K tokens — fine for hosted Claude with prompt
   // caching, but ruinous for a local 1-8B model with a 4K window. Use a
-  // hand-tuned slim prompt on the local path.
+  // hand-tuned slim prompt on the local path. Either path honors the
+  // per-provider user override if one is set in AI settings.
+  const settings = loadSettings();
+  const override = settings.systemPromptOverrides?.[toggles.provider] ?? null;
   let systemPrompt: string;
-  if (toggles.provider === 'local') {
+  if (override !== null) {
+    systemPrompt = override;
+  } else if (toggles.provider === 'local') {
     systemPrompt = buildLocalSystemPrompt();
   } else {
     systemPrompt = buildSystemPrompt(await loadAiMd());
@@ -149,6 +155,16 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
 
     if (toggles.provider === 'anthropic') {
       void recordUsage('anthropic', result.usage.inputTokens + result.usage.cacheReadInputTokens + result.usage.cacheCreationInputTokens, result.usage.outputTokens, turnCost);
+    }
+
+    if (toggles.provider === 'local' && (result as { truncated?: boolean }).truncated) {
+      // Local models are prone to running out of `max_tokens` mid-response
+      // — especially small ones that ramble. Surface a clear, actionable
+      // notice rather than the cryptic max_tokens stop reason.
+      callbacks.onError?.(new Error(
+        'The local model\'s response was cut off before it finished. ' +
+        'Try a shorter prompt, switch to the Large (Hermes 3) model, or compact the chat to free up context.'
+      ));
     }
 
     if (result.stopReason !== 'tool_use' || result.toolCalls.length === 0) {

@@ -8,6 +8,7 @@ import { resetClient } from '../ai/anthropic';
 import { formatUsd } from '../ai/cost';
 import { showAiKeyModal } from './aiKeyModal';
 import { showAiLocalModal } from './aiLocalModal';
+import { showSystemPromptModal } from './aiSystemPromptModal';
 import { loadSettings, saveSettings, setProvider } from '../ai/settings';
 import { findLocalModel } from '../ai/localModels';
 import { isModelLoaded } from '../ai/local';
@@ -48,6 +49,8 @@ export async function showAiSettingsModal(cb: AiSettingsCallbacks): Promise<void
   body.appendChild(document.createElement('hr')).className = 'border-zinc-700';
   const localSection = buildLocalSection(cb);
   body.appendChild(localSection);
+  body.appendChild(document.createElement('hr')).className = 'border-zinc-700';
+  body.appendChild(buildSystemPromptSection(cb));
   body.appendChild(document.createElement('hr')).className = 'border-zinc-700';
 
   const key = await getKey('anthropic');
@@ -197,6 +200,45 @@ function buildLocalSection(cb: AiSettingsCallbacks): HTMLElement {
     status.textContent = 'No local model picked yet. Click “Choose model…” to download one.';
   }
   wrap.appendChild(status);
+  return wrap;
+}
+
+function buildSystemPromptSection(cb: AiSettingsCallbacks): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col gap-2';
+  const head = document.createElement('div');
+  head.className = 'flex items-center justify-between';
+  const h = document.createElement('div');
+  h.className = 'text-xs text-zinc-400';
+  h.textContent = 'System prompt';
+  head.appendChild(h);
+  wrap.appendChild(head);
+
+  const settings = loadSettings();
+  const provider = settings.toggles.provider;
+  const override = settings.systemPromptOverrides?.[provider] ?? null;
+
+  const desc = document.createElement('div');
+  desc.className = 'text-[11px] text-zinc-400 leading-snug';
+  if (provider === 'local') {
+    desc.innerHTML = override !== null
+      ? '<strong>Custom prompt active</strong> — your override is sent to local models instead of the built-in slim prompt.'
+      : '<strong>Built-in slim prompt</strong> — a ~540-token version tailored to the 4K-window local models. The full <code>ai.md</code> doesn\'t fit.';
+  } else {
+    desc.innerHTML = override !== null
+      ? '<strong>Custom prompt active</strong> — your override is sent to Claude instead of the full <code>ai.md</code>.'
+      : '<strong>Built-in</strong> — the full <code>public/ai.md</code> (~15K tokens) cached on Anthropic\'s side.';
+  }
+  wrap.appendChild(desc);
+
+  const editBtn = document.createElement('button');
+  editBtn.className = 'self-start px-3 py-1 rounded text-xs text-zinc-200 bg-zinc-700 hover:bg-zinc-600';
+  editBtn.textContent = override !== null ? 'Edit / reset prompt' : 'View / edit prompt';
+  editBtn.addEventListener('click', () => {
+    closeModal();
+    void showSystemPromptModal(provider, { onChange: cb.onChange });
+  });
+  wrap.appendChild(editBtn);
   return wrap;
 }
 

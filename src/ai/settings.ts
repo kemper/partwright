@@ -13,6 +13,13 @@ export interface AiSettings {
   drawerOpen: boolean;
   /** Default for new sessions before the user has touched the toggle bar. */
   autoCompactMode: 'off' | 'conservative' | 'standard' | 'aggressive';
+  /** User-overridden system prompts. `null` means "use the built-in default
+   *  for this provider". We keep them per-provider so the slim local
+   *  prompt and the full Anthropic prompt can be edited independently. */
+  systemPromptOverrides: {
+    anthropic: string | null;
+    local: string | null;
+  };
 }
 
 const DEFAULT_TOGGLES: ChatToggles = {
@@ -28,6 +35,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   toggles: DEFAULT_TOGGLES,
   drawerOpen: false,
   autoCompactMode: 'off',
+  systemPromptOverrides: { anthropic: null, local: null },
 };
 
 let cached: AiSettings | null = null;
@@ -148,6 +156,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
     ? legacyModel
     : undefined;
 
+  const overrides = (partial as { systemPromptOverrides?: Partial<AiSettings['systemPromptOverrides']> }).systemPromptOverrides ?? {};
   return {
     autoCompactMode: partial.autoCompactMode ?? DEFAULT_SETTINGS.autoCompactMode,
     drawerOpen: partial.drawerOpen ?? DEFAULT_SETTINGS.drawerOpen,
@@ -158,6 +167,22 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       provider: tgls.provider ?? (legacyIsLocal ? 'local' : DEFAULT_SETTINGS.toggles.provider),
       anthropicModel: tgls.anthropicModel ?? legacyAnthropic ?? DEFAULT_SETTINGS.toggles.anthropicModel,
       localModel: tgls.localModel ?? (legacyIsLocal ? (legacyModel as LocalModelId) : DEFAULT_SETTINGS.toggles.localModel),
+    },
+    systemPromptOverrides: {
+      anthropic: overrides.anthropic ?? null,
+      local: overrides.local ?? null,
+    },
+  };
+}
+
+/** Replace or clear the custom system prompt for one provider. Passing
+ *  `null` reverts to the built-in default. */
+export function setSystemPromptOverride(settings: AiSettings, provider: Provider, prompt: string | null): AiSettings {
+  return {
+    ...settings,
+    systemPromptOverrides: {
+      ...settings.systemPromptOverrides,
+      [provider]: prompt && prompt.trim().length > 0 ? prompt : null,
     },
   };
 }

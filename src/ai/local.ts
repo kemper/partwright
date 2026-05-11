@@ -167,6 +167,10 @@ export interface StreamResult {
   toolCalls: PersistedToolCall[];
   stopReason: string;
   usage: TurnUsage;
+  /** True when the model didn't finish cleanly — hit max_tokens, or
+   *  emitted an unclosed `<tool_call>` block (a crash, likely). chatLoop
+   *  surfaces a "response was cut off" message and skips re-prompting. */
+  truncated?: boolean;
 }
 
 export interface LocalRequestSpec {
@@ -307,6 +311,19 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
     emittedLen = rawText.length;
   }
 
+  // Truncation detection: max_tokens was hit OR we're stuck mid-tool-call
+  // with no closing marker. Either way, show the partial body to the user
+  // so they understand what failed, and flag the result so chatLoop can
+  // emit a "response was cut off" notice.
+  const truncatedMidToolCall = !native && insideToolCall;
+  const truncatedMaxTokens = stopReason === 'length' || stopReason === 'max_tokens';
+  if (truncatedMidToolCall && emittedLen < rawText.length) {
+    // Surface whatever fragment landed inside the unclosed tool call so
+    // the user can see what the model was trying to do.
+    callbacks.onText?.(`\n\n[partial output — tool call was cut off]\n${rawText.slice(emittedLen)}`);
+    emittedLen = rawText.length;
+  }
+
   let toolCalls: PersistedToolCall[] = [];
   let cleanedText: string;
   if (native) {
@@ -321,11 +338,17 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
   // Normalize finish_reason to match Anthropic vocabulary ("tool_use" /
   // "end_turn") so chatLoop's branching reads the same.
   let normStop = stopReason;
-  if (toolCalls.length > 0) normStop = 'tool_use';
+  if (toolCalls.length > 0 && !truncatedMidToolCall) normStop = 'tool_use';
+  else if (truncatedMidToolCall || truncatedMaxTokens) normStop = 'max_tokens';
   else if (stopReason === 'stop') normStop = 'end_turn';
-  else if (stopReason === 'length') normStop = 'max_tokens';
 
-  return { text: cleanedText, toolCalls, stopReason: normStop, usage };
+  return {
+    text: cleanedText,
+    toolCalls,
+    stopReason: normStop,
+    usage,
+    truncated: truncatedMidToolCall || (truncatedMaxTokens && toolCalls.length === 0),
+  };
 }
 
 /** Cached lookup of WebLLM's `functionCallingModelIds`. Async because the

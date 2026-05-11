@@ -100,10 +100,46 @@ async function rerender(body: HTMLElement, cb: AiLocalModalCallbacks): Promise<v
     if (model) list.appendChild(renderModelCard(model, settings.toggles.localModel, body, cb));
   }
 
-  const footer = document.createElement('div');
-  footer.className = 'pt-2 text-[11px] text-zinc-500 leading-snug border-t border-zinc-800';
-  footer.innerHTML = 'Models download from <a href="https://huggingface.co/mlc-ai" target="_blank" rel="noopener noreferrer" class="underline text-zinc-400">huggingface.co/mlc-ai</a> the first time you use them and stay cached for next time. Runs entirely in your browser — no prompts leave your device.';
-  body.appendChild(footer);
+  body.appendChild(buildTrustPanel());
+}
+
+/** Trust panel — surfaces the supply chain so users know where the weights
+ *  come from and which open-source projects run them in the browser. We
+ *  want this to be unmissable, not buried in a footer, because "AI model
+ *  runs in your browser" sounds magical and people are right to be
+ *  suspicious about it. */
+function buildTrustPanel(): HTMLElement {
+  const panel = document.createElement('div');
+  panel.className = 'mt-1 rounded border border-zinc-700 bg-zinc-900/40 p-3 flex flex-col gap-2 text-[11px] text-zinc-400 leading-snug';
+
+  const head = document.createElement('div');
+  head.className = 'text-zinc-300 font-medium text-xs flex items-center gap-1.5';
+  head.textContent = 'Where these models come from';
+  panel.appendChild(head);
+
+  const list = document.createElement('ul');
+  list.className = 'list-disc list-inside space-y-1';
+  list.innerHTML = `
+    <li><strong class="text-zinc-300">Weights</strong> are downloaded from
+      <a href="https://huggingface.co/mlc-ai" target="_blank" rel="noopener noreferrer" class="underline text-zinc-300 hover:text-zinc-100">huggingface.co/mlc-ai</a>
+      — the official MLC.AI organization on Hugging Face. Originals are
+      Meta's Llama, Microsoft's Phi, and Nous Research's Hermes;
+      <a href="https://mlc.ai" target="_blank" rel="noopener noreferrer" class="underline text-zinc-300 hover:text-zinc-100">MLC.AI</a>
+      compiles them for browser WebGPU.</li>
+    <li><strong class="text-zinc-300">Runtime</strong> is
+      <a href="https://webllm.mlc.ai" target="_blank" rel="noopener noreferrer" class="underline text-zinc-300 hover:text-zinc-100">WebLLM</a>
+      (<code>@mlc-ai/web-llm</code> on npm, Apache-2.0). It loads the model
+      into your GPU and runs inference; nothing leaves your browser.</li>
+    <li><strong class="text-zinc-300">Network access</strong> is read-only:
+      the page fetches weights on first use, then caches them locally.
+      Subsequent turns are offline — verify with your browser's dev tools
+      Network tab.</li>
+    <li><strong class="text-zinc-300">Storage</strong> uses the browser's
+      Cache API / OPFS. Click <em>Remove</em> next to any downloaded
+      model to wipe its weights, or clear site data to start fresh.</li>
+  `;
+  panel.appendChild(list);
+  return panel;
 }
 
 function buildIntro(): HTMLElement {
@@ -188,6 +224,15 @@ function renderModelCard(
   stats.className = 'text-[10px] text-zinc-500';
   stats.textContent = `~${model.downloadGB.toFixed(1)} GB download · ${(model.vramMB / 1024).toFixed(1)} GB VRAM`;
   left.appendChild(stats);
+
+  const source = document.createElement('a');
+  source.href = `https://huggingface.co/mlc-ai/${model.id}`;
+  source.target = '_blank';
+  source.rel = 'noopener noreferrer';
+  source.className = 'text-[10px] text-zinc-500 hover:text-zinc-300 underline truncate';
+  source.textContent = `huggingface.co/mlc-ai/${model.id}`;
+  source.title = `Inspect the weights on Hugging Face before downloading.`;
+  left.appendChild(source);
 
   row.appendChild(left);
 

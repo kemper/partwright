@@ -14,6 +14,7 @@ import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiLocalModal } from './aiLocalModal';
+import { showSystemPromptModal } from './aiSystemPromptModal';
 import { showCompactConfirmModal } from './aiCompactModal';
 import { ensureModelLoaded, isModelLoaded } from '../ai/local';
 import { findLocalModel } from '../ai/localModels';
@@ -45,6 +46,7 @@ let toggleStripEl: HTMLElement | null = null;
 let costMeterEl: HTMLElement | null = null;
 let panelStatusEl: HTMLElement | null = null;
 let modelPickerEl: HTMLElement | null = null;
+let promptChipEl: HTMLElement | null = null;
 
 let onPanelStateChange: ((open: boolean) => void) | null = null;
 
@@ -137,6 +139,10 @@ function buildDrawer(): void {
   header.appendChild(modelPickerEl);
   renderModelPicker();
 
+  promptChipEl = document.createElement('span');
+  header.appendChild(promptChipEl);
+  renderPromptChip();
+
   const compactBtn = createIconButton('Compact', '⤓ Compact');
   compactBtn.title = 'Compact the conversation: summarize older turns and promote insights to session notes.';
   compactBtn.addEventListener('click', () => { void runCompact(); });
@@ -145,7 +151,7 @@ function buildDrawer(): void {
   const settingsBtn = createIconButton('Settings', '⚙');
   settingsBtn.title = 'AI settings: provider, key, lifetime usage.';
   settingsBtn.addEventListener('click', () => {
-    void showAiSettingsModal({ onChange: () => { renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); panelStatusUpdate(); } });
+    void showAiSettingsModal({ onChange: () => { renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); renderPromptChip(); panelStatusUpdate(); } });
   });
   header.appendChild(settingsBtn);
 
@@ -271,6 +277,43 @@ function createIconButton(_label: string, glyph: string): HTMLButtonElement {
   btn.className = 'px-2 py-1 rounded text-[11px] text-zinc-300 hover:bg-zinc-800 border border-transparent hover:border-zinc-700';
   btn.textContent = glyph;
   return btn;
+}
+
+/** Tiny clickable chip showing which system prompt is active. For local
+ *  models it specifically calls out "Slim prompt" — the user needs to know
+ *  we send a stripped-down wrapper, not the full ai.md, so the model
+ *  knowing fewer features makes sense. Clicking opens the editor. */
+function renderPromptChip(): void {
+  if (!promptChipEl) return;
+  const settings = loadSettings();
+  const provider = settings.toggles.provider;
+  const override = settings.systemPromptOverrides?.[provider] ?? null;
+
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  let label: string;
+  let cls: string;
+  let title: string;
+  if (override !== null) {
+    label = '✎ Custom prompt';
+    cls = 'px-1.5 py-0.5 rounded text-[10px] bg-amber-900/40 text-amber-200 border border-amber-800/60 hover:bg-amber-900/60';
+    title = 'A custom system prompt is in use. Click to view or edit.';
+  } else if (provider === 'local') {
+    label = '· Slim prompt';
+    cls = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
+    title = 'Local models use a ~540-token slim prompt (the full ai.md is too long). Click to view or edit.';
+  } else {
+    label = '· Full ai.md';
+    cls = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
+    title = 'Anthropic gets the full ai.md (~15K tokens) cached on the API. Click to view or edit.';
+  }
+  chip.className = cls;
+  chip.textContent = label;
+  chip.title = title;
+  chip.addEventListener('click', () => {
+    void showSystemPromptModal(provider, { onChange: () => renderPromptChip() });
+  });
+  promptChipEl.replaceChildren(chip);
 }
 
 function renderModelPicker(): void {
@@ -749,25 +792,35 @@ async function sendMessage(): Promise<void> {
     },
     onAssistantStart: id => {
       activeAssistantId = id;
+      // Bubble starts with a "Thinking…" pulse so the user knows the model
+      // is running. Especially important for local models, where the first
+      // token can be 5-10s away while the prompt is prefilled. Cleared on
+      // the first real text delta.
       const placeholder: ChatMessage = {
         id, sessionId: state.sessionId, role: 'assistant',
-        blocks: [{ type: 'text', text: '' }], createdAt: Date.now(),
+        blocks: [{ type: 'text', text: 'Thinking…' }], createdAt: Date.now(),
         seq: (state.history[state.history.length - 1]?.seq ?? 0) + 1,
       };
       state.history.push(placeholder);
       renderTranscript();
-      // Grab the just-rendered bubble's text element so we can append deltas
       if (transcriptEl) {
         const wrap = transcriptEl.querySelector(`[data-message-id="${id}"]`) as HTMLElement | null;
         liveTextEl = wrap?.querySelector('.bg-zinc-800') as HTMLElement | null;
-        if (liveTextEl) liveTextEl.textContent = '';
+        if (liveTextEl) {
+          liveTextEl.textContent = 'Thinking…';
+          liveTextEl.classList.add('italic', 'text-zinc-400', 'animate-pulse');
+        }
       }
     },
     onAssistantText: delta => {
-      if (liveTextEl) {
-        liveTextEl.textContent = (liveTextEl.textContent ?? '') + delta;
-        if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      if (!liveTextEl) return;
+      // First delta: drop the "Thinking…" placeholder and shed the pulse.
+      if (liveTextEl.classList.contains('animate-pulse')) {
+        liveTextEl.textContent = '';
+        liveTextEl.classList.remove('italic', 'text-zinc-400', 'animate-pulse');
       }
+      liveTextEl.textContent = (liveTextEl.textContent ?? '') + delta;
+      if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
     },
     onAssistantPersisted: msg => {
       // Replace the placeholder with the persisted message
