@@ -35,17 +35,28 @@ export interface ToolbarCallbacks {
 
 let _aiBtn: HTMLButtonElement | null = null;
 
-/** Update the AI chip label/state from outside (e.g. when key connects/disconnects). */
-export function setAiToolbarState(connected: boolean): void {
+export type AiToolbarMode = 'disconnected' | 'cloud' | 'local';
+
+/** Update the AI chip label/state from outside. Cloud = Anthropic key is
+ *  connected; Local = a local WebGPU model is configured; Disconnected =
+ *  neither, so clicking opens the connect flow. */
+export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
   if (!_aiBtn) return;
-  if (connected) {
+  // Tolerate the legacy boolean caller signature so an old import doesn't
+  // crash the toolbar at runtime.
+  const actual: AiToolbarMode = typeof mode === 'boolean' ? (mode ? 'cloud' : 'disconnected') : mode;
+  if (actual === 'cloud') {
     _aiBtn.className = 'flex items-center gap-1.5 px-2 py-1 rounded text-xs text-blue-300 bg-blue-900/30 border border-blue-700/50 hover:bg-blue-900/50 transition-colors';
     _aiBtn.innerHTML = '<span>✦ AI</span>';
-    _aiBtn.title = 'Open AI chat panel';
+    _aiBtn.title = 'Open AI chat panel (hosted Claude).';
+  } else if (actual === 'local') {
+    _aiBtn.className = 'flex items-center gap-1.5 px-2 py-1 rounded text-xs text-emerald-300 bg-emerald-900/30 border border-emerald-700/50 hover:bg-emerald-900/50 transition-colors';
+    _aiBtn.innerHTML = '<span>✦ AI · Local</span>';
+    _aiBtn.title = 'Open AI chat panel (local WebGPU model).';
   } else {
     _aiBtn.className = 'flex items-center gap-1.5 px-2 py-1 rounded text-xs text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100 transition-colors';
     _aiBtn.innerHTML = '<span>✦ Connect AI</span>';
-    _aiBtn.title = 'Connect an Anthropic API key to chat with the AI';
+    _aiBtn.title = 'Connect an API key or download a local model to chat with the AI.';
   }
 }
 

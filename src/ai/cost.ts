@@ -1,8 +1,12 @@
 // USD cost calculation per Anthropic public list pricing (Apr 2026 cache).
 // Prices in $ per million tokens. Cache reads are billed at ~10% of input,
 // cache writes (5-min TTL) at ~125% of input. We don't expose 1h-TTL caching.
+//
+// Local-provider turns are free at the API level (the user paid for the
+// download + electricity), so all local cost functions return 0. The cost
+// meter still tracks total tokens so users can compare model verbosity.
 
-import type { ModelId, TurnUsage } from './types';
+import type { AnthropicModelId, ModelId, TurnUsage } from './types';
 
 interface ModelPricing {
   /** USD per 1M input tokens (uncached). */
@@ -11,7 +15,7 @@ interface ModelPricing {
   output: number;
 }
 
-const PRICING: Record<ModelId, ModelPricing> = {
+const PRICING: Record<AnthropicModelId, ModelPricing> = {
   'claude-haiku-4-5': { input: 1.0, output: 5.0 },
   'claude-sonnet-4-6': { input: 3.0, output: 15.0 },
   'claude-opus-4-7': { input: 5.0, output: 25.0 },
@@ -20,7 +24,12 @@ const PRICING: Record<ModelId, ModelPricing> = {
 const CACHE_READ_MULTIPLIER = 0.1;
 const CACHE_WRITE_MULTIPLIER = 1.25;
 
+function isAnthropicModel(model: ModelId): model is AnthropicModelId {
+  return model in PRICING;
+}
+
 export function turnCostUsd(model: ModelId, usage: TurnUsage): number {
+  if (!isAnthropicModel(model)) return 0;
   const p = PRICING[model];
   const inputCost = (usage.inputTokens * p.input) / 1_000_000;
   const cacheReadCost = (usage.cacheReadInputTokens * p.input * CACHE_READ_MULTIPLIER) / 1_000_000;
@@ -38,6 +47,7 @@ export function estimateTurnCostUsd(
   freshInputTokens: number,
   expectedOutputTokens: number = 800,
 ): number {
+  if (!isAnthropicModel(model)) return 0;
   return turnCostUsd(model, {
     inputTokens: freshInputTokens,
     outputTokens: expectedOutputTokens,

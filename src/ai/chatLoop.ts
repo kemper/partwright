@@ -1,16 +1,24 @@
 // Main agent loop: assembles the request, streams the response, executes
 // tools, persists everything, and loops until the model hits end_turn.
+//
+// Dispatch by provider:
+//   anthropic → src/ai/anthropic.ts   (hosted Claude over HTTPS)
+//   local     → src/ai/local.ts       (WebLLM, in-browser WebGPU)
+// Both providers return the same `StreamResult` shape; chatLoop is otherwise
+// agnostic to which one is in play.
 
 import { generateId } from '../storage/db';
-import { streamTurn, buildApiMessages, type StreamCallbacks } from './anthropic';
+import { streamTurn, buildApiMessages, type StreamCallbacks as AnthropicStreamCallbacks } from './anthropic';
+import { streamLocalTurn, type StreamCallbacks as LocalStreamCallbacks } from './local';
 import { recordUsage, putMessages } from './db';
 import { buildToolList, executeTool } from './tools';
 import { buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { turnCostUsd } from './cost';
-import type { ChatBlock, ChatMessage, ChatToggles, PersistedToolCall, PersistedToolResult, TurnUsage } from './types';
+import { activeModel, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type TurnUsage } from './types';
 
 export interface RunTurnInput {
-  apiKey: string;
+  /** Hosted-provider API key. Required only when toggles.provider === 'anthropic'. */
+  apiKey?: string;
   toggles: ChatToggles;
   /** sessionId for the current chat bucket. */
   sessionId: string;
@@ -68,32 +76,53 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   let totalCostUsd = 0;
   let totalToolCalls = 0;
 
+  const model = activeModel(toggles);
+  if (model === null) {
+    callbacks.onError?.(new Error('No model is active. Open AI settings and choose a provider + model.'));
+    callbacks.onTurnComplete?.({ totalCostUsd: 0, toolCalls: 0 });
+    return workingHistory;
+  }
+
   for (let iter = 0; iter < MAX_AGENT_ITERATIONS; iter++) {
-    const apiMessages = buildApiMessages(workingHistory);
     const assistantId = generateId();
     callbacks.onAssistantStart?.(assistantId);
 
-    const streamCallbacks: StreamCallbacks = {
+    const streamCallbacks: AnthropicStreamCallbacks & LocalStreamCallbacks = {
       onText: callbacks.onAssistantText,
       onToolStart: callbacks.onToolStart,
     };
 
     let result;
     try {
-      result = await streamTurn({
-        apiKey,
-        model: toggles.model,
-        systemPrompt,
-        systemSuffix: toggleSuffix(toggles),
-        apiMessages,
-        tools,
-      }, streamCallbacks);
+      if (toggles.provider === 'anthropic') {
+        if (!apiKey) throw new Error('Anthropic API key is required.');
+        const apiMessages = buildApiMessages(workingHistory);
+        result = await streamTurn({
+          apiKey,
+          model: toggles.anthropicModel,
+          systemPrompt,
+          systemSuffix: toggleSuffix(toggles),
+          apiMessages,
+          tools,
+        }, streamCallbacks);
+      } else {
+        if (!toggles.localModel) throw new Error('No local model is selected. Open AI settings → Local model.');
+        result = await streamLocalTurn({
+          modelId: toggles.localModel,
+          systemPrompt,
+          systemSuffix: toggleSuffix(toggles),
+          history: workingHistory,
+          tools,
+        }, streamCallbacks);
+        // streamLocalTurn returns the same StreamResult shape but without
+        // raw assistant blocks; chatLoop never reads that field.
+      }
     } catch (err) {
       callbacks.onError?.(err instanceof Error ? err : new Error(String(err)));
       return workingHistory;
     }
 
-    const turnCost = turnCostUsd(toggles.model, result.usage);
+    const turnCost = turnCostUsd(model, result.usage);
     totalCostUsd += turnCost;
 
     const assistantMsg: ChatMessage = {
@@ -111,7 +140,9 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     workingHistory = [...workingHistory, assistantMsg];
     callbacks.onAssistantPersisted?.(assistantMsg);
 
-    void recordUsage('anthropic', result.usage.inputTokens + result.usage.cacheReadInputTokens + result.usage.cacheCreationInputTokens, result.usage.outputTokens, turnCost);
+    if (toggles.provider === 'anthropic') {
+      void recordUsage('anthropic', result.usage.inputTokens + result.usage.cacheReadInputTokens + result.usage.cacheCreationInputTokens, result.usage.outputTokens, turnCost);
+    }
 
     if (result.stopReason !== 'tool_use' || result.toolCalls.length === 0) {
       callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls });

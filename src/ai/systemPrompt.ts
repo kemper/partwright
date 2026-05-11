@@ -4,7 +4,7 @@
 // communicates the current toggle state so the model doesn't ask for tools
 // it can't call.
 
-import type { ChatToggles } from './types';
+import { activeModel, type ChatToggles } from './types';
 
 let aiMdCache: string | null = null;
 let aiMdPromise: Promise<string> | null = null;
@@ -74,7 +74,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
     '',
     '## Session toggle state',
     '',
-    `Model: ${toggles.model}`,
+    `Model: ${activeModel(toggles) ?? '(none picked)'} (provider: ${toggles.provider})`,
     `Auto-retry on tool error: ${toggles.autoRetry}`,
   ];
   if (restrictions.length > 0) {

@@ -6,7 +6,8 @@
 // window.partwright.addSessionNote so they survive future compactions.
 
 import { summarize } from './anthropic';
-import type { ChatMessage } from './types';
+import { summarizeLocal } from './local';
+import type { ChatMessage, ChatToggles } from './types';
 
 export interface CompactionProposal {
   /** Plain-text summary of the conversation up to the kept tail. */
@@ -54,8 +55,15 @@ Rules for notes:
 
 Return strictly the JSON. No markdown fences, no commentary.`;
 
+export interface CompactionContext {
+  /** Provider-aware so we don't bill the user when local is active. */
+  toggles: ChatToggles;
+  /** Required when toggles.provider === 'anthropic'. */
+  apiKey?: string;
+}
+
 export async function proposeCompaction(
-  apiKey: string,
+  ctx: CompactionContext,
   history: ChatMessage[],
 ): Promise<CompactionProposal> {
   if (history.length <= KEEP_TAIL) {
@@ -64,23 +72,34 @@ export async function proposeCompaction(
   const keep = history.slice(-KEEP_TAIL);
   const drop = history.slice(0, history.length - KEEP_TAIL);
   const transcript = drop.map(formatForSummary).join('\n\n');
+  const prompt = `Compact this transcript:\n\n${transcript}`;
 
-  const { text, usage } = await summarize(
-    apiKey,
-    'claude-haiku-4-5',
-    COMPACTION_SYSTEM,
-    `Compact this transcript:\n\n${transcript}`,
-  );
+  let text: string;
+  let usage: { inputTokens: number; outputTokens: number };
+  let costUsd: number;
+
+  if (ctx.toggles.provider === 'anthropic') {
+    if (!ctx.apiKey) throw new Error('Anthropic API key required for compaction.');
+    const r = await summarize(ctx.apiKey, 'claude-haiku-4-5', COMPACTION_SYSTEM, prompt);
+    text = r.text;
+    usage = { inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens };
+    costUsd = (usage.inputTokens * 1.0 + usage.outputTokens * 5.0) / 1_000_000;
+  } else {
+    if (!ctx.toggles.localModel) throw new Error('Local model required for compaction.');
+    const r = await summarizeLocal(ctx.toggles.localModel, COMPACTION_SYSTEM, prompt);
+    text = r.text;
+    usage = { inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens };
+    costUsd = 0;
+  }
 
   const parsed = parseProposal(text);
-  const costUsd = (usage.inputTokens * 1.0 + usage.outputTokens * 5.0) / 1_000_000;
   return {
     summary: parsed.summary,
     proposedNotes: parsed.notes,
     keep,
     drop,
     costUsd,
-    usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens },
+    usage,
   };
 }
 

@@ -10,6 +10,7 @@ import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState } from './ui/toolbar';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel } from './ui/aiPanel';
 import { getKey as getAiKey } from './ai/db';
+import { loadSettings as loadAiSettings } from './ai/settings';
 import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
@@ -1552,18 +1553,28 @@ async function main() {
       await initAiPanel();
       const cur = getState();
       await setAiActiveSession(cur.session?.id ?? null);
-      const key = await getAiKey('anthropic');
-      setAiToolbarState(!!key);
-      // Watch for key changes via a poll-on-focus trigger — cheap, and
-      // matches the chip's update cadence in the AI settings modal.
-      window.addEventListener('focus', async () => {
-        const k = await getAiKey('anthropic');
-        setAiToolbarState(!!k);
+      await refreshAiToolbarChip();
+      // Watch for key/provider changes via a poll-on-focus trigger — cheap,
+      // and matches the chip's update cadence in the AI settings modal.
+      window.addEventListener('focus', () => { void refreshAiToolbarChip(); });
+      // Also watch localStorage for cross-tab provider switches.
+      window.addEventListener('storage', e => {
+        if (e.key === 'partwright-ai-settings-v1') void refreshAiToolbarChip();
       });
     } catch (err) {
       console.warn('AI panel init failed:', err);
     }
   })();
+
+  async function refreshAiToolbarChip(): Promise<void> {
+    const settings = loadAiSettings();
+    if (settings.toggles.provider === 'local' && settings.toggles.localModel) {
+      setAiToolbarState('local');
+      return;
+    }
+    const key = await getAiKey('anthropic');
+    setAiToolbarState(key ? 'cloud' : 'disconnected');
+  }
 
   // Set initial editor title if we're on the editor page
   if (!showLanding && !showHelpPage && !show404) {

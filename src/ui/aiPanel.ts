@@ -7,14 +7,17 @@ import { runTurn, totalCost, totalTokensEstimate, estimateCachedPrefixTokens } f
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, applyPreset, setModel, setToggles, MODEL_OPTIONS, PRESET_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, applyPreset, setAnthropicModel, setToggles, ANTHROPIC_MODEL_OPTIONS, PRESET_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
 import { showAiSettingsModal } from './aiSettingsModal';
+import { showAiLocalModal } from './aiLocalModal';
 import { showCompactConfirmModal } from './aiCompactModal';
-import type { ChatBlock, ChatMessage, ImageSource, ModelId, PersistedToolResult } from '../ai/types';
+import { ensureModelLoaded, isModelLoaded } from '../ai/local';
+import { findLocalModel } from '../ai/localModels';
+import { activeModel, type AnthropicModelId, type ChatBlock, type ChatMessage, type ImageSource, type PersistedToolResult } from '../ai/types';
 
 interface PanelState {
   open: boolean;
@@ -269,19 +272,52 @@ function createIconButton(_label: string, glyph: string): HTMLButtonElement {
 function createModelSelect(): HTMLSelectElement {
   const sel = document.createElement('select');
   sel.className = 'px-2 py-1 rounded text-[11px] bg-zinc-800 border border-zinc-700 text-zinc-200 focus:outline-none';
-  for (const opt of MODEL_OPTIONS) {
-    const o = document.createElement('option');
-    o.value = opt.id;
-    o.textContent = opt.label;
-    sel.appendChild(o);
-  }
-  sel.value = loadSettings().toggles.model;
+  syncModelSelectOptions(sel);
   sel.addEventListener('change', () => {
-    saveSettings(setModel(loadSettings(), sel.value as ModelId));
-    renderToggleStrip();
-    renderCostMeter();
+    const settings = loadSettings();
+    if (settings.toggles.provider === 'anthropic') {
+      saveSettings(setAnthropicModel(settings, sel.value as AnthropicModelId));
+      renderToggleStrip();
+      renderCostMeter();
+    } else {
+      // Local-mode dropdown is read-only; redirect to the picker.
+      sel.value = settings.toggles.localModel ?? '';
+      void showAiLocalModal({ onChange: () => { syncModelSelectOptions(sel); renderToggleStrip(); renderCostMeter(); panelStatusUpdate(); } });
+    }
   });
   return sel;
+}
+
+/** Refill the model picker for whichever provider is active. Called on
+ *  every settings change so the dropdown always reflects what will run. */
+function syncModelSelectOptions(sel: HTMLSelectElement): void {
+  const settings = loadSettings();
+  sel.replaceChildren();
+  if (settings.toggles.provider === 'anthropic') {
+    for (const opt of ANTHROPIC_MODEL_OPTIONS) {
+      const o = document.createElement('option');
+      o.value = opt.id;
+      o.textContent = opt.label;
+      sel.appendChild(o);
+    }
+    sel.value = settings.toggles.anthropicModel;
+    sel.title = 'Anthropic model (hosted).';
+  } else {
+    // Local mode shows just the active model + a "change" option.
+    if (settings.toggles.localModel) {
+      const info = findLocalModel(settings.toggles.localModel);
+      const o = document.createElement('option');
+      o.value = info.id;
+      o.textContent = info.label;
+      sel.appendChild(o);
+    }
+    const changeOpt = document.createElement('option');
+    changeOpt.value = '__pick__';
+    changeOpt.textContent = 'Change…';
+    sel.appendChild(changeOpt);
+    if (settings.toggles.localModel) sel.value = settings.toggles.localModel;
+    sel.title = 'Local WebGPU model.';
+  }
 }
 
 function createPresetSelect(): HTMLSelectElement {
@@ -298,9 +334,10 @@ function createPresetSelect(): HTMLSelectElement {
   sel.addEventListener('change', () => {
     const next = applyPreset(loadSettings(), sel.value as AiSettings['preset']);
     saveSettings(next);
-    // Sync the model picker too
+    // Sync the model picker too — only meaningful on the Anthropic side
+    // since the preset doesn't pick a local model.
     const modelSelect = drawerEl?.querySelector('select') as HTMLSelectElement | null;
-    if (modelSelect) modelSelect.value = next.toggles.model;
+    if (modelSelect) syncModelSelectOptions(modelSelect);
     renderToggleStrip();
     renderCostMeter();
   });
@@ -367,10 +404,13 @@ function renderCostMeter(): void {
   const tokens = totalTokensEstimate(state.history, state.systemPromptChars);
   const cost = totalCost(state.history);
   const cachedPrefix = estimateCachedPrefixTokens(state.systemPromptChars);
-  const turnEst = estimateTurnCostUsd(settings.toggles.model, cachedPrefix, 500 + (settings.toggles.vision.views ? 6000 : 0));
+  const model = activeModel(settings.toggles);
+  const turnEst = model ? estimateTurnCostUsd(model, cachedPrefix, 500 + (settings.toggles.vision.views ? 6000 : 0)) : 0;
 
-  // Color the context bar by % of model context window
-  const ctxLimit = settings.toggles.model === 'claude-haiku-4-5' ? 200_000 : 1_000_000;
+  // Color the context bar by % of model context window. Local models cap
+  // at 4096 tokens — the percentage fills up much faster, which is the
+  // honest behavior we want to surface.
+  const ctxLimit = contextLimitFor(settings);
   const pct = Math.min(100, Math.round((tokens / ctxLimit) * 100));
   const barColor = pct < 60 ? 'bg-emerald-500' : pct < 85 ? 'bg-amber-500' : 'bg-red-500';
 
@@ -391,43 +431,115 @@ function renderCostMeter(): void {
   sep.textContent = '·';
   costMeterEl.appendChild(sep);
 
-  const session = document.createElement('span');
-  session.textContent = `session: ${formatUsd(cost)}`;
-  costMeterEl.appendChild(session);
+  // Cost panel: hide the hosted-only "next turn ~" estimate on local since
+  // there's no per-turn dollar cost to predict.
+  if (settings.toggles.provider === 'anthropic') {
+    const session = document.createElement('span');
+    session.textContent = `session: ${formatUsd(cost)}`;
+    costMeterEl.appendChild(session);
 
-  const sep2 = document.createElement('span');
-  sep2.className = 'text-zinc-700';
-  sep2.textContent = '·';
-  costMeterEl.appendChild(sep2);
+    const sep2 = document.createElement('span');
+    sep2.className = 'text-zinc-700';
+    sep2.textContent = '·';
+    costMeterEl.appendChild(sep2);
 
-  const next = document.createElement('span');
-  next.textContent = `next turn ~${formatUsd(turnEst)}`;
-  costMeterEl.appendChild(next);
+    const next = document.createElement('span');
+    next.textContent = `next turn ~${formatUsd(turnEst)}`;
+    costMeterEl.appendChild(next);
+  } else {
+    const local = document.createElement('span');
+    local.textContent = settings.toggles.localModel
+      ? `local: ${isModelLoaded(settings.toggles.localModel) ? 'in GPU' : 'cold start'}`
+      : 'local: no model picked';
+    costMeterEl.appendChild(local);
+  }
+}
+
+function contextLimitFor(settings: AiSettings): number {
+  if (settings.toggles.provider === 'local') return 4096;
+  if (settings.toggles.anthropicModel === 'claude-haiku-4-5') return 200_000;
+  return 1_000_000;
 }
 
 // === Status bar ===
 
 function panelStatusUpdate(): void {
   if (!panelStatusEl) return;
+  const settings = loadSettings();
+  if (settings.toggles.provider === 'local') {
+    // Local provider: status hinges on whether a model is selected, not on
+    // an API key. We don't auto-load weights — the user has to opt in via
+    // the modal — so a missing model shows the picker prompt.
+    panelStatusEl.replaceChildren();
+    if (!settings.toggles.localModel) {
+      panelStatusEl.classList.remove('hidden', 'text-emerald-400');
+      panelStatusEl.classList.add('text-amber-400');
+      panelStatusEl.appendChild(document.createTextNode('No local model picked. '));
+      const link = document.createElement('button');
+      link.className = 'underline text-amber-200 hover:text-amber-100';
+      link.textContent = 'Choose a model';
+      link.addEventListener('click', () => {
+        void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderToggleStrip(); renderCostMeter(); } });
+      });
+      panelStatusEl.appendChild(link);
+    } else if (!isModelLoaded(settings.toggles.localModel)) {
+      panelStatusEl.classList.remove('hidden', 'text-emerald-400');
+      panelStatusEl.classList.add('text-blue-300');
+      const info = findLocalModel(settings.toggles.localModel);
+      panelStatusEl.appendChild(document.createTextNode(`${info.label} downloaded — `));
+      const link = document.createElement('button');
+      link.className = 'underline text-blue-200 hover:text-blue-100';
+      link.textContent = 'load into GPU';
+      link.addEventListener('click', () => { void loadLocalModelInline(); });
+      panelStatusEl.appendChild(link);
+      panelStatusEl.appendChild(document.createTextNode(' or send a message to auto-load.'));
+    } else {
+      panelStatusEl.classList.add('hidden');
+    }
+    return;
+  }
   void getKey('anthropic').then(key => {
     if (!panelStatusEl) return;
     if (!key) {
       panelStatusEl.classList.remove('hidden', 'text-emerald-400');
       panelStatusEl.classList.add('text-amber-400');
       panelStatusEl.replaceChildren();
-      const text = document.createTextNode('Not connected. ');
-      panelStatusEl.appendChild(text);
+      panelStatusEl.appendChild(document.createTextNode('Not connected. '));
       const link = document.createElement('button');
       link.className = 'underline text-amber-200 hover:text-amber-100';
       link.textContent = 'Connect Anthropic API';
       link.addEventListener('click', () => {
         void showAiKeyModal({ onConnected: () => { panelStatusUpdate(); } });
       });
-      panelStatusEl.appendChild(link);
+      panelStatusEl.appendChild(document.createTextNode(' or '));
+      const local = document.createElement('button');
+      local.className = 'underline text-amber-200 hover:text-amber-100';
+      local.textContent = 'run a local model';
+      local.addEventListener('click', () => {
+        void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderToggleStrip(); renderCostMeter(); } });
+      });
+      panelStatusEl.appendChild(local);
+      panelStatusEl.appendChild(document.createTextNode('.'));
     } else {
       panelStatusEl.classList.add('hidden');
     }
   });
+}
+
+async function loadLocalModelInline(): Promise<void> {
+  const settings = loadSettings();
+  if (!settings.toggles.localModel) return;
+  setTransientStatus('Loading model into GPU...');
+  try {
+    await ensureModelLoaded(settings.toggles.localModel, {
+      onProgress: r => setTransientStatus(r.text || `Loading ${Math.round(r.progress * 100)}%`),
+    });
+    setTransientStatus('');
+    panelStatusUpdate();
+    renderCostMeter();
+  } catch (err) {
+    setTransientStatus(`Failed to load: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 // === Transcript rendering ===
@@ -605,13 +717,36 @@ async function sendMessage(): Promise<void> {
   const text = inputEl.value.trim();
   if (text.length === 0 && state.pendingImages.length === 0) return;
 
-  const key = await getKey('anthropic');
-  if (!key) {
-    void showAiKeyModal({ onConnected: () => { panelStatusUpdate(); void sendMessage(); } });
-    return;
+  const settings = loadSettings();
+  let apiKey: string | undefined;
+  if (settings.toggles.provider === 'anthropic') {
+    const key = await getKey('anthropic');
+    if (!key) {
+      void showAiKeyModal({ onConnected: () => { panelStatusUpdate(); void sendMessage(); } });
+      return;
+    }
+    apiKey = key.apiKey;
+  } else {
+    if (!settings.toggles.localModel) {
+      void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderToggleStrip(); renderCostMeter(); void sendMessage(); } });
+      return;
+    }
+    // Auto-load the model into GPU on first message — avoids the user having
+    // to click a separate "load" button.
+    if (!isModelLoaded(settings.toggles.localModel)) {
+      setTransientStatus('Loading model into GPU (first turn only)...');
+      try {
+        await ensureModelLoaded(settings.toggles.localModel, {
+          onProgress: r => setTransientStatus(r.text || `Loading ${Math.round(r.progress * 100)}%`),
+        });
+        setTransientStatus('');
+      } catch (err) {
+        setTransientStatus(`Failed to load: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+    }
   }
 
-  const settings = loadSettings();
   const blocks: ChatBlock[] = [];
   if (text.length > 0) blocks.push({ type: 'text', text });
   // Only attach images the user added if vision is on. Iso views are
@@ -628,7 +763,7 @@ async function sendMessage(): Promise<void> {
   let liveTextEl: HTMLElement | null = null;
 
   await runTurn({
-    apiKey: key.apiKey,
+    apiKey,
     toggles: settings.toggles,
     sessionId: state.sessionId,
     history: state.history,
@@ -697,15 +832,37 @@ async function runCompact(): Promise<void> {
     setTransientStatus('Wait for the current turn to finish before compacting.');
     return;
   }
-  const key = await getKey('anthropic');
-  if (!key) {
-    void showAiKeyModal({ onConnected: () => panelStatusUpdate() });
-    return;
+  const settings = loadSettings();
+  let apiKey: string | undefined;
+  if (settings.toggles.provider === 'anthropic') {
+    const key = await getKey('anthropic');
+    if (!key) {
+      void showAiKeyModal({ onConnected: () => panelStatusUpdate() });
+      return;
+    }
+    apiKey = key.apiKey;
+    setTransientStatus('Asking Haiku to summarize...');
+  } else {
+    if (!settings.toggles.localModel) {
+      void showAiLocalModal({ onChange: () => panelStatusUpdate() });
+      return;
+    }
+    if (!isModelLoaded(settings.toggles.localModel)) {
+      setTransientStatus('Loading model into GPU...');
+      try {
+        await ensureModelLoaded(settings.toggles.localModel, {
+          onProgress: r => setTransientStatus(r.text || `Loading ${Math.round(r.progress * 100)}%`),
+        });
+      } catch (err) {
+        setTransientStatus(`Failed to load: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+    }
+    setTransientStatus('Asking local model to summarize...');
   }
-  setTransientStatus('Asking Haiku to summarize...');
   let proposal;
   try {
-    proposal = await proposeCompaction(key.apiKey, state.history);
+    proposal = await proposeCompaction({ toggles: settings.toggles, apiKey }, state.history);
   } catch (err) {
     setTransientStatus(`Compaction failed: ${err instanceof Error ? err.message : String(err)}`);
     return;

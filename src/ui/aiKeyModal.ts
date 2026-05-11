@@ -4,6 +4,7 @@
 
 import { putKey, getKey } from '../ai/db';
 import { resetClient, validateKey } from '../ai/anthropic';
+import { showAiLocalModal } from './aiLocalModal';
 
 let modalEl: HTMLElement | null = null;
 
@@ -51,6 +52,22 @@ export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
   link.className = 'text-blue-400 hover:text-blue-300 underline text-xs';
   link.textContent = 'Get a key at console.anthropic.com →';
   body.appendChild(link);
+
+  const altRow = document.createElement('div');
+  altRow.className = 'text-xs text-zinc-400 leading-snug';
+  altRow.appendChild(document.createTextNode('Don’t want an API key? '));
+  const localLink = document.createElement('button');
+  localLink.className = 'underline text-emerald-300 hover:text-emerald-200';
+  localLink.textContent = 'Run a local model in your browser';
+  localLink.addEventListener('click', () => {
+    closeModal();
+    // Reuse the key-modal's onConnected callback: once a local model is
+    // picked the chat is ready to send the next turn, same as a key paste.
+    void showAiLocalModal({ onChange: cb.onConnected });
+  });
+  altRow.appendChild(localLink);
+  altRow.appendChild(document.createTextNode(' — free, runs on your GPU.'));
+  body.appendChild(altRow);
 
   const tipBox = document.createElement('div');
   tipBox.className = 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug';

@@ -1,8 +1,10 @@
-// Per-browser AI settings (preset, model, toggles). Persisted to
+// Per-browser AI settings (provider, preset, model, toggles). Persisted to
 // localStorage as one JSON blob — they're sticky across sessions and
 // separate from the per-session chat transcripts in IndexedDB.
 
-import type { ChatToggles, ModelId, Preset } from './types';
+import type { AnthropicModelId, ChatToggles, ModelId, Preset, Provider } from './types';
+import type { LocalModelId } from './localModels';
+import { DEFAULT_LOCAL_MODEL } from './localModels';
 
 const STORAGE_KEY = 'partwright-ai-settings-v1';
 
@@ -20,19 +22,25 @@ const PRESET_TOGGLES: Record<Exclude<Preset, 'custom'>, ChatToggles> = {
     vision: { views: false },
     scope: { runCode: true, saveVersions: true, paintFaces: false },
     autoRetry: 0,
-    model: 'claude-haiku-4-5',
+    provider: 'anthropic',
+    anthropicModel: 'claude-haiku-4-5',
+    localModel: null,
   },
   standard: {
     vision: { views: true },
     scope: { runCode: true, saveVersions: true, paintFaces: true },
     autoRetry: 1,
-    model: 'claude-sonnet-4-6',
+    provider: 'anthropic',
+    anthropicModel: 'claude-sonnet-4-6',
+    localModel: null,
   },
   full: {
     vision: { views: true },
     scope: { runCode: true, saveVersions: true, paintFaces: true },
     autoRetry: 3,
-    model: 'claude-opus-4-7',
+    provider: 'anthropic',
+    anthropicModel: 'claude-opus-4-7',
+    localModel: null,
   },
 };
 
@@ -51,15 +59,33 @@ export function loadSettings(): AiSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as Partial<AiSettings>;
+      const parsed = JSON.parse(raw) as Partial<LegacyAiSettings>;
       cached = mergeWithDefaults(parsed);
       return cached;
     }
   } catch {
     // Fall through to defaults on parse / storage error.
   }
-  cached = { ...DEFAULT_SETTINGS, toggles: { ...DEFAULT_SETTINGS.toggles, vision: { ...DEFAULT_SETTINGS.toggles.vision }, scope: { ...DEFAULT_SETTINGS.toggles.scope } } };
+  cached = cloneDefaults();
   return cached;
+}
+
+function cloneDefaults(): AiSettings {
+  return {
+    ...DEFAULT_SETTINGS,
+    toggles: cloneToggles(DEFAULT_SETTINGS.toggles),
+  };
+}
+
+function cloneToggles(t: ChatToggles): ChatToggles {
+  return {
+    vision: { ...t.vision },
+    scope: { ...t.scope },
+    autoRetry: t.autoRetry,
+    provider: t.provider,
+    anthropicModel: t.anthropicModel,
+    localModel: t.localModel,
+  };
 }
 
 export function saveSettings(next: AiSettings): void {
@@ -88,16 +114,43 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       vision: { ...p.vision },
       scope: { ...p.scope },
       autoRetry: p.autoRetry,
-      model: p.model,
+      // Presets target Anthropic, but if the user is currently on local,
+      // keep them on local — the preset only adjusts cost/scope/views.
+      provider: settings.toggles.provider,
+      anthropicModel: p.anthropicModel,
+      localModel: settings.toggles.localModel,
     },
   };
 }
 
-export function setModel(settings: AiSettings, model: ModelId): AiSettings {
+/** Set the Anthropic-side model. Used when the user picks Haiku/Sonnet/Opus
+ *  from the header dropdown while on the Anthropic provider. */
+export function setAnthropicModel(settings: AiSettings, model: AnthropicModelId): AiSettings {
   return {
     ...settings,
     preset: 'custom',
-    toggles: { ...settings.toggles, model },
+    toggles: { ...settings.toggles, anthropicModel: model },
+  };
+}
+
+/** Switch provider. Called from the AI settings modal. The previously-picked
+ *  per-provider model is preserved so toggling back and forth doesn't lose
+ *  the selection. */
+export function setProvider(settings: AiSettings, provider: Provider): AiSettings {
+  return {
+    ...settings,
+    preset: 'custom',
+    toggles: { ...settings.toggles, provider },
+  };
+}
+
+/** Set the WebLLM model id for the local provider. Called when the user
+ *  downloads / activates a model in the local-model modal. */
+export function setLocalModel(settings: AiSettings, modelId: LocalModelId | null): AiSettings {
+  return {
+    ...settings,
+    preset: 'custom',
+    toggles: { ...settings.toggles, localModel: modelId },
   };
 }
 
@@ -106,7 +159,9 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     vision: { ...settings.toggles.vision, ...(partial.vision ?? {}) },
     scope: { ...settings.toggles.scope, ...(partial.scope ?? {}) },
     autoRetry: partial.autoRetry ?? settings.toggles.autoRetry,
-    model: partial.model ?? settings.toggles.model,
+    provider: partial.provider ?? settings.toggles.provider,
+    anthropicModel: partial.anthropicModel ?? settings.toggles.anthropicModel,
+    localModel: partial.localModel ?? settings.toggles.localModel,
   };
   return { ...settings, preset: 'custom', toggles: next };
 }
@@ -115,8 +170,27 @@ type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K];
 };
 
-function mergeWithDefaults(partial: Partial<AiSettings>): AiSettings {
-  const tgls: Partial<ChatToggles> = partial.toggles ?? {};
+/** Legacy shape (v1 release) — pre-provider, single `model` field. We accept
+ *  it on load and split it into anthropicModel + the new provider field so
+ *  users upgrading from the BYO-Anthropic-only build don't lose state. */
+interface LegacyAiSettings {
+  preset?: Preset;
+  autoCompactMode?: AiSettings['autoCompactMode'];
+  drawerOpen?: boolean;
+  toggles?: Partial<ChatToggles> & { model?: ModelId };
+}
+
+function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
+  const tgls = partial.toggles ?? {};
+  // Pre-provider builds stored a single `model` field on toggles. Detect
+  // its shape: Anthropic ids start with "claude-", local WebLLM ids contain
+  // "-MLC".
+  const legacyModel = tgls.model;
+  const legacyIsLocal = typeof legacyModel === 'string' && legacyModel.endsWith('-MLC');
+  const legacyAnthropic: AnthropicModelId | undefined = legacyModel === 'claude-haiku-4-5' || legacyModel === 'claude-sonnet-4-6' || legacyModel === 'claude-opus-4-7'
+    ? legacyModel
+    : undefined;
+
   return {
     preset: partial.preset ?? DEFAULT_SETTINGS.preset,
     autoCompactMode: partial.autoCompactMode ?? DEFAULT_SETTINGS.autoCompactMode,
@@ -125,12 +199,14 @@ function mergeWithDefaults(partial: Partial<AiSettings>): AiSettings {
       vision: { ...DEFAULT_SETTINGS.toggles.vision, ...(tgls.vision ?? {}) },
       scope: { ...DEFAULT_SETTINGS.toggles.scope, ...(tgls.scope ?? {}) },
       autoRetry: tgls.autoRetry ?? DEFAULT_SETTINGS.toggles.autoRetry,
-      model: tgls.model ?? DEFAULT_SETTINGS.toggles.model,
+      provider: tgls.provider ?? (legacyIsLocal ? 'local' : DEFAULT_SETTINGS.toggles.provider),
+      anthropicModel: tgls.anthropicModel ?? legacyAnthropic ?? DEFAULT_SETTINGS.toggles.anthropicModel,
+      localModel: tgls.localModel ?? (legacyIsLocal ? (legacyModel as LocalModelId) : DEFAULT_SETTINGS.toggles.localModel),
     },
   };
 }
 
-export const MODEL_OPTIONS: { id: ModelId; label: string }[] = [
+export const ANTHROPIC_MODEL_OPTIONS: { id: AnthropicModelId; label: string }[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
   { id: 'claude-opus-4-7', label: 'Opus 4.7' },
@@ -142,3 +218,17 @@ export const PRESET_OPTIONS: { id: Preset; label: string; hint: string }[] = [
   { id: 'full', label: 'Full', hint: 'all tools + views, Opus, 3 retries' },
   { id: 'custom', label: 'Custom', hint: 'your toggles' },
 ];
+
+/** Helper: a fresh first-time settings object with the local provider
+ *  pre-armed to the recommended default. Used by the local-model modal so
+ *  the very first download flips the user onto local in one motion. */
+export function defaultLocalSettings(): AiSettings {
+  return {
+    ...cloneDefaults(),
+    toggles: {
+      ...cloneDefaults().toggles,
+      provider: 'local',
+      localModel: DEFAULT_LOCAL_MODEL,
+    },
+  };
+}

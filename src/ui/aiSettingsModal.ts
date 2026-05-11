@@ -1,11 +1,16 @@
 // AI Settings modal — accessible from the AI chip overflow. Shows key
 // status (last 4 chars + lifetime usage), and exposes Replace key /
-// Disconnect actions.
+// Disconnect actions for the hosted provider, plus a Local-model section
+// for picking and downloading WebLLM weights.
 
 import { deleteKey, getKey } from '../ai/db';
 import { resetClient } from '../ai/anthropic';
 import { formatUsd } from '../ai/cost';
 import { showAiKeyModal } from './aiKeyModal';
+import { showAiLocalModal } from './aiLocalModal';
+import { loadSettings, saveSettings, setProvider } from '../ai/settings';
+import { findLocalModel } from '../ai/localModels';
+import { isModelLoaded } from '../ai/local';
 
 let modalEl: HTMLElement | null = null;
 
@@ -38,6 +43,12 @@ export async function showAiSettingsModal(cb: AiSettingsCallbacks): Promise<void
 
   const body = document.createElement('div');
   body.className = 'px-5 py-4 flex flex-col gap-4 text-sm text-zinc-200';
+
+  body.appendChild(buildProviderRow(cb));
+  body.appendChild(document.createElement('hr')).className = 'border-zinc-700';
+  const localSection = buildLocalSection(cb);
+  body.appendChild(localSection);
+  body.appendChild(document.createElement('hr')).className = 'border-zinc-700';
 
   const key = await getKey('anthropic');
   if (!key) {
@@ -120,6 +131,73 @@ export async function showAiSettingsModal(cb: AiSettingsCallbacks): Promise<void
     }
   };
   document.addEventListener('keydown', escHandler);
+}
+
+function buildProviderRow(cb: AiSettingsCallbacks): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col gap-2';
+  const label = document.createElement('div');
+  label.className = 'text-xs text-zinc-400';
+  label.textContent = 'Provider';
+  wrap.appendChild(label);
+
+  const settings = loadSettings();
+  const seg = document.createElement('div');
+  seg.className = 'inline-flex rounded border border-zinc-700 overflow-hidden';
+  const mkBtn = (id: 'anthropic' | 'local', text: string, hint: string) => {
+    const b = document.createElement('button');
+    const active = settings.toggles.provider === id;
+    b.className = active
+      ? 'px-3 py-1 text-xs bg-zinc-700 text-zinc-100'
+      : 'px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700/60';
+    b.textContent = text;
+    b.title = hint;
+    b.addEventListener('click', () => {
+      saveSettings(setProvider(loadSettings(), id));
+      cb.onChange();
+      closeModal();
+      // Reopen so the modal reflects the new provider's section state.
+      void showAiSettingsModal(cb);
+    });
+    seg.appendChild(b);
+  };
+  mkBtn('anthropic', 'Anthropic (cloud)', 'Use a hosted Claude model with your API key.');
+  mkBtn('local', 'Local (WebGPU)', 'Run a small/medium/large model in this browser.');
+  wrap.appendChild(seg);
+  return wrap;
+}
+
+function buildLocalSection(cb: AiSettingsCallbacks): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col gap-2';
+  const head = document.createElement('div');
+  head.className = 'flex items-center justify-between';
+  const h = document.createElement('div');
+  h.className = 'text-xs text-zinc-400';
+  h.textContent = 'Local model';
+  head.appendChild(h);
+  const pick = document.createElement('button');
+  pick.className = 'px-3 py-1 rounded text-xs text-zinc-200 bg-zinc-700 hover:bg-zinc-600';
+  pick.textContent = 'Choose model…';
+  pick.addEventListener('click', () => {
+    closeModal();
+    void showAiLocalModal({ onChange: cb.onChange });
+  });
+  head.appendChild(pick);
+  wrap.appendChild(head);
+
+  const settings = loadSettings();
+  const status = document.createElement('div');
+  status.className = 'text-[11px] text-zinc-400 leading-snug';
+  if (settings.toggles.localModel) {
+    const info = findLocalModel(settings.toggles.localModel);
+    const resident = isModelLoaded(info.id);
+    status.textContent = `${info.label} · ${(info.vramMB / 1024).toFixed(1)} GB VRAM · ${resident ? 'in GPU memory' : 'not yet loaded'}`;
+  } else {
+    status.textContent = 'No local model picked yet. Click “Choose model…” to download one.';
+  }
+  wrap.appendChild(status);
+  return wrap;
 }
 
 function closeModal(): void {

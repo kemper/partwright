@@ -113,10 +113,20 @@ After any changes that touch routing, Vite config, index.html, or initialization
 11. **Gallery badges**: Colored versions in the gallery should show small color-swatch dots next to the version label.
 12. **Color export**: With color regions painted, export GLB — the file should carry vertex colors. Export 3MF — the file should include `<basematerials>` and per-triangle `pid` attributes.
 13. **Annotations are per-version**: Annotate v1, save v2 (annotations persist into v2). Clear annotations, draw a different one, save v3. Navigating v1↔v2↔v3 should swap annotations to match each version (v1 empty, v2 first set, v3 second set). Importing a schema-1.2 file (top-level `annotations`) should attach those annotations to the latest version on import.
+14. **Local model picker**: Click the `✦ Connect AI` (or `✦ AI`) chip → in the modal, follow "Run a local model in your browser". A second modal lists Small / Medium / Large / Vision options with download sizes. The WebGPU banner shows green on Chrome/Edge/Safari 26+ and red elsewhere. The "Use this model" / "Download X GB" button only triggers a network request the first time; cached models show a "Downloaded" pill and skip straight to GPU load. Closing the tab during a download cancels it cleanly.
 
 ## AI Agent Workflow & API Reference
 
 For the full Manifold/CrossSection API, `window.partwright` console API, session workflow, verification patterns, and photo-to-model workflow, see `public/ai.md`. The legacy `window.mainifold` alias remains available for older prompts.
+
+### In-app AI chat — two providers
+
+The right-side AI drawer can drive Partwright through either:
+
+- **Anthropic (cloud)** — user pastes their own API key (`src/ai/anthropic.ts`). The key is stored in IndexedDB; the chat streams from Anthropic's hosted Claude.
+- **Local (WebGPU)** — runs a model entirely in the browser via [WebLLM](https://webllm.mlc.ai) (`src/ai/local.ts`). The user opts in from the AI settings modal, picks one of four sizes (Small/Medium/Large/Vision), and the weights download once into the browser cache. No API key, no network traffic per turn.
+
+Both providers share the same chat loop (`src/ai/chatLoop.ts`), the same tool schemas (`src/ai/tools.ts`), and the same `public/ai.md` system prompt — only the request transport differs. The WebLLM SDK is loaded via dynamic `import()` so users who stick with Anthropic never pay the ~6 MB chunk download.
 
 Key rules:
 - **Always use sessions** for user-requested geometry — never create files in `examples/`
