@@ -16,6 +16,7 @@ import {
   deleteCachedModel,
   probeWebGpu,
   isModelLoaded,
+  getStorageUsage,
 } from '../ai/local';
 import { loadSettings, saveSettings, setLocalModel, setProvider } from '../ai/settings';
 
@@ -87,6 +88,11 @@ async function rerender(body: HTMLElement, cb: AiLocalModalCallbacks): Promise<v
   });
   renderGpuBanner(gpuBanner);
 
+  // Storage usage line — populated async via navigator.storage.estimate().
+  const storageBanner = document.createElement('div');
+  body.appendChild(storageBanner);
+  void renderStorageBanner(storageBanner);
+
   // Scan the cache once on open so we know which models show "Loaded" vs
   // "Download". A second open will repeat the scan — cheap, all-promises.
   cachedSet = await getCachedModels();
@@ -147,6 +153,73 @@ function buildIntro(): HTMLElement {
   intro.className = 'text-zinc-300 leading-snug';
   intro.textContent = 'Pick a size that matches your hardware. Small fits on most laptops, Large needs a discrete GPU with ~5 GB free VRAM, and Vision lets the model see screenshots of your work.';
   return intro;
+}
+
+/** Surface browser storage usage so the user can see how close they are to
+ *  the per-origin quota before downloading another 5 GB of weights. The
+ *  numbers come from `navigator.storage.estimate()` and cover everything
+ *  this origin stores (Cache API, IndexedDB, OPFS) — not just our models —
+ *  but in practice models dwarf the rest. */
+async function renderStorageBanner(host: HTMLElement): Promise<void> {
+  const usage = await getStorageUsage();
+  host.replaceChildren();
+  if (usage.unavailable) {
+    const line = document.createElement('div');
+    line.className = 'text-[11px] text-zinc-500';
+    line.textContent = 'Browser storage info unavailable in this browser.';
+    host.appendChild(line);
+    return;
+  }
+  const used = formatBytes(usage.usageBytes);
+  const quota = formatBytes(usage.quotaBytes);
+  const pct = usage.quotaBytes > 0
+    ? Math.min(100, Math.round((usage.usageBytes / usage.quotaBytes) * 100))
+    : 0;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'rounded border border-zinc-700 bg-zinc-900/40 px-3 py-2 flex flex-col gap-1.5 text-[11px] text-zinc-400 leading-snug';
+
+  const top = document.createElement('div');
+  top.className = 'flex items-center justify-between gap-2';
+  const left = document.createElement('div');
+  left.className = 'text-zinc-300';
+  left.innerHTML = `<strong>${used}</strong> used of <strong>${quota}</strong> available for this site`;
+  top.appendChild(left);
+  if (usage.persistent) {
+    const pill = document.createElement('span');
+    pill.className = 'px-1.5 py-0.5 rounded text-[10px] bg-emerald-900/40 text-emerald-200 border border-emerald-800/60';
+    pill.textContent = 'persistent';
+    pill.title = 'You have granted persistent storage; the browser will not evict cached weights under storage pressure.';
+    top.appendChild(pill);
+  }
+  wrap.appendChild(top);
+
+  // Progress bar — colors mirror the chat panel's context meter so the
+  // amber/red thresholds read as "getting full".
+  const bar = document.createElement('div');
+  bar.className = 'w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden';
+  const barColor = pct < 60 ? 'bg-emerald-500' : pct < 85 ? 'bg-amber-500' : 'bg-red-500';
+  const fill = document.createElement('div');
+  fill.className = `h-full ${barColor}`;
+  fill.style.width = `${pct}%`;
+  bar.appendChild(fill);
+  wrap.appendChild(bar);
+
+  const hint = document.createElement('div');
+  hint.className = 'text-[10px] text-zinc-500';
+  hint.textContent = 'Includes Partwright sessions and any cached model weights. The browser may evict this storage if your disk fills up; clearing site data also wipes it.';
+  wrap.appendChild(hint);
+
+  host.appendChild(wrap);
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let n = bytes;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(n < 10 ? 1 : 0)} ${units[i]}`;
 }
 
 function renderGpuBanner(host: HTMLElement): void {

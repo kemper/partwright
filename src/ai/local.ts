@@ -50,6 +50,43 @@ export interface LoadOptions {
   onProgress?: (update: ProgressUpdate) => void;
 }
 
+export interface StorageUsage {
+  /** Bytes the browser estimates we (this origin) are currently using
+   *  across all storage backends — Cache API, IndexedDB, OPFS, etc. */
+  usageBytes: number;
+  /** Bytes the browser estimates we're allowed to use before it starts
+   *  evicting. Chrome's "best-effort" quota is roughly 60% of free disk. */
+  quotaBytes: number;
+  /** True when the user has granted persistent storage so the browser
+   *  promises not to evict the data even under storage pressure. */
+  persistent: boolean;
+  /** True when the browser doesn't expose `navigator.storage.estimate` —
+   *  the UI shows a "storage info unavailable" line instead of numbers. */
+  unavailable: boolean;
+}
+
+/** Best-effort snapshot of how much browser storage Partwright is using.
+ *  Used by the local-model modal so the user can see how close to the quota
+ *  they are before downloading a 5 GB model. */
+export async function getStorageUsage(): Promise<StorageUsage> {
+  const nav = typeof navigator !== 'undefined' ? navigator : null;
+  if (!nav?.storage?.estimate) {
+    return { usageBytes: 0, quotaBytes: 0, persistent: false, unavailable: true };
+  }
+  try {
+    const est = await nav.storage.estimate();
+    const persistent = nav.storage.persisted ? await nav.storage.persisted() : false;
+    return {
+      usageBytes: est.usage ?? 0,
+      quotaBytes: est.quota ?? 0,
+      persistent,
+      unavailable: false,
+    };
+  } catch {
+    return { usageBytes: 0, quotaBytes: 0, persistent: false, unavailable: true };
+  }
+}
+
 /** Returns true when WebGPU + a discrete-enough adapter are available.
  *  Soft-fails (no exception) so the UI can render a "not supported" state
  *  rather than crashing on import. */

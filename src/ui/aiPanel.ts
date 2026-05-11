@@ -4,7 +4,7 @@
 // ai/* modules; this file is mostly DOM wiring.
 
 import { runTurn, totalCost, totalTokensEstimate, estimateCachedPrefixTokens } from '../ai/chatLoop';
-import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey } from '../ai/db';
+import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { loadSettings, saveSettings, setAnthropicModel, setToggles, ANTHROPIC_MODEL_OPTIONS, type AiSettings } from '../ai/settings';
@@ -147,6 +147,11 @@ function buildDrawer(): void {
   compactBtn.title = 'Compact the conversation: summarize older turns and promote insights to session notes.';
   compactBtn.addEventListener('click', () => { void runCompact(); });
   header.appendChild(compactBtn);
+
+  const clearBtn = createIconButton('Clear', '🗑');
+  clearBtn.title = 'Clear the chat history for the current session. The conversation is removed from your browser; saved versions and notes are untouched.';
+  clearBtn.addEventListener('click', () => { void clearCurrentChat(); });
+  header.appendChild(clearBtn);
 
   const settingsBtn = createIconButton('Settings', '⚙');
   settingsBtn.title = 'AI settings: provider, key, lifetime usage.';
@@ -853,6 +858,31 @@ async function sendMessage(): Promise<void> {
 }
 
 // === Compaction ===
+
+async function clearCurrentChat(): Promise<void> {
+  if (state.inFlight) {
+    setTransientStatus('Wait for the current turn to finish before clearing.');
+    return;
+  }
+  if (state.history.length === 0) {
+    setTransientStatus('Nothing to clear — the chat is already empty.');
+    return;
+  }
+  const scope = state.sessionId === GLOBAL_CHAT_BUCKET
+    ? 'the global chat (before any session was opened)'
+    : 'this session';
+  if (!confirm(`Clear chat for ${scope}? ${state.history.length} message(s) will be deleted from your browser. Saved versions and session notes are untouched.`)) return;
+  try {
+    await clearChat(state.sessionId);
+  } catch (err) {
+    setTransientStatus(`Couldn't clear chat: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  state.history = [];
+  renderTranscript();
+  renderCostMeter();
+  setTransientStatus('Chat cleared.');
+}
 
 async function runCompact(): Promise<void> {
   if (state.inFlight) {
