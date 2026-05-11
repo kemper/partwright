@@ -70,18 +70,14 @@ export function toggleSuffix(toggles: ChatToggles): string {
     restrictions.push('You CANNOT see the rendered model. Reason from code and geometry stats only — do not ask for screenshots.');
   }
 
-  const lines = [
-    '',
-    '## Session toggle state',
-    '',
-    `Model: ${activeModel(toggles) ?? '(none picked)'} (provider: ${toggles.provider})`,
-    `Auto-retry on tool error: ${toggles.autoRetry}`,
-  ];
-  if (restrictions.length > 0) {
-    lines.push('');
-    lines.push('User has restricted you this session:');
-    for (const r of restrictions) lines.push(`- ${r}`);
-  }
+  // Keep the suffix minimal: just the restrictions (when any apply) and a
+  // bare model line. Earlier versions included a structured "## Session
+  // toggle state" block with key:value pairs which small local models
+  // started echoing back to the user as if it were the response payload.
+  if (restrictions.length === 0) return '';
+  const lines = ['', `Current session model: ${activeModel(toggles) ?? '(none picked)'}.`, ''];
+  lines.push('Capability restrictions for this turn:');
+  for (const r of restrictions) lines.push(`- ${r}`);
   return lines.join('\n');
 }
 

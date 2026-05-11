@@ -25,7 +25,6 @@ export interface AiSettings {
 const DEFAULT_TOGGLES: ChatToggles = {
   vision: { views: true },
   scope: { runCode: true, saveVersions: true, paintFaces: true },
-  autoRetry: 1,
   provider: 'anthropic',
   anthropicModel: 'claude-sonnet-4-6',
   localModel: null,
@@ -68,7 +67,6 @@ function cloneToggles(t: ChatToggles): ChatToggles {
   return {
     vision: { ...t.vision },
     scope: { ...t.scope },
-    autoRetry: t.autoRetry,
     provider: t.provider,
     anthropicModel: t.anthropicModel,
     localModel: t.localModel,
@@ -123,7 +121,6 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
   const next: ChatToggles = {
     vision: { ...settings.toggles.vision, ...(partial.vision ?? {}) },
     scope: { ...settings.toggles.scope, ...(partial.scope ?? {}) },
-    autoRetry: partial.autoRetry ?? settings.toggles.autoRetry,
     provider: partial.provider ?? settings.toggles.provider,
     anthropicModel: partial.anthropicModel ?? settings.toggles.anthropicModel,
     localModel: partial.localModel ?? settings.toggles.localModel,
@@ -163,7 +160,6 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
     toggles: {
       vision: { ...DEFAULT_SETTINGS.toggles.vision, ...(tgls.vision ?? {}) },
       scope: { ...DEFAULT_SETTINGS.toggles.scope, ...(tgls.scope ?? {}) },
-      autoRetry: tgls.autoRetry ?? DEFAULT_SETTINGS.toggles.autoRetry,
       provider: tgls.provider ?? (legacyIsLocal ? 'local' : DEFAULT_SETTINGS.toggles.provider),
       anthropicModel: tgls.anthropicModel ?? legacyAnthropic ?? DEFAULT_SETTINGS.toggles.anthropicModel,
       localModel: tgls.localModel ?? (legacyIsLocal ? (legacyModel as LocalModelId) : DEFAULT_SETTINGS.toggles.localModel),

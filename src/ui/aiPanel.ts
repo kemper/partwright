@@ -391,21 +391,6 @@ function renderToggleStrip(): void {
     saveSettings(setToggles(loadSettings(), { scope: { paintFaces: !toggles.scope.paintFaces } }));
     renderToggleStrip();
   }));
-
-  const retry = document.createElement('select');
-  retry.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
-  retry.title = 'Auto-retry on tool error: how many times to feed the error back before surfacing it.';
-  for (const n of [0, 1, 3]) {
-    const opt = document.createElement('option');
-    opt.value = String(n);
-    opt.textContent = `↻ ${n}`;
-    retry.appendChild(opt);
-  }
-  retry.value = String(toggles.autoRetry);
-  retry.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { autoRetry: Number(retry.value) as 0 | 1 | 3 }));
-  });
-  toggleStripEl.appendChild(retry);
 }
 
 function togglePill(label: string, on: boolean, onClick: () => void): HTMLButtonElement {
@@ -589,6 +574,11 @@ function renderMessage(msg: ChatMessage): HTMLElement {
   wrap.className = msg.role === 'user' ? 'flex flex-col items-end gap-1' : 'flex flex-col items-start gap-1';
   wrap.dataset.messageId = msg.id;
 
+  if (msg.errored) {
+    wrap.appendChild(renderErrorBubble(msg));
+    return wrap;
+  }
+
   // Tool results (user role) get rendered as collapsed bubbles
   if (msg.role === 'user' && msg.toolResults && msg.toolResults.length > 0) {
     for (const tr of msg.toolResults) {
@@ -618,6 +608,77 @@ function renderMessage(msg: ChatMessage): HTMLElement {
   }
 
   return wrap;
+}
+
+/** Rendered for turns that errored mid-flight — visually distinct so the
+ *  user can spot the failure point in a long chat, and offers a Retry that
+ *  re-sends the immediately preceding user message. */
+function renderErrorBubble(msg: ChatMessage): HTMLElement {
+  const card = document.createElement('div');
+  card.className = 'max-w-[95%] rounded border border-red-700/60 bg-red-900/15 px-3 py-2 flex flex-col gap-2';
+
+  const head = document.createElement('div');
+  head.className = 'flex items-center gap-1.5 text-xs font-medium text-red-200';
+  head.innerHTML = '<span>⚠</span><span>Turn failed</span>';
+  card.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'text-[12px] text-red-100 whitespace-pre-wrap leading-snug';
+  body.textContent = msg.blocks.find(b => b.type === 'text')?.text ?? 'The model didn\'t finish the turn.';
+  card.appendChild(body);
+
+  const actions = document.createElement('div');
+  actions.className = 'flex items-center gap-2 pt-1';
+  const retryBtn = document.createElement('button');
+  retryBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
+  retryBtn.textContent = '↻ Retry last message';
+  retryBtn.addEventListener('click', () => { void retryLastUserMessage(msg.id); });
+  actions.appendChild(retryBtn);
+
+  const dismissBtn = document.createElement('button');
+  dismissBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800';
+  dismissBtn.textContent = 'Dismiss';
+  dismissBtn.title = 'Hide this error from the chat (it\'s not stored anyway).';
+  dismissBtn.addEventListener('click', () => {
+    state.history = state.history.filter(m => m.id !== msg.id);
+    renderTranscript();
+  });
+  actions.appendChild(dismissBtn);
+  card.appendChild(actions);
+  return card;
+}
+
+/** Find the most recent user message before this error, dismiss the error
+ *  bubble, and replay the user message verbatim. */
+async function retryLastUserMessage(errorMsgId: string): Promise<void> {
+  if (state.inFlight) {
+    setTransientStatus('Wait for the current turn to finish before retrying.');
+    return;
+  }
+  const errorIdx = state.history.findIndex(m => m.id === errorMsgId);
+  if (errorIdx < 0) return;
+  // Walk back to the last user message that wasn't a pure tool-result.
+  let lastUser: ChatMessage | null = null;
+  for (let i = errorIdx - 1; i >= 0; i--) {
+    const m = state.history[i];
+    if (m.role === 'user' && m.blocks.some(b => b.type === 'text' || b.type === 'image')) {
+      lastUser = m;
+      break;
+    }
+  }
+  if (!lastUser) {
+    setTransientStatus('Nothing to retry — couldn\'t find your last message.');
+    return;
+  }
+  // Drop the error bubble before re-sending so the chat reads cleanly.
+  state.history = state.history.filter(m => m.id !== errorMsgId);
+  renderTranscript();
+  if (!inputEl) return;
+  // Reconstruct the user input and resend through the normal send path.
+  const text = lastUser.blocks.find(b => b.type === 'text')?.text ?? '';
+  state.pendingImages = lastUser.blocks.filter(b => b.type === 'image').map(b => (b as { source: ImageSource }).source);
+  inputEl.value = text;
+  await sendMessage();
 }
 
 function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: boolean): HTMLElement {
@@ -843,11 +904,39 @@ async function sendMessage(): Promise<void> {
       if (result.isError) setTransientStatus('A tool errored. The agent will retry or surface the issue.');
     },
     onError: err => {
-      setTransientStatus(`Error: ${err.message}`);
+      // Replace the in-memory "Thinking…" placeholder with a visible
+      // error bubble so the user can see what failed. The error bubble
+      // is in-memory only (not persisted) — once `loadHistoryForCurrentSession`
+      // runs in onTurnComplete it'll be replaced by whatever the
+      // turn actually persisted (often nothing, leaving the user free
+      // to retry their last message).
+      if (activeAssistantId) {
+        const idx = state.history.findIndex(m => m.id === activeAssistantId);
+        const errorMsg: ChatMessage = {
+          id: activeAssistantId,
+          sessionId: state.sessionId,
+          role: 'assistant',
+          blocks: [{ type: 'text', text: err.message }],
+          createdAt: Date.now(),
+          seq: idx >= 0 ? state.history[idx].seq : (state.history[state.history.length - 1]?.seq ?? 0) + 1,
+          errored: true,
+        };
+        if (idx >= 0) state.history[idx] = errorMsg;
+        else state.history.push(errorMsg);
+        activeAssistantId = null;
+        liveTextEl = null;
+        renderTranscript();
+      } else {
+        setTransientStatus(`Error: ${err.message}`);
+      }
     },
     onTurnComplete: () => {
-      // Refresh from DB to catch any tool-result messages
+      // Refresh from DB to catch any tool-result messages, but preserve
+      // any in-memory error bubble from this turn — the persisted view
+      // wouldn't have it (errored placeholders aren't written to DB).
+      const erroredFromThisTurn = state.history.filter(m => m.errored);
       void loadHistoryForCurrentSession().then(() => {
+        for (const m of erroredFromThisTurn) state.history.push(m);
         renderTranscript();
         renderCostMeter();
       });

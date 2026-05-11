@@ -131,7 +131,12 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         // raw assistant blocks; chatLoop never reads that field.
       }
     } catch (err) {
+      // ALWAYS fire onTurnComplete in error paths too — otherwise the panel's
+      // history-reload-from-IndexedDB hook never runs and the in-memory
+      // "Thinking…" placeholder lives on forever, looking like a stuck or
+      // lost turn next time the user types.
       callbacks.onError?.(err instanceof Error ? err : new Error(String(err)));
+      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls });
       return workingHistory;
     }
 
@@ -172,8 +177,12 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       return workingHistory;
     }
 
-    // Execute tools, then loop with the results posted back.
-    const toolResults = await executeAllWithRetry(result.toolCalls, toggles, callbacks);
+    // Execute tools, then loop with the results posted back. We DO NOT
+    // retry a failing tool with the same arguments — that's never useful.
+    // The agent-loop pattern is the real recovery mechanism: the error
+    // result is fed back to the model on the next iteration, and the
+    // model picks different arguments.
+    const toolResults = await executeAll(result.toolCalls, callbacks);
     totalToolCalls += result.toolCalls.length;
 
     const toolResultMsg: ChatMessage = {
@@ -189,25 +198,24 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     workingHistory = [...workingHistory, toolResultMsg];
   }
 
-  // Hit iteration cap — surface to the user so they can intervene.
-  callbacks.onError?.(new Error(`Agent loop exceeded ${MAX_AGENT_ITERATIONS} iterations without completing. Try a more focused prompt or compact the conversation.`));
+  // Hit iteration cap — most likely the model got stuck in a tool-call →
+  // error → tool-call loop. Surface it as an actionable error so the user
+  // knows why we stopped and what to do next.
+  callbacks.onError?.(new Error(
+    `Stopped after ${MAX_AGENT_ITERATIONS} back-and-forth tool calls. The model kept calling tools without finishing. ` +
+    `You can try: a more specific prompt, switching to a larger model, or clearing the chat to start fresh.`
+  ));
   callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls });
   return workingHistory;
 }
 
-async function executeAllWithRetry(
+async function executeAll(
   toolCalls: PersistedToolCall[],
-  toggles: ChatToggles,
   callbacks: RunTurnCallbacks,
 ): Promise<PersistedToolResult[]> {
   const results: PersistedToolResult[] = [];
   for (const tc of toolCalls) {
-    let attempt = 0;
-    let result = await executeTool(tc.name, tc.input);
-    while (result.isError && attempt < toggles.autoRetry) {
-      attempt++;
-      result = await executeTool(tc.name, tc.input);
-    }
+    const result = await executeTool(tc.name, tc.input);
     const persisted: PersistedToolResult = {
       toolUseId: tc.id,
       content: result.content,

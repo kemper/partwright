@@ -33,9 +33,6 @@ export interface ChatToggles {
     /** Allow the model to call paint helpers. */
     paintFaces: boolean;
   };
-  /** Number of times the loop will silently feed an error back to the model
-   *  before surfacing it. 0/1/3. */
-  autoRetry: 0 | 1 | 3;
   /** Which backend the chat is talking to right now. */
   provider: Provider;
   /** Anthropic model for cloud chats. Always present so the user can switch
@@ -70,6 +67,11 @@ export interface ChatMessage {
   seq: number;
   /** When the message was synthesized by a compaction summary. */
   compacted?: boolean;
+  /** Marks a synthetic assistant message representing a turn that errored
+   *  out (e.g. the model crashed or hit the iteration cap). Rendered with
+   *  a red border so it stands out from a normal reply, and offers a
+   *  Retry button next to it. Not persisted to IndexedDB. */
+  errored?: boolean;
 }
 
 export type ChatBlock =
