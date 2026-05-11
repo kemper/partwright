@@ -25,6 +25,19 @@ let modalEl: HTMLElement | null = null;
 let cachedSet: Set<string> = new Set();
 let webGpuStatus: { supported: boolean; reason?: string } = { supported: true };
 
+/** Resolve the context window we'll actually request from WebLLM given a
+ *  model's declared default. The global override (set in AI settings)
+ *  trumps the per-model default; otherwise we pass through. */
+function effectiveContextWindow(modelDefault: number): number {
+  const override = loadSettings().localContext.windowSizeOverride;
+  return override && override > 0 ? override : modelDefault;
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1024 && n % 1024 === 0) return `${n / 1024}K`;
+  return n.toLocaleString();
+}
+
 export interface AiLocalModalCallbacks {
   onChange: () => void;
 }
@@ -202,6 +215,12 @@ function renderCustomModelCard(
   source.textContent = custom.modelUrl;
   left.appendChild(source);
 
+  const ctxLine = document.createElement('div');
+  ctxLine.className = 'text-[10px] text-zinc-500';
+  const ctxN = effectiveContextWindow(custom.contextWindowSize ?? 4096);
+  ctxLine.textContent = `Context: ${formatTokens(ctxN)}${custom.vramMB ? ` · VRAM: ${(custom.vramMB / 1024).toFixed(1)} GB` : ''}`;
+  left.appendChild(ctxLine);
+
   if (custom.modelLibUrl) {
     const lib = document.createElement('div');
     lib.className = 'text-[10px] text-zinc-500 truncate';
@@ -303,6 +322,19 @@ function buildCustomModelForm(parentBody: HTMLElement, cb: AiLocalModalCallbacks
   vramInput.className = 'w-20 px-2 py-1 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-xs focus:outline-none focus:border-blue-500';
   vramRow.appendChild(vramInput);
   advancedDetails.appendChild(vramRow);
+
+  const ctxRow = document.createElement('div');
+  ctxRow.className = 'mt-2 flex items-center gap-2 text-zinc-400';
+  ctxRow.innerHTML = '<span>Context window (tokens, optional)</span>';
+  const ctxInput = document.createElement('input');
+  ctxInput.type = 'number';
+  ctxInput.step = '1024';
+  ctxInput.min = '0';
+  ctxInput.placeholder = '4096';
+  ctxInput.className = 'w-24 px-2 py-1 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-xs focus:outline-none focus:border-blue-500';
+  ctxInput.title = 'Some MLC-compiled WASMs support larger windows. Leave blank to use 4096 (the safe baseline).';
+  ctxRow.appendChild(ctxInput);
+  advancedDetails.appendChild(ctxRow);
   wrap.appendChild(advancedDetails);
 
   const errorBox = document.createElement('div');
@@ -323,12 +355,14 @@ function buildCustomModelForm(parentBody: HTMLElement, cb: AiLocalModalCallbacks
       return;
     }
     const vramGB = parseFloat(vramInput.value);
+    const ctxTokens = parseInt(ctxInput.value, 10);
     const custom: CustomLocalModel = {
       id: parsed.modelId,
       label: parsed.modelId,
       modelUrl: parsed.modelUrl,
       modelLibUrl: libInput.value.trim(),
       vramMB: Number.isFinite(vramGB) && vramGB > 0 ? Math.round(vramGB * 1024) : undefined,
+      contextWindowSize: Number.isFinite(ctxTokens) && ctxTokens > 0 ? ctxTokens : undefined,
       addedAt: Date.now(),
     };
     saveSettings(addCustomLocalModel(loadSettings(), custom));
@@ -363,19 +397,20 @@ function parseCustomModelInput(raw: string): { modelUrl: string; modelId: string
   };
 }
 
-/** Honest note about the 4K context window cap so users with a 70B model
- *  don't expect the same long-conversation behavior as hosted Claude. */
+/** Honest note about context window tradeoffs — KV cache is the real
+ *  bottleneck in the browser, not the WASM compilation. */
 function buildContextNote(): HTMLElement {
   const note = document.createElement('div');
   note.className = 'mt-2 rounded border border-zinc-700 bg-zinc-900/40 p-3 text-[11px] text-zinc-400 leading-snug';
   note.innerHTML = `
     <strong class="text-zinc-300">A note on context window.</strong>
-    WebLLM compiles every prebuilt model — even the 70B — for a
-    <strong>4096-token context window</strong>. That's a build-time
-    constraint, not a setting we can override. Larger models still
-    reason better with the same window; we use a richer system prompt
-    for them. The system-prompt editor (in AI settings) lets you adjust
-    either tier.
+    We default to <strong>8K</strong> for 3B models, <strong>16K</strong>
+    for 7-9B, and <strong>4K</strong> for the 70B — chosen so KV-cache
+    memory stays in the practical browser-GPU budget. You can override
+    globally or enable sliding-window mode in <em>AI settings → Local
+    context</em>. 100K+ windows aren't realistic in the browser today:
+    KV cache alone would consume 16+ GB of GPU memory on an 8B model.
+    If you need long context, use the Anthropic provider.
   `;
   return note;
 }
@@ -583,7 +618,8 @@ function renderModelCard(
 
   const stats = document.createElement('div');
   stats.className = 'text-[10px] text-zinc-500';
-  stats.textContent = `~${model.downloadGB.toFixed(1)} GB download · ${(model.vramMB / 1024).toFixed(1)} GB VRAM · ${model.promptTier} prompt`;
+  const ctx = effectiveContextWindow(model.contextWindowSize);
+  stats.textContent = `~${model.downloadGB.toFixed(1)} GB download · ${(model.vramMB / 1024).toFixed(1)} GB VRAM · ${formatTokens(ctx)} context · ${model.promptTier} prompt`;
   left.appendChild(stats);
 
   const recommended = document.createElement('div');

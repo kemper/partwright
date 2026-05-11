@@ -9,7 +9,7 @@ import { formatUsd } from '../ai/cost';
 import { showAiKeyModal } from './aiKeyModal';
 import { showAiLocalModal } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
-import { loadSettings, saveSettings, setProvider } from '../ai/settings';
+import { loadSettings, saveSettings, setLocalContext, setProvider } from '../ai/settings';
 import { isModelLoaded, resolveLocalModel } from '../ai/local';
 
 let modalEl: HTMLElement | null = null;
@@ -48,6 +48,8 @@ export async function showAiSettingsModal(cb: AiSettingsCallbacks): Promise<void
   body.appendChild(document.createElement('hr')).className = 'border-zinc-700';
   const localSection = buildLocalSection(cb);
   body.appendChild(localSection);
+  body.appendChild(document.createElement('hr')).className = 'border-zinc-700';
+  body.appendChild(buildLocalContextSection(cb));
   body.appendChild(document.createElement('hr')).className = 'border-zinc-700';
   body.appendChild(buildSystemPromptSection(cb));
   body.appendChild(document.createElement('hr')).className = 'border-zinc-700';
@@ -199,6 +201,77 @@ function buildLocalSection(cb: AiSettingsCallbacks): HTMLElement {
     status.textContent = 'No local model picked yet. Click “Choose model…” to download one.';
   }
   wrap.appendChild(status);
+  return wrap;
+}
+
+/** "Local context" section — controls the trade-off between conversation
+ *  length and VRAM. Two knobs:
+ *    - Window size override: blank = use each model's declared default,
+ *      otherwise applies globally. Higher = more turns fit, more VRAM.
+ *    - Sliding window: when on, old turns drop off silently instead of
+ *      hitting the "exceeds window" error. */
+function buildLocalContextSection(cb: AiSettingsCallbacks): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col gap-2';
+  const head = document.createElement('div');
+  head.className = 'text-xs text-zinc-400';
+  head.textContent = 'Local context';
+  wrap.appendChild(head);
+
+  const desc = document.createElement('div');
+  desc.className = 'text-[11px] text-zinc-400 leading-snug';
+  desc.innerHTML = `WebLLM caps every prebuilt model's context window at compile time. We default to <strong>8K for 3B models</strong>, <strong>16K for 7-9B</strong>, and <strong>4K for the 70B</strong> (KV cache is too expensive at higher). You can override globally below; if the model's compiled WASM rejects the override, we fall back to 4K automatically and surface the error.`;
+  wrap.appendChild(desc);
+
+  const settings = loadSettings();
+
+  // Override input
+  const overrideRow = document.createElement('label');
+  overrideRow.className = 'flex items-center gap-2 text-xs text-zinc-300';
+  overrideRow.innerHTML = '<span>Override window size:</span>';
+  const overrideInput = document.createElement('input');
+  overrideInput.type = 'number';
+  overrideInput.step = '1024';
+  overrideInput.min = '0';
+  overrideInput.placeholder = 'auto';
+  overrideInput.className = 'w-24 px-2 py-1 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-xs focus:outline-none focus:border-blue-500';
+  overrideInput.value = settings.localContext.windowSizeOverride === null
+    ? ''
+    : String(settings.localContext.windowSizeOverride);
+  overrideInput.addEventListener('change', () => {
+    const v = parseInt(overrideInput.value, 10);
+    const next = Number.isFinite(v) && v > 0 ? v : null;
+    saveSettings(setLocalContext(loadSettings(), { windowSizeOverride: next }));
+    cb.onChange();
+  });
+  overrideRow.appendChild(overrideInput);
+  const overrideHint = document.createElement('span');
+  overrideHint.className = 'text-[10px] text-zinc-500';
+  overrideHint.textContent = 'tokens · blank = per-model default';
+  overrideRow.appendChild(overrideHint);
+  wrap.appendChild(overrideRow);
+
+  // Sliding window toggle
+  const slidingRow = document.createElement('label');
+  slidingRow.className = 'flex items-start gap-2 text-xs text-zinc-300';
+  const slidingCheckbox = document.createElement('input');
+  slidingCheckbox.type = 'checkbox';
+  slidingCheckbox.className = 'mt-0.5';
+  slidingCheckbox.checked = settings.localContext.sliding;
+  slidingCheckbox.addEventListener('change', () => {
+    saveSettings(setLocalContext(loadSettings(), { sliding: slidingCheckbox.checked }));
+    cb.onChange();
+  });
+  slidingRow.appendChild(slidingCheckbox);
+  const slidingText = document.createElement('span');
+  slidingText.innerHTML = '<strong class="text-zinc-200">Sliding window mode.</strong> <span class="text-zinc-400">Old turns drop off silently as new ones arrive. Conversation never errors, but the model loses long-range coherence. Costs the same VRAM as a fixed window of the same size.</span>';
+  slidingRow.appendChild(slidingText);
+  wrap.appendChild(slidingRow);
+
+  const reloadHint = document.createElement('div');
+  reloadHint.className = 'text-[10px] text-zinc-500';
+  reloadHint.textContent = 'Changes apply the next time the model is loaded into GPU.';
+  wrap.appendChild(reloadHint);
   return wrap;
 }
 

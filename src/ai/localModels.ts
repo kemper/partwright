@@ -59,6 +59,14 @@ export interface LocalModelInfo {
   qualityStars: 1 | 2 | 3;
   /** Which built-in system prompt the model receives by default. */
   promptTier: PromptTier;
+  /** Default context window size in tokens for this model. WebLLM caps
+   *  every prebuilt WASM at compile time; these defaults are educated
+   *  guesses about what works in practice. KV cache memory grows linearly
+   *  with this number — bumping the 70B to 16K eats ~8 GB extra VRAM. The
+   *  user can override globally via AiSettings.localContext, and we
+   *  automatically fall back to 4096 if reload errors at the requested
+   *  size. */
+  contextWindowSize: number;
 }
 
 export const LOCAL_MODELS: LocalModelInfo[] = [
@@ -70,11 +78,12 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'Fine-tuned for function calling — most reliable agent on this list. The starting point for serious use.',
     downloadGB: 4.5,
     vramMB: 4876,
-    recommendedSystem: 'Discrete GPU with 6+ GB VRAM, or Apple Silicon with 16+ GB unified RAM.',
+    recommendedSystem: 'Discrete GPU with 8+ GB VRAM, or Apple Silicon with 16+ GB unified RAM.',
     supportsVision: false,
     officialToolCalling: true,
     qualityStars: 3,
     promptTier: 'medium',
+    contextWindowSize: 8192,
   },
 
   // === Smaller (laptop-friendly) ===
@@ -90,6 +99,7 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     officialToolCalling: false,
     qualityStars: 2,
     promptTier: 'slim',
+    contextWindowSize: 8192,
   },
   {
     id: 'Hermes-3-Llama-3.2-3B-q4f16_1-MLC',
@@ -103,6 +113,7 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     officialToolCalling: false,
     qualityStars: 2,
     promptTier: 'slim',
+    contextWindowSize: 8192,
   },
   {
     id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC',
@@ -116,6 +127,7 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     officialToolCalling: false,
     qualityStars: 1,
     promptTier: 'slim',
+    contextWindowSize: 8192,
   },
 
   // === Larger (workstation-ish) ===
@@ -126,11 +138,12 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'Code-specialized at 7B; produces cleaner manifold-js than Llama 3.1 8B in practice.',
     downloadGB: 4.7,
     vramMB: 5100,
-    recommendedSystem: '8+ GB VRAM, or Apple Silicon with 16+ GB unified RAM.',
+    recommendedSystem: '12+ GB VRAM, or Apple Silicon with 16+ GB unified RAM.',
     supportsVision: false,
     officialToolCalling: false,
     qualityStars: 2,
     promptTier: 'medium',
+    contextWindowSize: 16384,
   },
   {
     id: 'Qwen3-8B-q4f16_1-MLC',
@@ -139,11 +152,12 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'Newer Qwen base, strong instruction following. Good middle ground when you want non-Hermes.',
     downloadGB: 5.4,
     vramMB: 5696,
-    recommendedSystem: '8+ GB VRAM, or 16+ GB Apple Silicon.',
+    recommendedSystem: '12+ GB VRAM, or 16+ GB Apple Silicon.',
     supportsVision: false,
     officialToolCalling: false,
     qualityStars: 2,
     promptTier: 'medium',
+    contextWindowSize: 16384,
   },
   {
     id: 'Qwen3.5-9B-q4f16_1-MLC',
@@ -152,11 +166,12 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'Latest Qwen iteration. Modest upgrade over Qwen 3 8B; same prompt-engineered tool path.',
     downloadGB: 6.0,
     vramMB: 6433,
-    recommendedSystem: '8+ GB VRAM, or 16+ GB Apple Silicon.',
+    recommendedSystem: '12+ GB VRAM, or 16+ GB Apple Silicon.',
     supportsVision: false,
     officialToolCalling: false,
     qualityStars: 2,
     promptTier: 'medium',
+    contextWindowSize: 16384,
   },
 
   // === Flagship — needs serious hardware ===
@@ -167,11 +182,14 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'Cloud-class quality, but the 3-bit quant trades some quality for fit. Needs heavy hardware to be tolerable.',
     downloadGB: 29,
     vramMB: 31153,
-    recommendedSystem: 'Apple Silicon with 64+ GB unified memory, or a desktop GPU with 32+ GB VRAM. Expect slow first-token latency.',
+    recommendedSystem: 'Apple Silicon with 64+ GB unified memory, or a desktop GPU with 40+ GB VRAM. Expect slow first-token latency.',
     supportsVision: false,
     officialToolCalling: false,
     qualityStars: 3,
     promptTier: 'medium',
+    // Keep 70B at 4K — KV cache for this model is ~1.2 GB per 4K tokens of
+    // context, so 16K would add ~5 GB on top of 31 GB weights.
+    contextWindowSize: 4096,
   },
 
   // === Vision ===
@@ -187,6 +205,9 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     officialToolCalling: false,
     qualityStars: 1,
     promptTier: 'slim',
+    // Phi 3.5 Vision's compiled WASM (cs2k) is known to be picky about
+    // context overrides — leave at the prebuilt default.
+    contextWindowSize: 4096,
   },
 ];
 

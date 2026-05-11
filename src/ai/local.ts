@@ -44,6 +44,13 @@ interface LoadedEngine {
  *  `_cs1k-webgpu.wasm` chunk-size suffix. The engine surfaces a clear
  *  network error if the guess is wrong; the user can then go edit the
  *  custom entry. */
+/** Find a user-supplied context window override for the named custom model. */
+function resolveCustomContextWindow(modelId: string): number | null {
+  const c = loadSettings().customLocalModels.find(m => m.id === modelId);
+  if (!c || !c.contextWindowSize || c.contextWindowSize <= 0) return null;
+  return Math.floor(c.contextWindowSize);
+}
+
 function buildCustomModelEntries(webllm: typeof import('@mlc-ai/web-llm')): import('@mlc-ai/web-llm').ModelRecord[] {
   const customs = loadSettings().customLocalModels;
   return customs.map(c => {
@@ -57,6 +64,10 @@ function buildCustomModelEntries(webllm: typeof import('@mlc-ai/web-llm')): impo
       vram_required_MB: c.vramMB ?? 0,
       low_resource_required: false,
       overrides: {
+        // The actual reload() pass overrides this at load time, so the
+        // value here is only a placeholder. Keep it at 4096 — WebLLM
+        // requires the field be set to something positive in the
+        // appConfig record.
         context_window_size: 4096,
       },
     };
@@ -93,6 +104,7 @@ function customModelToInfo(custom: CustomLocalModel): LocalModelInfo {
     officialToolCalling: false,
     qualityStars: 2,
     promptTier: 'slim',
+    contextWindowSize: custom.contextWindowSize ?? 4096,
   };
 }
 
@@ -249,9 +261,37 @@ export async function ensureModelLoaded(modelId: string, opts: LoadOptions = {})
       },
     });
 
-    await engine.reload(modelId, {
-      context_window_size: 4096,
-    });
+    // Compute the context override. Priority: user-set global override,
+    // then the model's declared default, then a safe 4096 fallback. If
+    // sliding window is enabled we pass `sliding_window_size` instead —
+    // WebLLM rejects requests that set both at once.
+    const { localContext } = loadSettings();
+    const customWindow = resolveCustomContextWindow(modelId);
+    const desired = localContext.windowSizeOverride
+      ?? customWindow
+      ?? info.contextWindowSize
+      ?? 4096;
+    const reloadConfig = localContext.sliding
+      ? { sliding_window_size: desired, attention_sink_size: 4 }
+      : { context_window_size: desired };
+
+    try {
+      await engine.reload(modelId, reloadConfig);
+    } catch (err) {
+      // The compile-time max in the WASM may be lower than what we asked
+      // for — WebLLM throws `WindowSizeConfigurationError` /
+      // `ContextWindowSizeExceededError` in that case. Fall back to 4096
+      // and surface the original message so the user knows we backed off.
+      if (desired > 4096) {
+        opts.onProgress?.({ progress: 0, text: `Context ${desired} rejected, retrying at 4096…` });
+        const fallback = localContext.sliding
+          ? { sliding_window_size: 4096, attention_sink_size: 4 }
+          : { context_window_size: 4096 };
+        await engine.reload(modelId, fallback);
+      } else {
+        throw err;
+      }
+    }
 
     const next: LoadedEngine = { modelId, engine, info };
     loaded = next;

@@ -25,6 +25,23 @@ export interface AiSettings {
    *  curated list. Persisted in localStorage so they don't have to
    *  re-add them every session. */
   customLocalModels: CustomLocalModel[];
+  /** Power-user knobs for the local provider. Lets you trade KV-cache
+   *  VRAM for longer conversations, or flip into sliding-window mode so
+   *  old turns drop off silently instead of erroring. */
+  localContext: LocalContextSettings;
+}
+
+export interface LocalContextSettings {
+  /** Per-origin override of every model's default context window. `null`
+   *  means use whatever the model declares in LocalModelInfo. Setting it
+   *  higher than the model's compiled max throws at reload — we catch
+   *  that and fall back automatically. */
+  windowSizeOverride: number | null;
+  /** When true, the engine is loaded with `sliding_window_size` instead
+   *  of `context_window_size`. Old turns drop off as new ones arrive;
+   *  the conversation never errors with "prompt tokens exceed window",
+   *  but the model loses long-range coherence. */
+  sliding: boolean;
 }
 
 export interface CustomLocalModel {
@@ -41,6 +58,9 @@ export interface CustomLocalModel {
   modelLibUrl: string;
   /** Saved by the user for their own reference; not enforced. */
   vramMB?: number;
+  /** Optional override for this model's context window. Falls back to
+   *  4096 when blank. */
+  contextWindowSize?: number;
   addedAt: number;
 }
 
@@ -58,6 +78,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   autoCompactMode: 'off',
   systemPromptOverrides: { anthropic: null, local: null },
   customLocalModels: [],
+  localContext: { windowSizeOverride: null, sliding: false },
 };
 
 let cached: AiSettings | null = null;
@@ -194,6 +215,25 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
     customLocalModels: Array.isArray((partial as { customLocalModels?: unknown }).customLocalModels)
       ? ((partial as { customLocalModels: CustomLocalModel[] }).customLocalModels)
       : [],
+    localContext: normalizeLocalContext((partial as { localContext?: Partial<LocalContextSettings> }).localContext),
+  };
+}
+
+function normalizeLocalContext(raw: Partial<LocalContextSettings> | undefined): LocalContextSettings {
+  const override = raw?.windowSizeOverride;
+  return {
+    windowSizeOverride: typeof override === 'number' && override > 0 ? Math.floor(override) : null,
+    sliding: raw?.sliding === true,
+  };
+}
+
+export function setLocalContext(settings: AiSettings, partial: Partial<LocalContextSettings>): AiSettings {
+  return {
+    ...settings,
+    localContext: {
+      ...settings.localContext,
+      ...partial,
+    },
   };
 }
 
