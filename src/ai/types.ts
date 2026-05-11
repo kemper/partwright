@@ -38,9 +38,11 @@ export interface ChatToggles {
   /** Anthropic model for cloud chats. Always present so the user can switch
    *  back to Anthropic without re-picking a model. */
   anthropicModel: AnthropicModelId;
-  /** WebLLM model for local chats. Present from the first time the user
-   *  picks one in the local-model modal. */
-  localModel: LocalModelId | null;
+  /** WebLLM model for local chats. Stored as a plain string so user-added
+   *  custom model ids (which aren't in the curated `LocalModelId` union)
+   *  fit too. Present from the first time the user picks one in the
+   *  local-model modal. */
+  localModel: string | null;
 }
 
 /** Persisted per-message record. One row per chat message in IndexedDB. */
@@ -120,7 +122,7 @@ export interface KeyRecord {
 /** Returns the active model id given a settings object. Centralized so the
  *  cost meter, the request builder, and the toolbar chip all agree on which
  *  model is in play for the next turn. */
-export function activeModel(toggles: ChatToggles): ModelId | null {
+export function activeModel(toggles: ChatToggles): ModelId | string | null {
   if (toggles.provider === 'anthropic') return toggles.anthropicModel;
   return toggles.localModel;
 }

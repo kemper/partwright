@@ -10,7 +10,8 @@
 // editor + Save (or clicking Reset) drops back to the built-in default.
 
 import { loadSettings, saveSettings, setSystemPromptOverride } from '../ai/settings';
-import { buildLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
+import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
+import { resolveLocalModel } from '../ai/local';
 import type { Provider } from '../ai/types';
 
 let modalEl: HTMLElement | null = null;
@@ -48,18 +49,25 @@ export async function showSystemPromptModal(provider: Provider, cb: SystemPrompt
   body.className = 'px-5 py-4 flex flex-col gap-3 text-sm text-zinc-200 overflow-y-auto';
   modal.appendChild(body);
 
+  const settings = loadSettings();
+  const override = settings.systemPromptOverrides?.[provider] ?? null;
+  // For local, the active built-in prompt depends on which model is
+  // selected — bigger models get the medium prompt. We show whichever
+  // would actually run today.
+  let promptTier: 'slim' | 'medium' = 'slim';
+  if (provider === 'local' && settings.toggles.localModel) {
+    promptTier = resolveLocalModel(settings.toggles.localModel).promptTier;
+  }
+  const defaultPrompt = provider === 'local'
+    ? (promptTier === 'medium' ? buildMediumLocalSystemPrompt() : buildLocalSystemPrompt())
+    : buildSystemPrompt(await loadAiMd());
+
   const intro = document.createElement('p');
   intro.className = 'text-zinc-300 leading-snug';
   intro.innerHTML = provider === 'local'
-    ? 'This is the wrapper prompt prepended to every message you send to a local model. Local models cap at a <strong>4096-token context window</strong>, so this is a deliberately slim version of the full <code>ai.md</code> docs — about 540 tokens — designed to leave room for the conversation.'
+    ? `This is the wrapper prompt prepended to every message you send to a local model. WebLLM caps every prebuilt model at a <strong>4096-token context window</strong>, so we ship two slim variants of the full <code>ai.md</code> docs: a small one (~540 tokens) for tiny models, and a medium one (~1200 tokens) for models that can absorb more. The model’s declared tier picks one. You’re currently editing the <strong>${promptTier}</strong> variant.`
     : 'This is the wrapper prompt prepended to every message you send to hosted Claude. By default it\'s the full <code>public/ai.md</code> body, served with prompt caching so you only pay for it once per cache window.';
   body.appendChild(intro);
-
-  const settings = loadSettings();
-  const override = settings.systemPromptOverrides?.[provider] ?? null;
-  const defaultPrompt = provider === 'local'
-    ? buildLocalSystemPrompt()
-    : buildSystemPrompt(await loadAiMd());
 
   // Source indicator pill
   const sourcePill = document.createElement('div');
@@ -70,7 +78,7 @@ export async function showSystemPromptModal(provider: Provider, cb: SystemPrompt
     pill.textContent = 'Custom (your override)';
   } else if (provider === 'local') {
     pill.className = 'px-2 py-0.5 rounded bg-blue-900/40 text-blue-200 border border-blue-800/60';
-    pill.textContent = 'Built-in slim prompt';
+    pill.textContent = promptTier === 'medium' ? 'Built-in medium prompt' : 'Built-in slim prompt';
   } else {
     pill.className = 'px-2 py-0.5 rounded bg-blue-900/40 text-blue-200 border border-blue-800/60';
     pill.textContent = 'Built-in (full public/ai.md)';

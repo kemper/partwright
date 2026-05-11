@@ -12,8 +12,9 @@ import { streamTurn, buildApiMessages, type StreamCallbacks as AnthropicStreamCa
 import { streamLocalTurn, type StreamCallbacks as LocalStreamCallbacks } from './local';
 import { recordUsage, putMessages } from './db';
 import { buildToolList, executeTool } from './tools';
-import { buildLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
+import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
+import { resolveLocalModel } from './local';
 import { turnCostUsd } from './cost';
 import { activeModel, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type TurnUsage } from './types';
 
@@ -66,6 +67,15 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   let systemPrompt: string;
   if (override !== null) {
     systemPrompt = override;
+  } else if (toggles.provider === 'local' && toggles.localModel) {
+    // Each local model declares which prompt tier it gets — bigger /
+    // better-trained models earn the richer "medium" prompt with more
+    // API examples; tiny models stick with the slim version so the 4K
+    // context window has room for the conversation.
+    const info = resolveLocalModel(toggles.localModel);
+    systemPrompt = info.promptTier === 'medium'
+      ? buildMediumLocalSystemPrompt()
+      : buildLocalSystemPrompt();
   } else if (toggles.provider === 'local') {
     systemPrompt = buildLocalSystemPrompt();
   } else {

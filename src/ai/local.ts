@@ -23,17 +23,77 @@ import type {
 } from './types';
 import type { ToolDefinition } from './tools';
 import type { LocalModelId, LocalModelInfo } from './localModels';
-import { findLocalModel, isWebGpuAvailable } from './localModels';
+import { isWebGpuAvailable, LOCAL_MODELS } from './localModels';
+import { loadSettings, type CustomLocalModel } from './settings';
 
 // We can't statically type-import from @mlc-ai/web-llm without forcing it
 // into the main bundle, so we keep the engine handle untyped here and rely
 // on duck-typing the methods we use.
 interface LoadedEngine {
-  modelId: LocalModelId;
+  modelId: string;
   // The MLCEngine instance (typed loosely so this module doesn't drag the
   // 14 MB SDK into every chunk that imports our `types`).
   engine: any;
   info: LocalModelInfo;
+}
+
+/** Translate the user's custom-model records into WebLLM ModelRecord
+ *  entries that engine.reload() can resolve. When the user didn't paste a
+ *  model_lib URL we make a best-guess from the standard MLC binaries
+ *  repo, using the model_id as the WASM filename stem with the canonical
+ *  `_cs1k-webgpu.wasm` chunk-size suffix. The engine surfaces a clear
+ *  network error if the guess is wrong; the user can then go edit the
+ *  custom entry. */
+function buildCustomModelEntries(webllm: typeof import('@mlc-ai/web-llm')): import('@mlc-ai/web-llm').ModelRecord[] {
+  const customs = loadSettings().customLocalModels;
+  return customs.map(c => {
+    const libUrl = c.modelLibUrl.trim().length > 0
+      ? c.modelLibUrl
+      : `${webllm.modelLibURLPrefix}${webllm.modelVersion}/${c.id.replace(/-MLC$/, '')}_cs1k-webgpu.wasm`;
+    return {
+      model: c.modelUrl,
+      model_id: c.id,
+      model_lib: libUrl,
+      vram_required_MB: c.vramMB ?? 0,
+      low_resource_required: false,
+      overrides: {
+        context_window_size: 4096,
+      },
+    };
+  });
+}
+
+/** Pull either a built-in curated model entry or a user-added custom one
+ *  by id. Custom models are wrapped in a synthesized LocalModelInfo so the
+ *  rest of the app (prompt-tier selection, vision-check, cards) can treat
+ *  them uniformly. */
+export function resolveLocalModel(id: string): LocalModelInfo {
+  const curated = LOCAL_MODELS.find(m => m.id === id);
+  if (curated) return curated;
+  const custom = loadSettings().customLocalModels.find(m => m.id === id);
+  if (!custom) throw new Error(`Unknown local model id: ${id}`);
+  return customModelToInfo(custom);
+}
+
+/** Synthesize a LocalModelInfo for a user-added custom model so the rest
+ *  of the code can stop caring whether a model is curated or pasted in. */
+function customModelToInfo(custom: CustomLocalModel): LocalModelInfo {
+  // `id` is typed as a union of curated model_ids; for custom models we
+  // accept that we're stretching the type — runtime semantics are fine
+  // because every consumer treats it as an opaque string.
+  return {
+    id: custom.id as LocalModelId,
+    group: 'custom',
+    label: custom.label || custom.id,
+    blurb: `Custom model from ${custom.modelUrl}`,
+    downloadGB: 0,
+    vramMB: custom.vramMB ?? 0,
+    recommendedSystem: 'Depends on the model — set by whoever published it.',
+    supportsVision: false,
+    officialToolCalling: false,
+    qualityStars: 2,
+    promptTier: 'slim',
+  };
 }
 
 let loaded: LoadedEngine | null = null;
@@ -126,7 +186,7 @@ export async function getCachedModels(): Promise<Set<string>> {
 
 /** Delete a model's cached weights. Used by the "Remove" button in the
  *  local-model modal. */
-export async function deleteCachedModel(modelId: LocalModelId): Promise<void> {
+export async function deleteCachedModel(modelId: string): Promise<void> {
   const webllm = await import('@mlc-ai/web-llm');
   await webllm.deleteModelAllInfoInCache(modelId, webllm.prebuiltAppConfig);
   if (loaded?.modelId === modelId) {
@@ -138,26 +198,27 @@ export async function deleteCachedModel(modelId: LocalModelId): Promise<void> {
 /** Whether a specific model is currently resident in GPU memory. The UI
  *  surfaces this so a second user message doesn't waste seconds re-loading
  *  weights into VRAM. */
-export function isModelLoaded(modelId: LocalModelId): boolean {
+export function isModelLoaded(modelId: string): boolean {
   return loaded?.modelId === modelId;
 }
 
 /** Get the currently loaded model id, or null. */
-export function loadedModelId(): LocalModelId | null {
+export function loadedModelId(): string | null {
   return loaded?.modelId ?? null;
 }
 
 /** Load (download if needed + activate) a model. Idempotent — calling again
  *  with the same id is a no-op; calling with a different id swaps. Single-
- *  flighted so two concurrent UI clicks don't race. */
-export async function ensureModelLoaded(modelId: LocalModelId, opts: LoadOptions = {}): Promise<void> {
+ *  flighted so two concurrent UI clicks don't race. Accepts both curated
+ *  model ids and the ids of user-added custom models. */
+export async function ensureModelLoaded(modelId: string, opts: LoadOptions = {}): Promise<void> {
   if (loaded?.modelId === modelId) return;
   if (loadInFlight) {
     const current = await loadInFlight;
     if (current.modelId === modelId) return;
   }
   loadInFlight = (async () => {
-    const info = findLocalModel(modelId);
+    const info = resolveLocalModel(modelId);
     const webllm = await import('@mlc-ai/web-llm');
 
     // Unload a different model first to free VRAM before the next set of
@@ -167,12 +228,22 @@ export async function ensureModelLoaded(modelId: LocalModelId, opts: LoadOptions
       loaded = null;
     }
 
+    // Inject user-added custom models into a clone of the prebuilt
+    // appConfig so engine.reload() can resolve them by id. We pre-fill
+    // model_lib from the user's input, falling back to the standard
+    // WebLLM model-lib URL prefix if blank.
+    const appConfig = { ...webllm.prebuiltAppConfig };
+    appConfig.model_list = [
+      ...webllm.prebuiltAppConfig.model_list,
+      ...buildCustomModelEntries(webllm),
+    ];
+
     const engine = new webllm.MLCEngine({
       // Default cache backend is "cache" (Cache API). Safari caps that at
       // ~1 GB; OPFS is uncapped after the storage permission prompt, so we
       // prefer it when available. WebLLM falls back if the browser lacks
       // OPFS.
-      appConfig: { ...webllm.prebuiltAppConfig },
+      appConfig,
       initProgressCallback: (report: { progress: number; text: string }) => {
         opts.onProgress?.({ progress: report.progress, text: report.text });
       },
@@ -211,7 +282,7 @@ export interface StreamResult {
 }
 
 export interface LocalRequestSpec {
-  modelId: LocalModelId;
+  modelId: string;
   systemPrompt: string;
   systemSuffix: string;
   /** Full prior conversation, oldest first, with the new user turn already
@@ -508,7 +579,7 @@ export async function interruptLocal(): Promise<void> {
 
 /** Single-shot, non-streamed completion. Compaction uses it. */
 export async function summarizeLocal(
-  modelId: LocalModelId,
+  modelId: string,
   system: string,
   user: string,
   maxTokens = 512,

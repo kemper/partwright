@@ -6,7 +6,7 @@
 // download + electricity), so all local cost functions return 0. The cost
 // meter still tracks total tokens so users can compare model verbosity.
 
-import type { AnthropicModelId, ModelId, TurnUsage } from './types';
+import type { AnthropicModelId, TurnUsage } from './types';
 
 interface ModelPricing {
   /** USD per 1M input tokens (uncached). */
@@ -24,11 +24,11 @@ const PRICING: Record<AnthropicModelId, ModelPricing> = {
 const CACHE_READ_MULTIPLIER = 0.1;
 const CACHE_WRITE_MULTIPLIER = 1.25;
 
-function isAnthropicModel(model: ModelId): model is AnthropicModelId {
+function isAnthropicModel(model: string): model is AnthropicModelId {
   return model in PRICING;
 }
 
-export function turnCostUsd(model: ModelId, usage: TurnUsage): number {
+export function turnCostUsd(model: string, usage: TurnUsage): number {
   if (!isAnthropicModel(model)) return 0;
   const p = PRICING[model];
   const inputCost = (usage.inputTokens * p.input) / 1_000_000;
@@ -42,7 +42,7 @@ export function turnCostUsd(model: ModelId, usage: TurnUsage): number {
  *  per-turn user content as fresh input, and assumes a moderate output size.
  *  Used to render the "~$0.03/turn" hint next to the send button. */
 export function estimateTurnCostUsd(
-  model: ModelId,
+  model: string,
   cachedPrefixTokens: number,
   freshInputTokens: number,
   expectedOutputTokens: number = 800,

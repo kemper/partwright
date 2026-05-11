@@ -20,6 +20,28 @@ export interface AiSettings {
     anthropic: string | null;
     local: string | null;
   };
+  /** User-added local models. Lets the user load any MLC-compiled model
+   *  from Hugging Face (or anywhere) without us shipping it in the
+   *  curated list. Persisted in localStorage so they don't have to
+   *  re-add them every session. */
+  customLocalModels: CustomLocalModel[];
+}
+
+export interface CustomLocalModel {
+  /** Stable id — the WebLLM model_id. Must be unique across the user's
+   *  custom list and not collide with built-in model_ids. */
+  id: string;
+  /** Optional human-readable label. Falls back to `id` when blank. */
+  label: string;
+  /** HF weights URL, e.g. https://huggingface.co/org/repo. */
+  modelUrl: string;
+  /** Compiled WASM URL. When blank we try to guess from the standard
+   *  WebLLM model-lib path; the engine surfaces a clear error if the
+   *  guess is wrong. */
+  modelLibUrl: string;
+  /** Saved by the user for their own reference; not enforced. */
+  vramMB?: number;
+  addedAt: number;
 }
 
 const DEFAULT_TOGGLES: ChatToggles = {
@@ -35,6 +57,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   drawerOpen: false,
   autoCompactMode: 'off',
   systemPromptOverrides: { anthropic: null, local: null },
+  customLocalModels: [],
 };
 
 let cached: AiSettings | null = null;
@@ -110,7 +133,7 @@ export function setProvider(settings: AiSettings, provider: Provider): AiSetting
 
 /** Set the WebLLM model id for the local provider. Called when the user
  *  downloads / activates a model in the local-model modal. */
-export function setLocalModel(settings: AiSettings, modelId: LocalModelId | null): AiSettings {
+export function setLocalModel(settings: AiSettings, modelId: string | null): AiSettings {
   return {
     ...settings,
     toggles: { ...settings.toggles, localModel: modelId },
@@ -168,7 +191,20 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       anthropic: overrides.anthropic ?? null,
       local: overrides.local ?? null,
     },
+    customLocalModels: Array.isArray((partial as { customLocalModels?: unknown }).customLocalModels)
+      ? ((partial as { customLocalModels: CustomLocalModel[] }).customLocalModels)
+      : [],
   };
+}
+
+export function addCustomLocalModel(settings: AiSettings, model: CustomLocalModel): AiSettings {
+  // De-dupe by id — replace any existing entry with the same id.
+  const filtered = settings.customLocalModels.filter(m => m.id !== model.id);
+  return { ...settings, customLocalModels: [...filtered, model] };
+}
+
+export function removeCustomLocalModel(settings: AiSettings, id: string): AiSettings {
+  return { ...settings, customLocalModels: settings.customLocalModels.filter(m => m.id !== id) };
 }
 
 /** Replace or clear the custom system prompt for one provider. Passing

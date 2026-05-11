@@ -17,7 +17,7 @@ import { showAiLocalModal } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { showCompactConfirmModal } from './aiCompactModal';
 import { ensureModelLoaded, isModelLoaded } from '../ai/local';
-import { findLocalModel } from '../ai/localModels';
+import { resolveLocalModel } from '../ai/local';
 import { activeModel, type AnthropicModelId, type ChatBlock, type ChatMessage, type ImageSource, type PersistedToolResult } from '../ai/types';
 
 interface PanelState {
@@ -353,7 +353,7 @@ function renderModelPicker(): void {
   const chip = document.createElement('button');
   chip.className = 'px-2 py-1 rounded text-[11px] bg-emerald-900/30 border border-emerald-700/50 text-emerald-200 hover:bg-emerald-900/50';
   if (settings.toggles.localModel) {
-    const info = findLocalModel(settings.toggles.localModel);
+    const info = resolveLocalModel(settings.toggles.localModel);
     chip.textContent = info.label;
     chip.title = `Local model: ${info.label}${isModelLoaded(info.id) ? ' (in GPU)' : ' (not loaded)'}`;
   } else {
@@ -492,7 +492,7 @@ function panelStatusUpdate(): void {
     } else if (!isModelLoaded(settings.toggles.localModel)) {
       panelStatusEl.classList.remove('hidden', 'text-emerald-400');
       panelStatusEl.classList.add('text-blue-300');
-      const info = findLocalModel(settings.toggles.localModel);
+      const info = resolveLocalModel(settings.toggles.localModel);
       panelStatusEl.appendChild(document.createTextNode(`${info.label} downloaded — `));
       const link = document.createElement('button');
       link.className = 'underline text-blue-200 hover:text-blue-100';

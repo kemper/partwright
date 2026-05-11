@@ -6,9 +6,10 @@
 
 import {
   LOCAL_MODELS,
-  type LocalModelId,
+  LOCAL_GROUP_LABELS,
+  LOCAL_GROUP_HINTS,
   type LocalModelInfo,
-  type LocalSizeTier,
+  type LocalSizeGroup,
 } from '../ai/localModels';
 import {
   ensureModelLoaded,
@@ -18,7 +19,7 @@ import {
   isModelLoaded,
   getStorageUsage,
 } from '../ai/local';
-import { loadSettings, saveSettings, setLocalModel, setProvider } from '../ai/settings';
+import { loadSettings, saveSettings, setLocalModel, setProvider, addCustomLocalModel, removeCustomLocalModel, type CustomLocalModel } from '../ai/settings';
 
 let modalEl: HTMLElement | null = null;
 let cachedSet: Set<string> = new Set();
@@ -98,15 +99,285 @@ async function rerender(body: HTMLElement, cb: AiLocalModalCallbacks): Promise<v
   cachedSet = await getCachedModels();
   const settings = loadSettings();
 
-  const list = document.createElement('div');
-  list.className = 'flex flex-col gap-2';
-  body.appendChild(list);
-  for (const tier of (['small', 'medium', 'large', 'vision'] as LocalSizeTier[])) {
-    const model = LOCAL_MODELS.find(m => m.tier === tier);
-    if (model) list.appendChild(renderModelCard(model, settings.toggles.localModel, body, cb));
+  // Group models by tier so the picker reads like a curated shopping list
+  // rather than a flat dump. Order: recommended → smaller → larger →
+  // flagship → vision → custom. Each group gets a heading + one-line hint
+  // so the user knows whether the section is for their hardware.
+  const groupOrder: LocalSizeGroup[] = ['recommended', 'smaller', 'larger', 'flagship', 'vision'];
+  for (const group of groupOrder) {
+    const models = LOCAL_MODELS.filter(m => m.group === group);
+    if (models.length === 0) continue;
+    body.appendChild(buildGroupHeader(group));
+    const list = document.createElement('div');
+    list.className = 'flex flex-col gap-2 mb-1';
+    for (const model of models) {
+      list.appendChild(renderModelCard(model, settings.toggles.localModel, body, cb));
+    }
+    body.appendChild(list);
   }
 
+  // User-added custom models — listed as their own group with the same
+  // card UI as the curated set, but with a Remove button instead of an
+  // "Active by default".
+  if (settings.customLocalModels.length > 0) {
+    body.appendChild(buildGroupHeader('custom'));
+    const list = document.createElement('div');
+    list.className = 'flex flex-col gap-2 mb-1';
+    for (const c of settings.customLocalModels) {
+      list.appendChild(renderCustomModelCard(c, settings.toggles.localModel, body, cb));
+    }
+    body.appendChild(list);
+  }
+
+  body.appendChild(buildCustomModelForm(body, cb));
+  body.appendChild(buildContextNote());
   body.appendChild(buildTrustPanel());
+}
+
+function buildGroupHeader(group: LocalSizeGroup): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col gap-0.5 mt-1';
+  const label = document.createElement('div');
+  label.className = 'text-xs font-semibold text-zinc-200 uppercase tracking-wide';
+  label.textContent = LOCAL_GROUP_LABELS[group];
+  wrap.appendChild(label);
+  const hint = document.createElement('div');
+  hint.className = 'text-[11px] text-zinc-500 leading-snug';
+  hint.textContent = LOCAL_GROUP_HINTS[group];
+  wrap.appendChild(hint);
+  return wrap;
+}
+
+/** Compact card for a user-added custom model. Same affordances as the
+ *  curated card minus the per-tier metadata, plus a Remove button that
+ *  forgets the entry. */
+function renderCustomModelCard(
+  custom: CustomLocalModel,
+  activeId: string | null,
+  parentBody: HTMLElement,
+  cb: AiLocalModalCallbacks,
+): HTMLElement {
+  const isActive = custom.id === activeId;
+  const isCached = cachedSet.has(custom.id);
+  const isResident = isModelLoaded(custom.id);
+
+  const card = document.createElement('div');
+  card.className = isActive
+    ? 'rounded border border-blue-600/60 bg-blue-900/10 p-3 flex flex-col gap-2'
+    : 'rounded border border-zinc-700 bg-zinc-900/40 p-3 flex flex-col gap-2';
+
+  const row = document.createElement('div');
+  row.className = 'flex items-start justify-between gap-2';
+  const left = document.createElement('div');
+  left.className = 'flex flex-col gap-0.5 min-w-0';
+
+  const head = document.createElement('div');
+  head.className = 'flex items-center gap-2 flex-wrap';
+  const name = document.createElement('div');
+  name.className = 'text-sm font-medium text-zinc-100';
+  name.textContent = custom.label || custom.id;
+  head.appendChild(name);
+  if (isResident) {
+    const pill = document.createElement('span');
+    pill.className = 'text-[10px] px-1.5 py-0.5 rounded bg-emerald-700/40 text-emerald-200 border border-emerald-700/60';
+    pill.textContent = 'In GPU';
+    head.appendChild(pill);
+  } else if (isCached) {
+    const pill = document.createElement('span');
+    pill.className = 'text-[10px] px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-300';
+    pill.textContent = 'Downloaded';
+    head.appendChild(pill);
+  }
+  const custPill = document.createElement('span');
+  custPill.className = 'text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700';
+  custPill.textContent = 'Custom';
+  head.appendChild(custPill);
+  left.appendChild(head);
+
+  const source = document.createElement('a');
+  source.href = custom.modelUrl;
+  source.target = '_blank';
+  source.rel = 'noopener noreferrer';
+  source.className = 'text-[11px] text-zinc-400 hover:text-zinc-200 underline truncate';
+  source.textContent = custom.modelUrl;
+  left.appendChild(source);
+
+  if (custom.modelLibUrl) {
+    const lib = document.createElement('div');
+    lib.className = 'text-[10px] text-zinc-500 truncate';
+    lib.textContent = `lib: ${custom.modelLibUrl}`;
+    left.appendChild(lib);
+  } else {
+    const lib = document.createElement('div');
+    lib.className = 'text-[10px] text-zinc-500';
+    lib.textContent = 'lib: auto-derived from model id';
+    left.appendChild(lib);
+  }
+  row.appendChild(left);
+
+  const actions = document.createElement('div');
+  actions.className = 'flex flex-col items-end gap-1 shrink-0';
+  const primary = document.createElement('button');
+  if (isActive && isResident) {
+    primary.className = 'px-3 py-1.5 rounded text-xs font-medium bg-emerald-700/40 text-emerald-200 border border-emerald-700/60 cursor-default';
+    primary.textContent = 'Active';
+    primary.disabled = true;
+  } else {
+    primary.className = 'px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white';
+    primary.textContent = isCached ? 'Use this model' : 'Download & use';
+    primary.addEventListener('click', () => { void selectCustomModel(custom.id, parentBody, cb); });
+  }
+  actions.appendChild(primary);
+
+  const remove = document.createElement('button');
+  remove.className = 'px-2 py-0.5 rounded text-[10px] text-zinc-400 hover:text-red-300 hover:bg-red-900/30 border border-transparent';
+  remove.textContent = 'Forget';
+  remove.title = `Remove this custom model from the list (cached weights, if any, stay until you Remove them too).`;
+  remove.addEventListener('click', async () => {
+    if (!confirm(`Remove "${custom.label || custom.id}" from your custom model list?`)) return;
+    saveSettings(removeCustomLocalModel(loadSettings(), custom.id));
+    cb.onChange();
+    await rerender(parentBody, cb);
+  });
+  actions.appendChild(remove);
+
+  row.appendChild(actions);
+  card.appendChild(row);
+  return card;
+}
+
+async function selectCustomModel(modelId: string, parentBody: HTMLElement, cb: AiLocalModalCallbacks): Promise<void> {
+  // Reuse the standard download flow; ensureModelLoaded reads the custom
+  // entries from settings on every call so a freshly-added model is
+  // visible to WebLLM.
+  await selectModel(modelId, parentBody, cb);
+}
+
+/** Form at the bottom of the modal where the user pastes a Hugging Face
+ *  URL (or `org/repo`) and optionally a compiled-WASM URL. Validation is
+ *  loose — we just save what they typed and let the engine surface a
+ *  network error if the URLs are wrong. */
+function buildCustomModelForm(parentBody: HTMLElement, cb: AiLocalModalCallbacks): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'mt-3 rounded border border-zinc-700 bg-zinc-900/40 p-3 flex flex-col gap-2';
+
+  const head = document.createElement('div');
+  head.className = 'text-xs font-semibold text-zinc-200 uppercase tracking-wide';
+  head.textContent = 'Add a custom model';
+  wrap.appendChild(head);
+
+  const hint = document.createElement('div');
+  hint.className = 'text-[11px] text-zinc-400 leading-snug';
+  hint.innerHTML = 'Paste any <a href="https://huggingface.co/mlc-ai" target="_blank" rel="noopener noreferrer" class="underline text-zinc-300 hover:text-zinc-100">MLC-compiled Hugging Face model</a> URL or <code>org/repo</code> reference. The model_id must match the repo name. We try to auto-fill the compiled WASM library URL; for non-standard builds, paste it yourself.';
+  wrap.appendChild(hint);
+
+  const urlInput = document.createElement('input');
+  urlInput.type = 'text';
+  urlInput.placeholder = 'huggingface.co/mlc-ai/Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC';
+  urlInput.className = 'w-full px-2 py-1 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-xs font-mono placeholder:text-zinc-600 focus:outline-none focus:border-blue-500';
+  urlInput.spellcheck = false;
+  wrap.appendChild(urlInput);
+
+  const advancedDetails = document.createElement('details');
+  advancedDetails.className = 'text-[11px]';
+  const summary = document.createElement('summary');
+  summary.className = 'cursor-pointer text-zinc-400 hover:text-zinc-200 select-none';
+  summary.textContent = 'Advanced — set model_lib URL and VRAM estimate';
+  advancedDetails.appendChild(summary);
+
+  const libInput = document.createElement('input');
+  libInput.type = 'text';
+  libInput.placeholder = '(optional) https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/.../model_cs1k-webgpu.wasm';
+  libInput.className = 'w-full mt-2 px-2 py-1 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-xs font-mono placeholder:text-zinc-600 focus:outline-none focus:border-blue-500';
+  libInput.spellcheck = false;
+  advancedDetails.appendChild(libInput);
+
+  const vramRow = document.createElement('div');
+  vramRow.className = 'mt-2 flex items-center gap-2 text-zinc-400';
+  vramRow.innerHTML = '<span>VRAM (GB, optional)</span>';
+  const vramInput = document.createElement('input');
+  vramInput.type = 'number';
+  vramInput.step = '0.1';
+  vramInput.min = '0';
+  vramInput.placeholder = '5.0';
+  vramInput.className = 'w-20 px-2 py-1 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-xs focus:outline-none focus:border-blue-500';
+  vramRow.appendChild(vramInput);
+  advancedDetails.appendChild(vramRow);
+  wrap.appendChild(advancedDetails);
+
+  const errorBox = document.createElement('div');
+  errorBox.className = 'text-[11px] text-red-300 hidden';
+  wrap.appendChild(errorBox);
+
+  const actions = document.createElement('div');
+  actions.className = 'flex items-center justify-end gap-2';
+  const addBtn = document.createElement('button');
+  addBtn.className = 'px-3 py-1 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50';
+  addBtn.textContent = 'Add to list';
+  addBtn.addEventListener('click', () => {
+    errorBox.classList.add('hidden');
+    const parsed = parseCustomModelInput(urlInput.value);
+    if (!parsed) {
+      errorBox.textContent = 'Couldn\'t parse that URL. Use either a huggingface.co URL or org/repo format.';
+      errorBox.classList.remove('hidden');
+      return;
+    }
+    const vramGB = parseFloat(vramInput.value);
+    const custom: CustomLocalModel = {
+      id: parsed.modelId,
+      label: parsed.modelId,
+      modelUrl: parsed.modelUrl,
+      modelLibUrl: libInput.value.trim(),
+      vramMB: Number.isFinite(vramGB) && vramGB > 0 ? Math.round(vramGB * 1024) : undefined,
+      addedAt: Date.now(),
+    };
+    saveSettings(addCustomLocalModel(loadSettings(), custom));
+    cb.onChange();
+    void rerender(parentBody, cb);
+  });
+  actions.appendChild(addBtn);
+  wrap.appendChild(actions);
+  return wrap;
+}
+
+/** Parse a user-pasted reference into the bits WebLLM needs. Accepts:
+ *    https://huggingface.co/<org>/<repo>
+ *    huggingface.co/<org>/<repo>
+ *    <org>/<repo>
+ *  The repo name is taken verbatim as the WebLLM model_id, so it must be
+ *  the actual published MLC repo (e.g. ending in `-MLC`). Returns null
+ *  for anything we can't pattern-match. */
+function parseCustomModelInput(raw: string): { modelUrl: string; modelId: string } | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  // Strip protocol + host if a full URL was pasted.
+  const m = trimmed.match(/^(?:https?:\/\/)?(?:www\.)?(?:huggingface\.co\/)?([^/\s]+\/[^/\s?#]+)/);
+  if (!m) return null;
+  const [, slug] = m;
+  const parts = slug.split('/');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  const [org, repo] = parts;
+  return {
+    modelUrl: `https://huggingface.co/${org}/${repo}`,
+    modelId: repo,
+  };
+}
+
+/** Honest note about the 4K context window cap so users with a 70B model
+ *  don't expect the same long-conversation behavior as hosted Claude. */
+function buildContextNote(): HTMLElement {
+  const note = document.createElement('div');
+  note.className = 'mt-2 rounded border border-zinc-700 bg-zinc-900/40 p-3 text-[11px] text-zinc-400 leading-snug';
+  note.innerHTML = `
+    <strong class="text-zinc-300">A note on context window.</strong>
+    WebLLM compiles every prebuilt model — even the 70B — for a
+    <strong>4096-token context window</strong>. That's a build-time
+    constraint, not a setting we can override. Larger models still
+    reason better with the same window; we use a richer system prompt
+    for them. The system-prompt editor (in AI settings) lets you adjust
+    either tier.
+  `;
+  return note;
 }
 
 /** Trust panel — surfaces the supply chain so users know where the weights
@@ -239,7 +510,7 @@ function renderGpuBanner(host: HTMLElement): void {
 
 function renderModelCard(
   model: LocalModelInfo,
-  activeId: LocalModelId | null,
+  activeId: string | null,
   parentBody: HTMLElement,
   cb: AiLocalModalCallbacks,
 ): HTMLElement {
@@ -262,6 +533,17 @@ function renderModelCard(
   name.className = 'text-sm font-medium text-zinc-100';
   name.textContent = model.label;
   head.appendChild(name);
+
+  // Quality stars (filled count of 3) for THIS app's use case — driving
+  // tool calls for CAD modeling. A 70B with mediocre tool-calling rates
+  // lower than an 8B fine-tuned for tools, which is why we don't just
+  // sort by parameter count.
+  const stars = document.createElement('span');
+  stars.className = 'text-[11px] text-amber-300';
+  stars.textContent = '★'.repeat(model.qualityStars) + '☆'.repeat(3 - model.qualityStars);
+  stars.title = `Quality rating for tool-driven modeling (${model.qualityStars}/3 stars).`;
+  head.appendChild(stars);
+
   if (isResident) {
     const pill = document.createElement('span');
     pill.className = 'text-[10px] px-1.5 py-0.5 rounded bg-emerald-700/40 text-emerald-200 border border-emerald-700/60';
@@ -277,7 +559,13 @@ function renderModelCard(
     const pill = document.createElement('span');
     pill.className = 'text-[10px] px-1.5 py-0.5 rounded bg-violet-900/40 text-violet-200 border border-violet-800/60';
     pill.title = 'Officially fine-tuned for tool calling — most reliable at running our tools.';
-    pill.textContent = 'Tool calls';
+    pill.textContent = 'Native tools';
+    head.appendChild(pill);
+  } else {
+    const pill = document.createElement('span');
+    pill.className = 'text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700';
+    pill.title = 'Uses prompt-engineered tool calls (model emits <tool_call> markup we parse).';
+    pill.textContent = 'Prompt tools';
     head.appendChild(pill);
   }
   if (model.supportsVision) {
@@ -295,8 +583,13 @@ function renderModelCard(
 
   const stats = document.createElement('div');
   stats.className = 'text-[10px] text-zinc-500';
-  stats.textContent = `~${model.downloadGB.toFixed(1)} GB download · ${(model.vramMB / 1024).toFixed(1)} GB VRAM`;
+  stats.textContent = `~${model.downloadGB.toFixed(1)} GB download · ${(model.vramMB / 1024).toFixed(1)} GB VRAM · ${model.promptTier} prompt`;
   left.appendChild(stats);
+
+  const recommended = document.createElement('div');
+  recommended.className = 'text-[10px] text-zinc-500 leading-snug';
+  recommended.textContent = `Runs well on: ${model.recommendedSystem}`;
+  left.appendChild(recommended);
 
   const source = document.createElement('a');
   source.href = `https://huggingface.co/mlc-ai/${model.id}`;
@@ -349,7 +642,7 @@ function renderModelCard(
   return card;
 }
 
-async function selectModel(modelId: LocalModelId, parentBody: HTMLElement, cb: AiLocalModalCallbacks): Promise<void> {
+async function selectModel(modelId: string, parentBody: HTMLElement, cb: AiLocalModalCallbacks): Promise<void> {
   // Disable everything in the modal while we download / load.
   const oldBody = parentBody.cloneNode(false) as HTMLElement;
   parentBody.replaceWith(oldBody);

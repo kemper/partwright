@@ -2,80 +2,211 @@
 // corresponds to a `model_id` in the WebLLM prebuilt config (see
 // `node_modules/@mlc-ai/web-llm/lib/index.js` `prebuiltAppConfig.model_list`).
 //
-// We only ship four — one per size tier plus one vision model — so the UI
-// stays focused. The download sizes are the unpacked weight size on disk
-// (q4f16_1 quantization), which is what users actually pay in bandwidth and
-// cache storage.
+// Curation rules:
+//   * Every model must be plausibly capable of tool calling for CAD
+//     modeling. The Llama 3.2 1B / SmolLM family are dropped — they
+//     understand instructions but routinely fail to emit the tool-call
+//     markup we need.
+//   * For each model we record subjective quality (1-3 stars) for this
+//     specific app's use case and the minimum system the model is happy
+//     on. These numbers come from local benchmarking + WebLLM's reported
+//     vram_required_MB; treat them as guidance, not guarantees.
+//   * `promptTier` decides which system prompt the model gets:
+//     'slim' (~540 tokens) for small models, 'medium' (~1200 tokens) for
+//     models that can take a richer brief. WebLLM caps every prebuilt at
+//     a 4096-token context window — the medium prompt is the upper bound
+//     of what fits while still leaving room for the conversation and
+//     tool docs.
 
 export type LocalModelId =
-  | 'Llama-3.2-1B-Instruct-q4f16_1-MLC'
   | 'Llama-3.2-3B-Instruct-q4f16_1-MLC'
+  | 'Hermes-3-Llama-3.2-3B-q4f16_1-MLC'
+  | 'Qwen2.5-Coder-3B-Instruct-q4f16_1-MLC'
+  | 'Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC'
+  | 'Qwen3-8B-q4f16_1-MLC'
+  | 'Qwen3.5-9B-q4f16_1-MLC'
   | 'Hermes-3-Llama-3.1-8B-q4f16_1-MLC'
+  | 'Llama-3.1-70B-Instruct-q3f16_1-MLC'
   | 'Phi-3.5-vision-instruct-q4f16_1-MLC';
 
-export type LocalSizeTier = 'small' | 'medium' | 'large' | 'vision';
+/** Coarse grouping shown as section headers in the picker. The `custom`
+ *  group is reserved for user-added models from AiSettings.customLocalModels;
+ *  no built-in entries live there. */
+export type LocalSizeGroup = 'recommended' | 'smaller' | 'larger' | 'flagship' | 'vision' | 'custom';
+
+export type PromptTier = 'slim' | 'medium';
 
 export interface LocalModelInfo {
   id: LocalModelId;
-  tier: LocalSizeTier;
+  group: LocalSizeGroup;
   label: string;
   /** Short pitch shown next to the radio button. */
   blurb: string;
-  /** Approximate download size, GB. Used in the consent step. */
+  /** Approximate download size, GB. */
   downloadGB: number;
   /** VRAM the model needs once loaded — from WebLLM's prebuilt config. */
   vramMB: number;
-  /** Whether the model can see image inputs. Drives whether we pass image
-   *  blocks through or strip them. Only the vision tier is true today. */
+  /** Human-readable system recommendation (RAM/VRAM combination needed). */
+  recommendedSystem: string;
+  /** Whether the model can see image inputs. */
   supportsVision: boolean;
-  /** Whether WebLLM ships this in `functionCallingModelIds`. Non-flagged
-   *  models still get JSON-schema-constrained tool calls via XGrammar; the
-   *  flagged ones are explicitly fine-tuned for it. */
+  /** Whether WebLLM ships this in `functionCallingModelIds`. Models on
+   *  that list use the OpenAI native `tools` request shape; the rest
+   *  rely on prompt-engineered `<tool_call>` markup. */
   officialToolCalling: boolean;
+  /** Subjective quality rating for *this app's* use case (driving Partwright
+   *  with tool calls), 1-3 stars. Not a generic LLM benchmark. */
+  qualityStars: 1 | 2 | 3;
+  /** Which built-in system prompt the model receives by default. */
+  promptTier: PromptTier;
 }
 
 export const LOCAL_MODELS: LocalModelInfo[] = [
+  // === Recommended ===
   {
-    id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
-    tier: 'small',
-    label: 'Small — Llama 3.2 1B',
-    blurb: 'Fastest, runs on most laptops with a GPU. Best for simple shapes and quick code edits.',
-    downloadGB: 0.7,
-    vramMB: 879,
+    id: 'Hermes-3-Llama-3.1-8B-q4f16_1-MLC',
+    group: 'recommended',
+    label: 'Hermes 3 8B',
+    blurb: 'Fine-tuned for function calling — most reliable agent on this list. The starting point for serious use.',
+    downloadGB: 4.5,
+    vramMB: 4876,
+    recommendedSystem: 'Discrete GPU with 6+ GB VRAM, or Apple Silicon with 16+ GB unified RAM.',
+    supportsVision: false,
+    officialToolCalling: true,
+    qualityStars: 3,
+    promptTier: 'medium',
+  },
+
+  // === Smaller (laptop-friendly) ===
+  {
+    id: 'Qwen2.5-Coder-3B-Instruct-q4f16_1-MLC',
+    group: 'smaller',
+    label: 'Qwen 2.5 Coder 3B',
+    blurb: 'Tuned on code; better at JSON tool args than general 3B models. Decent for simple shapes.',
+    downloadGB: 2.0,
+    vramMB: 2400,
+    recommendedSystem: '4+ GB VRAM, or any Apple Silicon Mac with 8+ GB.',
     supportsVision: false,
     officialToolCalling: false,
+    qualityStars: 2,
+    promptTier: 'slim',
+  },
+  {
+    id: 'Hermes-3-Llama-3.2-3B-q4f16_1-MLC',
+    group: 'smaller',
+    label: 'Hermes 3 (Llama 3.2) 3B',
+    blurb: 'Hermes function-call training on a 3B base — gets the format right more often than vanilla 3B Llama.',
+    downloadGB: 1.9,
+    vramMB: 2264,
+    recommendedSystem: '4+ GB VRAM, or 8+ GB Apple Silicon.',
+    supportsVision: false,
+    officialToolCalling: false,
+    qualityStars: 2,
+    promptTier: 'slim',
   },
   {
     id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC',
-    tier: 'medium',
-    label: 'Medium — Llama 3.2 3B',
-    blurb: 'Recommended starting point. Strong code reasoning, fits on most modern GPUs.',
+    group: 'smaller',
+    label: 'Llama 3.2 3B',
+    blurb: 'General-purpose 3B instruct model. Works but tends to chat instead of acting.',
     downloadGB: 1.9,
     vramMB: 2264,
+    recommendedSystem: '4+ GB VRAM, or 8+ GB Apple Silicon.',
     supportsVision: false,
     officialToolCalling: false,
+    qualityStars: 1,
+    promptTier: 'slim',
+  },
+
+  // === Larger (workstation-ish) ===
+  {
+    id: 'Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC',
+    group: 'larger',
+    label: 'Qwen 2.5 Coder 7B',
+    blurb: 'Code-specialized at 7B; produces cleaner manifold-js than Llama 3.1 8B in practice.',
+    downloadGB: 4.7,
+    vramMB: 5100,
+    recommendedSystem: '8+ GB VRAM, or Apple Silicon with 16+ GB unified RAM.',
+    supportsVision: false,
+    officialToolCalling: false,
+    qualityStars: 2,
+    promptTier: 'medium',
   },
   {
-    id: 'Hermes-3-Llama-3.1-8B-q4f16_1-MLC',
-    tier: 'large',
-    label: 'Large — Hermes 3 8B',
-    blurb: 'Fine-tuned for tool calling. Needs a discrete GPU with ~5 GB VRAM.',
-    downloadGB: 4.5,
-    vramMB: 4876,
+    id: 'Qwen3-8B-q4f16_1-MLC',
+    group: 'larger',
+    label: 'Qwen 3 8B',
+    blurb: 'Newer Qwen base, strong instruction following. Good middle ground when you want non-Hermes.',
+    downloadGB: 5.4,
+    vramMB: 5696,
+    recommendedSystem: '8+ GB VRAM, or 16+ GB Apple Silicon.',
     supportsVision: false,
-    officialToolCalling: true,
+    officialToolCalling: false,
+    qualityStars: 2,
+    promptTier: 'medium',
   },
+  {
+    id: 'Qwen3.5-9B-q4f16_1-MLC',
+    group: 'larger',
+    label: 'Qwen 3.5 9B',
+    blurb: 'Latest Qwen iteration. Modest upgrade over Qwen 3 8B; same prompt-engineered tool path.',
+    downloadGB: 6.0,
+    vramMB: 6433,
+    recommendedSystem: '8+ GB VRAM, or 16+ GB Apple Silicon.',
+    supportsVision: false,
+    officialToolCalling: false,
+    qualityStars: 2,
+    promptTier: 'medium',
+  },
+
+  // === Flagship — needs serious hardware ===
+  {
+    id: 'Llama-3.1-70B-Instruct-q3f16_1-MLC',
+    group: 'flagship',
+    label: 'Llama 3.1 70B (q3)',
+    blurb: 'Cloud-class quality, but the 3-bit quant trades some quality for fit. Needs heavy hardware to be tolerable.',
+    downloadGB: 29,
+    vramMB: 31153,
+    recommendedSystem: 'Apple Silicon with 64+ GB unified memory, or a desktop GPU with 32+ GB VRAM. Expect slow first-token latency.',
+    supportsVision: false,
+    officialToolCalling: false,
+    qualityStars: 3,
+    promptTier: 'medium',
+  },
+
+  // === Vision ===
   {
     id: 'Phi-3.5-vision-instruct-q4f16_1-MLC',
-    tier: 'vision',
-    label: 'Vision — Phi 3.5 Vision 4B',
-    blurb: 'Can analyze screenshots of the model. Smaller than Large but adds vision.',
-    downloadGB: 3.8,
+    group: 'vision',
+    label: 'Phi 3.5 Vision 4B',
+    blurb: 'Only browser-runnable model that can see images. Use when you want the AI to look at iso views or reference photos.',
+    downloadGB: 3.6,
     vramMB: 3952,
+    recommendedSystem: '6+ GB VRAM, or 16+ GB Apple Silicon.',
     supportsVision: true,
     officialToolCalling: false,
+    qualityStars: 1,
+    promptTier: 'slim',
   },
 ];
+
+export const LOCAL_GROUP_LABELS: Record<LocalSizeGroup, string> = {
+  recommended: 'Recommended',
+  smaller: 'Smaller — laptop-friendly',
+  larger: 'Larger — workstation',
+  flagship: 'Flagship — heavy hardware',
+  vision: 'Vision — image input',
+  custom: 'Custom — your additions',
+};
+
+export const LOCAL_GROUP_HINTS: Record<LocalSizeGroup, string> = {
+  recommended: 'Officially fine-tuned for tool calling. Use this unless you have a reason not to.',
+  smaller: 'Fits on most laptops. Less reliable at multi-step tool sequences.',
+  larger: 'Needs a discrete GPU or beefy Apple Silicon. Better reasoning, still 4K context.',
+  flagship: 'Cloud-class capability — but the q3 quant + 4K context cap leaves some on the table.',
+  vision: 'Can interpret reference photos and iso-view screenshots; smaller than tool-calling alternatives.',
+  custom: 'Models you added by URL. WebLLM loads them like any prebuilt — you trust the source.',
+};
 
 export function findLocalModel(id: LocalModelId): LocalModelInfo {
   const info = LOCAL_MODELS.find(m => m.id === id);
@@ -83,8 +214,9 @@ export function findLocalModel(id: LocalModelId): LocalModelInfo {
   return info;
 }
 
-/** Default local model picked when the user opts in but hasn't chosen yet. */
-export const DEFAULT_LOCAL_MODEL: LocalModelId = 'Llama-3.2-3B-Instruct-q4f16_1-MLC';
+/** Default local model picked when the user opts in but hasn't chosen yet.
+ *  Hermes 3 8B — the only model with native tool calling. */
+export const DEFAULT_LOCAL_MODEL: LocalModelId = 'Hermes-3-Llama-3.1-8B-q4f16_1-MLC';
 
 /** Returns true when the browser exposes WebGPU. Local models require it. */
 export function isWebGpuAvailable(): boolean {

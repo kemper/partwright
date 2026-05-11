@@ -10,8 +10,7 @@ import { showAiKeyModal } from './aiKeyModal';
 import { showAiLocalModal } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { loadSettings, saveSettings, setProvider } from '../ai/settings';
-import { findLocalModel } from '../ai/localModels';
-import { isModelLoaded } from '../ai/local';
+import { isModelLoaded, resolveLocalModel } from '../ai/local';
 
 let modalEl: HTMLElement | null = null;
 
@@ -193,7 +192,7 @@ function buildLocalSection(cb: AiSettingsCallbacks): HTMLElement {
   const status = document.createElement('div');
   status.className = 'text-[11px] text-zinc-400 leading-snug';
   if (settings.toggles.localModel) {
-    const info = findLocalModel(settings.toggles.localModel);
+    const info = resolveLocalModel(settings.toggles.localModel);
     const resident = isModelLoaded(info.id);
     status.textContent = `${info.label} · ${(info.vramMB / 1024).toFixed(1)} GB VRAM · ${resident ? 'in GPU memory' : 'not yet loaded'}`;
   } else {
