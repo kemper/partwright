@@ -181,31 +181,44 @@ export interface LocalRequestSpec {
 }
 
 /** Single agent-loop iteration against a local model. Mirrors the shape
- *  returned by anthropic.streamTurn so chatLoop can swap providers cleanly. */
+ *  returned by anthropic.streamTurn so chatLoop can swap providers cleanly.
+ *
+ *  Two tool-calling strategies, chosen per model:
+ *    * Native — Hermes-2-Pro / Hermes-3 are in WebLLM's `functionCallingModelIds`
+ *      and accept the OpenAI `tools` request field. The model emits
+ *      `tool_calls` deltas the same way the OpenAI API does.
+ *    * Prompt-engineered — every other model rejects the `tools` field
+ *      with an UnsupportedModelIdError. We inject tool descriptions into
+ *      the system prompt and ask the model to emit `<tool_call>{...}</tool_call>`
+ *      blocks, then parse them out post-stream. */
 export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamCallbacks = {}): Promise<StreamResult> {
   if (!loaded || loaded.modelId !== spec.modelId) {
     throw new Error(`Local model ${spec.modelId} is not loaded. Open AI settings → Local model to download it first.`);
   }
   const { engine, info } = loaded;
   const maxTokens = spec.maxTokens ?? 1024;
+  const native = await supportsNativeToolCalls(spec.modelId);
 
-  const messages = buildLocalApiMessages(spec.systemPrompt, spec.systemSuffix, spec.history, info);
-  const tools = buildOpenAiTools(spec.tools);
+  const systemSuffix = native
+    ? spec.systemSuffix
+    : appendPromptToolDocs(spec.systemSuffix, spec.tools);
+  const messages = buildLocalApiMessages(spec.systemPrompt, systemSuffix, spec.history, info, native);
 
-  // WebLLM's stream emits OpenAI-shape chunks. Tool call args arrive as a
-  // running JSON string we accumulate across deltas, just like the official
-  // OpenAI SDK.
-  const stream = await engine.chat.completions.create({
+  const baseReq: Record<string, unknown> = {
     messages,
-    tools: tools.length > 0 ? tools : undefined,
-    tool_choice: tools.length > 0 ? 'auto' : undefined,
     stream: true,
     stream_options: { include_usage: true },
     max_tokens: maxTokens,
     temperature: 0.6,
-  });
+  };
+  if (native && spec.tools.length > 0) {
+    baseReq.tools = buildOpenAiTools(spec.tools);
+    baseReq.tool_choice = 'auto';
+  }
 
-  let text = '';
+  const stream = await engine.chat.completions.create(baseReq);
+
+  let rawText = '';
   let stopReason = 'unknown';
   const toolBuf = new Map<number, { id: string; name: string; argsRaw: string; announced: boolean }>();
   const usage: TurnUsage = {
@@ -215,14 +228,52 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
     cacheReadInputTokens: 0,
   };
 
+  // Track what we've emitted to the UI so we can suppress the prompt-engineered
+  // tool-call markup mid-stream. We only emit deltas of clean text up to the
+  // open `<tool_call>` marker; once the closing marker arrives we resume after it.
+  let emittedLen = 0;
+  let insideToolCall = false;
+  let pendingToolCallId = 1;
+
   for await (const chunk of stream as AsyncIterable<any>) {
     const choice = chunk?.choices?.[0];
     if (choice?.delta?.content) {
       const delta = choice.delta.content as string;
-      text += delta;
-      callbacks.onText?.(delta);
+      rawText += delta;
+      if (native) {
+        callbacks.onText?.(delta);
+      } else {
+        // Walk the buffer looking for tool-call markers as text accumulates.
+        while (emittedLen < rawText.length) {
+          if (!insideToolCall) {
+            const openIdx = rawText.indexOf(TOOL_CALL_OPEN, emittedLen);
+            if (openIdx === -1) {
+              // No (incomplete) open marker present — emit everything up to
+              // the safe cutoff (leave the last few chars unemitted so we
+              // don't split the marker across deltas).
+              const safe = Math.max(emittedLen, rawText.length - TOOL_CALL_OPEN.length);
+              if (safe > emittedLen) {
+                callbacks.onText?.(rawText.slice(emittedLen, safe));
+                emittedLen = safe;
+              }
+              break;
+            }
+            // Emit text up to the open marker, then enter tool-call mode.
+            if (openIdx > emittedLen) callbacks.onText?.(rawText.slice(emittedLen, openIdx));
+            emittedLen = openIdx + TOOL_CALL_OPEN.length;
+            insideToolCall = true;
+            // Provisional announcement; the actual name is unknown until parse.
+            callbacks.onToolStart?.(`tc_${pendingToolCallId++}`, 'tool');
+          } else {
+            const closeIdx = rawText.indexOf(TOOL_CALL_CLOSE, emittedLen);
+            if (closeIdx === -1) break;
+            emittedLen = closeIdx + TOOL_CALL_CLOSE.length;
+            insideToolCall = false;
+          }
+        }
+      }
     }
-    if (choice?.delta?.tool_calls) {
+    if (native && choice?.delta?.tool_calls) {
       for (const tc of choice.delta.tool_calls as Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }>) {
         const idx = tc.index ?? 0;
         let entry = toolBuf.get(idx);
@@ -246,20 +297,22 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
     }
   }
 
-  const toolCalls: PersistedToolCall[] = [];
-  for (const entry of toolBuf.values()) {
-    if (!entry.name) continue;
-    let parsed: Record<string, unknown> = {};
-    try {
-      parsed = entry.argsRaw.trim().length > 0 ? JSON.parse(entry.argsRaw) : {};
-    } catch {
-      // Schema-constrained decoding makes this rare but possible if the
-      // model truncates mid-call. We pass the raw string back so the
-      // executor can surface a useful "bad JSON" error to the model on
-      // retry instead of silently dropping the call.
-      parsed = { __raw: entry.argsRaw };
-    }
-    toolCalls.push({ id: entry.id, name: entry.name, input: parsed });
+  // Final flush for the prompt-engineered path: anything still unemitted
+  // outside a tool-call block goes out now.
+  if (!native && !insideToolCall && emittedLen < rawText.length) {
+    callbacks.onText?.(rawText.slice(emittedLen));
+    emittedLen = rawText.length;
+  }
+
+  let toolCalls: PersistedToolCall[] = [];
+  let cleanedText: string;
+  if (native) {
+    toolCalls = collectNativeToolCalls(toolBuf);
+    cleanedText = rawText;
+  } else {
+    const parsed = parsePromptToolCalls(rawText);
+    toolCalls = parsed.toolCalls;
+    cleanedText = parsed.cleanedText;
   }
 
   // Normalize finish_reason to match Anthropic vocabulary ("tool_use" /
@@ -269,7 +322,118 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
   else if (stopReason === 'stop') normStop = 'end_turn';
   else if (stopReason === 'length') normStop = 'max_tokens';
 
-  return { text, toolCalls, stopReason: normStop, usage };
+  return { text: cleanedText, toolCalls, stopReason: normStop, usage };
+}
+
+/** Cached lookup of WebLLM's `functionCallingModelIds`. Async because the
+ *  list lives inside the lazy-loaded WebLLM chunk. */
+let nativeIdsCache: Set<string> | null = null;
+async function supportsNativeToolCalls(modelId: string): Promise<boolean> {
+  if (!nativeIdsCache) {
+    const webllm = await import('@mlc-ai/web-llm');
+    nativeIdsCache = new Set(webllm.functionCallingModelIds as readonly string[]);
+  }
+  return nativeIdsCache.has(modelId);
+}
+
+function collectNativeToolCalls(toolBuf: Map<number, { id: string; name: string; argsRaw: string }>): PersistedToolCall[] {
+  const out: PersistedToolCall[] = [];
+  for (const entry of toolBuf.values()) {
+    if (!entry.name) continue;
+    let parsed: Record<string, unknown> = {};
+    try {
+      parsed = entry.argsRaw.trim().length > 0 ? JSON.parse(entry.argsRaw) : {};
+    } catch {
+      parsed = { __raw: entry.argsRaw };
+    }
+    out.push({ id: entry.id, name: entry.name, input: parsed });
+  }
+  return out;
+}
+
+// === Prompt-engineered tool calling ===
+
+const TOOL_CALL_OPEN = '<tool_call>';
+const TOOL_CALL_CLOSE = '</tool_call>';
+
+/** Build a tool-use instruction block to append to the system prompt for
+ *  models that don't accept the OpenAI `tools` request field. We list each
+ *  tool's name, description, and JSON-schema parameters in a compact form
+ *  the model can pattern-match against. */
+function appendPromptToolDocs(existingSuffix: string, tools: ToolDefinition[]): string {
+  if (tools.length === 0) return existingSuffix;
+  const lines: string[] = [];
+  if (existingSuffix.trim().length > 0) lines.push(existingSuffix);
+  lines.push('');
+  lines.push('## Tool calling');
+  lines.push('');
+  lines.push('You can call tools by emitting a `<tool_call>` block — JSON only, exactly this shape:');
+  lines.push('');
+  lines.push('<tool_call>');
+  lines.push('{"name": "tool_name", "arguments": { /* args object */ }}');
+  lines.push('</tool_call>');
+  lines.push('');
+  lines.push('Rules:');
+  lines.push('- One JSON object per `<tool_call>` block. Multiple blocks are allowed per turn.');
+  lines.push('- `arguments` must validate against the tool\'s parameter schema below.');
+  lines.push('- Emit nothing between `<tool_call>` and the JSON — no commentary, no code fences, no extra whitespace.');
+  lines.push('- After a tool call, stop and wait for the result before continuing.');
+  lines.push('');
+  lines.push('Available tools:');
+  lines.push('');
+  for (const t of tools) {
+    lines.push(`### ${t.name}`);
+    lines.push(t.description);
+    lines.push('Parameters (JSON schema):');
+    lines.push('```json');
+    lines.push(JSON.stringify(t.input_schema, null, 2));
+    lines.push('```');
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+/** Pull `<tool_call>...</tool_call>` blocks out of a model response. Returns
+ *  the cleaned conversational text (with markup stripped) plus parsed calls. */
+function parsePromptToolCalls(text: string): { cleanedText: string; toolCalls: PersistedToolCall[] } {
+  const calls: PersistedToolCall[] = [];
+  let cleaned = '';
+  let cursor = 0;
+  let n = 0;
+  while (cursor < text.length) {
+    const open = text.indexOf(TOOL_CALL_OPEN, cursor);
+    if (open === -1) {
+      cleaned += text.slice(cursor);
+      break;
+    }
+    cleaned += text.slice(cursor, open);
+    const close = text.indexOf(TOOL_CALL_CLOSE, open + TOOL_CALL_OPEN.length);
+    if (close === -1) {
+      // Truncated — keep what we have and stop. The malformed tail is
+      // dropped from the user-visible text rather than printed verbatim.
+      break;
+    }
+    const body = text.slice(open + TOOL_CALL_OPEN.length, close).trim();
+    const parsed = tryParseToolCallBody(body);
+    if (parsed) {
+      calls.push({ id: `tc_${++n}`, name: parsed.name, input: parsed.arguments });
+    }
+    cursor = close + TOOL_CALL_CLOSE.length;
+  }
+  return { cleanedText: cleaned.trim(), toolCalls: calls };
+}
+
+function tryParseToolCallBody(body: string): { name: string; arguments: Record<string, unknown> } | null {
+  // Be lenient: strip a JSON code fence if the model wraps the call.
+  const stripped = body.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  try {
+    const obj = JSON.parse(stripped) as { name?: unknown; arguments?: unknown; parameters?: unknown };
+    if (typeof obj.name !== 'string') return null;
+    const args = (obj.arguments ?? obj.parameters ?? {}) as Record<string, unknown>;
+    return { name: obj.name, arguments: typeof args === 'object' && args !== null ? args : {} };
+  } catch {
+    return null;
+  }
 }
 
 /** Interrupt a generation in progress. Used by the chat panel's stop button. */
@@ -329,6 +493,7 @@ function buildLocalApiMessages(
   systemSuffix: string,
   history: ChatMessage[],
   info: LocalModelInfo,
+  native: boolean,
 ): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
   const sys = systemSuffix.trim().length > 0 ? `${systemPrompt}\n\n${systemSuffix}` : systemPrompt;
@@ -336,28 +501,67 @@ function buildLocalApiMessages(
 
   for (const msg of history) {
     if (msg.role === 'user') {
-      // Tool results need to come back as one OpenAI "tool" message per
-      // tool_call_id (not bundled in a user message).
-      if (msg.toolResults && msg.toolResults.length > 0) {
-        for (const r of msg.toolResults) {
-          out.push({ role: 'tool', tool_call_id: r.toolUseId, content: r.content });
+      if (native) {
+        // Native function-calling models expect one OpenAI "tool" message
+        // per tool_call_id.
+        if (msg.toolResults && msg.toolResults.length > 0) {
+          for (const r of msg.toolResults) {
+            out.push({ role: 'tool', tool_call_id: r.toolUseId, content: r.content });
+          }
+        }
+        const content = userBlocksToContent(msg.blocks, info);
+        if (content !== null) out.push({ role: 'user', content });
+      } else {
+        // Prompt-engineered path: collapse tool results into a single user
+        // turn the model can read as plain text.
+        const parts: string[] = [];
+        if (msg.toolResults && msg.toolResults.length > 0) {
+          for (const r of msg.toolResults) {
+            parts.push(`<tool_result${r.isError ? ' error="true"' : ''}>\n${r.content}\n</tool_result>`);
+          }
+        }
+        const textContent = userBlocksToContent(msg.blocks, info);
+        if (typeof textContent === 'string') parts.push(textContent);
+        else if (Array.isArray(textContent)) {
+          // Vision multipart: append the parts directly when supported.
+          // Falls through below.
+        }
+        if (parts.length > 0) {
+          if (Array.isArray(textContent)) {
+            const merged: unknown[] = [...textContent, { type: 'text', text: parts.join('\n\n') }];
+            out.push({ role: 'user', content: merged });
+          } else {
+            out.push({ role: 'user', content: parts.join('\n\n') });
+          }
+        } else if (Array.isArray(textContent)) {
+          out.push({ role: 'user', content: textContent });
         }
       }
-      // User text + (vision-only) images.
-      const content = userBlocksToContent(msg.blocks, info);
-      if (content !== null) out.push({ role: 'user', content });
     } else {
       const content = assistantTextOf(msg.blocks);
-      const toolCalls = (msg.toolCalls ?? []).map(tc => ({
-        id: tc.id,
-        type: 'function' as const,
-        function: { name: tc.name, arguments: JSON.stringify(tc.input ?? {}) },
-      }));
-      const assistantMsg: Record<string, unknown> = { role: 'assistant' };
-      if (content.length > 0) assistantMsg.content = content;
-      if (toolCalls.length > 0) assistantMsg.tool_calls = toolCalls;
-      // OpenAI requires either content or tool_calls; skip if both empty.
-      if (content.length > 0 || toolCalls.length > 0) out.push(assistantMsg);
+      if (native) {
+        const toolCalls = (msg.toolCalls ?? []).map(tc => ({
+          id: tc.id,
+          type: 'function' as const,
+          function: { name: tc.name, arguments: JSON.stringify(tc.input ?? {}) },
+        }));
+        const assistantMsg: Record<string, unknown> = { role: 'assistant' };
+        if (content.length > 0) assistantMsg.content = content;
+        if (toolCalls.length > 0) assistantMsg.tool_calls = toolCalls;
+        if (content.length > 0 || toolCalls.length > 0) out.push(assistantMsg);
+      } else {
+        // Re-serialize prior tool calls in the same `<tool_call>` markup
+        // the model is being trained on this turn — keeps the conversation
+        // self-consistent.
+        const parts: string[] = [];
+        if (content.length > 0) parts.push(content);
+        if (msg.toolCalls) {
+          for (const tc of msg.toolCalls) {
+            parts.push(`${TOOL_CALL_OPEN}\n${JSON.stringify({ name: tc.name, arguments: tc.input ?? {} })}\n${TOOL_CALL_CLOSE}`);
+          }
+        }
+        if (parts.length > 0) out.push({ role: 'assistant', content: parts.join('\n\n') });
+      }
     }
   }
   return out;

@@ -17,8 +17,6 @@ export type AnthropicModelId = 'claude-haiku-4-5' | 'claude-sonnet-4-6' | 'claud
  *  same at the type level (a string) so callers can treat it opaquely. */
 export type ModelId = AnthropicModelId | LocalModelId;
 
-export type Preset = 'minimal' | 'standard' | 'full' | 'custom';
-
 /** Per-session knobs the user can flip in the toggle strip above the chat
  *  input. These directly shape the request payload (image blocks, tool list,
  *  system-prompt suffix). */

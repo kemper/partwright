@@ -7,7 +7,7 @@ import { runTurn, totalCost, totalTokensEstimate, estimateCachedPrefixTokens } f
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, applyPreset, setAnthropicModel, setToggles, ANTHROPIC_MODEL_OPTIONS, PRESET_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, setAnthropicModel, setToggles, ANTHROPIC_MODEL_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { generateId } from '../storage/db';
@@ -44,6 +44,7 @@ let pendingImagesEl: HTMLElement | null = null;
 let toggleStripEl: HTMLElement | null = null;
 let costMeterEl: HTMLElement | null = null;
 let panelStatusEl: HTMLElement | null = null;
+let modelPickerEl: HTMLElement | null = null;
 
 let onPanelStateChange: ((open: boolean) => void) | null = null;
 
@@ -118,7 +119,11 @@ function buildDrawer(): void {
   root.className = 'fixed top-0 right-0 h-screen w-[420px] bg-zinc-900 border-l border-zinc-700 shadow-2xl z-40 flex flex-col transition-transform duration-200 translate-x-full';
   drawerEl = root;
 
-  // Header — title, model picker, preset picker, close
+  // Header — title, model picker (provider-aware), compact, settings, close.
+  // The picker collapses to whichever provider is active: a `<select>` of
+  // Anthropic models when on Anthropic, an active-model chip + "Change…"
+  // button when on Local. The old "Preset" dropdown is gone — users pick
+  // models directly and use the toggle strip for fine-grained controls.
   const header = document.createElement('div');
   header.className = 'flex items-center gap-2 px-3 py-2 border-b border-zinc-700 shrink-0';
 
@@ -127,11 +132,10 @@ function buildDrawer(): void {
   titleEl.textContent = 'AI';
   header.appendChild(titleEl);
 
-  const modelSelect = createModelSelect();
-  header.appendChild(modelSelect);
-
-  const presetSelect = createPresetSelect();
-  header.appendChild(presetSelect);
+  modelPickerEl = document.createElement('div');
+  modelPickerEl.className = 'flex items-center gap-1';
+  header.appendChild(modelPickerEl);
+  renderModelPicker();
 
   const compactBtn = createIconButton('Compact', '⤓ Compact');
   compactBtn.title = 'Compact the conversation: summarize older turns and promote insights to session notes.';
@@ -141,7 +145,7 @@ function buildDrawer(): void {
   const settingsBtn = createIconButton('Settings', '⚙');
   settingsBtn.title = 'AI settings: provider, key, lifetime usage.';
   settingsBtn.addEventListener('click', () => {
-    void showAiSettingsModal({ onChange: () => { renderTranscript(); renderToggleStrip(); renderCostMeter(); panelStatusUpdate(); } });
+    void showAiSettingsModal({ onChange: () => { renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); panelStatusUpdate(); } });
   });
   header.appendChild(settingsBtn);
 
@@ -269,31 +273,15 @@ function createIconButton(_label: string, glyph: string): HTMLButtonElement {
   return btn;
 }
 
-function createModelSelect(): HTMLSelectElement {
-  const sel = document.createElement('select');
-  sel.className = 'px-2 py-1 rounded text-[11px] bg-zinc-800 border border-zinc-700 text-zinc-200 focus:outline-none';
-  syncModelSelectOptions(sel);
-  sel.addEventListener('change', () => {
-    const settings = loadSettings();
-    if (settings.toggles.provider === 'anthropic') {
-      saveSettings(setAnthropicModel(settings, sel.value as AnthropicModelId));
-      renderToggleStrip();
-      renderCostMeter();
-    } else {
-      // Local-mode dropdown is read-only; redirect to the picker.
-      sel.value = settings.toggles.localModel ?? '';
-      void showAiLocalModal({ onChange: () => { syncModelSelectOptions(sel); renderToggleStrip(); renderCostMeter(); panelStatusUpdate(); } });
-    }
-  });
-  return sel;
-}
-
-/** Refill the model picker for whichever provider is active. Called on
- *  every settings change so the dropdown always reflects what will run. */
-function syncModelSelectOptions(sel: HTMLSelectElement): void {
+function renderModelPicker(): void {
+  if (!modelPickerEl) return;
+  modelPickerEl.replaceChildren();
   const settings = loadSettings();
-  sel.replaceChildren();
+
   if (settings.toggles.provider === 'anthropic') {
+    const sel = document.createElement('select');
+    sel.className = 'px-2 py-1 rounded text-[11px] bg-zinc-800 border border-zinc-700 text-zinc-200 focus:outline-none';
+    sel.title = 'Anthropic model (hosted).';
     for (const opt of ANTHROPIC_MODEL_OPTIONS) {
       const o = document.createElement('option');
       o.value = opt.id;
@@ -301,47 +289,33 @@ function syncModelSelectOptions(sel: HTMLSelectElement): void {
       sel.appendChild(o);
     }
     sel.value = settings.toggles.anthropicModel;
-    sel.title = 'Anthropic model (hosted).';
-  } else {
-    // Local mode shows just the active model + a "change" option.
-    if (settings.toggles.localModel) {
-      const info = findLocalModel(settings.toggles.localModel);
-      const o = document.createElement('option');
-      o.value = info.id;
-      o.textContent = info.label;
-      sel.appendChild(o);
-    }
-    const changeOpt = document.createElement('option');
-    changeOpt.value = '__pick__';
-    changeOpt.textContent = 'Change…';
-    sel.appendChild(changeOpt);
-    if (settings.toggles.localModel) sel.value = settings.toggles.localModel;
-    sel.title = 'Local WebGPU model.';
+    sel.addEventListener('change', () => {
+      saveSettings(setAnthropicModel(loadSettings(), sel.value as AnthropicModelId));
+      renderToggleStrip();
+      renderCostMeter();
+    });
+    modelPickerEl.appendChild(sel);
+    return;
   }
-}
 
-function createPresetSelect(): HTMLSelectElement {
-  const sel = document.createElement('select');
-  sel.className = 'px-2 py-1 rounded text-[11px] bg-zinc-800 border border-zinc-700 text-zinc-200 focus:outline-none';
-  for (const opt of PRESET_OPTIONS) {
-    const o = document.createElement('option');
-    o.value = opt.id;
-    o.textContent = opt.label;
-    o.title = opt.hint;
-    sel.appendChild(o);
+  // Local provider: show the active model as a chip + "Change…" button.
+  // Native `<select>` doesn't work here because the entries aren't symmetric
+  // — picking a different model triggers a download flow, not a simple
+  // setting change.
+  const chip = document.createElement('button');
+  chip.className = 'px-2 py-1 rounded text-[11px] bg-emerald-900/30 border border-emerald-700/50 text-emerald-200 hover:bg-emerald-900/50';
+  if (settings.toggles.localModel) {
+    const info = findLocalModel(settings.toggles.localModel);
+    chip.textContent = info.label;
+    chip.title = `Local model: ${info.label}${isModelLoaded(info.id) ? ' (in GPU)' : ' (not loaded)'}`;
+  } else {
+    chip.textContent = 'Pick local model';
+    chip.title = 'No local model is selected. Click to pick one.';
   }
-  sel.value = loadSettings().preset;
-  sel.addEventListener('change', () => {
-    const next = applyPreset(loadSettings(), sel.value as AiSettings['preset']);
-    saveSettings(next);
-    // Sync the model picker too — only meaningful on the Anthropic side
-    // since the preset doesn't pick a local model.
-    const modelSelect = drawerEl?.querySelector('select') as HTMLSelectElement | null;
-    if (modelSelect) syncModelSelectOptions(modelSelect);
-    renderToggleStrip();
-    renderCostMeter();
+  chip.addEventListener('click', () => {
+    void showAiLocalModal({ onChange: () => { renderModelPicker(); renderToggleStrip(); renderCostMeter(); panelStatusUpdate(); } });
   });
-  return sel;
+  modelPickerEl.appendChild(chip);
 }
 
 // === Toggle strip rendering ===
@@ -479,7 +453,7 @@ function panelStatusUpdate(): void {
       link.className = 'underline text-amber-200 hover:text-amber-100';
       link.textContent = 'Choose a model';
       link.addEventListener('click', () => {
-        void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderToggleStrip(); renderCostMeter(); } });
+        void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); } });
       });
       panelStatusEl.appendChild(link);
     } else if (!isModelLoaded(settings.toggles.localModel)) {
@@ -516,7 +490,7 @@ function panelStatusUpdate(): void {
       local.className = 'underline text-amber-200 hover:text-amber-100';
       local.textContent = 'run a local model';
       local.addEventListener('click', () => {
-        void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderToggleStrip(); renderCostMeter(); } });
+        void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); } });
       });
       panelStatusEl.appendChild(local);
       panelStatusEl.appendChild(document.createTextNode('.'));
@@ -728,7 +702,7 @@ async function sendMessage(): Promise<void> {
     apiKey = key.apiKey;
   } else {
     if (!settings.toggles.localModel) {
-      void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderToggleStrip(); renderCostMeter(); void sendMessage(); } });
+      void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderModelPicker(); renderToggleStrip(); renderCostMeter(); void sendMessage(); } });
       return;
     }
     // Auto-load the model into GPU on first message — avoids the user having
