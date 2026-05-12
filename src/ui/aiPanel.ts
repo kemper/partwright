@@ -390,9 +390,18 @@ function renderModelPicker(): void {
   const chip = document.createElement('button');
   chip.className = 'px-2 py-1 rounded text-[11px] bg-emerald-900/30 border border-emerald-700/50 text-emerald-200 hover:bg-emerald-900/50';
   if (settings.toggles.localModel) {
-    const info = resolveLocalModel(settings.toggles.localModel);
-    chip.textContent = info.label;
-    chip.title = `Local model: ${info.label}${isModelLoaded(info.id) ? ' (in GPU)' : ' (not loaded)'}`;
+    // resolveLocalModel can throw if `localModel` points at a custom
+    // entry that was removed in another tab between the settings read
+    // and now. Falling back to "Pick local model" lets the user recover
+    // by re-selecting rather than crashing the drawer header.
+    try {
+      const info = resolveLocalModel(settings.toggles.localModel);
+      chip.textContent = info.label;
+      chip.title = `Local model: ${info.label}${isModelLoaded(info.id) ? ' (in GPU)' : ' (not loaded)'}`;
+    } catch {
+      chip.textContent = 'Pick local model';
+      chip.title = 'The previously-selected model is no longer available. Click to pick one.';
+    }
   } else {
     chip.textContent = 'Pick local model';
     chip.title = 'No local model is selected. Click to pick one.';
@@ -545,8 +554,14 @@ function panelStatusUpdate(): void {
     } else if (!isModelLoaded(settings.toggles.localModel)) {
       panelStatusEl.classList.remove('hidden', 'text-emerald-400');
       panelStatusEl.classList.add('text-blue-300');
-      const info = resolveLocalModel(settings.toggles.localModel);
-      panelStatusEl.appendChild(document.createTextNode(`${info.label} downloaded — `));
+      let label = 'Model';
+      try {
+        label = resolveLocalModel(settings.toggles.localModel).label;
+      } catch {
+        // The active id was probably forgotten in another tab; let the
+        // user click through to the picker rather than crashing.
+      }
+      panelStatusEl.appendChild(document.createTextNode(`${label} downloaded — `));
       const link = document.createElement('button');
       link.className = 'underline text-blue-200 hover:text-blue-100';
       link.textContent = 'load into GPU';
@@ -1036,8 +1051,9 @@ async function maybeAutoCompact(): Promise<void> {
     if (pct < 0.7) return;
     if (state.history.length <= keepTail + 1) return;
   } else if (mode === 'conservative') {
-    // Don't auto-run; just hint when over 80%.
-    if (pct >= 0.8) setTransientStatus('Context is over 80% full — consider clicking Compact.');
+    // Don't auto-run. The persistent "Compact now" link on the cost
+    // meter (rendered when pct >= 0.8) is the surfaced nag — we don't
+    // need a transient toast on top.
     return;
   } else {
     return;
@@ -1058,9 +1074,13 @@ async function maybeAutoCompact(): Promise<void> {
   let proposal;
   try {
     proposal = await proposeCompaction({ toggles: settings.toggles, apiKey }, state.history, keepTail);
-  } catch {
-    // Auto-compaction is opportunistic — swallow errors so a flaky local
-    // model doesn't stop the user's actual conversation.
+  } catch (err) {
+    // Auto-compaction is opportunistic — don't stop the user's actual
+    // conversation. But DO surface a transient hint so a quietly-broken
+    // auto-compact doesn't leave the user wondering why context keeps
+    // growing. The manual Compact button still works.
+    const msg = err instanceof Error ? err.message : String(err);
+    setTransientStatus(`Auto-compact skipped: ${msg}. Click Compact to retry.`);
     return;
   }
 

@@ -72,12 +72,12 @@ export async function proposeCompaction(
   if (history.length <= keepTail) {
     throw new Error('Not enough history to compact yet — chat for a few more turns first.');
   }
-  // Pick the keep/drop boundary so the first KEPT message is never an
-  // orphan `user.toolResults` — that would dangle without its matching
-  // `assistant.tool_calls`, which both Anthropic and WebLLM reject. We
-  // walk the boundary forward (dropping more) until the kept head is
-  // either a user message with text/images, an assistant message, or
-  // we've emptied the keep set entirely.
+  // Pick the keep/drop boundary so the first KEPT message is never a
+  // user message carrying `toolResults` — those reference a
+  // `tool_use_id` from a preceding `assistant.tool_calls` message which
+  // would be in the dropped slice. Both Anthropic and WebLLM reject an
+  // orphan tool_result block. We walk forward past every such message;
+  // the summary captures what the tool round accomplished.
   let keepStart = history.length - keepTail;
   while (keepStart < history.length && isOrphanToolResultHead(history[keepStart])) {
     keepStart++;
@@ -119,18 +119,16 @@ export async function proposeCompaction(
   };
 }
 
-/** True for a `user` message whose content is JUST a tool-result payload —
- *  i.e. the continuation of a previous tool round. These rely on the
- *  preceding `assistant.tool_calls` for context and break when isolated. */
+/** True for any `user` message carrying `toolResults`. Those blocks
+ *  reference a `tool_use_id` from a preceding `assistant.tool_calls`
+ *  message; if that assistant message is in the dropped slice (almost
+ *  always the case at the boundary) the kept tool_result is orphaned
+ *  and the next API turn fails. We accept losing any mixed text/image
+ *  content on these messages — in practice the chat loop never produces
+ *  mixed tool-result + text messages anyway, and the summary covers what
+ *  the tool round accomplished. */
 function isOrphanToolResultHead(msg: ChatMessage): boolean {
-  if (msg.role !== 'user') return false;
-  if (!msg.toolResults || msg.toolResults.length === 0) return false;
-  // If the user also typed text or attached an image, treat as a normal
-  // user turn — the model can still interpret it standalone.
-  const hasNonToolContent = msg.blocks.some(b =>
-    (b.type === 'text' && b.text.trim().length > 0) || b.type === 'image'
-  );
-  return !hasNonToolContent;
+  return msg.role === 'user' && !!msg.toolResults && msg.toolResults.length > 0;
 }
 
 function formatForSummary(msg: ChatMessage): string {

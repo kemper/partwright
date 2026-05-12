@@ -46,9 +46,10 @@ export interface RunTurnCallbacks {
   onToolResult?: (toolUseId: string, toolName: string, result: PersistedToolResult) => void;
   /** Persisted assistant message at the end of one round (post-tools). */
   onAssistantPersisted?: (msg: ChatMessage) => void;
-  /** Loop ended (either end_turn or unrecoverable error). */
-  onTurnComplete?: (info: { totalCostUsd: number; toolCalls: number }) => void;
-  /** Unrecoverable error — the loop stops here. */
+  /** Unrecoverable error — the loop stops here. The caller should await
+   *  `runTurn` itself for end-of-turn cleanup (an earlier `onTurnComplete`
+   *  callback was removed because fire-and-forget cleanup races
+   *  user-typed new messages — see aiPanel sendMessage). */
   onError?: (err: Error) => void;
 }
 
@@ -96,13 +97,10 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   callbacks.onUserPersisted?.(userMsg);
 
   let workingHistory: ChatMessage[] = [...history, userMsg];
-  let totalCostUsd = 0;
-  let totalToolCalls = 0;
 
   const model = activeModel(toggles);
   if (model === null) {
     callbacks.onError?.(new Error('No model is active. Open AI settings and choose a provider + model.'));
-    callbacks.onTurnComplete?.({ totalCostUsd: 0, toolCalls: 0 });
     return workingHistory;
   }
 
@@ -141,17 +139,14 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         // raw assistant blocks; chatLoop never reads that field.
       }
     } catch (err) {
-      // ALWAYS fire onTurnComplete in error paths too — otherwise the panel's
-      // history-reload-from-IndexedDB hook never runs and the in-memory
-      // "Thinking…" placeholder lives on forever, looking like a stuck or
-      // lost turn next time the user types.
+      // Surface the error to the caller; runTurn returns normally and the
+      // caller's awaited post-cleanup runs the history reload. The
+      // in-memory "Thinking…" placeholder gets wiped there.
       callbacks.onError?.(err instanceof Error ? err : new Error(String(err)));
-      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls });
       return workingHistory;
     }
 
     const turnCost = turnCostUsd(model, result.usage);
-    totalCostUsd += turnCost;
 
     const assistantMsg: ChatMessage = {
       id: assistantId,
@@ -183,7 +178,6 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     }
 
     if (result.stopReason !== 'tool_use' || result.toolCalls.length === 0) {
-      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls });
       return workingHistory;
     }
 
@@ -193,7 +187,6 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     // result is fed back to the model on the next iteration, and the
     // model picks different arguments.
     const toolResults = await executeAll(result.toolCalls, callbacks);
-    totalToolCalls += result.toolCalls.length;
 
     const toolResultMsg: ChatMessage = {
       id: generateId(),
@@ -215,7 +208,6 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     `Stopped after ${MAX_AGENT_ITERATIONS} back-and-forth tool calls. The model kept calling tools without finishing. ` +
     `You can try: a more specific prompt, switching to a larger model, or clearing the chat to start fresh.`
   ));
-  callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls });
   return workingHistory;
 }
 
