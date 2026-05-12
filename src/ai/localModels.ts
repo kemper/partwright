@@ -229,12 +229,6 @@ export const LOCAL_GROUP_HINTS: Record<LocalSizeGroup, string> = {
   custom: 'Models you added by URL. WebLLM loads them like any prebuilt — you trust the source.',
 };
 
-export function findLocalModel(id: LocalModelId): LocalModelInfo {
-  const info = LOCAL_MODELS.find(m => m.id === id);
-  if (!info) throw new Error(`Unknown local model id: ${id}`);
-  return info;
-}
-
 /** Default local model picked when the user opts in but hasn't chosen yet.
  *  Hermes 3 8B — the only model with native tool calling. */
 export const DEFAULT_LOCAL_MODEL: LocalModelId = 'Hermes-3-Llama-3.1-8B-q4f16_1-MLC';

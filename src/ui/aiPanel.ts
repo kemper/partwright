@@ -42,6 +42,16 @@ const state: PanelState = {
  *  fetch lands. */
 let cachedAiMdLength = 15_000;
 
+/** Compute the next sequence ordinal for a compaction summary so it sorts
+ *  before every kept message. Multiple compactions over a session would
+ *  otherwise all share seq=-1 and sort unstably on reload — by stepping
+ *  one below the current minimum we keep the order deterministic. */
+function nextCompactedSeq(history: ChatMessage[]): number {
+  const existing = history.map(m => m.seq).filter(n => Number.isFinite(n));
+  const min = existing.length > 0 ? Math.min(...existing) : 0;
+  return min - 1;
+}
+
 /** Effective system-prompt length in characters for the active provider /
  *  model / override combo. Drives the context meter and the auto-compact
  *  threshold — recomputed each render so flipping provider in AI settings
@@ -459,6 +469,22 @@ function renderCostMeter(): void {
     <span class="text-zinc-400">${pct}%</span>
   `;
   costMeterEl.appendChild(meter);
+
+  // Conservative auto-compact mode just *nags* — it doesn't fire on its
+  // own. Surface a persistent "Compact now" link on the meter once we're
+  // past 80%, so the hint isn't tucked into a transient toast users miss.
+  if (settings.autoCompactMode === 'conservative' && pct >= 80) {
+    const sepNag = document.createElement('span');
+    sepNag.className = 'text-zinc-700';
+    sepNag.textContent = '·';
+    costMeterEl.appendChild(sepNag);
+    const nag = document.createElement('button');
+    nag.className = 'text-[10px] text-amber-300 hover:text-amber-200 underline';
+    nag.textContent = 'Compact now';
+    nag.title = 'Context is over 80% full. Compact to free space.';
+    nag.addEventListener('click', () => { void runCompact(); });
+    costMeterEl.appendChild(nag);
+  }
 
   const sep = document.createElement('span');
   sep.className = 'text-zinc-700';
@@ -1052,7 +1078,7 @@ async function maybeAutoCompact(): Promise<void> {
     role: 'assistant',
     blocks: [{ type: 'text', text: `[auto-compacted ${proposal.drop.length} turn(s)]\n${proposal.summary}` }],
     createdAt: Date.now(),
-    seq: -1,
+    seq: nextCompactedSeq(state.history),
     compacted: true,
   };
   await deleteMessages(proposal.drop.map(m => m.id));
@@ -1146,7 +1172,7 @@ async function runCompact(): Promise<void> {
       role: 'assistant',
       blocks: [{ type: 'text', text: `[compacted summary]\n${summary}` }],
       createdAt: Date.now(),
-      seq: -1, // sorts before everything kept
+      seq: nextCompactedSeq(state.history),
       compacted: true,
     };
     await deleteMessages(proposal.drop.map(m => m.id));

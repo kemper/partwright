@@ -216,8 +216,13 @@ export async function getCachedModels(): Promise<Set<string>> {
 }
 
 /** Delete a model's cached weights. Used by the "Remove" button in the
- *  local-model modal. */
+ *  local-model modal. Waits for any in-flight load to settle first so we
+ *  don't race the SDK populating `loaded` with a freshly-loaded engine
+ *  whose cache we're about to wipe. */
 export async function deleteCachedModel(modelId: string): Promise<void> {
+  if (loadInFlight) {
+    try { await loadInFlight; } catch { /* noop — failed loads still finalize */ }
+  }
   const webllm = await import('@mlc-ai/web-llm');
   await webllm.deleteModelAllInfoInCache(modelId, webllm.prebuiltAppConfig);
   if (loaded?.modelId === modelId) {

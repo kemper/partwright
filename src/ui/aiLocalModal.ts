@@ -23,7 +23,11 @@ import { loadSettings, saveSettings, setLocalModel, setProvider, addCustomLocalM
 
 let modalEl: HTMLElement | null = null;
 let cachedSet: Set<string> = new Set();
-let webGpuStatus: { supported: boolean; reason?: string } = { supported: true };
+/** WebGPU probe status. Starts as `checking` so we don't render an
+ *  optimistic green pill that flashes to red a tick later on browsers
+ *  without WebGPU. The first probe result flips this to ok/bad. */
+type GpuStatus = { state: 'checking' } | { state: 'ok' } | { state: 'bad'; reason: string };
+let webGpuStatus: GpuStatus = { state: 'checking' };
 
 /** Resolve the context window we'll actually request from WebLLM given a
  *  model's declared default. The global override (set in AI settings)
@@ -94,10 +98,12 @@ async function rerender(body: HTMLElement, cb: AiLocalModalCallbacks): Promise<v
   const gpuBanner = document.createElement('div');
   body.appendChild(gpuBanner);
   void probeWebGpu().then(r => {
-    webGpuStatus = { supported: r.supported, reason: r.reason };
+    webGpuStatus = r.supported
+      ? { state: 'ok' }
+      : { state: 'bad', reason: r.reason ?? 'WebGPU is not available.' };
     renderGpuBanner(gpuBanner);
   }).catch(() => {
-    webGpuStatus = { supported: false, reason: 'WebGPU probe failed.' };
+    webGpuStatus = { state: 'bad', reason: 'WebGPU probe failed.' };
     renderGpuBanner(gpuBanner);
   });
   renderGpuBanner(gpuBanner);
@@ -540,17 +546,24 @@ function formatBytes(bytes: number): string {
 
 function renderGpuBanner(host: HTMLElement): void {
   host.replaceChildren();
-  if (webGpuStatus.supported) {
+  if (webGpuStatus.state === 'checking') {
+    const wait = document.createElement('div');
+    wait.className = 'rounded border border-zinc-700 bg-zinc-900/40 px-3 py-2 text-xs text-zinc-400';
+    wait.textContent = 'Checking WebGPU support…';
+    host.appendChild(wait);
+    return;
+  }
+  if (webGpuStatus.state === 'ok') {
     const ok = document.createElement('div');
     ok.className = 'rounded border border-emerald-700/50 bg-emerald-900/20 px-3 py-2 text-xs text-emerald-200';
     ok.textContent = 'WebGPU detected — your browser can run local models.';
     host.appendChild(ok);
-  } else {
-    const bad = document.createElement('div');
-    bad.className = 'rounded border border-red-700/60 bg-red-900/20 px-3 py-2 text-xs text-red-200 leading-snug';
-    bad.innerHTML = `<strong>WebGPU is not available here.</strong> ${escapeHtml(webGpuStatus.reason ?? '')} Local models need WebGPU — try the latest Chrome or Safari 26+.`;
-    host.appendChild(bad);
+    return;
   }
+  const bad = document.createElement('div');
+  bad.className = 'rounded border border-red-700/60 bg-red-900/20 px-3 py-2 text-xs text-red-200 leading-snug';
+  bad.innerHTML = `<strong>WebGPU is not available here.</strong> ${escapeHtml(webGpuStatus.reason)} Local models need WebGPU — try the latest Chrome or Safari 26+.`;
+  host.appendChild(bad);
 }
 
 function renderModelCard(
@@ -663,7 +676,7 @@ function renderModelCard(
   } else {
     primary.className = 'px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
     primary.textContent = `Download ${model.downloadGB.toFixed(1)} GB`;
-    if (!webGpuStatus.supported) primary.disabled = true;
+    if (webGpuStatus.state === 'bad') primary.disabled = true;
     primary.addEventListener('click', () => { void selectModel(model.id, parentBody, cb); });
   }
   actions.appendChild(primary);
@@ -675,6 +688,13 @@ function renderModelCard(
     remove.title = `Delete the cached weights for ${model.label}.`;
     remove.addEventListener('click', async () => {
       if (!confirm(`Delete cached weights for ${model.label}? You'll need to re-download to use it again.`)) return;
+      // If this was the active model, clear it from settings — otherwise
+      // the chat panel tries to send to a model whose weights are gone.
+      let s = loadSettings();
+      if (s.toggles.localModel === model.id) {
+        s = setLocalModel(s, null);
+        saveSettings(s);
+      }
       await deleteCachedModel(model.id);
       cb.onChange();
       await rerender(parentBody, cb);
