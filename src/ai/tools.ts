@@ -202,6 +202,17 @@ function getApi(): PartwrightAPI {
  *  them back to the model for self-correction. */
 export async function executeTool(name: string, input: Record<string, unknown>): Promise<ToolExecResult> {
   try {
+    // Pre-flight: code-writing tools must match the active session
+    // language. The agent loop will retry with the corrected language
+    // when this errors, which is faster and clearer than letting the
+    // wrong-language code reach the engine and fail with a parse error.
+    if (name === 'setCode' || name === 'runAndSave' || name === 'runCode') {
+      const code = typeof input.code === 'string' ? input.code : '';
+      if (code.length > 0) {
+        const mismatch = detectLanguageMismatch(code);
+        if (mismatch) return { content: mismatch, isError: true };
+      }
+    }
     const api = getApi();
     const result = await dispatch(api, name, input);
     if (result === undefined) return { content: '(ok)', isError: false };
@@ -210,6 +221,45 @@ export async function executeTool(name: string, input: Record<string, unknown>):
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { content: msg, isError: true };
+  }
+}
+
+/** Returns an error message when the supplied code clearly doesn't match
+ *  the active session language, or null when it looks plausible. The
+ *  detector is intentionally conservative — false positives bounce the
+ *  model into a wasted retry, so we only flag patterns we're highly
+ *  confident about (`Manifold.` API calls in a SCAD session, `module ` /
+ *  trailing `;` blocks with no `return` in a JS session). */
+function detectLanguageMismatch(code: string): string | null {
+  const lang = readActiveLanguage();
+  if (lang === null) return null;
+  if (lang === 'scad') {
+    // Strong JS markers in a SCAD session — manifold-3d API calls and
+    // explicit `return` statements (SCAD has no return keyword).
+    if (/\bManifold\s*\./.test(code) || /\bCrossSection\s*\./.test(code) || /^\s*return\s+/m.test(code) || /\bconst\s*\{\s*Manifold\b/.test(code)) {
+      return 'Language mismatch: this session is OpenSCAD (.scad) but the code looks like manifold-js (JavaScript). Rewrite using SCAD syntax: `cube([w,d,h], center=true);`, `cylinder(h=…, r1=…, r2=…, $fn=64);`, `translate([x,y,z]) <child>;`, `union() { ... }`, etc. No `return`, no `Manifold.` calls.';
+    }
+  } else {
+    // Strong SCAD markers in a JS session — `module name() {}` /
+    // `function foo() = …` / `$fn = …;` are SCAD-only constructs.
+    if (/^\s*module\s+\w+\s*\(/m.test(code) || /^\s*\$fn\s*=/m.test(code) || /^\s*function\s+\w+\s*\([^)]*\)\s*=/m.test(code)) {
+      return 'Language mismatch: this session is manifold-js (JavaScript) but the code uses OpenSCAD-only syntax (`module`, `$fn`, or function-equals). Rewrite using the manifold-js API: `const { Manifold, CrossSection } = api;`, `Manifold.cube(...)`, `.translate(...)`, ending with `return manifold;`.';
+    }
+  }
+  return null;
+}
+
+/** Read the live engine language without forcing every consumer of
+ *  `tools.ts` to import the engine module statically. The function lives
+ *  in `src/geometry/engine.ts` and is already loaded by the app shell at
+ *  startup, so a require-style lookup via `window.partwright` is safe. */
+function readActiveLanguage(): 'manifold-js' | 'scad' | null {
+  try {
+    const w = window as unknown as { partwright?: { getActiveLanguage?: () => 'manifold-js' | 'scad' } };
+    const lang = w.partwright?.getActiveLanguage?.();
+    return lang === 'manifold-js' || lang === 'scad' ? lang : null;
+  } catch {
+    return null;
   }
 }
 

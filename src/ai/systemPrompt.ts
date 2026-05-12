@@ -52,10 +52,15 @@ export function loadAiMd(): Promise<string> {
   return aiMdPromise;
 }
 
-/** Builds the suffix that describes the current toggle state. Generated
- *  per-turn, appended after the cached `ai.md` body. Kept small so the
- *  cache prefix invalidation only affects the very last block. */
-export function toggleSuffix(toggles: ChatToggles): string {
+/** Builds the suffix that describes the current per-turn session state.
+ *  Generated fresh every turn — anything stateful about the session
+ *  belongs here, NOT in the cached prompt body. The language directive
+ *  is the most important: the cached prompts (slim/medium/full) all
+ *  document manifold-js, so without an explicit override the model
+ *  ignores a user's "use SCAD" request and writes JavaScript anyway.
+ *  Sticking the active language in the suffix flips the prompt-vs-suffix
+ *  signal ratio so the more-recent + more-specific instruction wins. */
+export function toggleSuffix(toggles: ChatToggles, activeLanguage?: 'manifold-js' | 'scad'): string {
   const restrictions: string[] = [];
   if (!toggles.scope.runCode) {
     restrictions.push('You CANNOT run code. Suggest code in chat for the user to run themselves.');
@@ -70,15 +75,35 @@ export function toggleSuffix(toggles: ChatToggles): string {
     restrictions.push('You CANNOT see the rendered model. Reason from code and geometry stats only — do not ask for screenshots.');
   }
 
-  // Keep the suffix minimal: just the restrictions (when any apply) and a
-  // bare model line. Earlier versions included a structured "## Session
-  // toggle state" block with key:value pairs which small local models
-  // started echoing back to the user as if it were the response payload.
-  if (restrictions.length === 0) return '';
-  const lines = ['', `Current session model: ${activeModel(toggles) ?? '(none picked)'}.`, ''];
-  lines.push('Capability restrictions for this turn:');
-  for (const r of restrictions) lines.push(`- ${r}`);
-  return lines.join('\n');
+  // Build the language directive every turn. The cached system prompts
+  // teach manifold-js; if the active session is SCAD, this line is what
+  // tells the model to override that default. Only emit when SCAD —
+  // manifold-js matches the cached prompt and saying so would be noise.
+  const langLines: string[] = [];
+  if (activeLanguage === 'scad') {
+    langLines.push(
+      '',
+      'IMPORTANT — Active session language: OpenSCAD (.scad). The cached system prompt above documents manifold-js, but THAT WILL NOT RUN in this session. Generate OpenSCAD code only:',
+      '- Use SCAD primitives: cube([w,d,h], center=true); cylinder(h=h, r1=…, r2=…, $fn=64); sphere(r=…, $fn=64);',
+      '- Use SCAD operators: translate([x,y,z]) <child>; rotate([rx,ry,rz]) <child>; union() { ... } difference() { ... } intersection() { ... }',
+      '- Do NOT emit `return manifold;` or `Manifold.cube(...)` — those are JavaScript and will fail in the SCAD engine.',
+      '- A program is a list of statements; the result is whatever the top-level operations produce, no return value.',
+    );
+  }
+
+  // Keep the suffix minimal otherwise: just the restrictions when any
+  // apply. Earlier versions included a structured "## Session toggle
+  // state" block with key:value pairs which small local models started
+  // echoing back to the user as if it were the response payload.
+  const restrictionLines: string[] = [];
+  if (restrictions.length > 0) {
+    restrictionLines.push('', `Current session model: ${activeModel(toggles) ?? '(none picked)'}.`, '');
+    restrictionLines.push('Capability restrictions for this turn:');
+    for (const r of restrictions) restrictionLines.push(`- ${r}`);
+  }
+
+  if (langLines.length === 0 && restrictionLines.length === 0) return '';
+  return [...langLines, ...restrictionLines].join('\n');
 }
 
 export function buildSystemPrompt(aiMd: string): string {

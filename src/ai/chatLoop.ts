@@ -16,6 +16,7 @@ import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt
 import { loadSettings } from './settings';
 import { resolveLocalModel } from './local';
 import { turnCostUsd } from './cost';
+import { getActiveLanguage } from '../geometry/engine';
 import { activeModel, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type TurnUsage } from './types';
 
 export interface RunTurnInput {
@@ -113,6 +114,11 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       onToolStart: callbacks.onToolStart,
     };
 
+    // Resolve the active session language fresh each iteration. The user
+    // could have switched between tool calls in theory; in practice we
+    // mostly need it so the suffix carries the right language directive.
+    const activeLanguage = getActiveLanguage();
+
     let result;
     try {
       if (toggles.provider === 'anthropic') {
@@ -122,7 +128,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           apiKey,
           model: toggles.anthropicModel,
           systemPrompt,
-          systemSuffix: toggleSuffix(toggles),
+          systemSuffix: toggleSuffix(toggles, activeLanguage),
           apiMessages,
           tools,
         }, streamCallbacks);
@@ -131,7 +137,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         result = await streamLocalTurn({
           modelId: toggles.localModel,
           systemPrompt,
-          systemSuffix: toggleSuffix(toggles),
+          systemSuffix: toggleSuffix(toggles, activeLanguage),
           history: workingHistory,
           tools,
         }, streamCallbacks);
