@@ -4,6 +4,7 @@
 
 import type { AnthropicModelId, ChatToggles, ModelId, Provider } from './types';
 import type { LocalModelId } from './localModels';
+import { LOCAL_MODELS } from './localModels';
 
 const STORAGE_KEY = 'partwright-ai-settings-v1';
 
@@ -248,14 +249,42 @@ export const AUTO_COMPACT_OPTIONS: { id: AiSettings['autoCompactMode']; label: s
   { id: 'aggressive', label: 'After every turn', hint: 'Compact after every assistant turn; keep only the last exchange. Best when full history doesn\'t matter — like driving the modeler.' },
 ];
 
+/** Error thrown when a custom-model id would shadow a curated entry.
+ *  Callers should catch this and show an inline error in the form rather
+ *  than letting the throw escape. */
+export class BuiltInModelIdCollision extends Error {
+  readonly id: string;
+  constructor(id: string) {
+    super(`The id "${id}" matches a built-in model. Customs must use a unique id.`);
+    this.id = id;
+    this.name = 'BuiltInModelIdCollision';
+  }
+}
+
 export function addCustomLocalModel(settings: AiSettings, model: CustomLocalModel): AiSettings {
+  // Reject ids that already belong to a curated model — otherwise the
+  // user can silently override (and break) a built-in entry by pasting
+  // its repo URL.
+  if (LOCAL_MODELS.some(m => m.id === model.id)) {
+    throw new BuiltInModelIdCollision(model.id);
+  }
   // De-dupe by id — replace any existing entry with the same id.
   const filtered = settings.customLocalModels.filter(m => m.id !== model.id);
   return { ...settings, customLocalModels: [...filtered, model] };
 }
 
 export function removeCustomLocalModel(settings: AiSettings, id: string): AiSettings {
-  return { ...settings, customLocalModels: settings.customLocalModels.filter(m => m.id !== id) };
+  // If the user is currently using this custom model, clear the active
+  // selection too — otherwise the chat panel keeps a stale id and
+  // `resolveLocalModel` throws on the next render.
+  const clearedActive = settings.toggles.localModel === id
+    ? { ...settings.toggles, localModel: null }
+    : settings.toggles;
+  return {
+    ...settings,
+    toggles: clearedActive,
+    customLocalModels: settings.customLocalModels.filter(m => m.id !== id),
+  };
 }
 
 /** Replace or clear the custom system prompt for one provider. Passing

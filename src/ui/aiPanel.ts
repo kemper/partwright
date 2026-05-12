@@ -8,7 +8,7 @@ import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, 
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { loadSettings, saveSettings, setAnthropicModel, setToggles, ANTHROPIC_MODEL_OPTIONS, type AiSettings } from '../ai/settings';
-import { buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
+import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
@@ -25,7 +25,6 @@ interface PanelState {
   sessionId: string;
   history: ChatMessage[];
   pendingImages: ImageSource[];
-  systemPromptChars: number;
   inFlight: boolean;
 }
 
@@ -34,9 +33,37 @@ const state: PanelState = {
   sessionId: GLOBAL_CHAT_BUCKET,
   history: [],
   pendingImages: [],
-  systemPromptChars: 0,
   inFlight: false,
 };
+
+/** Cached length of `public/ai.md`, populated once on init. We use it to
+ *  size the context-meter percentage when the active provider is Anthropic.
+ *  Defaults to a reasonable guess so the meter is sensible before the
+ *  fetch lands. */
+let cachedAiMdLength = 15_000;
+
+/** Effective system-prompt length in characters for the active provider /
+ *  model / override combo. Drives the context meter and the auto-compact
+ *  threshold — recomputed each render so flipping provider in AI settings
+ *  doesn't strand us with the wrong number. */
+function effectiveSystemPromptChars(): number {
+  const s = loadSettings();
+  const override = s.systemPromptOverrides?.[s.toggles.provider] ?? null;
+  if (override !== null) return override.length;
+  if (s.toggles.provider === 'anthropic') return cachedAiMdLength;
+  // Local: choose by the active model's promptTier.
+  if (s.toggles.localModel) {
+    try {
+      const info = resolveLocalModel(s.toggles.localModel);
+      return info.promptTier === 'medium'
+        ? buildMediumLocalSystemPrompt().length
+        : buildLocalSystemPrompt().length;
+    } catch {
+      // Fall through if the active model id no longer resolves.
+    }
+  }
+  return buildLocalSystemPrompt().length;
+}
 
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
@@ -54,9 +81,9 @@ let onPanelStateChange: ((open: boolean) => void) | null = null;
 export async function initAiPanel(): Promise<void> {
   if (drawerEl) return;
   // Pre-load ai.md so the first turn doesn't pay the fetch latency on top
-  // of the API round trip. Also seeds the systemPromptChars estimate.
+  // of the API round trip. Also caches its length for the context meter.
   const aiMd = await loadAiMd();
-  state.systemPromptChars = buildSystemPrompt(aiMd).length;
+  cachedAiMdLength = buildSystemPrompt(aiMd).length;
 
   const settings = loadSettings();
   state.open = settings.drawerOpen;
@@ -408,9 +435,9 @@ function togglePill(label: string, on: boolean, onClick: () => void): HTMLButton
 function renderCostMeter(): void {
   if (!costMeterEl) return;
   const settings = loadSettings();
-  const tokens = totalTokensEstimate(state.history, state.systemPromptChars);
+  const tokens = totalTokensEstimate(state.history, effectiveSystemPromptChars());
   const cost = totalCost(state.history);
-  const cachedPrefix = estimateCachedPrefixTokens(state.systemPromptChars);
+  const cachedPrefix = estimateCachedPrefixTokens(effectiveSystemPromptChars());
   const model = activeModel(settings.toggles);
   const turnEst = model ? estimateTurnCostUsd(model, cachedPrefix, 500 + (settings.toggles.vision.views ? 6000 : 0)) : 0;
 
@@ -930,25 +957,26 @@ async function sendMessage(): Promise<void> {
         setTransientStatus(`Error: ${err.message}`);
       }
     },
-    onTurnComplete: () => {
-      // Refresh from DB to catch any tool-result messages, but preserve
-      // any in-memory error bubble from this turn — the persisted view
-      // wouldn't have it (errored placeholders aren't written to DB).
-      const erroredFromThisTurn = state.history.filter(m => m.errored);
-      void loadHistoryForCurrentSession().then(async () => {
-        for (const m of erroredFromThisTurn) state.history.push(m);
-        renderTranscript();
-        renderCostMeter();
-        // Only auto-compact when the turn ended cleanly — there's no point
-        // condensing a transcript that errored out before it finished.
-        if (erroredFromThisTurn.length === 0) {
-          await maybeAutoCompact();
-        }
-      });
-    },
   });
 
-  state.inFlight = false;
+  // Post-turn cleanup runs after `runTurn` resolves — NOT in
+  // `onTurnComplete`, because that callback is fire-and-forget and
+  // would let `inFlight` drop while we're still editing history during
+  // auto-compaction. Anything that mutates state.history MUST happen
+  // before the `inFlight = false` below or a fast-typing user can
+  // start a second turn over our writes.
+  try {
+    const erroredFromThisTurn = state.history.filter(m => m.errored);
+    await loadHistoryForCurrentSession();
+    for (const m of erroredFromThisTurn) state.history.push(m);
+    renderTranscript();
+    renderCostMeter();
+    if (erroredFromThisTurn.length === 0) {
+      await maybeAutoCompact();
+    }
+  } finally {
+    state.inFlight = false;
+  }
 }
 
 // === Auto-compaction ===
@@ -964,7 +992,7 @@ async function maybeAutoCompact(): Promise<void> {
 
   // Decide whether the current history justifies a compaction. The
   // threshold is per-mode; aggressive fires every turn it can.
-  const tokens = totalTokensEstimate(state.history, state.systemPromptChars);
+  const tokens = totalTokensEstimate(state.history, effectiveSystemPromptChars());
   const ctxLimit = settings.toggles.provider === 'local'
     ? (settings.localContext.windowSizeOverride ?? 8192)
     : (settings.toggles.anthropicModel === 'claude-haiku-4-5' ? 200_000 : 1_000_000);

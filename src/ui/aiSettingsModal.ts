@@ -270,6 +270,18 @@ function buildLocalContextSection(cb: AiSettingsCallbacks): HTMLElement {
   slidingRow.appendChild(slidingText);
   wrap.appendChild(slidingRow);
 
+  if (settings.localContext.sliding) {
+    // The sliding window rolls off TOKENS, not messages. When the window
+    // edge bisects a multi-turn tool call, the model can be left with an
+    // orphan `tool_result` it can't match to a `tool_use` — WebLLM may
+    // throw on the next turn. Auto-compaction sidesteps this entirely by
+    // working at the message level.
+    const warn = document.createElement('div');
+    warn.className = 'rounded border border-amber-700/40 bg-amber-900/15 px-3 py-2 text-[11px] text-amber-200 leading-snug';
+    warn.innerHTML = `<strong>Heads up:</strong> sliding-window mode rolls off tokens without understanding our message structure. If the cut falls between a tool call and its result, the next turn can error. <strong>Auto-compaction</strong> (the section below) avoids this — prefer it for long sessions.`;
+    wrap.appendChild(warn);
+  }
+
   const reloadHint = document.createElement('div');
   reloadHint.className = 'text-[10px] text-zinc-500';
   reloadHint.textContent = 'Changes apply the next time the model is loaded into GPU.';

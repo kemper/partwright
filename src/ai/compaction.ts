@@ -72,8 +72,21 @@ export async function proposeCompaction(
   if (history.length <= keepTail) {
     throw new Error('Not enough history to compact yet — chat for a few more turns first.');
   }
-  const keep = history.slice(-keepTail);
-  const drop = history.slice(0, history.length - keepTail);
+  // Pick the keep/drop boundary so the first KEPT message is never an
+  // orphan `user.toolResults` — that would dangle without its matching
+  // `assistant.tool_calls`, which both Anthropic and WebLLM reject. We
+  // walk the boundary forward (dropping more) until the kept head is
+  // either a user message with text/images, an assistant message, or
+  // we've emptied the keep set entirely.
+  let keepStart = history.length - keepTail;
+  while (keepStart < history.length && isOrphanToolResultHead(history[keepStart])) {
+    keepStart++;
+  }
+  const keep = history.slice(keepStart);
+  const drop = history.slice(0, keepStart);
+  if (drop.length === 0) {
+    throw new Error('Not enough history to compact yet — chat for a few more turns first.');
+  }
   const transcript = drop.map(formatForSummary).join('\n\n');
   const prompt = `Compact this transcript:\n\n${transcript}`;
 
@@ -104,6 +117,20 @@ export async function proposeCompaction(
     costUsd,
     usage,
   };
+}
+
+/** True for a `user` message whose content is JUST a tool-result payload —
+ *  i.e. the continuation of a previous tool round. These rely on the
+ *  preceding `assistant.tool_calls` for context and break when isolated. */
+function isOrphanToolResultHead(msg: ChatMessage): boolean {
+  if (msg.role !== 'user') return false;
+  if (!msg.toolResults || msg.toolResults.length === 0) return false;
+  // If the user also typed text or attached an image, treat as a normal
+  // user turn — the model can still interpret it standalone.
+  const hasNonToolContent = msg.blocks.some(b =>
+    (b.type === 'text' && b.text.trim().length > 0) || b.type === 'image'
+  );
+  return !hasNonToolContent;
 }
 
 function formatForSummary(msg: ChatMessage): string {

@@ -19,7 +19,7 @@ import {
   isModelLoaded,
   getStorageUsage,
 } from '../ai/local';
-import { loadSettings, saveSettings, setLocalModel, setProvider, addCustomLocalModel, removeCustomLocalModel, type CustomLocalModel } from '../ai/settings';
+import { loadSettings, saveSettings, setLocalModel, setProvider, addCustomLocalModel, removeCustomLocalModel, BuiltInModelIdCollision, type CustomLocalModel } from '../ai/settings';
 
 let modalEl: HTMLElement | null = null;
 let cachedSet: Set<string> = new Set();
@@ -365,7 +365,17 @@ function buildCustomModelForm(parentBody: HTMLElement, cb: AiLocalModalCallbacks
       contextWindowSize: Number.isFinite(ctxTokens) && ctxTokens > 0 ? ctxTokens : undefined,
       addedAt: Date.now(),
     };
-    saveSettings(addCustomLocalModel(loadSettings(), custom));
+    try {
+      saveSettings(addCustomLocalModel(loadSettings(), custom));
+    } catch (err) {
+      if (err instanceof BuiltInModelIdCollision) {
+        errorBox.textContent = `That id matches a built-in model. Pick a different repo, or use the built-in entry from the list above.`;
+      } else {
+        errorBox.textContent = err instanceof Error ? err.message : String(err);
+      }
+      errorBox.classList.remove('hidden');
+      return;
+    }
     cb.onChange();
     void rerender(parentBody, cb);
   });
