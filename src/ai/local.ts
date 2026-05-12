@@ -410,48 +410,67 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
     cacheReadInputTokens: 0,
   };
 
-  // Track what we've emitted to the UI so we can suppress the prompt-engineered
-  // tool-call markup mid-stream. We only emit deltas of clean text up to the
-  // open `<tool_call>` marker; once the closing marker arrives we resume after it.
+  // Track what we've emitted to the UI so we can suppress structured-output
+  // markup mid-stream. Two kinds of markup get scanned out of the visible
+  // bubble: `<tool_call>...</tool_call>` (the prompt-engineered tool path)
+  // and `<think>...</think>` (Qwen 3 / Qwen 3.5 / DeepSeek-R1 reasoning
+  // models — they emit chain-of-thought tags on every turn whether they
+  // have anything to think about or not, and the user shouldn't see them).
+  // We use a single "suppress" state and walk the buffer recognizing the
+  // earliest open marker each iteration.
   let emittedLen = 0;
-  let insideToolCall = false;
+  let suppressMode: null | 'tool_call' | 'think' = null;
   let pendingToolCallId = 1;
+
+  // The longest open marker we need to keep buffered when no open tag has
+  // been found yet — otherwise we could split a `<think>` or `<tool_call>`
+  // across two delta emissions and leak the prefix to the UI.
+  const MAX_OPEN_LEN = Math.max(TOOL_CALL_OPEN.length, THINK_OPEN.length);
 
   for await (const chunk of stream as AsyncIterable<any>) {
     const choice = chunk?.choices?.[0];
     if (choice?.delta?.content) {
       const delta = choice.delta.content as string;
       rawText += delta;
-      if (native) {
-        callbacks.onText?.(delta);
-      } else {
-        // Walk the buffer looking for tool-call markers as text accumulates.
-        while (emittedLen < rawText.length) {
-          if (!insideToolCall) {
-            const openIdx = rawText.indexOf(TOOL_CALL_OPEN, emittedLen);
-            if (openIdx === -1) {
-              // No (incomplete) open marker present — emit everything up to
-              // the safe cutoff (leave the last few chars unemitted so we
-              // don't split the marker across deltas).
-              const safe = Math.max(emittedLen, rawText.length - TOOL_CALL_OPEN.length);
-              if (safe > emittedLen) {
-                callbacks.onText?.(rawText.slice(emittedLen, safe));
-                emittedLen = safe;
-              }
-              break;
+      // Walk the buffer for both `<tool_call>` and `<think>` markers.
+      // Native function-calling models (Hermes 3 family) don't emit
+      // tool_call markup — the SDK exposes tool calls via `delta.tool_calls`
+      // below — but they CAN emit `<think>` tags if the user loaded a
+      // reasoning-style custom model, so the scanner runs in both modes.
+      while (emittedLen < rawText.length) {
+        if (suppressMode === null) {
+          const tcIdx = !native ? rawText.indexOf(TOOL_CALL_OPEN, emittedLen) : -1;
+          const thIdx = rawText.indexOf(THINK_OPEN, emittedLen);
+          const nextOpen = pickEarliest(tcIdx, thIdx);
+          if (nextOpen === null) {
+            // No open marker present — emit everything up to a safe
+            // cutoff (leave the last few chars unemitted so a marker
+            // straddling deltas doesn't leak its prefix).
+            const safe = Math.max(emittedLen, rawText.length - MAX_OPEN_LEN);
+            if (safe > emittedLen) {
+              callbacks.onText?.(rawText.slice(emittedLen, safe));
+              emittedLen = safe;
             }
-            // Emit text up to the open marker, then enter tool-call mode.
-            if (openIdx > emittedLen) callbacks.onText?.(rawText.slice(emittedLen, openIdx));
-            emittedLen = openIdx + TOOL_CALL_OPEN.length;
-            insideToolCall = true;
+            break;
+          }
+          // Emit text up to the open marker, then enter suppress mode.
+          if (nextOpen.idx > emittedLen) callbacks.onText?.(rawText.slice(emittedLen, nextOpen.idx));
+          emittedLen = nextOpen.idx + (nextOpen.kind === 'tool_call' ? TOOL_CALL_OPEN.length : THINK_OPEN.length);
+          suppressMode = nextOpen.kind;
+          if (nextOpen.kind === 'tool_call') {
             // Provisional announcement; the actual name is unknown until parse.
             callbacks.onToolStart?.(`tc_${pendingToolCallId++}`, 'tool');
-          } else {
-            const closeIdx = rawText.indexOf(TOOL_CALL_CLOSE, emittedLen);
-            if (closeIdx === -1) break;
-            emittedLen = closeIdx + TOOL_CALL_CLOSE.length;
-            insideToolCall = false;
           }
+        } else if (suppressMode === 'tool_call') {
+          const closeIdx = rawText.indexOf(TOOL_CALL_CLOSE, emittedLen);
+          if (closeIdx === -1) break;
+          emittedLen = closeIdx + TOOL_CALL_CLOSE.length;
+          suppressMode = null;
+        } else {
+          const closeIdx = rawText.indexOf(THINK_CLOSE, emittedLen);
+          if (closeIdx === -1) break;
+          emittedLen = closeIdx + THINK_CLOSE.length;
+          suppressMode = null;
         }
       }
     }
@@ -479,33 +498,43 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
     }
   }
 
-  // Final flush for the prompt-engineered path: anything still unemitted
-  // outside a tool-call block goes out now.
-  if (!native && !insideToolCall && emittedLen < rawText.length) {
+  // Final flush: anything still unemitted outside a suppressed block goes
+  // out now. (Anything still inside `<think>` or `<tool_call>` is dropped
+  // by intent — see truncation handling below for the tool-call case.)
+  if (suppressMode === null && emittedLen < rawText.length) {
     callbacks.onText?.(rawText.slice(emittedLen));
     emittedLen = rawText.length;
   }
 
   // Truncation detection: max_tokens was hit OR we're stuck mid-tool-call
-  // with no closing marker. Either way, show the partial body to the user
-  // so they understand what failed, and flag the result so chatLoop can
-  // emit a "response was cut off" notice.
-  const truncatedMidToolCall = !native && insideToolCall;
+  // with no closing marker. (Truncated `<think>` blocks aren't surfaced —
+  // the user wouldn't have seen them even if completed.) Show the partial
+  // tool-call body so the user understands what failed, and flag the
+  // result so chatLoop can emit a "response was cut off" notice.
+  const truncatedMidToolCall = suppressMode === 'tool_call';
+  // A truncated `<think>` block (suppressMode === 'think' at stream end)
+  // doesn't need its own surface — the user never saw the partial CoT
+  // anyway, and `truncatedMaxTokens` below still flags the cut-off turn.
   const truncatedMaxTokens = stopReason === 'length' || stopReason === 'max_tokens';
   if (truncatedMidToolCall && emittedLen < rawText.length) {
-    // Surface whatever fragment landed inside the unclosed tool call so
-    // the user can see what the model was trying to do.
     callbacks.onText?.(`\n\n[partial output — tool call was cut off]\n${rawText.slice(emittedLen)}`);
     emittedLen = rawText.length;
   }
+
+  // Strip any complete `<think>...</think>` blocks before further parsing.
+  // The streaming scanner already kept them out of the live bubble; this
+  // makes sure they don't get persisted as part of the assistant message
+  // (which would also rebroadcast them to the model on the next turn).
+  // Unclosed `<think>` tails (truncation) just get dropped.
+  const withoutThink = stripThinkBlocks(rawText);
 
   let toolCalls: PersistedToolCall[] = [];
   let cleanedText: string;
   if (native) {
     toolCalls = collectNativeToolCalls(toolBuf);
-    cleanedText = rawText;
+    cleanedText = withoutThink;
   } else {
-    const parsed = parsePromptToolCalls(rawText);
+    const parsed = parsePromptToolCalls(withoutThink);
     toolCalls = parsed.toolCalls;
     cleanedText = parsed.cleanedText;
   }
@@ -556,6 +585,45 @@ function collectNativeToolCalls(toolBuf: Map<number, { id: string; name: string;
 
 const TOOL_CALL_OPEN = '<tool_call>';
 const TOOL_CALL_CLOSE = '</tool_call>';
+
+// Reasoning-style models (Qwen 3, Qwen 3.5, DeepSeek-R1 and their MLC
+// builds) emit `<think>...</think>` chain-of-thought blocks at the start
+// of every response, often with empty content when the prompt is trivial.
+// We strip them at every level: the streaming scanner suppresses live
+// emission, and `stripThinkBlocks` cleans the persisted text so they
+// don't echo back on the next turn through the message history.
+const THINK_OPEN = '<think>';
+const THINK_CLOSE = '</think>';
+
+/** Given two `indexOf` results, return the earliest non-negative match
+ *  along with which marker matched. Returns null when neither is found.
+ *  Used by the streaming scanner to decide which suppression mode to
+ *  enter when the model interleaves `<think>` and `<tool_call>` output. */
+function pickEarliest(
+  tcIdx: number,
+  thIdx: number,
+): { idx: number; kind: 'tool_call' | 'think' } | null {
+  if (tcIdx < 0 && thIdx < 0) return null;
+  if (tcIdx < 0) return { idx: thIdx, kind: 'think' };
+  if (thIdx < 0) return { idx: tcIdx, kind: 'tool_call' };
+  return tcIdx < thIdx ? { idx: tcIdx, kind: 'tool_call' } : { idx: thIdx, kind: 'think' };
+}
+
+/** Remove every complete `<think>...</think>` block from a string. Used
+ *  post-stream so the persisted assistant message — and therefore the
+ *  history sent on the next turn — never carries chain-of-thought
+ *  markup. Unclosed (truncated) tails are also stripped from the
+ *  opening marker onward. */
+function stripThinkBlocks(text: string): string {
+  // Greedy strip of completed blocks first (non-greedy `[\s\S]*?` so
+  // adjacent blocks don't merge). The `\s*` after `</think>` swallows
+  // the whitespace that typically follows so we don't leave a blank
+  // line at the top of the bubble.
+  const completed = text.replace(/<think>[\s\S]*?<\/think>\s*/g, '');
+  // Then strip any trailing unclosed block (truncation).
+  const unclosed = completed.indexOf(THINK_OPEN);
+  return unclosed >= 0 ? completed.slice(0, unclosed).trimEnd() : completed.trimEnd();
+}
 
 /** Build a tool-use instruction block to append to the system prompt for
  *  models that don't accept the OpenAI `tools` request field. Kept terse —
