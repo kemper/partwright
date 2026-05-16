@@ -4,12 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Partwright — AI-Driven Parametric CAD in Your Browser</title>
-  <meta name="description" content="Browser-based parametric CAD powered by manifold-3d WebAssembly. Write JavaScript or OpenSCAD to construct 3D geometry with boolean operations, driven by AI agents or by hand." />
+  <meta name="description" content="Describe a part, get a printable 3D model. Partwright is a browser-based parametric CAD tool with a programmatic API designed for AI agents — no signup, no installs, powered by manifold-3d." />
+  <meta name="keywords" content="AI CAD, parametric CAD, browser CAD, manifold-3d, OpenSCAD, JavaScript CAD, 3D printing, AI 3D modeling, agent-driven design, GLB, STL, 3MF" />
+  <meta name="author" content="Partwright" />
 
   <!-- Open Graph (Slack, Discord, Facebook, LinkedIn, etc.) -->
   <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Partwright" />
   <meta property="og:title" content="Partwright — AI-Driven Parametric CAD" />
-  <meta property="og:description" content="Browser-based parametric CAD powered by manifold-3d WebAssembly. Write JavaScript or OpenSCAD to construct 3D geometry with boolean operations." />
+  <meta property="og:description" content="Describe a part, get a printable 3D model. A browser-based parametric CAD tool with a programmatic API designed for AI agents." />
   <meta property="og:image" content="/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
@@ -22,20 +25,81 @@
   <!-- Twitter / X Card -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Partwright — AI-Driven Parametric CAD" />
-  <meta name="twitter:description" content="Browser-based parametric CAD powered by manifold-3d WebAssembly. Write JavaScript or OpenSCAD to construct 3D geometry with boolean operations." />
+  <meta name="twitter:description" content="Describe a part, get a printable 3D model. A browser-based parametric CAD tool with a programmatic API designed for AI agents." />
   <meta name="twitter:image" content="/og-image.png" />
 
-  <!-- Structured data -->
+  <!-- Structured data: SoftwareApplication -->
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "Partwright",
     "url": "/",
-    "description": "AI-driven parametric CAD in your browser. Write JavaScript to construct 3D geometry with boolean operations, powered by manifold-3d WebAssembly.",
+    "description": "AI-driven parametric CAD in your browser. Write JavaScript or OpenSCAD to construct 3D geometry with boolean operations, powered by manifold-3d WebAssembly.",
     "applicationCategory": "DesignApplication",
+    "applicationSubCategory": "CAD",
     "operatingSystem": "Any (browser-based)",
-    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+    "browserRequirements": "Requires modern browser with WebAssembly and SharedArrayBuffer (Chrome, Edge, Firefox, Safari)",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "featureList": [
+      "AI agent programmatic API (window.partwright)",
+      "JavaScript and OpenSCAD modeling",
+      "Live 3D viewport with multi-view rendering",
+      "Session and version management",
+      "Color-region painting for multi-material 3D printing",
+      "Export to GLB, STL, OBJ, and 3MF"
+    ],
+    "softwareHelp": { "@type": "WebPage", "url": "/help" }
+  }
+  </script>
+
+  <!-- Structured data: FAQ -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is Partwright?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Partwright is a browser-based parametric CAD tool. You write JavaScript (using the manifold-3d API) or OpenSCAD code that constructs 3D geometry, and the result renders live. There is no backend, no installs, and no signup."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do AI agents use Partwright?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Partwright exposes a window.partwright console API that lets agents create sessions, run code, validate geometry with assertions, save versions, paint color regions, and export files — all programmatically, with no clicks. Geometry stats are also published as JSON in a #geometry-data DOM element for verification."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is Partwright free?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes. Partwright is free, open source, and runs entirely in your browser. There is no account, no quota, and no outbound network requests."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What can I export?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Partwright exports GLB, STL, OBJ, and 3MF. GLB and 3MF carry per-region colors painted in the editor, so they are ready for multi-material 3D printing."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Which 3D engine does it use?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Partwright uses manifold-3d (compiled to WebAssembly) for boolean operations, Three.js for rendering, and CodeMirror for the code editor. OpenSCAD code is executed via openscad-wasm."
+        }
+      }
+    ]
   }
   </script>
 
@@ -56,6 +120,29 @@
   <div id="ai-agent-readme" hidden aria-hidden="true">
     AI agents: this app is designed for programmatic use. See /llms.txt and /ai.md.
   </div>
+
+  <!-- Crawler / no-JS fallback. Search engines that don't execute JS, or that
+       fetch the page for unfurl previews, will see this content instead of the
+       splash spinner. The SPA's bootstrap removes #loading-splash and renders
+       into #app, leaving this <noscript> block invisible to JS-enabled
+       browsers. -->
+  <noscript>
+    <div style="font-family:system-ui,-apple-system,sans-serif;color:#fafafa;background:#18181b;min-height:100vh;padding:48px 24px;box-sizing:border-box;">
+      <div style="max-width:720px;margin:0 auto;">
+        <h1 style="font-size:32px;font-weight:700;letter-spacing:-0.5px;margin:0 0 12px;">Partwright</h1>
+        <p style="font-size:18px;color:#a1a1aa;margin:0 0 24px;">AI-driven parametric CAD in your browser.</p>
+        <p style="font-size:15px;line-height:1.6;color:#d4d4d8;margin:0 0 16px;">Describe a part, get a printable 3D model. Partwright is a browser-based parametric CAD tool with a programmatic API designed for AI agents — no signup, no installs, powered by manifold-3d.</p>
+        <p style="font-size:15px;line-height:1.6;color:#d4d4d8;margin:0 0 24px;">This app requires JavaScript. Please enable it to load the editor.</p>
+        <ul style="font-size:14px;color:#a1a1aa;line-height:1.8;padding-left:20px;">
+          <li><a href="/editor" style="color:#60a5fa;">Open the editor</a></li>
+          <li><a href="/catalog" style="color:#60a5fa;">Browse the catalog</a></li>
+          <li><a href="/help" style="color:#60a5fa;">How it works</a></li>
+          <li><a href="/ai.md" style="color:#60a5fa;">AI agent instructions</a></li>
+        </ul>
+      </div>
+    </div>
+  </noscript>
+
   <div id="app" class="flex flex-col h-screen w-screen">
     <!-- Splash screen — visible until JS mounts, then removed -->
     <div id="loading-splash" style="display:flex;align-items:center;justify-content:center;flex-direction:column;height:100vh;width:100vw;background:#18181b;gap:24px">

@@ -13,6 +13,7 @@ import { createHelpPage } from './ui/help';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
 import { createCatalogPage, type CatalogManifestEntry } from './ui/catalog';
 import { createNotFoundPage } from './ui/notFound';
+import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { initViewsPanel, updateMultiView } from './ui/panels';
 import { createSessionBar } from './ui/sessionBar';
 import { createGalleryView, refreshGallery } from './ui/gallery';
@@ -143,20 +144,23 @@ const BASE_TITLE = 'Partwright';
 let _expectedTitle = 'Partwright — AI-Driven Parametric CAD in Your Browser';
 
 function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | '404' | 'catalog'; sessionName?: string | null }) {
-  if (context?.page === 'landing' || context?.page === undefined && shouldShowLanding()) {
-    _expectedTitle = `${BASE_TITLE} — AI-Driven Parametric CAD in Your Browser`;
+  let route: RouteName;
+  let titleOverride: string | undefined;
+  if (context?.page === 'landing' || (context?.page === undefined && shouldShowLanding())) {
+    route = 'landing';
   } else if (context?.page === 'help') {
-    _expectedTitle = `Help — ${BASE_TITLE}`;
+    route = 'help';
   } else if (context?.page === 'catalog') {
-    _expectedTitle = `Catalog — ${BASE_TITLE}`;
+    route = 'catalog';
   } else if (context?.page === '404') {
-    _expectedTitle = `Not Found — ${BASE_TITLE}`;
+    route = '404';
   } else {
-    // Editor — include session name if available
+    route = 'editor';
     const name = context?.sessionName ?? getState().session?.name;
-    _expectedTitle = name ? `${name} — ${BASE_TITLE}` : `Editor — ${BASE_TITLE}`;
+    if (name) titleOverride = `${name} — ${BASE_TITLE}`;
   }
-  document.title = _expectedTitle;
+  _expectedTitle = titleOverride ?? routeTitle(route);
+  applyRouteMeta(route, titleOverride ? { title: _expectedTitle } : undefined);
 }
 
 // Guard against external title mutations (e.g. browser automation eval results)
@@ -1540,7 +1544,7 @@ async function main() {
   });
 
   // Set initial editor title if we're on the editor page
-  if (!showLanding && !showHelpPage && !show404) {
+  if (!showLanding && !showHelpPage && !showCatalog && !show404) {
     updateDocumentTitle({ page: 'editor' });
   }
 

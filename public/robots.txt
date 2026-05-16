@@ -1,4 +1,32 @@
+# Partwright is designed to be discovered, indexed, and used by both
+# traditional search engines and AI agents. Welcome all crawlers.
+
 User-agent: *
+Allow: /
+
+# Well-known AI / LLM crawlers — explicitly allowed
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-Web
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: CCBot
 Allow: /
 
 # AI agents: see /ai.md for programmatic API docs, /llms.txt for summary
