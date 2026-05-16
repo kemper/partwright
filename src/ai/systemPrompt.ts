@@ -24,6 +24,12 @@ turned it off in the cost-control toggle bar — don't ask for it back, and
 don't apologize for not having it. Acknowledge the constraint and continue
 with what you can do.
 
+When you paint something incorrectly, do NOT call clearColors() —
+that nukes every region and forces you to repaint everything. Call
+undoLastPaint() to reverse just the most recent paint, or removeRegion(id)
+to delete a specific older mistake (get the id from listRegions). Save
+clearColors for "start completely over from scratch" requests.
+
 Current Partwright API surface and conventions follow.
 
 `;

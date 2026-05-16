@@ -204,7 +204,11 @@ partwright.findFaces({box?, normal?, normalTolerance?, color?, region?, maxResul
 partwright.getMesh()                     // -> {numVert, numTri, vertices, triangles, normals, centroids, boundingBox} (typed arrays)
 partwright.getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) // -> {groups[{id, normal, centroid, area, triangleCount, bbox, triangleIds}], totalTriangles, groupCount, tolerance}
 partwright.listRegions()                 // -> [{id, name, color, source, triangles, order, bbox, centroid}, ...]
-partwright.clearColors()                 // Remove all regions
+partwright.undoLastPaint()               // Reverse the SINGLE most recent paint op -> {undone, id, ...}
+partwright.redoLastPaint()               // Reapply the most recently undone paint -> {redone, id, ...}
+partwright.canRedoPaint()                // -> {canRedo: bool}
+partwright.removeRegion(id)              // Delete ONE region by id from listRegions()
+partwright.clearColors()                 // Remove ALL regions (destructive — prefer undoLastPaint/removeRegion for fixing single mistakes)
 
 // Notes -- track design context, decisions, and measurements
 await partwright.addSessionNote(text)    // -> {id, text, timestamp}
@@ -442,8 +446,25 @@ const r = partwright.paintRegion({
 // r = { id, name, triangles } on success, or { error } if no matching face found
 
 partwright.listRegions()    // [{ id, name, color, source, triangles, order }, ...]
-partwright.clearColors()    // remove all regions
+partwright.undoLastPaint()  // reverse just the most recent paint op
+partwright.removeRegion(id) // delete one region by id (older mistake)
+partwright.clearColors()    // remove ALL regions — destructive, prefer the two above for single mistakes
 ```
+
+**Fixing mistakes.** If a paint operation went wrong, prefer the surgical
+tools over `clearColors()`:
+
+- `undoLastPaint()` reverses the single most recent paint. The removed
+  region goes onto a redo stack — `redoLastPaint()` puts it back. This
+  is the right call ~95% of the time when you painted something wrong.
+- `removeRegion(id)` deletes one specific region (id from
+  `listRegions()`). Use when the mistake wasn't the most recent paint.
+- `clearColors()` removes every region. Only call this when the user
+  explicitly asks to start over.
+
+Calling `clearColors()` to fix a single mistake forces you to repaint
+every other region from scratch — multiple round-trips, multiple chances
+to introduce new mistakes. Don't do it.
 
 **How face matching works.** `paintRegion` flood-fills outward from the seed triangle, including any neighbor whose normal is within `tolerance` of the seed's. Pick `point` slightly inside the model surface and pass the outward-pointing `normal` -- the seed resolver looks for the triangle whose plane the point lies on and whose normal aligns with yours.
 

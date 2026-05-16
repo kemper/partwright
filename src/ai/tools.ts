@@ -217,8 +217,29 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'undoLastPaint',
+    description: 'Undo the SINGLE most recent paint operation. Always prefer this over clearColors when you only need to fix one mistake — clearColors wipes every region and forces you to repaint everything from scratch. The undone region goes onto a redo stack you can recover with redoLastPaint.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'redoLastPaint',
+    description: 'Reapply the most recently undone paint operation. Use after an over-eager undoLastPaint.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'removeRegion',
+    description: 'Remove ONE color region by id (from listRegions). Use to delete a specific mistake when it is not the most recent paint operation — undoLastPaint is faster for the most recent.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'integer', description: 'Region id from listRegions().' },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'clearColors',
-    description: 'Remove all color regions from the current version. Restores the unlocked, code-only state.',
+    description: 'Remove ALL color regions from the current version. Destructive — only use when you want a completely clean slate. To fix a single mistake, call undoLastPaint or removeRegion(id) instead.',
     input_schema: { type: 'object', properties: {} },
   },
 ];
@@ -238,7 +259,7 @@ const ALWAYS_AVAILABLE = new Set([
 
 const RUN_GATED = new Set(['runCode']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintSlab', 'paintNearestRegion', 'clearColors']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintSlab', 'paintNearestRegion', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors']);
 
 export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
   return ALL_TOOLS.filter(t => {
@@ -318,6 +339,12 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintNearestRegion(input);
     case 'findFaces':
       return api.findFaces(input);
+    case 'undoLastPaint':
+      return api.undoLastPaint();
+    case 'redoLastPaint':
+      return api.redoLastPaint();
+    case 'removeRegion':
+      return api.removeRegion(input.id as number);
     case 'clearColors':
       return api.clearColors();
     default:

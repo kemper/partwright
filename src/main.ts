@@ -80,7 +80,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, type SerializedColorRegion } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, canRedoRegion, type SerializedColorRegion } from './color/regions';
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
 import { buildAdjacency, findCoplanarRegion, resolveSeed, findNearestTriangle } from './color/adjacency';
 import { findSlabTriangles } from './color/slabPaint';
@@ -3549,6 +3549,68 @@ async function main() {
       return { cleared: true };
     },
 
+    /** Remove a single color region by id. Reverses one paint operation
+     *  without nuking the rest. Returns `{ removed: true, id }` on success
+     *  or `{ error }` if no region matches. */
+    removeRegion(id: number) {
+      if (!Number.isFinite(id)) return { error: 'removeRegion(id) requires a finite integer id from listRegions()' };
+      const ok = removeRegion(id);
+      if (!ok) return { error: `No region with id=${id}. Call listRegions() to see current ids.` };
+      if (currentMeshData) {
+        updateMesh(currentMeshData, { skipAutoFrame: true });
+        updateMultiView(currentMeshData);
+        renderElevationsToContainer(elevationsContainer, currentMeshData);
+      }
+      syncLockState();
+      return { removed: true, id };
+    },
+
+    /** Undo the most recent paint operation. The removed region goes onto
+     *  a redo stack — `redoLastPaint()` puts it back. Returns the removed
+     *  region's metadata, or `{ error }` if nothing to undo. */
+    undoLastPaint() {
+      const region = removeLastRegion();
+      if (!region) return { error: 'Nothing to undo — no paint operations on the current version.' };
+      if (currentMeshData) {
+        updateMesh(currentMeshData, { skipAutoFrame: true });
+        updateMultiView(currentMeshData);
+        renderElevationsToContainer(elevationsContainer, currentMeshData);
+      }
+      syncLockState();
+      return {
+        undone: true,
+        id: region.id,
+        name: region.name,
+        color: region.color,
+        triangles: region.triangles.size,
+      };
+    },
+
+    /** Redo the most recently undone paint operation. Pairs with
+     *  `undoLastPaint()`. */
+    redoLastPaint() {
+      const region = redoLastRegion();
+      if (!region) return { error: 'Nothing to redo — call undoLastPaint() first.' };
+      if (currentMeshData) {
+        updateMesh(currentMeshData, { skipAutoFrame: true });
+        updateMultiView(currentMeshData);
+        renderElevationsToContainer(elevationsContainer, currentMeshData);
+      }
+      syncLockState();
+      return {
+        redone: true,
+        id: region.id,
+        name: region.name,
+        color: region.color,
+        triangles: region.triangles.size,
+      };
+    },
+
+    /** Check whether `redoLastPaint()` would succeed. */
+    canRedoPaint() {
+      return { canRedo: canRedoRegion() };
+    },
+
     /** Query triangles on the current mesh by geometric or color filters.
      *  Returns `{ triangleIds, count, sampled }` so the result can be passed
      *  directly to `paintFaces({ triangleIds, color })`.
@@ -3989,7 +4051,11 @@ async function main() {
         'getMesh':         { signature: 'getMesh() -- Direct triangle/vertex/normal/centroid access for procedural paint workflows', docs: '/ai.md#color-regions' },
         'getMeshSummary':  { signature: 'getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) -- List coplanar face groups with centroid/normal/area/bbox', docs: '/ai.md#color-regions' },
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai.md#color-regions' },
-        'clearColors':     { signature: 'clearColors() -- Remove all color regions', docs: '/ai.md#color-regions' },
+        'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai.md#color-regions' },
+        'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai.md#color-regions' },
+        'undoLastPaint':   { signature: 'undoLastPaint() -- Undo the most recent paint op. Removed region goes on a redo stack.', docs: '/ai.md#color-regions' },
+        'redoLastPaint':   { signature: 'redoLastPaint() -- Reapply the most recently undone paint op.', docs: '/ai.md#color-regions' },
+        'canRedoPaint':    { signature: 'canRedoPaint() -> {canRedo: bool} -- Check if redoLastPaint() would do anything.', docs: '/ai.md#color-regions' },
         // Annotations
         'listAnnotations':    { signature: 'listAnnotations() -- List freehand strokes -> [{id, color, width, points}]', docs: '/ai.md#annotations' },
         'listTextAnnotations':{ signature: 'listTextAnnotations() -- List pinned text labels -> [{id, text, color, fontSizePx, anchor}]', docs: '/ai.md#annotations' },
