@@ -42,6 +42,9 @@ import {
   type ImportInboxEntry,
 } from './import/importInbox';
 import { showImportPreview, summarizeSessionImport } from './ui/importPreview';
+import { parseSTL } from './import/parsers/stl';
+import { generateImportCode } from './import/codegen';
+import { setActiveImports, type ImportedMesh } from './import/importedMesh';
 import type { BuiltExport } from './export/gltf';
 
 /** Register a freshly-built export blob in the inbox so it shows up in Recent Exports. */
@@ -917,6 +920,29 @@ async function main() {
     return { sessionId: session.id };
   }
 
+  // Import a parsed mesh (STL today) as a new session.
+  //
+  // Unlike code imports, the parsed mesh bytes don't live in the editor — they
+  // ride on the Version via `importedMeshes`. We must persist v1 immediately
+  // so the imports survive a reload and so future saveVersion calls (which
+  // carry forward `importedMeshes` from the prior version) have something to
+  // build on.
+  async function importMeshPayload(mesh: ImportedMesh, sessionName: string): Promise<{ sessionId: string }> {
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+    const session = await createSession(sessionName, 'manifold-js');
+    setActiveImports([mesh]);
+    const code = generateImportCode([mesh]);
+    setValue(code);
+    await runCodeSync(code);
+    const thumbnail = await captureThumbnail();
+    const geometryData = getGeometryDataObj();
+    await saveVersion(code, geometryData, thumbnail, 'imported', undefined, {
+      force: true,
+      importedMeshes: [mesh],
+    });
+    return { sessionId: session.id };
+  }
+
   // Run a JSON session import end-to-end: validate, show the preview modal, import.
   async function importJSONFromText(filename: string, text: string): Promise<boolean> {
     let parsed: unknown;
@@ -938,12 +964,13 @@ async function main() {
     return true;
   }
 
-  // Import a .partwright.json session, or a raw .js / .scad file, into a new session.
-  // Returns whether the import committed (so callers know if the inbox should be updated).
+  // Import a .partwright.json session, a raw .js / .scad file, or an .stl mesh
+  // into a new session. Returns whether the import committed (so callers know
+  // if the inbox should be updated).
   async function handleImportFile(file: File, options: { skipPreActiveConfirm?: boolean } = {}): Promise<boolean> {
     const source = classifyImportSource(file.name);
     if (!source) {
-      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad`);
+      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl`);
       return false;
     }
 
@@ -971,6 +998,13 @@ async function main() {
         const sessionName = file.name.replace(/\.(js|scad)$/i, '');
         await importCodePayload(code, lang, sessionName);
         committed = true;
+      } else if (source === 'STL') {
+        const mesh = await parseSTLFile(file);
+        if (mesh) {
+          const sessionName = file.name.replace(/\.stl$/i, '');
+          await importMeshPayload(mesh, sessionName);
+          committed = true;
+        }
       }
       if (committed) registerImport(file, file.name, source);
       return committed;
@@ -978,6 +1012,27 @@ async function main() {
       alert(`Failed to import "${file.name}": ${(e as Error).message}`);
       return false;
     }
+  }
+
+  /** Read an STL file and parse it into an ImportedMesh. Reports parse failure
+   *  to the user inline and returns null. */
+  async function parseSTLFile(file: File): Promise<ImportedMesh | null> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const mesh = parseSTL(bytes);
+    if (!mesh || mesh.numTri === 0) {
+      alert(`Could not parse "${file.name}" as an STL file.`);
+      return null;
+    }
+    return {
+      id: generateId(),
+      filename: file.name,
+      format: 'stl',
+      vertProperties: mesh.vertProperties,
+      triVerts: mesh.triVerts,
+      numVert: mesh.numVert,
+      numTri: mesh.numTri,
+      numProp: mesh.numProp,
+    };
   }
 
   // Re-import an entry from the Recent Imports inbox. Reuses the same flow as
@@ -988,20 +1043,29 @@ async function main() {
       if (entry.source === 'JSON') {
         const text = await entry.blob.text();
         await importJSONFromText(entry.filename, text);
-      } else {
-        const cur = getState();
-        if (cur.session && cur.versionCount > 0) {
-          const ok = await showInlineConfirm(
-            editorUI,
-            `Re-import "${entry.filename}" as a new session? Your current session will be kept.`,
-          );
-          if (!ok) return;
-        }
-        const code = await entry.blob.text();
-        const lang: Language = entry.source === 'SCAD' ? 'scad' : 'manifold-js';
-        const sessionName = entry.filename.replace(/\.(js|scad)$/i, '');
-        await importCodePayload(code, lang, sessionName);
+        return;
       }
+      const cur = getState();
+      if (cur.session && cur.versionCount > 0) {
+        const ok = await showInlineConfirm(
+          editorUI,
+          `Re-import "${entry.filename}" as a new session? Your current session will be kept.`,
+        );
+        if (!ok) return;
+      }
+      if (entry.source === 'STL') {
+        const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
+        const mesh = await parseSTLFile(file);
+        if (mesh) {
+          const sessionName = entry.filename.replace(/\.stl$/i, '');
+          await importMeshPayload(mesh, sessionName);
+        }
+        return;
+      }
+      const code = await entry.blob.text();
+      const lang: Language = entry.source === 'SCAD' ? 'scad' : 'manifold-js';
+      const sessionName = entry.filename.replace(/\.(js|scad)$/i, '');
+      await importCodePayload(code, lang, sessionName);
     } catch (e) {
       alert(`Failed to re-import "${entry.filename}": ${(e as Error).message}`);
     }
@@ -1010,7 +1074,7 @@ async function main() {
   // Document-level drag-and-drop import
   function isImportableFile(file: File): boolean {
     const n = file.name.toLowerCase();
-    return n.endsWith('.json') || n.endsWith('.js') || n.endsWith('.scad');
+    return n.endsWith('.json') || n.endsWith('.js') || n.endsWith('.scad') || n.endsWith('.stl');
   }
 
   document.addEventListener('dragover', (e) => {
@@ -1211,6 +1275,7 @@ async function main() {
     if (sessionLang !== getActiveLanguage()) {
       await switchLanguage(sessionLang);
     }
+    setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
     setValue(version.code);
     await runCodeSync(version.code);
     rehydrateColorRegions(version.geometryData);

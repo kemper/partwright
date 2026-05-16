@@ -1,6 +1,7 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
 import { getDefaultCircularSegments } from '../qualitySettings';
+import { getActiveImports } from '../../import/importedMesh';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let manifoldModule: any = null;
@@ -92,6 +93,17 @@ export const manifoldJsEngine: Engine = {
       return acc;
     };
 
+    // Imported meshes (STL etc.) attached to the active version are exposed as
+    // `api.imports[i]` — each entry is shaped to pass straight into
+    // `Manifold.ofMesh()`. Metadata (filename/format) is kept off this object
+    // so Embind doesn't choke on unexpected fields; user code that needs the
+    // source filename can read it from the generated code comment.
+    const imports = getActiveImports().map(m => ({
+      numProp: m.numProp,
+      vertProperties: m.vertProperties,
+      triVerts: m.triVerts,
+    }));
+
     const api = {
       Manifold,
       CrossSection,
@@ -100,6 +112,7 @@ export const manifoldJsEngine: Engine = {
       setCircularSegments,
       label,
       labeledUnion,
+      imports,
     };
 
     // Catch the common misconception that paint tools can be called
