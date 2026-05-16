@@ -53,7 +53,7 @@ export function createHelpPage(
     },
     {
       heading: 'Exporting',
-      body: 'Export your geometry as GLB, STL, OBJ, or 3MF using the Export dropdown in the toolbar. GLB is recommended for most uses.',
+      body: 'Export your geometry as 3MF, OBJ, STL, or GLB using the Export dropdown in the toolbar. 3MF is recommended for 3D printing — it carries color regions natively and imports cleanly into Bambu Studio and other slicers. Use GLB for web preview only (slicers do not read it).',
     },
     {
       heading: 'AI agent workflow',

@@ -312,6 +312,7 @@ export function createToolbar(
   const threemfOpt = createDescribedItem(
     '3MF',
     'Geometry + color. Native format for Bambu Studio multi-color prints.',
+    'Recommended',
   );
   threemfOpt.addEventListener('click', () => {
     dropdown.classList.add('hidden');
