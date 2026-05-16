@@ -353,9 +353,9 @@ function renderToggleStrip(): void {
   const { toggles } = settings;
 
   toggleStripEl.appendChild(togglePill(
-    '👁 Views',
+    '📸 Auto-render',
     toggles.vision.views,
-    'Vision: send rendered images to the AI (Show AI snapshot + renderView tool). When ON, the model can see what it modeled — costs ~1500 tokens per image. When OFF, the model reasons from code + geometry stats only.',
+    'Auto-render: lets the model call renderView() to take its own screenshots after paint / geometry changes. Each render ≈ 1500 tokens of input on the next turn — verification is valuable but it adds up. The 📷 Show AI button still works manually when this is OFF.',
     () => {
       saveSettings(setToggles(loadSettings(), { vision: { views: !toggles.vision.views } }));
       renderToggleStrip();
@@ -426,7 +426,11 @@ function renderCostMeter(): void {
   const tokens = totalTokensEstimate(state.history, state.systemPromptChars);
   const cost = totalCost(state.history);
   const cachedPrefix = estimateCachedPrefixTokens(state.systemPromptChars);
-  const turnEst = estimateTurnCostUsd(settings.toggles.model, cachedPrefix, 500 + (settings.toggles.vision.views ? 6000 : 0));
+  // Per-turn estimate covers the user's input + a typical response. Image
+  // tokens (Show AI snapshot + any renderView calls the model makes) are
+  // observed on the post-turn meter rather than predicted here — they're
+  // too variable to estimate up front without lying to the user.
+  const turnEst = estimateTurnCostUsd(settings.toggles.model, cachedPrefix, 500);
 
   // Color the context bar by % of model context window
   const ctxLimit = settings.toggles.model === 'claude-haiku-4-5' ? 200_000 : 1_000_000;

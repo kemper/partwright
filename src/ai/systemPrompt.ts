@@ -102,7 +102,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
     restrictions.push('You CANNOT paint faces / set color regions.');
   }
   if (!toggles.vision.views) {
-    restrictions.push('You CANNOT see the rendered model. Reason from code and geometry stats only — do not ask for screenshots.');
+    restrictions.push('You CANNOT call renderView. The user disabled auto-render to save cost — reason from code, geometry stats, and any images the user explicitly attaches (Show AI). Do not ask for screenshots.');
   }
 
   const lines = [

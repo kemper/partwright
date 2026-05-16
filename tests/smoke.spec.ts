@@ -70,7 +70,7 @@ test.describe('AI chat panel', () => {
     const panel = page.locator('#ai-panel');
 
     // Toggle pills
-    await expect(panel.locator('button', { hasText: /👁 Views/ })).toBeVisible();
+    await expect(panel.locator('button', { hasText: /📸 Auto-render/ })).toBeVisible();
     await expect(panel.locator('button', { hasText: /▶ Run/ })).toBeVisible();
     await expect(panel.locator('button', { hasText: /💾 Save/ })).toBeVisible();
     await expect(panel.locator('button', { hasText: /🎨 Paint/ })).toBeVisible();
@@ -102,7 +102,7 @@ test.describe('AI chat panel', () => {
   test('toggle pills flip state on click', async ({ page }) => {
     await page.goto('/editor?view=ai');
     await page.click('#btn-ai');
-    const viewsPill = page.locator('#ai-panel button', { hasText: /👁 Views/ });
+    const viewsPill = page.locator('#ai-panel button', { hasText: /📸 Auto-render/ });
     const before = await viewsPill.getAttribute('class');
     // The toggle strip lives inside the panel's bottom region. Playwright
     // (1.58 + chromium 141) intermittently reports `Element is outside of
@@ -130,7 +130,7 @@ test.describe('AI chat panel', () => {
     await page.goto('/editor');
     await page.waitForSelector('#ai-panel');
     await page.locator('#btn-ai').dispatchEvent('click');
-    const pillNames = ['👁 Views', '▶ Run', '💾 Save', '🎨 Paint'];
+    const pillNames = ['📸 Auto-render', '▶ Run', '💾 Save', '🎨 Paint'];
     for (const name of pillNames) {
       const pill = page.locator('#ai-panel button', { hasText: name });
       await expect(pill).toBeVisible();
