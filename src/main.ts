@@ -3786,12 +3786,63 @@ async function main() {
       }
 
       const summary = computeFaceGroups(currentMeshData, o);
+
+      // Optional bbox filter — agents painting one feature of a complex
+      // model can pass `withinBox` to get only the groups in that region.
+      // Cheap to compute (we already have group bboxes); keeps the per-
+      // group `triangleIds` payload from drowning the response in groups
+      // the agent doesn't care about.
+      let groups = summary.groups;
+      const within = (opts as { withinBox?: { min?: unknown; max?: unknown } } | undefined)?.withinBox;
+      if (within && typeof within === 'object') {
+        const min = within.min as [number, number, number] | undefined;
+        const max = within.max as [number, number, number] | undefined;
+        if (Array.isArray(min) && min.length === 3 && Array.isArray(max) && max.length === 3) {
+          groups = groups.filter(g => bboxesIntersect(g.bbox, { min, max }));
+        }
+      }
+
       return {
-        groups: summary.groups,
+        groups,
         totalTriangles: summary.totalTriangles,
-        groupCount: summary.groups.length,
+        groupCount: groups.length,
         tolerance: summary.tolerance,
+        ...(groups.length < summary.groups.length ? { unfiltered: summary.groups.length } : {}),
       };
+    },
+
+    /** Decompose the current manifold into its boolean-distinct components
+     *  and return per-component metadata: `{index, centroid, boundingBox,
+     *  volume, surfaceArea}`. The killer use case is "paint each feature
+     *  of a unioned model" — for a smiley face built from a head + two
+     *  eyes + a mouth, this returns 4 components with their bboxes, and
+     *  the agent can then call `paintInBox({box: component.boundingBox,
+     *  color})` for each, with no coordinate guessing. */
+    listComponents() {
+      if (!currentManifold) return { error: 'No geometry loaded — run code first.' };
+      try {
+        const parts = currentManifold.decompose();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const components = parts.map((p: any, i: number) => {
+          const bb = getBoundingBox(p);
+          const vol = (() => { try { return p.volume(); } catch { return 0; } })();
+          const sa = (() => { try { return p.surfaceArea(); } catch { return 0; } })();
+          const centroid: [number, number, number] = bb
+            ? [(bb.min[0] + bb.max[0]) / 2, (bb.min[1] + bb.max[1]) / 2, (bb.min[2] + bb.max[2]) / 2]
+            : [0, 0, 0];
+          p.delete();
+          return {
+            index: i,
+            volume: Math.round(vol * 100) / 100,
+            surfaceArea: Math.round(sa * 100) / 100,
+            centroid,
+            boundingBox: bb ?? { min: [0, 0, 0], max: [0, 0, 0] },
+          };
+        });
+        return { count: components.length, components };
+      } catch (err) {
+        return { error: `decompose failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
     },
 
     // === Annotations API ===
@@ -4052,6 +4103,7 @@ async function main() {
         'getMeshSummary':  { signature: 'getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) -- List coplanar face groups with centroid/normal/area/bbox', docs: '/ai.md#color-regions' },
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai.md#color-regions' },
         'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai.md#color-regions' },
+        'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- Decompose the manifold into boolean-distinct parts. For "paint each feature" workflows (e.g. unioned head + eyes + mouth).', docs: '/ai.md#color-regions' },
         'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai.md#color-regions' },
         'undoLastPaint':   { signature: 'undoLastPaint() -- Undo the most recent paint op. Removed region goes on a redo stack.', docs: '/ai.md#color-regions' },
         'redoLastPaint':   { signature: 'redoLastPaint() -- Reapply the most recently undone paint op.', docs: '/ai.md#color-regions' },
@@ -4128,6 +4180,21 @@ async function main() {
   console.info('Partwright: AI agents should use window.partwright -- start with partwright.help(). window.mainifold remains as a legacy alias. See /llms.txt');
 
   // === Internal functions ===
+
+  /** Axis-aligned bounding-box intersection test. Used by getMeshSummary's
+   *  `withinBox` filter and any other callers that need to scope a query
+   *  region. Inclusive on both ends so a face touching the box boundary
+   *  counts as inside. */
+  function bboxesIntersect(
+    a: { min: [number, number, number]; max: [number, number, number] },
+    b: { min: [number, number, number]; max: [number, number, number] },
+  ): boolean {
+    return (
+      a.max[0] >= b.min[0] && a.min[0] <= b.max[0] &&
+      a.max[1] >= b.min[1] && a.min[1] <= b.max[1] &&
+      a.max[2] >= b.min[2] && a.min[2] <= b.max[2]
+    );
+  }
 
   /** Report bounding box + centroid for a triangle set, walking only the
    *  vertices used by those triangles. Returns `null` when the set is empty. */

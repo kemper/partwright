@@ -66,7 +66,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'getMeshSummary',
-    description: 'Group triangles by coplanar regions and return per-group {centroid, normal, area, bbox, triangleIds}. Use `maxGroups: 8` and `maxTrianglesPerGroup: 0` aggressively — the full mesh on complex models is hundreds of groups and tens of thousands of triangle ids, all charged as input tokens.',
+    description: 'Group triangles by coplanar regions and return per-group {centroid, normal, area, bbox, triangleIds}. Use `maxGroups: 8` and `maxTrianglesPerGroup: 0` aggressively — the full mesh on complex models is hundreds of groups and tens of thousands of triangle ids, all charged as input tokens. Pass `withinBox` to scope to one feature of the model.',
     input_schema: {
       type: 'object',
       properties: {
@@ -74,6 +74,26 @@ const ALL_TOOLS: ToolDefinition[] = [
         minTriangles: { type: 'integer', description: 'Drop groups smaller than this. Default 1.' },
         maxGroups: { type: 'integer', description: 'Return only the N largest groups. Default unlimited — pass 8-16 for a first pass.' },
         maxTrianglesPerGroup: { type: 'integer', description: 'Cap triangleIds per group. Pass 0 to OMIT triangleIds entirely (saves the most tokens — use this when you just need centroids/normals to plan painting).' },
+        withinBox: { type: 'object', description: 'Optional {min: [x,y,z], max: [x,y,z]} — return only groups whose bbox intersects this region. Use to focus on one feature (e.g. the eyes of a face) without pulling the whole mesh summary.' },
+      },
+    },
+  },
+  {
+    name: 'listComponents',
+    description: 'Decompose the current manifold into its boolean-distinct components and return {index, centroid, boundingBox, volume, surfaceArea} for each. Use this for "paint each feature" workflows on unioned models — for a smiley built from head + 2 eyes + mouth, this returns 4 components with bboxes, and you can call paintInBox({box: component.boundingBox, color}) for each instead of guessing world coordinates.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'paintPreview',
+    description: 'DRY-RUN: returns {triangleCount, bbox, centroid} for what a paint op WOULD select, WITHOUT committing. Same selector args as paintInBox / paintNear / paintFaces. Use to gauge whether your selector is too tight or too loose before spending the round-trip to paint and undo. (The underlying API also returns a thumbnail image — stripped from the tool result because you cannot interpret it.)',
+    input_schema: {
+      type: 'object',
+      properties: {
+        box: { type: 'object', description: '{min: [x,y,z], max: [x,y,z]}' },
+        point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+        radius: { type: 'number' },
+        normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.' },
+        triangleIds: { type: 'array', items: { type: 'integer' }, description: 'Explicit triangle list — mostly for verifying findFaces results.' },
       },
     },
   },
@@ -255,6 +275,8 @@ const ALWAYS_AVAILABLE = new Set([
   'addSessionNote',
   'listSessionNotes',
   'findFaces',
+  'listComponents',
+  'paintPreview',
 ]);
 
 const RUN_GATED = new Set(['runCode']);
@@ -339,6 +361,18 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintNearestRegion(input);
     case 'findFaces':
       return api.findFaces(input);
+    case 'listComponents':
+      return api.listComponents();
+    case 'paintPreview': {
+      // paintPreview returns a {thumbnail, triangleCount, bbox, centroid}
+      // — the thumbnail is a large base64 PNG the model can't interpret
+      // and costs tokens to ship, so we strip it before returning.
+      const result = await api.paintPreview(input) as Record<string, unknown> | undefined;
+      if (result && typeof result === 'object') {
+        delete result.thumbnail;
+      }
+      return result;
+    }
     case 'undoLastPaint':
       return api.undoLastPaint();
     case 'redoLastPaint':

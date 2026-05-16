@@ -202,8 +202,10 @@ partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, view?}) /
 partwright.assertPaint({region, expectedTriangleCount?, expectedBoundingBox?, expectedCentroid?}) // verify a region -> {passed, failures?}
 partwright.findFaces({box?, normal?, normalTolerance?, color?, region?, maxResults?}) // query triangle ids by geometry/color -> {triangleIds, count, matched, truncated}
 partwright.getMesh()                     // -> {numVert, numTri, vertices, triangles, normals, centroids, boundingBox} (typed arrays)
-partwright.getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) // -> {groups[{id, normal, centroid, area, triangleCount, bbox, triangleIds}], totalTriangles, groupCount, tolerance}
+partwright.getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?, withinBox?}?) // -> {groups[{id, normal, centroid, area, triangleCount, bbox, triangleIds}], totalTriangles, groupCount, tolerance, unfiltered?}
 partwright.listRegions()                 // -> [{id, name, color, source, triangles, order, bbox, centroid}, ...]
+partwright.listComponents()              // -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- per-piece bbox for unioned models
+partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, view?}) // DRY-RUN -> {triangleCount, bbox, centroid, thumbnail}
 partwright.undoLastPaint()               // Reverse the SINGLE most recent paint op -> {undone, id, ...}
 partwright.redoLastPaint()               // Reapply the most recently undone paint -> {redone, id, ...}
 partwright.canRedoPaint()                // -> {canRedo: bool}
@@ -450,6 +452,35 @@ partwright.undoLastPaint()  // reverse just the most recent paint op
 partwright.removeRegion(id) // delete one region by id (older mistake)
 partwright.clearColors()    // remove ALL regions — destructive, prefer the two above for single mistakes
 ```
+
+**Preview before commit.** `paintPreview()` accepts the same selector args
+as `paintInBox` / `paintNear` / `paintFaces` but doesn't commit. It
+returns `{triangleCount, bbox, centroid, thumbnail}` — use the count and
+bbox to validate your selector is in the right ballpark before paying
+the round-trip to paint, observe, and undo. Cheap; free of side effects.
+
+```js
+const preview = partwright.paintPreview({ box: { min: [-5, -5, 8], max: [5, 5, 12] } });
+// preview.triangleCount === 0  →  selector matched nothing, widen it
+// preview.triangleCount > 5000 →  too greedy, tighten
+// otherwise: partwright.paintInBox({box: same, color: [1,0,0]})
+```
+
+**Paint by feature on unioned models.** When the geometry is a boolean
+union of distinct pieces (head + eyes + mouth, body + arms + legs, etc.),
+call `listComponents()` first to get the per-piece bbox:
+
+```js
+const { components } = partwright.listComponents();
+// components: [{index, centroid, boundingBox, volume, surfaceArea}, ...]
+// Sort by centroid.y or volume to identify which is which.
+for (const c of components) {
+  partwright.paintInBox({ box: c.boundingBox, color: chooseColor(c.index) });
+}
+```
+
+This avoids guessing world coordinates and survives small parametric
+tweaks to the model.
 
 **Fixing mistakes.** If a paint operation went wrong, prefer the surgical
 tools over `clearColors()`:

@@ -30,6 +30,23 @@ undoLastPaint() to reverse just the most recent paint, or removeRegion(id)
 to delete a specific older mistake (get the id from listRegions). Save
 clearColors for "start completely over from scratch" requests.
 
+Paint workflow for any non-trivial selector:
+1. paintPreview({box / point+radius / etc.}) → check triangleCount, bbox.
+   If the count looks wildly wrong (way too many or zero), adjust the
+   selector args before committing. paintPreview is free of side effects
+   — use it liberally.
+2. paintInBox / paintNear / paintSlab to commit.
+3. If wrong: undoLastPaint() (NOT clearColors), tweak, retry.
+
+For models built as a boolean union of distinct features (e.g. a smiley =
+head ∪ left_eye ∪ right_eye ∪ mouth), call listComponents() FIRST to get
+the bbox of each piece, then paintInBox({box: component.boundingBox,
+color}) per component. Don't guess world coordinates.
+
+For getMeshSummary on a complex model, scope queries with withinBox to
+the feature you care about — full-mesh summaries on hundreds of groups
+charge tokens for data you will discard.
+
 Current Partwright API surface and conventions follow.
 
 `;
