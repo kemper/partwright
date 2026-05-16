@@ -1003,10 +1003,16 @@ const MAX_STALL_RETRIES = 2;
 const STALL_PHASES = new Set<ProgressTracker['phase']>(['thinking', 'streaming']);
 
 function showProgress(phase: ProgressTracker['phase'], detail?: string): void {
+  // Per-text-delta calls land here too (the watchdog needs lastBeat fresh
+  // to know the stream is healthy). Skip the DOM rebuild when nothing the
+  // user can see has changed — the 1s ticker keeps the "(15s silent)"
+  // counter accurate, and avoiding replaceChildren() on every token saves
+  // hundreds of DOM rewrites/sec during a streaming response.
+  const visualChanged = progressState.phase !== phase || progressState.detail !== detail;
   progressState.phase = phase;
   progressState.detail = detail;
   progressState.lastBeat = Date.now();
-  renderProgress();
+  if (visualChanged) renderProgress();
   if (!progressEl) return;
   progressEl.classList.remove('hidden');
   if (progressTickerId === null) {

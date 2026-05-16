@@ -3642,11 +3642,7 @@ async function main() {
     /** Clear all color regions */
     clearColors() {
       clearRegions();
-      if (currentMeshData) {
-        updateMesh(currentMeshData, { skipAutoFrame: true });
-        updateMultiView(currentMeshData);
-        renderElevationsToContainer(elevationsContainer, currentMeshData);
-      }
+      scheduleColorRefresh();
       syncLockState();
       return { cleared: true };
     },
@@ -3658,11 +3654,7 @@ async function main() {
       if (!Number.isFinite(id)) return { error: 'removeRegion(id) requires a finite integer id from listRegions()' };
       const ok = removeRegion(id);
       if (!ok) return { error: `No region with id=${id}. Call listRegions() to see current ids.` };
-      if (currentMeshData) {
-        updateMesh(currentMeshData, { skipAutoFrame: true });
-        updateMultiView(currentMeshData);
-        renderElevationsToContainer(elevationsContainer, currentMeshData);
-      }
+      scheduleColorRefresh();
       syncLockState();
       return { removed: true, id };
     },
@@ -3673,11 +3665,7 @@ async function main() {
     undoLastPaint() {
       const region = removeLastRegion();
       if (!region) return { error: 'Nothing to undo — no paint operations on the current version.' };
-      if (currentMeshData) {
-        updateMesh(currentMeshData, { skipAutoFrame: true });
-        updateMultiView(currentMeshData);
-        renderElevationsToContainer(elevationsContainer, currentMeshData);
-      }
+      scheduleColorRefresh();
       syncLockState();
       return {
         undone: true,
@@ -3693,11 +3681,7 @@ async function main() {
     redoLastPaint() {
       const region = redoLastRegion();
       if (!region) return { error: 'Nothing to redo — call undoLastPaint() first.' };
-      if (currentMeshData) {
-        updateMesh(currentMeshData, { skipAutoFrame: true });
-        updateMultiView(currentMeshData);
-        renderElevationsToContainer(elevationsContainer, currentMeshData);
-      }
+      scheduleColorRefresh();
       syncLockState();
       return {
         redone: true,
@@ -4684,13 +4668,30 @@ async function main() {
       { kind: 'triangles', ids: [...triangles] },
       triangles,
     );
-    const colored = applyTriColorsIfVisible(currentMeshData);
-    updateMesh(colored, { skipAutoFrame: true });
-    updateMultiView(colored);
-    renderElevationsToContainer(elevationsContainer, colored);
+    scheduleColorRefresh();
     syncLockState();
     const stats = regionTriangleStats(triangles, currentMeshData);
     return { id: region.id, name: region.name, triangles: triangles.size, bbox: stats.bbox, centroid: stats.centroid };
+  }
+
+  /** Coalesce viewport + multi-view + elevations-strip refreshes triggered
+   *  by paint mutations (commit / undo / redo / removeRegion / clearColors).
+   *  An agent turn that paints N regions in a row otherwise pays the full
+   *  three-renderer cost N times; with rAF batching it pays once at the
+   *  next frame boundary. Each sub-renderer is 50-150ms on complex meshes,
+   *  so this was a primary source of the "page unresponsive" warning. */
+  let paintRefreshPending = false;
+  function scheduleColorRefresh(): void {
+    if (paintRefreshPending) return;
+    paintRefreshPending = true;
+    requestAnimationFrame(() => {
+      paintRefreshPending = false;
+      if (!currentMeshData) return;
+      const colored = applyTriColorsIfVisible(currentMeshData);
+      updateMesh(colored, { skipAutoFrame: true });
+      updateMultiView(colored);
+      renderElevationsToContainer(elevationsContainer, colored);
+    });
   }
 
   function runCode(code?: string) {

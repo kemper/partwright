@@ -112,21 +112,14 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     callbacks.onAssistantStart?.(assistantId);
 
     callbacks.onProgress?.({ phase: 'thinking', detail: 'Waiting for first token...' });
-    let sawFirstDelta = false;
     const streamCallbacks: StreamCallbacks = {
       onText: delta => {
-        if (!sawFirstDelta) {
-          sawFirstDelta = true;
-          callbacks.onProgress?.({ phase: 'streaming' });
-        } else {
-          // Beat on EVERY delta so the stall watchdog sees a healthy
-          // stream and so the elapsed-seconds counter in the UI doesn't
-          // keep ticking up while text is actually arriving. Without this
-          // the watchdog can spuriously retry mid-stream on Opus 4.7
-          // when adaptive thinking inserts a long pause between
-          // tokens — but real stalls during streaming still get caught.
-          callbacks.onProgress?.({ phase: 'streaming' });
-        }
+        // Beat on EVERY delta so the stall watchdog sees a healthy stream
+        // and the elapsed-seconds counter doesn't keep climbing while text
+        // is actually arriving. The progress handler short-circuits the
+        // DOM rebuild when the phase is unchanged, so this is essentially
+        // free past the first delta.
+        callbacks.onProgress?.({ phase: 'streaming' });
         callbacks.onAssistantText?.(delta);
       },
       onToolStart: (id, name) => {
