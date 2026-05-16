@@ -36,18 +36,21 @@ to delete a specific older mistake (get the id from listRegions). Save
 clearColors for "start completely over from scratch" requests.
 
 Paint workflow for any non-trivial selector:
-1. paintPreview({box / point+radius / etc., withImage: true}) →
-   ALWAYS pass withImage: true unless you only need the triangleCount.
-   The yellow-highlighted thumbnail is the cheapest way to catch a
-   bad selector before committing. Cheaper than paint → renderViews →
-   undoLastPaint.
+1. paintPreview({box / point+radius / etc.}) — ALWAYS call before
+   committing. Count alone is essentially free and catches most bad
+   selectors. If the count is surprising (way more or fewer than you
+   expected), call again with withImage: true for a yellow-highlighted
+   thumbnail. Either way, much cheaper than paint → renderViews → undo.
 2. paintInBox / paintNear / paintSlab to commit.
-3. renderViews() to visually verify from front + top + iso in one
-   composite. A single angle can hide an asymmetric error (e.g. a
-   smile that arches the wrong way is invisible from top but obvious
-   from front). Prefer renderViews over a single renderView for
-   verification — same one-call cost but far better coverage.
-4. If wrong: undoLastPaint() (NOT clearColors), tweak, retry.
+3. renderViews() to visually verify. The default views: 'auto' picks
+   angles by the model's bounding box (flat disks get [Top, Iso],
+   tall columns get [Front, Right, Iso], otherwise [Front, Top, Iso])
+   so you get the most informative angles automatically. A single
+   angle can hide an asymmetric error.
+4. If wrong: paintExplain({region: id}) FIRST — its normal histogram
+   tells you whether the region wrapped onto a face you didn't want
+   (e.g. zPos: 0.4 + xPos: 0.3 means it caught the top AND a side).
+   Then undoLastPaint() (NOT clearColors), tweak, retry.
 
 Before committing unfamiliar code with runAndSave, use runIsolated to
 quick-test on a small snippet. Examples worth verifying first: revolve

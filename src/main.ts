@@ -2063,39 +2063,32 @@ async function main() {
      *  labeled grid, returned as one PNG data URL. The killer use case
      *  is "did this paint operation land where I thought" — a single
      *  top-down view can hide errors that show clearly from the front.
-     *  Default `views: 'tri'` returns front / top / iso (3 cells, 2x2
-     *  grid with one blank); pass `views: 'all'` for the standard 4-view
-     *  iso grid (front / right / top / iso). */
-    async renderViews(options?: { views?: 'tri' | 'all'; size?: number }): Promise<string | null> {
+     *
+     *  `views: 'auto'` (default) picks the angles by bounding-box aspect:
+     *  flat models get [Top, Iso]; tall models get [Front, Right, Iso];
+     *  everything else gets [Front, Top, Iso]. `views: 'tri'` forces the
+     *  front/top/iso composite regardless of shape; `views: 'all'` is the
+     *  classic 4-view iso grid (front/right/top/iso). */
+    async renderViews(options?: { views?: 'auto' | 'tri' | 'all'; size?: number }): Promise<string | null> {
       if (options !== undefined) {
         const o = assertObject(options, 'renderViews(options)')!;
         assertNoUnknownKeys(o, ['views', 'size'], 'renderViews(options)');
-        if (o.views !== undefined) assertEnum(o.views, ['tri', 'all'], 'renderViews(options).views');
+        if (o.views !== undefined) assertEnum(o.views, ['auto', 'tri', 'all'], 'renderViews(options).views');
         assertNumber(o.size, 'renderViews(options).size', { optional: true, min: 1, integer: true });
       }
       if (!currentMeshData) return null;
-      const which = options?.views ?? 'tri';
+      const which = options?.views ?? 'auto';
       const tileSize = options?.size ?? 320;
       const colored = applyTriColorsIfVisible(currentMeshData);
-      const angles: { label: string; opts: { elevation: number; azimuth: number; ortho: boolean } }[] =
-        which === 'tri'
-          ? [
-              { label: 'Front', opts: { elevation: 0,  azimuth: 0,  ortho: true } },
-              { label: 'Top',   opts: { elevation: 90, azimuth: 0,  ortho: true } },
-              { label: 'Iso',   opts: { elevation: 35, azimuth: 45, ortho: false } },
-            ]
-          : [
-              { label: 'Front', opts: { elevation: 0,  azimuth: 0,   ortho: true } },
-              { label: 'Right', opts: { elevation: 0,  azimuth: 90,  ortho: true } },
-              { label: 'Top',   opts: { elevation: 90, azimuth: 0,   ortho: true } },
-              { label: 'Iso',   opts: { elevation: 35, azimuth: 45,  ortho: false } },
-            ];
+      const angles = chooseRenderAngles(which);
 
       const labelHeight = 24;
       const cellHeight = tileSize + labelHeight;
+      const cols = angles.length === 1 ? 1 : 2;
+      const rows = Math.ceil(angles.length / cols);
       const composite = document.createElement('canvas');
-      composite.width = tileSize * 2;
-      composite.height = cellHeight * 2;
+      composite.width = tileSize * cols;
+      composite.height = cellHeight * rows;
       const ctx = composite.getContext('2d');
       if (!ctx) return null;
       ctx.fillStyle = '#f4f4f5';
@@ -2110,7 +2103,7 @@ async function main() {
         if (!dataUrl) continue;
         const img = await loadImageFromDataUrl(dataUrl);
         if (!img) continue;
-        drawCell(ctx, img, i, tileSize, cellHeight, label);
+        drawCell(ctx, img, i, tileSize, cellHeight, label, cols);
       }
       return composite.toDataURL('image/png');
     },
@@ -3484,6 +3477,10 @@ async function main() {
       radius?: number;
       triangleIds?: number[];
       view?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number };
+      /** Skip the WebGL render and omit `thumbnail` from the result.
+       *  Default `true` (count-only is the cheap sanity check); pass
+       *  `withImage: true` when you want a visual on top of the stats. */
+      withImage?: boolean;
     } = {}) {
       const mesh = currentMeshData;
       if (!mesh) return { error: 'No geometry loaded' };
@@ -3511,37 +3508,61 @@ async function main() {
       }
 
       const stats = regionTriangleStats(triangles, mesh);
-      // Build a temporary mesh with the candidate triangles tinted bright yellow,
-      // overlayed on top of any existing regions.
-      const baseColored = applyTriColors(mesh) ?? mesh;
-      const numTri = mesh.numTri;
-      const triColors = new Uint8Array(numTri * 3);
-      const baseBuf = baseColored.triColors as Uint8Array | undefined;
-      const basePainted = baseBuf ? (baseBuf as Uint8Array & { _painted?: Uint8Array })._painted : undefined;
-      const painted = new Uint8Array(numTri);
-      for (let t = 0; t < numTri; t++) {
-        if (baseBuf && basePainted && basePainted[t]) {
-          triColors[t * 3] = baseBuf[t * 3];
-          triColors[t * 3 + 1] = baseBuf[t * 3 + 1];
-          triColors[t * 3 + 2] = baseBuf[t * 3 + 2];
-          painted[t] = 1;
-        }
-      }
-      // Highlight color: bright yellow-orange, strongly distinct from skin/nail palettes.
-      for (const t of triangles) {
-        triColors[t * 3] = 255;
-        triColors[t * 3 + 1] = 230;
-        triColors[t * 3 + 2] = 0;
-        painted[t] = 1;
-      }
-      (triColors as Uint8Array & { _painted?: Uint8Array })._painted = painted;
-      const previewMesh: MeshData = { ...mesh, triColors };
-      const thumbnail = renderSingleView(previewMesh, opts.view ?? {});
+      const wantImage = opts.withImage === true;
+      const thumbnail = wantImage ? renderRegionHighlight(mesh, triangles, opts.view ?? {}) : undefined;
       return {
-        thumbnail,
+        ...(thumbnail !== undefined ? { thumbnail } : {}),
         triangleCount: triangles.size,
         bbox: stats.bbox,
         centroid: stats.centroid,
+      };
+    },
+
+    /** Diagnose an existing painted region: returns counts, bbox, area,
+     *  a normal-distribution histogram (axis-aligned bins), and a yellow-
+     *  highlighted thumbnail of just the region's triangles overlaid on
+     *  the current model. Use to self-correct after a bad paint without
+     *  the paint → render → undo → repaint cycle.
+     *
+     *  ```
+     *  partwright.paintExplain({ region: 'mouth' })       // by name
+     *  partwright.paintExplain({ region: 17042, withImage: false })  // stats-only
+     *  ``` */
+    paintExplain(opts: {
+      region: number | string;
+      withImage?: boolean;
+      view?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number };
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintExplain requires { region }' };
+      if (opts.region === undefined) return { error: 'paintExplain.region (id or name) is required' };
+
+      const regions = getRegions();
+      const region = typeof opts.region === 'number'
+        ? regions.find(r => r.id === opts.region)
+        : regions.find(r => r.name === opts.region);
+      if (!region) {
+        const existing = regions.map(r => `"${r.name}" (id=${r.id})`).join(', ') || '(none)';
+        return { error: `No region matching ${JSON.stringify(opts.region)}. Existing: ${existing}` };
+      }
+
+      const mesh = currentMeshData;
+      const stats = regionTriangleStats(region.triangles, mesh);
+      const { area, normalHistogram } = computeRegionAreaAndNormalHistogram(region.triangles, mesh);
+      const wantImage = opts.withImage !== false; // default true — explain wants visual
+      const thumbnail = wantImage ? renderRegionHighlight(mesh, region.triangles, opts.view ?? {}) : undefined;
+
+      return {
+        id: region.id,
+        name: region.name,
+        color: region.color,
+        source: region.source,
+        triangleCount: region.triangles.size,
+        area: Math.round(area * 1000) / 1000,
+        bbox: stats.bbox,
+        centroid: stats.centroid,
+        normalHistogram,
+        ...(thumbnail !== undefined ? { thumbnail } : {}),
       };
     },
 
@@ -4228,7 +4249,8 @@ async function main() {
         'paintInBox':      { signature: 'paintInBox({box, normalCone?, color, name?}) -- Paint triangles whose centroid is inside an axis-aligned box (and optional normal cone).', docs: '/ai.md#color-regions' },
         'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?}) -- Paint specific triangle indices', docs: '/ai.md#color-regions' },
         'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?}) -- Paint planar slab range', docs: '/ai.md#color-regions' },
-        'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, view?}) -- Highlight a candidate region without committing -> {thumbnail, triangleCount, bbox, centroid}', docs: '/ai.md#color-regions' },
+        'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai.md#color-regions' },
+        'paintExplain':    { signature: 'paintExplain({region, withImage?, view?}) -- Diagnose a committed region -> {triangleCount, area, bbox, centroid, normalHistogram, [thumbnail]}.', docs: '/ai.md#color-regions' },
         'assertPaint':     { signature: 'assertPaint({region, expectedTriangleCount?, expectedBoundingBox?, expectedCentroid?}) -- Verify a previously-painted region -> {passed, failures?}', docs: '/ai.md#color-regions' },
         'findFaces':       { signature: 'findFaces({box?, normal?, normalTolerance?, color?, region?, maxResults?}) -- Query triangle ids by geometry/color filters', docs: '/ai.md#color-regions' },
         'getMesh':         { signature: 'getMesh() -- Direct triangle/vertex/normal/centroid access for procedural paint workflows', docs: '/ai.md#color-regions' },
@@ -4321,7 +4343,8 @@ async function main() {
    *  counts as inside. */
   /** Draw one rendered angle into the renderViews composite grid:
    *  the rendered tile occupies the top of the cell, with a labelled
-   *  footer band beneath it identifying the angle. */
+   *  footer band beneath it identifying the angle. `cols` controls
+   *  whether cellIndex wraps after 1 or 2 columns. */
   function drawCell(
     ctx: CanvasRenderingContext2D,
     src: CanvasImageSource,
@@ -4329,9 +4352,10 @@ async function main() {
     tileSize: number,
     cellHeight: number,
     label: string,
+    cols: number,
   ): void {
-    const col = cellIndex % 2;
-    const row = Math.floor(cellIndex / 2);
+    const col = cellIndex % cols;
+    const row = Math.floor(cellIndex / cols);
     const x = col * tileSize;
     const y = row * cellHeight;
     ctx.drawImage(src, x, y, tileSize, tileSize);
@@ -4342,6 +4366,130 @@ async function main() {
     ctx.textAlign = 'center';
     ctx.fillText(label, x + tileSize / 2, y + tileSize + 16);
     ctx.textAlign = 'start';
+  }
+
+  /** Pick the angle set for `renderViews`. `auto` reads the current
+   *  manifold's bounding box and chooses based on aspect ratio:
+   *  - very flat (dz / max(dx, dy) < 0.15) → [Top, Iso]: front view
+   *    would be a thin sliver, top carries the information.
+   *  - very tall (max(dx, dy) / dz < 0.3) → [Front, Right, Iso]:
+   *    top view would be a tiny disk, the side elevations matter.
+   *  - otherwise the classic [Front, Top, Iso] trio. */
+  function chooseRenderAngles(which: 'auto' | 'tri' | 'all'): { label: string; opts: { elevation: number; azimuth: number; ortho: boolean } }[] {
+    const FRONT = { label: 'Front', opts: { elevation: 0,  azimuth: 0,  ortho: true } };
+    const RIGHT = { label: 'Right', opts: { elevation: 0,  azimuth: 90, ortho: true } };
+    const TOP   = { label: 'Top',   opts: { elevation: 90, azimuth: 0,  ortho: true } };
+    const ISO   = { label: 'Iso',   opts: { elevation: 35, azimuth: 45, ortho: false } };
+    if (which === 'tri') return [FRONT, TOP, ISO];
+    if (which === 'all') return [FRONT, RIGHT, TOP, ISO];
+    // 'auto': inspect the current manifold's bounding box.
+    let bb: { min: [number, number, number]; max: [number, number, number] } | null = null;
+    if (currentManifold) {
+      try { bb = getBoundingBox(currentManifold); } catch { bb = null; }
+    }
+    if (!bb) return [FRONT, TOP, ISO];
+    const dx = bb.max[0] - bb.min[0];
+    const dy = bb.max[1] - bb.min[1];
+    const dz = bb.max[2] - bb.min[2];
+    const widest = Math.max(dx, dy);
+    if (widest <= 0 || dz <= 0) return [FRONT, TOP, ISO];
+    const flatness = dz / widest;
+    if (flatness < 0.15) return [TOP, ISO];
+    if (widest / dz < 0.3) return [FRONT, RIGHT, ISO];
+    return [FRONT, TOP, ISO];
+  }
+
+  /** Render the current mesh with `highlightTriangles` tinted bright
+   *  yellow on top of any existing color regions. Shared between
+   *  `paintPreview` (highlight a candidate selector) and `paintExplain`
+   *  (highlight an already-committed region). */
+  function renderRegionHighlight(
+    mesh: MeshData,
+    highlightTriangles: Set<number>,
+    viewOpts: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number },
+  ): string | null {
+    const baseColored = applyTriColors(mesh) ?? mesh;
+    const numTri = mesh.numTri;
+    const triColors = new Uint8Array(numTri * 3);
+    const baseBuf = baseColored.triColors as Uint8Array | undefined;
+    const basePainted = baseBuf ? (baseBuf as Uint8Array & { _painted?: Uint8Array })._painted : undefined;
+    const painted = new Uint8Array(numTri);
+    for (let t = 0; t < numTri; t++) {
+      if (baseBuf && basePainted && basePainted[t]) {
+        triColors[t * 3] = baseBuf[t * 3];
+        triColors[t * 3 + 1] = baseBuf[t * 3 + 1];
+        triColors[t * 3 + 2] = baseBuf[t * 3 + 2];
+        painted[t] = 1;
+      }
+    }
+    // Highlight color: bright yellow-orange, strongly distinct from skin/nail palettes.
+    for (const t of highlightTriangles) {
+      triColors[t * 3] = 255;
+      triColors[t * 3 + 1] = 230;
+      triColors[t * 3 + 2] = 0;
+      painted[t] = 1;
+    }
+    (triColors as Uint8Array & { _painted?: Uint8Array })._painted = painted;
+    const previewMesh: MeshData = { ...mesh, triColors };
+    return renderSingleView(previewMesh, viewOpts);
+  }
+
+  /** For a triangle set, compute total surface area and an area-weighted
+   *  histogram of face normals binned by cardinal axis (within 30°).
+   *  Triangles whose normal is more than 30° off every axis fall into
+   *  `oblique`. All bins normalize to sum ≈ 1. Useful for telling the
+   *  agent "this region is 70% top-facing, 25% wrap-around side" without
+   *  shipping the raw triangle list. */
+  function computeRegionAreaAndNormalHistogram(
+    triangles: Set<number>,
+    mesh: MeshData,
+  ): {
+    area: number;
+    normalHistogram: { xPos: number; xNeg: number; yPos: number; yNeg: number; zPos: number; zNeg: number; oblique: number };
+  } {
+    const adjacency = buildAdjacency(mesh);
+    const cosThresh = Math.cos(30 * Math.PI / 180); // ≈ 0.866
+    const bins = { xPos: 0, xNeg: 0, yPos: 0, yNeg: 0, zPos: 0, zNeg: 0, oblique: 0 };
+    let totalArea = 0;
+    const { triVerts, vertProperties, numProp } = mesh;
+    for (const t of triangles) {
+      const v0 = triVerts[t * 3];
+      const v1 = triVerts[t * 3 + 1];
+      const v2 = triVerts[t * 3 + 2];
+      const ax = vertProperties[v0 * numProp], ay = vertProperties[v0 * numProp + 1], az = vertProperties[v0 * numProp + 2];
+      const bx = vertProperties[v1 * numProp], by = vertProperties[v1 * numProp + 1], bz = vertProperties[v1 * numProp + 2];
+      const cx = vertProperties[v2 * numProp], cy = vertProperties[v2 * numProp + 1], cz = vertProperties[v2 * numProp + 2];
+      const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+      const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+      const crx = e1y * e2z - e1z * e2y;
+      const cry = e1z * e2x - e1x * e2z;
+      const crz = e1x * e2y - e1y * e2x;
+      const area = 0.5 * Math.sqrt(crx * crx + cry * cry + crz * crz);
+      totalArea += area;
+      const nx = adjacency.normals[t * 3];
+      const ny = adjacency.normals[t * 3 + 1];
+      const nz = adjacency.normals[t * 3 + 2];
+      if (nx > cosThresh) bins.xPos += area;
+      else if (nx < -cosThresh) bins.xNeg += area;
+      else if (ny > cosThresh) bins.yPos += area;
+      else if (ny < -cosThresh) bins.yNeg += area;
+      else if (nz > cosThresh) bins.zPos += area;
+      else if (nz < -cosThresh) bins.zNeg += area;
+      else bins.oblique += area;
+    }
+    if (totalArea > 0) {
+      const norm = (v: number) => Math.round((v / totalArea) * 1000) / 1000;
+      return {
+        area: totalArea,
+        normalHistogram: {
+          xPos: norm(bins.xPos), xNeg: norm(bins.xNeg),
+          yPos: norm(bins.yPos), yNeg: norm(bins.yNeg),
+          zPos: norm(bins.zPos), zNeg: norm(bins.zNeg),
+          oblique: norm(bins.oblique),
+        },
+      };
+    }
+    return { area: 0, normalHistogram: { xPos: 0, xNeg: 0, yPos: 0, yNeg: 0, zPos: 0, zNeg: 0, oblique: 0 } };
   }
 
   /** Decode a data: URL into an HTMLImageElement. Image decoding from a

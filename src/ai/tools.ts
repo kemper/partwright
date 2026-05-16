@@ -145,11 +145,11 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'renderViews',
-    description: 'Render MULTIPLE labeled angles (front + top + iso by default) as ONE composite PNG. THIS IS HOW YOU SEE YOUR WORK reliably — a top-down view can hide a smile that arches the wrong way, but front+top+iso together catch it. Costs ~1500-2500 input tokens for the whole composite (one image, multiple cells), only slightly more than a single renderView but with far better verification coverage.',
+    description: 'Render MULTIPLE labeled angles as ONE composite PNG. THIS IS HOW YOU SEE YOUR WORK reliably — a single angle can hide an asymmetric error that another angle catches. Costs ~1500-2500 input tokens. Default `views: "auto"` picks angles by the model\'s bounding box: flat disks get [Top, Iso] (a front elevation of a disk is a useless sliver), tall columns get [Front, Right, Iso] (the top of a column is a useless dot), everything else gets [Front, Top, Iso]. Use `tri` or `all` to force a specific set.',
     input_schema: {
       type: 'object',
       properties: {
-        views: { type: 'string', enum: ['tri', 'all'], description: '"tri" = front + top + iso (default, 3 cells, lower cost). "all" = front + right + top + iso (4 cells, more coverage).' },
+        views: { type: 'string', enum: ['auto', 'tri', 'all'], description: '"auto" (default) picks angles from the model aspect ratio. "tri" = front + top + iso (3 cells). "all" = front + right + top + iso (4 cells).' },
         size: { type: 'integer', description: 'Pixel size per cell. Default 320.' },
       },
     },
@@ -166,8 +166,20 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'paintExplain',
+    description: 'Diagnose an existing painted region. Returns {triangleCount, area, bbox, centroid, normalHistogram, thumbnail}. Use after a paint that looks wrong — the histogram tells you which axis the region faces (e.g. zPos: 0.7 means 70% of the surface area faces up), the thumbnail shows the region tinted yellow on the current model. Cheaper and more diagnostic than paint → renderViews → undo. Pass `withImage: false` for stats-only when you only need the histogram.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        region: { description: 'Region id (integer, from listRegions) or name (string).' },
+        withImage: { type: 'boolean', description: 'Default true. Pass false for stats-only (skip the thumbnail render).' },
+      },
+      required: ['region'],
+    },
+  },
+  {
     name: 'paintPreview',
-    description: 'DRY-RUN: returns {triangleCount, bbox, centroid} for what a paint op WOULD select, WITHOUT committing. Same selector args as paintInBox / paintNear / paintFaces. The cheapest way to catch a bad selector before you commit — call this before any non-trivial paint. Returns a yellow-highlighted thumbnail by default (the model can see it); pass `withImage: false` for the stats-only cheap path when you only need triangleCount.',
+    description: 'DRY-RUN: returns {triangleCount, bbox, centroid} for what a paint op WOULD select, WITHOUT committing. Same selector args as paintInBox / paintNear / paintFaces. The cheapest way to catch a bad selector — count alone is essentially free; ALWAYS call before any non-trivial paint. Pass `withImage: true` ONLY when the count is suspicious (wildly more or fewer than expected) or the selector geometry is fuzzy — that adds a yellow-highlighted thumbnail.',
     input_schema: {
       type: 'object',
       properties: {
@@ -176,7 +188,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         radius: { type: 'number' },
         normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.' },
         triangleIds: { type: 'array', items: { type: 'integer' }, description: 'Explicit triangle list — mostly for verifying findFaces results.' },
-        withImage: { type: 'boolean', description: 'When true (default), returns the preview thumbnail as a multimodal image. Pass false for stats-only.' },
+        withImage: { type: 'boolean', description: 'Default false (stats-only, free). Pass true to also return the highlighted thumbnail when the count is surprising or you want a visual sanity check.' },
       },
     },
   },
@@ -365,6 +377,7 @@ const ALWAYS_AVAILABLE = new Set([
   'findFaces',
   'listComponents',
   'paintPreview',
+  'paintExplain',
 ]);
 
 const RUN_GATED = new Set(['runCode']);
@@ -542,16 +555,38 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintComponent(input);
     case 'getFeatureCentroids':
       return api.getFeatureCentroids(input);
-    case 'paintPreview': {
-      // paintPreview returns {thumbnail, triangleCount, bbox, centroid}.
-      // The thumbnail is on by default — it's the cheapest way for the
-      // model to catch a bad selector before committing. Opt out with
-      // withImage: false for the stats-only cheap path.
+    case 'paintExplain': {
+      // paintExplain returns {thumbnail, ...stats}. Image-on by default
+      // because the visual is the most useful diagnostic for the model;
+      // strip when withImage: false.
       const wantImage = input.withImage !== false;
-      // The underlying API doesn't know about withImage — drop it.
       const apiInput = { ...input };
       delete apiInput.withImage;
-      const result = await api.paintPreview(apiInput) as Record<string, unknown> | undefined;
+      const result = await api.paintExplain(apiInput) as Record<string, unknown> | undefined;
+      if (!result || typeof result !== 'object') return result;
+      if ('error' in result) return result;
+      const thumbnail = result.thumbnail as string | undefined;
+      delete result.thumbnail;
+      if (wantImage && typeof thumbnail === 'string') {
+        const img = parseImageDataUrl(thumbnail);
+        if (img) {
+          const summary = `paintExplain: ${JSON.stringify(result)}. Region triangles highlighted yellow over the current model.`;
+          return {
+            content: summary,
+            isError: false,
+            image: { ...img, label: `paintExplain "${result.name}"` },
+          } satisfies ToolExecResult;
+        }
+      }
+      return result;
+    }
+    case 'paintPreview': {
+      // paintPreview returns {triangleCount, bbox, centroid, [thumbnail]}.
+      // The underlying API takes `withImage` directly and skips the WebGL
+      // render when false (count-only is the cheap sanity check). Pass
+      // through unchanged.
+      const wantImage = input.withImage === true;
+      const result = await api.paintPreview(input) as Record<string, unknown> | undefined;
       if (!result || typeof result !== 'object') return result;
       const thumbnail = result.thumbnail as string | undefined;
       delete result.thumbnail;

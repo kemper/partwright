@@ -167,7 +167,7 @@ await partwright.runAndExplain(code)     // -> {stats, components[], hints[]} (d
 await partwright.modifyAndTest(patchFn, assertions?) // Modify current code + test in isolation
 partwright.query({sliceAt?, decompose?, boundingBox?}) // Multi-query current geometry in one call
 partwright.renderView({elevation?, azimuth?, ortho?, size?})  // Render ONE angle -> data URL
-await partwright.renderViews({views?: 'tri'|'all', size?})    // 3- or 4-angle labeled composite -> data URL; prefer for verification
+await partwright.renderViews({views?: 'auto'|'tri'|'all', size?})  // multi-angle labeled composite -> data URL; 'auto' (default) picks angles by aspect ratio; prefer for verification
 partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}
 partwright.isRunning()                   // -> boolean (is code executing?)
 
@@ -199,7 +199,8 @@ partwright.paintNear({point, radius, normalCone?, topOnly?, color, name?})      
 partwright.paintInBox({box, normalCone?, topOnly?, color, name?})                   // box: paint triangles inside an AABB -> {id, name, triangles, bbox, centroid} or {error}
 partwright.paintFaces({triangleIds, color, name?})                        // brush: paint specific triangle indices -> {id, name, triangles} or {error}
 partwright.paintSlab({axis|normal, offset, thickness, color, name?})      // slab: paint a planar range -> {id, name, triangles} or {error}
-partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, view?}) // dry-run: highlight a candidate region -> {thumbnail, triangleCount, bbox, centroid} (does not commit)
+partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, withImage?, view?}) // dry-run -> {triangleCount, bbox, centroid, [thumbnail]} (default: count-only; withImage: true adds thumbnail)
+partwright.paintExplain({region, withImage?, view?}) // diagnose committed region -> {triangleCount, area, bbox, centroid, normalHistogram, [thumbnail]}
 partwright.assertPaint({region, expectedTriangleCount?, expectedBoundingBox?, expectedCentroid?}) // verify a region -> {passed, failures?}
 partwright.findFaces({box?, normal?, normalTolerance?, color?, region?, maxResults?}) // query triangle ids by geometry/color -> {triangleIds, count, matched, truncated}
 partwright.getMesh()                     // -> {numVert, numTri, vertices, triangles, normals, centroids, boundingBox} (typed arrays)
@@ -208,7 +209,7 @@ partwright.listRegions()                 // -> [{id, name, color, source, triang
 partwright.listComponents()              // -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- per-piece bbox for unioned models
 partwright.paintComponent({index, color, name?, topOnly?}) // One-call: paint the Nth boolean-distinct piece
 partwright.getFeatureCentroids({maxGroups?, withinBox?}?)  // Lightweight planning: centroids + normals + bbox per face group, NO triangleIds
-partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, view?}) // DRY-RUN -> {triangleCount, bbox, centroid, thumbnail}
+partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, withImage?, view?}) // DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}
 partwright.undoLastPaint()               // Reverse the SINGLE most recent paint op -> {undone, id, ...}
 partwright.redoLastPaint()               // Reapply the most recently undone paint -> {redone, id, ...}
 partwright.canRedoPaint()                // -> {canRedo: bool}
@@ -458,16 +459,27 @@ partwright.clearColors()    // remove ALL regions — destructive, prefer the tw
 
 **Preview before commit (default workflow).** `paintPreview()` accepts
 the same selector args as `paintInBox` / `paintNear` / `paintFaces` but
-doesn't commit. It returns `{triangleCount, bbox, centroid, thumbnail}` —
-the thumbnail shows candidate triangles highlighted yellow over the
-current model, so you can confirm visually before paying the round-trip
-to paint, observe, and undo. Cheap; free of side effects.
+doesn't commit. By default it returns just `{triangleCount, bbox,
+centroid}` — count alone is essentially free and catches most bad
+selectors. Pass `withImage: true` when the count surprises you and a
+yellow-highlighted thumbnail is worth the tokens. Cheap; no side effects.
 
-**Verify from multiple angles.** Use `renderViews({views: 'tri'})` (front
-+ top + iso composite) for verification rather than a single
-`renderView` call. A single top-down view can hide an asymmetric error
-that's obvious from the front — e.g. a smile curve arching the wrong
-way. Same one-call cost, much better coverage.
+**Diagnose a bad paint.** `paintExplain({region: id})` returns area,
+bbox, centroid, a normal-distribution histogram (`{xPos, xNeg, yPos,
+yNeg, zPos, zNeg, oblique}` summing to ~1), and a thumbnail of the
+region tinted yellow. Use after a paint that looks wrong — the
+histogram tells you in one number whether the region wrapped onto a
+face you didn't intend (e.g. `zPos: 0.4, xPos: 0.3` = caught the top
+AND a side).
+
+**Verify from multiple angles.** Use `renderViews()` for verification
+rather than a single `renderView` call. The default `views: 'auto'`
+picks angles by the model's bounding box: flat disks get [Top, Iso]
+(a front elevation of a disk is a thin sliver), tall columns get
+[Front, Right, Iso] (the top of a column is a dot), everything else
+gets [Front, Top, Iso]. Use `views: 'tri'` or `'all'` to force a
+specific composite. A single angle can hide an asymmetric error —
+e.g. a smile curve arching the wrong way.
 
 **Test before commit.** For unfamiliar primitives (revolve axis,
 hull edges, decompose order, any boolean chain), call `runIsolated(code)`
@@ -651,17 +663,36 @@ partwright.paintSlab({
 });
 ```
 
-**Verifying paint before you commit it.** `paintPreview` accepts the same selectors as `paintInBox` / `paintNear` / `paintFaces` and returns a thumbnail with the candidate triangles tinted bright yellow on top of any existing paint, *without* adding a region. Use it to confirm the shape of a region before committing.
+**Verifying paint before you commit it.** `paintPreview` accepts the same selectors as `paintInBox` / `paintNear` / `paintFaces`, *without* adding a region. Default: count-only (free sanity check). Pass `withImage: true` to also get a thumbnail with the candidate triangles tinted bright yellow on top of any existing paint.
 
 ```js
-const preview = partwright.paintPreview({
+const dry = partwright.paintPreview({
   point: [10.4, 5.2, 67],
   radius: 3,
   normalCone: { axis: [0, -0.89, 0.45], angleDeg: 25 },
+});
+// dry = { triangleCount, bbox, centroid }   // count-only, cheap
+// If dry.triangleCount looks off, opt into the visual:
+const visual = partwright.paintPreview({
+  point: [10.4, 5.2, 67], radius: 3, withImage: true,
   view: { elevation: 0, azimuth: 180, ortho: true, size: 320 }, // optional
 });
-// preview = { thumbnail, triangleCount, bbox, centroid }
-// Display preview.thumbnail (data URL) -- no region created, no editor lock.
+// visual = { triangleCount, bbox, centroid, thumbnail }
+```
+
+**Explaining a region after the fact.** `paintExplain({region: id})`
+returns counts, bbox, centroid, surface area, a normal-distribution
+histogram, and a yellow-highlighted thumbnail of just that region.
+Use when a painted region looks wrong and you need to diagnose *why*
+without re-running the selector:
+
+```js
+partwright.paintExplain({ region: 'mouth' });
+// -> { id, name, color, source, triangleCount, area, bbox, centroid,
+//      normalHistogram: { xPos, xNeg, yPos, yNeg, zPos, zNeg, oblique },
+//      thumbnail }
+// Pass `withImage: false` to skip the WebGL render when you only need
+// the histogram (e.g. "is this region all top-facing or did it wrap?").
 ```
 
 **Asserting paint after you commit it.** `assertPaint` checks a region against expected triangle count and bbox/centroid ranges — same shape as `runAndAssert`, but for color regions. Use this in iterative agent loops to catch regressions when the underlying mesh changes (e.g. after a forkVersion).
@@ -746,11 +777,13 @@ Once any region exists, the editor goes read-only and `runAndSave` is rejected. 
 
 ### Verify before you commit
 
-Use `paintPreview` to see the candidate region tinted bright yellow on a thumbnail before adding a region. Saves the paint → render → undo loop:
+`paintPreview` is count-only by default — call it before any non-trivial paint as a free sanity check on selector geometry. If the count is surprising, opt into the visual:
 
 ```js
-const dry = partwright.paintPreview({ point: [...], radius: 4, view: { ortho: true, size: 240 } });
-// Inspect dry.thumbnail; if happy, call paintNear with the same args to commit.
+const dry = partwright.paintPreview({ point: [...], radius: 4 });
+// dry.triangleCount > 0? if happy, call paintNear with the same args to commit.
+// If the count is wildly off, add withImage: true to see what got selected:
+partwright.paintPreview({ point: [...], radius: 4, withImage: true, view: { ortho: true, size: 240 } });
 ```
 
 Use `assertPaint` to verify regions stayed where you expected after a re-render or version load:
