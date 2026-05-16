@@ -42,20 +42,46 @@ export interface ChatToggles {
   model: ModelId;
 }
 
-export const ITERATION_CAP: Record<ChatToggles['maxIterations'], number> = {
-  low: 4,
-  medium: 16,
-  high: 64,
-  infinity: Number.POSITIVE_INFINITY,
+/** Source of truth for the iteration-cap dropdown. The toggle pill,
+ *  the agent loop, and the per-turn system suffix all derive from this
+ *  single record — add/rename a tier here and the three call sites
+ *  pick it up automatically. */
+export const MAX_ITERATIONS: Record<ChatToggles['maxIterations'], { value: number; label: string; promptLabel: string; hint: string }> = {
+  low:      { value: 4,  label: 'Low (4)',  promptLabel: '4',         hint: 'Short turns. Useful when the model wanders.' },
+  medium:   { value: 16, label: 'Med (16)', promptLabel: '16',        hint: 'Default. Comfortable for most paint workflows.' },
+  high:     { value: 64, label: 'High (64)', promptLabel: '64',       hint: 'Long autonomous runs. Watch the cost meter.' },
+  infinity: { value: Number.POSITIVE_INFINITY, label: '∞', promptLabel: 'unlimited', hint: 'Unlimited. Only stops on completion / error / your Stop click.' },
 };
 
-export const SPEND_CAP_USD: Record<ChatToggles['maxSpend'], number> = {
-  cheap: 0.10,
-  low: 0.50,
-  medium: 2.00,
-  high: 10.00,
-  infinity: Number.POSITIVE_INFINITY,
+/** Source of truth for the spend-cap dropdown. Same pattern as
+ *  MAX_ITERATIONS. */
+export const MAX_SPEND: Record<ChatToggles['maxSpend'], { value: number; label: string; promptLabel: string; hint: string }> = {
+  cheap:    { value: 0.10,  label: '$0.10', promptLabel: '$0.10',     hint: 'Tight budget. Pairs well with Haiku and short turns.' },
+  low:      { value: 0.50,  label: '$0.50', promptLabel: '$0.50',     hint: 'Safety net for casual iteration.' },
+  medium:   { value: 2.00,  label: '$2',    promptLabel: '$2',        hint: 'Default. Comfortable for most Sonnet turns including a few vision calls.' },
+  high:     { value: 10.00, label: '$10',   promptLabel: '$10',       hint: 'Long autonomous runs on Opus, lots of vision verification.' },
+  infinity: { value: Number.POSITIVE_INFINITY, label: '∞', promptLabel: 'unlimited', hint: 'No budget cap. The model can spend whatever it wants.' },
 };
+
+/** Cap value lookups — derived from MAX_ITERATIONS / MAX_SPEND so the
+ *  numbers can never drift from the dropdown labels. */
+export const ITERATION_CAP: Record<ChatToggles['maxIterations'], number> =
+  Object.fromEntries(Object.entries(MAX_ITERATIONS).map(([k, v]) => [k, v.value])) as Record<ChatToggles['maxIterations'], number>;
+export const SPEND_CAP_USD: Record<ChatToggles['maxSpend'], number> =
+  Object.fromEntries(Object.entries(MAX_SPEND).map(([k, v]) => [k, v.value])) as Record<ChatToggles['maxSpend'], number>;
+
+/** Outcome category the agent loop reports back to the UI. Single
+ *  source of truth — chatLoop produces these, aiPanel renders them. */
+export type TurnOutcomeReason =
+  | 'end_turn'
+  | 'empty_final'
+  | 'iteration_cap'
+  | 'spend_cap'
+  | 'max_tokens'
+  | 'refusal'
+  | 'aborted'
+  | 'error'
+  | 'other';
 
 /** Persisted per-message record. One row per chat message in IndexedDB. */
 export interface ChatMessage {

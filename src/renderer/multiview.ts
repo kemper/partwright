@@ -4,6 +4,12 @@ import type { MeshData } from '../geometry/types';
 import { buildStrokesGroup, disposeStrokesGroup } from '../annotations/annotationOverlay';
 import { presetIndex } from '../storage/db';
 
+/** Composite-render angle sets accepted by `partwright.renderViews`.
+ *  Single source of truth shared by the API surface (main.ts), the AI
+ *  tool schema (src/ai/tools.ts), and the per-turn system prompt. */
+export const RENDER_VIEW_MODES = ['auto', 'tri', 'all'] as const;
+export type RenderViewMode = typeof RENDER_VIEW_MODES[number];
+
 interface ViewConfig {
   name: string;
   position: (d: number) => [number, number, number];

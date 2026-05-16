@@ -2,7 +2,7 @@ import './style.css';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible } from './renderer/viewport';
-import { renderCompositeCanvas, renderElevationsToContainer, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, type AttachedImage } from './renderer/multiview';
+import { renderCompositeCanvas, renderElevationsToContainer, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, RENDER_VIEW_MODES, type AttachedImage, type RenderViewMode } from './renderer/multiview';
 import { generateId } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic } from './editor/codeEditor';
@@ -2069,11 +2069,11 @@ async function main() {
      *  everything else gets [Front, Top, Iso]. `views: 'tri'` forces the
      *  front/top/iso composite regardless of shape; `views: 'all'` is the
      *  classic 4-view iso grid (front/right/top/iso). */
-    async renderViews(options?: { views?: 'auto' | 'tri' | 'all'; size?: number }): Promise<string | null> {
+    async renderViews(options?: { views?: RenderViewMode; size?: number }): Promise<string | null> {
       if (options !== undefined) {
         const o = assertObject(options, 'renderViews(options)')!;
         assertNoUnknownKeys(o, ['views', 'size'], 'renderViews(options)');
-        if (o.views !== undefined) assertEnum(o.views, ['auto', 'tri', 'all'], 'renderViews(options).views');
+        if (o.views !== undefined) assertEnum(o.views, RENDER_VIEW_MODES, 'renderViews(options).views');
         assertNumber(o.size, 'renderViews(options).size', { optional: true, min: 1, integer: true });
       }
       if (!currentMeshData) return null;
@@ -4366,7 +4366,7 @@ async function main() {
    *  - very tall (max(dx, dy) / dz < 0.3) → [Front, Right, Iso]:
    *    top view would be a tiny disk, the side elevations matter.
    *  - otherwise the classic [Front, Top, Iso] trio. */
-  function chooseRenderAngles(which: 'auto' | 'tri' | 'all'): { label: string; opts: { elevation: number; azimuth: number; ortho: boolean } }[] {
+  function chooseRenderAngles(which: RenderViewMode): { label: string; opts: { elevation: number; azimuth: number; ortho: boolean } }[] {
     const FRONT = { label: 'Front', opts: { elevation: 0,  azimuth: 0,  ortho: true } };
     const RIGHT = { label: 'Right', opts: { elevation: 0,  azimuth: 90, ortho: true } };
     const TOP   = { label: 'Top',   opts: { elevation: 90, azimuth: 0,  ortho: true } };

@@ -14,7 +14,7 @@ import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showCompactConfirmModal } from './aiCompactModal';
-import type { ChatBlock, ChatMessage, ChatToggles, ImageSource, ModelId, PersistedToolResult } from '../ai/types';
+import type { ChatBlock, ChatMessage, ChatToggles, ImageSource, ModelId, PersistedToolResult, TurnOutcomeReason } from '../ai/types';
 
 interface PanelState {
   open: boolean;
@@ -807,7 +807,7 @@ async function sendMessage(): Promise<void> {
 interface TurnOutcome {
   totalCostUsd: number;
   toolCalls: number;
-  reason: 'end_turn' | 'empty_final' | 'iteration_cap' | 'spend_cap' | 'max_tokens' | 'refusal' | 'aborted' | 'error' | 'other';
+  reason: TurnOutcomeReason;
   detail?: string;
   iterations: number;
 }

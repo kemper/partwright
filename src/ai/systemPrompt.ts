@@ -4,7 +4,8 @@
 // communicates the current toggle state so the model doesn't ask for tools
 // it can't call.
 
-import type { ChatToggles } from './types';
+import { MAX_ITERATIONS, MAX_SPEND, type ChatToggles } from './types';
+import type { Language } from '../geometry/engines/types';
 
 let aiMdCache: string | null = null;
 let aiMdPromise: Promise<string> | null = null;
@@ -128,12 +129,8 @@ export function toggleSuffix(toggles: ChatToggles): string {
   }
 
   const lang = currentLanguage();
-  const capLabel: Record<ChatToggles['maxIterations'], string> = {
-    low: '4', medium: '16', high: '64', infinity: 'unlimited',
-  };
-  const spendLabel: Record<ChatToggles['maxSpend'], string> = {
-    cheap: '$0.10', low: '$0.50', medium: '$2', high: '$10', infinity: 'unlimited',
-  };
+  const capLabel = MAX_ITERATIONS[toggles.maxIterations].promptLabel;
+  const spendLabel = MAX_SPEND[toggles.maxSpend].promptLabel;
   const lines = [
     '',
     '## Session toggle state',
@@ -145,8 +142,8 @@ export function toggleSuffix(toggles: ChatToggles): string {
     }`,
     `Model: ${toggles.model}`,
     `Auto-retry on tool error: ${toggles.autoRetry}`,
-    `Iteration cap (tool round-trips this turn): ${capLabel[toggles.maxIterations]}. Pace your tool calls accordingly — if the cap is low, batch related work and prefer one-shot tools like paintComponent or paintInBox over verify-then-paint loops.`,
-    `Spend cap (USD this turn): ${spendLabel[toggles.maxSpend]}. Vision tool calls (renderView, paintPreview withImage) are the most expensive — skip them when stats alone are enough.`,
+    `Iteration cap (tool round-trips this turn): ${capLabel}. Pace your tool calls accordingly — if the cap is low, batch related work and prefer one-shot tools like paintComponent or paintInBox over verify-then-paint loops.`,
+    `Spend cap (USD this turn): ${spendLabel}. Vision tool calls (renderView, paintPreview withImage) are the most expensive — skip them when stats alone are enough.`,
   ];
   if (restrictions.length > 0) {
     lines.push('');
@@ -156,9 +153,9 @@ export function toggleSuffix(toggles: ChatToggles): string {
   return lines.join('\n');
 }
 
-function currentLanguage(): string {
+function currentLanguage(): Language {
   try {
-    const w = window as unknown as { partwright?: { getActiveLanguage?: () => string } };
+    const w = window as unknown as { partwright?: { getActiveLanguage?: () => Language } };
     return w.partwright?.getActiveLanguage?.() ?? 'manifold-js';
   } catch {
     return 'manifold-js';

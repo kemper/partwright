@@ -2,7 +2,7 @@
 // localStorage as one JSON blob — they're sticky across sessions and
 // separate from the per-session chat transcripts in IndexedDB.
 
-import type { ChatToggles, ModelId, Preset } from './types';
+import { MAX_ITERATIONS, MAX_SPEND, type ChatToggles, type ModelId, type Preset } from './types';
 
 const STORAGE_KEY = 'partwright-ai-settings-v1';
 
@@ -141,20 +141,13 @@ function mergeWithDefaults(partial: Partial<AiSettings>): AiSettings {
   };
 }
 
-export const MAX_ITERATIONS_OPTIONS: { id: ChatToggles['maxIterations']; label: string; hint: string }[] = [
-  { id: 'low', label: 'Low (4)', hint: 'Short turns. Useful when the model wanders.' },
-  { id: 'medium', label: 'Med (16)', hint: 'Default. Comfortable for most paint workflows.' },
-  { id: 'high', label: 'High (64)', hint: 'Long autonomous runs. Watch the cost meter.' },
-  { id: 'infinity', label: '∞', hint: 'Unlimited. Only stops on completion / error / your Stop click.' },
-];
+export const MAX_ITERATIONS_OPTIONS: { id: ChatToggles['maxIterations']; label: string; hint: string }[] =
+  (Object.entries(MAX_ITERATIONS) as [ChatToggles['maxIterations'], (typeof MAX_ITERATIONS)[keyof typeof MAX_ITERATIONS]][])
+    .map(([id, v]) => ({ id, label: v.label, hint: v.hint }));
 
-export const MAX_SPEND_OPTIONS: { id: ChatToggles['maxSpend']; label: string; hint: string }[] = [
-  { id: 'cheap', label: '$0.10', hint: 'Tight budget. Pairs well with Haiku and short turns.' },
-  { id: 'low', label: '$0.50', hint: 'Safety net for casual iteration.' },
-  { id: 'medium', label: '$2', hint: 'Default. Comfortable for most Sonnet turns including a few vision calls.' },
-  { id: 'high', label: '$10', hint: 'Long autonomous runs on Opus, lots of vision verification.' },
-  { id: 'infinity', label: '∞', hint: 'No budget cap. The model can spend whatever it wants.' },
-];
+export const MAX_SPEND_OPTIONS: { id: ChatToggles['maxSpend']; label: string; hint: string }[] =
+  (Object.entries(MAX_SPEND) as [ChatToggles['maxSpend'], (typeof MAX_SPEND)[keyof typeof MAX_SPEND]][])
+    .map(([id, v]) => ({ id, label: v.label, hint: v.hint }));
 
 export const MODEL_OPTIONS: { id: ModelId; label: string }[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },

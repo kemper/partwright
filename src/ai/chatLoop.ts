@@ -7,7 +7,7 @@ import { recordUsage, putMessages } from './db';
 import { buildToolList, executeTool } from './tools';
 import { buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { turnCostUsd } from './cost';
-import { ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult } from './types';
+import { ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type TurnOutcomeReason } from './types';
 
 /** Yield to the browser between heavy synchronous work blocks so the
  *  page stays responsive. requestAnimationFrame lets the browser paint
@@ -66,7 +66,7 @@ export interface RunTurnCallbacks {
   onTurnComplete?: (info: {
     totalCostUsd: number;
     toolCalls: number;
-    reason: 'end_turn' | 'empty_final' | 'iteration_cap' | 'spend_cap' | 'max_tokens' | 'refusal' | 'aborted' | 'error' | 'other';
+    reason: TurnOutcomeReason;
     detail?: string;
     iterations: number;
   }) => void;
@@ -198,7 +198,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       // Map stop reason to a UI-friendly outcome so the panel can show
       // "✓ done" vs "⚠ model exited without final text" vs other.
       const hasText = result.text.trim().length > 0;
-      let reason: 'end_turn' | 'empty_final' | 'max_tokens' | 'refusal' | 'other' = 'other';
+      let reason: TurnOutcomeReason = 'other';
       if (result.stopReason === 'end_turn') reason = hasText ? 'end_turn' : 'empty_final';
       else if (result.stopReason === 'max_tokens') reason = 'max_tokens';
       else if (result.stopReason === 'refusal') reason = 'refusal';

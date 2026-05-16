@@ -4,6 +4,8 @@
 // from the request payload entirely — the model can't call what isn't there.
 
 import type { ChatToggles } from './types';
+import type { Language } from '../geometry/engines/types';
+import { RENDER_VIEW_MODES } from '../renderer/multiview';
 
 export interface ToolDefinition {
   name: string;
@@ -149,7 +151,7 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        views: { type: 'string', enum: ['auto', 'tri', 'all'], description: '"auto" (default) picks angles from the model aspect ratio. "tri" = front + top + iso (3 cells). "all" = front + right + top + iso (4 cells).' },
+        views: { type: 'string', enum: [...RENDER_VIEW_MODES], description: '"auto" (default) picks angles from the model aspect ratio. "tri" = front + top + iso (3 cells). "all" = front + right + top + iso (4 cells).' },
         size: { type: 'integer', description: 'Pixel size per cell. Default 320.' },
       },
     },
@@ -512,7 +514,7 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'getActiveLanguage':
       return api.getActiveLanguage();
     case 'setActiveLanguage':
-      return api.setActiveLanguage(input.lang as 'manifold-js' | 'scad');
+      return api.setActiveLanguage(input.lang as Language);
     case 'getCode':
       return api.getCode();
     case 'setCode':
