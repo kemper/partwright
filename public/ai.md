@@ -166,7 +166,8 @@ await partwright.runAndAssert(code, assertions) // -> {passed, failures?, stats}
 await partwright.runAndExplain(code)     // -> {stats, components[], hints[]} (debug disconnects)
 await partwright.modifyAndTest(patchFn, assertions?) // Modify current code + test in isolation
 partwright.query({sliceAt?, decompose?, boundingBox?}) // Multi-query current geometry in one call
-partwright.renderView({elevation?, azimuth?, ortho?, size?}) // Render from any angle -> data URL
+partwright.renderView({elevation?, azimuth?, ortho?, size?})  // Render ONE angle -> data URL
+await partwright.renderViews({views?: 'tri'|'all', size?})    // 3- or 4-angle labeled composite -> data URL; prefer for verification
 partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}
 partwright.isRunning()                   // -> boolean (is code executing?)
 
@@ -455,11 +456,32 @@ partwright.removeRegion(id) // delete one region by id (older mistake)
 partwright.clearColors()    // remove ALL regions — destructive, prefer the two above for single mistakes
 ```
 
-**Preview before commit.** `paintPreview()` accepts the same selector args
-as `paintInBox` / `paintNear` / `paintFaces` but doesn't commit. It
-returns `{triangleCount, bbox, centroid, thumbnail}` — use the count and
-bbox to validate your selector is in the right ballpark before paying
-the round-trip to paint, observe, and undo. Cheap; free of side effects.
+**Preview before commit (default workflow).** `paintPreview()` accepts
+the same selector args as `paintInBox` / `paintNear` / `paintFaces` but
+doesn't commit. It returns `{triangleCount, bbox, centroid, thumbnail}` —
+the thumbnail shows candidate triangles highlighted yellow over the
+current model, so you can confirm visually before paying the round-trip
+to paint, observe, and undo. Cheap; free of side effects.
+
+**Verify from multiple angles.** Use `renderViews({views: 'tri'})` (front
++ top + iso composite) for verification rather than a single
+`renderView` call. A single top-down view can hide an asymmetric error
+that's obvious from the front — e.g. a smile curve arching the wrong
+way. Same one-call cost, much better coverage.
+
+**Test before commit.** For unfamiliar primitives (revolve axis,
+hull edges, decompose order, any boolean chain), call `runIsolated(code)`
+on a tiny snippet first — it returns stats + a thumbnail without
+mutating the editor or the session. Saves a paint-undo-retry cycle
+when the geometry surprises you.
+
+**Engine choice for paint workflows.** SCAD's `revolve`,
+`linear_extrude`, and `cylinder` produce radial-fan triangle topology
+(every face triangle radiates from the central axis). That topology is
+awkward to paint cleanly — `paintInBox` tends to bleed across the
+adjacent fan wedges. If a task involves precise painting of curved
+features, prefer `manifold-js` from the start. SCAD remains the right
+choice for parametric extrusion-heavy parts where painting is secondary.
 
 ```js
 const preview = partwright.paintPreview({ box: { min: [-5, -5, 8], max: [5, 5, 12] } });

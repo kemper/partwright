@@ -132,7 +132,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'renderView',
-    description: 'Render the current model from a specified angle and return the PNG directly to you as a multimodal image. THIS IS HOW YOU SEE YOUR WORK — call after any paint or geometry change to visually verify the result, then undoLastPaint() if it landed wrong. Cheap (one render) but each image costs ~1500 input tokens on the next turn, so render with intent (one good angle that shows the feature) rather than spamming all 4 iso views.',
+    description: 'Render the current model from ONE angle and return the PNG as a multimodal image. Cheap (one render, ~1500 input tokens next turn). Use when you have a specific suspicion to confirm from a known angle. For general "did this paint land correctly" verification, prefer renderViews — a single angle can hide an error visible from another.',
     input_schema: {
       type: 'object',
       properties: {
@@ -144,8 +144,30 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'renderViews',
+    description: 'Render MULTIPLE labeled angles (front + top + iso by default) as ONE composite PNG. THIS IS HOW YOU SEE YOUR WORK reliably — a top-down view can hide a smile that arches the wrong way, but front+top+iso together catch it. Costs ~1500-2500 input tokens for the whole composite (one image, multiple cells), only slightly more than a single renderView but with far better verification coverage.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        views: { type: 'string', enum: ['tri', 'all'], description: '"tri" = front + top + iso (default, 3 cells, lower cost). "all" = front + right + top + iso (4 cells, more coverage).' },
+        size: { type: 'integer', description: 'Pixel size per cell. Default 320.' },
+      },
+    },
+  },
+  {
+    name: 'runIsolated',
+    description: 'Run code WITHOUT side effects — does not modify the editor, does not save a version, does not affect currentMeshData. Returns {geometryData, thumbnail}; the thumbnail is forwarded back to you as a multimodal image so you can see the result. Use to TEST unfamiliar primitives (revolve axis behavior, hull edge cases, decompose ordering) on a 3-line snippet before committing a full runAndSave. Much cheaper than running, undoing, and retrying.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        code: { type: 'string', description: 'Code to run in the active language. Must return a Manifold (manifold-js) or evaluate to one (SCAD).' },
+      },
+      required: ['code'],
+    },
+  },
+  {
     name: 'paintPreview',
-    description: 'DRY-RUN: returns {triangleCount, bbox, centroid} for what a paint op WOULD select, WITHOUT committing. Same selector args as paintInBox / paintNear / paintFaces. Use to gauge whether your selector is too tight or too loose before spending the round-trip to paint and undo. Pass `withImage: true` to ALSO get back a vision-readable thumbnail of the candidate region (highlighted yellow over the current model) — costs ~1500 tokens, only ask when stats alone are inconclusive.',
+    description: 'DRY-RUN: returns {triangleCount, bbox, centroid} for what a paint op WOULD select, WITHOUT committing. Same selector args as paintInBox / paintNear / paintFaces. The cheapest way to catch a bad selector before you commit — call this before any non-trivial paint. Returns a yellow-highlighted thumbnail by default (the model can see it); pass `withImage: false` for the stats-only cheap path when you only need triangleCount.',
     input_schema: {
       type: 'object',
       properties: {
@@ -154,7 +176,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         radius: { type: 'number' },
         normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.' },
         triangleIds: { type: 'array', items: { type: 'integer' }, description: 'Explicit triangle list — mostly for verifying findFaces results.' },
-        withImage: { type: 'boolean', description: 'When true, returns the preview thumbnail as a multimodal image. Default false (stats only).' },
+        withImage: { type: 'boolean', description: 'When true (default), returns the preview thumbnail as a multimodal image. Pass false for stats-only.' },
       },
     },
   },
@@ -348,11 +370,12 @@ const ALWAYS_AVAILABLE = new Set([
 const RUN_GATED = new Set(['runCode']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors']);
-/** renderView ships a PNG back to the model via a multimodal content
+/** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
- *  code + stats alone. */
-const VIEWS_GATED = new Set(['renderView']);
+ *  code + stats alone. runIsolated is here because its primary value is
+ *  the thumbnail; without vision it degrades to just the stats. */
+const VIEWS_GATED = new Set(['renderView', 'renderViews', 'runIsolated']);
 
 export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
   return ALL_TOOLS.filter(t => {
@@ -387,10 +410,11 @@ function getApi(): PartwrightAPI {
 export async function executeTool(name: string, input: Record<string, unknown>): Promise<ToolExecResult> {
   try {
     const api = getApi();
-    // renderView is the only tool that hands back an image. Handled
-    // directly here so the data-URL parsing + multimodal wrapping stays
-    // out of the generic dispatch helper.
+    // Tools that ship images back to the model bypass the generic JSON
+    // dispatch — they need the data-URL → multimodal-image wrapping.
     if (name === 'renderView') return executeRenderView(api, input);
+    if (name === 'renderViews') return await executeRenderViews(api, input);
+    if (name === 'runIsolated') return await executeRunIsolated(api, input);
 
     const result = await dispatch(api, name, input);
     if (result === undefined) return { content: '(ok)', isError: false };
@@ -410,32 +434,64 @@ export async function executeTool(name: string, input: Record<string, unknown>):
 
 function executeRenderView(api: PartwrightAPI, input: Record<string, unknown>): ToolExecResult {
   const result = api.renderView(input) as string | { error: string } | null | undefined;
-  if (result == null) return { content: 'renderView returned no image — is there geometry loaded? Run code first.', isError: true };
-  if (typeof result === 'object' && 'error' in result) return { content: result.error, isError: true };
-  if (typeof result !== 'string') return { content: 'renderView returned an unexpected value', isError: true };
-
-  // data URL format: "data:image/png;base64,...."
-  const match = result.match(/^data:(image\/[a-z+]+);base64,(.+)$/i);
-  if (!match) return { content: 'renderView returned a non-data-URL string', isError: true };
-  const mediaTypeStr = match[1];
-  const data = match[2];
-  const safeMedia: ImageSource['mediaType'] =
-    mediaTypeStr === 'image/png' || mediaTypeStr === 'image/jpeg' ||
-    mediaTypeStr === 'image/gif' || mediaTypeStr === 'image/webp'
-      ? mediaTypeStr
-      : 'image/png';
-
   const elevation = (input.elevation as number | undefined) ?? 30;
   const azimuth = (input.azimuth as number | undefined) ?? 0;
   const ortho = (input.ortho as boolean | undefined) ?? false;
   const size = (input.size as number | undefined) ?? 320;
   const label = `view: elev=${elevation}°, az=${azimuth}°${ortho ? ', ortho' : ''}, ${size}px`;
+  return wrapImageResult(result, 'renderView', label);
+}
 
+async function executeRenderViews(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {
+  const result = await api.renderViews(input) as string | { error: string } | null | undefined;
+  const views = (input.views as string | undefined) ?? 'tri';
+  const size = (input.size as number | undefined) ?? 320;
+  const label = `views: ${views} composite (${size}px per cell)`;
+  return wrapImageResult(result, 'renderViews', label);
+}
+
+async function executeRunIsolated(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {
+  const code = input.code as string;
+  const result = await api.runIsolated(code) as { geometryData?: unknown; thumbnail?: string | null; error?: string } | undefined;
+  if (!result || typeof result !== 'object') return { content: 'runIsolated returned no result', isError: true };
+  if ('error' in result && typeof result.error === 'string') return { content: result.error, isError: true };
+  const stats = result.geometryData ?? {};
+  const summary = `runIsolated stats: ${JSON.stringify(stats, null, 2)}`;
+  if (typeof result.thumbnail !== 'string') {
+    return { content: summary, isError: false };
+  }
+  const img = parseImageDataUrl(result.thumbnail);
+  if (!img) return { content: summary, isError: false };
+  return {
+    content: `${summary}\n\nThumbnail attached — this is what the code would produce without side effects. Use to verify before runAndSave.`,
+    isError: false,
+    image: { ...img, label: 'runIsolated preview' },
+  };
+}
+
+function wrapImageResult(result: string | { error: string } | null | undefined, toolName: string, label: string): ToolExecResult {
+  if (result == null) return { content: `${toolName} returned no image — is there geometry loaded? Run code first.`, isError: true };
+  if (typeof result === 'object' && 'error' in result) return { content: result.error, isError: true };
+  if (typeof result !== 'string') return { content: `${toolName} returned an unexpected value`, isError: true };
+  const img = parseImageDataUrl(result);
+  if (!img) return { content: `${toolName} returned a non-data-URL string`, isError: true };
   return {
     content: `Rendered ${label}. The image is attached to this result — inspect it visually before deciding next steps.`,
     isError: false,
-    image: { data, mediaType: safeMedia, label },
+    image: { ...img, label },
   };
+}
+
+function parseImageDataUrl(dataUrl: string): { data: string; mediaType: ImageSource['mediaType'] } | null {
+  const match = dataUrl.match(/^data:(image\/[a-z+]+);base64,(.+)$/i);
+  if (!match) return null;
+  const mediaTypeStr = match[1];
+  const safeMedia: ImageSource['mediaType'] =
+    mediaTypeStr === 'image/png' || mediaTypeStr === 'image/jpeg' ||
+    mediaTypeStr === 'image/gif' || mediaTypeStr === 'image/webp'
+      ? mediaTypeStr
+      : 'image/png';
+  return { data: match[2], mediaType: safeMedia };
 }
 
 async function dispatch(api: PartwrightAPI, name: string, input: Record<string, unknown>): Promise<unknown> {
@@ -488,10 +544,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.getFeatureCentroids(input);
     case 'paintPreview': {
       // paintPreview returns {thumbnail, triangleCount, bbox, centroid}.
-      // When the caller didn't ask for the image, strip it before
-      // returning — saves tokens. When withImage: true, repackage the
-      // thumbnail as a multimodal ToolExecResult so the model can see it.
-      const wantImage = input.withImage === true;
+      // The thumbnail is on by default — it's the cheapest way for the
+      // model to catch a bad selector before committing. Opt out with
+      // withImage: false for the stats-only cheap path.
+      const wantImage = input.withImage !== false;
       // The underlying API doesn't know about withImage — drop it.
       const apiInput = { ...input };
       delete apiInput.withImage;

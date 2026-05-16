@@ -36,16 +36,30 @@ to delete a specific older mistake (get the id from listRegions). Save
 clearColors for "start completely over from scratch" requests.
 
 Paint workflow for any non-trivial selector:
-1. paintPreview({box / point+radius / etc.}) → check triangleCount, bbox.
-   If the count looks wildly wrong (way too many or zero), adjust the
-   selector args before committing. paintPreview is free of side effects
-   — use it liberally.
+1. paintPreview({box / point+radius / etc., withImage: true}) →
+   ALWAYS pass withImage: true unless you only need the triangleCount.
+   The yellow-highlighted thumbnail is the cheapest way to catch a
+   bad selector before committing. Cheaper than paint → renderViews →
+   undoLastPaint.
 2. paintInBox / paintNear / paintSlab to commit.
-3. renderView({elevation, azimuth}) to visually verify. The image is
-   sent back to you as a multimodal block — you can actually see the
-   result, not just the stats. Pick an angle that shows the painted
-   feature.
+3. renderViews() to visually verify from front + top + iso in one
+   composite. A single angle can hide an asymmetric error (e.g. a
+   smile that arches the wrong way is invisible from top but obvious
+   from front). Prefer renderViews over a single renderView for
+   verification — same one-call cost but far better coverage.
 4. If wrong: undoLastPaint() (NOT clearColors), tweak, retry.
+
+Before committing unfamiliar code with runAndSave, use runIsolated to
+quick-test on a small snippet. Examples worth verifying first: revolve
+axis behavior, hull edge cases, decompose ordering, any boolean op
+on a complex chain. runIsolated returns a thumbnail you can see —
+much cheaper than runAndSave → renderViews → forkVersion-to-fix.
+
+When the user's request is genuinely ambiguous (e.g. "add a smile" —
+is it a carved recess, raised feature, or flat color region?
+"thicker handle" — by how much, on what axis?), ASK ONE clarifying
+question instead of guessing. A clarification turn costs less than
+3 wasted versions.
 
 For models built as a boolean union of distinct features (e.g. a smiley =
 head ∪ left_eye ∪ right_eye ∪ mouth), use paintComponent(index, color)
@@ -121,7 +135,11 @@ export function toggleSuffix(toggles: ChatToggles): string {
     '',
     '## Session toggle state',
     '',
-    `Active language: ${lang}  — write code in this language. Use setActiveLanguage to switch only when justified (e.g. user asked, or the request maps obviously better to the other engine: OpenSCAD for parametric extrusion-heavy parts, manifold-js for boolean composition and fine programmatic control).`,
+    `Active language: ${lang}  — write code in this language. Use setActiveLanguage to switch only when justified (e.g. user asked, or the request maps obviously better to the other engine: OpenSCAD for parametric extrusion-heavy parts, manifold-js for boolean composition and fine programmatic control).${
+      lang === 'scad'
+        ? ' Note: SCAD\'s revolve / linear_extrude / cylinder produce radial-fan triangle topology that is awkward to paint cleanly (every triangle radiates from the center axis). If the task involves precise painting of curved features, consider switching to manifold-js up front rather than wrestling with the fan mesh.'
+        : ''
+    }`,
     `Model: ${toggles.model}`,
     `Auto-retry on tool error: ${toggles.autoRetry}`,
     `Iteration cap (tool round-trips this turn): ${capLabel[toggles.maxIterations]}. Pace your tool calls accordingly — if the cap is low, batch related work and prefer one-shot tools like paintComponent or paintInBox over verify-then-paint loops.`,

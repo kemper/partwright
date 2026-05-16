@@ -2059,6 +2059,62 @@ async function main() {
       return renderSingleView(applyTriColorsIfVisible(currentMeshData), options ?? {});
     },
 
+    /** Render multiple angles of the current model laid out in a single
+     *  labeled grid, returned as one PNG data URL. The killer use case
+     *  is "did this paint operation land where I thought" — a single
+     *  top-down view can hide errors that show clearly from the front.
+     *  Default `views: 'tri'` returns front / top / iso (3 cells, 2x2
+     *  grid with one blank); pass `views: 'all'` for the standard 4-view
+     *  iso grid (front / right / top / iso). */
+    async renderViews(options?: { views?: 'tri' | 'all'; size?: number }): Promise<string | null> {
+      if (options !== undefined) {
+        const o = assertObject(options, 'renderViews(options)')!;
+        assertNoUnknownKeys(o, ['views', 'size'], 'renderViews(options)');
+        if (o.views !== undefined) assertEnum(o.views, ['tri', 'all'], 'renderViews(options).views');
+        assertNumber(o.size, 'renderViews(options).size', { optional: true, min: 1, integer: true });
+      }
+      if (!currentMeshData) return null;
+      const which = options?.views ?? 'tri';
+      const tileSize = options?.size ?? 320;
+      const colored = applyTriColorsIfVisible(currentMeshData);
+      const angles: { label: string; opts: { elevation: number; azimuth: number; ortho: boolean } }[] =
+        which === 'tri'
+          ? [
+              { label: 'Front', opts: { elevation: 0,  azimuth: 0,  ortho: true } },
+              { label: 'Top',   opts: { elevation: 90, azimuth: 0,  ortho: true } },
+              { label: 'Iso',   opts: { elevation: 35, azimuth: 45, ortho: false } },
+            ]
+          : [
+              { label: 'Front', opts: { elevation: 0,  azimuth: 0,   ortho: true } },
+              { label: 'Right', opts: { elevation: 0,  azimuth: 90,  ortho: true } },
+              { label: 'Top',   opts: { elevation: 90, azimuth: 0,   ortho: true } },
+              { label: 'Iso',   opts: { elevation: 35, azimuth: 45,  ortho: false } },
+            ];
+
+      const labelHeight = 24;
+      const cellHeight = tileSize + labelHeight;
+      const composite = document.createElement('canvas');
+      composite.width = tileSize * 2;
+      composite.height = cellHeight * 2;
+      const ctx = composite.getContext('2d');
+      if (!ctx) return null;
+      ctx.fillStyle = '#f4f4f5';
+      ctx.fillRect(0, 0, composite.width, composite.height);
+
+      // Render each angle to a data URL via renderSingleView (each call
+      // reuses the same offscreen WebGLRenderer), decode each to an
+      // HTMLImageElement, then stamp into the composite grid.
+      for (let i = 0; i < angles.length; i++) {
+        const { label, opts } = angles[i];
+        const dataUrl = renderSingleView(colored, { ...opts, size: tileSize });
+        if (!dataUrl) continue;
+        const img = await loadImageFromDataUrl(dataUrl);
+        if (!img) continue;
+        drawCell(ctx, img, i, tileSize, cellHeight, label);
+      }
+      return composite.toDataURL('image/png');
+    },
+
     /** Render a cross-section at Z height as an SVG string for visual verification */
     sliceAtZVisual(z: number): { svg: string; area: number; contours: number } | null {
       assertNumber(z, 'sliceAtZVisual(z)');
@@ -4128,6 +4184,7 @@ async function main() {
         'sliceAtZ':        { signature: 'sliceAtZ(z) -- Cross-section at height -> {polygons, svg, area}', docs: '/ai.md#console-api--windowpartwright' },
         'getBoundingBox':  { signature: 'getBoundingBox() -- -> {min, max}', docs: '/ai.md#console-api--windowpartwright' },
         'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?}) -- Render from any angle -> data URL', docs: '/ai.md#visual-verification' },
+        'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
         'analyzeProfile':  { signature: 'analyzeProfile(sampleCount?) -- Z-profile feature summary', docs: '/ai.md#console-api--windowpartwright' },
         'measureAt':       { signature: 'measureAt([x,y]) -- Ray-cast probe at XY -> {hits, thickness, topZ, bottomZ}', docs: '/ai.md#console-api--windowpartwright' },
         // Viewport controls
@@ -4262,6 +4319,43 @@ async function main() {
    *  `withinBox` filter and any other callers that need to scope a query
    *  region. Inclusive on both ends so a face touching the box boundary
    *  counts as inside. */
+  /** Draw one rendered angle into the renderViews composite grid:
+   *  the rendered tile occupies the top of the cell, with a labelled
+   *  footer band beneath it identifying the angle. */
+  function drawCell(
+    ctx: CanvasRenderingContext2D,
+    src: CanvasImageSource,
+    cellIndex: number,
+    tileSize: number,
+    cellHeight: number,
+    label: string,
+  ): void {
+    const col = cellIndex % 2;
+    const row = Math.floor(cellIndex / 2);
+    const x = col * tileSize;
+    const y = row * cellHeight;
+    ctx.drawImage(src, x, y, tileSize, tileSize);
+    ctx.fillStyle = '#27272a';
+    ctx.fillRect(x, y + tileSize, tileSize, cellHeight - tileSize);
+    ctx.fillStyle = '#f4f4f5';
+    ctx.font = '13px -apple-system, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, x + tileSize / 2, y + tileSize + 16);
+    ctx.textAlign = 'start';
+  }
+
+  /** Decode a data: URL into an HTMLImageElement. Image decoding from a
+   *  data URL is async even when the bytes are local — returning a
+   *  promise here keeps the renderViews caller cleanly awaitable. */
+  function loadImageFromDataUrl(dataUrl: string): Promise<HTMLImageElement | null> {
+    return new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = dataUrl;
+    });
+  }
+
   function bboxesIntersect(
     a: { min: [number, number, number]; max: [number, number, number] },
     b: { min: [number, number, number]; max: [number, number, number] },
