@@ -773,8 +773,41 @@ async function sendMessage(): Promise<void> {
  *  auto-retry. When the watchdog fires we abort and re-issue the same
  *  conversation; on retry attempts userBlocks is empty because the user
  *  message is already in history from the first attempt. */
+interface TurnOutcome {
+  totalCostUsd: number;
+  toolCalls: number;
+  reason: 'end_turn' | 'empty_final' | 'iteration_cap' | 'max_tokens' | 'refusal' | 'aborted' | 'error' | 'other';
+  detail?: string;
+  iterations: number;
+}
+
+function formatTurnOutcome(o: TurnOutcome): string {
+  const cost = formatUsd(o.totalCostUsd);
+  const iters = `${o.iterations} iter`;
+  const tools = o.toolCalls > 0 ? `, ${o.toolCalls} tool call${o.toolCalls === 1 ? '' : 's'}` : '';
+  switch (o.reason) {
+    case 'end_turn':
+      return `✓ done · ${cost} · ${iters}${tools}`;
+    case 'empty_final':
+      return `⚠ model exited without a final message · ${cost} · ${iters}${tools} — last visible content is above`;
+    case 'iteration_cap':
+      return `⚠ stopped at agent iteration cap (${o.iterations}) — try a more focused prompt or click Compact · ${cost}${tools}`;
+    case 'max_tokens':
+      return `⚠ hit max_tokens before finishing · ${cost} · ${iters}${tools} — ask the model to continue`;
+    case 'refusal':
+      return `⊘ model refused · ${cost} · ${iters}${tools}`;
+    case 'aborted':
+      return `⊘ stopped · ${cost} · ${iters}${tools}`;
+    case 'error':
+      return `✗ ${o.detail ?? 'error'} · ${cost} · ${iters}${tools}`;
+    default:
+      return `· ended (${o.detail ?? 'other'}) · ${cost} · ${iters}${tools}`;
+  }
+}
+
 async function runTurnWithStallRetry(apiKey: string, toggles: ChatToggles, userBlocks: ChatBlock[]): Promise<void> {
   let attempt = 0;
+  let lastTurnOutcome: TurnOutcome | null = null;
   while (true) {
     attempt++;
     const controller = new AbortController();
@@ -833,7 +866,11 @@ async function runTurnWithStallRetry(apiKey: string, toggles: ChatToggles, userB
         if (result.isError) setTransientStatus('A tool errored. The agent will retry or surface the issue.');
       },
       onError: err => {
+        // Capture as the outcome too so the sticky final-state banner
+        // shows the error instead of disappearing silently. The transient
+        // status still flashes for users watching that strip.
         setTransientStatus(`Error: ${err.message}`);
+        lastTurnOutcome = { totalCostUsd: 0, toolCalls: 0, reason: 'error', detail: err.message, iterations: 0 };
       },
       onAborted: () => {
         // Only show the user-stopped notice if the user actually clicked
@@ -843,18 +880,28 @@ async function runTurnWithStallRetry(apiKey: string, toggles: ChatToggles, userB
           inputEl?.focus();
         }
       },
-      onTurnComplete: () => {
+      onTurnComplete: info => {
         void loadHistoryForCurrentSession().then(() => {
           renderTranscript();
           renderCostMeter();
         });
+        lastTurnOutcome = info;
       },
     });
 
     state.inFlight = false;
     state.inFlightController = null;
     setSendButtonMode('send');
-    hideProgress();
+
+    // Surface a sticky completion banner so the user knows the turn
+    // actually ended and why — better than a silent hideProgress that
+    // reads as "the model stalled and gave up".
+    if (lastTurnOutcome) {
+      showProgressFinal(formatTurnOutcome(lastTurnOutcome));
+      lastTurnOutcome = null;
+    } else {
+      hideProgress();
+    }
 
     if (stalledByWatchdog && progressState.retryCount <= MAX_STALL_RETRIES) {
       // Strip the empty/partial assistant message left by the stalled
@@ -901,7 +948,7 @@ function setSendButtonMode(mode: 'send' | 'stop'): void {
 // === Progress indicator + stall watchdog ===
 
 interface ProgressTracker {
-  phase: 'thinking' | 'streaming' | 'tool' | 'idle';
+  phase: 'thinking' | 'streaming' | 'tool' | 'final' | 'idle';
   detail?: string;
   lastBeat: number;
   retryCount: number;
@@ -954,10 +1001,16 @@ function renderProgress(): void {
     progressState.phase === 'thinking' ? `🧠 thinking…${silentSuffix}` :
     progressState.phase === 'streaming' ? `✎ streaming response…${silentSuffix}` :
     progressState.phase === 'tool' ? `🔧 ${progressState.detail ?? 'running tool'}…` :
+    progressState.phase === 'final' ? (progressState.detail ?? '✓ done') :
     '';
   progressEl.replaceChildren();
   const dot = document.createElement('span');
-  dot.className = 'inline-block w-2 h-2 rounded-full bg-blue-400 animate-pulse';
+  // Final-state dot is static and colored by outcome rather than pulsing.
+  const dotColor =
+    progressState.phase === 'final'
+      ? (label.startsWith('⚠') ? 'bg-amber-400' : label.startsWith('✗') || label.startsWith('⊘') ? 'bg-red-400' : 'bg-emerald-400')
+      : 'bg-blue-400 animate-pulse';
+  dot.className = `inline-block w-2 h-2 rounded-full ${dotColor}`;
   progressEl.appendChild(dot);
   const text = document.createElement('span');
   text.textContent = label;
@@ -969,6 +1022,27 @@ function renderProgress(): void {
   ) {
     triggerStallRetry();
   }
+}
+
+/** Display a sticky completion / failure status for ~6s after a turn
+ *  ends. Replaces the silent hideProgress() that left users wondering
+ *  whether the model finished, errored, or just stopped speaking. */
+function showProgressFinal(detail: string): void {
+  if (!progressEl) return;
+  progressState.phase = 'final';
+  progressState.detail = detail;
+  progressState.lastBeat = Date.now();
+  progressEl.classList.remove('hidden');
+  renderProgress();
+  if (progressTickerId !== null) {
+    clearInterval(progressTickerId);
+    progressTickerId = null;
+  }
+  window.setTimeout(() => {
+    if (progressState.phase === 'final' && progressState.detail === detail) {
+      hideProgress();
+    }
+  }, 6000);
 }
 
 function triggerStallRetry(): void {

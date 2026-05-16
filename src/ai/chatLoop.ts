@@ -44,8 +44,16 @@ export interface RunTurnCallbacks {
    *  and on a wall-clock interval while waiting for the first text delta.
    *  Use to keep an indicator alive so the user knows we haven't frozen. */
   onProgress?: (info: { phase: 'thinking' | 'streaming' | 'tool' | 'idle'; detail?: string }) => void;
-  /** Loop ended (either end_turn or unrecoverable error). */
-  onTurnComplete?: (info: { totalCostUsd: number; toolCalls: number }) => void;
+  /** Loop ended. `reason` distinguishes a clean end_turn from the
+   *  iteration cap, an empty final response, or other stop reasons so
+   *  the UI can surface what actually happened. */
+  onTurnComplete?: (info: {
+    totalCostUsd: number;
+    toolCalls: number;
+    reason: 'end_turn' | 'empty_final' | 'iteration_cap' | 'max_tokens' | 'refusal' | 'aborted' | 'error' | 'other';
+    detail?: string;
+    iterations: number;
+  }) => void;
   /** User aborted the turn. Fires after the partial assistant message has
    *  been persisted. Distinct from onError — abort is intentional. */
   onAborted?: () => void;
@@ -53,7 +61,7 @@ export interface RunTurnCallbacks {
   onError?: (err: Error) => void;
 }
 
-const MAX_AGENT_ITERATIONS = 8;
+const MAX_AGENT_ITERATIONS = 16;
 
 /** Run one user turn through the agent loop. Returns the final history. */
 export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks = {}): Promise<ChatMessage[]> {
@@ -148,12 +156,19 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
 
     if (aborted) {
       callbacks.onAborted?.();
-      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls });
+      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'aborted', iterations: iter + 1 });
       return workingHistory;
     }
 
     if (result.stopReason !== 'tool_use' || result.toolCalls.length === 0) {
-      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls });
+      // Map stop reason to a UI-friendly outcome so the panel can show
+      // "✓ done" vs "⚠ model exited without final text" vs other.
+      const hasText = result.text.trim().length > 0;
+      let reason: 'end_turn' | 'empty_final' | 'max_tokens' | 'refusal' | 'other' = 'other';
+      if (result.stopReason === 'end_turn') reason = hasText ? 'end_turn' : 'empty_final';
+      else if (result.stopReason === 'max_tokens') reason = 'max_tokens';
+      else if (result.stopReason === 'refusal') reason = 'refusal';
+      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason, detail: result.stopReason, iterations: iter + 1 });
       return workingHistory;
     }
 
@@ -179,14 +194,13 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
 
     if (signal?.aborted) {
       callbacks.onAborted?.();
-      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls });
+      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'aborted', iterations: iter + 1 });
       return workingHistory;
     }
   }
 
   // Hit iteration cap — surface to the user so they can intervene.
-  callbacks.onError?.(new Error(`Agent loop exceeded ${MAX_AGENT_ITERATIONS} iterations without completing. Try a more focused prompt or compact the conversation.`));
-  callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls });
+  callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'iteration_cap', iterations: MAX_AGENT_ITERATIONS });
   return workingHistory;
 }
 
