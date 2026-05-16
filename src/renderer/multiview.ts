@@ -74,6 +74,31 @@ function meshDataToGeometry(meshData: MeshData): THREE.BufferGeometry {
 }
 
 let offRenderer: THREE.WebGLRenderer | null = null;
+let offRendererDisposeTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Three.js retains compiled shader programs, framebuffers, and texture handles
+// inside WebGLRenderer that setSize() does not free. Browsers also cap a tab
+// at ~16 live WebGL contexts. We dispose the offscreen renderer after a short
+// idle window so GPU memory is reclaimed between user actions; the lazy branch
+// in getOffscreenRenderer re-creates it on the next render.
+const OFFSCREEN_IDLE_DISPOSE_MS = 10_000;
+
+function disposeOffscreenRenderer(): void {
+  if (!offRenderer) return;
+  // forceContextLoss releases the underlying WebGL context; dispose() alone
+  // leaves it counted against the per-tab context cap.
+  offRenderer.forceContextLoss();
+  offRenderer.dispose();
+  offRenderer = null;
+}
+
+function scheduleOffscreenDispose(): void {
+  if (offRendererDisposeTimer) clearTimeout(offRendererDisposeTimer);
+  offRendererDisposeTimer = setTimeout(() => {
+    offRendererDisposeTimer = null;
+    disposeOffscreenRenderer();
+  }, OFFSCREEN_IDLE_DISPOSE_MS);
+}
 
 function getOffscreenRenderer(size: number): THREE.WebGLRenderer {
   if (!offRenderer) {
@@ -81,6 +106,7 @@ function getOffscreenRenderer(size: number): THREE.WebGLRenderer {
     offRenderer.setPixelRatio(1);
   }
   offRenderer.setSize(size, size);
+  scheduleOffscreenDispose();
   return offRenderer;
 }
 
