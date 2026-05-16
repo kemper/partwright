@@ -86,8 +86,33 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'listComponents',
-    description: 'Decompose the current manifold into its boolean-distinct components and return {index, centroid, boundingBox, volume, surfaceArea} for each. Use this for "paint each feature" workflows on unioned models — for a smiley built from head + 2 eyes + mouth, this returns 4 components with bboxes, and you can call paintInBox({box: component.boundingBox, color}) for each instead of guessing world coordinates.',
+    description: 'Decompose the current manifold into its boolean-distinct components and return {index, centroid, boundingBox, volume, surfaceArea} for each. Use this for "paint each feature" workflows on unioned models — for a smiley built from head + 2 eyes + mouth, this returns 4 components with bboxes. Prefer paintComponent(index, color) if you intend to paint right after — it skips this query entirely.',
     input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'paintComponent',
+    description: 'Paint a boolean-distinct component (from listComponents) in one call. Equivalent to listComponents → paintInBox(component.boundingBox) but a single round-trip. Use whenever the user wants "paint the Nth piece a color" — eyes, nose, mouth on a unioned smiley, arms of a robot, etc.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        index: { type: 'integer', description: 'Component index from listComponents() (0-based).' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
+        name: { type: 'string', description: 'Optional human-readable region name. Defaults to "Component <index>".' },
+        topOnly: { type: 'boolean', description: 'If true, only paint upward-facing triangles (skip side walls + bottom). Same shortcut as paintInBox.topOnly.' },
+      },
+      required: ['index', 'color'],
+    },
+  },
+  {
+    name: 'getFeatureCentroids',
+    description: 'Token-cheap planning aid: returns coplanar face groups with just centroid + normal + bbox + area (NO triangle IDs). Use this when planning where to paint without committing yet — cheaper than getMeshSummary because the triangleIds payload is omitted. Optional `withinBox` scopes to one feature.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        maxGroups: { type: 'integer', description: 'Return the N largest groups. Default 32.' },
+        withinBox: { type: 'object', description: 'Optional {min: [x,y,z], max: [x,y,z]} — only groups whose bbox intersects.' },
+      },
+    },
   },
   {
     name: 'renderView',
@@ -104,7 +129,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'paintPreview',
-    description: 'DRY-RUN: returns {triangleCount, bbox, centroid} for what a paint op WOULD select, WITHOUT committing. Same selector args as paintInBox / paintNear / paintFaces. Use to gauge whether your selector is too tight or too loose before spending the round-trip to paint and undo. (The underlying API also returns a thumbnail image — stripped from the tool result because you cannot interpret it; call renderView separately if you need to see.)',
+    description: 'DRY-RUN: returns {triangleCount, bbox, centroid} for what a paint op WOULD select, WITHOUT committing. Same selector args as paintInBox / paintNear / paintFaces. Use to gauge whether your selector is too tight or too loose before spending the round-trip to paint and undo. Pass `withImage: true` to ALSO get back a vision-readable thumbnail of the candidate region (highlighted yellow over the current model) — costs ~1500 tokens, only ask when stats alone are inconclusive.',
     input_schema: {
       type: 'object',
       properties: {
@@ -113,6 +138,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         radius: { type: 'number' },
         normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.' },
         triangleIds: { type: 'array', items: { type: 'integer' }, description: 'Explicit triangle list — mostly for verifying findFaces results.' },
+        withImage: { type: 'boolean', description: 'When true, returns the preview thumbnail as a multimodal image. Default false (stats only).' },
       },
     },
   },
@@ -183,13 +209,14 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'paintNear',
-    description: 'Paint every triangle within `radius` of `point` (optionally constrained by a normal cone). One call, no triangleId shuttling. Use for "paint the faces around this corner / nub / boss".',
+    description: 'Paint every triangle within `radius` of `point` (optionally constrained by a normal cone). One call, no triangleId shuttling. Use for "paint the faces around this corner / nub / boss". Pass `topOnly: true` to skip side walls and the bottom face — the most common over-paint cause.',
     input_schema: {
       type: 'object',
       properties: {
         point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         radius: { type: 'number' },
-        normalCone: { type: 'object', description: 'Optional {normal: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.' },
+        normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n} to restrict to faces pointing roughly in that direction.' },
+        topOnly: { type: 'boolean', description: 'Shortcut for normalCone: {axis: [0,0,1], angleDeg: 30}. Common case: paint only upward-facing faces in the region.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
       },
@@ -198,12 +225,13 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'paintInBox',
-    description: 'Paint every triangle whose centroid is inside the axis-aligned box (optionally constrained by a normal cone). One call. Use for "paint the top half / the right rim / everything below z=0".',
+    description: 'Paint every triangle whose centroid is inside the axis-aligned box (optionally constrained by a normal cone). One call. Use for "paint the top half / the right rim / everything below z=0". Pass `topOnly: true` to skip side walls and the bottom face — the most common over-paint cause.',
     input_schema: {
       type: 'object',
       properties: {
         box: { type: 'object', description: '{min: [x,y,z], max: [x,y,z]}' },
-        normalCone: { type: 'object', description: 'Optional {normal: [x,y,z], angleDeg: n}.' },
+        normalCone: { type: 'object', description: 'Optional {axis: [x,y,z], angleDeg: n}.' },
+        topOnly: { type: 'boolean', description: 'Shortcut for normalCone: {axis: [0,0,1], angleDeg: 30}. Common case: paint the top face of a feature without catching its sides.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
       },
@@ -288,6 +316,7 @@ const ALWAYS_AVAILABLE = new Set([
   'setCode',
   'getGeometryData',
   'getMeshSummary',
+  'getFeatureCentroids',
   'getSessionContext',
   'listVersions',
   'loadVersion',
@@ -300,7 +329,7 @@ const ALWAYS_AVAILABLE = new Set([
 
 const RUN_GATED = new Set(['runCode']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintSlab', 'paintNearestRegion', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors']);
 /** renderView ships a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -431,13 +460,38 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.findFaces(input);
     case 'listComponents':
       return api.listComponents();
+    case 'paintComponent':
+      return api.paintComponent(input);
+    case 'getFeatureCentroids':
+      return api.getFeatureCentroids(input);
     case 'paintPreview': {
-      // paintPreview returns a {thumbnail, triangleCount, bbox, centroid}
-      // — the thumbnail is a large base64 PNG the model can't interpret
-      // and costs tokens to ship, so we strip it before returning.
-      const result = await api.paintPreview(input) as Record<string, unknown> | undefined;
-      if (result && typeof result === 'object') {
-        delete result.thumbnail;
+      // paintPreview returns {thumbnail, triangleCount, bbox, centroid}.
+      // When the caller didn't ask for the image, strip it before
+      // returning — saves tokens. When withImage: true, repackage the
+      // thumbnail as a multimodal ToolExecResult so the model can see it.
+      const wantImage = input.withImage === true;
+      // The underlying API doesn't know about withImage — drop it.
+      const apiInput = { ...input };
+      delete apiInput.withImage;
+      const result = await api.paintPreview(apiInput) as Record<string, unknown> | undefined;
+      if (!result || typeof result !== 'object') return result;
+      const thumbnail = result.thumbnail as string | undefined;
+      delete result.thumbnail;
+      if (wantImage && typeof thumbnail === 'string') {
+        const match = thumbnail.match(/^data:(image\/[a-z+]+);base64,(.+)$/i);
+        if (match) {
+          const mediaTypeStr = match[1];
+          const safeMedia: ImageSource['mediaType'] =
+            mediaTypeStr === 'image/png' || mediaTypeStr === 'image/jpeg' ||
+            mediaTypeStr === 'image/gif' || mediaTypeStr === 'image/webp'
+              ? mediaTypeStr : 'image/png';
+          const summary = `Preview: ${JSON.stringify(result)}. Candidate triangles are highlighted yellow over the current model.`;
+          return {
+            content: summary,
+            isError: false,
+            image: { data: match[2], mediaType: safeMedia, label: 'paintPreview' },
+          } satisfies ToolExecResult;
+        }
       }
       return result;
     }

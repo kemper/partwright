@@ -3337,15 +3337,21 @@ async function main() {
       normalCone?: { axis: [number, number, number]; angleDeg: number };
       color: [number, number, number];
       name?: string;
+      /** Shortcut: paint only upward-facing triangles inside the box. Same
+       *  as `normalCone: { axis: [0, 0, 1], angleDeg: 30 }` — eliminates
+       *  the common over-paint where the box also catches side walls and
+       *  the bottom face. Ignored when `normalCone` is explicitly set. */
+      topOnly?: boolean;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintInBox requires { box, color }' };
-      const filterErr = validateBoxAndCone(opts.box, opts.normalCone);
+      const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
+      const filterErr = validateBoxAndCone(opts.box, cone);
       if (filterErr) return { error: filterErr };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
 
-      const triangles = collectTrianglesByFilter(currentMeshData, opts.box, opts.normalCone, null);
-      if (triangles.size === 0) return { error: 'paintInBox: no triangles matched the box (and normalCone, if any). Try widening the box, raising angleDeg, or call findFaces() to see what passes each filter individually.' };
+      const triangles = collectTrianglesByFilter(currentMeshData, opts.box, cone, null);
+      if (triangles.size === 0) return { error: `paintInBox: no triangles matched the box${cone ? ' (with the normalCone' + (opts.topOnly ? '/topOnly' : '') + ' filter)' : ''}. Try widening the box, dropping topOnly/normalCone, or call findFaces() to see what passes each filter individually.` };
 
       return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
     },
@@ -3369,6 +3375,8 @@ async function main() {
       normalCone?: { axis: [number, number, number]; angleDeg: number };
       color: [number, number, number];
       name?: string;
+      /** Shortcut: only upward-facing triangles. See paintInBox.topOnly. */
+      topOnly?: boolean;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintNear requires { point, radius, color }' };
@@ -3377,11 +3385,12 @@ async function main() {
         if (typeof opts.point[i] !== 'number' || !Number.isFinite(opts.point[i])) return { error: 'point components must be finite numbers' };
       }
       if (typeof opts.radius !== 'number' || !Number.isFinite(opts.radius) || opts.radius <= 0) return { error: 'radius must be a positive finite number' };
-      const coneErr = validateNormalCone(opts.normalCone);
+      const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
+      const coneErr = validateNormalCone(cone);
       if (coneErr) return { error: coneErr };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
 
-      const triangles = collectTrianglesBySphere(currentMeshData, opts.point as [number, number, number], opts.radius, opts.normalCone);
+      const triangles = collectTrianglesBySphere(currentMeshData, opts.point as [number, number, number], opts.radius, cone);
       if (triangles.size === 0) return { error: `paintNear: no triangles within ${opts.radius} of [${opts.point.join(', ')}]. Try a larger radius — call findFaces() with a bigger box first to see what's around.` };
 
       return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
@@ -3816,6 +3825,57 @@ async function main() {
       };
     },
 
+    /** Paint a single boolean-distinct component by index from
+     *  `listComponents()`. Convenience wrapper that runs decompose, pulls
+     *  the component's bounding box, and calls paintInBox in one round
+     *  trip. Use this when you already know "the 3rd unioned part is the
+     *  mouth, paint it red" — saves the listComponents → paintInBox
+     *  two-call dance. */
+    paintComponent(opts: {
+      index: number;
+      color: [number, number, number];
+      name?: string;
+      /** Inherits the same topOnly shortcut as paintInBox. */
+      topOnly?: boolean;
+    }) {
+      if (!opts || typeof opts !== 'object') return { error: 'paintComponent requires { index, color }' };
+      if (!Number.isInteger(opts.index) || opts.index < 0) return { error: 'paintComponent.index must be a non-negative integer (from listComponents)' };
+      if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
+      if (!currentManifold) return { error: 'No geometry loaded — run code first.' };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let parts: any[] | null = null;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        parts = currentManifold.decompose() as any[];
+        if (opts.index >= parts.length) {
+          return { error: `paintComponent.index ${opts.index} out of range — listComponents has ${parts.length} component(s).` };
+        }
+        const bb = getBoundingBox(parts[opts.index]);
+        if (!bb) return { error: `Component ${opts.index} has no bounding box (degenerate geometry?).` };
+        // Pad the box slightly so a flat coplanar boundary doesn't miss
+        // triangles whose centroid lies exactly on the edge.
+        const pad = 1e-4;
+        const box = {
+          min: [bb.min[0] - pad, bb.min[1] - pad, bb.min[2] - pad] as [number, number, number],
+          max: [bb.max[0] + pad, bb.max[1] + pad, bb.max[2] + pad] as [number, number, number],
+        };
+        return partwrightAPI.paintInBox({ box, color: opts.color, name: opts.name ?? `Component ${opts.index}`, topOnly: opts.topOnly });
+      } catch (err) {
+        return { error: `paintComponent failed: ${err instanceof Error ? err.message : String(err)}` };
+      } finally {
+        if (parts) for (const p of parts) { try { p.delete(); } catch { /* noop */ } }
+      }
+    },
+
+    /** Token-cheap planning aid for paint workflows: returns just the
+     *  centroid + normal + bbox of each coplanar face group, no triangle
+     *  IDs. Same as `getMeshSummary({maxTrianglesPerGroup: 0, maxGroups})`
+     *  but a one-liner that signals "I'm planning, not painting yet". */
+    getFeatureCentroids(opts?: { maxGroups?: number; withinBox?: { min: [number, number, number]; max: [number, number, number] } }) {
+      const maxGroups = Math.max(1, opts?.maxGroups ?? 32);
+      return partwrightAPI.getMeshSummary({ maxTrianglesPerGroup: 0, maxGroups, ...(opts?.withinBox ? { withinBox: opts.withinBox } : {}) });
+    },
+
     /** Decompose the current manifold into its boolean-distinct components
      *  and return per-component metadata: `{index, centroid, boundingBox,
      *  volume, surfaceArea}`. The killer use case is "paint each feature
@@ -4109,6 +4169,8 @@ async function main() {
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai.md#color-regions' },
         'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai.md#color-regions' },
         'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- Decompose the manifold into boolean-distinct parts. For "paint each feature" workflows (e.g. unioned head + eyes + mouth).', docs: '/ai.md#color-regions' },
+        'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai.md#color-regions' },
+        'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai.md#color-regions' },
         'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai.md#color-regions' },
         'undoLastPaint':   { signature: 'undoLastPaint() -- Undo the most recent paint op. Removed region goes on a redo stack.', docs: '/ai.md#color-regions' },
         'redoLastPaint':   { signature: 'redoLastPaint() -- Reapply the most recently undone paint op.', docs: '/ai.md#color-regions' },
@@ -4271,6 +4333,18 @@ async function main() {
 
   /** Validate `{ axis, angleDeg }` shape used by paint cone filters. Returns
    *  an error string or `null`. */
+  /** Resolve the normalCone to use for a paint op. Explicit cone wins;
+   *  `topOnly: true` is sugar for "upward-facing within ~30° of +Z" and
+   *  is the most common case the agent over-paints without. */
+  function resolvePaintCone(
+    explicit: { axis: [number, number, number]; angleDeg: number } | undefined,
+    topOnly: boolean | undefined,
+  ): { axis: [number, number, number]; angleDeg: number } | undefined {
+    if (explicit) return explicit;
+    if (topOnly) return { axis: [0, 0, 1], angleDeg: 30 };
+    return undefined;
+  }
+
   function validateNormalCone(cone: { axis: [number, number, number]; angleDeg: number } | undefined): string | null {
     if (cone === undefined) return null;
     if (typeof cone !== 'object' || cone === null) return 'normalCone must be { axis: [x,y,z], angleDeg: number }';

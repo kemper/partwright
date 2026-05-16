@@ -43,13 +43,21 @@ Paint workflow for any non-trivial selector:
 4. If wrong: undoLastPaint() (NOT clearColors), tweak, retry.
 
 For models built as a boolean union of distinct features (e.g. a smiley =
-head ∪ left_eye ∪ right_eye ∪ mouth), call listComponents() FIRST to get
-the bbox of each piece, then paintInBox({box: component.boundingBox,
-color}) per component. Don't guess world coordinates.
+head ∪ left_eye ∪ right_eye ∪ mouth), use paintComponent(index, color)
+to paint each piece in ONE call — it decomposes and paints in one round
+trip. Use listComponents() FIRST only when you need to inspect bboxes
+before deciding what to paint.
 
-For getMeshSummary on a complex model, scope queries with withinBox to
-the feature you care about — full-mesh summaries on hundreds of groups
-charge tokens for data you will discard.
+When paintInBox / paintNear catches side walls or bottom faces by
+mistake, pass topOnly: true — that restricts the selector to upward-
+facing triangles only (axis +Z within 30°) and eliminates the most
+common over-paint cause.
+
+For planning paint targets without committing, prefer
+getFeatureCentroids() over getMeshSummary — it omits the triangleIds
+payload (which can be tens of thousands of integers) and ships only
+the centroid + normal + bbox per group. Pass withinBox to scope to one
+feature of the model.
 
 Current Partwright API surface and conventions follow.
 

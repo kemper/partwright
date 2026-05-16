@@ -194,8 +194,8 @@ await partwright.clearAllSessions()      // Delete all sessions & versions
 // Color regions -- tag face regions with a color (see #color-regions)
 partwright.paintRegion({point, normal, color, name?, tolerance?})         // bucket: coplanar flood-fill -> {id, name, triangles} or {error, nearest?}
 partwright.paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) // snap seed to nearest face, then flood-fill -> {id, name, triangles, snappedTo} or {error}
-partwright.paintNear({point, radius, normalCone?, color, name?})          // sphere: paint triangles whose centroid is within radius -> {id, name, triangles, bbox, centroid} or {error}
-partwright.paintInBox({box, normalCone?, color, name?})                   // box: paint triangles inside an AABB -> {id, name, triangles, bbox, centroid} or {error}
+partwright.paintNear({point, radius, normalCone?, topOnly?, color, name?})          // sphere: paint triangles whose centroid is within radius -> {id, name, triangles, bbox, centroid} or {error}
+partwright.paintInBox({box, normalCone?, topOnly?, color, name?})                   // box: paint triangles inside an AABB -> {id, name, triangles, bbox, centroid} or {error}
 partwright.paintFaces({triangleIds, color, name?})                        // brush: paint specific triangle indices -> {id, name, triangles} or {error}
 partwright.paintSlab({axis|normal, offset, thickness, color, name?})      // slab: paint a planar range -> {id, name, triangles} or {error}
 partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, view?}) // dry-run: highlight a candidate region -> {thumbnail, triangleCount, bbox, centroid} (does not commit)
@@ -205,6 +205,8 @@ partwright.getMesh()                     // -> {numVert, numTri, vertices, trian
 partwright.getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?, withinBox?}?) // -> {groups[{id, normal, centroid, area, triangleCount, bbox, triangleIds}], totalTriangles, groupCount, tolerance, unfiltered?}
 partwright.listRegions()                 // -> [{id, name, color, source, triangles, order, bbox, centroid}, ...]
 partwright.listComponents()              // -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- per-piece bbox for unioned models
+partwright.paintComponent({index, color, name?, topOnly?}) // One-call: paint the Nth boolean-distinct piece
+partwright.getFeatureCentroids({maxGroups?, withinBox?}?)  // Lightweight planning: centroids + normals + bbox per face group, NO triangleIds
 partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, view?}) // DRY-RUN -> {triangleCount, bbox, centroid, thumbnail}
 partwright.undoLastPaint()               // Reverse the SINGLE most recent paint op -> {undone, id, ...}
 partwright.redoLastPaint()               // Reapply the most recently undone paint -> {redone, id, ...}
@@ -468,19 +470,31 @@ const preview = partwright.paintPreview({ box: { min: [-5, -5, 8], max: [5, 5, 1
 
 **Paint by feature on unioned models.** When the geometry is a boolean
 union of distinct pieces (head + eyes + mouth, body + arms + legs, etc.),
-call `listComponents()` first to get the per-piece bbox:
+the one-call form is `paintComponent(index, color)` — it decomposes and
+paints in a single round trip:
 
 ```js
 const { components } = partwright.listComponents();
 // components: [{index, centroid, boundingBox, volume, surfaceArea}, ...]
-// Sort by centroid.y or volume to identify which is which.
+// Sort by centroid.y / volume to identify which piece is which, then:
 for (const c of components) {
-  partwright.paintInBox({ box: c.boundingBox, color: chooseColor(c.index) });
+  partwright.paintComponent({ index: c.index, color: chooseColor(c.index) });
 }
 ```
 
-This avoids guessing world coordinates and survives small parametric
-tweaks to the model.
+This avoids guessing world coordinates, survives small parametric
+tweaks to the model, and skips the listComponents → paintInBox pair.
+
+**Avoiding over-paint.** When `paintInBox` / `paintNear` catches side
+walls or the bottom face by mistake, pass `topOnly: true` — restricts
+to upward-facing triangles (axis +Z within 30°). Equivalent to
+`normalCone: { axis: [0, 0, 1], angleDeg: 30 }` but easier to remember.
+
+**Cheap planning.** `getFeatureCentroids({maxGroups, withinBox?})`
+returns face-group centroids + normals + bbox + area, WITHOUT the
+triangleId arrays that make `getMeshSummary` expensive on complex
+models. Use this when planning paint targets; only escalate to the
+full `getMeshSummary` when you actually need the per-triangle ids.
 
 **Fixing mistakes.** If a paint operation went wrong, prefer the surgical
 tools over `clearColors()`:
