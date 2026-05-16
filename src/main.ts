@@ -1549,7 +1549,12 @@ async function main() {
   // network blocks /ai.md) — toolbar still shows the Connect button.
   void (async () => {
     try {
-      await initAiPanel();
+      await initAiPanel({
+        onNavigateToEditor: async () => {
+          updateAppHistory('/editor', 'push');
+          await syncRouteFromURL();
+        },
+      });
       const cur = getState();
       await setAiActiveSession(cur.session?.id ?? null);
       const key = await getAiKey('anthropic');

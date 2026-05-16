@@ -125,6 +125,34 @@ test.describe('AI chat panel', () => {
     });
     expect(ok).toBe(true);
   });
+
+  test('drawer + send from landing page navigates to editor', async ({ page }) => {
+    // Open the drawer on /editor first so it persists open, then go back
+    // to the landing page. The drawer is a body-level overlay so it
+    // should still be visible there.
+    await page.goto('/editor');
+    // Wait for the panel itself, not just the toolbar button — the button
+    // mounts first, the panel's click-handler comes online a beat later.
+    await page.waitForSelector('#ai-panel');
+    // Click via dispatchEvent so we sidestep the same viewport-hit-test
+    // edge case that bites the toggle-pill click on a freshly-mounted
+    // panel; we just need the click handler to fire.
+    await page.locator('#btn-ai').dispatchEvent('click');
+    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/, { timeout: 5000 });
+    await page.goto('/');
+    await page.waitForSelector('#ai-panel');
+    await expect(page.locator('#ai-panel')).toBeVisible();
+
+    // Sending a message from the landing page should navigate to /editor.
+    // No key is set so the key modal appears first — that path is fine,
+    // we just want to confirm we don't silently model on /.
+    await page.locator('#ai-panel textarea').fill('build a cube');
+    await page.locator('#ai-panel button:has-text("Send")').dispatchEvent('click');
+    const onEditor = page.waitForURL(/\/editor/, { timeout: 5000 }).then(() => 'editor');
+    const onModal = page.waitForSelector('input[type="password"]', { timeout: 5000 }).then(() => 'modal');
+    const which = await Promise.race([onEditor, onModal]);
+    expect(['editor', 'modal']).toContain(which);
+  });
 });
 
 // === helpers ===

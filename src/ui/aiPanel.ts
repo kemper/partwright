@@ -49,12 +49,22 @@ let costMeterEl: HTMLElement | null = null;
 let panelStatusEl: HTMLElement | null = null;
 let progressEl: HTMLElement | null = null;
 let progressTickerId: number | null = null;
+let navigateToEditorFn: (() => Promise<void> | void) | null = null;
 
 let onPanelStateChange: ((open: boolean) => void) | null = null;
 
+export interface AiPanelOptions {
+  /** main.ts hands in a navigation helper so the panel can move the user
+   *  to the editor before firing a request from another page. Avoids a
+   *  silent-modeling-on-landing-page UX bug where the AI runs code but
+   *  the user can't see the result. */
+  onNavigateToEditor?: () => Promise<void> | void;
+}
+
 /** Mount the drawer once on app start. Idempotent. */
-export async function initAiPanel(): Promise<void> {
+export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   if (drawerEl) return;
+  navigateToEditorFn = opts.onNavigateToEditor ?? null;
   // Pre-load ai.md so the first turn doesn't pay the fetch latency on top
   // of the API round trip. Also seeds the systemPromptChars estimate.
   const aiMd = await loadAiMd();
@@ -669,6 +679,30 @@ async function sendMessage(): Promise<void> {
     return;
   }
 
+  // The drawer is a fixed overlay on every page (landing, catalog, help),
+  // but the AI's tools (runAndSave, setCode, paint*) target the editor.
+  // If the user fires from anywhere else, navigate to /editor and give
+  // the route handler a beat to mount the editor + engine before runTurn
+  // starts calling window.partwright methods.
+  if (window.location.pathname !== '/editor' && navigateToEditorFn) {
+    setTransientStatus('Switching to editor…');
+    try {
+      await navigateToEditorFn();
+    } catch (err) {
+      setTransientStatus(`Navigation failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    // Wait for window.partwright to actually be live before proceeding.
+    // The editor mount + engine init is async; polling is simpler than
+    // wiring a dedicated ready event for one caller.
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const w = window as unknown as { partwright?: { run?: unknown } };
+      if (w.partwright?.run) break;
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
+
   const settings = loadSettings();
   const blocks: ChatBlock[] = [];
   if (text.length > 0) blocks.push({ type: 'text', text });
@@ -828,9 +862,15 @@ const progressState: ProgressTracker = { phase: 'idle', lastBeat: 0, retryCount:
 /** Wall-clock seconds without a stream beat before we treat the request as
  *  stalled. Anthropic's adaptive thinking can pause output for tens of
  *  seconds during deep reasoning, so this threshold needs to be generous —
- *  smaller numbers cause spurious "auto-resume" loops on Opus 4.7. */
-const STALL_THRESHOLD_MS = 45_000;
+ *  smaller numbers cause spurious "auto-resume" loops on Opus 4.7. The
+ *  watchdog beats on every text delta, so this is the gap BETWEEN tokens,
+ *  not total turn time. */
+const STALL_THRESHOLD_MS = 35_000;
 const MAX_STALL_RETRIES = 2;
+/** Phases where a long silence indicates a real stall — not 'tool' (tool
+ *  execution is synchronous JS and may legitimately run for a few seconds
+ *  with no progress events) and not 'idle' (we shouldn't be running). */
+const STALL_PHASES = new Set<ProgressTracker['phase']>(['thinking', 'streaming']);
 
 function showProgress(phase: ProgressTracker['phase'], detail?: string): void {
   progressState.phase = phase;
@@ -858,10 +898,11 @@ function hideProgress(): void {
 function renderProgress(): void {
   if (!progressEl) return;
   if (progressState.phase === 'idle') return;
-  const elapsedSec = Math.max(1, Math.round((Date.now() - progressState.lastBeat) / 1000));
+  const elapsedSec = Math.max(0, Math.round((Date.now() - progressState.lastBeat) / 1000));
+  const silentSuffix = elapsedSec > 3 ? ` (${elapsedSec}s silent)` : '';
   const label =
-    progressState.phase === 'thinking' ? `🧠 thinking… (${elapsedSec}s silent)` :
-    progressState.phase === 'streaming' ? '✎ streaming response…' :
+    progressState.phase === 'thinking' ? `🧠 thinking…${silentSuffix}` :
+    progressState.phase === 'streaming' ? `✎ streaming response…${silentSuffix}` :
     progressState.phase === 'tool' ? `🔧 ${progressState.detail ?? 'running tool'}…` :
     '';
   progressEl.replaceChildren();
@@ -871,7 +912,11 @@ function renderProgress(): void {
   const text = document.createElement('span');
   text.textContent = label;
   progressEl.appendChild(text);
-  if (state.inFlightController && progressState.phase === 'thinking' && elapsedSec * 1000 > STALL_THRESHOLD_MS) {
+  if (
+    state.inFlightController &&
+    STALL_PHASES.has(progressState.phase) &&
+    elapsedSec * 1000 > STALL_THRESHOLD_MS
+  ) {
     triggerStallRetry();
   }
 }

@@ -91,6 +91,14 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         if (!sawFirstDelta) {
           sawFirstDelta = true;
           callbacks.onProgress?.({ phase: 'streaming' });
+        } else {
+          // Beat on EVERY delta so the stall watchdog sees a healthy
+          // stream and so the elapsed-seconds counter in the UI doesn't
+          // keep ticking up while text is actually arriving. Without this
+          // the watchdog can spuriously retry mid-stream on Opus 4.7
+          // when adaptive thinking inserts a long pause between
+          // tokens — but real stalls during streaming still get caught.
+          callbacks.onProgress?.({ phase: 'streaming' });
         }
         callbacks.onAssistantText?.(delta);
       },
