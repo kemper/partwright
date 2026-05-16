@@ -80,7 +80,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, canRedoRegion, type SerializedColorRegion } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, type SerializedColorRegion } from './color/regions';
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
 import { buildAdjacency, findCoplanarRegion, resolveSeed, findNearestTriangle } from './color/adjacency';
 import { findSlabTriangles } from './color/slabPaint';
@@ -3477,9 +3477,10 @@ async function main() {
       radius?: number;
       triangleIds?: number[];
       view?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number };
-      /** Skip the WebGL render and omit `thumbnail` from the result.
-       *  Default `true` (count-only is the cheap sanity check); pass
-       *  `withImage: true` when you want a visual on top of the stats. */
+      /** When `true`, render a yellow-highlighted thumbnail of the
+       *  would-be region and return it in `thumbnail`. Default `false` —
+       *  count-only is the cheap sanity check that should always be
+       *  affordable. */
       withImage?: boolean;
     } = {}) {
       const mesh = currentMeshData;
@@ -3705,11 +3706,6 @@ async function main() {
         color: region.color,
         triangles: region.triangles.size,
       };
-    },
-
-    /** Check whether `redoLastPaint()` would succeed. */
-    canRedoPaint() {
-      return { canRedo: canRedoRegion() };
     },
 
     /** Query triangles on the current mesh by geometric or color filters.
@@ -4263,7 +4259,6 @@ async function main() {
         'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai.md#color-regions' },
         'undoLastPaint':   { signature: 'undoLastPaint() -- Undo the most recent paint op. Removed region goes on a redo stack.', docs: '/ai.md#color-regions' },
         'redoLastPaint':   { signature: 'redoLastPaint() -- Reapply the most recently undone paint op.', docs: '/ai.md#color-regions' },
-        'canRedoPaint':    { signature: 'canRedoPaint() -> {canRedo: bool} -- Check if redoLastPaint() would do anything.', docs: '/ai.md#color-regions' },
         // Annotations
         'listAnnotations':    { signature: 'listAnnotations() -- List freehand strokes -> [{id, color, width, points}]', docs: '/ai.md#annotations' },
         'listTextAnnotations':{ signature: 'listTextAnnotations() -- List pinned text labels -> [{id, text, color, fontSizePx, anchor}]', docs: '/ai.md#annotations' },
@@ -4337,10 +4332,6 @@ async function main() {
 
   // === Internal functions ===
 
-  /** Axis-aligned bounding-box intersection test. Used by getMeshSummary's
-   *  `withinBox` filter and any other callers that need to scope a query
-   *  region. Inclusive on both ends so a face touching the box boundary
-   *  counts as inside. */
   /** Draw one rendered angle into the renderViews composite grid:
    *  the rendered tile occupies the top of the cell, with a labelled
    *  footer band beneath it identifying the angle. `cols` controls
@@ -4504,6 +4495,8 @@ async function main() {
     });
   }
 
+  /** Axis-aligned bounding-box intersection test. Inclusive on both ends
+   *  so a face touching the box boundary counts as inside. */
   function bboxesIntersect(
     a: { min: [number, number, number]; max: [number, number, number] },
     b: { min: [number, number, number]; max: [number, number, number] },
@@ -4583,8 +4576,6 @@ async function main() {
     };
   }
 
-  /** Validate `{ axis, angleDeg }` shape used by paint cone filters. Returns
-   *  an error string or `null`. */
   /** Resolve the normalCone to use for a paint op. Explicit cone wins;
    *  `topOnly: true` is sugar for "upward-facing within ~30° of +Z" and
    *  is the most common case the agent over-paints without. */

@@ -457,7 +457,7 @@ function executeRenderView(api: PartwrightAPI, input: Record<string, unknown>): 
 
 async function executeRenderViews(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {
   const result = await api.renderViews(input) as string | { error: string } | null | undefined;
-  const views = (input.views as string | undefined) ?? 'tri';
+  const views = (input.views as string | undefined) ?? 'auto';
   const size = (input.size as number | undefined) ?? 320;
   const label = `views: ${views} composite (${size}px per cell)`;
   return wrapImageResult(result, 'renderViews', label);

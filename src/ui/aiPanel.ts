@@ -51,7 +51,9 @@ let progressEl: HTMLElement | null = null;
 let progressTickerId: number | null = null;
 let navigateToEditorFn: (() => Promise<void> | void) | null = null;
 
-let onPanelStateChange: ((open: boolean) => void) | null = null;
+/** Set by the watchdog when it abort()s mid-stream so sendMessage knows
+ *  this was a stall recovery (auto-resume), not a user-initiated stop. */
+let stalledByWatchdog = false;
 
 export interface AiPanelOptions {
   /** main.ts hands in a navigation helper so the panel can move the user
@@ -105,21 +107,12 @@ export function toggleAiPanel(): void {
   else showDrawer();
 }
 
-export function isAiPanelOpen(): boolean {
-  return state.open;
-}
-
-export function onAiPanelStateChange(fn: (open: boolean) => void): void {
-  onPanelStateChange = fn;
-}
-
 function showDrawer(): void {
   if (!drawerEl) return;
   state.open = true;
   drawerEl.classList.remove('translate-x-full');
   drawerEl.classList.add('translate-x-0');
   saveSettings({ ...loadSettings(), drawerOpen: true });
-  onPanelStateChange?.(true);
   inputEl?.focus();
 }
 
@@ -129,7 +122,6 @@ function hideDrawer(): void {
   drawerEl.classList.remove('translate-x-0');
   drawerEl.classList.add('translate-x-full');
   saveSettings({ ...loadSettings(), drawerOpen: false });
-  onPanelStateChange?.(false);
 }
 
 async function loadHistoryForCurrentSession(): Promise<void> {
@@ -1100,8 +1092,6 @@ function triggerStallRetry(): void {
   stalledByWatchdog = true;
   state.inFlightController?.abort();
 }
-
-let stalledByWatchdog = false;
 
 // === Compaction ===
 

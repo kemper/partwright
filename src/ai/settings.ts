@@ -11,8 +11,6 @@ export interface AiSettings {
   toggles: ChatToggles;
   /** When `false`, the chat drawer starts collapsed on page load. */
   drawerOpen: boolean;
-  /** Default for new sessions before the user has touched the toggle bar. */
-  autoCompactMode: 'off' | 'conservative' | 'standard' | 'aggressive';
 }
 
 const PRESET_TOGGLES: Record<Exclude<Preset, 'custom'>, ChatToggles> = {
@@ -49,7 +47,6 @@ const DEFAULT_SETTINGS: AiSettings = {
   preset: 'standard',
   toggles: PRESET_TOGGLES.standard,
   drawerOpen: false,
-  autoCompactMode: 'off',
 };
 
 let cached: AiSettings | null = null;
@@ -132,7 +129,6 @@ function mergeWithDefaults(partial: Partial<AiSettings>): AiSettings {
   const tgls: Partial<ChatToggles> = partial.toggles ?? {};
   return {
     preset: partial.preset ?? DEFAULT_SETTINGS.preset,
-    autoCompactMode: partial.autoCompactMode ?? DEFAULT_SETTINGS.autoCompactMode,
     drawerOpen: partial.drawerOpen ?? DEFAULT_SETTINGS.drawerOpen,
     toggles: {
       vision: { ...DEFAULT_SETTINGS.toggles.vision, ...(tgls.vision ?? {}) },

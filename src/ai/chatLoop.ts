@@ -7,7 +7,7 @@ import { recordUsage, putMessages } from './db';
 import { buildToolList, executeTool } from './tools';
 import { buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { turnCostUsd } from './cost';
-import { ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type TurnUsage } from './types';
+import { ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult } from './types';
 
 /** Yield to the browser between heavy synchronous work blocks so the
  *  page stays responsive. requestAnimationFrame lets the browser paint
@@ -76,8 +76,6 @@ export interface RunTurnCallbacks {
   /** Unrecoverable error — the loop stops here. */
   onError?: (err: Error) => void;
 }
-
-// MAX_AGENT_ITERATIONS is now per-turn from toggles.maxIterations.
 
 /** Run one user turn through the agent loop. Returns the final history. */
 export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks = {}): Promise<ChatMessage[]> {
@@ -341,17 +339,4 @@ export function totalCost(history: ChatMessage[]): number {
   let total = 0;
   for (const m of history) if (m.costUsd) total += m.costUsd;
   return total;
-}
-
-/** Token usage summed across the assistant turns. */
-export function totalUsage(history: ChatMessage[]): TurnUsage {
-  const out: TurnUsage = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
-  for (const m of history) {
-    if (!m.usage) continue;
-    out.inputTokens += m.usage.inputTokens;
-    out.outputTokens += m.usage.outputTokens;
-    out.cacheCreationInputTokens += m.usage.cacheCreationInputTokens;
-    out.cacheReadInputTokens += m.usage.cacheReadInputTokens;
-  }
-  return out;
 }

@@ -7,7 +7,6 @@ import Anthropic from '@anthropic-ai/sdk';
 import type {
   ChatBlock,
   ChatMessage,
-  ChatToggles,
   ImageSource,
   ModelId,
   PersistedToolCall,
@@ -288,15 +287,6 @@ function imageBlockToApi(source: ImageSource): Anthropic.ImageBlockParam {
     type: 'image',
     source: { type: 'base64', media_type: source.mediaType, data: source.data },
   };
-}
-
-/** Sum token usage from the response into the per-key counters. The current
- *  turn's costUsd should be computed via cost.ts and added separately to the
- *  KeyRecord total. */
-export function applyToggleSpecificParams(_toggles: ChatToggles, _model: ModelId): void {
-  // Currently no model needs special params (we never set temperature/top_p,
-  // and adaptive thinking is off by default). Kept as a hook for when we
-  // want to opt into adaptive thinking on Opus 4.7, etc.
 }
 
 /** Run a single non-streamed message — used by manual compaction (fast,

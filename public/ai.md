@@ -212,7 +212,6 @@ partwright.getFeatureCentroids({maxGroups?, withinBox?}?)  // Lightweight planni
 partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, withImage?, view?}) // DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}
 partwright.undoLastPaint()               // Reverse the SINGLE most recent paint op -> {undone, id, ...}
 partwright.redoLastPaint()               // Reapply the most recently undone paint -> {redone, id, ...}
-partwright.canRedoPaint()                // -> {canRedo: bool}
 partwright.removeRegion(id)              // Delete ONE region by id from listRegions()
 partwright.clearColors()                 // Remove ALL regions (destructive — prefer undoLastPaint/removeRegion for fixing single mistakes)
 
