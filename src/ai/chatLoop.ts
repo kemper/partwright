@@ -7,7 +7,7 @@ import { recordUsage, putMessages } from './db';
 import { buildToolList, executeTool } from './tools';
 import { buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { turnCostUsd } from './cost';
-import { ITERATION_CAP, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type TurnUsage } from './types';
+import { ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type TurnUsage } from './types';
 
 /** Yield to the browser between heavy synchronous work blocks so the
  *  page stays responsive. requestAnimationFrame lets the browser paint
@@ -61,12 +61,12 @@ export interface RunTurnCallbacks {
    *  Use to keep an indicator alive so the user knows we haven't frozen. */
   onProgress?: (info: { phase: 'thinking' | 'streaming' | 'tool' | 'idle'; detail?: string }) => void;
   /** Loop ended. `reason` distinguishes a clean end_turn from the
-   *  iteration cap, an empty final response, or other stop reasons so
-   *  the UI can surface what actually happened. */
+   *  iteration cap, the spend cap, an empty final response, or other
+   *  stop reasons so the UI can surface what actually happened. */
   onTurnComplete?: (info: {
     totalCostUsd: number;
     toolCalls: number;
-    reason: 'end_turn' | 'empty_final' | 'iteration_cap' | 'max_tokens' | 'refusal' | 'aborted' | 'error' | 'other';
+    reason: 'end_turn' | 'empty_final' | 'iteration_cap' | 'spend_cap' | 'max_tokens' | 'refusal' | 'aborted' | 'error' | 'other';
     detail?: string;
     iterations: number;
   }) => void;
@@ -103,6 +103,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   let totalCostUsd = 0;
   let totalToolCalls = 0;
   const maxIter = ITERATION_CAP[toggles.maxIterations];
+  const maxSpend = SPEND_CAP_USD[toggles.maxSpend];
 
   for (let iter = 0; Number.isFinite(maxIter) ? iter < maxIter : true; iter++) {
     // Give the browser a frame between iterations so an agent running
@@ -177,6 +178,21 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     if (aborted) {
       callbacks.onAborted?.();
       callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'aborted', iterations: iter + 1 });
+      return workingHistory;
+    }
+
+    // Spend cap — stop BEFORE the next iteration if we've already
+    // exceeded the user's per-turn budget. We check after persisting
+    // the current iteration so the assistant message they paid for
+    // still lands in the transcript.
+    if (Number.isFinite(maxSpend) && totalCostUsd > maxSpend) {
+      callbacks.onTurnComplete?.({
+        totalCostUsd,
+        toolCalls: totalToolCalls,
+        reason: 'spend_cap',
+        detail: `$${maxSpend.toFixed(2)}`,
+        iterations: iter + 1,
+      });
       return workingHistory;
     }
 

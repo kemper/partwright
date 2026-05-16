@@ -21,6 +21,7 @@ const PRESET_TOGGLES: Record<Exclude<Preset, 'custom'>, ChatToggles> = {
     scope: { runCode: true, saveVersions: true, paintFaces: false },
     autoRetry: 0,
     maxIterations: 'low',
+    maxSpend: 'cheap',
     model: 'claude-haiku-4-5',
   },
   standard: {
@@ -31,6 +32,7 @@ const PRESET_TOGGLES: Record<Exclude<Preset, 'custom'>, ChatToggles> = {
     scope: { runCode: true, saveVersions: true, paintFaces: false },
     autoRetry: 1,
     maxIterations: 'medium',
+    maxSpend: 'medium',
     model: 'claude-sonnet-4-6',
   },
   full: {
@@ -38,6 +40,7 @@ const PRESET_TOGGLES: Record<Exclude<Preset, 'custom'>, ChatToggles> = {
     scope: { runCode: true, saveVersions: true, paintFaces: true },
     autoRetry: 3,
     maxIterations: 'high',
+    maxSpend: 'high',
     model: 'claude-opus-4-7',
   },
 };
@@ -95,6 +98,7 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       scope: { ...p.scope },
       autoRetry: p.autoRetry,
       maxIterations: p.maxIterations,
+      maxSpend: p.maxSpend,
       model: p.model,
     },
   };
@@ -114,6 +118,7 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     scope: { ...settings.toggles.scope, ...(partial.scope ?? {}) },
     autoRetry: partial.autoRetry ?? settings.toggles.autoRetry,
     maxIterations: partial.maxIterations ?? settings.toggles.maxIterations,
+    maxSpend: partial.maxSpend ?? settings.toggles.maxSpend,
     model: partial.model ?? settings.toggles.model,
   };
   return { ...settings, preset: 'custom', toggles: next };
@@ -134,6 +139,7 @@ function mergeWithDefaults(partial: Partial<AiSettings>): AiSettings {
       scope: { ...DEFAULT_SETTINGS.toggles.scope, ...(tgls.scope ?? {}) },
       autoRetry: tgls.autoRetry ?? DEFAULT_SETTINGS.toggles.autoRetry,
       maxIterations: tgls.maxIterations ?? DEFAULT_SETTINGS.toggles.maxIterations,
+      maxSpend: tgls.maxSpend ?? DEFAULT_SETTINGS.toggles.maxSpend,
       model: tgls.model ?? DEFAULT_SETTINGS.toggles.model,
     },
   };
@@ -144,6 +150,14 @@ export const MAX_ITERATIONS_OPTIONS: { id: ChatToggles['maxIterations']; label: 
   { id: 'medium', label: 'Med (16)', hint: 'Default. Comfortable for most paint workflows.' },
   { id: 'high', label: 'High (64)', hint: 'Long autonomous runs. Watch the cost meter.' },
   { id: 'infinity', label: '∞', hint: 'Unlimited. Only stops on completion / error / your Stop click.' },
+];
+
+export const MAX_SPEND_OPTIONS: { id: ChatToggles['maxSpend']; label: string; hint: string }[] = [
+  { id: 'cheap', label: '$0.10', hint: 'Tight budget. Pairs well with Haiku and short turns.' },
+  { id: 'low', label: '$0.50', hint: 'Safety net for casual iteration.' },
+  { id: 'medium', label: '$2', hint: 'Default. Comfortable for most Sonnet turns including a few vision calls.' },
+  { id: 'high', label: '$10', hint: 'Long autonomous runs on Opus, lots of vision verification.' },
+  { id: 'infinity', label: '∞', hint: 'No budget cap. The model can spend whatever it wants.' },
 ];
 
 export const MODEL_OPTIONS: { id: ModelId; label: string }[] = [

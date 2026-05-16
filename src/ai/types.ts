@@ -33,6 +33,12 @@ export interface ChatToggles {
    *  turn. The agent stops with a "stopped at cap" banner if it would
    *  exceed this. 'low'=4, 'medium'=16, 'high'=64, 'infinity'=unlimited. */
   maxIterations: 'low' | 'medium' | 'high' | 'infinity';
+  /** Hard cap on USD spend per user turn. Sums input + output + cache
+   *  read/write across every iteration. When exceeded the loop stops
+   *  with a "stopped at spend cap" banner. Both this and maxIterations
+   *  apply — whichever trips first stops the turn. 'infinity' disables
+   *  the cap. */
+  maxSpend: 'cheap' | 'low' | 'medium' | 'high' | 'infinity';
   model: ModelId;
 }
 
@@ -40,6 +46,14 @@ export const ITERATION_CAP: Record<ChatToggles['maxIterations'], number> = {
   low: 4,
   medium: 16,
   high: 64,
+  infinity: Number.POSITIVE_INFINITY,
+};
+
+export const SPEND_CAP_USD: Record<ChatToggles['maxSpend'], number> = {
+  cheap: 0.10,
+  low: 0.50,
+  medium: 2.00,
+  high: 10.00,
   infinity: Number.POSITIVE_INFINITY,
 };
 

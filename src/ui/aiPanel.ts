@@ -7,7 +7,7 @@ import { runTurn, totalCost, totalTokensEstimate, estimateCachedPrefixTokens } f
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, applyPreset, setModel, setToggles, MODEL_OPTIONS, PRESET_OPTIONS, MAX_ITERATIONS_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, applyPreset, setModel, setToggles, MODEL_OPTIONS, PRESET_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { generateId } from '../storage/db';
@@ -434,6 +434,26 @@ function renderToggleStrip(): void {
     saveSettings(setToggles(loadSettings(), { maxIterations: iterCap.value as ChatToggles['maxIterations'] }));
   });
   toggleStripEl.appendChild(iterCap);
+
+  // Spend cap — alternative / parallel control to iteration cap. Both
+  // apply; whichever trips first stops the loop. Useful when iteration
+  // count is hard to predict (vision-heavy turns can run a few
+  // iterations but spend $0.50+ each).
+  const spendCap = document.createElement('select');
+  spendCap.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
+  spendCap.title = 'Spend cap: max USD this turn can cost before the loop forces a stop. Applies alongside the iteration cap — whichever trips first wins. Useful when iteration count is unpredictable (a vision-heavy iteration may spend $0.50). Set ∞ to disable.';
+  for (const opt of MAX_SPEND_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = opt.id;
+    o.textContent = `$ ${opt.label}`;
+    o.title = opt.hint;
+    spendCap.appendChild(o);
+  }
+  spendCap.value = toggles.maxSpend;
+  spendCap.addEventListener('change', () => {
+    saveSettings(setToggles(loadSettings(), { maxSpend: spendCap.value as ChatToggles['maxSpend'] }));
+  });
+  toggleStripEl.appendChild(spendCap);
 }
 
 function togglePill(label: string, on: boolean, tooltip: string, onClick: () => void): HTMLButtonElement {
@@ -795,7 +815,7 @@ async function sendMessage(): Promise<void> {
 interface TurnOutcome {
   totalCostUsd: number;
   toolCalls: number;
-  reason: 'end_turn' | 'empty_final' | 'iteration_cap' | 'max_tokens' | 'refusal' | 'aborted' | 'error' | 'other';
+  reason: 'end_turn' | 'empty_final' | 'iteration_cap' | 'spend_cap' | 'max_tokens' | 'refusal' | 'aborted' | 'error' | 'other';
   detail?: string;
   iterations: number;
 }
@@ -810,7 +830,9 @@ function formatTurnOutcome(o: TurnOutcome): string {
     case 'empty_final':
       return `⚠ model exited without a final message · ${cost} · ${iters}${tools} — last visible content is above`;
     case 'iteration_cap':
-      return `⚠ stopped at agent iteration cap (${o.iterations}) — try a more focused prompt or click Compact · ${cost}${tools}`;
+      return `⚠ stopped at agent iteration cap (${o.iterations}) — try a more focused prompt, click Compact, or raise the ⟲ cap · ${cost}${tools}`;
+    case 'spend_cap':
+      return `⚠ stopped at spend cap${o.detail ? ` (${o.detail})` : ''} — raise the $ cap or click Send to continue · ${cost} · ${iters}${tools}`;
     case 'max_tokens':
       return `⚠ hit max_tokens before finishing · ${cost} · ${iters}${tools} — ask the model to continue`;
     case 'refusal':
