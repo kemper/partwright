@@ -10,6 +10,19 @@ import { presetIndex } from '../storage/db';
 export const RENDER_VIEW_MODES = ['auto', 'tri', 'all'] as const;
 export type RenderViewMode = typeof RENDER_VIEW_MODES[number];
 
+/** Standard camera angles used by `renderSingleView` consumers across
+ *  the app: the renderViews composite, the Show-AI iso-views capture,
+ *  and any future thumbnail caller. Each value is exactly the shape
+ *  `renderSingleView` accepts. Single source so the Front-elevation
+ *  semantics can't drift between callers. */
+export const STANDARD_VIEWS = {
+  front: { label: 'Front', elevation: 0,  azimuth: 0,   ortho: true  },
+  right: { label: 'Right', elevation: 0,  azimuth: 90,  ortho: true  },
+  top:   { label: 'Top',   elevation: 90, azimuth: 0,   ortho: true  },
+  iso:   { label: 'Iso',   elevation: 35, azimuth: 45,  ortho: false },
+} as const;
+export type StandardViewAngle = typeof STANDARD_VIEWS[keyof typeof STANDARD_VIEWS];
+
 interface ViewConfig {
   name: string;
   position: (d: number) => [number, number, number];

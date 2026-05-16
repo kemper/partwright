@@ -4,45 +4,19 @@
 
 import { putKey, getKey } from '../ai/db';
 import { resetClient, validateKey } from '../ai/anthropic';
-
-let modalEl: HTMLElement | null = null;
+import { createModalShell } from './modalShell';
 
 export interface AiKeyModalCallbacks {
   onConnected: () => void;
 }
 
 export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
-  closeModal();
-
-  const overlay = document.createElement('div');
-  overlay.className = 'fixed inset-0 bg-black/60 flex items-center justify-center z-50';
-  overlay.addEventListener('click', e => {
-    if (e.target === overlay) closeModal();
-  });
-
-  const modal = document.createElement('div');
-  modal.className = 'bg-zinc-800 rounded-xl shadow-2xl border border-zinc-700 w-full max-w-md flex flex-col';
-
-  const header = document.createElement('div');
-  header.className = 'px-5 py-3 border-b border-zinc-700 flex items-center justify-between';
-  const title = document.createElement('h2');
-  title.className = 'text-sm font-semibold text-zinc-100';
-  title.textContent = 'Connect Anthropic API';
-  header.appendChild(title);
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'px-2 py-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 text-sm';
-  closeBtn.textContent = '✕';
-  closeBtn.addEventListener('click', closeModal);
-  header.appendChild(closeBtn);
-  modal.appendChild(header);
-
-  const body = document.createElement('div');
-  body.className = 'px-5 py-4 flex flex-col gap-3 text-sm text-zinc-200';
+  const shell = createModalShell({ title: 'Connect Anthropic API' });
 
   const intro = document.createElement('p');
   intro.className = 'text-zinc-300 leading-snug';
   intro.textContent = 'Partwright AI uses your Anthropic API key. The key is stored only in this browser — not on any Partwright server.';
-  body.appendChild(intro);
+  shell.body.appendChild(intro);
 
   const link = document.createElement('a');
   link.href = 'https://console.anthropic.com/settings/keys';
@@ -50,12 +24,12 @@ export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
   link.rel = 'noopener noreferrer';
   link.className = 'text-blue-400 hover:text-blue-300 underline text-xs';
   link.textContent = 'Get a key at console.anthropic.com →';
-  body.appendChild(link);
+  shell.body.appendChild(link);
 
   const tipBox = document.createElement('div');
   tipBox.className = 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug';
   tipBox.innerHTML = '<strong>Recommended:</strong> use a workspace-scoped key with a monthly spend cap. Anyone who can run code in this page (extensions, devtools) can read the key.';
-  body.appendChild(tipBox);
+  shell.body.appendChild(tipBox);
 
   const label = document.createElement('label');
   label.className = 'flex flex-col gap-1';
@@ -71,35 +45,26 @@ export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
   input.spellcheck = false;
   input.autocomplete = 'off';
   label.appendChild(input);
-  body.appendChild(label);
+  shell.body.appendChild(label);
 
   const errorBox = document.createElement('div');
   errorBox.className = 'text-xs text-red-400 hidden';
-  body.appendChild(errorBox);
+  shell.body.appendChild(errorBox);
 
   const status = document.createElement('div');
   status.className = 'text-xs text-zinc-500 hidden';
-  body.appendChild(status);
+  shell.body.appendChild(status);
 
-  modal.appendChild(body);
-
-  const footer = document.createElement('div');
-  footer.className = 'px-5 py-3 border-t border-zinc-700 flex items-center justify-end gap-2';
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'px-3 py-1.5 rounded text-xs text-zinc-300 hover:bg-zinc-700';
   cancelBtn.textContent = 'Cancel';
-  cancelBtn.addEventListener('click', closeModal);
-  footer.appendChild(cancelBtn);
+  cancelBtn.addEventListener('click', shell.close);
+  shell.footer.appendChild(cancelBtn);
 
   const connectBtn = document.createElement('button');
   connectBtn.className = 'px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
   connectBtn.textContent = 'Connect';
-  footer.appendChild(connectBtn);
-  modal.appendChild(footer);
-
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
-  modalEl = overlay;
+  shell.footer.appendChild(connectBtn);
 
   setTimeout(() => input.focus(), 0);
 
@@ -135,7 +100,7 @@ export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
       totalCostUsd: existing?.totalCostUsd ?? 0,
     });
     resetClient();
-    closeModal();
+    shell.close();
     cb.onConnected();
   }
 
@@ -148,17 +113,4 @@ export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
   input.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); void attemptConnect(); }
   });
-
-  const escHandler = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      closeModal();
-      document.removeEventListener('keydown', escHandler);
-    }
-  };
-  document.addEventListener('keydown', escHandler);
-}
-
-function closeModal(): void {
-  modalEl?.remove();
-  modalEl = null;
 }

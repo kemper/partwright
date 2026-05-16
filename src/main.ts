@@ -2,7 +2,7 @@ import './style.css';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible } from './renderer/viewport';
-import { renderCompositeCanvas, renderElevationsToContainer, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, RENDER_VIEW_MODES, type AttachedImage, type RenderViewMode } from './renderer/multiview';
+import { renderCompositeCanvas, renderElevationsToContainer, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
 import { generateId } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic } from './editor/codeEditor';
@@ -80,7 +80,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, type SerializedColorRegion } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion } from './color/regions';
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
 import { buildAdjacency, findCoplanarRegion, resolveSeed, findNearestTriangle } from './color/adjacency';
 import { findSlabTriangles } from './color/slabPaint';
@@ -3791,25 +3791,7 @@ async function main() {
 
       const mesh = currentMeshData;
       const adjacency = nrm ? buildAdjacency(mesh) : null;
-      const triColors = colorTarget ? (() => {
-        const numTri = mesh.numTri;
-        return (function() {
-          const buf = new Uint8Array(numTri * 3);
-          for (const r of [...getRegions()].sort((a, b) => a.order - b.order)) {
-            const rr = Math.round(r.color[0] * 255);
-            const gg = Math.round(r.color[1] * 255);
-            const bb = Math.round(r.color[2] * 255);
-            for (const t of r.triangles) {
-              if (t >= 0 && t < numTri) {
-                buf[t * 3] = rr;
-                buf[t * 3 + 1] = gg;
-                buf[t * 3 + 2] = bb;
-              }
-            }
-          }
-          return buf;
-        })();
-      })() : null;
+      const triColors = colorTarget ? (buildTriColors(mesh.numTri) ?? new Uint8Array(mesh.numTri * 3)) : null;
 
       const result: number[] = [];
       let visited = 0;
@@ -4367,10 +4349,14 @@ async function main() {
    *    top view would be a tiny disk, the side elevations matter.
    *  - otherwise the classic [Front, Top, Iso] trio. */
   function chooseRenderAngles(which: RenderViewMode): { label: string; opts: { elevation: number; azimuth: number; ortho: boolean } }[] {
-    const FRONT = { label: 'Front', opts: { elevation: 0,  azimuth: 0,  ortho: true } };
-    const RIGHT = { label: 'Right', opts: { elevation: 0,  azimuth: 90, ortho: true } };
-    const TOP   = { label: 'Top',   opts: { elevation: 90, azimuth: 0,  ortho: true } };
-    const ISO   = { label: 'Iso',   opts: { elevation: 35, azimuth: 45, ortho: false } };
+    const view = (v: typeof STANDARD_VIEWS[keyof typeof STANDARD_VIEWS]) => ({
+      label: v.label,
+      opts: { elevation: v.elevation, azimuth: v.azimuth, ortho: v.ortho },
+    });
+    const FRONT = view(STANDARD_VIEWS.front);
+    const RIGHT = view(STANDARD_VIEWS.right);
+    const TOP   = view(STANDARD_VIEWS.top);
+    const ISO   = view(STANDARD_VIEWS.iso);
     if (which === 'tri') return [FRONT, TOP, ISO];
     if (which === 'all') return [FRONT, RIGHT, TOP, ISO];
     // 'auto': inspect the current manifold's bounding box.
@@ -4393,36 +4379,17 @@ async function main() {
   /** Render the current mesh with `highlightTriangles` tinted bright
    *  yellow on top of any existing color regions. Shared between
    *  `paintPreview` (highlight a candidate selector) and `paintExplain`
-   *  (highlight an already-committed region). */
+   *  (highlight an already-committed region). The yellow is intentionally
+   *  off-palette from anything a user would commit, so it reads as
+   *  "in-progress / unsaved" against real paint. */
   function renderRegionHighlight(
     mesh: MeshData,
     highlightTriangles: Set<number>,
     viewOpts: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number },
   ): string | null {
-    const baseColored = applyTriColors(mesh) ?? mesh;
-    const numTri = mesh.numTri;
-    const triColors = new Uint8Array(numTri * 3);
-    const baseBuf = baseColored.triColors as Uint8Array | undefined;
-    const basePainted = baseBuf ? (baseBuf as Uint8Array & { _painted?: Uint8Array })._painted : undefined;
-    const painted = new Uint8Array(numTri);
-    for (let t = 0; t < numTri; t++) {
-      if (baseBuf && basePainted && basePainted[t]) {
-        triColors[t * 3] = baseBuf[t * 3];
-        triColors[t * 3 + 1] = baseBuf[t * 3 + 1];
-        triColors[t * 3 + 2] = baseBuf[t * 3 + 2];
-        painted[t] = 1;
-      }
-    }
-    // Highlight color: bright yellow-orange, strongly distinct from skin/nail palettes.
-    for (const t of highlightTriangles) {
-      triColors[t * 3] = 255;
-      triColors[t * 3 + 1] = 230;
-      triColors[t * 3 + 2] = 0;
-      painted[t] = 1;
-    }
-    (triColors as Uint8Array & { _painted?: Uint8Array })._painted = painted;
-    const previewMesh: MeshData = { ...mesh, triColors };
-    return renderSingleView(previewMesh, viewOpts);
+    const triColors = buildTriColors(mesh.numTri) ?? createEmptyTriColors(mesh.numTri);
+    overlayPainted(triColors, highlightTriangles, [1, 230 / 255, 0]);
+    return renderSingleView({ ...mesh, triColors }, viewOpts);
   }
 
   /** For a triangle set, compute total surface area and an area-weighted

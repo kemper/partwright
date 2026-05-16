@@ -593,18 +593,12 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       const thumbnail = result.thumbnail as string | undefined;
       delete result.thumbnail;
       if (wantImage && typeof thumbnail === 'string') {
-        const match = thumbnail.match(/^data:(image\/[a-z+]+);base64,(.+)$/i);
-        if (match) {
-          const mediaTypeStr = match[1];
-          const safeMedia: ImageSource['mediaType'] =
-            mediaTypeStr === 'image/png' || mediaTypeStr === 'image/jpeg' ||
-            mediaTypeStr === 'image/gif' || mediaTypeStr === 'image/webp'
-              ? mediaTypeStr : 'image/png';
-          const summary = `Preview: ${JSON.stringify(result)}. Candidate triangles are highlighted yellow over the current model.`;
+        const img = parseImageDataUrl(thumbnail);
+        if (img) {
           return {
-            content: summary,
+            content: `Preview: ${JSON.stringify(result)}. Candidate triangles are highlighted yellow over the current model.`,
             isError: false,
-            image: { data: match[2], mediaType: safeMedia, label: 'paintPreview' },
+            image: { ...img, label: 'paintPreview' },
           } satisfies ToolExecResult;
         }
       }

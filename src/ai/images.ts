@@ -6,20 +6,9 @@
 // model less context.
 
 import type { ImageSource } from './types';
+import { STANDARD_VIEWS } from '../renderer/multiview';
 
-interface ViewSpec {
-  label: string;
-  elevation: number;
-  azimuth: number;
-  ortho: boolean;
-}
-
-const ISO_VIEWS: ViewSpec[] = [
-  { label: 'Front',   elevation: 0,  azimuth: 0,   ortho: true },
-  { label: 'Right',   elevation: 0,  azimuth: 90,  ortho: true },
-  { label: 'Top',     elevation: 90, azimuth: 0,   ortho: true },
-  { label: 'Iso',     elevation: 35, azimuth: 45,  ortho: false },
-];
+const ISO_VIEWS = Object.values(STANDARD_VIEWS);
 
 const TILE_SIZE = 384;
 const LABEL_HEIGHT = 24;
