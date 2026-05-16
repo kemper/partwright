@@ -81,9 +81,20 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   else hideDrawer();
 }
 
-/** Called by main.ts whenever the active session changes (open / close). */
+/** Called by main.ts whenever the active session changes (open / close).
+ *  When the user isn't on /editor (landing, catalog, help, 404), we
+ *  ignore whatever session the session manager is holding and pin the
+ *  chat to the global bucket — prior session chat shouldn't leak across
+ *  navigation. */
 export async function setActiveSession(sessionId: string | null): Promise<void> {
-  state.sessionId = sessionId ?? GLOBAL_CHAT_BUCKET;
+  const onEditor = window.location.pathname === '/editor';
+  const effective = (onEditor && sessionId) ? sessionId : GLOBAL_CHAT_BUCKET;
+  if (state.sessionId === effective && state.history.length > 0) {
+    // Already showing this bucket — skip the IndexedDB round trip and
+    // avoid a transcript re-render that scrolls the user to the bottom.
+    return;
+  }
+  state.sessionId = effective;
   await loadHistoryForCurrentSession();
   renderTranscript();
   renderCostMeter();

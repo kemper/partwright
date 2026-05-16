@@ -1356,6 +1356,16 @@ async function main() {
   }
 
   async function syncRouteFromURL() {
+    // Routing to a non-editor page (landing, catalog, help, 404) drops
+    // the AI chat back to the global bucket. The drawer is a body-level
+    // overlay that follows the user across pages, so without this the
+    // last session's transcript would still be visible after clicking
+    // Home — confusing because no editor / session is loaded to act on
+    // it. /editor's own loader updates the AI session via onStateChange
+    // when a session opens, so we don't need to set it explicitly here.
+    if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShow404()) {
+      void setAiActiveSession(null);
+    }
     if (shouldShowLanding()) {
       await showLandingPage();
     } else if (shouldShowHelp()) {
