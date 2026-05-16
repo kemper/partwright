@@ -111,6 +111,9 @@ export function toggleSuffix(toggles: ChatToggles): string {
   }
 
   const lang = currentLanguage();
+  const capLabel: Record<ChatToggles['maxIterations'], string> = {
+    low: '4', medium: '16', high: '64', infinity: 'unlimited',
+  };
   const lines = [
     '',
     '## Session toggle state',
@@ -118,6 +121,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
     `Active language: ${lang}  — write code in this language. Use setActiveLanguage to switch only when justified (e.g. user asked, or the request maps obviously better to the other engine: OpenSCAD for parametric extrusion-heavy parts, manifold-js for boolean composition and fine programmatic control).`,
     `Model: ${toggles.model}`,
     `Auto-retry on tool error: ${toggles.autoRetry}`,
+    `Iteration cap (tool round-trips this turn): ${capLabel[toggles.maxIterations]}. Pace your tool calls accordingly — if the cap is low, batch related work and prefer one-shot tools like paintComponent or paintInBox over verify-then-paint loops.`,
   ];
   if (restrictions.length > 0) {
     lines.push('');

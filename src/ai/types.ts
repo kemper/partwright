@@ -29,8 +29,19 @@ export interface ChatToggles {
   /** Number of times the loop will silently feed an error back to the model
    *  before surfacing it. 0/1/3. */
   autoRetry: 0 | 1 | 3;
+  /** Maximum number of agent-loop iterations (tool round-trips) per user
+   *  turn. The agent stops with a "stopped at cap" banner if it would
+   *  exceed this. 'low'=4, 'medium'=16, 'high'=64, 'infinity'=unlimited. */
+  maxIterations: 'low' | 'medium' | 'high' | 'infinity';
   model: ModelId;
 }
+
+export const ITERATION_CAP: Record<ChatToggles['maxIterations'], number> = {
+  low: 4,
+  medium: 16,
+  high: 64,
+  infinity: Number.POSITIVE_INFINITY,
+};
 
 /** Persisted per-message record. One row per chat message in IndexedDB. */
 export interface ChatMessage {

@@ -7,7 +7,7 @@ import { runTurn, totalCost, totalTokensEstimate, estimateCachedPrefixTokens } f
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, applyPreset, setModel, setToggles, MODEL_OPTIONS, PRESET_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, applyPreset, setModel, setToggles, MODEL_OPTIONS, PRESET_OPTIONS, MAX_ITERATIONS_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { generateId } from '../storage/db';
@@ -415,6 +415,25 @@ function renderToggleStrip(): void {
     saveSettings(setToggles(loadSettings(), { autoRetry: Number(retry.value) as 0 | 1 | 3 }));
   });
   toggleStripEl.appendChild(retry);
+
+  // Iteration cap — how many tool round-trips per user turn before the
+  // loop forces a stop. Lower = safer (model can't run away on cost or
+  // time), higher = more autonomous (long paint runs complete in one go).
+  const iterCap = document.createElement('select');
+  iterCap.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
+  iterCap.title = 'Iteration cap: how many agent loop rounds before the loop forces a stop. Lower = safer (the model can\'t run away on cost or time), higher = more autonomous (long paint runs complete in one go). ∞ relies entirely on the model declaring done or you clicking Stop.';
+  for (const opt of MAX_ITERATIONS_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = opt.id;
+    o.textContent = `⟲ ${opt.label}`;
+    o.title = opt.hint;
+    iterCap.appendChild(o);
+  }
+  iterCap.value = toggles.maxIterations;
+  iterCap.addEventListener('change', () => {
+    saveSettings(setToggles(loadSettings(), { maxIterations: iterCap.value as ChatToggles['maxIterations'] }));
+  });
+  toggleStripEl.appendChild(iterCap);
 }
 
 function togglePill(label: string, on: boolean, tooltip: string, onClick: () => void): HTMLButtonElement {

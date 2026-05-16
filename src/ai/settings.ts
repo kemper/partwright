@@ -20,6 +20,7 @@ const PRESET_TOGGLES: Record<Exclude<Preset, 'custom'>, ChatToggles> = {
     vision: { views: false },
     scope: { runCode: true, saveVersions: true, paintFaces: false },
     autoRetry: 0,
+    maxIterations: 'low',
     model: 'claude-haiku-4-5',
   },
   standard: {
@@ -29,12 +30,14 @@ const PRESET_TOGGLES: Record<Exclude<Preset, 'custom'>, ChatToggles> = {
     // can flip the Paint pill on, or pick the Full preset.
     scope: { runCode: true, saveVersions: true, paintFaces: false },
     autoRetry: 1,
+    maxIterations: 'medium',
     model: 'claude-sonnet-4-6',
   },
   full: {
     vision: { views: true },
     scope: { runCode: true, saveVersions: true, paintFaces: true },
     autoRetry: 3,
+    maxIterations: 'high',
     model: 'claude-opus-4-7',
   },
 };
@@ -91,6 +94,7 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       vision: { ...p.vision },
       scope: { ...p.scope },
       autoRetry: p.autoRetry,
+      maxIterations: p.maxIterations,
       model: p.model,
     },
   };
@@ -109,6 +113,7 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     vision: { ...settings.toggles.vision, ...(partial.vision ?? {}) },
     scope: { ...settings.toggles.scope, ...(partial.scope ?? {}) },
     autoRetry: partial.autoRetry ?? settings.toggles.autoRetry,
+    maxIterations: partial.maxIterations ?? settings.toggles.maxIterations,
     model: partial.model ?? settings.toggles.model,
   };
   return { ...settings, preset: 'custom', toggles: next };
@@ -128,10 +133,18 @@ function mergeWithDefaults(partial: Partial<AiSettings>): AiSettings {
       vision: { ...DEFAULT_SETTINGS.toggles.vision, ...(tgls.vision ?? {}) },
       scope: { ...DEFAULT_SETTINGS.toggles.scope, ...(tgls.scope ?? {}) },
       autoRetry: tgls.autoRetry ?? DEFAULT_SETTINGS.toggles.autoRetry,
+      maxIterations: tgls.maxIterations ?? DEFAULT_SETTINGS.toggles.maxIterations,
       model: tgls.model ?? DEFAULT_SETTINGS.toggles.model,
     },
   };
 }
+
+export const MAX_ITERATIONS_OPTIONS: { id: ChatToggles['maxIterations']; label: string; hint: string }[] = [
+  { id: 'low', label: 'Low (4)', hint: 'Short turns. Useful when the model wanders.' },
+  { id: 'medium', label: 'Med (16)', hint: 'Default. Comfortable for most paint workflows.' },
+  { id: 'high', label: 'High (64)', hint: 'Long autonomous runs. Watch the cost meter.' },
+  { id: 'infinity', label: '∞', hint: 'Unlimited. Only stops on completion / error / your Stop click.' },
+];
 
 export const MODEL_OPTIONS: { id: ModelId; label: string }[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },

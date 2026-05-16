@@ -7,7 +7,23 @@ import { recordUsage, putMessages } from './db';
 import { buildToolList, executeTool } from './tools';
 import { buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { turnCostUsd } from './cost';
-import type { ChatBlock, ChatMessage, ChatToggles, PersistedToolCall, PersistedToolResult, TurnUsage } from './types';
+import { ITERATION_CAP, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type TurnUsage } from './types';
+
+/** Yield to the browser between heavy synchronous work blocks so the
+ *  page stays responsive. requestAnimationFrame lets the browser paint
+ *  pending frames and process input events; without it, a chain of
+ *  paint tools can lock the main thread long enough for Chrome to show
+ *  "page unresponsive". Used between tool executions and between agent
+ *  loop iterations. */
+function yieldToBrowser(): Promise<void> {
+  return new Promise(resolve => requestAnimationFrame(() => resolve()));
+}
+
+/** Log tool execution time. Anything over this threshold is flagged in
+ *  the console so we can pinpoint the slow op if the page freezes — the
+ *  most common culprits are commitPaintFromSet (re-renders all 4 iso
+ *  views per call) and Manifold boolean ops on complex meshes. */
+const SLOW_TOOL_MS = 250;
 
 export interface RunTurnInput {
   apiKey: string;
@@ -61,7 +77,7 @@ export interface RunTurnCallbacks {
   onError?: (err: Error) => void;
 }
 
-const MAX_AGENT_ITERATIONS = 16;
+// MAX_AGENT_ITERATIONS is now per-turn from toggles.maxIterations.
 
 /** Run one user turn through the agent loop. Returns the final history. */
 export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks = {}): Promise<ChatMessage[]> {
@@ -86,8 +102,12 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   let workingHistory: ChatMessage[] = [...history, userMsg];
   let totalCostUsd = 0;
   let totalToolCalls = 0;
+  const maxIter = ITERATION_CAP[toggles.maxIterations];
 
-  for (let iter = 0; iter < MAX_AGENT_ITERATIONS; iter++) {
+  for (let iter = 0; Number.isFinite(maxIter) ? iter < maxIter : true; iter++) {
+    // Give the browser a frame between iterations so an agent running
+    // many tool round-trips doesn't lock up the page.
+    if (iter > 0) await yieldToBrowser();
     const apiMessages = buildApiMessages(workingHistory);
     const assistantId = generateId();
     callbacks.onAssistantStart?.(assistantId);
@@ -200,7 +220,10 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   }
 
   // Hit iteration cap — surface to the user so they can intervene.
-  callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'iteration_cap', iterations: MAX_AGENT_ITERATIONS });
+  // Sentinel — only reachable for finite caps. The infinite case loops
+  // forever above and exits via end_turn / error / abort.
+  const reached = Number.isFinite(maxIter) ? maxIter : totalToolCalls;
+  callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'iteration_cap', iterations: reached });
   return workingHistory;
 }
 
@@ -226,10 +249,10 @@ async function executeAllWithRetry(
       continue;
     }
     let attempt = 0;
-    let result = await executeTool(tc.name, tc.input);
+    let result = await timedExecuteTool(tc.name, tc.input);
     while (result.isError && attempt < toggles.autoRetry && !signal?.aborted) {
       attempt++;
-      result = await executeTool(tc.name, tc.input);
+      result = await timedExecuteTool(tc.name, tc.input);
     }
     const persisted: PersistedToolResult = {
       toolUseId: tc.id,
@@ -239,8 +262,28 @@ async function executeAllWithRetry(
     };
     results.push(persisted);
     callbacks.onToolResult?.(tc.id, tc.name, persisted);
+    // Yield BETWEEN tool calls so the browser can flush a frame and the
+    // user can interact (click Stop, scroll the transcript). A run of 5
+    // paint tools without yields is enough to trigger Chrome's "page
+    // unresponsive" warning on a moderately complex mesh.
+    await yieldToBrowser();
   }
   return results;
+}
+
+async function timedExecuteTool(name: string, input: Record<string, unknown>) {
+  const t0 = performance.now();
+  const result = await executeTool(name, input);
+  const elapsed = performance.now() - t0;
+  if (elapsed > SLOW_TOOL_MS) {
+    // Visible only in dev tools — meant for diagnosing the
+    // "page unresponsive" case. We don't surface this in the UI to
+    // avoid alarming users when the warning is benign (a Manifold
+    // boolean op on a complex mesh is just genuinely slow).
+    // eslint-disable-next-line no-console
+    console.warn(`[AI tool] ${name} took ${Math.round(elapsed)}ms (threshold ${SLOW_TOOL_MS}ms).`);
+  }
+  return result;
 }
 
 function nextSeq(history: ChatMessage[]): number {
