@@ -77,7 +77,7 @@ export function createToolbar(
   callbacks: ToolbarCallbacks,
 ): HTMLElement {
   const toolbar = document.createElement('div');
-  toolbar.className = 'flex items-center gap-1 px-3 py-1.5 bg-zinc-900 border-b border-zinc-700 text-sm shrink-0';
+  toolbar.className = 'flex flex-wrap md:flex-nowrap items-center gap-1 px-3 py-1.5 bg-zinc-900 border-b border-zinc-700 text-sm shrink-0';
 
   // Logo — clicking returns to the landing page
   const logo = document.createElement('button');
@@ -490,7 +490,7 @@ export function createToolbar(
   // Help button
   const helpBtn = document.createElement('button');
   helpBtn.id = 'btn-help';
-  helpBtn.className = 'flex items-center justify-center w-6 h-6 rounded-full text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700 transition-colors text-xs font-bold ml-2';
+  helpBtn.className = 'flex items-center justify-center w-10 h-10 md:w-6 md:h-6 rounded-full text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700 transition-colors text-sm md:text-xs font-bold ml-2';
   helpBtn.textContent = '?';
   helpBtn.title = 'Help';
   helpBtn.addEventListener('click', () => {
@@ -503,7 +503,7 @@ export function createToolbar(
   // Tour re-entry button
   const tourBtn = document.createElement('button');
   tourBtn.id = 'btn-retake-tour';
-  tourBtn.className = 'flex items-center justify-center w-6 h-6 rounded-full text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700 transition-colors text-xs ml-1';
+  tourBtn.className = 'flex items-center justify-center w-10 h-10 md:w-6 md:h-6 rounded-full text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700 transition-colors text-sm md:text-xs ml-1';
   tourBtn.textContent = '\uD83C\uDFAF';
   tourBtn.title = 'Take the guided tour';
   tourBtn.addEventListener('click', () => {
@@ -520,7 +520,7 @@ export function createToolbar(
 function createButton(id: string, text: string): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.id = id;
-  btn.className = 'flex items-center gap-1.5 px-2.5 py-1 rounded text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100 transition-colors text-xs';
+  btn.className = 'flex items-center gap-1.5 px-3 py-2 md:px-2.5 md:py-1 rounded text-zinc-300 [@media(hover:hover)]:hover:bg-zinc-700 [@media(hover:hover)]:hover:text-zinc-100 transition-colors text-sm md:text-xs';
   btn.textContent = text;
   return btn;
 }
