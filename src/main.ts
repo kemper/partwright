@@ -59,6 +59,22 @@ import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
 import { updatePaintMesh, setOnRegionPainted, isActive as isPaintActive } from './color/paintMode';
+import { initSculptUI, setOnApply as setSculptApply } from './ui/sculptUI';
+import {
+  updateSculptBaseMesh,
+  setOnMeshChange as setSculptOnMeshChange,
+} from './sculpt/sculptMode';
+import {
+  hasStrokes as hasSculptStrokes,
+  getStrokes as getSculptStrokes,
+  serialize as serializeStrokes,
+  deserialize as deserializeStrokes,
+  clearStrokes as clearSculptStrokes,
+  onChange as onSculptStrokesChange,
+} from './sculpt/strokes';
+import { replayStrokes } from './sculpt/replay';
+import type { SerializedStroke } from './sculpt/types';
+import { getManifoldModule } from './geometry/engines/manifoldJs';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu } from './annotations/annotateUI';
 import { isActive as isSelectActive, getSelectedId as getSelectedAnnotationId } from './annotations/selectMode';
 import {
@@ -577,11 +593,65 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): vo
   }
 }
 
-/** Include color regions in geometry data for saving. */
+/** Rehydrate sculpt strokes from a version's geometryData. Replays
+ *  them over the just-executed base mesh, replaces `currentMeshData`
+ *  with the sculpted result, and tells the sculpt module to treat the
+ *  raw code mesh as its base (so further sculpting starts from there).
+ *  Returns true if strokes were applied. */
+function rehydrateSculptStrokes(geometryData: Record<string, unknown> | null): boolean {
+  clearSculptStrokes();
+  if (!geometryData || !currentMeshData) {
+    syncLockState();
+    return false;
+  }
+  const strokes = geometryData.strokes as SerializedStroke[] | undefined;
+  if (!strokes || strokes.length === 0) {
+    syncLockState();
+    return false;
+  }
+
+  deserializeStrokes(strokes);
+  // Replay strokes from the just-executed code mesh.
+  let sculpted: MeshData;
+  try {
+    sculpted = replayStrokes(currentMeshData, strokes);
+  } catch (err) {
+    console.warn('Sculpt rehydrate: replay failed, falling back to base mesh:', err);
+    syncLockState();
+    return false;
+  }
+  // sculptMode treats the raw code mesh as its base so future strokes
+  // start from the original (canonical) topology.
+  updateSculptBaseMesh(currentMeshData);
+  // Promote the sculpted mesh to "current" so paint, export, and
+  // viewport all see the same surface.
+  currentMeshData = sculpted;
+  // Refresh viewport + panes with the sculpted mesh.
+  updateMesh(sculpted, { skipAutoFrame: true });
+  // Also feed the sculpted mesh to the paint adjacency so picking
+  // works on the post-sculpt topology.
+  updatePaintMesh(sculpted);
+  updateGeometryData();
+  syncLockState();
+  return true;
+}
+
+/** Helper: rehydrate both sculpt strokes and color regions from a
+ *  version's geometryData, in the right order (strokes first so color
+ *  rehydration sees the sculpted topology). */
+function rehydrateVersionState(geometryData: Record<string, unknown> | null): void {
+  rehydrateSculptStrokes(geometryData);
+  rehydrateColorRegions(geometryData);
+}
+
+/** Include color regions and sculpt strokes in geometry data for saving. */
 function enrichGeometryDataWithColors(geoData: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!geoData) return geoData;
   if (hasColorRegions()) {
     geoData.colorRegions = serializeRegions();
+  }
+  if (hasSculptStrokes()) {
+    geoData.strokes = serializeStrokes();
   }
   return geoData;
 }
@@ -1098,7 +1168,7 @@ async function main() {
       await runCodeSync(code);
       const loadedVersion = getState().currentVersion;
       if (loadedVersion) {
-        rehydrateColorRegions(loadedVersion.geometryData);
+        rehydrateVersionState(loadedVersion.geometryData);
       }
       applyVersionAnnotations(loadedVersion);
     },
@@ -1121,10 +1191,10 @@ async function main() {
   createGalleryView(galleryContainer, async (code: string) => {
     setValue(code);
     await runCodeSync(code);
-    // Rehydrate color regions and annotations from the loaded version
+    // Rehydrate color regions, sculpt strokes, and annotations from the loaded version
     const loadedVersion = getState().currentVersion;
     if (loadedVersion) {
-      rehydrateColorRegions(loadedVersion.geometryData);
+      rehydrateVersionState(loadedVersion.geometryData);
     }
     applyVersionAnnotations(loadedVersion);
     switchTab('interactive');
@@ -1213,7 +1283,7 @@ async function main() {
     }
     setValue(version.code);
     await runCodeSync(version.code);
-    rehydrateColorRegions(version.geometryData);
+    rehydrateVersionState(version.geometryData);
     applyVersionAnnotations(version);
     const sessionImages = await getImagesFromSession();
     if (sessionImages) {
@@ -1497,6 +1567,64 @@ async function main() {
   initDimensionsToggle(clipControls);
   initAnnotateUI(clipControls);
   initPaintUI(clipControls);
+  initSculptUI(clipControls);
+  // Wire sculpt mesh changes back to the multiview + elevations panes so
+  // they update alongside the live viewport while sculpting.
+  setSculptOnMeshChange((mesh) => {
+    updateMultiView(mesh);
+    renderElevationsToContainer(elevationsContainer, mesh);
+  });
+  // Apply pending sculpt strokes to the current version.
+  setSculptApply(async () => {
+    if (!getState().session) {
+      setStatus(statusBar, 'error', 'Sculpt apply: no active session');
+      return;
+    }
+    if (!hasSculptStrokes()) {
+      setStatus(statusBar, 'error', 'Sculpt apply: no strokes to apply');
+      return;
+    }
+    const baseMesh = currentMeshData;
+    if (!baseMesh) {
+      setStatus(statusBar, 'error', 'Sculpt apply: no current mesh');
+      return;
+    }
+    const sculpted = replayStrokes(baseMesh, getSculptStrokes());
+    // Validate manifoldness — failures (self-intersection, edge holes)
+    // are logged but don't block persistence; the mesh is renderable
+    // and exports may degrade gracefully.
+    const mod = getManifoldModule();
+    if (mod) {
+      try {
+        const test = mod.Manifold.ofMesh({
+          vertProperties: sculpted.vertProperties,
+          triVerts: sculpted.triVerts,
+          numProp: sculpted.numProp,
+        });
+        if (test && typeof test.delete === 'function') test.delete();
+      } catch (err) {
+        console.warn('Sculpt apply: Manifold.ofMesh validation failed, saving anyway:', err);
+      }
+    }
+    // Persist: write a new version carrying the strokes. The base
+    // mesh (unsculpted) stays as the canonical code output; strokes
+    // replay over it on reload.
+    const code = getValue();
+    const geoData = enrichGeometryDataWithColors(getGeometryDataObj() ?? {});
+    const thumbnail = await captureThumbnail();
+    await saveVersion(code, geoData, thumbnail, 'sculpted', undefined, { force: true });
+    // After saving, treat the sculpted mesh as the current one so
+    // viewport/exports/paint stay aligned.
+    currentMeshData = sculpted;
+    updateMesh(sculpted, { skipAutoFrame: true });
+    updateMultiView(sculpted);
+    renderElevationsToContainer(elevationsContainer, sculpted);
+    updatePaintMesh(sculpted);
+    // Refresh the machine-readable stats so #geometry-data reports
+    // the post-sculpt vertex/triangle counts and bbox.
+    updateGeometryData();
+    syncLockState();
+  });
   // Declared before initMeasureToggle is called so the assignment inside it
   // doesn't hit a let-TDZ error (the same `let` lower in this function is
   // hoisted to a binding, but only initialized when execution reaches it).
@@ -1527,13 +1655,13 @@ async function main() {
           await saveVersion(code, coloredGeoData, thumbnail, 'colored', undefined, { force: true });
         }
 
-        // 2. Re-render without colors, then save an uncolored sibling
-        updateMesh(currentMeshData, { skipAutoFrame: true });
-        updateMultiView(currentMeshData);
-        renderElevationsToContainer(elevationsContainer, currentMeshData);
+        // 2. Re-run code to restore the canonical (unsculpted, uncolored)
+        // mesh — `currentMeshData` may have been the sculpted mesh.
+        await runCodeSync(code);
 
         const cleanGeoData = getGeometryDataObj() ?? {};
         delete cleanGeoData.colorRegions;
+        delete cleanGeoData.strokes;
         const cleanThumb = await captureThumbnail();
         await saveVersion(code, cleanGeoData, cleanThumb, undefined, undefined, { force: true });
       } else {
@@ -1545,13 +1673,11 @@ async function main() {
         }
       }
     },
-    // Clear: just re-render without colors (clearRegions already called)
+    // Clear: re-run code to restore the canonical mesh (clearRegions /
+    // clearStrokes already called).
     () => {
-      if (currentMeshData) {
-        updateMesh(currentMeshData, { skipAutoFrame: true });
-        updateMultiView(currentMeshData);
-        renderElevationsToContainer(elevationsContainer, currentMeshData);
-      }
+      const code = getValue();
+      void runCodeSync(code);
     },
   );
 
@@ -1597,6 +1723,12 @@ async function main() {
   };
   onAnnotationStrokesChange(refreshAnnotationDependentPanes);
   onAnnotationVisibilityChange(refreshAnnotationDependentPanes);
+
+  // Sculpt strokes added/cleared also gate the editor lock — same
+  // banner + read-only behavior color regions use.
+  onSculptStrokesChange(() => {
+    syncLockState();
+  });
 
   editorReady = true;
   editorReadyResolve();
@@ -2382,7 +2514,7 @@ async function main() {
       }
       setValue(version.code);
       await runCodeSync(version.code);
-      rehydrateColorRegions(version.geometryData);
+      rehydrateVersionState(version.geometryData);
       applyVersionAnnotations(version);
       // Labels are runtime state from the just-executed code. Surface
       // whether any were registered so callers can decide between
@@ -2408,7 +2540,7 @@ async function main() {
       if (version) {
         setValue(version.code);
         await runCodeSync(version.code);
-        rehydrateColorRegions(version.geometryData);
+        rehydrateVersionState(version.geometryData);
         applyVersionAnnotations(version);
       }
       return version ? { id: version.id, index: version.index, label: version.label } : null;
@@ -5227,12 +5359,31 @@ async function main() {
       // saved version re-runs the code first, which rebuilds the map.
       currentLabelMap = result.labelMap ?? null;
 
+      // Hand the freshly-built code mesh to the sculpt module so its
+      // base mesh stays in sync. If the run was triggered while sculpt
+      // strokes were in the pending list, they remain pending; the
+      // sculpt mode replays them on top of the new base for the
+      // user's next preview.
+      updateSculptBaseMesh(result.mesh);
+
+      // If sculpt strokes from a previous rehydrate are still in the
+      // store, replay them on top of the newly-executed mesh so the
+      // visible surface stays the sculpted one. This matters for
+      // every code re-run while a sculpted version is loaded —
+      // including the debounced auto-run that fires when setValue()
+      // populates the editor on version load.
+      let activeMesh: MeshData = result.mesh;
+      if (hasSculptStrokes()) {
+        activeMesh = replayStrokes(result.mesh, getSculptStrokes());
+        currentMeshData = activeMesh;
+      }
+
       // Apply any existing color regions to the mesh
-      const displayMesh = hasColorRegions() ? applyTriColorsIfVisible(result.mesh) : result.mesh;
+      const displayMesh = hasColorRegions() ? applyTriColorsIfVisible(activeMesh) : activeMesh;
       updateMesh(displayMesh);
       updateMultiView(displayMesh);
       renderElevationsToContainer(elevationsContainer, displayMesh);
-      updatePaintMesh(result.mesh); // always pass uncolored mesh for adjacency
+      updatePaintMesh(activeMesh); // always pass post-sculpt mesh for adjacency
 
       updateGeometryData(elapsed, src);
       syncClipSliderBounds();

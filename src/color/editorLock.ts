@@ -1,8 +1,10 @@
-// Editor lock — locks the code editor when the current version has color regions.
+// Editor lock — locks the code editor when the current version has color regions
+// or sculpt strokes applied.
 // Provides lock overlay banner and unlock modal with preserve/destructive paths.
 
 import { setReadOnly } from '../editor/codeEditor';
 import { hasRegions, clearRegions, serialize as serializeRegions, type SerializedColorRegion } from './regions';
+import { hasStrokes, clearStrokes } from '../sculpt/strokes';
 
 let locked = false;
 let lockOverlay: HTMLElement | null = null;
@@ -32,10 +34,17 @@ export function isLocked(): boolean {
   return locked;
 }
 
-/** Sync lock state based on whether regions exist. Call after painting, loading, or clearing. */
+/** Sync lock state based on whether regions or sculpt strokes exist. Call
+ *  after painting, sculpting, loading, or clearing. */
 export function syncLockState(): void {
-  const shouldLock = hasRegions();
-  if (shouldLock === locked) return;
+  const shouldLock = hasRegions() || hasStrokes();
+  if (shouldLock === locked) {
+    // Even when the overall lock state didn't change, the banner text
+    // may need to swap between "color regions" and "sculpt strokes"
+    // (e.g. user added strokes to an already-colored version).
+    if (locked) refreshLockBanner();
+    return;
+  }
 
   locked = shouldLock;
   setReadOnly(locked);
@@ -49,6 +58,22 @@ export function syncLockState(): void {
   }
 }
 
+function bannerText(): string {
+  // Color regions take priority in the banner if both are present —
+  // the underlying lock state is the same either way.
+  if (hasRegions() && hasStrokes()) {
+    return '🔒 This version has color regions and sculpt strokes applied.';
+  }
+  if (hasStrokes()) return '🔒 This version has sculpt strokes applied.';
+  return '🔒 This version has color regions applied.';
+}
+
+function refreshLockBanner(): void {
+  if (!lockOverlay) return;
+  const span = lockOverlay.querySelector('span');
+  if (span) span.innerHTML = bannerText();
+}
+
 function showLockOverlay(): void {
   if (lockOverlay || !editorContainer) return;
 
@@ -57,7 +82,7 @@ function showLockOverlay(): void {
   lockOverlay.className = 'flex items-center justify-between px-3 py-1.5 bg-amber-900/60 border-b border-amber-500/40 text-xs text-amber-200 shrink-0';
 
   const msg = document.createElement('span');
-  msg.innerHTML = '\uD83D\uDD12 This version has color regions applied.';
+  msg.innerHTML = bannerText();
 
   const unlockBtn = document.createElement('button');
   unlockBtn.className = 'px-2 py-0.5 rounded text-xs bg-amber-500/20 hover:bg-amber-500/40 text-amber-100 border border-amber-500/40 transition-colors';
@@ -170,10 +195,12 @@ function showUnlockModal(): void {
     if (preserve && onUnlockFork) {
       const colorData = serializeRegions();
       clearRegions();
+      clearStrokes();
       syncLockState();
       await onUnlockFork(colorData);
     } else if (!preserve && onUnlockClear) {
       clearRegions();
+      clearStrokes();
       syncLockState();
       onUnlockClear();
     }
