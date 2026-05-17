@@ -62,7 +62,7 @@ export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
 }
 
 /** File extensions accepted by the Import button and drag-and-drop. */
-export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad';
+export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl';
 
 let _autoRun = true;
 let _onAutoRunChange: ((on: boolean) => void) | null = null;
@@ -204,7 +204,7 @@ export function createToolbar(
   importWrapper.id = 'import-wrapper';
 
   const btnImport = createButton('btn-import', '\u2191 Import');
-  btnImport.title = 'Import a .partwright.json session, or a .js / .scad file';
+  btnImport.title = 'Import a .partwright.json session, a .js / .scad source file, or an .stl mesh';
   importWrapper.appendChild(btnImport);
 
   // Hidden file input — kept inside the wrapper so click-outside-to-close still works.
@@ -226,7 +226,7 @@ export function createToolbar(
   importDropdown.appendChild(createSectionHeader('From file'));
   const chooseFileOpt = createDescribedItem(
     'Choose file\u2026',
-    'Open a .partwright.json session, or a .js / .scad file.',
+    'Open a .partwright.json session, a .js / .scad source file, or an .stl mesh.',
   );
   chooseFileOpt.addEventListener('click', () => {
     importDropdown.classList.add('hidden');
