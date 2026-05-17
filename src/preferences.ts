@@ -57,18 +57,49 @@ export const RENDER_DELAY_OPTIONS: { id: RenderDelay; label: string; hint: strin
   { id: 'relaxed', label: 'Relaxed', hint: "800ms — kinder to slow machines and heavy models" },
 ];
 
+// ---------- AI safety: lifetime spend cap ----------
+
+export type LifetimeSpendCap = 'unlimited' | 'cap5' | 'cap20' | 'cap100';
+
+export const LIFETIME_SPEND_CAP_USD: Record<LifetimeSpendCap, number> = {
+  unlimited: Number.POSITIVE_INFINITY,
+  cap5: 5,
+  cap20: 20,
+  cap100: 100,
+};
+
+export const LIFETIME_SPEND_OPTIONS: { id: LifetimeSpendCap; label: string; hint: string }[] = [
+  { id: 'unlimited', label: 'Unlimited', hint: 'No lifetime cap — only the per-turn $ cap applies' },
+  { id: 'cap5',  label: '$5',   hint: "Hard stop after $5 of total AI spend" },
+  { id: 'cap20', label: '$20',  hint: 'Hard stop after $20 of total AI spend' },
+  { id: 'cap100', label: '$100', hint: 'Hard stop after $100 of total AI spend' },
+];
+
+// ---------- AI defaults ----------
+
+export type AiPaintDefault = 'off' | 'on';
+
+export const AI_PAINT_DEFAULT_OPTIONS: { id: AiPaintDefault; label: string; hint: string }[] = [
+  { id: 'off', label: 'Off', hint: "Paint tools are disabled in new sessions (default — color regions lock the editor)" },
+  { id: 'on',  label: 'On',  hint: 'Paint tools are enabled in new sessions' },
+];
+
 // ---------- Aggregate preferences ----------
 
 export interface Preferences {
   quality: QualityLevel;
   meshColor: MeshColorId;
   renderDelay: RenderDelay;
+  lifetimeSpendCap: LifetimeSpendCap;
+  aiPaintDefault: AiPaintDefault;
 }
 
 const DEFAULTS: Preferences = {
   quality: 'highest',
   meshColor: 'blue',
   renderDelay: 'normal',
+  lifetimeSpendCap: 'unlimited',
+  aiPaintDefault: 'off',
 };
 
 let cached: Preferences | null = null;
@@ -121,13 +152,27 @@ export function getRenderDelayMs(): number {
   return RENDER_DELAY_MS[loadPreferences().renderDelay];
 }
 
+/** Lifetime AI spend cap in USD (Number.POSITIVE_INFINITY = no cap). */
+export function getLifetimeSpendCapUsd(): number {
+  return LIFETIME_SPEND_CAP_USD[loadPreferences().lifetimeSpendCap];
+}
+
+/** Whether new AI sessions should start with paint tools enabled. */
+export function getAiPaintDefault(): boolean {
+  return loadPreferences().aiPaintDefault === 'on';
+}
+
 function mergeWithDefaults(partial: Partial<Preferences>): Preferences {
   const q = partial.quality;
   const c = partial.meshColor;
   const d = partial.renderDelay;
+  const l = partial.lifetimeSpendCap;
+  const p = partial.aiPaintDefault;
   return {
     quality: q && q in QUALITY_SEGMENTS ? q : DEFAULTS.quality,
     meshColor: c && c in MESH_COLORS ? c : DEFAULTS.meshColor,
     renderDelay: d && d in RENDER_DELAY_MS ? d : DEFAULTS.renderDelay,
+    lifetimeSpendCap: l && l in LIFETIME_SPEND_CAP_USD ? l : DEFAULTS.lifetimeSpendCap,
+    aiPaintDefault: p === 'on' || p === 'off' ? p : DEFAULTS.aiPaintDefault,
   };
 }

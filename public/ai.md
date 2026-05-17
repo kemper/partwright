@@ -288,11 +288,13 @@ revolve(cs, n?, degrees?)
 Segments guide: 6-8 low-poly, 32-48 smooth, 64+ high quality
 ```
 
-**User Preferences (toolbar gear icon):** Partwright exposes three per-browser preferences that affect every run; assume defaults unless the user has explicitly mentioned changing them.
+**User Preferences (toolbar gear icon):** Partwright exposes per-browser preferences that affect every run; assume defaults unless the user has explicitly mentioned changing them.
 
 - **Modeling Quality** — segment count for circular primitives. Default **Highest** (128 segments). Seeded into `setCircularSegments()` (manifold-js) and `$fn` (OpenSCAD) before each run; your code can still override per-script or per-primitive.
 - **Default Mesh Color** — color of unpainted geometry in the interactive viewport. Default **Blue**. Doesn't affect 3MF/OBJ exports or painted regions.
 - **Auto-render Delay** — editor debounce (100ms / 300ms / 800ms). Default **Normal** (300ms). Lower values feel snappier; higher values reduce mid-typing stutters on heavy models.
+- **AI Lifetime Spend Cap** — hard ceiling on total Anthropic API spend tracked across all sessions. Default **Unlimited**. When the cap is reached, every AI turn fails immediately before hitting the API — surface this clearly if you see the corresponding error.
+- **AI Paint by Default** — whether new sessions start with paint tools enabled in the AI scope. Default **Off** (painted regions lock the editor; users typically opt in per-session). When this preference is flipped on, `scope.paintFaces` is force-enabled in the current AI settings too.
 
 ### All constructors
 

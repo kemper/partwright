@@ -21,7 +21,7 @@ test.describe('Preferences modal', () => {
     await expect(page.getByRole('heading', { name: 'Preferences' })).toHaveCount(0);
   });
 
-  test('all three settings persist to localStorage', async ({ page }) => {
+  test('all settings persist to localStorage', async ({ page }) => {
     await page.goto('/editor?view=ai');
     await page.waitForSelector('#btn-preferences');
 
@@ -29,6 +29,8 @@ test.describe('Preferences modal', () => {
     await page.locator('input[type=radio][value=low]').check();
     await page.locator('input[type=radio][value=emerald]').check();
     await page.locator('input[type=radio][value=relaxed]').check();
+    await page.locator('input[type=radio][value=cap20]').check();
+    await page.locator('input[type=radio][value=on][name=aiPaintDefault]').check();
 
     const stored = await page.evaluate(() => localStorage.getItem('partwright-preferences-v1'));
     expect(stored).toBeTruthy();
@@ -36,6 +38,8 @@ test.describe('Preferences modal', () => {
       quality: 'low',
       meshColor: 'emerald',
       renderDelay: 'relaxed',
+      lifetimeSpendCap: 'cap20',
+      aiPaintDefault: 'on',
     });
 
     // Close + reopen — selections persist.
@@ -44,6 +48,28 @@ test.describe('Preferences modal', () => {
     await expect(page.locator('input[type=radio][value=low]')).toBeChecked();
     await expect(page.locator('input[type=radio][value=emerald]')).toBeChecked();
     await expect(page.locator('input[type=radio][value=relaxed]')).toBeChecked();
+    await expect(page.locator('input[type=radio][value=cap20]')).toBeChecked();
+    await expect(page.locator('input[type=radio][value=on][name=aiPaintDefault]')).toBeChecked();
+  });
+
+  test('toggling AI paint default writes through to AI settings', async ({ page }) => {
+    await page.goto('/editor?view=ai');
+    await page.waitForSelector('#btn-preferences');
+
+    // Default: paint should be off in AI settings (per `standard` preset).
+    let aiSettings = await page.evaluate(() =>
+      localStorage.getItem('partwright-ai-settings-v1'),
+    );
+    expect(aiSettings === null || JSON.parse(aiSettings).toggles.scope.paintFaces === false).toBe(true);
+
+    await page.locator('#btn-preferences').click();
+    await page.locator('input[type=radio][value=on][name=aiPaintDefault]').check();
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    // AI settings should now have paintFaces=true after the preference write-through.
+    aiSettings = await page.evaluate(() => localStorage.getItem('partwright-ai-settings-v1'));
+    expect(aiSettings).toBeTruthy();
+    expect(JSON.parse(aiSettings!).toggles.scope.paintFaces).toBe(true);
   });
 
   test('manifold-js engine applies the chosen segment count', async ({ page }) => {

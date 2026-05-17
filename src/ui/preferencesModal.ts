@@ -12,10 +12,17 @@ import {
   QUALITY_SEGMENTS,
   MESH_COLOR_OPTIONS,
   RENDER_DELAY_OPTIONS,
+  LIFETIME_SPEND_OPTIONS,
+  LIFETIME_SPEND_CAP_USD,
+  AI_PAINT_DEFAULT_OPTIONS,
   type QualityLevel,
   type MeshColorId,
   type RenderDelay,
+  type LifetimeSpendCap,
+  type AiPaintDefault,
 } from '../preferences';
+import { getKey, putKey } from '../ai/db';
+import { formatUsd } from '../ai/cost';
 
 export function showPreferencesModal(): void {
   const shell = createModalShell({ title: 'Preferences', scrollable: true });
@@ -89,6 +96,79 @@ export function showPreferencesModal(): void {
       currentId: current.renderDelay,
       onChange: (id) => {
         current = { ...current, renderDelay: id as RenderDelay };
+        savePreferences(current);
+      },
+    }),
+  );
+
+  // ---------- AI: lifetime spend cap ----------
+  shell.body.appendChild(
+    section(
+      'AI Lifetime Spend Cap',
+      'Hard ceiling on total Anthropic API spend tracked across all sessions on this browser. Once reached, AI requests fail until you raise the cap or reset the usage counter.',
+    ),
+  );
+
+  const spendStatus = document.createElement('div');
+  spendStatus.className = 'text-xs text-zinc-400 flex items-center justify-between gap-3';
+  const renderSpendStatus = async () => {
+    const key = await getKey('anthropic');
+    const spent = key?.totalCostUsd ?? 0;
+    const cap = LIFETIME_SPEND_CAP_USD[current.lifetimeSpendCap];
+    const capLabel = Number.isFinite(cap) ? formatUsd(cap) : '∞';
+    spendStatus.innerHTML = '';
+    const text = document.createElement('span');
+    text.textContent = `Tracked spend: ${formatUsd(spent)} of ${capLabel}`;
+    spendStatus.appendChild(text);
+    if (spent > 0) {
+      const resetBtn = document.createElement('button');
+      resetBtn.className = 'px-2 py-0.5 rounded text-[11px] text-zinc-300 bg-zinc-700 hover:bg-zinc-600';
+      resetBtn.textContent = 'Reset counter';
+      resetBtn.title = 'Zero the tracked lifetime AI spend without disconnecting your API key';
+      resetBtn.addEventListener('click', async () => {
+        if (!confirm('Reset the tracked AI spend counter to $0? Your API key stays connected.')) return;
+        const k = await getKey('anthropic');
+        if (!k) return;
+        await putKey({ ...k, totalInputTokens: 0, totalOutputTokens: 0, totalCostUsd: 0 });
+        await renderSpendStatus();
+      });
+      spendStatus.appendChild(resetBtn);
+    }
+  };
+  void renderSpendStatus();
+  shell.body.appendChild(spendStatus);
+
+  shell.body.appendChild(
+    radioGroup({
+      name: 'lifetimeSpendCap',
+      ariaLabel: 'Lifetime AI spend cap',
+      options: LIFETIME_SPEND_OPTIONS,
+      defaultId: 'unlimited',
+      currentId: current.lifetimeSpendCap,
+      onChange: (id) => {
+        current = { ...current, lifetimeSpendCap: id as LifetimeSpendCap };
+        savePreferences(current);
+        void renderSpendStatus();
+      },
+    }),
+  );
+
+  // ---------- AI: paint enabled by default ----------
+  shell.body.appendChild(
+    section(
+      'AI Paint by Default',
+      'Whether the model can paint faces straight out of the box. Painted regions lock the editor — keeping this off makes the AI safer for code-only iteration. You can still flip the Paint pill on a per-session basis.',
+    ),
+  );
+  shell.body.appendChild(
+    radioGroup({
+      name: 'aiPaintDefault',
+      ariaLabel: 'AI paint by default',
+      options: AI_PAINT_DEFAULT_OPTIONS,
+      defaultId: 'off',
+      currentId: current.aiPaintDefault,
+      onChange: (id) => {
+        current = { ...current, aiPaintDefault: id as AiPaintDefault };
         savePreferences(current);
       },
     }),

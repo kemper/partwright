@@ -3,11 +3,12 @@
 
 import { generateId } from '../storage/db';
 import { streamTurn, buildApiMessages, type StreamCallbacks } from './anthropic';
-import { recordUsage, putMessages } from './db';
+import { recordUsage, putMessages, getKey } from './db';
 import { buildToolList, executeTool } from './tools';
 import { buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
-import { turnCostUsd } from './cost';
+import { turnCostUsd, formatUsd } from './cost';
 import { ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type TurnOutcomeReason } from './types';
+import { getLifetimeSpendCapUsd } from '../preferences';
 
 /** Yield to the browser between heavy synchronous work blocks so the
  *  page stays responsive. requestAnimationFrame lets the browser paint
@@ -83,6 +84,21 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   const tools = buildToolList(toggles);
   const aiMd = await loadAiMd();
   const systemPrompt = buildSystemPrompt(aiMd);
+
+  // Lifetime spend cap (set in Preferences ⚙). When the user's total
+  // tracked spend across all sessions has already hit the cap, bail
+  // out before we persist the user message or hit the API.
+  const lifetimeCap = getLifetimeSpendCapUsd();
+  if (Number.isFinite(lifetimeCap)) {
+    const keyRecord = await getKey('anthropic');
+    const lifetimeSpent = keyRecord?.totalCostUsd ?? 0;
+    if (lifetimeSpent >= lifetimeCap) {
+      callbacks.onError?.(new Error(
+        `Lifetime AI spend cap reached: ${formatUsd(lifetimeSpent)} of ${formatUsd(lifetimeCap)}. Raise the cap in Preferences (⚙) or reset the usage counter to continue.`,
+      ));
+      return history;
+    }
+  }
 
   const seqStart = nextSeq(history);
 

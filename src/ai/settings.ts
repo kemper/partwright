@@ -3,6 +3,7 @@
 // separate from the per-session chat transcripts in IndexedDB.
 
 import { MAX_ITERATIONS, MAX_SPEND, type ChatToggles, type ModelId, type Preset } from './types';
+import { getAiPaintDefault, onPreferencesChange } from '../preferences';
 
 const STORAGE_KEY = 'partwright-ai-settings-v1';
 
@@ -26,7 +27,8 @@ const PRESET_TOGGLES: Record<Exclude<Preset, 'custom'>, ChatToggles> = {
     vision: { views: true },
     // Paint off by default — color regions lock the editor and are easy
     // for the model to mis-target. Users who want AI-driven painting
-    // can flip the Paint pill on, or pick the Full preset.
+    // can flip the Paint pill on, or pick the Full preset, or flip the
+    // "AI paint by default" preference (which overrides this entry).
     scope: { runCode: true, saveVersions: true, paintFaces: false },
     autoRetry: 1,
     maxIterations: 'medium',
@@ -64,9 +66,39 @@ export function loadSettings(): AiSettings {
   } catch {
     // Fall through to defaults on parse / storage error.
   }
-  cached = { ...DEFAULT_SETTINGS, toggles: { ...DEFAULT_SETTINGS.toggles, vision: { ...DEFAULT_SETTINGS.toggles.vision }, scope: { ...DEFAULT_SETTINGS.toggles.scope } } };
+  // First-run defaults — honor the "AI paint by default" preference so
+  // new users land with paint either on or off without having to dive
+  // into the AI panel.
+  const baseScope = { ...DEFAULT_SETTINGS.toggles.scope, paintFaces: getAiPaintDefault() };
+  cached = {
+    ...DEFAULT_SETTINGS,
+    toggles: { ...DEFAULT_SETTINGS.toggles, vision: { ...DEFAULT_SETTINGS.toggles.vision }, scope: baseScope },
+  };
   return cached;
 }
+
+/** Force-update the stored AI paint setting. Called from the
+ *  Preferences modal so toggling the global default takes effect
+ *  immediately for the current session — without this, users would
+ *  only see the change on the next browser profile / clear storage. */
+export function setAiPaintFaces(enabled: boolean): void {
+  const current = loadSettings();
+  if (current.toggles.scope.paintFaces === enabled) return;
+  const next: AiSettings = {
+    ...current,
+    toggles: {
+      ...current.toggles,
+      scope: { ...current.toggles.scope, paintFaces: enabled },
+    },
+  };
+  saveSettings(next);
+}
+
+// Mirror preference changes onto the live AI settings so the user
+// sees an immediate effect when they toggle the AI paint default.
+onPreferencesChange((p) => {
+  setAiPaintFaces(p.aiPaintDefault === 'on');
+});
 
 export function saveSettings(next: AiSettings): void {
   cached = next;

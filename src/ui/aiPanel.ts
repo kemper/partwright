@@ -7,7 +7,7 @@ import { runTurn, totalCost, totalTokensEstimate, estimateCachedPrefixTokens } f
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, applyPreset, setModel, setToggles, MODEL_OPTIONS, PRESET_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, applyPreset, setModel, setToggles, onSettingsChange, MODEL_OPTIONS, PRESET_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { generateId } from '../storage/db';
@@ -295,6 +295,11 @@ function buildDrawer(): void {
   renderCostMeter();
   renderTranscript();
   panelStatusUpdate();
+
+  // External writes to AI settings (e.g. from the Preferences modal's
+  // "AI paint by default" toggle) should be reflected in the toggle
+  // strip immediately, not on next click.
+  onSettingsChange(() => { renderToggleStrip(); });
 }
 
 function createIconButton(_label: string, glyph: string): HTMLButtonElement {
