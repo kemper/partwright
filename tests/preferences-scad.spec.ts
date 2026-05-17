@@ -6,7 +6,7 @@ import { test, expect } from 'playwright/test';
 
 test('SCAD engine applies the chosen $fn from quality preset', async ({ page }) => {
   await page.goto('/editor?view=ai');
-  await page.waitForSelector('#btn-quality');
+  await page.waitForSelector('#btn-preferences');
 
   type RunResult = { triangleCount?: number; error?: string };
   type PartwrightApi = {
@@ -41,7 +41,7 @@ test('SCAD engine applies the chosen $fn from quality preset', async ({ page }) 
   expect(high.triangleCount ?? 0).toBeGreaterThan(2000);
 
   // Drop to Low.
-  await page.locator('#btn-quality').click();
+  await page.locator('#btn-preferences').click();
   await page.locator('input[type=radio][value=low]').check();
   await page.getByRole('button', { name: 'Done' }).click();
 

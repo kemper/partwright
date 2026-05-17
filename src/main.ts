@@ -1,6 +1,6 @@
 import './style.css';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
-import { onQualitySettingsChange } from './geometry/qualitySettings';
+import { onPreferencesChange } from './preferences';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible } from './renderer/viewport';
 import { renderCompositeCanvas, renderElevationsToContainer, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
@@ -1485,9 +1485,11 @@ async function main() {
     if (isAutoRun()) runCode(code);
   });
 
-  // When the user changes the modeling-quality preset, re-render the
-  // current code so the new segment count takes effect immediately.
-  onQualitySettingsChange(() => { runCode(); });
+  // When the user changes a preference (quality, mesh color, render
+  // delay) re-render the current code so the change takes effect
+  // immediately. Render delay only matters for the next keystroke, so
+  // a re-run is harmless there too.
+  onPreferencesChange(() => { runCode(); });
 
   // Wire up clip controls
   initClipControls(clipControls);

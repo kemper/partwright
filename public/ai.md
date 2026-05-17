@@ -288,7 +288,11 @@ revolve(cs, n?, degrees?)
 Segments guide: 6-8 low-poly, 32-48 smooth, 64+ high quality
 ```
 
-**Default segment count:** Partwright seeds `setCircularSegments()` from the user's Modeling Quality preset (gear icon in the toolbar) before each run. The default preset is **Highest** (128 segments), so curves render smooth out of the box without any explicit configuration. Users can drop to Low/Medium/High in the settings modal if they prefer faster renders. Your code can still call `setCircularSegments(n)` or pass an explicit segments argument to a primitive to override on a per-script or per-call basis.
+**User Preferences (toolbar gear icon):** Partwright exposes three per-browser preferences that affect every run; assume defaults unless the user has explicitly mentioned changing them.
+
+- **Modeling Quality** — segment count for circular primitives. Default **Highest** (128 segments). Seeded into `setCircularSegments()` (manifold-js) and `$fn` (OpenSCAD) before each run; your code can still override per-script or per-primitive.
+- **Default Mesh Color** — color of unpainted geometry in the interactive viewport. Default **Blue**. Doesn't affect 3MF/OBJ exports or painted regions.
+- **Auto-render Delay** — editor debounce (100ms / 300ms / 800ms). Default **Normal** (300ms). Lower values feel snappier; higher values reduce mid-typing stutters on heavy models.
 
 ### All constructors
 

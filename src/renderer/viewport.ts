@@ -9,6 +9,7 @@ import { initDimensionLines, updateDimensionLines, disposeDimensionLines } from 
 import { initAnnotationOverlay, setLiveResolution as setAnnotationResolution } from '../annotations/annotationOverlay';
 import { configureSessionPlane } from '../annotations/sessionPlane';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
+import { getDefaultMeshColor } from '../preferences';
 
 const VIEWPORT_BG = { dark: 0x1a1a2e, light: 0xededed } as const;
 const GRID_COLORS = { dark: { major: 0x444444, minor: 0x333333 }, light: { major: 0xb0b0b0, minor: 0xc8c8c8 } } as const;
@@ -176,7 +177,7 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
   const geometry = meshGLToBufferGeometry(meshData);
   const hasColors = geometry.hasAttribute('color');
 
-  const solidMat = createDefaultMaterial(hasColors);
+  const solidMat = createDefaultMaterial(hasColors, getDefaultMeshColor());
   const wireMat = createWireframeMaterial();
 
   // Apply clipping planes to materials

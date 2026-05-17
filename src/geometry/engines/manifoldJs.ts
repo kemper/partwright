@@ -1,6 +1,6 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
-import { getDefaultCircularSegments } from '../qualitySettings';
+import { getDefaultCircularSegments } from '../../preferences';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let manifoldModule: any = null;

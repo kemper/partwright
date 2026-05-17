@@ -1,6 +1,6 @@
 import { resetTour, startTour } from './tour';
 import { partwrightMarkSvg } from './brand';
-import { showQualitySettingsModal } from './qualitySettingsModal';
+import { showPreferencesModal } from './preferencesModal';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
 import { downloadBlob } from '../export/download';
 import {
@@ -516,17 +516,17 @@ export function createToolbar(
   onThemeChange(syncThemeBtn);
   toolbar.appendChild(themeBtn);
 
-  // Modeling-quality settings — gear icon opens a modal where users
-  // pick the default curve resolution. Defaults to "Highest" so the
-  // out-of-the-box rendering is smooth.
-  const qualityBtn = document.createElement('button');
-  qualityBtn.id = 'btn-quality';
-  qualityBtn.className = 'flex items-center justify-center w-10 h-10 md:w-6 md:h-6 rounded-full text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700 transition-colors text-sm md:text-xs ml-2';
-  qualityBtn.textContent = '⚙';
-  qualityBtn.title = 'Modeling quality (default curve resolution)';
-  qualityBtn.setAttribute('aria-label', 'Modeling quality settings');
-  qualityBtn.addEventListener('click', () => { showQualitySettingsModal(); });
-  toolbar.appendChild(qualityBtn);
+  // Preferences — gear icon opens a modal for modeling quality, mesh
+  // color, and auto-render delay. Defaults are tuned for modern
+  // hardware; users on slower machines can dial things down.
+  const prefsBtn = document.createElement('button');
+  prefsBtn.id = 'btn-preferences';
+  prefsBtn.className = 'flex items-center justify-center w-10 h-10 md:w-6 md:h-6 rounded-full text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700 transition-colors text-sm md:text-xs ml-2';
+  prefsBtn.textContent = '⚙';
+  prefsBtn.title = 'Preferences (quality, color, render delay)';
+  prefsBtn.setAttribute('aria-label', 'Preferences');
+  prefsBtn.addEventListener('click', () => { showPreferencesModal(); });
+  toolbar.appendChild(prefsBtn);
 
   // Help button
   const helpBtn = document.createElement('button');

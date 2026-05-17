@@ -2,7 +2,7 @@ import type { Engine, MeshResult, ValidateResult } from './types';
 import { parseBinarySTLToMeshGL } from './scadToManifold';
 import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
 import { scadDiagnostics } from '../sourceDiagnostics';
-import { getDefaultCircularSegments } from '../qualitySettings';
+import { getDefaultCircularSegments } from '../../preferences';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type CreateOpenSCAD = (opts: any) => Promise<any>;

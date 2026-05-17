@@ -7,6 +7,7 @@ import { basicSetup } from 'codemirror';
 import { lintGutter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
 import type { SourceDiagnostic } from '../geometry/types';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
+import { getRenderDelayMs } from '../preferences';
 
 export type EditorLanguage = 'manifold-js' | 'scad';
 
@@ -138,7 +139,7 @@ export function initEditor(
           if (debounceTimer !== null) clearTimeout(debounceTimer);
           debounceTimer = window.setTimeout(() => {
             onChange(getValue());
-          }, 300);
+          }, getRenderDelayMs());
         }
       }),
       EditorView.theme({

@@ -59,7 +59,11 @@ export function createModalShell(opts: ModalShellOptions): ModalShell {
   modal.appendChild(header);
 
   const body = document.createElement('div');
-  const overflowClass = opts.scrollable ? 'overflow-auto' : '';
+  // `flex-1 min-h-0` is needed alongside `overflow-auto` for the body
+  // to actually scroll inside a flex-column with a max-height; without
+  // it, the body grows to its natural height and overflows the modal,
+  // pushing the footer outside the visible area.
+  const overflowClass = opts.scrollable ? 'overflow-auto flex-1 min-h-0' : '';
   body.className = `px-5 py-4 flex flex-col gap-3 text-sm text-zinc-200 ${overflowClass}`.trim();
   modal.appendChild(body);
 
