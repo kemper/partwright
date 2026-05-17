@@ -3,7 +3,7 @@ import { get3MFUnitString } from '../geometry/units';
 import { downloadBlob, getExportFilename, getExportTitle } from './download';
 import type { BuiltExport } from './gltf';
 import { buildZip } from './zip';
-import { cleanMeshForExport, DEFAULT_COLOR_HEX, triColorHex, hasAnyPainted } from './meshClean';
+import { cleanMeshForExport, triColorHex, hasAnyPainted, isPaintedTri } from './meshClean';
 
 /** Build a 3MF export blob without triggering a download. */
 export function build3MF(meshData: MeshData, customName?: string): BuiltExport {
@@ -21,43 +21,48 @@ export function build3MF(meshData: MeshData, customName?: string): BuiltExport {
     vertices.push(`          <vertex x="${x}" y="${y}" z="${z}" />`);
   }
 
-  // Collect distinct colors for m:colorgroup
+  // Collect ONLY the colors the user actually painted. Bambu Studio (and
+  // similar slicers) create one filament slot per <m:color> entry in the
+  // colorgroup. Including the app's default model color here would surface
+  // as an unwanted extra filament the user never asked for.
   const hasColors = triColors != null && hasAnyPainted(triColors, validTris);
-  const colorMap = new Map<string, number>(); // hex -> material index
+  const colorMap = new Map<string, number>(); // hex -> index into m:colorgroup
   const materialColors: string[] = [];
 
   if (hasColors && triColors) {
-    colorMap.set(DEFAULT_COLOR_HEX, 0);
-    materialColors.push(DEFAULT_COLOR_HEX);
-
     for (const t of validTris) {
+      if (!isPaintedTri(triColors, t)) continue;
       const hex = triColorHex(triColors, t);
-      if (hex !== DEFAULT_COLOR_HEX && !colorMap.has(hex)) {
+      if (!colorMap.has(hex)) {
         colorMap.set(hex, materialColors.length);
         materialColors.push(hex);
       }
     }
   }
 
-  // Build triangles XML (remapped vertex indices, filtered for degenerates)
+  // Build triangles XML (remapped vertex indices, filtered for degenerates).
+  // Unpainted triangles get NO pid/p1 — they inherit the slicer's default
+  // print filament. This avoids inflating the filament list with a "default"
+  // slot the user didn't paint.
   const triangles: string[] = [];
   for (const t of validTris) {
     const v1 = remap[triVerts[t * 3]];
     const v2 = remap[triVerts[t * 3 + 1]];
     const v3 = remap[triVerts[t * 3 + 2]];
 
-    if (hasColors && triColors) {
+    if (hasColors && triColors && isPaintedTri(triColors, t)) {
       const hex = triColorHex(triColors, t);
-      const matIdx = colorMap.get(hex) ?? 0;
+      const matIdx = colorMap.get(hex)!;
       triangles.push(`          <triangle v1="${v1}" v2="${v2}" v3="${v3}" pid="2" p1="${matIdx}" />`);
     } else {
       triangles.push(`          <triangle v1="${v1}" v2="${v2}" v3="${v3}" />`);
     }
   }
 
-  // Build m:colorgroup XML block
+  // Build m:colorgroup XML block — only emit when at least one color is
+  // present (i.e. the user actually painted something).
   let colorgroupXml = '';
-  if (hasColors) {
+  if (materialColors.length > 0) {
     const colors = materialColors.map(hex =>
       `      <m:color color="${hex.toUpperCase()}FF" />`
     ).join('\n');
@@ -70,14 +75,15 @@ ${colors}
   // Escape XML special chars in title
   const title = getExportTitle().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-  const nsAttr = hasColors ? ' xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02"' : '';
+  const emitMaterialNs = materialColors.length > 0;
+  const nsAttr = emitMaterialNs ? ' xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02"' : '';
 
   const modelXml = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="${get3MFUnitString()}" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"${nsAttr}>
   <metadata name="Title">${title}</metadata>
   <metadata name="Application">Partwright</metadata>
   <resources>${colorgroupXml}
-    <object id="1" type="model"${hasColors ? ' pid="2" pindex="0"' : ''}>
+    <object id="1" type="model">
       <mesh>
         <vertices>
 ${vertices.join('\n')}
