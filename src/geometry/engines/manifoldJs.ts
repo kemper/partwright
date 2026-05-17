@@ -1,5 +1,6 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
+import { getDefaultCircularSegments } from '../qualitySettings';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let manifoldModule: any = null;
@@ -35,6 +36,12 @@ export const manifoldJsEngine: Engine = {
       setMinCircularEdgeLength,
       setCircularSegments,
     } = manifoldModule;
+
+    // Apply the user's quality preset before running their code. This
+    // is the default segment count for every sphere/cylinder/circle
+    // unless the script overrides it via setCircularSegments() or
+    // passes an explicit segment argument to a primitive.
+    setCircularSegments(getDefaultCircularSegments());
 
     // Per-run registry mapping a fresh `originalID()` (assigned by
     // shape.asOriginal()) back to the human-readable name the user
