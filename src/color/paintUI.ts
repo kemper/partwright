@@ -31,14 +31,26 @@ import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/t
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
 
 const PRESET_COLORS: [number, number, number][] = [
+  // Warm
   [0.92, 0.26, 0.21], // red
-  [0.13, 0.59, 0.95], // blue
-  [0.30, 0.69, 0.31], // green
-  [1.00, 0.76, 0.03], // yellow
-  [0.61, 0.15, 0.69], // purple
   [1.00, 0.60, 0.00], // orange
+  [1.00, 0.76, 0.03], // yellow
+  [0.55, 0.36, 0.22], // brown
+  // Cool
+  [0.55, 0.85, 0.20], // lime
+  [0.30, 0.69, 0.31], // green
   [0.00, 0.74, 0.83], // teal
+  [0.13, 0.59, 0.95], // blue
+  // Purples / pinks
+  [0.10, 0.20, 0.55], // navy
+  [0.61, 0.15, 0.69], // purple
+  [0.93, 0.05, 0.65], // magenta
   [0.91, 0.12, 0.39], // pink
+  // Neutrals
+  [1.00, 1.00, 1.00], // white
+  [0.75, 0.75, 0.75], // light gray
+  [0.35, 0.35, 0.35], // dark gray
+  [0.00, 0.00, 0.00], // black
 ];
 
 let paintBtn: HTMLButtonElement | null = null;
