@@ -195,7 +195,7 @@ export function loadAiMd(): Promise<string> {
  *  ignores a user's "use SCAD" request and writes JavaScript anyway.
  *  Sticking the active language in the suffix flips the prompt-vs-suffix
  *  signal ratio so the more-recent + more-specific instruction wins. */
-export function toggleSuffix(toggles: ChatToggles, activeLanguage?: 'manifold-js' | 'scad'): string {
+export function toggleSuffix(toggles: ChatToggles): string {
   const restrictions: string[] = [];
   if (!toggles.scope.runCode) {
     restrictions.push('You CANNOT run code. Suggest code in chat for the user to run themselves.');
