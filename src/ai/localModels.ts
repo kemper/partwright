@@ -60,12 +60,13 @@ export interface LocalModelInfo {
   /** Which built-in system prompt the model receives by default. */
   promptTier: PromptTier;
   /** Default context window size in tokens for this model. WebLLM caps
-   *  every prebuilt WASM at compile time; these defaults are educated
-   *  guesses about what works in practice. KV cache memory grows linearly
-   *  with this number — bumping the 70B to 16K eats ~8 GB extra VRAM. The
-   *  user can override globally via AiSettings.localContext, and we
-   *  automatically fall back to 4096 if reload errors at the requested
-   *  size. */
+   *  every prebuilt WASM at compile time; these are the value we REQUEST
+   *  at engine.reload(). The actual ceiling is fetched at load time from
+   *  the model's `mlc-chat-config.json` (see `modelMetadata.ts`) and the
+   *  requested value gets clamped down to whatever the WASM accepts. So
+   *  these can be aggressive — they're capped automatically. KV cache
+   *  memory grows linearly with the resolved window; bumping the 70B to
+   *  16K eats ~8 GB extra VRAM, hence its conservative default. */
   contextWindowSize: number;
 }
 
@@ -83,7 +84,7 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     officialToolCalling: true,
     qualityStars: 3,
     promptTier: 'medium',
-    contextWindowSize: 8192,
+    contextWindowSize: 32768,
   },
 
   // === Smaller (laptop-friendly) ===
@@ -99,7 +100,7 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     officialToolCalling: false,
     qualityStars: 2,
     promptTier: 'slim',
-    contextWindowSize: 8192,
+    contextWindowSize: 32768,
   },
   {
     id: 'Hermes-3-Llama-3.2-3B-q4f16_1-MLC',
@@ -113,7 +114,7 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     officialToolCalling: false,
     qualityStars: 2,
     promptTier: 'slim',
-    contextWindowSize: 8192,
+    contextWindowSize: 32768,
   },
   {
     id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC',
@@ -127,7 +128,7 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     officialToolCalling: false,
     qualityStars: 1,
     promptTier: 'slim',
-    contextWindowSize: 8192,
+    contextWindowSize: 32768,
   },
 
   // === Larger (workstation-ish) ===
@@ -143,7 +144,7 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     officialToolCalling: false,
     qualityStars: 2,
     promptTier: 'medium',
-    contextWindowSize: 16384,
+    contextWindowSize: 32768,
   },
   {
     id: 'Qwen3-8B-q4f16_1-MLC',
@@ -157,7 +158,7 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     officialToolCalling: false,
     qualityStars: 2,
     promptTier: 'medium',
-    contextWindowSize: 16384,
+    contextWindowSize: 32768,
   },
   {
     id: 'Qwen3.5-9B-q4f16_1-MLC',
@@ -171,7 +172,7 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     officialToolCalling: false,
     qualityStars: 2,
     promptTier: 'medium',
-    contextWindowSize: 16384,
+    contextWindowSize: 32768,
   },
 
   // === Flagship — needs serious hardware ===

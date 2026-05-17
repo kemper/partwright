@@ -16,7 +16,7 @@ import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiLocalModal } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { showCompactConfirmModal } from './aiCompactModal';
-import { ensureModelLoaded, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
+import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
 import { activeModel, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type TurnOutcomeReason } from '../ai/types';
 
 interface PanelState {
@@ -67,17 +67,25 @@ function effectiveSystemPromptChars(): number {
 }
 
 /** Token limit for the active provider/model — drives the % full bar
- *  on the cost meter and the auto-compaction thresholds. Reads the
- *  per-model declared context window so 4K models don't lie at "70%
- *  full = 11K" and 16K models don't lie at "70% = 5.6K". */
+ *  on the cost meter and the auto-compaction thresholds. For local
+ *  models we use the runtime-resolved WASM ceiling (fetched from the
+ *  model's mlc-chat-config.json) when available, clamped by any user
+ *  override, and falling back to the curated per-model default. */
 function contextLimitFor(settings: AiSettings): number {
   if (settings.toggles.provider === 'local') {
-    if (settings.localContext.windowSizeOverride) return settings.localContext.windowSizeOverride;
     if (settings.toggles.localModel) {
-      try { return resolveLocalModel(settings.toggles.localModel).contextWindowSize ?? 8192; }
-      catch { /* stale id — fall through */ }
+      try {
+        const info = resolveLocalModel(settings.toggles.localModel);
+        const ceiling = effectiveContextCeiling(settings.toggles.localModel, info.contextWindowSize);
+        // User override caps below the ceiling; the actual reload value
+        // is min(override, ceiling). Reflect that in the meter so the
+        // user sees the same number we're requesting.
+        return settings.localContext.windowSizeOverride
+          ? Math.min(settings.localContext.windowSizeOverride, ceiling)
+          : ceiling;
+      } catch { /* stale id — fall through */ }
     }
-    return 8192;
+    return settings.localContext.windowSizeOverride ?? 8192;
   }
   if (settings.toggles.anthropicModel === 'claude-haiku-4-5') return 200_000;
   return 1_000_000;

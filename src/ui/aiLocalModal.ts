@@ -18,7 +18,9 @@ import {
   probeWebGpu,
   isModelLoaded,
   getStorageUsage,
+  effectiveContextCeiling,
 } from '../ai/local';
+import { getModelCeiling } from '../ai/modelMetadata';
 import { loadSettings, saveSettings, setLocalModel, setProvider, addCustomLocalModel, removeCustomLocalModel, BuiltInModelIdCollision, type CustomLocalModel } from '../ai/settings';
 
 let modalEl: HTMLElement | null = null;
@@ -29,12 +31,17 @@ let cachedSet: Set<string> = new Set();
 type GpuStatus = { state: 'checking' } | { state: 'ok' } | { state: 'bad'; reason: string };
 let webGpuStatus: GpuStatus = { state: 'checking' };
 
-/** Resolve the context window we'll actually request from WebLLM given a
- *  model's declared default. The global override (set in AI settings)
- *  trumps the per-model default; otherwise we pass through. */
-function effectiveContextWindow(modelDefault: number): number {
-  const override = loadSettings().localContext.windowSizeOverride;
-  return override && override > 0 ? override : modelDefault;
+/** Resolve the context window we'll actually request at engine.reload()
+ *  time, given the model's declared default and any cached WASM ceiling
+ *  (fetched from mlc-chat-config.json — see modelMetadata.ts). The
+ *  global override caps below the ceiling. The same math runs in
+ *  `local.ts ensureModelLoaded` — keep these in sync. */
+function effectiveContextWindow(modelId: string | null, modelDefault: number): number {
+  const settings = loadSettings();
+  const ceiling = modelId ? effectiveContextCeiling(modelId, modelDefault) : modelDefault;
+  const override = settings.localContext.windowSizeOverride;
+  if (override && override > 0) return Math.min(override, ceiling);
+  return ceiling;
 }
 
 function formatTokens(n: number): string {
@@ -223,7 +230,7 @@ function renderCustomModelCard(
 
   const ctxLine = document.createElement('div');
   ctxLine.className = 'text-[10px] text-zinc-500';
-  const ctxN = effectiveContextWindow(custom.contextWindowSize ?? 4096);
+  const ctxN = effectiveContextWindow(custom.id, custom.contextWindowSize ?? 4096);
   ctxLine.textContent = `Context: ${formatTokens(ctxN)}${custom.vramMB ? ` · VRAM: ${(custom.vramMB / 1024).toFixed(1)} GB` : ''}`;
   left.appendChild(ctxLine);
 
@@ -641,8 +648,17 @@ function renderModelCard(
 
   const stats = document.createElement('div');
   stats.className = 'text-[10px] text-zinc-500';
-  const ctx = effectiveContextWindow(model.contextWindowSize);
+  const ctx = effectiveContextWindow(model.id, model.contextWindowSize);
   stats.textContent = `~${model.downloadGB.toFixed(1)} GB download · ${(model.vramMB / 1024).toFixed(1)} GB VRAM · ${formatTokens(ctx)} context · ${model.promptTier} prompt`;
+  // Kick off a background fetch of the model's mlc-chat-config.json so
+  // the displayed context tightens up to the actual WASM ceiling on a
+  // subsequent re-render. First open shows the curated default; later
+  // opens show the precise number.
+  if (effectiveContextCeiling(model.id, -1) < 0) {
+    void getModelCeiling(model.id, `https://huggingface.co/mlc-ai/${model.id}`).then(c => {
+      if (c !== null) stats.textContent = `~${model.downloadGB.toFixed(1)} GB download · ${(model.vramMB / 1024).toFixed(1)} GB VRAM · ${formatTokens(effectiveContextWindow(model.id, model.contextWindowSize))} context · ${model.promptTier} prompt`;
+    });
+  }
   left.appendChild(stats);
 
   const recommended = document.createElement('div');

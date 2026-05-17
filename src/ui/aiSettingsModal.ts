@@ -9,7 +9,7 @@ import { showAiLocalModal } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { createModalShell } from './modalShell';
 import { loadSettings, saveSettings, setAutoCompactMode, setLocalContext, setProvider, AUTO_COMPACT_OPTIONS } from '../ai/settings';
-import { resolveLocalModel, isModelLoaded, unloadActiveLocalModel } from '../ai/local';
+import { effectiveContextCeiling, resolveLocalModel, isModelLoaded, unloadActiveLocalModel } from '../ai/local';
 
 export interface AiSettingsCallbacks {
   onChange: () => void;
@@ -31,6 +31,11 @@ export async function showAiSettingsModal(cb: AiSettingsCallbacks): Promise<void
   shell.body.appendChild(buildSystemPromptSection(shell.close, cb));
   shell.body.appendChild(makeDivider());
   await buildAnthropicSection(shell.close, shell.footer, shell.body, cb);
+}
+
+function formatK(n: number): string {
+  if (n >= 1024 && n % 1024 === 0) return `${n / 1024}K`;
+  return n.toLocaleString();
 }
 
 function makeDivider(): HTMLElement {
@@ -155,7 +160,15 @@ function buildLocalContextSection(cb: AiSettingsCallbacks): HTMLElement {
   overrideRow.appendChild(overrideInput);
   const overrideHint = document.createElement('span');
   overrideHint.className = 'text-[10px] text-zinc-500';
-  overrideHint.textContent = 'tokens · blank = per-model default';
+  let ceilingHint = '';
+  if (settings.toggles.localModel) {
+    try {
+      const info = resolveLocalModel(settings.toggles.localModel);
+      const ceiling = effectiveContextCeiling(settings.toggles.localModel, info.contextWindowSize);
+      ceilingHint = ` · ${formatK(ceiling)} max for ${info.label}`;
+    } catch { /* stale id — skip ceiling hint */ }
+  }
+  overrideHint.textContent = `tokens · blank = per-model default${ceilingHint}`;
   overrideRow.appendChild(overrideHint);
   wrap.appendChild(overrideRow);
 

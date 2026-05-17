@@ -25,6 +25,7 @@ import type { ToolDefinition } from './tools';
 import type { LocalModelId, LocalModelInfo } from './localModels';
 import { isWebGpuAvailable, LOCAL_MODELS } from './localModels';
 import { loadSettings, type CustomLocalModel } from './settings';
+import { buildFallbackLadder, getCachedCeiling, getModelCeiling } from './modelMetadata';
 
 // We can't statically type-import from @mlc-ai/web-llm without forcing it
 // into the main bundle, so we keep the engine handle untyped here and rely
@@ -44,6 +45,22 @@ interface LoadedEngine {
  *  `_cs1k-webgpu.wasm` chunk-size suffix. The engine surfaces a clear
  *  network error if the guess is wrong; the user can then go edit the
  *  custom entry. */
+/** Look up the HF weights URL for a model id from the combined appConfig
+ *  (curated + custom). Returns null when the id doesn't match anything —
+ *  the caller falls back to per-model defaults rather than trying to
+ *  fetch ceiling metadata. */
+function resolveModelUrl(modelId: string, modelList: Array<{ model_id: string; model: string }>): string | null {
+  const entry = modelList.find(m => m.model_id === modelId);
+  return entry ? entry.model : null;
+}
+
+/** Public lookup for UI components — returns whatever we've cached for
+ *  this model id, or the curated default when no fetch has succeeded
+ *  yet. Synchronous so renderers don't have to wait. */
+export function effectiveContextCeiling(modelId: string, fallback: number): number {
+  return getCachedCeiling(modelId) ?? fallback;
+}
+
 /** Find a user-supplied context window override for the named custom model. */
 function resolveCustomContextWindow(modelId: string): number | null {
   const c = loadSettings().customLocalModels.find(m => m.id === modelId);
@@ -306,33 +323,53 @@ export async function ensureModelLoaded(modelId: string, opts: LoadOptions = {})
     // WebLLM rejects requests that set both at once. Sliding-window mode
     // also needs an `attention_sink_size` (StreamingLLM-style anchored
     // tokens) so the system prompt stays in view as old turns roll off.
+    //
+    // Before requesting, fetch the WASM's actual compile-time ceiling
+    // from the model's mlc-chat-config.json — that lets us clamp the
+    // desired window to a value we know will be accepted, instead of
+    // optimistically requesting more and falling back blindly when the
+    // engine rejects.
     const { localContext } = loadSettings();
     const customWindow = resolveCustomContextWindow(modelId);
-    const desired = localContext.windowSizeOverride
+    const requested = localContext.windowSizeOverride
       ?? customWindow
       ?? info.contextWindowSize
       ?? 4096;
-    const sinkSize = computeAttentionSink(info);
-    const reloadConfig = localContext.sliding
-      ? { sliding_window_size: desired, attention_sink_size: sinkSize }
-      : { context_window_size: desired };
-
-    try {
-      await engine.reload(modelId, reloadConfig);
-    } catch (err) {
-      // The compile-time max in the WASM may be lower than what we asked
-      // for — WebLLM throws `WindowSizeConfigurationError` /
-      // `ContextWindowSizeExceededError` in that case. Fall back to 4096
-      // and surface the original message so the user knows we backed off.
-      if (desired > 4096) {
-        opts.onProgress?.({ progress: 0, text: `Context ${desired} rejected, retrying at 4096…` });
-        const fallback = localContext.sliding
-          ? { sliding_window_size: 4096, attention_sink_size: 4 }
-          : { context_window_size: 4096 };
-        await engine.reload(modelId, fallback);
-      } else {
-        throw err;
+    const modelUrl = resolveModelUrl(modelId, appConfig.model_list as Array<{ model_id: string; model: string }>);
+    let ceiling: number | null = null;
+    if (modelUrl) {
+      try {
+        opts.onProgress?.({ progress: 0, text: 'Checking model context ceiling…' });
+        ceiling = await getModelCeiling(modelId, modelUrl);
+      } catch {
+        // Fall through — we'll request `requested` and rely on the
+        // fallback ladder if the WASM rejects.
       }
+    }
+    const desired = ceiling !== null ? Math.min(requested, ceiling) : requested;
+    const sinkSize = computeAttentionSink(info);
+    const ladder = buildFallbackLadder(desired);
+
+    let succeededAt: number | null = null;
+    let lastErr: unknown = null;
+    for (const candidate of ladder) {
+      const reloadConfig = localContext.sliding
+        ? { sliding_window_size: candidate, attention_sink_size: sinkSize }
+        : { context_window_size: candidate };
+      try {
+        if (candidate < desired) {
+          opts.onProgress?.({ progress: 0, text: `Context ${desired} rejected, retrying at ${candidate}…` });
+        }
+        await engine.reload(modelId, reloadConfig);
+        succeededAt = candidate;
+        break;
+      } catch (err) {
+        lastErr = err;
+        // Keep ladder-walking unless this is the last rung.
+      }
+    }
+    if (succeededAt === null) {
+      throw lastErr instanceof Error ? lastErr : new Error('Failed to load model at any context window size');
     }
 
     const next: LoadedEngine = { modelId, engine, info };
