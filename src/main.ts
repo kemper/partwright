@@ -2,7 +2,7 @@ import './style.css';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible } from './renderer/viewport';
-import { renderCompositeCanvas, renderElevationsToContainer, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
+import { renderCompositeCanvas, renderElevationsToContainer, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
 import { generateId } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic } from './editor/codeEditor';
@@ -49,7 +49,7 @@ function registerExportFromBuilt(built: BuiltExport, source: string): void {
 }
 import type { MeshData, SourceDiagnostic } from './geometry/types';
 import { analyzeZProfile, type ZProfile } from './geometry/profileAnalysis';
-import { probeAtXY, probeRay, measureDistance, type ProbeResult, type GeneralRayResult } from './geometry/rayCast';
+import { probeAtXY, probeRay, probePixel, measureDistance, type ProbeResult, type GeneralRayResult, type PixelHit } from './geometry/rayCast';
 import { checkContainment, type ContainmentWarning } from './geometry/containmentCheck';
 import { setUnits as _setUnits, getUnits as _getUnits, type UnitSystem } from './geometry/units';
 import { initMeasureTool, activate as activateMeasure, deactivate as deactivateMeasure, getState as getMeasureState } from './ui/measureTool';
@@ -83,7 +83,7 @@ import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontS
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion } from './color/regions';
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
-import { buildAdjacency, findCoplanarRegion, resolveSeed, findNearestTriangle } from './color/adjacency';
+import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle } from './color/adjacency';
 import { findSlabTriangles } from './color/slabPaint';
 import { computeFaceGroups } from './color/faceGroups';
 import {
@@ -527,6 +527,39 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): vo
       // its seed no longer hits a face).
       const ids = currentLabelMap?.get(region.descriptor.label);
       if (ids) triangles = new Set(ids);
+    } else if (region.descriptor.kind === 'connectedFromSeed') {
+      const { seedPoint, seedNormal, maxDeviationDeg } = region.descriptor;
+      // Find the closest triangle to the seed point — robust across
+      // re-runs because triangle indices are unstable but world-space
+      // points are not. Then BFS-flood gated by deviation from the
+      // stored seed normal.
+      const nearest = findNearestTriangle(seedPoint, mesh, adjacency);
+      if (nearest.triIndex >= 0) {
+        const cos = Math.cos(maxDeviationDeg * Math.PI / 180);
+        triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos);
+        // The flood starts from the seed triangle's own normal. If the
+        // user supplied a seedNormal that differs (e.g. they probed a
+        // pixel that hit a different feature than expected), the seed
+        // triangle still anchors the flood — but we'd ideally filter by
+        // dot(stored seedNormal, neighbor) >= cos. Compromise: when the
+        // stored seed normal disagrees with the resolved seed triangle's
+        // normal beyond the deviation, fall back to filtering against
+        // the stored normal explicitly so the bucket stays stable.
+        const sNorm = adjacency.normals;
+        const dotSeed = sNorm[nearest.triIndex * 3] * seedNormal[0]
+                      + sNorm[nearest.triIndex * 3 + 1] * seedNormal[1]
+                      + sNorm[nearest.triIndex * 3 + 2] * seedNormal[2];
+        if (dotSeed < cos) {
+          // Surface re-orientation between runs — re-filter conservatively.
+          const filtered = new Set<number>();
+          for (const t of triangles) {
+            const nx = sNorm[t * 3], ny = sNorm[t * 3 + 1], nz = sNorm[t * 3 + 2];
+            const d = seedNormal[0] * nx + seedNormal[1] * ny + seedNormal[2] * nz;
+            if (d >= cos) filtered.add(t);
+          }
+          triangles = filtered;
+        }
+      }
     }
 
     if (triangles.size > 0) {
@@ -2995,6 +3028,135 @@ async function main() {
       return probeRay(currentMeshData, origin, direction);
     },
 
+    /** Click in your perception. Translates a pixel in a rendered image
+     *  back to a world-space hit on the mesh — exact surface point,
+     *  face normal, and triangle id of the front-most hit (occlusion-
+     *  correct by construction). The `view` argument must be the SAME
+     *  shape `renderView` accepted for the image you're probing; the
+     *  camera is rebuilt deterministically so screen coordinates round-
+     *  trip without drift. Returns `null` when the pixel is background.
+     *
+     *  Pixel convention matches the rendered PNG: `(0, 0)` is top-left,
+     *  `(size - 1, size - 1)` is bottom-right.
+     *
+     *  ```
+     *  // renderView returned a 320×320 image; you identified the fingertip
+     *  // around pixel (180, 220) by eye:
+     *  const hit = partwright.probePixel({
+     *    pixel: [180, 220],
+     *    view:  { elevation: 0, azimuth: 0, ortho: true, size: 320 },
+     *  });
+     *  if (hit) partwright.paintNear({ point: hit.point, radius: 4, color: [...] });
+     *  ``` */
+    probePixel(opts: {
+      pixel: [number, number];
+      view: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number };
+    }): PixelHit | { error: string } | null {
+      if (!opts || typeof opts !== 'object') return { error: 'probePixel requires { pixel, view }' };
+      if (!Array.isArray(opts.pixel) || opts.pixel.length !== 2) return { error: 'probePixel.pixel must be [x, y]' };
+      for (const c of opts.pixel) {
+        if (typeof c !== 'number' || !Number.isFinite(c)) return { error: 'probePixel.pixel components must be finite numbers' };
+      }
+      if (!opts.view || typeof opts.view !== 'object') return { error: 'probePixel.view must match the renderView options used to produce the image' };
+      const v = opts.view as { elevation?: unknown; azimuth?: unknown; ortho?: unknown; size?: unknown };
+      assertNoUnknownKeys(v, ['elevation', 'azimuth', 'ortho', 'size'], 'probePixel(opts).view');
+      assertNumber(v.elevation, 'probePixel(opts).view.elevation', { optional: true, min: -90, max: 90 });
+      assertNumber(v.azimuth, 'probePixel(opts).view.azimuth', { optional: true });
+      assertBoolean(v.ortho, 'probePixel(opts).view.ortho', { optional: true });
+      assertNumber(v.size, 'probePixel(opts).view.size', { optional: true, min: 1, integer: true });
+      if (!currentMeshData) return null;
+      const size = (v.size as number | undefined) ?? 500;
+      const [px, py] = opts.pixel;
+      if (px < 0 || px >= size || py < 0 || py >= size) {
+        return { error: `probePixel.pixel [${px}, ${py}] is outside the ${size}×${size} viewport. Pixel (0,0) is top-left, (${size - 1},${size - 1}) is bottom-right.` };
+      }
+      const camera = buildViewCamera(currentMeshData, opts.view);
+      return probePixel(currentMeshData, camera, [px, py], size);
+    },
+
+    /** Paint a connected patch starting from a seed point on the
+     *  surface, expanding through adjacent triangles only as far as the
+     *  surface stays within `maxDeviationDeg` of the seed's normal.
+     *
+     *  Unlike `paintRegion` (which compares each adjacent pair, so on a
+     *  smooth surface the threshold is bimodal — all or nothing),
+     *  `paintConnected` compares every candidate triangle against the
+     *  SEED's normal directly. That means picking a seed on a hand and
+     *  flooding with 30° tolerance gives you the hand's surface that
+     *  faces roughly the same way, no matter how curved the connecting
+     *  geometry is.
+     *
+     *  Best when paired with `probePixel`: probe a pixel in a rendered
+     *  view, take the returned `point` + `normal`, hand them to
+     *  `paintConnected`. The patch follows real mesh topology rather
+     *  than a coordinate box, so it doesn't bleed across feature
+     *  boundaries (a robe collar stops where the skin starts).
+     *
+     *  ```
+     *  partwright.paintConnected({
+     *    seed: { point: hit.point, normal: hit.normal },
+     *    maxDeviationDeg: 30,
+     *    color: [0.4, 0.7, 0.4],
+     *    name: 'skin patch',
+     *  })
+     *  ``` */
+    paintConnected(opts: {
+      seed: { point: [number, number, number]; normal?: [number, number, number] };
+      maxDeviationDeg?: number;
+      color: [number, number, number];
+      name?: string;
+    }) {
+      if (!opts || typeof opts !== 'object') return { error: 'paintConnected requires { seed: {point, normal?}, color }' };
+      if (!opts.seed || typeof opts.seed !== 'object') return { error: 'paintConnected.seed must be { point: [x,y,z], normal?: [nx,ny,nz] }' };
+      if (!Array.isArray(opts.seed.point) || opts.seed.point.length !== 3) return { error: 'paintConnected.seed.point must be [x,y,z]' };
+      for (const c of opts.seed.point) {
+        if (typeof c !== 'number' || !Number.isFinite(c)) return { error: 'paintConnected.seed.point components must be finite numbers' };
+      }
+      if (opts.seed.normal !== undefined) {
+        if (!Array.isArray(opts.seed.normal) || opts.seed.normal.length !== 3) return { error: 'paintConnected.seed.normal must be [nx,ny,nz] when provided' };
+        for (const c of opts.seed.normal) {
+          if (typeof c !== 'number' || !Number.isFinite(c)) return { error: 'paintConnected.seed.normal components must be finite numbers' };
+        }
+      }
+      const maxDev = opts.maxDeviationDeg ?? 30;
+      if (typeof maxDev !== 'number' || !Number.isFinite(maxDev) || maxDev < 0 || maxDev > 180) {
+        return { error: 'paintConnected.maxDeviationDeg must be a finite number in [0, 180]' };
+      }
+      if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'paintConnected.color must be [r,g,b] in 0..1' };
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+
+      const mesh = currentMeshData;
+      const adjacency = buildAdjacency(mesh);
+      const nearest = findNearestTriangle(opts.seed.point, mesh, adjacency);
+      if (nearest.triIndex < 0) return { error: 'paintConnected: mesh has no triangles' };
+
+      // Use the supplied normal if provided, else derive from the nearest
+      // triangle — same convention paintRegion uses.
+      const seedNormal: [number, number, number] = opts.seed.normal ?? nearest.normal;
+      // Persist the seed point we used (snapped to the surface) so
+      // rehydration finds the same triangle on re-load.
+      const seedPoint: [number, number, number] = nearest.closest;
+      const cos = Math.cos(maxDev * Math.PI / 180);
+      const triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos);
+      if (triangles.size === 0) return { error: `paintConnected: seed triangle ${nearest.triIndex} has no neighbors meeting the deviation threshold` };
+
+      const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
+      const region = addRegion(
+        regionName,
+        opts.color as [number, number, number],
+        'paintbrush',
+        { kind: 'connectedFromSeed', seedPoint, seedNormal, maxDeviationDeg: maxDev },
+        triangles,
+      );
+      const colored = applyTriColorsIfVisible(mesh);
+      updateMesh(colored, { skipAutoFrame: true });
+      updateMultiView(colored);
+      renderElevationsToContainer(elevationsContainer, colored);
+      syncLockState();
+      const stats = regionTriangleStats(triangles, mesh);
+      return { id: region.id, name: region.name, triangles: triangles.size, bbox: stats.bbox, centroid: stats.centroid, seedTriangle: nearest.triIndex };
+    },
+
     /** Check if any component is fully contained inside another (invisible geometry) */
     checkContainment(): ContainmentWarning[] | null {
       if (!currentManifold) return null;
@@ -4330,6 +4492,7 @@ async function main() {
         'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
         'analyzeProfile':  { signature: 'analyzeProfile(sampleCount?) -- Z-profile feature summary', docs: '/ai.md#console-api--windowpartwright' },
         'measureAt':       { signature: 'measureAt([x,y]) -- Ray-cast probe at XY -> {hits, thickness, topZ, bottomZ}', docs: '/ai.md#console-api--windowpartwright' },
+        'probePixel':      { signature: 'probePixel({pixel: [x,y], view}) -- Translate a pixel in a rendered view back to a surface hit: {point, normal, distance, triangleId}. The view spec must match the renderView call. null when the pixel is background.', docs: '/ai.md#console-api--windowpartwright' },
         // Viewport controls
         'setGridVisible':       { signature: 'setGridVisible(on?) -- Show/hide grid plane (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'isGridVisible':        { signature: 'isGridVisible() -- Whether grid plane is visible', docs: '/ai.md#viewport-controls' },
@@ -4383,6 +4546,7 @@ async function main() {
         'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai.md#color-regions' },
         'listLabels':      { signature: 'listLabels() -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- Labels registered in the current run via api.label(shape, name). Survives boolean ops; the cleanest paint primitive on agent-authored geometry.', docs: '/ai.md#color-regions' },
         'paintByLabel':    { signature: 'paintByLabel({label, color, name?}) -- Paint a labelled feature by name. Pair with api.label/labeledUnion in your code. No coordinate guessing.', docs: '/ai.md#color-regions' },
+        'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai.md#color-regions' },
         'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai.md#color-regions' },
         'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai.md#color-regions' },
         'undoLastPaint':   { signature: 'undoLastPaint() -- Undo the most recent paint op. Removed region goes on a redo stack.', docs: '/ai.md#color-regions' },

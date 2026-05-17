@@ -59,11 +59,19 @@ import {
  *           {@link ExportOptions.includeThumbnails}. Importers prefer the
  *           embedded thumbnail when present and fall back to regenerating from
  *           code; older readers ignore the field.
- *  - `1.5` — color regions support `{kind: 'byLabel', label: string}`
- *           descriptors that resolve at runtime from manifold-js's
- *           `runOriginalID` provenance. Persists the label name only;
- *           the triangle set is rebuilt on each load by re-running the
- *           code. Older readers ignore the new discriminant variant.
+ *  - `1.5` — color regions gained two new descriptor variants, both
+ *           re-resolved at runtime so the triangle set is rebuilt on
+ *           each load:
+ *             - `{kind: 'byLabel', label}` — resolves via manifold-js's
+ *               `runOriginalID` provenance (api.label / api.labeledUnion
+ *               in user code). Persists the label name only.
+ *             - `{kind: 'connectedFromSeed', seedPoint, seedNormal,
+ *               maxDeviationDeg}` — BFS from the closest triangle to
+ *               the seed, gated by per-neighbor deviation from the seed
+ *               normal. Persists the seed only.
+ *           Older readers ignore unknown discriminant variants; the
+ *           region drops silently if its descriptor doesn't match a
+ *           known kind.
  */
 export const SCHEMA_VERSION = '1.5';
 

@@ -193,6 +193,8 @@ await partwright.openSession(id)         // Open existing session
 await partwright.clearAllSessions()      // Delete all sessions & versions
 
 // Color regions -- tag face regions with a color (see #color-regions)
+partwright.probePixel({pixel, view})                                      // "click in your perception": pixel in a rendered view -> {point, normal, distance, triangleId} or null
+partwright.paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?}) // BFS-flood from seed gated by seed-normal deviation (not adjacent). For organic / smooth meshes paintRegion can't handle.
 partwright.paintRegion({point, normal, color, name?, tolerance?})         // bucket: coplanar flood-fill -> {id, name, triangles} or {error, nearest?}
 partwright.paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) // snap seed to nearest face, then flood-fill -> {id, name, triangles, snappedTo} or {error}
 partwright.paintNear({point, radius, normalCone?, topOnly?, coverageMode?, maxTriangleArea?, color, name?})    // sphere: paint triangles within radius -> {id, name, triangles, bbox, centroid} or {error}
@@ -689,6 +691,37 @@ partwright.paintInBox({
 ```
 
 `paintNear` and `paintInBox` ignore mesh edges entirely — they collect triangles by *position* and (optionally) by face-normal direction, so the result is independent of how the boolean union tessellated the surface. Use them for organic geometry; use `paintRegion` for flat plates with crisp 90° edges.
+
+**Paint by visual reasoning (organic / character meshes).** When bounding boxes won't separate the features (a hand from a sleeve at the same Z; an ear from a head), use `probePixel` + `paintConnected`. `probePixel` translates a pixel position in a rendered view back to an exact surface point + normal + triangleId — essentially clicking in your own perception. `paintConnected` then flood-fills from that seed, gated by deviation from the SEED normal, so it stays on the feature without bleeding to side faces with different orientations.
+
+```js
+// 1. Render the angle that shows the feature clearly.
+const img = partwright.renderView({ elevation: 0, azimuth: 0, ortho: true, size: 320 });
+// (the image is forwarded to you as a multimodal block)
+
+// 2. Identify the feature's pixel in the rendered image. Then probe
+//    that exact pixel back into world space — the view spec MUST
+//    match the renderView call above.
+const hit = partwright.probePixel({
+  pixel: [180, 220],
+  view: { elevation: 0, azimuth: 0, ortho: true, size: 320 },
+});
+// hit = { point: [x, y, z], normal: [nx, ny, nz], distance, triangleId } or null
+
+// 3. Flood from the seed, gated by 30° deviation from the seed normal.
+//    paintConnected stays on the feature where paintRegion (bimodal
+//    on smooth meshes) cannot.
+if (hit) {
+  partwright.paintConnected({
+    seed: { point: hit.point, normal: hit.normal },
+    maxDeviationDeg: 30,
+    color: [0.4, 0.7, 0.4],
+    name: 'skin',
+  });
+}
+```
+
+The seed point returned by `probePixel` is *exactly* on the mesh surface (raycast result, not a snap), so paint primitives that need precise seed placement (`paintRegion` in particular) work without seed-tolerance issues. The model's pixel-position estimation has built-in error (~±10-20px on a 320 render); `paintConnected` absorbs that fine since the seed normal anchors the flood. For `paintNear`, pick a radius generous enough for the same.
 
 **Brush + slab + procedural targeting.**
 
