@@ -3,15 +3,8 @@
 import type { MeshData } from '../geometry/types';
 import { isPainted as checkPainted } from '../color/regions';
 
-/** Default model color used to fill unpainted faces in viewers / formats
- *  that require every face to carry an explicit material (e.g. OBJ's
- *  `usemtl`). 3MF export omits this — see `threemf.ts`. */
+/** Default model color used when faces have no paint. */
 export const DEFAULT_COLOR_HEX = '#4a9eff';
-
-/** True if this triangle carries a user-painted color. */
-export function isPaintedTri(triColors: Uint8Array, t: number): boolean {
-  return checkPainted(triColors, t);
-}
 
 /** Get the hex color string for a triangle (e.g. '#ff3333'), or DEFAULT_COLOR_HEX if unpainted. */
 export function triColorHex(triColors: Uint8Array, t: number): string {

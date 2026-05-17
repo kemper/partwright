@@ -1,10 +1,16 @@
-// Verify that exporting a model with N painted regions produces exactly N
-// colors in the 3MF m:colorgroup — no extra "default" filament slot.
+// 3MF color export regression tests.
 //
-// Regression test for: "exported 3MF imported into Bambu Studio with many
-// more colors than I actually painted." Bambu Studio (and similar slicers)
-// create one filament per <m:color> entry. Including a default color the
-// user never painted with would surface as an unwanted extra filament.
+// History:
+//   - User reported: exported 3MF imported into Bambu Studio with "many
+//     more colors than I actually painted." Suspected over-counting in the
+//     m:colorgroup.
+//   - First fix attempt removed the default color from the colorgroup so
+//     only painted colors remained. That broke Bambu's import-color dialog
+//     entirely — Bambu's "Standard 3MF Import Color" trigger requires the
+//     object to carry pid/pindex pointing at a valid colorgroup entry, and
+//     unpainted triangles must have an explicit pid too. Reverted.
+//   - These tests lock down the current behavior and double as a record of
+//     what the format looks like, so the next iteration can refer to them.
 
 import { test, expect } from 'playwright/test';
 
@@ -37,7 +43,7 @@ function readZip(bytes: Uint8Array): ZipEntry[] {
   return entries;
 }
 
-async function exportPaintedCube(page: import('playwright/test').Page, recipe: string) {
+async function exportPainted(page: import('playwright/test').Page, recipe: string) {
   await page.goto('/editor');
   await page.waitForSelector('text=Ready', { timeout: 15000 });
   return page.evaluate(async (script) => {
@@ -53,7 +59,7 @@ async function exportPaintedCube(page: import('playwright/test').Page, recipe: s
   }, recipe);
 }
 
-function inspectColorgroup(base64: string) {
+function inspectModelXml(base64: string) {
   const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
   const entries = readZip(bytes);
   const modelEntry = entries.find(e => e.name === '3D/3dmodel.model');
@@ -63,27 +69,38 @@ function inspectColorgroup(base64: string) {
   return { xml, colorMatches };
 }
 
-test('two distinct painted colors → exactly 2 colorgroup entries', async ({ page }) => {
-  const result = await exportPaintedCube(page, `
+// Bambu Studio's import dialog requires the colorgroup to be referenced
+// from the <object>. Verify we still emit that pid/pindex when colors exist.
+test('object carries pid/pindex pointing at colorgroup when colors are present', async ({ page }) => {
+  const result = await exportPainted(page, `
     await pw.run('return api.Manifold.cube([20, 20, 20]);');
     const top = pw.paintInBox({ box: { min: [-1, -1, 19], max: [21, 21, 21] }, color: [1, 0, 0] });
     if (top.error) return top;
-    const bottom = pw.paintInBox({ box: { min: [-1, -1, -1], max: [21, 21, 1] }, color: [0, 0, 1] });
-    if (bottom.error) return bottom;
   `);
 
   expect(result.error, JSON.stringify(result)).toBeUndefined();
-  const { xml, colorMatches } = inspectColorgroup(result.base64!);
-  expect(colorMatches.length, `expected 2 colors, got ${colorMatches.length}\n${xml.slice(0, 2000)}`).toBe(2);
-
-  // Both painted colors are present, in any order.
-  const hexes = colorMatches.map(m => m.match(/"([^"]+)"/)![1].toUpperCase()).sort();
-  expect(hexes).toEqual(['#0000FFFF', '#FF0000FF']);
+  const { xml } = inspectModelXml(result.base64!);
+  expect(xml).toMatch(/<object\s+id="1"\s+type="model"\s+pid="2"\s+pindex="0"/);
+  expect(xml).toMatch(/<m:colorgroup\s+id="2">/);
 });
 
-// Repeat the same color across multiple regions and verify dedup.
-test('three regions sharing one color → exactly 1 colorgroup entry', async ({ page }) => {
-  const result = await exportPaintedCube(page, `
+// No paint regions → no colorgroup at all (and no pid on object).
+test('plain mesh has no colorgroup and no pid on the object', async ({ page }) => {
+  const result = await exportPainted(page, `
+    await pw.run('return api.Manifold.cube([20, 20, 20]);');
+  `);
+
+  expect(result.error, JSON.stringify(result)).toBeUndefined();
+  const { xml, colorMatches } = inspectModelXml(result.base64!);
+  expect(colorMatches.length).toBe(0);
+  expect(xml).toMatch(/<object\s+id="1"\s+type="model">/);
+  expect(xml).not.toMatch(/pid=/);
+});
+
+// Same color painted across N regions → dedup to 1 painted entry in the
+// colorgroup (plus the default at index 0).
+test('same color across three regions dedupes to one painted entry', async ({ page }) => {
+  const result = await exportPainted(page, `
     await pw.run('return api.Manifold.cube([20, 20, 20]);');
     const a = pw.paintInBox({ box: { min: [-1, -1, 19], max: [21, 21, 21] }, color: [1, 0, 0] });
     if (a.error) return a;
@@ -94,26 +111,15 @@ test('three regions sharing one color → exactly 1 colorgroup entry', async ({ 
   `);
 
   expect(result.error, JSON.stringify(result)).toBeUndefined();
-  const { xml, colorMatches } = inspectColorgroup(result.base64!);
-  expect(colorMatches.length, `expected 1 color, got ${colorMatches.length}\n${xml.slice(0, 800)}`).toBe(1);
+  const { xml, colorMatches } = inspectModelXml(result.base64!);
+  // 1 default + 1 unique painted color = 2 entries.
+  expect(colorMatches.length, `expected 2 colors (default + 1 painted), got ${colorMatches.length}\n${xml.slice(0, 1200)}`).toBe(2);
 });
 
-test('hi-poly sphere with one painted region → exactly 1 colorgroup entry', async ({ page }) => {
-  // A sphere triangulates into many small faces. Painting one cap region
-  // should still produce a single colorgroup entry.
-  const result = await exportPaintedCube(page, `
-    await pw.run('return api.Manifold.sphere(15, 64);');
-    const r = pw.paintInBox({ box: { min: [-16, -16, 5], max: [16, 16, 16] }, color: [0.92, 0.26, 0.21] });
-    if (r.error) return r;
-  `);
-
-  expect(result.error, JSON.stringify(result)).toBeUndefined();
-  const { xml, colorMatches } = inspectColorgroup(result.base64!);
-  expect(colorMatches.length, `expected 1 color, got ${colorMatches.length}\nfirst 1500 chars:\n${xml.slice(0, 1500)}`).toBe(1);
-});
-
-test('every entry in colorgroup is referenced by some triangle', async ({ page }) => {
-  const result = await exportPaintedCube(page, `
+// Two distinct painted colors → 3 entries (default + 2 painted). Order:
+// default first, painted in iteration order.
+test('two distinct painted colors produce default + 2 entries', async ({ page }) => {
+  const result = await exportPainted(page, `
     await pw.run('return api.Manifold.cube([20, 20, 20]);');
     const top = pw.paintInBox({ box: { min: [-1, -1, 19], max: [21, 21, 21] }, color: [1, 0, 0] });
     if (top.error) return top;
@@ -122,56 +128,24 @@ test('every entry in colorgroup is referenced by some triangle', async ({ page }
   `);
 
   expect(result.error, JSON.stringify(result)).toBeUndefined();
-  const { xml, colorMatches } = inspectColorgroup(result.base64!);
-
-  // Collect every p1 value referenced by triangles in the model.
-  const used = new Set<string>();
-  for (const m of xml.matchAll(/p1="(\d+)"/g)) used.add(m[1]);
-
-  // Now check: is every index in the colorgroup actually used?
-  const unused: number[] = [];
-  for (let i = 0; i < colorMatches.length; i++) {
-    if (!used.has(String(i))) unused.push(i);
-  }
-
-  expect(unused, `colorgroup entries ${unused.join(',')} are NEVER referenced by any triangle, yet still appear in the file:\n${xml.slice(0, 1500)}`).toEqual([]);
+  const { xml, colorMatches } = inspectModelXml(result.base64!);
+  expect(colorMatches.length, `expected 3 colors, got ${colorMatches.length}\n${xml.slice(0, 2000)}`).toBe(3);
+  // Default is always the first entry.
+  expect(colorMatches[0]).toContain('#4A9EFF');
 });
 
-// Unpainted regions must NOT carry pid="2" attributes — that would put the
-// triangle in the colorgroup and effectively assign it a filament slot.
-test('unpainted triangles have no pid/p1 attributes', async ({ page }) => {
-  const result = await exportPaintedCube(page, `
+// Every triangle must have an explicit pid/p1 when colors are present —
+// otherwise Bambu loses the color assignment for unpainted faces.
+test('every triangle has pid/p1 when colors are present', async ({ page }) => {
+  const result = await exportPainted(page, `
     await pw.run('return api.Manifold.cube([20, 20, 20]);');
     const top = pw.paintInBox({ box: { min: [-1, -1, 19], max: [21, 21, 21] }, color: [1, 0, 0] });
     if (top.error) return top;
   `);
 
   expect(result.error, JSON.stringify(result)).toBeUndefined();
-  const bytes = Uint8Array.from(atob(result.base64!), c => c.charCodeAt(0));
-  const xml = new TextDecoder().decode(readZip(bytes).find(e => e.name === '3D/3dmodel.model')!.data);
-
+  const { xml } = inspectModelXml(result.base64!);
   const allTris = xml.match(/<triangle\b[^/]*\/>/g) ?? [];
-  const taggedTris = allTris.filter(t => t.includes('pid="'));
-  const untaggedTris = allTris.filter(t => !t.includes('pid="'));
-
-  // A 20×20×20 cube has 6 faces × 2 = 12 triangles. The top face is 2
-  // painted; the remaining 10 should be untagged.
-  expect(taggedTris.length, `expected 2 painted triangles, got ${taggedTris.length}\n${xml}`).toBe(2);
-  expect(untaggedTris.length, `expected 10 untagged triangles, got ${untaggedTris.length}\n${xml}`).toBe(10);
-});
-
-test('cube with subtract + 1 painted region → exactly 1 colorgroup entry', async ({ page }) => {
-  const result = await exportPaintedCube(page, `
-    await pw.run(\`
-      const a = api.Manifold.cube([20, 20, 20], true);
-      const b = api.Manifold.cube([10, 10, 30], true);
-      return a.subtract(b);
-    \`);
-    const p = pw.paintInBox({ box: { min: [-11, -11, 9], max: [11, 11, 11] }, color: [1, 0, 0] });
-    if (p.error) return p;
-  `);
-
-  expect(result.error, JSON.stringify(result)).toBeUndefined();
-  const { xml, colorMatches } = inspectColorgroup(result.base64!);
-  expect(colorMatches.length, `expected 1 color, got ${colorMatches.length}\n${xml.slice(0, 1500)}`).toBe(1);
+  const taggedTris = allTris.filter(t => t.includes('pid="') && t.includes('p1="'));
+  expect(taggedTris.length, `expected every triangle tagged; got ${taggedTris.length} of ${allTris.length}\n${xml.slice(0, 1500)}`).toBe(allTris.length);
 });
