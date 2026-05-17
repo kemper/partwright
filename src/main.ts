@@ -83,7 +83,26 @@ import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion } from './color/regions';
-import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
+import { initEditorLock, syncLockState, setUnlockHandlers, registerExternalLockProbe, setLockBannerMessageProvider } from './color/editorLock';
+import { initSculptUI, setSculptApplyHandler } from './ui/sculptUI';
+import {
+  updateSculptMesh,
+  getCurrentSelection as getSculptSelection,
+  getKind as getSculptKind,
+  getInflateDistance,
+  getSmoothIterations,
+  clearSelection as clearSculptSelection,
+} from './sculpt/sculptMode';
+import {
+  getDeformers,
+  hasDeformers,
+  addDeformer,
+  clearDeformers,
+  serialize as serializeDeformers,
+  deserialize as deserializeDeformers,
+} from './sculpt/deformerStore';
+import { applyInflate, applySmooth } from './sculpt/deformers';
+import type { SerializedDeformer, DeformerCoplanarRegion } from './sculpt/types';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle } from './color/adjacency';
 import { findSlabTriangles } from './color/slabPaint';
 import { computeFaceGroups } from './color/faceGroups';
@@ -582,6 +601,107 @@ function enrichGeometryDataWithColors(geoData: Record<string, unknown> | null): 
   if (!geoData) return geoData;
   if (hasColorRegions()) {
     geoData.colorRegions = serializeRegions();
+  }
+  return geoData;
+}
+
+/** Resolve a single deformer's region descriptor against the current mesh +
+ *  adjacency, returning the triangle ids. Empty set when the seed no longer
+ *  hits — caller decides whether to skip silently. */
+function resolveDeformerRegion(
+  descriptor: DeformerCoplanarRegion,
+  mesh: MeshData,
+  adjacency: ReturnType<typeof buildAdjacency>,
+): Set<number> {
+  const { seedPoint, seedNormal, normalTolerance } = descriptor;
+  const seedTri = resolveSeed(seedPoint, seedNormal, mesh, adjacency, normalTolerance);
+  if (seedTri < 0) return new Set();
+  return findCoplanarRegion(seedTri, adjacency, normalTolerance);
+}
+
+/** Run a single deformer against a mesh. Returns the deformed mesh, or
+ *  null if the region resolved to empty. */
+function runDeformer(deformer: SerializedDeformer, mesh: MeshData): MeshData | null {
+  const adjacency = buildAdjacency(mesh);
+  const triangles = resolveDeformerRegion(deformer.regionDescriptor, mesh, adjacency);
+  if (triangles.size === 0) return null;
+  if (deformer.kind === 'inflate') {
+    const { distance } = deformer.params as { distance: number };
+    return applyInflate(mesh, triangles, distance);
+  }
+  if (deformer.kind === 'smooth') {
+    const { iterations } = deformer.params as { iterations: number };
+    return applySmooth(mesh, triangles, iterations);
+  }
+  return null;
+}
+
+/** Replay all deformers in order against a base mesh. Returns the new mesh.
+ *  Validates each step via Manifold.ofMesh so a deformer that produces
+ *  non-manifold output skips silently (preserves the pre-deformer mesh and
+ *  logs a warning) rather than corrupting later steps. */
+function replayDeformers(baseMesh: MeshData, deformers: readonly SerializedDeformer[]): MeshData {
+  if (deformers.length === 0) return baseMesh;
+  let mesh = baseMesh;
+  const sorted = [...deformers].sort((a, b) => a.order - b.order);
+  for (const d of sorted) {
+    const next = runDeformer(d, mesh);
+    if (!next) {
+      console.warn(`Sculpt: deformer ${d.id} (${d.kind}) skipped — region did not resolve.`);
+      continue;
+    }
+    if (!validateMeshAsManifold(next)) {
+      console.warn(`Sculpt: deformer ${d.id} (${d.kind}) skipped — result was not manifold.`);
+      continue;
+    }
+    mesh = next;
+  }
+  return mesh;
+}
+
+/** Try to round-trip a MeshData through Manifold.ofMesh as a manifold check.
+ *  Returns true if Manifold accepts it. Catches any throw — the WASM module
+ *  rejects non-manifold input. */
+function validateMeshAsManifold(mesh: MeshData): boolean {
+  const module = getModule();
+  if (!module) {
+    // No manifold module available — assume valid so we can still render
+    // (the engine probably hasn't initialized yet, in which case nothing
+    // useful is happening anyway).
+    return true;
+  }
+  let result: unknown = null;
+  try {
+    result = module.Manifold.ofMesh({
+      vertProperties: mesh.vertProperties,
+      triVerts: mesh.triVerts,
+      numProp: mesh.numProp,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = result as any;
+    if (m && typeof m.numTri === 'function') {
+      const ok = m.numTri() > 0;
+      if (typeof m.delete === 'function') {
+        try { m.delete(); } catch { /* already deleted */ }
+      }
+      return ok;
+    }
+    return true;
+  } catch {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = result as any;
+    if (m && typeof m.delete === 'function') {
+      try { m.delete(); } catch { /* already deleted */ }
+    }
+    return false;
+  }
+}
+
+/** Include deformer state in geometry data for saving. */
+function enrichGeometryDataWithDeformers(geoData: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!geoData) return geoData;
+  if (hasDeformers()) {
+    geoData.deformers = serializeDeformers();
   }
   return geoData;
 }
@@ -1090,7 +1210,7 @@ async function main() {
   createSessionBar(editorUI, {
     onSaveVersion: async () => ({
       code: getValue(),
-      geometryData: enrichGeometryDataWithColors(getGeometryDataObj()),
+      geometryData: enrichGeometryDataWithDeformers(enrichGeometryDataWithColors(getGeometryDataObj())),
       thumbnail: await captureThumbnail(),
     }),
     onLoadVersion: async (code: string) => {
@@ -1212,15 +1332,29 @@ async function main() {
       await switchLanguage(sessionLang);
     }
     setValue(version.code);
+    // Preload deformers BEFORE running the code — runCodeSync replays them
+    // automatically when they're already in the store.
+    preloadDeformersForVersion(version.geometryData);
     await runCodeSync(version.code);
     rehydrateColorRegions(version.geometryData);
     applyVersionAnnotations(version);
+    // Surface the lock if deformers loaded (color path already syncs via
+    // rehydrateColorRegions, but a deformer-only version needs an explicit nudge).
+    syncLockState();
     const sessionImages = await getImagesFromSession();
     if (sessionImages) {
       _setImages(sessionImages);
     } else {
       _clearImages();
     }
+  }
+
+  function preloadDeformersForVersion(geometryData: Record<string, unknown> | null): void {
+    clearDeformers();
+    if (!geometryData) return;
+    const raw = geometryData.deformers as SerializedDeformer[] | undefined;
+    if (!raw || raw.length === 0) return;
+    deserializeDeformers(raw);
   }
 
   async function openEditorFromLanding() {
@@ -1497,6 +1631,7 @@ async function main() {
   initDimensionsToggle(clipControls);
   initAnnotateUI(clipControls);
   initPaintUI(clipControls);
+  initSculptUI(clipControls);
   // Declared before initMeasureToggle is called so the assignment inside it
   // doesn't hit a let-TDZ error (the same `let` lower in this function is
   // hoisted to a binding, but only initialized when execution reaches it).
@@ -1508,32 +1643,57 @@ async function main() {
   // Initialize editor lock
   initEditorLock(editorContainer);
 
+  // Deformers participate in the editor lock too. We register a probe so the
+  // lock module doesn't need to import sculpt state directly, and provide a
+  // banner-message override so the wording reflects which subsystem is active.
+  registerExternalLockProbe(hasDeformers);
+  setLockBannerMessageProvider(() => {
+    if (hasColorRegions() && hasDeformers()) return '🔒 This version has color regions and deformers applied.';
+    if (hasDeformers()) return '🔒 This version has deformers applied.';
+    return null; // fall back to default
+  });
+
   // Set up unlock handlers
   setUnlockHandlers(
-    // Fork: save the colored version (if needed), then create a new uncolored version
+    // Fork: save the colored/sculpted version (if needed), then create a new clean version
     async (colorData) => {
       if (getState().session && currentMeshData) {
         const code = getValue();
 
-        // 1. Only save the colored version if it doesn't already have colorRegions persisted
-        const currentVersion = getState().currentVersion;
-        const alreadyPersisted = currentVersion?.geometryData &&
-          Array.isArray((currentVersion.geometryData as Record<string, unknown>).colorRegions);
+        // Snapshot deformers BEFORE the unlock-modal cleared them (it only
+        // clears color regions; deformers are cleared here).
+        const sculptData = serializeDeformers();
+        const hadDeformers = sculptData.length > 0;
+        clearDeformers();
 
-        if (!alreadyPersisted) {
+        // 1. Only save the colored/sculpted version if it isn't already persisted with the data.
+        const currentVersion = getState().currentVersion;
+        const persistedGeo = currentVersion?.geometryData as Record<string, unknown> | null | undefined;
+        const colorsAlreadyPersisted = persistedGeo && Array.isArray(persistedGeo.colorRegions);
+        const deformersAlreadyPersisted = persistedGeo && Array.isArray(persistedGeo.deformers);
+
+        const needsSavedSnapshot = (colorData.length > 0 && !colorsAlreadyPersisted)
+          || (hadDeformers && !deformersAlreadyPersisted);
+
+        if (needsSavedSnapshot) {
           const thumbnail = await captureThumbnail();
-          const coloredGeoData = getGeometryDataObj() ?? {};
-          coloredGeoData.colorRegions = colorData;
-          await saveVersion(code, coloredGeoData, thumbnail, 'colored', undefined, { force: true });
+          const snapshotGeo = getGeometryDataObj() ?? {};
+          if (colorData.length > 0) snapshotGeo.colorRegions = colorData;
+          if (hadDeformers) snapshotGeo.deformers = sculptData;
+          const label = hadDeformers && colorData.length > 0
+            ? 'colored+sculpted'
+            : hadDeformers ? 'sculpted' : 'colored';
+          await saveVersion(code, snapshotGeo, thumbnail, label, undefined, { force: true });
         }
 
-        // 2. Re-render without colors, then save an uncolored sibling
-        updateMesh(currentMeshData, { skipAutoFrame: true });
-        updateMultiView(currentMeshData);
-        renderElevationsToContainer(elevationsContainer, currentMeshData);
+        // 2. Re-execute the bare code so currentMeshData is the un-deformed mesh again,
+        //    then save an unmodified sibling. Re-running is the only reliable way to
+        //    drop a deformer — the in-memory currentMeshData reflects the deformed state.
+        await runCodeSync(code);
 
         const cleanGeoData = getGeometryDataObj() ?? {};
         delete cleanGeoData.colorRegions;
+        delete cleanGeoData.deformers;
         const cleanThumb = await captureThumbnail();
         await saveVersion(code, cleanGeoData, cleanThumb, undefined, undefined, { force: true });
       } else {
@@ -1545,13 +1705,12 @@ async function main() {
         }
       }
     },
-    // Clear: just re-render without colors (clearRegions already called)
+    // Clear: discard deformers + colors, re-run from bare code so the viewport
+    // reflects the undeformed state.
     () => {
-      if (currentMeshData) {
-        updateMesh(currentMeshData, { skipAutoFrame: true });
-        updateMultiView(currentMeshData);
-        renderElevationsToContainer(elevationsContainer, currentMeshData);
-      }
+      clearDeformers();
+      const code = getValue();
+      void runCodeSync(code);
     },
   );
 
@@ -1584,6 +1743,62 @@ async function main() {
     updateMesh(colored, { skipAutoFrame: true });
     updateMultiView(colored);
     renderElevationsToContainer(elevationsContainer, colored);
+  });
+
+  // Sculpt: apply the current deformer to the selected region. Saves a new
+  // version and locks the editor (same lifecycle as paint).
+  setSculptApplyHandler(async () => {
+    if (!currentMeshData) return;
+    const selection = getSculptSelection();
+    if (!selection || selection.triangles.size === 0) return;
+
+    const kind = getSculptKind();
+    const params = kind === 'inflate'
+      ? { distance: getInflateDistance() }
+      : { iterations: getSmoothIterations() };
+
+    const baseMesh = currentMeshData;
+    const trial = kind === 'inflate'
+      ? applyInflate(baseMesh, selection.triangles, (params as { distance: number }).distance)
+      : applySmooth(baseMesh, selection.triangles, (params as { iterations: number }).iterations);
+
+    if (!validateMeshAsManifold(trial)) {
+      console.warn('Sculpt: deformer produced a non-manifold result; aborting.');
+      window.alert('Sculpt: that deformer produced a non-manifold mesh. Try a smaller value or a different region.');
+      return;
+    }
+
+    // Persist the deformer descriptor on the store, then re-render.
+    addDeformer({
+      kind,
+      regionDescriptor: {
+        kind: 'coplanar',
+        seedPoint: selection.seedPoint,
+        seedNormal: selection.seedNormal,
+        normalTolerance: selection.tolerance,
+      },
+      params,
+    });
+
+    // Update in-memory mesh to the deformed result so paint/picks/exports
+    // all see the new geometry. Adjacency is rebuilt on next updateSculptMesh.
+    currentMeshData = trial;
+    const displayMesh = hasColorRegions() ? applyTriColorsIfVisible(trial) : trial;
+    updateMesh(displayMesh, { skipAutoFrame: true });
+    updateMultiView(displayMesh);
+    renderElevationsToContainer(elevationsContainer, displayMesh);
+    updatePaintMesh(trial);
+    updateSculptMesh(trial);
+
+    // Save a new version with the deformer baked into geometryData.deformers.
+    if (getState().session) {
+      const thumbnail = await captureThumbnail();
+      const geoData = enrichGeometryDataWithDeformers(enrichGeometryDataWithColors(getGeometryDataObj()));
+      await saveVersion(getValue(), geoData, thumbnail, 'sculpted', undefined, { force: true });
+    }
+
+    clearSculptSelection();
+    syncLockState();
   });
 
   // When annotations change (stroke added/removed/cleared) or are toggled,
@@ -2347,7 +2562,7 @@ async function main() {
         return { error: 'No active session. Call createSession() or openSession(id) first.' };
       }
       const thumbnail = await captureThumbnail();
-      const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label);
+      const version = await saveVersion(getValue(), enrichGeometryDataWithDeformers(enrichGeometryDataWithColors(getGeometryDataObj())), thumbnail, label);
       if (version) return { id: version.id, index: version.index, label: version.label };
       return {
         skipped: true,
@@ -2450,7 +2665,7 @@ async function main() {
       await runCodeSync(code);
       const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
       const thumbnail = await captureThumbnail();
-      const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes);
+      const version = await saveVersion(code, enrichGeometryDataWithDeformers(enrichGeometryDataWithColors(getGeometryDataObj())), thumbnail, label, assertions?.notes);
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
@@ -4697,6 +4912,29 @@ async function main() {
   apiWindow.partwright = partwrightAPI;
   apiWindow.mainifold = partwrightAPI;
 
+  // Internal test bridge for the sculpt deformer tests. Exposed at boot so
+  // tests don't need to dynamic-import internal modules — that's racy with
+  // Vite's module discovery on cold start.
+  apiWindow.__sculptTest = {
+    addDeformer,
+    clearDeformers,
+    getDeformers,
+    hasDeformers,
+    syncLockState,
+    rerunCurrentCode: () => runCodeSync(getValue()),
+    getRenderedMeshMaxZ(): number {
+      const group = getMeshGroup();
+      const solid = group.children[0] as unknown as { geometry?: { attributes?: { position?: { array: Float32Array } } } };
+      const pos = solid?.geometry?.attributes?.position?.array;
+      if (!pos) return NaN;
+      let maxZ = -Infinity;
+      for (let i = 2; i < pos.length; i += 3) {
+        if (pos[i] > maxZ) maxZ = pos[i];
+      }
+      return maxZ;
+    },
+  };
+
   // Log API availability for AI agents
   console.info('Partwright: AI agents should use window.partwright -- start with partwright.help(). window.mainifold remains as a legacy alias. See /llms.txt');
 
@@ -5215,7 +5453,6 @@ async function main() {
     if (result.mesh) {
       clearEditorDiagnostics();
       clearEditorErrorPanel(editorErrorPanel);
-      currentMeshData = result.mesh;
       // Release the previous Manifold's WASM-heap memory before overwriting.
       // Manifold objects live outside the JS heap and require manual .delete().
       if (currentManifold && currentManifold !== result.manifold && typeof currentManifold.delete === 'function') {
@@ -5227,12 +5464,18 @@ async function main() {
       // saved version re-runs the code first, which rebuilds the map.
       currentLabelMap = result.labelMap ?? null;
 
+      // Replay any rehydrated sculpt deformers on top of the freshly-executed
+      // mesh. When no deformers are loaded this is a no-op.
+      const sculptedMesh = hasDeformers() ? replayDeformers(result.mesh, getDeformers()) : result.mesh;
+      currentMeshData = sculptedMesh;
+
       // Apply any existing color regions to the mesh
-      const displayMesh = hasColorRegions() ? applyTriColorsIfVisible(result.mesh) : result.mesh;
+      const displayMesh = hasColorRegions() ? applyTriColorsIfVisible(sculptedMesh) : sculptedMesh;
       updateMesh(displayMesh);
       updateMultiView(displayMesh);
       renderElevationsToContainer(elevationsContainer, displayMesh);
-      updatePaintMesh(result.mesh); // always pass uncolored mesh for adjacency
+      updatePaintMesh(sculptedMesh); // always pass uncolored mesh for adjacency
+      updateSculptMesh(sculptedMesh);
 
       updateGeometryData(elapsed, src);
       syncClipSliderBounds();

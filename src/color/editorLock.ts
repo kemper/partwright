@@ -1,5 +1,6 @@
-// Editor lock — locks the code editor when the current version has color regions.
-// Provides lock overlay banner and unlock modal with preserve/destructive paths.
+// Editor lock — locks the code editor when the current version has color regions
+// or sculpt deformers. Provides lock overlay banner and unlock modal with
+// preserve/destructive paths.
 
 import { setReadOnly } from '../editor/codeEditor';
 import { hasRegions, clearRegions, serialize as serializeRegions, type SerializedColorRegion } from './regions';
@@ -13,6 +14,26 @@ let autoRunButton: HTMLElement | null = null;
 // Callback to fork the current version (provided by main.ts)
 let onUnlockFork: ((colorRegions: SerializedColorRegion[]) => Promise<void>) | null = null;
 let onUnlockClear: (() => void) | null = null;
+
+// Predicate provided by other lock-causing subsystems (e.g. sculpt deformers).
+// Registered so this module doesn't need to import from sibling features —
+// keeps the dependency direction the way it already is.
+let externalLockProbe: (() => boolean) | null = null;
+let lockBannerMessageProvider: (() => string | null) | null = null;
+
+/** Register a predicate that contributes to the locked state. When this
+ *  returns true, the editor is locked even if there are no color regions. */
+export function registerExternalLockProbe(fn: () => boolean): void {
+  externalLockProbe = fn;
+}
+
+/** Register a function that returns an alternative banner message string.
+ *  Returns null/undefined to fall back to the default color-region wording.
+ *  Useful so the sculpt module can show "This version has deformers applied."
+ *  when only deformers are present. */
+export function setLockBannerMessageProvider(fn: () => string | null): void {
+  lockBannerMessageProvider = fn;
+}
 
 export function setUnlockHandlers(
   forkHandler: (colorRegions: SerializedColorRegion[]) => Promise<void>,
@@ -32,10 +53,19 @@ export function isLocked(): boolean {
   return locked;
 }
 
-/** Sync lock state based on whether regions exist. Call after painting, loading, or clearing. */
+/** Sync lock state based on whether regions exist OR any external probe
+ *  reports a lock-causing state (e.g. sculpt deformers). Call after painting,
+ *  loading, clearing, or applying/removing a deformer. */
 export function syncLockState(): void {
-  const shouldLock = hasRegions();
-  if (shouldLock === locked) return;
+  const externallyLocked = externalLockProbe ? externalLockProbe() : false;
+  const shouldLock = hasRegions() || externallyLocked;
+
+  // Re-run banner refresh even when the lock bit doesn't change — the
+  // message text depends on which subsystem is active (paint vs deformers).
+  if (shouldLock === locked) {
+    if (shouldLock) refreshLockMessage();
+    return;
+  }
 
   locked = shouldLock;
   setReadOnly(locked);
@@ -49,6 +79,19 @@ export function syncLockState(): void {
   }
 }
 
+function refreshLockMessage(): void {
+  if (!lockOverlay) return;
+  const msgEl = lockOverlay.querySelector('span');
+  if (!msgEl) return;
+  msgEl.innerHTML = currentLockMessage();
+}
+
+function currentLockMessage(): string {
+  const override = lockBannerMessageProvider?.();
+  if (override) return override;
+  return '🔒 This version has color regions applied.';
+}
+
 function showLockOverlay(): void {
   if (lockOverlay || !editorContainer) return;
 
@@ -57,7 +100,7 @@ function showLockOverlay(): void {
   lockOverlay.className = 'flex items-center justify-between px-3 py-1.5 bg-amber-900/60 border-b border-amber-500/40 text-xs text-amber-200 shrink-0';
 
   const msg = document.createElement('span');
-  msg.innerHTML = '\uD83D\uDD12 This version has color regions applied.';
+  msg.innerHTML = currentLockMessage();
 
   const unlockBtn = document.createElement('button');
   unlockBtn.className = 'px-2 py-0.5 rounded text-xs bg-amber-500/20 hover:bg-amber-500/40 text-amber-100 border border-amber-500/40 transition-colors';

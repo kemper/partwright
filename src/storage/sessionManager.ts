@@ -341,6 +341,16 @@ function colorRegionsEqual(prev: Record<string, unknown> | null | undefined, nex
   return JSON.stringify(prevRegions) === JSON.stringify(nextRegions);
 }
 
+/** Sculpt deformers ride alongside color regions on `geometryData.deformers`.
+ *  Same rationale — a save that only adds deformers must create a new version. */
+function deformersEqual(prev: Record<string, unknown> | null | undefined, next: Record<string, unknown> | null | undefined): boolean {
+  const prevDef = (prev?.deformers ?? []) as unknown[];
+  const nextDef = (next?.deformers ?? []) as unknown[];
+  if (prevDef.length !== nextDef.length) return false;
+  if (prevDef.length === 0) return true;
+  return JSON.stringify(prevDef) === JSON.stringify(nextDef);
+}
+
 export async function saveVersion(
   code: string,
   geometryData: Record<string, unknown> | null,
@@ -353,16 +363,17 @@ export async function saveVersion(
 
   const annotationSnapshot = serializeAnnotations();
 
-  // Skip if code AND annotations AND color regions are all identical to the
-  // current version (unless forced). Annotations and color regions live
-  // per-version, so a save that only changes either must still create a new
-  // version — comparing code alone would no-op.
+  // Skip if code AND annotations AND color regions AND deformers are all
+  // identical to the current version (unless forced). Annotations, color
+  // regions, and deformers each live per-version, so a save that only
+  // changes any of them must still create a new version.
   if (
     !options?.force &&
     currentState.currentVersion &&
     currentState.currentVersion.code === code &&
     annotationsEqual(currentState.currentVersion.annotations, annotationSnapshot) &&
-    colorRegionsEqual(currentState.currentVersion.geometryData as Record<string, unknown> | null, geometryData)
+    colorRegionsEqual(currentState.currentVersion.geometryData as Record<string, unknown> | null, geometryData) &&
+    deformersEqual(currentState.currentVersion.geometryData as Record<string, unknown> | null, geometryData)
   ) {
     return null;
   }
