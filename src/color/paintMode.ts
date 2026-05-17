@@ -6,16 +6,21 @@ import type { MeshData } from '../geometry/types';
 import { pickFace } from './facePicker';
 import { buildAdjacency, findCoplanarRegion, getTriangleNormal, type AdjacencyGraph } from './adjacency';
 import { addRegion, getRegions } from './regions';
-import { getMeshGroup, getRenderer, setUserOrbitLock, isUserOrbitLocked } from '../renderer/viewport';
+import { getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
+import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
-export type PaintTool = 'bucket' | 'brush' | 'slab';
+export type PaintTool = 'bucket' | 'brush' | 'slab' | 'box';
 
 let active = false;
 let currentColor: [number, number, number] = [1, 0.2, 0.2]; // default red
 let currentTool: PaintTool = 'bucket';
 let bucketTolerance = 0.9995;
+/** Brush radius in mesh units. 0 = single-triangle (legacy behavior); >0 = paint
+ *  every triangle whose centroid is within `brushRadius` of the picked surface
+ *  point. */
+let brushRadius = 0;
 let adjacency: AdjacencyGraph | null = null;
 let currentMesh: MeshData | null = null;
 
@@ -27,9 +32,13 @@ let hoveredTriangles: Set<number> | null = null;
 let brushPainting = false;
 let brushSession: Set<number> | null = null;
 
-// Orbit lock — paint mode locks model rotation by default. The lock-toggle
-// button in the toolbar reflects this; users can unlock manually to reposition.
-let priorOrbitLock = false;
+// True when the active mousedown missed the model. We let OrbitControls
+// rotate in that case and skip the matching mouseup paint commit so a
+// rotation that happens to release over the model doesn't paint by accident.
+let mouseDownOffModel = false;
+
+// Teardown for the capture-phase pointer suppressor registered on activate.
+let removeSuppressor: (() => void) | null = null;
 
 // Callbacks
 let onRegionPainted: (() => void) | null = null;
@@ -54,6 +63,8 @@ export function setTool(tool: PaintTool): void {
   if (active) {
     if (tool === 'slab') activateSlabDrag();
     else if (prev === 'slab') deactivateSlabDrag();
+    if (tool === 'box') activateBoxDrag();
+    else if (prev === 'box') deactivateBoxDrag();
   }
 
   if (onToolChange) onToolChange(tool);
@@ -69,6 +80,14 @@ export function setBucketTolerance(tol: number): void {
 
 export function getBucketTolerance(): number {
   return bucketTolerance;
+}
+
+export function setBrushRadius(r: number): void {
+  brushRadius = Math.max(0, r);
+}
+
+export function getBrushRadius(): number {
+  return brushRadius;
 }
 
 export function setOnRegionPainted(fn: () => void): void {
@@ -93,6 +112,7 @@ export function updatePaintMesh(mesh: MeshData): void {
   if (active) {
     adjacency = buildAdjacency(mesh);
     onSlabDragMeshChanged();
+    onBoxDragMeshChanged();
   }
   clearHighlight();
 }
@@ -105,8 +125,14 @@ export function activate(): void {
     adjacency = buildAdjacency(currentMesh);
   }
 
-  priorOrbitLock = isUserOrbitLocked();
-  setUserOrbitLock(true);
+  // Veto OrbitControls only for left-button pointerdowns that hit the model
+  // and only when a tool wants the click. Off-model clicks fall through so
+  // OrbitControls can rotate; the Box tool's gizmo owns its own drag.
+  removeSuppressor = addPointerSuppressor((event) => {
+    if (event.button !== 0) return false;
+    if (currentTool === 'box') return false;
+    return isPointerOverModel(event);
+  });
 
   const canvas = getRenderer().domElement;
   canvas.addEventListener('mousemove', onMouseMove);
@@ -116,6 +142,7 @@ export function activate(): void {
   canvas.style.cursor = 'crosshair';
 
   if (currentTool === 'slab') activateSlabDrag();
+  if (currentTool === 'box') activateBoxDrag();
 }
 
 export function deactivate(): void {
@@ -123,9 +150,10 @@ export function deactivate(): void {
   active = false;
   adjacency = null;
 
-  if (!priorOrbitLock) setUserOrbitLock(false);
+  if (removeSuppressor) { removeSuppressor(); removeSuppressor = null; }
 
   deactivateSlabDrag();
+  deactivateBoxDrag();
 
   const canvas = getRenderer().domElement;
   canvas.removeEventListener('mousemove', onMouseMove);
@@ -136,13 +164,22 @@ export function deactivate(): void {
   clearHighlight();
   brushPainting = false;
   brushSession = null;
+  mouseDownOffModel = false;
 }
 
 function onMouseMove(event: MouseEvent): void {
   if (!adjacency || !currentMesh) return;
 
-  // Slab tool doesn't use viewport hover; controls are panel-based.
-  if (currentTool === 'slab') {
+  // Slab and box tools own their own gizmo / drag interactions; the
+  // bucket-vs-brush hover preview gets out of the way.
+  if (currentTool === 'slab' || currentTool === 'box') {
+    clearHighlight();
+    return;
+  }
+
+  // Mid-rotation (mousedown landed off the model) — skip hover preview so
+  // the highlight doesn't flicker on top of the model as the camera spins.
+  if (mouseDownOffModel) {
     clearHighlight();
     return;
   }
@@ -151,7 +188,7 @@ function onMouseMove(event: MouseEvent): void {
   if (currentTool === 'brush' && brushPainting && brushSession) {
     const result = pickFace(event);
     if (result) {
-      brushSession.add(result.triangleIndex);
+      addBrushFootprint(result.triangleIndex, result.point, brushSession);
       showHighlight(brushSession);
     }
     return;
@@ -165,7 +202,8 @@ function onMouseMove(event: MouseEvent): void {
 
   let region: Set<number>;
   if (currentTool === 'brush') {
-    region = new Set([result.triangleIndex]);
+    region = new Set<number>();
+    addBrushFootprint(result.triangleIndex, result.point, region);
   } else {
     region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
   }
@@ -179,22 +217,57 @@ function onMouseMove(event: MouseEvent): void {
 function onMouseDown(event: MouseEvent): void {
   if (!adjacency || !currentMesh) return;
   if (event.button !== 0) return;
-  if (currentTool === 'slab') return;
+  if (currentTool === 'slab' || currentTool === 'box') return;
+
+  // Off-model click → OrbitControls is rotating; remember so mouseup doesn't
+  // paint if the user happens to release over the model after a rotation.
+  const result = pickFace(event);
+  if (!result) {
+    mouseDownOffModel = true;
+    return;
+  }
+  mouseDownOffModel = false;
 
   if (currentTool === 'brush') {
-    const result = pickFace(event);
-    if (!result) return;
     brushPainting = true;
-    brushSession = new Set([result.triangleIndex]);
+    brushSession = new Set<number>();
+    addBrushFootprint(result.triangleIndex, result.point, brushSession);
     showHighlight(brushSession);
     event.preventDefault();
+  }
+}
+
+/** Expand a single picked triangle into the brush's full footprint.
+ *  At brushRadius=0 this just adds the picked triangle (legacy behavior).
+ *  At brushRadius>0 it adds every triangle whose centroid lies within
+ *  `brushRadius` of the picked surface point. */
+function addBrushFootprint(seedTri: number, seedPoint: [number, number, number], target: Set<number>): void {
+  target.add(seedTri);
+  if (brushRadius <= 0 || !adjacency) return;
+
+  const { centroids } = adjacency;
+  const numTri = centroids.length / 3;
+  const r2 = brushRadius * brushRadius;
+  const sx = seedPoint[0], sy = seedPoint[1], sz = seedPoint[2];
+
+  for (let t = 0; t < numTri; t++) {
+    if (target.has(t)) continue;
+    const dx = centroids[t * 3]     - sx;
+    const dy = centroids[t * 3 + 1] - sy;
+    const dz = centroids[t * 3 + 2] - sz;
+    if (dx * dx + dy * dy + dz * dz <= r2) target.add(t);
   }
 }
 
 function onMouseUp(event: MouseEvent): void {
   if (!adjacency || !currentMesh) return;
   if (event.button !== 0) return;
-  if (currentTool === 'slab') return;
+  if (currentTool === 'slab' || currentTool === 'box') return;
+
+  if (mouseDownOffModel) {
+    mouseDownOffModel = false;
+    return;
+  }
 
   if (currentTool === 'brush') {
     if (!brushPainting || !brushSession || brushSession.size === 0) {
@@ -263,13 +336,16 @@ function onMouseLeave(): void {
 }
 
 /** Public helper: render a hover-style highlight over a triangle set.
- *  Used by the slab UI for live preview. Returns a teardown function. */
-export function previewTriangles(triangles: Set<number>): () => void {
-  showHighlight(triangles);
+ *  Used by the slab UI for live preview and by the region list for
+ *  hover-to-locate. Optional `color` overrides the active paint color
+ *  (defaults to whatever `setColor` last received). Returns a teardown
+ *  function. */
+export function previewTriangles(triangles: Set<number>, color?: [number, number, number]): () => void {
+  showHighlight(triangles, color);
   return () => clearHighlight();
 }
 
-function showHighlight(triangles: Set<number>): void {
+function showHighlight(triangles: Set<number>, colorOverride?: [number, number, number]): void {
   clearHighlight();
   if (!currentMesh) return;
   if (triangles.size === 0) return;
@@ -295,8 +371,9 @@ function showHighlight(triangles: Set<number>): void {
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geo.computeVertexNormals();
 
+  const c = colorOverride ?? currentColor;
   const mat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(currentColor[0], currentColor[1], currentColor[2]),
+    color: new THREE.Color(c[0], c[1], c[2]),
     transparent: true,
     opacity: 0.4,
     side: THREE.DoubleSide,

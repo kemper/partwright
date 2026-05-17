@@ -153,6 +153,23 @@ mistake, pass topOnly: true — that restricts the selector to upward-
 facing triangles only (axis +Z within 30°) and eliminates the most
 common over-paint cause.
 
+For direct vertex-push editing on imported or frozen-mesh versions (versions
+whose source is 'mesh' rather than code), use the free-mesh push tools.
+These overwrite the stored mesh blob immediately with each push — there is
+no pending queue or explicit save step. Workflow:
+1. renderView / renderViews — pick the angle showing the feature to move.
+2. probePixel({pixel, view}) — translates the pixel to a surface hit
+   {point, normal, triangleId (= triangleIndex)}.
+3. applyFreePush({triangleIndex, hitPoint: hit.point, normal: hit.normal,
+   stepScale: 2}) — pushes the closest vertex of that triangle along the
+   normal by (stepScale × default-step). Negative stepScale pulls inward.
+4. renderViews() to verify the deformation.
+Undo/redo: undoFreePush() reverses the last push onto a redo stack.
+redoFreePush() re-applies it. Both return {error} if the respective stack
+is empty. The redo stack is cleared by any new push or version navigation.
+Free-mesh tools are only available when the current version is a frozen-mesh
+version — they silently error on code-driven versions.
+
 For planning paint targets without committing, prefer
 getFeatureCentroids() over getMeshSummary — it omits the triangleIds
 payload (which can be tens of thousands of integers) and ships only
@@ -220,7 +237,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
     `Model: ${toggles.model}`,
     `Auto-retry on tool error: ${toggles.autoRetry}`,
     `Iteration cap (tool round-trips this turn): ${capLabel}. Pace your tool calls accordingly — if the cap is low, batch related work and prefer one-shot tools like paintComponent or paintInBox over verify-then-paint loops.`,
-    `Spend cap (USD this turn): ${spendLabel}. Vision tool calls (renderView, paintPreview withImage) are the most expensive — skip them when stats alone are enough.`,
+    `Spend cap (total USD this session): ${spendLabel}. Prior turns in this session count toward the same budget, so the cap can fire mid-turn even on a cheap iteration. Vision tool calls (renderView, paintPreview withImage) are the most expensive — skip them when stats alone are enough.`,
   ];
   if (restrictions.length > 0) {
     lines.push('');

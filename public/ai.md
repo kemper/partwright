@@ -202,6 +202,7 @@ partwright.paintRegion({point, normal, color, name?, tolerance?})         // buc
 partwright.paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) // snap seed to nearest face, then flood-fill -> {id, name, triangles, snappedTo} or {error}
 partwright.paintNear({point, radius, normalCone?, topOnly?, coverageMode?, maxTriangleArea?, color, name?})    // sphere: paint triangles within radius -> {id, name, triangles, bbox, centroid} or {error}
 partwright.paintInBox({box, normalCone?, topOnly?, coverageMode?, maxTriangleArea?, color, name?})             // box: paint triangles inside an AABB -> {id, name, triangles, bbox, centroid} or {error}
+partwright.paintInOrientedBox({box: {center, size, quaternion?}, color, name?})                                 // rotated box: paint triangles inside an oriented bounding box. quaternion defaults to identity. Same selector as the UI Box tool.
 partwright.paintFaces({triangleIds, color, name?})                        // brush: paint specific triangle indices -> {id, name, triangles} or {error}
 partwright.paintSlab({axis|normal, offset, thickness, coverageMode?, maxTriangleArea?, color, name?})      // slab: paint a planar range -> {id, name, triangles} or {error}
 partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, coverageMode?, maxTriangleArea?, withImage?, view?}) // dry-run -> {triangleCount, bbox, centroid, totalArea, largestTriangleArea, [thumbnail]}
@@ -210,7 +211,7 @@ partwright.assertPaint({region, expectedTriangleCount?, expectedBoundingBox?, ex
 partwright.findFaces({box?, normal?, normalTolerance?, color?, region?, maxResults?}) // query triangle ids by geometry/color -> {triangleIds, count, matched, truncated}
 partwright.getMesh()                     // -> {numVert, numTri, vertices, triangles, normals, centroids, boundingBox} (typed arrays)
 partwright.getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?, withinBox?}?) // -> {groups[{id, normal, centroid, area, triangleCount, bbox, triangleIds}], totalTriangles, groupCount, tolerance, unfiltered?}
-partwright.listRegions()                 // -> [{id, name, color, source, triangles, order, bbox, centroid}, ...]
+partwright.listRegions()                 // -> [{id, name, color, source, triangles, order, visible, bbox, centroid}, ...]
 partwright.listComponents()              // -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- per-piece bbox for unioned models
 partwright.paintComponent({index, color, name?, topOnly?}) // One-call: paint the Nth boolean-distinct piece
 partwright.listLabels()                  // -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- labels registered via api.label(shape, name) in the current run
@@ -221,7 +222,14 @@ partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, coverageM
 partwright.undoLastPaint()               // Reverse the SINGLE most recent paint op -> {undone, id, ...}
 partwright.redoLastPaint()               // Reapply the most recently undone paint -> {redone, id, ...}
 partwright.removeRegion(id)              // Delete ONE region by id from listRegions()
+partwright.setRegionVisibility(id, visible) // Show/hide ONE region in the viewport (hidden regions still export)
+partwright.hideRegion(id)                // Shorthand for setRegionVisibility(id, false)
+partwright.showRegion(id)                // Shorthand for setRegionVisibility(id, true)
 partwright.clearColors()                 // Remove ALL regions (destructive — prefer undoLastPaint/removeRegion for fixing single mistakes)
+partwright.getBucketTolerance()          // -> {tolerance} (cosine of max bend angle, -1..1)
+partwright.setBucketTolerance(t)         // Set the UI bucket tool's tolerance + the default for paintRegion
+partwright.getBrushSize()                // -> {radius} (mesh units, 0 = single triangle)
+partwright.setBrushSize(r)               // Set the UI brush radius (>= 0). Programmatic painting uses paintNear / paintFaces.
 
 // Notes -- track design context, decisions, and measurements
 await partwright.addSessionNote(text)    // -> {id, text, timestamp}
@@ -460,11 +468,16 @@ const r = partwright.paintRegion({
 });
 // r = { id, name, triangles } on success, or { error } if no matching face found
 
-partwright.listRegions()    // [{ id, name, color, source, triangles, order }, ...]
+partwright.listRegions()    // [{ id, name, color, source, triangles, order, visible }, ...]
 partwright.undoLastPaint()  // reverse just the most recent paint op
 partwright.removeRegion(id) // delete one region by id (older mistake)
+partwright.hideRegion(id)   // toggle a region off in the viewport without deleting it; exports still include it
+partwright.showRegion(id)   // re-show a previously hidden region
 partwright.clearColors()    // remove ALL regions — destructive, prefer the two above for single mistakes
 ```
+
+**Per-region visibility vs. delete.** `setRegionVisibility(id, false)` (or `hideRegion(id)`) toggles a region off in the *viewport* — the painted triangles render unpainted while the region is hidden, but the region itself stays in `listRegions()` and the `visible` flag is persisted across save/load. This is the right tool for "I want to see what the model looks like without this region" or "compare paint vs. no-paint." GLB / 3MF exports always include hidden regions — visibility is a viewer-state flag, not an export filter. Use `removeRegion(id)` when you actually want to delete a region permanently.
+
 
 **Preview before commit (default workflow).** `paintPreview()` accepts
 the same selector args as `paintInBox` / `paintNear` / `paintFaces` but

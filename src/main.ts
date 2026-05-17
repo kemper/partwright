@@ -1,3 +1,24 @@
+// Application entry point.
+//
+// Responsibilities:
+//   - Boot the geometry engine, renderer, editor, layout, and AI panel.
+//   - Wire cross-module events (route changes, session lifecycle, tab
+//     switches, drag-and-drop import).
+//   - Build the window.partwright public API surface inside main() and
+//     expose it on window for browser-console / AI-agent callers.
+//
+// What lives elsewhere:
+//   - Runtime argument validation: src/validation/apiValidation.ts
+//   - Geometry stats + assertion checks: src/geometry/statsComputation.ts
+//   - Per-subsystem UI: src/ui/* (toolbar, panels, modals, views)
+//   - Storage: src/storage/sessionManager.ts, src/storage/db.ts
+//   - AI chat backend: src/ai/* (anthropic, chatLoop, compaction, tools)
+//
+// Note: most of the window.partwright API is defined as a closure inside
+// main() because the methods read editor / engine / session state that
+// only exists once the app has bootstrapped. The validation helpers used
+// throughout that API are pure and live in the validation module above.
+
 import './style.css';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, buildResultFromMesh, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
@@ -42,6 +63,9 @@ import {
   type ImportInboxEntry,
 } from './import/importInbox';
 import { showImportPreview, summarizeSessionImport } from './ui/importPreview';
+import { parseSTL } from './import/parsers/stl';
+import { generateImportCode } from './import/codegen';
+import { setActiveImports, type ImportedMesh } from './import/importedMesh';
 import type { BuiltExport } from './export/gltf';
 
 /** Register a freshly-built export blob in the inbox so it shows up in Recent Exports. */
@@ -82,16 +106,18 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion } from './color/regions';
+import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius } from './color/paintMode';
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
 import { parseBinarySTLToMeshGL } from './geometry/engines/scadToManifold';
 import { serializeMeshData, deserializeMeshData } from './sculpt/meshIO';
 import { saveMeshVersion, updateMeshVersion } from './storage/sessionManager';
 import { initFreeMeshUI, setFreeMeshNotice, isFreeMeshActive } from './sculpt/freeMeshUI';
-import { configure as configureFreeSculpt } from './sculpt/freeSculpt';
+import { configure as configureFreeSculpt, programmaticPush, undoFreePush as undoFreePushInternal, redoFreePush as redoFreePushInternal, canUndoFreePush, canRedoFreePush, clearFreeMeshHistory } from './sculpt/freeSculpt';
 import { initFreeSculptUI, setSculptEnabled, forceDeactivateSculpt } from './sculpt/freeSculptUI';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle } from './color/adjacency';
 import { findSlabTriangles } from './color/slabPaint';
+import { findBoxTriangles } from './color/boxPaint';
 import { computeFaceGroups } from './color/faceGroups';
 import {
   getSessionIdFromURL,
@@ -128,6 +154,28 @@ import {
   type ExportOptions,
 } from './storage/sessionManager';
 import type { Version } from './storage/db';
+import {
+  ValidationError,
+  guard,
+  assertString,
+  assertNumber,
+  assertBoolean,
+  assertObject,
+  assertFunction,
+  assertEnum,
+  assertNumberTuple,
+  assertArray,
+  assertNoUnknownKeys,
+  validateAssertionsShape,
+} from './validation/apiValidation';
+import {
+  simpleHash,
+  bboxFromMesh,
+  computeGeometryStats,
+  computeStatDiff,
+  checkAssertions,
+  type GeometryAssertions,
+} from './geometry/statsComputation';
 
 // Load examples as raw text — JS and SCAD
 const jsExampleModules = import.meta.glob('../examples/*.js', { query: '?raw', import: 'default' });
@@ -206,14 +254,6 @@ function createGeometryDataElement(): HTMLElement {
   return el;
 }
 
-function simpleHash(str: string): string {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
-  }
-  return (h >>> 0).toString(16).padStart(8, '0');
-}
-
 function firstErrorLine(error: string): string {
   return error
     .split('\n')
@@ -266,200 +306,14 @@ function clearEditorErrorPanel(panel: HTMLElement): void {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function computeGeometryStats(manifold: any, meshData: MeshData, executionTimeMs?: number, sourceCode?: string): Record<string, unknown> {
-  const bbox = getBoundingBox(manifold);
-
-  let volume = 0;
-  let surfaceArea = 0;
-  try {
-    volume = manifold.volume();
-    surfaceArea = manifold.surfaceArea();
-  } catch {
-    // fallback if methods unavailable
-  }
-
-  const centroid = bbox
-    ? [(bbox.min[0] + bbox.max[0]) / 2, (bbox.min[1] + bbox.max[1]) / 2, (bbox.min[2] + bbox.max[2]) / 2]
-    : null;
-
-  const dimensions = bbox
-    ? [bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2]]
-    : null;
-
-  let componentCount = 1;
-  try {
-    const parts = manifold.decompose();
-    componentCount = parts.length;
-    for (const p of parts) p.delete();
-  } catch {
-    // fallback
-  }
-
-  let isManifold = true;
-  let manifoldStatus: string | null = null;
-  try {
-    const s = manifold.status();
-    isManifold = s === 0 || s === 'NoError';
-    if (!isManifold) {
-      // Surface the actual status for diagnostics
-      manifoldStatus = String(s);
-    }
-  } catch {
-    // fallback
-  }
-
-  const quartileSlices: Record<string, { z: number; area: number; contours: number }> = {};
-  if (bbox) {
-    const zRange = bbox.max[2] - bbox.min[2];
-    for (const pct of [25, 50, 75]) {
-      const z = bbox.min[2] + zRange * (pct / 100);
-      const s = sliceAtZ(manifold, z);
-      if (s) {
-        quartileSlices[`z${pct}`] = { z, area: s.area, contours: s.polygons.length };
-      }
-    }
-  }
-
-  return {
-    status: 'ok' as const,
-    vertexCount: meshData.numVert,
-    triangleCount: meshData.numTri,
-    boundingBox: bbox ? {
-      x: [bbox.min[0], bbox.max[0]],
-      y: [bbox.min[1], bbox.max[1]],
-      z: [bbox.min[2], bbox.max[2]],
-      dimensions,
-    } : null,
-    centroid,
-    volume,
-    surfaceArea,
-    genus: (() => { try { return manifold.genus(); } catch { return null; } })(),
-    isManifold,
-    ...(manifoldStatus ? { manifoldStatus } : {}),
-    componentCount,
-    crossSections: quartileSlices,
-    unit: _getUnits(),
-    executionTimeMs: executionTimeMs ?? null,
-    codeHash: sourceCode ? simpleHash(sourceCode) : null,
-  };
-}
-
-function computeStatDiff(prev: Record<string, unknown>, next: Record<string, unknown>): Record<string, unknown> {
-  const diff: Record<string, unknown> = {};
-
-  const numericFields = ['volume', 'surfaceArea', 'vertexCount', 'triangleCount', 'genus', 'componentCount'];
-  for (const field of numericFields) {
-    const from = prev[field] as number;
-    const to = next[field] as number;
-    if (from !== undefined && to !== undefined) {
-      const delta = to - from;
-      if (delta === 0) {
-        diff[field] = { from, to, delta: 'unchanged' };
-      } else {
-        const pct = from !== 0 ? ((delta / from) * 100).toFixed(1) : null;
-        diff[field] = {
-          from, to,
-          delta: `${delta > 0 ? '+' : ''}${Math.round(delta)}${pct ? ` (${delta > 0 ? '+' : ''}${pct}%)` : ''}`,
-        };
-      }
-    }
-  }
-
-  const prevBB = prev.boundingBox as Record<string, unknown> | null;
-  const nextBB = next.boundingBox as Record<string, unknown> | null;
-  if (prevBB?.dimensions && nextBB?.dimensions) {
-    diff.boundingBox = { dimensions: { from: prevBB.dimensions, to: nextBB.dimensions } };
-  }
-
-  return diff;
-}
-
-interface GeometryAssertions {
-  minVolume?: number;
-  maxVolume?: number;
-  isManifold?: boolean;
-  maxComponents?: number;
-  genus?: number;
-  minGenus?: number;
-  maxGenus?: number;
-  minBounds?: [number, number, number];
-  maxBounds?: [number, number, number];
-  minTriangles?: number;
-  maxTriangles?: number;
-  /** Proportion range assertions: { widthToDepth: [min, max], widthToHeight: [min, max], depthToHeight: [min, max] } */
-  boundsRatio?: {
-    widthToDepth?: [number, number];
-    widthToHeight?: [number, number];
-    depthToHeight?: [number, number];
-  };
-  /** Optional notes to attach to this version (design rationale, user feedback, etc.) */
-  notes?: string;
-}
-
-function checkAssertions(stats: Record<string, unknown>, assertions: GeometryAssertions): string[] {
-  const failures: string[] = [];
-  const v = stats.volume as number;
-  const tc = stats.triangleCount as number;
-  const cc = stats.componentCount as number;
-  const g = stats.genus as number | null;
-  const im = stats.isManifold as boolean;
-  const bb = stats.boundingBox as { dimensions?: number[] } | null;
-
-  if (assertions.minVolume !== undefined && v < assertions.minVolume)
-    failures.push(`volume ${v.toFixed(1)} < minVolume ${assertions.minVolume}`);
-  if (assertions.maxVolume !== undefined && v > assertions.maxVolume)
-    failures.push(`volume ${v.toFixed(1)} > maxVolume ${assertions.maxVolume}`);
-  if (assertions.isManifold !== undefined && im !== assertions.isManifold)
-    failures.push(`isManifold is ${im}, expected ${assertions.isManifold}`);
-  if (assertions.maxComponents !== undefined && cc > assertions.maxComponents)
-    failures.push(`componentCount ${cc} > maxComponents ${assertions.maxComponents}`);
-  if (assertions.genus !== undefined && g !== assertions.genus)
-    failures.push(`genus ${g} !== expected ${assertions.genus}`);
-  if (assertions.minGenus !== undefined && (g === null || g < assertions.minGenus))
-    failures.push(`genus ${g} < minGenus ${assertions.minGenus}`);
-  if (assertions.maxGenus !== undefined && (g === null || g > assertions.maxGenus))
-    failures.push(`genus ${g} > maxGenus ${assertions.maxGenus}`);
-  if (assertions.minTriangles !== undefined && tc < assertions.minTriangles)
-    failures.push(`triangleCount ${tc} < minTriangles ${assertions.minTriangles}`);
-  if (assertions.maxTriangles !== undefined && tc > assertions.maxTriangles)
-    failures.push(`triangleCount ${tc} > maxTriangles ${assertions.maxTriangles}`);
-  if (assertions.minBounds && bb?.dimensions) {
-    const d = bb.dimensions;
-    for (let i = 0; i < 3; i++) {
-      if (d[i] < assertions.minBounds[i])
-        failures.push(`dimension ${['X', 'Y', 'Z'][i]} ${d[i].toFixed(1)} < minBounds ${assertions.minBounds[i]}`);
-    }
-  }
-  if (assertions.maxBounds && bb?.dimensions) {
-    const d = bb.dimensions;
-    for (let i = 0; i < 3; i++) {
-      if (d[i] > assertions.maxBounds[i])
-        failures.push(`dimension ${['X', 'Y', 'Z'][i]} ${d[i].toFixed(1)} > maxBounds ${assertions.maxBounds[i]}`);
-    }
-  }
-  if (assertions.boundsRatio && bb?.dimensions) {
-    const [w, dep, h] = bb.dimensions;
-    const ratios: { name: string; value: number; range?: [number, number] }[] = [
-      { name: 'widthToDepth', value: w / dep, range: assertions.boundsRatio.widthToDepth },
-      { name: 'widthToHeight', value: w / h, range: assertions.boundsRatio.widthToHeight },
-      { name: 'depthToHeight', value: dep / h, range: assertions.boundsRatio.depthToHeight },
-    ];
-    for (const r of ratios) {
-      if (r.range) {
-        if (r.value < r.range[0]) failures.push(`${r.name} ratio ${r.value.toFixed(2)} < min ${r.range[0]}`);
-        if (r.value > r.range[1]) failures.push(`${r.name} ratio ${r.value.toFixed(2)} > max ${r.range[1]}`);
-      }
-    }
-  }
-  return failures;
-}
-
 function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
-  if (!currentManifold || !currentMeshData) {
+  if (!currentMeshData) {
     geometryDataEl.textContent = JSON.stringify({ status: 'error', error: 'No geometry' });
     return;
   }
 
+  // currentManifold may be null for render-only imports (sculpted STLs that
+  // can't form a watertight manifold). computeGeometryStats degrades gracefully.
   const data = computeGeometryStats(currentManifold, currentMeshData, executionTimeMs, sourceCode);
   // Surface session URLs in geometry-data so they're accessible even when getGalleryUrl() is sandbox-blocked
   const state = getState();
@@ -525,6 +379,9 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): vo
     } else if (region.descriptor.kind === 'slab') {
       const { normal, offset, thickness } = region.descriptor;
       triangles = findSlabTriangles(mesh, normal, offset, thickness);
+    } else if (region.descriptor.kind === 'box') {
+      const { center, size, quaternion } = region.descriptor;
+      triangles = findBoxTriangles(mesh, { center, size, quaternion });
     } else if (region.descriptor.kind === 'byLabel') {
       // Labels are runtime state — manifold-3d assigns fresh
       // originalIDs on every run, so we re-resolve by name from the
@@ -570,7 +427,7 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): vo
     }
 
     if (triangles.size > 0) {
-      addRegion(region.name, region.color, region.source, region.descriptor, triangles);
+      addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false);
     }
   }
 
@@ -590,185 +447,6 @@ function enrichGeometryDataWithColors(geoData: Record<string, unknown> | null): 
     geoData.colorRegions = serializeRegions();
   }
   return geoData;
-}
-
-// === Argument validation helpers ==========================================
-//
-// Runtime type/shape validation for the window.partwright API. The public API
-// is reachable from untyped callers (browser console, MCP-driven AI agents,
-// automation scripts) so TypeScript's compile-time guarantees do not apply.
-// These helpers enforce argument contracts explicitly, with chatty error
-// messages pointing at /ai.md anchors so AI callers can self-correct.
-//
-// Convention:
-//   • Methods that already return a value use { error: "..." } on failure.
-//   • Void setters THROW so misuse is loud.
-//   • No coercion — "5" is not a number; wrong types are rejected outright.
-
-/** Thrown by assertion helpers on validation failure. Void setters let this
- *  propagate; value-returning methods catch via toValidationError(). */
-class ValidationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ValidationError';
-  }
-}
-
-function describeValue(val: unknown): string {
-  if (val === null) return 'null';
-  if (val === undefined) return 'undefined';
-  if (Array.isArray(val)) return `array(length=${val.length})`;
-  if (typeof val === 'object') return 'object';
-  if (typeof val === 'string') return `string("${val.length > 40 ? val.slice(0, 40) + '…' : val}")`;
-  return `${typeof val}(${String(val)})`;
-}
-
-/** Run a validation function; if it throws ValidationError, return { error } instead. */
-function guard<T>(fn: () => T): T | { error: string } {
-  try {
-    return fn();
-  } catch (e: unknown) {
-    if (e instanceof ValidationError) return { error: e.message };
-    throw e;
-  }
-}
-
-interface AssertStringOpts { optional?: boolean; allowEmpty?: boolean }
-function assertString(val: unknown, paramName: string, opts: AssertStringOpts = {}): string | undefined {
-  if (val === undefined || val === null) {
-    if (opts.optional) return undefined;
-    throw new ValidationError(`${paramName} is required (expected string, got ${describeValue(val)}). See /ai.md#argument-validation`);
-  }
-  if (typeof val !== 'string') {
-    throw new ValidationError(`${paramName} must be a string, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  if (!opts.allowEmpty && val.length === 0) {
-    throw new ValidationError(`${paramName} must not be an empty string. See /ai.md#argument-validation`);
-  }
-  return val;
-}
-
-interface AssertNumberOpts { optional?: boolean; min?: number; max?: number; integer?: boolean }
-function assertNumber(val: unknown, paramName: string, opts: AssertNumberOpts = {}): number | undefined {
-  if (val === undefined || val === null) {
-    if (opts.optional) return undefined;
-    throw new ValidationError(`${paramName} is required (expected number, got ${describeValue(val)}). See /ai.md#argument-validation`);
-  }
-  if (typeof val !== 'number' || !Number.isFinite(val)) {
-    throw new ValidationError(`${paramName} must be a finite number, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  if (opts.integer && !Number.isInteger(val)) {
-    throw new ValidationError(`${paramName} must be an integer, got ${val}. See /ai.md#argument-validation`);
-  }
-  if (opts.min !== undefined && val < opts.min) {
-    throw new ValidationError(`${paramName} must be >= ${opts.min}, got ${val}. See /ai.md#argument-validation`);
-  }
-  if (opts.max !== undefined && val > opts.max) {
-    throw new ValidationError(`${paramName} must be <= ${opts.max}, got ${val}. See /ai.md#argument-validation`);
-  }
-  return val;
-}
-
-interface AssertBooleanOpts { optional?: boolean }
-function assertBoolean(val: unknown, paramName: string, opts: AssertBooleanOpts = {}): boolean | undefined {
-  if (val === undefined || val === null) {
-    if (opts.optional) return undefined;
-    throw new ValidationError(`${paramName} is required (expected boolean, got ${describeValue(val)}). See /ai.md#argument-validation`);
-  }
-  if (typeof val !== 'boolean') {
-    throw new ValidationError(`${paramName} must be a boolean, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val;
-}
-
-interface AssertObjectOpts { optional?: boolean }
-function assertObject(val: unknown, paramName: string, opts: AssertObjectOpts = {}): Record<string, unknown> | undefined {
-  if (val === undefined || val === null) {
-    if (opts.optional) return undefined;
-    throw new ValidationError(`${paramName} is required (expected object, got ${describeValue(val)}). See /ai.md#argument-validation`);
-  }
-  if (typeof val !== 'object' || Array.isArray(val)) {
-    throw new ValidationError(`${paramName} must be a plain object (not array/null), got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val as Record<string, unknown>;
-}
-
-function assertFunction(val: unknown, paramName: string): (...args: unknown[]) => unknown {
-  if (typeof val !== 'function') {
-    throw new ValidationError(`${paramName} must be a function, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val as (...args: unknown[]) => unknown;
-}
-
-function assertEnum<T extends string>(val: unknown, allowed: readonly T[], paramName: string): T {
-  if (typeof val !== 'string' || !allowed.includes(val as T)) {
-    throw new ValidationError(`${paramName} must be one of: ${allowed.map(a => `"${a}"`).join(' | ')}. Got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val as T;
-}
-
-/** Validate a fixed-length tuple of numbers (e.g. [x,y,z]). */
-function assertNumberTuple(val: unknown, length: number, paramName: string): number[] {
-  if (!Array.isArray(val)) {
-    throw new ValidationError(`${paramName} must be an array of ${length} numbers, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  if (val.length !== length) {
-    throw new ValidationError(`${paramName} must have exactly ${length} elements, got length=${val.length}. See /ai.md#argument-validation`);
-  }
-  for (let i = 0; i < length; i++) {
-    if (typeof val[i] !== 'number' || !Number.isFinite(val[i])) {
-      throw new ValidationError(`${paramName}[${i}] must be a finite number, got ${describeValue(val[i])}. See /ai.md#argument-validation`);
-    }
-  }
-  return val as number[];
-}
-
-function assertArray(val: unknown, paramName: string): unknown[] {
-  if (!Array.isArray(val)) {
-    throw new ValidationError(`${paramName} must be an array, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val;
-}
-
-/** Reject any keys on `obj` that are not in the `allowed` set.
- *  Catches typos like `{ widthToDeep: [1,2] }` that would otherwise be silently ignored. */
-function assertNoUnknownKeys(obj: Record<string, unknown>, allowed: readonly string[], paramName: string): void {
-  for (const key of Object.keys(obj)) {
-    if (!allowed.includes(key)) {
-      throw new ValidationError(`${paramName}.${key} is not a recognized field. Allowed: ${allowed.join(', ')}. See /ai.md#argument-validation`);
-    }
-  }
-}
-
-/** Validate a GeometryAssertions object shape. Throws ValidationError on failure. */
-const ASSERTION_FIELDS = [
-  'minVolume', 'maxVolume', 'isManifold', 'maxComponents', 'genus', 'minGenus', 'maxGenus',
-  'minBounds', 'maxBounds', 'minTriangles', 'maxTriangles', 'boundsRatio', 'notes',
-] as const;
-const BOUNDS_RATIO_FIELDS = ['widthToDepth', 'widthToHeight', 'depthToHeight'] as const;
-
-function validateAssertionsShape(assertions: unknown, paramName: string): void {
-  const a = assertObject(assertions, paramName)!;
-  assertNoUnknownKeys(a, ASSERTION_FIELDS, paramName);
-  assertNumber(a.minVolume, `${paramName}.minVolume`, { optional: true });
-  assertNumber(a.maxVolume, `${paramName}.maxVolume`, { optional: true });
-  assertBoolean(a.isManifold, `${paramName}.isManifold`, { optional: true });
-  assertNumber(a.maxComponents, `${paramName}.maxComponents`, { optional: true, min: 0, integer: true });
-  assertNumber(a.genus, `${paramName}.genus`, { optional: true, integer: true });
-  assertNumber(a.minGenus, `${paramName}.minGenus`, { optional: true, integer: true });
-  assertNumber(a.maxGenus, `${paramName}.maxGenus`, { optional: true, integer: true });
-  if (a.minBounds !== undefined) assertNumberTuple(a.minBounds, 3, `${paramName}.minBounds`);
-  if (a.maxBounds !== undefined) assertNumberTuple(a.maxBounds, 3, `${paramName}.maxBounds`);
-  assertNumber(a.minTriangles, `${paramName}.minTriangles`, { optional: true, min: 0, integer: true });
-  assertNumber(a.maxTriangles, `${paramName}.maxTriangles`, { optional: true, min: 0, integer: true });
-  assertString(a.notes, `${paramName}.notes`, { optional: true, allowEmpty: true });
-  if (a.boundsRatio !== undefined) {
-    const br = assertObject(a.boundsRatio, `${paramName}.boundsRatio`)!;
-    assertNoUnknownKeys(br, BOUNDS_RATIO_FIELDS, `${paramName}.boundsRatio`);
-    for (const k of BOUNDS_RATIO_FIELDS) {
-      if (br[k] !== undefined) assertNumberTuple(br[k], 2, `${paramName}.boundsRatio.${k}`);
-    }
-  }
 }
 
 // ===========================================================================
@@ -923,6 +601,30 @@ async function main() {
     return { sessionId: session.id };
   }
 
+  // Import a parsed mesh (STL today) as a new session.
+  //
+  // Unlike code imports, the parsed mesh bytes don't live in the editor — they
+  // ride on the Version via `importedMeshes`. We must persist v1 immediately
+  // so the imports survive a reload and so future saveVersion calls (which
+  // carry forward `importedMeshes` from the prior version) have something to
+  // build on.
+  async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean } = { manifold: true }): Promise<{ sessionId: string }> {
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+    const session = await createSession(sessionName, 'manifold-js');
+    setActiveImports([mesh]);
+    const code = generateImportCode([mesh], { manifold: opts.manifold });
+    setValue(code);
+    await runCodeSync(code);
+    const thumbnail = await captureThumbnail();
+    const geometryData = getGeometryDataObj();
+    const label = opts.manifold ? 'imported' : 'imported (render-only)';
+    await saveVersion(code, geometryData, thumbnail, label, undefined, {
+      force: true,
+      importedMeshes: [mesh],
+    });
+    return { sessionId: session.id };
+  }
+
   // Run a JSON session import end-to-end: validate, show the preview modal, import.
   async function importJSONFromText(filename: string, text: string): Promise<boolean> {
     let parsed: unknown;
@@ -944,12 +646,13 @@ async function main() {
     return true;
   }
 
-  // Import a .partwright.json session, or a raw .js / .scad file, into a new session.
-  // Returns whether the import committed (so callers know if the inbox should be updated).
+  // Import a .partwright.json session, a raw .js / .scad file, or an .stl mesh
+  // into a new session. Returns whether the import committed (so callers know
+  // if the inbox should be updated).
   async function handleImportFile(file: File, options: { skipPreActiveConfirm?: boolean } = {}): Promise<boolean> {
     const source = classifyImportSource(file.name);
     if (!source) {
-      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad`);
+      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl`);
       return false;
     }
 
@@ -977,6 +680,13 @@ async function main() {
         const sessionName = file.name.replace(/\.(js|scad)$/i, '');
         await importCodePayload(code, lang, sessionName);
         committed = true;
+      } else if (source === 'STL') {
+        const parsed = await parseSTLFile(file);
+        if (parsed) {
+          const sessionName = file.name.replace(/\.stl$/i, '');
+          await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+          committed = true;
+        }
       }
       if (committed) registerImport(file, file.name, source);
       return committed;
@@ -986,6 +696,111 @@ async function main() {
     }
   }
 
+  interface ParsedSTL {
+    mesh: ImportedMesh;
+    /** True if Manifold.ofMesh() succeeded — supports boolean ops, paint, slicing.
+     *  False if the user chose to import render-only after manifold construction failed. */
+    isManifold: boolean;
+  }
+
+  /** Read an STL file, parse it, and verify Manifold.ofMesh() accepts the result.
+   *  Tries progressively looser weld tolerances to absorb float-precision noise.
+   *  If the mesh still won't form a manifold (common for sculpted/scanned models
+   *  with self-intersections or open edges), prompts the user to import as
+   *  render-only — visible and exportable, but no booleans/paint/slice. */
+  async function parseSTLFile(file: File): Promise<ParsedSTL | null> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+
+    // Sanity-check that the file parses to *something* before doing the more
+    // expensive ofMesh trial.
+    const probe = parseSTL(bytes);
+    if (!probe || probe.numTri === 0) {
+      alert(`Could not parse "${file.name}" as an STL file.`);
+      return null;
+    }
+
+    // Scale-aware fallback tolerance: 5 ppm of the mesh's bounding-box diagonal
+    // catches imports that ship in unusual units (μm or m) where 1e-3 absolute
+    // is either way too tight or way too loose.
+    const bbox = bboxFromMesh(probe);
+    const diag = bbox
+      ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
+      : 0;
+    const scaleTolerance = Math.max(diag * 5e-6, 1e-6);
+
+    const tolerances = [1e-5, 1e-4, 1e-3, scaleTolerance];
+    let bestMesh = probe;
+    let maxTried = 0;
+    let manifoldError: string | null = null;
+    for (const tol of tolerances) {
+      const mesh = parseSTL(bytes, { weldTolerance: tol });
+      if (!mesh || mesh.numTri === 0) continue;
+      const trial = tryConstructManifold(mesh);
+      if (trial.ok) {
+        return { mesh: toImportedMesh(file.name, mesh), isManifold: true };
+      }
+      manifoldError = trial.error;
+      if (tol > maxTried) maxTried = tol;
+      bestMesh = mesh;
+    }
+
+    // All tolerances failed. Offer render-only fallback — most users importing
+    // a Baby Yoda / Eiffel Tower scan just want to look at it, not boolean-op it.
+    const accepted = await showInlineConfirm(
+      editorUI,
+      `${file.name} won't form a clean manifold — typical for sculpted or scanned models with self-intersections, open edges, or T-junctions.\n\n` +
+      `You can still import it as render-only: the mesh displays and exports normally, but boolean operations, paint, and cross-sections won't work.\n\n` +
+      `For full editing, repair the mesh first in MeshLab or Blender, then re-import.\n\n` +
+      `${probe.numTri.toLocaleString()} triangles · ${probe.numVert.toLocaleString()} vertices · tried weld tolerances up to ${maxTried.toExponential(1)} · ${manifoldError}`,
+      {
+        title: 'Import as render-only?',
+        confirmLabel: 'Import render-only',
+        cancelLabel: 'Cancel',
+      }
+    );
+    if (!accepted) return null;
+
+    return { mesh: toImportedMesh(file.name, bestMesh), isManifold: false };
+  }
+
+  function toImportedMesh(filename: string, mesh: MeshData): ImportedMesh {
+    return {
+      id: generateId(),
+      filename,
+      format: 'stl',
+      vertProperties: mesh.vertProperties,
+      triVerts: mesh.triVerts,
+      numVert: mesh.numVert,
+      numTri: mesh.numTri,
+      numProp: mesh.numProp,
+    };
+  }
+
+  /** Attempt Manifold.ofMesh() on a parsed mesh; report success/failure. The
+   *  trial manifold is disposed immediately — we only care whether construction
+   *  worked, not the geometry itself. */
+  function tryConstructManifold(mesh: MeshData): { ok: true } | { ok: false; error: string } {
+    const mod = getModule();
+    if (!mod) return { ok: true }; // engine not ready yet; assume good and let runtime surface any issue
+    let m: { isEmpty(): boolean; delete?: () => void } | null = null;
+    try {
+      m = mod.Manifold.ofMesh({
+        numProp: mesh.numProp,
+        vertProperties: mesh.vertProperties,
+        triVerts: mesh.triVerts,
+      });
+      if (!m || m.isEmpty()) {
+        return { ok: false, error: 'constructed manifold is empty' };
+      }
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    } finally {
+      try { m?.delete?.(); } catch { /* already gone */ }
+    }
+  }
+
+
   // Re-import an entry from the Recent Imports inbox. Reuses the same flow as
   // a fresh file import, including the JSON preview modal — it is still a
   // session-creating action and the user may want to verify before clobbering.
@@ -994,20 +809,29 @@ async function main() {
       if (entry.source === 'JSON') {
         const text = await entry.blob.text();
         await importJSONFromText(entry.filename, text);
-      } else {
-        const cur = getState();
-        if (cur.session && cur.versionCount > 0) {
-          const ok = await showInlineConfirm(
-            editorUI,
-            `Re-import "${entry.filename}" as a new session? Your current session will be kept.`,
-          );
-          if (!ok) return;
-        }
-        const code = await entry.blob.text();
-        const lang: Language = entry.source === 'SCAD' ? 'scad' : 'manifold-js';
-        const sessionName = entry.filename.replace(/\.(js|scad)$/i, '');
-        await importCodePayload(code, lang, sessionName);
+        return;
       }
+      const cur = getState();
+      if (cur.session && cur.versionCount > 0) {
+        const ok = await showInlineConfirm(
+          editorUI,
+          `Re-import "${entry.filename}" as a new session? Your current session will be kept.`,
+        );
+        if (!ok) return;
+      }
+      if (entry.source === 'STL') {
+        const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
+        const parsed = await parseSTLFile(file);
+        if (parsed) {
+          const sessionName = entry.filename.replace(/\.stl$/i, '');
+          await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+        }
+        return;
+      }
+      const code = await entry.blob.text();
+      const lang: Language = entry.source === 'SCAD' ? 'scad' : 'manifold-js';
+      const sessionName = entry.filename.replace(/\.(js|scad)$/i, '');
+      await importCodePayload(code, lang, sessionName);
     } catch (e) {
       alert(`Failed to re-import "${entry.filename}": ${(e as Error).message}`);
     }
@@ -1040,7 +864,10 @@ async function main() {
     }
   }
 
-  // Document-level drag-and-drop import
+  // Document-level drag-and-drop import. The editor UI is initialized once
+  // per page load and never torn down, so these document listeners live for
+  // the lifetime of the document — no cleanup needed. If editor teardown is
+  // ever added, store these handlers and pair with removeEventListener().
   function isImportableFile(file: File): boolean {
     const n = file.name.toLowerCase();
     return n.endsWith('.json') || n.endsWith('.js') || n.endsWith('.scad') || n.endsWith('.stl');
@@ -1089,6 +916,24 @@ async function main() {
       if (!getState().session) {
         alert('No active session to export. Save a version first.');
         return;
+      }
+      // STL imports live on Version.importedMeshes (typed-array mesh bytes),
+      // which the .partwright.json export schema doesn't carry yet. Warn so
+      // the user knows the resulting file will reopen with empty `api.imports`
+      // and the wrapper code will fail until the STL is re-imported.
+      const versions = await listCurrentVersions();
+      const hasImports = versions.some(v => Array.isArray((v as { importedMeshes?: unknown[] }).importedMeshes) && ((v as { importedMeshes?: unknown[] }).importedMeshes!).length > 0);
+      if (hasImports) {
+        const proceed = await showInlineConfirm(
+          editorUI,
+          `This session uses imported meshes (STL).\n\nThe .partwright.json file will include the code but not the mesh data — anyone reopening it will need to re-import the STL for the version to render.\n\nExport an STL/GLB instead if you just need the geometry.`,
+          {
+            title: 'Imported meshes won\'t be included',
+            confirmLabel: 'Export anyway',
+            cancelLabel: 'Cancel',
+          }
+        );
+        if (!proceed) return;
       }
       const opts = await showExportOptionsDialog();
       if (!opts) return;
@@ -1261,6 +1106,7 @@ async function main() {
     if (sessionLang !== getActiveLanguage()) {
       await switchLanguage(sessionLang);
     }
+    clearFreeMeshHistory(); // version navigation clears the push undo/redo stacks
     if (version.source === 'mesh' && version.meshBlob) {
       // Frozen-mesh path: skip code execution, rebuild via Manifold.ofMesh.
       // Editor shows a placeholder string (read-only) and a notice banner.
@@ -1274,6 +1120,7 @@ async function main() {
       setFreeMeshNotice(null);
       setSculptEnabled(false);
       forceDeactivateSculpt();
+      setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
       setValue(version.code);
       await runCodeSync(version.code);
     }
@@ -1653,6 +1500,23 @@ async function main() {
   // when the current version is `source: 'mesh'`.
   initFreeMeshUI(editorContainer);
   initFreeSculptUI(clipControls);
+  // Keyboard undo/redo for free-mesh push operations (Ctrl/Cmd+Z / Ctrl+Y).
+  // Only fires when the current version is a frozen-mesh version and the
+  // respective stack is non-empty — falls through otherwise.
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
+    const meta = e.ctrlKey || e.metaKey;
+    if (!meta) return;
+    if (!isFreeMeshActive()) return;
+    const isUndo = e.key === 'z' && !e.shiftKey;
+    const isRedo = (e.key === 'z' && e.shiftKey) || e.key === 'y';
+    if (!isUndo && !isRedo) return;
+    if (isUndo && !canUndoFreePush()) return;
+    if (isRedo && !canRedoFreePush()) return;
+    e.preventDefault();
+    if (isUndo) undoFreePushInternal();
+    else redoFreePushInternal();
+  });
+
   configureFreeSculpt({
     getMesh: () => currentMeshData,
     onPush: async (newMesh: MeshData) => {
@@ -3369,6 +3233,52 @@ async function main() {
       return { id: region.id, name: region.name, triangles: triangles.size, bbox: stats.bbox, centroid: stats.centroid, seedTriangle: nearest.triIndex };
     },
 
+    /** Push the vertex of a triangle closest to a hit point along a surface
+     *  normal. Only valid when the current version is a frozen-mesh version
+     *  (`source: 'mesh'`). Obtain triangleIndex, hitPoint, and normal from
+     *  probePixel. Returns {ok: true} on success, {error} otherwise. */
+    applyFreePush(opts: {
+      triangleIndex: number;
+      hitPoint: [number, number, number];
+      normal: [number, number, number];
+      stepScale?: number;
+    }): { ok: true } | { error: string } {
+      if (!currentMeshData || getState().currentVersion?.source !== 'mesh') {
+        return { error: 'applyFreePush: no active frozen-mesh version' };
+      }
+      const check = guard(() => {
+        assertObject(opts, 'applyFreePush(opts)');
+        assertNoUnknownKeys(opts as Record<string, unknown>, ['triangleIndex', 'hitPoint', 'normal', 'stepScale'], 'applyFreePush(opts)');
+        assertNumber((opts as Record<string, unknown>).triangleIndex, 'applyFreePush(opts).triangleIndex', { integer: true, min: 0 });
+        assertNumber((opts as Record<string, unknown>).stepScale, 'applyFreePush(opts).stepScale', { optional: true });
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check as { error: string };
+      const ok = programmaticPush(
+        opts.triangleIndex,
+        opts.hitPoint,
+        opts.normal,
+        opts.stepScale !== undefined ? opts.stepScale : undefined,
+      );
+      return ok ? { ok: true } : { error: 'applyFreePush: push failed (check mesh is loaded)' };
+    },
+
+    /** Undo the most recent free-mesh push. Returns {error} if there is
+     *  nothing to undo. The undone push goes onto a redo stack. */
+    undoFreePush(): { ok: true } | { error: string } {
+      if (!canUndoFreePush()) return { error: 'Nothing to undo — no pushes recorded yet' };
+      const result = undoFreePushInternal();
+      return result ? { ok: true } : { error: 'Undo failed (no active frozen-mesh version)' };
+    },
+
+    /** Redo the most recently undone free-mesh push. Returns {error} if the
+     *  redo stack is empty. */
+    redoFreePush(): { ok: true } | { error: string } {
+      if (!canRedoFreePush()) return { error: 'Nothing to redo — call undoFreePush first' };
+      const result = redoFreePushInternal();
+      return result ? { ok: true } : { error: 'Redo failed (no active frozen-mesh version)' };
+    },
+
     /** Check if any component is fully contained inside another (invisible geometry) */
     checkContainment(): ContainmentWarning[] | null {
       if (!currentManifold) return null;
@@ -3699,6 +3609,7 @@ async function main() {
           source: r.source,
           triangles: r.triangles.size,
           order: r.order,
+          visible: r.visible,
           bbox: stats?.bbox ?? null,
           centroid: stats?.centroid ?? null,
         };
@@ -3828,6 +3739,56 @@ async function main() {
 
       const triangles = collectTrianglesByFilter(currentMeshData, opts.box, cone, null, opts.coverageMode, opts.maxTriangleArea);
       if (triangles.size === 0) return { error: `paintInBox: no triangles matched the box${cone ? ' (with the normalCone' + (opts.topOnly ? '/topOnly' : '') + ' filter)' : ''}${opts.coverageMode === 'fully_inside' ? ' (with coverageMode: fully_inside — try widening the box or dropping the mode)' : ''}${opts.maxTriangleArea !== undefined ? ` (with maxTriangleArea: ${opts.maxTriangleArea} — try raising it)` : ''}. Try widening the box, dropping topOnly/normalCone, or call findFaces() to see what passes each filter individually.` };
+
+      return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
+    },
+
+    /** Paint every triangle whose centroid lies inside an *oriented* bounding
+     *  box — same selector the UI's Box tool uses, but with explicit
+     *  center/size/quaternion instead of a gizmo. Use this when you need
+     *  arbitrary rotation that an AABB can't express (e.g. painting a tilted
+     *  panel on an oriented part).
+     *
+     *  `quaternion` defaults to identity `[0, 0, 0, 1]` if omitted, which
+     *  reduces to the same selector as `paintInBox` against an AABB centered
+     *  at `center` with the given `size`.
+     *
+     *  ```
+     *  partwright.paintInOrientedBox({
+     *    box: {
+     *      center: [10, 0, 5],
+     *      size: [8, 4, 2],
+     *      quaternion: [0, 0, Math.sin(Math.PI / 8), Math.cos(Math.PI / 8)], // 45° around Z
+     *    },
+     *    color: [0.2, 0.7, 0.9],
+     *  });
+     *  ```
+     *  Returns `{ id, name, triangles }` or `{ error }`. */
+    paintInOrientedBox(opts: {
+      box: {
+        center: [number, number, number];
+        size: [number, number, number];
+        quaternion?: [number, number, number, number];
+      };
+      color: [number, number, number];
+      name?: string;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintInOrientedBox requires { box, color }' };
+      if (!opts.box || typeof opts.box !== 'object') return { error: 'paintInOrientedBox.box must be { center, size, quaternion? }' };
+      const { center, size, quaternion } = opts.box;
+      if (!Array.isArray(center) || center.length !== 3 || !center.every(Number.isFinite)) return { error: 'paintInOrientedBox.box.center must be [x, y, z] of finite numbers' };
+      if (!Array.isArray(size) || size.length !== 3 || !size.every(v => Number.isFinite(v) && v > 0)) return { error: 'paintInOrientedBox.box.size must be [sx, sy, sz] of positive finite numbers' };
+      const q: [number, number, number, number] = quaternion ?? [0, 0, 0, 1];
+      if (!Array.isArray(q) || q.length !== 4 || !q.every(Number.isFinite)) return { error: 'paintInOrientedBox.box.quaternion must be [x, y, z, w] of finite numbers (defaults to identity if omitted)' };
+      if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r, g, b] with values 0..1' };
+
+      const triangles = findBoxTriangles(currentMeshData, {
+        center: [center[0], center[1], center[2]],
+        size: [size[0], size[1], size[2]],
+        quaternion: q,
+      });
+      if (triangles.size === 0) return { error: 'paintInOrientedBox: no triangles inside the box. Try a larger size, recheck the center, or use paintPreview to see what the box covers.' };
 
       return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
     },
@@ -4097,6 +4058,67 @@ async function main() {
       scheduleColorRefresh();
       syncLockState();
       return { removed: true, id };
+    },
+
+    /** Toggle whether a single region is rendered in the viewport. Hidden
+     *  regions still ship in GLB/3MF exports — visibility is a UI-only flag
+     *  meant for previewing the model without a region's overlay. Mirrors the
+     *  eye-icon button in the paint panel's region list. Returns
+     *  `{ id, visible }` on success or `{ error }` if no region matches. */
+    setRegionVisibility(id: number, visible: boolean) {
+      if (!Number.isFinite(id)) return { error: 'setRegionVisibility(id, visible) requires a finite integer id from listRegions()' };
+      if (typeof visible !== 'boolean') return { error: 'setRegionVisibility(id, visible): visible must be a boolean (true | false)' };
+      const ok = setRegionVisibility(id, visible);
+      if (!ok) return { error: `No region with id=${id}. Call listRegions() to see current ids.` };
+      scheduleColorRefresh();
+      return { id, visible };
+    },
+
+    /** Shorthand for `setRegionVisibility(id, false)`. */
+    hideRegion(id: number) {
+      return this.setRegionVisibility(id, false);
+    },
+
+    /** Shorthand for `setRegionVisibility(id, true)`. */
+    showRegion(id: number) {
+      return this.setRegionVisibility(id, true);
+    },
+
+    /** Read or write the bucket-tool tolerance used by the interactive paint
+     *  panel and by `paintRegion` when no `tolerance` argument is passed.
+     *  Value is the cosine of the maximum allowed bend angle (1 = strict
+     *  coplanar, -1 = whole connected component). Use the angle form via
+     *  `paintRegion({tolerance})` if you'd rather think in degrees.
+     *  Returns the previous + new value on set. */
+    getBucketTolerance() {
+      return { tolerance: getPaintBucketTolerance() };
+    },
+    setBucketTolerance(tolerance: number) {
+      if (typeof tolerance !== 'number' || !Number.isFinite(tolerance)) {
+        return { error: 'setBucketTolerance(tolerance): tolerance must be a finite number in [-1, 1] (cosine of max bend angle)' };
+      }
+      const clamped = Math.max(-1, Math.min(1, tolerance));
+      const previous = getPaintBucketTolerance();
+      setPaintBucketTolerance(clamped);
+      return { previous, tolerance: clamped };
+    },
+
+    /** Read or write the brush-tool radius (in mesh units) used by the
+     *  interactive paint panel. `0` means single-triangle (legacy behavior);
+     *  any positive value expands the brush footprint to every triangle whose
+     *  centroid lies within the radius of the click/drag point.
+     *  Programmatic painters should use `paintNear({point, radius})` or
+     *  `paintFaces({triangleIds})` — this setter only changes the UI brush. */
+    getBrushSize() {
+      return { radius: getPaintBrushRadius() };
+    },
+    setBrushSize(radius: number) {
+      if (typeof radius !== 'number' || !Number.isFinite(radius) || radius < 0) {
+        return { error: 'setBrushSize(radius): radius must be a non-negative finite number (mesh units)' };
+      }
+      const previous = getPaintBrushRadius();
+      setPaintBrushRadius(radius);
+      return { previous, radius };
     },
 
     /** Undo the most recent paint operation. The removed region goes onto
@@ -4788,6 +4810,7 @@ async function main() {
         'paintNearestRegion': { signature: 'paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) -- Snap seed to nearest face, then paint coplanar region', docs: '/ai.md#color-regions' },
         'paintNear':       { signature: 'paintNear({point, radius, normalCone?, color, name?}) -- Paint triangles whose centroid is within `radius` of `point`. Predictable, no flood-fill tolerance to tune.', docs: '/ai.md#color-regions' },
         'paintInBox':      { signature: 'paintInBox({box, normalCone?, color, name?}) -- Paint triangles whose centroid is inside an axis-aligned box (and optional normal cone).', docs: '/ai.md#color-regions' },
+        'paintInOrientedBox': { signature: 'paintInOrientedBox({box: {center, size, quaternion?}, color, name?}) -- Paint triangles whose centroid is inside a rotated oriented box. Same selector as the UI Box tool.', docs: '/ai.md#color-regions' },
         'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?}) -- Paint specific triangle indices', docs: '/ai.md#color-regions' },
         'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?}) -- Paint planar slab range', docs: '/ai.md#color-regions' },
         'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai.md#color-regions' },
@@ -4806,8 +4829,15 @@ async function main() {
         'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai.md#color-regions' },
         'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai.md#color-regions' },
         'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai.md#color-regions' },
+        'setRegionVisibility': { signature: 'setRegionVisibility(id, visible) -- Show/hide ONE region in the viewport. Hidden regions still export.', docs: '/ai.md#color-regions' },
+        'hideRegion':      { signature: 'hideRegion(id) -- Shorthand for setRegionVisibility(id, false).', docs: '/ai.md#color-regions' },
+        'showRegion':      { signature: 'showRegion(id) -- Shorthand for setRegionVisibility(id, true).', docs: '/ai.md#color-regions' },
         'undoLastPaint':   { signature: 'undoLastPaint() -- Undo the most recent paint op. Removed region goes on a redo stack.', docs: '/ai.md#color-regions' },
         'redoLastPaint':   { signature: 'redoLastPaint() -- Reapply the most recently undone paint op.', docs: '/ai.md#color-regions' },
+        'getBucketTolerance': { signature: 'getBucketTolerance() -- Read the bucket flood-fill tolerance (cosine of max bend angle).', docs: '/ai.md#color-regions' },
+        'setBucketTolerance': { signature: 'setBucketTolerance(tolerance) -- Set the bucket flood-fill tolerance (-1..1). Affects the UI bucket tool and the default for paintRegion.', docs: '/ai.md#color-regions' },
+        'getBrushSize':    { signature: 'getBrushSize() -- Read the UI brush radius (mesh units). 0 = single triangle.', docs: '/ai.md#color-regions' },
+        'setBrushSize':    { signature: 'setBrushSize(radius) -- Set the UI brush radius (mesh units, >= 0). Affects only the interactive brush tool; programmatic painting uses paintNear / paintFaces.', docs: '/ai.md#color-regions' },
         // Annotations
         'listAnnotations':    { signature: 'listAnnotations() -- List freehand strokes -> [{id, color, width, points}]', docs: '/ai.md#annotations' },
         'listTextAnnotations':{ signature: 'listTextAnnotations() -- List pinned text labels -> [{id, text, color, fontSizePx, anchor}]', docs: '/ai.md#annotations' },
@@ -5602,9 +5632,20 @@ function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'load
   }
 }
 
+interface ConfirmOptions {
+  /** Optional bold title above the message. */
+  title?: string;
+  /** Label for the confirm button. Default 'Continue'. */
+  confirmLabel?: string;
+  /** Label for the cancel button. Default 'Cancel'. */
+  cancelLabel?: string;
+}
+
 /** Modal confirmation dialog with semi-transparent backdrop overlay.
- *  Returns a Promise that resolves true (Continue) or false (Cancel / Escape / click overlay). */
-function showInlineConfirm(_container: HTMLElement, message: string): Promise<boolean> {
+ *  Message preserves newlines (single `\n` becomes a soft break, `\n\n` a
+ *  paragraph break) so callers can lay out multi-line prompts cleanly.
+ *  Returns a Promise that resolves true (confirm) or false (cancel / Escape / click overlay). */
+function showInlineConfirm(_container: HTMLElement, message: string, options: ConfirmOptions = {}): Promise<boolean> {
   return new Promise((resolve) => {
     // Remove any existing modal
     document.querySelector('.confirm-modal-overlay')?.remove();
@@ -5613,12 +5654,22 @@ function showInlineConfirm(_container: HTMLElement, message: string): Promise<bo
     const overlay = document.createElement('div');
     overlay.className = 'confirm-modal-overlay fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center';
 
-    // Modal box
+    // Modal box — wider than the default 'max-w-sm' so multi-line prompts
+    // don't reflow into long thin columns.
     const modal = document.createElement('div');
-    modal.className = 'bg-zinc-800 border border-zinc-600 rounded-xl shadow-2xl p-5 max-w-sm mx-4 animate-modal-in';
+    modal.className = 'bg-zinc-800 border border-zinc-600 rounded-xl shadow-2xl p-5 max-w-md mx-4 animate-modal-in';
+
+    if (options.title) {
+      const title = document.createElement('h2');
+      title.className = 'text-zinc-100 text-base font-semibold mb-2';
+      title.textContent = options.title;
+      modal.appendChild(title);
+    }
 
     const msg = document.createElement('p');
-    msg.className = 'text-zinc-200 text-sm leading-relaxed mb-5';
+    // `whitespace-pre-line` preserves \n as line breaks while still collapsing
+    // other whitespace runs, so single-line callers behave unchanged.
+    msg.className = 'text-zinc-200 text-sm leading-relaxed mb-5 whitespace-pre-line';
     msg.textContent = message;
 
     const btnGroup = document.createElement('div');
@@ -5626,11 +5677,11 @@ function showInlineConfirm(_container: HTMLElement, message: string): Promise<bo
 
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'px-4 py-1.5 rounded-lg text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors';
-    cancelBtn.textContent = 'Cancel';
+    cancelBtn.textContent = options.cancelLabel ?? 'Cancel';
 
     const continueBtn = document.createElement('button');
     continueBtn.className = 'px-4 py-1.5 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors';
-    continueBtn.textContent = 'Continue';
+    continueBtn.textContent = options.confirmLabel ?? 'Continue';
 
     btnGroup.appendChild(cancelBtn);
     btnGroup.appendChild(continueBtn);

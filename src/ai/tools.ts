@@ -2,6 +2,17 @@
 // window.partwright. The set of tools the model receives is filtered by the
 // per-session scope toggles (see settings.ts). Disabled tools are removed
 // from the request payload entirely — the model can't call what isn't there.
+//
+// Flow per tool call:
+//   1. chatLoop.ts sends user input + history + system prompt to anthropic.ts.
+//   2. anthropic.ts streams back a tool_use content block.
+//   3. chatLoop.ts calls executeTool(name, input) defined in this file.
+//   4. executeTool reaches into window.partwright (built in main.ts) and
+//      wraps the return value into a tool_result block.
+//   5. The result is appended to history and fed back to Claude next turn.
+//
+// Argument validation lives on the API side (src/validation/apiValidation.ts)
+// so the same checks apply to console/MCP callers, not just the model.
 
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
@@ -204,6 +215,30 @@ const ALL_TOOLS: ToolDefinition[] = [
       },
       required: ['seed', 'color'],
     },
+  },
+  {
+    name: 'applyFreePush',
+    description: 'Push the vertex of a frozen-mesh triangle along a surface normal. Only works when the current version is a frozen-mesh version (created by importing a mesh file). Use renderView → probePixel to get {triangleIndex, hitPoint, normal}, then call applyFreePush. The step defaults to the tool\'s push-step setting (default 1 world unit); pass stepScale to multiply it. Negative stepScale pulls inward. Returns {ok: true} or {error}. The push is saved immediately to the frozen-mesh blob — undo via undoFreePush.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        triangleIndex: { type: 'integer', description: 'Triangle index from probePixel (the triangleId field).' },
+        hitPoint: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'World-space hit point from probePixel (point field).' },
+        normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Surface normal from probePixel (normal field). Push direction.' },
+        stepScale: { type: 'number', description: 'Multiply the default push step by this factor. Negative values pull inward. Default 1.' },
+      },
+      required: ['triangleIndex', 'hitPoint', 'normal'],
+    },
+  },
+  {
+    name: 'undoFreePush',
+    description: 'Undo the most recent free-mesh push. The undone push goes onto a redo stack — call redoFreePush() to re-apply. Returns {error} if the stack is empty. Redo stack is cleared by any new push or version navigation.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'redoFreePush',
+    description: 'Redo the most recently undone free-mesh push. Returns {error} if the redo stack is empty.',
+    input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'getFeatureCentroids',
@@ -491,6 +526,9 @@ const ALWAYS_AVAILABLE = new Set([
 const RUN_GATED = new Set(['runCode']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors']);
+/** Free-mesh push tools are gated by saveVersions — each push overwrites the
+ *  stored mesh blob immediately (same as the mouse-click path). */
+const FREE_MESH_GATED = new Set(['applyFreePush', 'undoFreePush', 'redoFreePush']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -508,6 +546,7 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
       return t.name === 'loadVersion' ? toggles.scope.saveVersions : (toggles.scope.runCode && toggles.scope.saveVersions);
     }
     if (PAINT_GATED.has(t.name)) return toggles.scope.paintFaces;
+    if (FREE_MESH_GATED.has(t.name)) return toggles.scope.saveVersions;
     if (VIEWS_GATED.has(t.name)) return toggles.vision.views;
     return false;
   });
@@ -672,6 +711,12 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.probePixel(input);
     case 'paintConnected':
       return api.paintConnected(input);
+    case 'applyFreePush':
+      return api.applyFreePush(input);
+    case 'undoFreePush':
+      return api.undoFreePush();
+    case 'redoFreePush':
+      return api.redoFreePush();
     case 'getFeatureCentroids':
       return api.getFeatureCentroids(input);
     case 'paintExplain': {

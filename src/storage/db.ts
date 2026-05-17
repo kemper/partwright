@@ -69,6 +69,10 @@ export interface Version {
   /** Serialized {@link MeshData} blob — only present when `source === 'mesh'`.
    *  Format is defined by `src/sculpt/meshIO.ts` (`serializeMeshData`). */
   meshBlob?: ArrayBuffer;
+  /** External meshes imported into this version (STL today). Exposed to the
+   *  sandbox as `api.imports[i]` so user code can call `Manifold.ofMesh(...)`.
+   *  Kept as `unknown[]` here to preserve db-layer isolation. */
+  importedMeshes?: unknown[];
 }
 
 export interface SessionNote {
@@ -403,6 +407,8 @@ export async function saveVersion(
    *  and stores the serialized MeshData blob. Omit for normal code-driven
    *  versions (the default). */
   meshBlob?: ArrayBuffer,
+  /** External meshes imported into this version (opaque to the db layer). */
+  importedMeshes?: unknown[],
 ): Promise<Version> {
   const versions = await listVersions(sessionId);
   const nextIndex = versions.length > 0 ? Math.max(...versions.map(v => v.index)) + 1 : 1;
@@ -419,6 +425,7 @@ export async function saveVersion(
     ...(notes ? { notes } : {}),
     ...(annotations && annotations.length > 0 ? { annotations } : {}),
     ...(meshBlob ? { source: 'mesh' as const, meshBlob } : {}),
+    ...(importedMeshes && importedMeshes.length > 0 ? { importedMeshes } : {}),
   };
 
   const store = await tx('versions', 'readwrite');

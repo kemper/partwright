@@ -15,6 +15,10 @@ export interface ModalShellOptions {
   /** When true, applies `max-h-[80vh]` + `overflow-auto` so long bodies
    *  (e.g. compaction proposal with many notes) scroll. */
   scrollable?: boolean;
+  /** Called when the shell is dismissed by Escape, click-outside, the ✕
+   *  button, or a programmatic `close()`. Promise-returning modals use
+   *  this to resolve with a cancellation value. Fires exactly once. */
+  onClose?: () => void;
 }
 
 export interface ModalShell {
@@ -82,6 +86,7 @@ export function createModalShell(opts: ModalShellOptions): ModalShell {
     document.removeEventListener('keydown', escHandler);
     overlay.remove();
     if (currentModal === overlay) currentModal = null;
+    opts.onClose?.();
   }
 
   overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
