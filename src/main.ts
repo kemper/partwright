@@ -1096,12 +1096,15 @@ async function main() {
     // a Baby Yoda / Eiffel Tower scan just want to look at it, not boolean-op it.
     const accepted = await showInlineConfirm(
       editorUI,
-      `"${file.name}" can't be imported as a manifold.\n\n` +
-      `${probe.numTri.toLocaleString()} triangles, ${probe.numVert.toLocaleString()} vertices. ` +
-      `Tried weld tolerances up to ${maxTried.toExponential(1)}; Manifold reports "${manifoldError}". ` +
-      `This is typical for sculpted or scanned models (self-intersections, open edges, T-junctions).\n\n` +
-      `Import as render-only? You'll see and export the mesh, but boolean operations, paint, and cross-sections won't work. ` +
-      `For full editing, repair the mesh first in MeshLab or Blender.`
+      `${file.name} won't form a clean manifold — typical for sculpted or scanned models with self-intersections, open edges, or T-junctions.\n\n` +
+      `You can still import it as render-only: the mesh displays and exports normally, but boolean operations, paint, and cross-sections won't work.\n\n` +
+      `For full editing, repair the mesh first in MeshLab or Blender, then re-import.\n\n` +
+      `${probe.numTri.toLocaleString()} triangles · ${probe.numVert.toLocaleString()} vertices · tried weld tolerances up to ${maxTried.toExponential(1)} · ${manifoldError}`,
+      {
+        title: 'Import as render-only?',
+        confirmLabel: 'Import render-only',
+        cancelLabel: 'Cancel',
+      }
     );
     if (!accepted) return null;
 
@@ -5599,9 +5602,20 @@ function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'load
   }
 }
 
+interface ConfirmOptions {
+  /** Optional bold title above the message. */
+  title?: string;
+  /** Label for the confirm button. Default 'Continue'. */
+  confirmLabel?: string;
+  /** Label for the cancel button. Default 'Cancel'. */
+  cancelLabel?: string;
+}
+
 /** Modal confirmation dialog with semi-transparent backdrop overlay.
- *  Returns a Promise that resolves true (Continue) or false (Cancel / Escape / click overlay). */
-function showInlineConfirm(_container: HTMLElement, message: string): Promise<boolean> {
+ *  Message preserves newlines (single `\n` becomes a soft break, `\n\n` a
+ *  paragraph break) so callers can lay out multi-line prompts cleanly.
+ *  Returns a Promise that resolves true (confirm) or false (cancel / Escape / click overlay). */
+function showInlineConfirm(_container: HTMLElement, message: string, options: ConfirmOptions = {}): Promise<boolean> {
   return new Promise((resolve) => {
     // Remove any existing modal
     document.querySelector('.confirm-modal-overlay')?.remove();
@@ -5610,12 +5624,22 @@ function showInlineConfirm(_container: HTMLElement, message: string): Promise<bo
     const overlay = document.createElement('div');
     overlay.className = 'confirm-modal-overlay fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center';
 
-    // Modal box
+    // Modal box — wider than the default 'max-w-sm' so multi-line prompts
+    // don't reflow into long thin columns.
     const modal = document.createElement('div');
-    modal.className = 'bg-zinc-800 border border-zinc-600 rounded-xl shadow-2xl p-5 max-w-sm mx-4 animate-modal-in';
+    modal.className = 'bg-zinc-800 border border-zinc-600 rounded-xl shadow-2xl p-5 max-w-md mx-4 animate-modal-in';
+
+    if (options.title) {
+      const title = document.createElement('h2');
+      title.className = 'text-zinc-100 text-base font-semibold mb-2';
+      title.textContent = options.title;
+      modal.appendChild(title);
+    }
 
     const msg = document.createElement('p');
-    msg.className = 'text-zinc-200 text-sm leading-relaxed mb-5';
+    // `whitespace-pre-line` preserves \n as line breaks while still collapsing
+    // other whitespace runs, so single-line callers behave unchanged.
+    msg.className = 'text-zinc-200 text-sm leading-relaxed mb-5 whitespace-pre-line';
     msg.textContent = message;
 
     const btnGroup = document.createElement('div');
@@ -5623,11 +5647,11 @@ function showInlineConfirm(_container: HTMLElement, message: string): Promise<bo
 
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'px-4 py-1.5 rounded-lg text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors';
-    cancelBtn.textContent = 'Cancel';
+    cancelBtn.textContent = options.cancelLabel ?? 'Cancel';
 
     const continueBtn = document.createElement('button');
     continueBtn.className = 'px-4 py-1.5 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors';
-    continueBtn.textContent = 'Continue';
+    continueBtn.textContent = options.confirmLabel ?? 'Continue';
 
     btnGroup.appendChild(cancelBtn);
     btnGroup.appendChild(continueBtn);
