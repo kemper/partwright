@@ -178,6 +178,12 @@ default 1, negative = deflate). "smooth" takes \`iterations\`
 tighten the coplanar region selection (default 0.9995). The tool
 rejects non-manifold results — if you get that error, try a smaller
 distance / fewer iterations / different seed.
+Undo/redo: undoLastDeformer() removes the last deformer and saves a
+new version (the undone op goes onto a redo stack). redoDeformer()
+re-applies it. Both return {error} if the stack is empty. The redo
+stack is in-memory — page reload or version navigation clears it, so
+call saveSculptedVersion before navigating if you want the state
+preserved.
 
 For planning paint targets without committing, prefer
 getFeatureCentroids() over getMeshSummary — it omits the triangleIds
@@ -246,7 +252,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
     `Model: ${toggles.model}`,
     `Auto-retry on tool error: ${toggles.autoRetry}`,
     `Iteration cap (tool round-trips this turn): ${capLabel}. Pace your tool calls accordingly — if the cap is low, batch related work and prefer one-shot tools like paintComponent or paintInBox over verify-then-paint loops.`,
-    `Spend cap (USD this turn): ${spendLabel}. Vision tool calls (renderView, paintPreview withImage) are the most expensive — skip them when stats alone are enough.`,
+    `Spend cap (total USD this session): ${spendLabel}. Prior turns in this session count toward the same budget, so the cap can fire mid-turn even on a cheap iteration. Vision tool calls (renderView, paintPreview withImage) are the most expensive — skip them when stats alone are enough.`,
   ];
   if (restrictions.length > 0) {
     lines.push('');

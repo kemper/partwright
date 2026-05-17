@@ -2,6 +2,17 @@
 // window.partwright. The set of tools the model receives is filtered by the
 // per-session scope toggles (see settings.ts). Disabled tools are removed
 // from the request payload entirely — the model can't call what isn't there.
+//
+// Flow per tool call:
+//   1. chatLoop.ts sends user input + history + system prompt to anthropic.ts.
+//   2. anthropic.ts streams back a tool_use content block.
+//   3. chatLoop.ts calls executeTool(name, input) defined in this file.
+//   4. executeTool reaches into window.partwright (built in main.ts) and
+//      wraps the return value into a tool_result block.
+//   5. The result is appended to history and fed back to Claude next turn.
+//
+// Argument validation lives on the API side (src/validation/apiValidation.ts)
+// so the same checks apply to console/MCP callers, not just the model.
 
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
@@ -213,6 +224,16 @@ const ALL_TOOLS: ToolDefinition[] = [
   {
     name: 'listAppliedDeformers',
     description: 'Return the deformers stored on the currently loaded version, in apply order: {id, kind, params, regionDescriptor, order}. Useful for verifying state before chaining another applyDeformer call, or for understanding what a loaded session already has applied.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'undoLastDeformer',
+    description: 'Remove the most recently applied deformer and save a new version with the shortened deformer chain. The undone deformer is pushed onto an in-memory redo stack so it can be re-applied with redoDeformer. Returns { versionId, undone: {kind, params} } or { error } if there are no deformers to undo. The redo stack is in-memory only and is cleared by any new applyDeformer call or version navigation.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'redoDeformer',
+    description: 'Re-apply the most recently undone deformer (from undoLastDeformer) and save a new version. Returns { versionId, redone: {kind, params} } or { error } if the redo stack is empty. The redo stack is cleared by any new applyDeformer call or version navigation.',
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -528,7 +549,7 @@ const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInB
  *  mesh, so they require both runCode (to have a mesh in the first place)
  *  and saveVersions (to persist the deformer). Read-only listAppliedDeformers
  *  is in ALWAYS_AVAILABLE above. */
-const SCULPT_GATED = new Set(['applyDeformer']);
+const SCULPT_GATED = new Set(['applyDeformer', 'undoLastDeformer', 'redoDeformer']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -715,6 +736,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return await api.applyDeformer(input);
     case 'listAppliedDeformers':
       return api.listAppliedDeformers();
+    case 'undoLastDeformer':
+      return await api.undoLastDeformer();
+    case 'redoDeformer':
+      return await api.redoDeformer();
     case 'getFeatureCentroids':
       return api.getFeatureCentroids(input);
     case 'paintExplain': {

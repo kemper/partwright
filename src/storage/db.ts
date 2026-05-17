@@ -56,6 +56,10 @@ export interface Version {
    *  this version was saved. Shape matches `SerializedAnnotation[]` from the
    *  annotations module — kept as `unknown[]` here to preserve db-layer isolation. */
   annotations?: unknown[];
+  /** External meshes imported into this version (STL today). Exposed to the
+   *  sandbox as `api.imports[i]` so user code can call `Manifold.ofMesh(...)`.
+   *  Kept as `unknown[]` here to preserve db-layer isolation. */
+  importedMeshes?: unknown[];
 }
 
 export interface SessionNote {
@@ -386,6 +390,8 @@ export async function saveVersion(
   timestamp?: number,
   /** Snapshot of annotations at save time (opaque to the db layer). */
   annotations?: unknown[],
+  /** External meshes imported into this version (opaque to the db layer). */
+  importedMeshes?: unknown[],
 ): Promise<Version> {
   const versions = await listVersions(sessionId);
   const nextIndex = versions.length > 0 ? Math.max(...versions.map(v => v.index)) + 1 : 1;
@@ -401,6 +407,7 @@ export async function saveVersion(
     timestamp: timestamp ?? Date.now(),
     ...(notes ? { notes } : {}),
     ...(annotations && annotations.length > 0 ? { annotations } : {}),
+    ...(importedMeshes && importedMeshes.length > 0 ? { importedMeshes } : {}),
   };
 
   const store = await tx('versions', 'readwrite');
