@@ -61,12 +61,24 @@ export function projectionRange(mesh: MeshData, normal: [number, number, number]
   return { min, max };
 }
 
-/** Find all triangles whose centroid lies inside the slab. */
+export type SlabCoverageMode = 'centroid' | 'fully_inside' | 'any_vertex_inside';
+
+/** Find all triangles inside the slab. Coverage mode controls which
+ *  point on the triangle has to satisfy the slab containment test:
+ *
+ *  - `centroid` (default): the triangle's centroid lies in the slab.
+ *    Cheapest, matches historical behavior, but lets long radial fan
+ *    triangles "bleed" outside the slab when their centroid happens
+ *    to fall in range while their vertices extend further.
+ *  - `fully_inside`: all 3 vertices lie in the slab.
+ *  - `any_vertex_inside`: at least one vertex lies in the slab.
+ */
 export function findSlabTriangles(
   mesh: MeshData,
   normal: [number, number, number],
   offset: number,
   thickness: number,
+  coverage: SlabCoverageMode = 'centroid',
 ): Set<number> {
   const result = new Set<number>();
   if (thickness <= 0) return result;
@@ -74,11 +86,23 @@ export function findSlabTriangles(
   const [nx, ny, nz] = normalize(normal);
   const lo = offset;
   const hi = offset + thickness;
+  const { triVerts, vertProperties, numProp, numTri } = mesh;
 
-  for (let t = 0; t < mesh.numTri; t++) {
-    const c = getTriangleCentroid(t, mesh);
-    const d = c[0] * nx + c[1] * ny + c[2] * nz;
-    if (d >= lo && d <= hi) result.add(t);
+  for (let t = 0; t < numTri; t++) {
+    if (coverage === 'centroid') {
+      const c = getTriangleCentroid(t, mesh);
+      const d = c[0] * nx + c[1] * ny + c[2] * nz;
+      if (d >= lo && d <= hi) result.add(t);
+      continue;
+    }
+    const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+    const dA = vertProperties[v0 * numProp] * nx + vertProperties[v0 * numProp + 1] * ny + vertProperties[v0 * numProp + 2] * nz;
+    const dB = vertProperties[v1 * numProp] * nx + vertProperties[v1 * numProp + 1] * ny + vertProperties[v1 * numProp + 2] * nz;
+    const dC = vertProperties[v2 * numProp] * nx + vertProperties[v2 * numProp + 1] * ny + vertProperties[v2 * numProp + 2] * nz;
+    const inA = dA >= lo && dA <= hi;
+    const inB = dB >= lo && dB <= hi;
+    const inC = dC >= lo && dC <= hi;
+    if (coverage === 'fully_inside' ? (inA && inB && inC) : (inA || inB || inC)) result.add(t);
   }
 
   return result;
