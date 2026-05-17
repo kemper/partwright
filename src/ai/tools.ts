@@ -184,6 +184,38 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'applyDeformer',
+    description: 'Apply a procedural deformer (inflate or smooth) to a coplanar region of the current mesh. The region is selected by raycasting from a seed point along a seed normal — use probePixel first to find these from a rendered view. Saves a new version automatically; the version becomes locked (read-only, fork to edit code). Calling applyDeformer again creates a NEW version on top of the previous one — the deformer stack replays in order on reload. Validates the result with Manifold.ofMesh and rejects non-manifold output.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        seedPoint: {
+          type: 'object',
+          description: 'World-space surface hit. Use the `point` from probePixel.',
+          properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } },
+          required: ['x', 'y', 'z'],
+        },
+        seedNormal: {
+          type: 'object',
+          description: 'Surface normal at the seed. Use the `normal` from probePixel.',
+          properties: { x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } },
+          required: ['x', 'y', 'z'],
+        },
+        deformer: { type: 'string', enum: ['inflate', 'smooth'], description: '"inflate" pushes region vertices along their averaged normals; "smooth" Laplacian-averages them with their region neighbours, boundary pinned.' },
+        distance: { type: 'number', description: 'Inflate only. World units, positive = outward, negative = inward (deflate). Default 1.' },
+        iterations: { type: 'integer', description: 'Smooth only. Number of Laplacian iterations (1..10 typical). Default 3.' },
+        tolerance: { type: 'number', description: 'Region coplanarity threshold as cosine of max bend angle, 0..1. Default 0.9995 (≈1.8°). Lower values include more curved/bent neighbouring faces.' },
+        label: { type: 'string', description: 'Optional gallery label for the saved version. Auto-generated (e.g. "inflate +2.00", "smooth ×3") when omitted.' },
+      },
+      required: ['seedPoint', 'seedNormal', 'deformer'],
+    },
+  },
+  {
+    name: 'listAppliedDeformers',
+    description: 'Return the deformers stored on the currently loaded version, in apply order: {id, kind, params, regionDescriptor, order}. Useful for verifying state before chaining another applyDeformer call, or for understanding what a loaded session already has applied.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'paintConnected',
     description: 'Flood-fill paint from a surface seed, gated by deviation from the SEED normal (not adjacent-face). This is what paintRegion should have been on smooth meshes — paintRegion compares adjacent pairs and is bimodal (all or nothing) on capsules / spheres / organic surfaces, paintConnected keeps the reference fixed at the seed so 30° gives you "this region of the surface facing roughly this way", regardless of how curved the connecting topology is. Best paired with probePixel — probe a pixel in a render, hand the {point, normal} straight to paintConnected.',
     input_schema: {
@@ -486,11 +518,17 @@ const ALWAYS_AVAILABLE = new Set([
   'probePixel',
   'paintPreview',
   'paintExplain',
+  'listAppliedDeformers',
 ]);
 
 const RUN_GATED = new Set(['runCode']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors']);
+/** Sculpt deformer tools save a new locked version and mutate the in-memory
+ *  mesh, so they require both runCode (to have a mesh in the first place)
+ *  and saveVersions (to persist the deformer). Read-only listAppliedDeformers
+ *  is in ALWAYS_AVAILABLE above. */
+const SCULPT_GATED = new Set(['applyDeformer']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -508,6 +546,7 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
       return t.name === 'loadVersion' ? toggles.scope.saveVersions : (toggles.scope.runCode && toggles.scope.saveVersions);
     }
     if (PAINT_GATED.has(t.name)) return toggles.scope.paintFaces;
+    if (SCULPT_GATED.has(t.name)) return toggles.scope.runCode && toggles.scope.saveVersions;
     if (VIEWS_GATED.has(t.name)) return toggles.vision.views;
     return false;
   });
@@ -672,6 +711,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.probePixel(input);
     case 'paintConnected':
       return api.paintConnected(input);
+    case 'applyDeformer':
+      return await api.applyDeformer(input);
+    case 'listAppliedDeformers':
+      return api.listAppliedDeformers();
     case 'getFeatureCentroids':
       return api.getFeatureCentroids(input);
     case 'paintExplain': {

@@ -102,7 +102,7 @@ import {
   deserialize as deserializeDeformers,
 } from './sculpt/deformerStore';
 import { applyInflate, applySmooth } from './sculpt/deformers';
-import type { SerializedDeformer, DeformerCoplanarRegion } from './sculpt/types';
+import type { SerializedDeformer, DeformerCoplanarRegion, DeformerKind, DeformerParams as DeformerParamsAny } from './sculpt/types';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle } from './color/adjacency';
 import { findSlabTriangles } from './color/slabPaint';
 import { computeFaceGroups } from './color/faceGroups';
@@ -819,6 +819,24 @@ function assertEnum<T extends string>(val: unknown, allowed: readonly T[], param
     throw new ValidationError(`${paramName} must be one of: ${allowed.map(a => `"${a}"`).join(' | ')}. Got ${describeValue(val)}. See /ai.md#argument-validation`);
   }
   return val as T;
+}
+
+/** Validate an `{x, y, z}` object of finite numbers. Throws ValidationError
+ *  with a chatty pointer. Used by the AI-facing applyDeformer tool, where
+ *  the model passes coordinates as objects rather than tuples. */
+function assertXYZ(val: unknown, paramName: string): { x: number; y: number; z: number } {
+  if (val === undefined || val === null || typeof val !== 'object' || Array.isArray(val)) {
+    throw new ValidationError(`${paramName} must be an {x, y, z} object of finite numbers, got ${describeValue(val)}. See /ai.md#argument-validation`);
+  }
+  const obj = val as Record<string, unknown>;
+  assertNoUnknownKeys(obj, ['x', 'y', 'z'], paramName);
+  for (const k of ['x', 'y', 'z'] as const) {
+    const c = obj[k];
+    if (typeof c !== 'number' || !Number.isFinite(c)) {
+      throw new ValidationError(`${paramName}.${k} must be a finite number, got ${describeValue(c)}. See /ai.md#argument-validation`);
+    }
+  }
+  return { x: obj.x as number, y: obj.y as number, z: obj.z as number };
 }
 
 /** Validate a fixed-length tuple of numbers (e.g. [x,y,z]). */
@@ -1748,28 +1766,15 @@ async function main() {
   // Sculpt: apply the current deformer to the selected region. Saves a new
   // version and locks the editor (same lifecycle as paint).
   setSculptApplyHandler(async () => {
-    if (!currentMeshData) return;
     const selection = getSculptSelection();
     if (!selection || selection.triangles.size === 0) return;
 
     const kind = getSculptKind();
-    const params = kind === 'inflate'
+    const params: DeformerParamsAny = kind === 'inflate'
       ? { distance: getInflateDistance() }
       : { iterations: getSmoothIterations() };
 
-    const baseMesh = currentMeshData;
-    const trial = kind === 'inflate'
-      ? applyInflate(baseMesh, selection.triangles, (params as { distance: number }).distance)
-      : applySmooth(baseMesh, selection.triangles, (params as { iterations: number }).iterations);
-
-    if (!validateMeshAsManifold(trial)) {
-      console.warn('Sculpt: deformer produced a non-manifold result; aborting.');
-      window.alert('Sculpt: that deformer produced a non-manifold mesh. Try a smaller value or a different region.');
-      return;
-    }
-
-    // Persist the deformer descriptor on the store, then re-render.
-    addDeformer({
+    const result = await applyDeformerAndSave({
       kind,
       regionDescriptor: {
         kind: 'coplanar',
@@ -1778,6 +1783,70 @@ async function main() {
         normalTolerance: selection.tolerance,
       },
       params,
+      label: 'sculpted',
+    });
+
+    if ('error' in result) {
+      console.warn('Sculpt: applyDeformerAndSave failed —', result.error);
+      window.alert(`Sculpt: ${result.error}`);
+    }
+
+    clearSculptSelection();
+    syncLockState();
+  });
+
+  /** Shared apply path used by both the UI Sculpt button and the AI
+   *  `applyDeformer` tool. Resolves the region descriptor against the
+   *  current mesh, runs the named deformer, validates the result with
+   *  Manifold.ofMesh, persists the descriptor on the deformerStore, updates
+   *  the live mesh + paint/sculpt adjacency, and saves a new version.
+   *
+   *  Returns `{ error }` on any validation failure or non-manifold result —
+   *  callers should not throw the error to the user. */
+  async function applyDeformerAndSave(opts: {
+    kind: DeformerKind;
+    regionDescriptor: DeformerCoplanarRegion;
+    params: DeformerParamsAny;
+    label?: string;
+  }): Promise<
+    | { error: string }
+    | {
+        versionId: string | null;
+        affectedTriangles: number;
+        deformer: { id: number; kind: DeformerKind; params: DeformerParamsAny; regionDescriptor: DeformerCoplanarRegion };
+      }
+  > {
+    if (!currentMeshData) return { error: 'No geometry loaded. Run code first.' };
+
+    const baseMesh = currentMeshData;
+    const adjacency = buildAdjacency(baseMesh);
+    const triangles = resolveDeformerRegion(opts.regionDescriptor, baseMesh, adjacency);
+    if (triangles.size === 0) {
+      return { error: 'Region selection found zero triangles — seedPoint/seedNormal did not raycast onto the mesh, or the bucket tolerance was too tight.' };
+    }
+
+    let trial: MeshData;
+    try {
+      if (opts.kind === 'inflate') {
+        trial = applyInflate(baseMesh, triangles, (opts.params as { distance: number }).distance);
+      } else if (opts.kind === 'smooth') {
+        trial = applySmooth(baseMesh, triangles, (opts.params as { iterations: number }).iterations);
+      } else {
+        return { error: `Unknown deformer kind: ${String(opts.kind)}` };
+      }
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+
+    if (!validateMeshAsManifold(trial)) {
+      return { error: 'Deformer produced a non-manifold mesh. Try a smaller distance / fewer iterations, or pick a different region.' };
+    }
+
+    // Persist the deformer descriptor on the store.
+    const stored = addDeformer({
+      kind: opts.kind,
+      regionDescriptor: opts.regionDescriptor,
+      params: opts.params,
     });
 
     // Update in-memory mesh to the deformed result so paint/picks/exports
@@ -1791,15 +1860,39 @@ async function main() {
     updateSculptMesh(trial);
 
     // Save a new version with the deformer baked into geometryData.deformers.
+    let savedId: string | null = null;
     if (getState().session) {
       const thumbnail = await captureThumbnail();
       const geoData = enrichGeometryDataWithDeformers(enrichGeometryDataWithColors(getGeometryDataObj()));
-      await saveVersion(getValue(), geoData, thumbnail, 'sculpted', undefined, { force: true });
+      const savedLabel = opts.label ?? autoDeformerLabel(opts.kind, opts.params);
+      const saved = await saveVersion(getValue(), geoData, thumbnail, savedLabel, undefined, { force: true });
+      savedId = saved?.id ?? null;
     }
 
-    clearSculptSelection();
-    syncLockState();
-  });
+    return {
+      versionId: savedId,
+      affectedTriangles: triangles.size,
+      deformer: {
+        id: stored.id,
+        kind: stored.kind,
+        params: stored.params as DeformerParamsAny,
+        regionDescriptor: stored.regionDescriptor as DeformerCoplanarRegion,
+      },
+    };
+  }
+
+  function autoDeformerLabel(kind: DeformerKind, params: DeformerParamsAny): string {
+    if (kind === 'inflate') {
+      const d = (params as { distance: number }).distance;
+      const sign = d >= 0 ? '+' : '';
+      return `inflate ${sign}${d.toFixed(2)}`;
+    }
+    if (kind === 'smooth') {
+      const n = (params as { iterations: number }).iterations;
+      return `smooth ×${n}`;
+    }
+    return 'sculpted';
+  }
 
   // When annotations change (stroke added/removed/cleared) or are toggled,
   // refresh the offscreen-rendered panes (multiview + elevations) so they
@@ -3405,6 +3498,90 @@ async function main() {
       return { id: region.id, name: region.name, triangles: triangles.size, bbox: stats.bbox, centroid: stats.centroid, seedTriangle: nearest.triIndex };
     },
 
+    /** Apply a procedural deformer (Inflate / Smooth) to a coplanar region
+     *  of the current mesh. The region is selected by raycasting from a
+     *  seed point along a seed normal — pair with `probePixel` to find a
+     *  surface hit visually, then hand the `{point, normal}` straight in.
+     *
+     *  Saves a new locked version automatically. To iterate, call
+     *  applyDeformer again — each call stacks on the previous result and
+     *  creates a new version. Use forkVersion to escape the lock and edit
+     *  the source code.
+     *
+     *  ```
+     *  const hit = partwright.probePixel({ pixel: [100, 100], view: {elevation: 90, ortho: true, size: 200} });
+     *  await partwright.applyDeformer({
+     *    seedPoint: hit.point,
+     *    seedNormal: hit.normal,
+     *    deformer: 'inflate',
+     *    distance: 2,
+     *  });
+     *  ``` */
+    async applyDeformer(opts: {
+      seedPoint: { x: number; y: number; z: number };
+      seedNormal: { x: number; y: number; z: number };
+      deformer: 'inflate' | 'smooth';
+      distance?: number;
+      iterations?: number;
+      tolerance?: number;
+      label?: string;
+    }) {
+      if (!opts || typeof opts !== 'object') return { error: 'applyDeformer requires { seedPoint, seedNormal, deformer, ... }' };
+      const check = guard(() => {
+        assertNoUnknownKeys(
+          opts as unknown as Record<string, unknown>,
+          ['seedPoint', 'seedNormal', 'deformer', 'distance', 'iterations', 'tolerance', 'label'],
+          'applyDeformer(opts)',
+        );
+        assertXYZ(opts.seedPoint, 'applyDeformer(opts).seedPoint');
+        assertXYZ(opts.seedNormal, 'applyDeformer(opts).seedNormal');
+        assertEnum(opts.deformer, ['inflate', 'smooth'] as const, 'applyDeformer(opts).deformer');
+        assertNumber(opts.distance, 'applyDeformer(opts).distance', { optional: true, min: -1000, max: 1000 });
+        assertNumber(opts.iterations, 'applyDeformer(opts).iterations', { optional: true, integer: true, min: 1, max: 100 });
+        assertNumber(opts.tolerance, 'applyDeformer(opts).tolerance', { optional: true, min: 0, max: 1 });
+        assertString(opts.label, 'applyDeformer(opts).label', { optional: true });
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+
+      const tolerance = opts.tolerance ?? 0.9995;
+      const seedPoint: [number, number, number] = [opts.seedPoint.x, opts.seedPoint.y, opts.seedPoint.z];
+      const seedNormal: [number, number, number] = [opts.seedNormal.x, opts.seedNormal.y, opts.seedNormal.z];
+
+      let params: DeformerParamsAny;
+      if (opts.deformer === 'inflate') {
+        const distance = opts.distance ?? 1;
+        params = { distance };
+      } else {
+        const iterations = opts.iterations ?? 3;
+        params = { iterations };
+      }
+
+      const result = await applyDeformerAndSave({
+        kind: opts.deformer,
+        regionDescriptor: { kind: 'coplanar', seedPoint, seedNormal, normalTolerance: tolerance },
+        params,
+        label: opts.label,
+      });
+      return result;
+    },
+
+    /** Returns the deformers applied to the currently loaded version, in
+     *  application order. Useful for verifying state before chaining another
+     *  applyDeformer call. */
+    listAppliedDeformers(): { deformers: { id: number; kind: DeformerKind; params: DeformerParamsAny; regionDescriptor: DeformerCoplanarRegion; order: number }[] } {
+      const list = serializeDeformers();
+      return {
+        deformers: list.map(d => ({
+          id: d.id,
+          kind: d.kind,
+          params: d.params as DeformerParamsAny,
+          regionDescriptor: d.regionDescriptor as DeformerCoplanarRegion,
+          order: d.order,
+        })),
+      };
+    },
+
     /** Check if any component is fully contained inside another (invisible geometry) */
     checkContainment(): ContainmentWarning[] | null {
       if (!currentManifold) return null;
@@ -4840,6 +5017,9 @@ async function main() {
         'paintByLabel':    { signature: 'paintByLabel({label, color, name?}) -- Paint a labelled feature by name. Pair with api.label/labeledUnion in your code. No coordinate guessing.', docs: '/ai.md#color-regions' },
         'paintByLabels':   { signature: 'paintByLabels([{label, color, name?}, ...]) -- Batch sibling. N features painted in one call -> {results, failed}. Use for any multi-feature paint job.', docs: '/ai.md#color-regions' },
         'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai.md#color-regions' },
+        // Sculpt deformers
+        'applyDeformer':   { signature: 'await applyDeformer({seedPoint:{x,y,z}, seedNormal:{x,y,z}, deformer:"inflate"|"smooth", distance?, iterations?, tolerance?, label?}) -- Apply a procedural deformer to a coplanar region. Saves a new locked version. Pair with probePixel for surface picks.', docs: '/ai.md#sculpt-deformers' },
+        'listAppliedDeformers': { signature: 'listAppliedDeformers() -> {deformers: [{id, kind, params, regionDescriptor, order}]} -- Deformers applied to the current version, in apply order.', docs: '/ai.md#sculpt-deformers' },
         'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai.md#color-regions' },
         'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai.md#color-regions' },
         'undoLastPaint':   { signature: 'undoLastPaint() -- Undo the most recent paint op. Removed region goes on a redo stack.', docs: '/ai.md#color-regions' },

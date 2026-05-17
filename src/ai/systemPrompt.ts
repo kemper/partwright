@@ -153,6 +153,32 @@ mistake, pass topOnly: true — that restricts the selector to upward-
 facing triangles only (axis +Z within 30°) and eliminates the most
 common over-paint cause.
 
+For organic-mesh sculpting (push a face outward, smooth a noisy
+patch), use applyDeformer. It takes a seed point + normal that
+identify a coplanar region (same raycast convention as paint), runs
+either "inflate" (push along averaged vertex normals) or "smooth"
+(Laplacian, region boundary pinned), validates the result is
+manifold, and saves a new locked version. The workflow mirrors
+paintConnected:
+1. renderView / renderViews — pick the angle showing the feature.
+2. probePixel({pixel, view}) — surface hit -> {point, normal}.
+3. applyDeformer({seedPoint, seedNormal, deformer: "inflate",
+   distance: 2}) — saves a new version. Note: probePixel returns
+   point/normal as [x,y,z] tuples; applyDeformer takes {x,y,z}
+   objects, so convert: seedPoint = {x: hit.point[0], y:
+   hit.point[1], z: hit.point[2]}.
+4. listAppliedDeformers() to confirm what is now on the version,
+   or call applyDeformer again to stack another deformer (each
+   call creates a NEW version on top of the previous one — the
+   stack replays in order on session reload). To edit code instead
+   of stacking, fork the locked version via forkVersion.
+Deformer params: "inflate" takes \`distance\` (signed world units,
+default 1, negative = deflate). "smooth" takes \`iterations\`
+(default 3, 1..10 typical). Both accept \`tolerance\` to widen or
+tighten the coplanar region selection (default 0.9995). The tool
+rejects non-manifold results — if you get that error, try a smaller
+distance / fewer iterations / different seed.
+
 For planning paint targets without committing, prefer
 getFeatureCentroids() over getMeshSummary — it omits the triangleIds
 payload (which can be tens of thousands of integers) and ships only
