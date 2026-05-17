@@ -87,6 +87,7 @@ import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as ge
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle } from './color/adjacency';
 import { findSlabTriangles } from './color/slabPaint';
+import { findBoxTriangles } from './color/boxPaint';
 import { computeFaceGroups } from './color/faceGroups';
 import {
   getSessionIdFromURL,
@@ -520,6 +521,9 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): vo
     } else if (region.descriptor.kind === 'slab') {
       const { normal, offset, thickness } = region.descriptor;
       triangles = findSlabTriangles(mesh, normal, offset, thickness);
+    } else if (region.descriptor.kind === 'box') {
+      const { center, size, quaternion } = region.descriptor;
+      triangles = findBoxTriangles(mesh, { center, size, quaternion });
     } else if (region.descriptor.kind === 'byLabel') {
       // Labels are runtime state — manifold-3d assigns fresh
       // originalIDs on every run, so we re-resolve by name from the
@@ -3655,6 +3659,56 @@ async function main() {
       return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
     },
 
+    /** Paint every triangle whose centroid lies inside an *oriented* bounding
+     *  box — same selector the UI's Box tool uses, but with explicit
+     *  center/size/quaternion instead of a gizmo. Use this when you need
+     *  arbitrary rotation that an AABB can't express (e.g. painting a tilted
+     *  panel on an oriented part).
+     *
+     *  `quaternion` defaults to identity `[0, 0, 0, 1]` if omitted, which
+     *  reduces to the same selector as `paintInBox` against an AABB centered
+     *  at `center` with the given `size`.
+     *
+     *  ```
+     *  partwright.paintInOrientedBox({
+     *    box: {
+     *      center: [10, 0, 5],
+     *      size: [8, 4, 2],
+     *      quaternion: [0, 0, Math.sin(Math.PI / 8), Math.cos(Math.PI / 8)], // 45° around Z
+     *    },
+     *    color: [0.2, 0.7, 0.9],
+     *  });
+     *  ```
+     *  Returns `{ id, name, triangles }` or `{ error }`. */
+    paintInOrientedBox(opts: {
+      box: {
+        center: [number, number, number];
+        size: [number, number, number];
+        quaternion?: [number, number, number, number];
+      };
+      color: [number, number, number];
+      name?: string;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintInOrientedBox requires { box, color }' };
+      if (!opts.box || typeof opts.box !== 'object') return { error: 'paintInOrientedBox.box must be { center, size, quaternion? }' };
+      const { center, size, quaternion } = opts.box;
+      if (!Array.isArray(center) || center.length !== 3 || !center.every(Number.isFinite)) return { error: 'paintInOrientedBox.box.center must be [x, y, z] of finite numbers' };
+      if (!Array.isArray(size) || size.length !== 3 || !size.every(v => Number.isFinite(v) && v > 0)) return { error: 'paintInOrientedBox.box.size must be [sx, sy, sz] of positive finite numbers' };
+      const q: [number, number, number, number] = quaternion ?? [0, 0, 0, 1];
+      if (!Array.isArray(q) || q.length !== 4 || !q.every(Number.isFinite)) return { error: 'paintInOrientedBox.box.quaternion must be [x, y, z, w] of finite numbers (defaults to identity if omitted)' };
+      if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r, g, b] with values 0..1' };
+
+      const triangles = findBoxTriangles(currentMeshData, {
+        center: [center[0], center[1], center[2]],
+        size: [size[0], size[1], size[2]],
+        quaternion: q,
+      });
+      if (triangles.size === 0) return { error: 'paintInOrientedBox: no triangles inside the box. Try a larger size, recheck the center, or use paintPreview to see what the box covers.' };
+
+      return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
+    },
+
     /** Paint every triangle whose centroid lies within `radius` of `point`.
      *  Optional `normalCone` restricts by face normal direction. Use this for
      *  "paint a fingernail-sized patch around X" without picking edge tolerances.
@@ -4672,6 +4726,7 @@ async function main() {
         'paintNearestRegion': { signature: 'paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) -- Snap seed to nearest face, then paint coplanar region', docs: '/ai.md#color-regions' },
         'paintNear':       { signature: 'paintNear({point, radius, normalCone?, color, name?}) -- Paint triangles whose centroid is within `radius` of `point`. Predictable, no flood-fill tolerance to tune.', docs: '/ai.md#color-regions' },
         'paintInBox':      { signature: 'paintInBox({box, normalCone?, color, name?}) -- Paint triangles whose centroid is inside an axis-aligned box (and optional normal cone).', docs: '/ai.md#color-regions' },
+        'paintInOrientedBox': { signature: 'paintInOrientedBox({box: {center, size, quaternion?}, color, name?}) -- Paint triangles whose centroid is inside a rotated oriented box. Same selector as the UI Box tool.', docs: '/ai.md#color-regions' },
         'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?}) -- Paint specific triangle indices', docs: '/ai.md#color-regions' },
         'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?}) -- Paint planar slab range', docs: '/ai.md#color-regions' },
         'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai.md#color-regions' },

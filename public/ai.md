@@ -202,6 +202,7 @@ partwright.paintRegion({point, normal, color, name?, tolerance?})         // buc
 partwright.paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) // snap seed to nearest face, then flood-fill -> {id, name, triangles, snappedTo} or {error}
 partwright.paintNear({point, radius, normalCone?, topOnly?, coverageMode?, maxTriangleArea?, color, name?})    // sphere: paint triangles within radius -> {id, name, triangles, bbox, centroid} or {error}
 partwright.paintInBox({box, normalCone?, topOnly?, coverageMode?, maxTriangleArea?, color, name?})             // box: paint triangles inside an AABB -> {id, name, triangles, bbox, centroid} or {error}
+partwright.paintInOrientedBox({box: {center, size, quaternion?}, color, name?})                                 // rotated box: paint triangles inside an oriented bounding box. quaternion defaults to identity. Same selector as the UI Box tool.
 partwright.paintFaces({triangleIds, color, name?})                        // brush: paint specific triangle indices -> {id, name, triangles} or {error}
 partwright.paintSlab({axis|normal, offset, thickness, coverageMode?, maxTriangleArea?, color, name?})      // slab: paint a planar range -> {id, name, triangles} or {error}
 partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, coverageMode?, maxTriangleArea?, withImage?, view?}) // dry-run -> {triangleCount, bbox, centroid, totalArea, largestTriangleArea, [thumbnail]}

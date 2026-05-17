@@ -8,9 +8,10 @@ import { buildAdjacency, findCoplanarRegion, getTriangleNormal, type AdjacencyGr
 import { addRegion, getRegions } from './regions';
 import { getMeshGroup, getRenderer, setUserOrbitLock, isUserOrbitLocked } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
+import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
-export type PaintTool = 'bucket' | 'brush' | 'slab';
+export type PaintTool = 'bucket' | 'brush' | 'slab' | 'box';
 
 let active = false;
 let currentColor: [number, number, number] = [1, 0.2, 0.2]; // default red
@@ -58,6 +59,8 @@ export function setTool(tool: PaintTool): void {
   if (active) {
     if (tool === 'slab') activateSlabDrag();
     else if (prev === 'slab') deactivateSlabDrag();
+    if (tool === 'box') activateBoxDrag();
+    else if (prev === 'box') deactivateBoxDrag();
   }
 
   if (onToolChange) onToolChange(tool);
@@ -105,6 +108,7 @@ export function updatePaintMesh(mesh: MeshData): void {
   if (active) {
     adjacency = buildAdjacency(mesh);
     onSlabDragMeshChanged();
+    onBoxDragMeshChanged();
   }
   clearHighlight();
 }
@@ -128,6 +132,7 @@ export function activate(): void {
   canvas.style.cursor = 'crosshair';
 
   if (currentTool === 'slab') activateSlabDrag();
+  if (currentTool === 'box') activateBoxDrag();
 }
 
 export function deactivate(): void {
@@ -138,6 +143,7 @@ export function deactivate(): void {
   if (!priorOrbitLock) setUserOrbitLock(false);
 
   deactivateSlabDrag();
+  deactivateBoxDrag();
 
   const canvas = getRenderer().domElement;
   canvas.removeEventListener('mousemove', onMouseMove);
@@ -153,8 +159,9 @@ export function deactivate(): void {
 function onMouseMove(event: MouseEvent): void {
   if (!adjacency || !currentMesh) return;
 
-  // Slab tool doesn't use viewport hover; controls are panel-based.
-  if (currentTool === 'slab') {
+  // Slab and box tools own their own gizmo / drag interactions; the
+  // bucket-vs-brush hover preview gets out of the way.
+  if (currentTool === 'slab' || currentTool === 'box') {
     clearHighlight();
     return;
   }
@@ -192,7 +199,7 @@ function onMouseMove(event: MouseEvent): void {
 function onMouseDown(event: MouseEvent): void {
   if (!adjacency || !currentMesh) return;
   if (event.button !== 0) return;
-  if (currentTool === 'slab') return;
+  if (currentTool === 'slab' || currentTool === 'box') return;
 
   if (currentTool === 'brush') {
     const result = pickFace(event);
@@ -230,7 +237,7 @@ function addBrushFootprint(seedTri: number, seedPoint: [number, number, number],
 function onMouseUp(event: MouseEvent): void {
   if (!adjacency || !currentMesh) return;
   if (event.button !== 0) return;
-  if (currentTool === 'slab') return;
+  if (currentTool === 'slab' || currentTool === 'box') return;
 
   if (currentTool === 'brush') {
     if (!brushPainting || !brushSession || brushSession.size === 0) {

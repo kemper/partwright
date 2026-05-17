@@ -34,6 +34,7 @@ import {
 import { forceDeactivate as forceDeactivateAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
+import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, type BoxMode } from './boxDrag';
 
 const PRESET_COLORS: [number, number, number][] = [
   // Warm
@@ -68,6 +69,7 @@ let toolButtons: Partial<Record<PaintTool, HTMLButtonElement>> = {};
 let bucketControls: HTMLElement | null = null;
 let brushControls: HTMLElement | null = null;
 let slabControls: HTMLElement | null = null;
+let boxControls: HTMLElement | null = null;
 
 /** Initialize the paint UI inside the clip-controls overlay area. */
 export function initPaintUI(controlsContainer: HTMLElement): void {
@@ -155,10 +157,11 @@ function createPickerPanel(): HTMLElement {
   panel.appendChild(toolTitle);
 
   const toolRow = document.createElement('div');
-  toolRow.className = 'grid grid-cols-3 gap-1 mb-2.5';
+  toolRow.className = 'grid grid-cols-2 gap-1 mb-2.5';
   toolRow.appendChild(createToolButton('bucket', '\u{1FAA3} Bucket', 'Flood-fill across coplanar faces'));
   toolRow.appendChild(createToolButton('brush', '\u{1F58C}\uFE0F Brush', 'Paint individual triangles (drag to paint)'));
-  toolRow.appendChild(createToolButton('slab', '\u{1F9F1} Slab', 'Paint all faces inside a slab range'));
+  toolRow.appendChild(createToolButton('slab', '\u{1F9F1} Slab', 'Paint all faces inside an axis-aligned range'));
+  toolRow.appendChild(createToolButton('box', '\u{1F4E6} Box', 'Paint everything inside a positionable, rotatable, scalable 3D box'));
   panel.appendChild(toolRow);
 
   // === Color picker ===
@@ -223,6 +226,10 @@ function createPickerPanel(): HTMLElement {
   // === Slab tool controls ===
   slabControls = createSlabControls();
   panel.appendChild(slabControls);
+
+  // === Box tool controls ===
+  boxControls = createBoxControls();
+  panel.appendChild(boxControls);
 
   // === Region list ===
   const regionList = document.createElement('div');
@@ -298,6 +305,7 @@ function syncToolPanels(): void {
   if (bucketControls) bucketControls.classList.toggle('hidden', tool !== 'bucket');
   if (brushControls) brushControls.classList.toggle('hidden', tool !== 'brush');
   if (slabControls) slabControls.classList.toggle('hidden', tool !== 'slab');
+  if (boxControls) boxControls.classList.toggle('hidden', tool !== 'box');
 }
 
 function createBucketControls(): HTMLElement {
@@ -501,6 +509,161 @@ function axisButtonClass(active: boolean): string {
     return 'px-2 py-1 rounded text-[11px] bg-blue-500/30 text-blue-200 border border-blue-500/50 transition-colors';
   }
   return 'px-2 py-1 rounded text-[11px] bg-zinc-700/40 text-zinc-300 hover:bg-zinc-600/60 border border-transparent transition-colors';
+}
+
+function createBoxControls(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'mt-2 pt-2 border-t border-zinc-700 hidden';
+
+  // Mode buttons — translate / rotate / scale, drives the gizmo.
+  const modeLabel = document.createElement('div');
+  modeLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium';
+  modeLabel.textContent = 'Box transform';
+  wrap.appendChild(modeLabel);
+
+  const modeRow = document.createElement('div');
+  modeRow.className = 'grid grid-cols-3 gap-1 mb-2';
+  const modeBtns: Partial<Record<BoxMode, HTMLButtonElement>> = {};
+  for (const m of ['translate', 'rotate', 'scale'] as const) {
+    const btn = document.createElement('button');
+    btn.textContent = m === 'translate' ? 'Move' : m === 'rotate' ? 'Rotate' : 'Resize';
+    btn.className = axisButtonClass(m === getBoxMode());
+    btn.title = `Switch the gizmo to ${m} mode`;
+    btn.addEventListener('click', () => {
+      setBoxMode(m);
+      for (const [k, b] of Object.entries(modeBtns)) {
+        if (b) b.className = axisButtonClass(k === getBoxMode());
+      }
+    });
+    modeRow.appendChild(btn);
+    modeBtns[m] = btn;
+  }
+  wrap.appendChild(modeRow);
+
+  // Numeric readout — center / size / rotation. Two-way synced with the gizmo.
+  const grid = document.createElement('div');
+  grid.className = 'grid grid-cols-[auto_repeat(3,_minmax(0,_1fr))] gap-1 text-[10px] text-zinc-400 items-center';
+
+  const centerInputs = makeVectorRow(grid, 'Pos',  -1e6, 1e6, 0.1, (v) => setBox({ center: v }));
+  const sizeInputs   = makeVectorRow(grid, 'Size',  0.001, 1e6, 0.1, (v) => setBox({ size: v }));
+  const rotInputs    = makeVectorRow(grid, 'Rot°', -360, 360, 1, (v) => {
+    // Convert Euler degrees -> quaternion (XYZ order).
+    const ex = v[0] * Math.PI / 180;
+    const ey = v[1] * Math.PI / 180;
+    const ez = v[2] * Math.PI / 180;
+    const q = eulerXYZToQuat(ex, ey, ez);
+    setBox({ quaternion: q });
+  });
+  wrap.appendChild(grid);
+
+  // Action: paint inside the current box.
+  const actionRow = document.createElement('div');
+  actionRow.className = 'mt-2 flex flex-col gap-1';
+
+  const paintBtn = document.createElement('button');
+  paintBtn.className = 'w-full px-2 py-1.5 rounded text-[11px] bg-blue-500/30 text-blue-200 hover:bg-blue-500/50 border border-blue-500/50 transition-colors font-medium';
+  paintBtn.textContent = 'Paint inside box';
+  paintBtn.title = 'Commit every triangle inside the box as a new color region';
+  paintBtn.addEventListener('click', () => {
+    const painted = commitBox();
+    if (painted === 0) {
+      paintBtn.textContent = 'No triangles in box';
+      window.setTimeout(() => { paintBtn.textContent = 'Paint inside box'; }, 1200);
+    }
+  });
+  actionRow.appendChild(paintBtn);
+
+  const help = document.createElement('div');
+  help.className = 'text-[10px] text-zinc-500 leading-relaxed';
+  help.textContent = 'Drag the gizmo handles in the viewport, or edit values above. The box is rendered in the active paint color.';
+  actionRow.appendChild(help);
+
+  wrap.appendChild(actionRow);
+
+  // Keep the numeric inputs in sync when the gizmo moves.
+  onBoxChange((box) => {
+    if (!isInputFocused(centerInputs)) setVector(centerInputs, box.center, 2);
+    if (!isInputFocused(sizeInputs))   setVector(sizeInputs,   box.size,   2);
+    if (!isInputFocused(rotInputs)) {
+      const e = quatToEulerXYZ(box.quaternion);
+      setVector(rotInputs, [e[0] * 180 / Math.PI, e[1] * 180 / Math.PI, e[2] * 180 / Math.PI], 1);
+    }
+  });
+
+  return wrap;
+}
+
+/** Build a label + 3 number inputs (X/Y/Z) for a vector property. */
+function makeVectorRow(parent: HTMLElement, label: string, min: number, max: number, step: number, onChange: (v: [number, number, number]) => void): HTMLInputElement[] {
+  const labelEl = document.createElement('span');
+  labelEl.className = 'text-zinc-500 text-right pr-1 tabular-nums';
+  labelEl.textContent = label;
+  parent.appendChild(labelEl);
+
+  const inputs: HTMLInputElement[] = [];
+  for (let i = 0; i < 3; i++) {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.value = '0';
+    input.className = 'min-w-0 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+    const apply = (): void => {
+      const v = inputs.map(x => parseFloat(x.value));
+      if (v.every(Number.isFinite)) onChange([v[0], v[1], v[2]]);
+    };
+    input.addEventListener('change', apply);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { apply(); input.blur(); } });
+    parent.appendChild(input);
+    inputs.push(input);
+  }
+  return inputs;
+}
+
+function setVector(inputs: HTMLInputElement[], vec: [number, number, number], decimals: number): void {
+  for (let i = 0; i < 3; i++) inputs[i].value = vec[i].toFixed(decimals);
+}
+
+function isInputFocused(inputs: HTMLInputElement[]): boolean {
+  return inputs.some(i => document.activeElement === i);
+}
+
+/** Convert XYZ Euler angles (radians) to a quaternion [x, y, z, w]. */
+function eulerXYZToQuat(x: number, y: number, z: number): [number, number, number, number] {
+  const c1 = Math.cos(x / 2), s1 = Math.sin(x / 2);
+  const c2 = Math.cos(y / 2), s2 = Math.sin(y / 2);
+  const c3 = Math.cos(z / 2), s3 = Math.sin(z / 2);
+  return [
+    s1 * c2 * c3 + c1 * s2 * s3,
+    c1 * s2 * c3 - s1 * c2 * s3,
+    c1 * c2 * s3 + s1 * s2 * c3,
+    c1 * c2 * c3 - s1 * s2 * s3,
+  ];
+}
+
+/** Convert a quaternion to XYZ Euler angles (radians). Matches THREE's
+ *  Euler.setFromQuaternion with order 'XYZ' so the gizmo readout stays
+ *  consistent with the gizmo input. */
+function quatToEulerXYZ(q: [number, number, number, number]): [number, number, number] {
+  const [x, y, z, w] = q;
+  const m11 = 1 - 2 * (y * y + z * z);
+  const m12 = 2 * (x * y - w * z);
+  const m13 = 2 * (x * z + w * y);
+  const m22 = 1 - 2 * (x * x + z * z);
+  const m23 = 2 * (y * z - w * x);
+  const m32 = 2 * (y * z + w * x);
+  const m33 = 1 - 2 * (x * x + y * y);
+  const ey = Math.asin(Math.max(-1, Math.min(1, m13)));
+  let ex: number, ez: number;
+  if (Math.abs(m13) < 0.99999) {
+    ex = Math.atan2(-m23, m33);
+    ez = Math.atan2(-m12, m11);
+  } else {
+    ex = Math.atan2(m32, m22);
+    ez = 0;
+  }
+  return [ex, ey, ez];
 }
 
 function updateVisibilityButton(): void {

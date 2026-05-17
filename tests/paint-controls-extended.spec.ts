@@ -117,6 +117,64 @@ test.describe('extended paint controls', () => {
     expect(afterDelete[0].id).toBe(ids[1]);
   });
 
+  test('box paint tool activates with a default box sized to the model and commits a region', async ({ page }) => {
+    await openEditor(page);
+
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await page.locator('button[title*="positionable, rotatable"]').dispatchEvent('click');
+
+    // Box controls panel should be visible with non-zero default size.
+    const sizeInput = page.locator('#paint-picker-panel input[type="number"]').nth(5);
+    await expect(sizeInput).toBeVisible();
+    const sizeValue = await sizeInput.inputValue();
+    expect(parseFloat(sizeValue)).toBeGreaterThan(0);
+
+    // Hit "Paint inside box" — default box wraps the model so all triangles get caught.
+    await page.locator('button[title="Commit every triangle inside the box as a new color region"]').dispatchEvent('click');
+
+    const regions = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      return pw.listRegions();
+    });
+    expect(regions.length).toBe(1);
+    expect(regions[0].triangles).toBeGreaterThan(0);
+    expect(regions[0].name).toContain('Box');
+  });
+
+  test('paintInOrientedBox API paints into a rotated box', async ({ page }) => {
+    await openEditor(page);
+
+    const result = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      // Identity quaternion should match an AABB centered at origin.
+      const identity = pw.paintInOrientedBox({
+        box: { center: [0, 0, 0], size: [22, 22, 22] },
+        color: [0.5, 0.2, 0.9],
+        name: 'Identity OBB',
+      });
+      pw.clearColors();
+      // 45° rotation around Z — same volume, same triangles caught for a centered cube.
+      const rotated = pw.paintInOrientedBox({
+        box: {
+          center: [0, 0, 0],
+          size: [22, 22, 22],
+          quaternion: [0, 0, Math.sin(Math.PI / 8), Math.cos(Math.PI / 8)],
+        },
+        color: [0.5, 0.2, 0.9],
+        name: 'Rotated OBB',
+      });
+      pw.clearColors();
+      const bad = pw.paintInOrientedBox({ box: { center: [0, 0, 0], size: [0, 1, 1] }, color: [1, 0, 0] });
+      return { identity, rotated, bad };
+    });
+    expect(result.identity.triangles).toBeGreaterThan(0);
+    expect(result.rotated.triangles).toBeGreaterThan(0);
+    expect(result.bad.error).toBeTruthy();
+  });
+
   test('hideRegion / showRegion partwright API toggles visibility flag', async ({ page }) => {
     await openEditor(page);
     const result = await page.evaluate(() => {

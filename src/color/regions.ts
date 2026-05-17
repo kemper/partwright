@@ -16,6 +16,7 @@ export interface ColorRegion {
 export type RegionDescriptor =
   | { kind: 'coplanar'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; normalTolerance: number }
   | { kind: 'slab'; normal: [number, number, number]; offset: number; thickness: number }
+  | { kind: 'box'; center: [number, number, number]; size: [number, number, number]; quaternion: [number, number, number, number] }
   | { kind: 'triangles'; ids: number[] }
   | { kind: 'byLabel'; label: string }
   | { kind: 'connectedFromSeed'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; maxDeviationDeg: number };
