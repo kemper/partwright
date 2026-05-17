@@ -577,7 +577,9 @@ function panelStatusUpdate(): void {
 function renderTranscript(): void {
   if (!transcriptEl) return;
   transcriptEl.replaceChildren();
-  if (state.history.length === 0) {
+  const hasHistory = state.history.length > 0;
+  const hasQueue = state.queuedBlocks.length > 0;
+  if (!hasHistory && !hasQueue) {
     const empty = document.createElement('div');
     empty.className = 'flex-1 flex items-center justify-center text-zinc-600 text-xs text-center px-6';
     empty.textContent = state.sessionId === GLOBAL_CHAT_BUCKET
@@ -589,7 +591,39 @@ function renderTranscript(): void {
   for (const msg of state.history) {
     transcriptEl.appendChild(renderMessage(msg));
   }
+  // Pending preview — render queued follow-ups as faded user bubbles at the
+  // bottom of the transcript so the human sees their typed message land
+  // immediately, before the agent's loop drains the queue. When the drain
+  // fires, the merged tool_result message takes the queued blocks' place
+  // (and renderTranscript runs again to clear the preview).
+  if (hasQueue) {
+    transcriptEl.appendChild(renderQueuedPreview());
+  }
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+function renderQueuedPreview(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col items-end gap-1';
+  wrap.dataset.queuedPreview = 'true';
+  for (const b of state.queuedBlocks) {
+    if (b.type === 'text' && b.text.trim().length > 0) {
+      const bubble = document.createElement('div');
+      bubble.className = 'max-w-[90%] px-3 py-2 rounded-lg text-sm whitespace-pre-wrap leading-snug bg-blue-600/70 text-white border border-amber-400/50 ring-1 ring-amber-400/30';
+      bubble.textContent = b.text;
+      bubble.title = 'Queued — will be delivered to the AI at the next pause.';
+      wrap.appendChild(bubble);
+    } else if (b.type === 'image') {
+      const imgWrap = renderImageBubble(b.source);
+      imgWrap.classList.add('opacity-70', 'ring-1', 'ring-amber-400/40');
+      wrap.appendChild(imgWrap);
+    }
+  }
+  const tag = document.createElement('div');
+  tag.className = 'text-[10px] text-amber-300/80 italic';
+  tag.textContent = '⏳ queued — waiting for the agent to pause';
+  wrap.appendChild(tag);
+  return wrap;
 }
 
 function renderMessage(msg: ChatMessage): HTMLElement {
@@ -802,6 +836,10 @@ function queueCurrentInput(): void {
   state.pendingImages = [];
   renderPendingImages();
   renderQueuedBadge();
+  // Surface the queued blocks as a preview bubble at the bottom of the
+  // transcript so the human gets immediate visual confirmation — without
+  // this they'd see no feedback until end-of-turn reload.
+  renderTranscript();
   inputEl.focus();
 }
 
@@ -840,6 +878,7 @@ function renderQueuedBadge(): void {
   clearBtn.addEventListener('click', () => {
     state.queuedBlocks = [];
     renderQueuedBadge();
+    renderTranscript();
   });
   queuedBadgeRef.appendChild(clearBtn);
 }
@@ -851,6 +890,11 @@ function drainQueuedBlocks(): ChatBlock[] {
   const drained = state.queuedBlocks;
   state.queuedBlocks = [];
   renderQueuedBadge();
+  // Clear the preview bubble — onUserMessageUpdated (mid-loop case) or the
+  // end-of-turn reload (auto-restart case) will replace it with the real
+  // delivered bubble. Re-rendering here drops the now-stale preview
+  // immediately so it doesn't visually duplicate when the real one lands.
+  renderTranscript();
   return drained;
 }
 
@@ -975,8 +1019,20 @@ async function runTurnWithStallRetry(apiKey: string, toggles: ChatToggles, userB
         renderTranscript();
       },
       onUserMessageUpdated: msg => {
+        // chatLoop persists tool_result user messages directly without
+        // firing onUserPersisted, so the first time we hear about one mid-
+        // turn (because the human's queue triggered a merge) we have to
+        // insert it ourselves at the right seq position — otherwise
+        // renderTranscript can't show the human's bubble until end-of-turn
+        // reload, and the user thinks their message vanished.
         const idx = state.history.findIndex(m => m.id === msg.id);
-        if (idx >= 0) state.history[idx] = msg;
+        if (idx >= 0) {
+          state.history[idx] = msg;
+        } else {
+          const insertAt = state.history.findIndex(m => m.seq > msg.seq);
+          if (insertAt === -1) state.history.push(msg);
+          else state.history.splice(insertAt, 0, msg);
+        }
         renderTranscript();
         setTransientStatus('Queued message delivered to the AI.');
       },
