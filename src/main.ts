@@ -1231,6 +1231,24 @@ async function main() {
         alert('No active session to export. Save a version first.');
         return;
       }
+      // STL imports live on Version.importedMeshes (typed-array mesh bytes),
+      // which the .partwright.json export schema doesn't carry yet. Warn so
+      // the user knows the resulting file will reopen with empty `api.imports`
+      // and the wrapper code will fail until the STL is re-imported.
+      const versions = await listCurrentVersions();
+      const hasImports = versions.some(v => Array.isArray((v as { importedMeshes?: unknown[] }).importedMeshes) && ((v as { importedMeshes?: unknown[] }).importedMeshes!).length > 0);
+      if (hasImports) {
+        const proceed = await showInlineConfirm(
+          editorUI,
+          `This session uses imported meshes (STL).\n\nThe .partwright.json file will include the code but not the mesh data — anyone reopening it will need to re-import the STL for the version to render.\n\nExport an STL/GLB instead if you just need the geometry.`,
+          {
+            title: 'Imported meshes won\'t be included',
+            confirmLabel: 'Export anyway',
+            cancelLabel: 'Cancel',
+          }
+        );
+        if (!proceed) return;
+      }
       const opts = await showExportOptionsDialog();
       if (!opts) return;
       const ok = await exportSessionJSON(undefined, opts);
