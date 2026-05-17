@@ -3,6 +3,8 @@
 // session-bound is on, thumbnails off (importer regenerates from code).
 
 import type { ExportOptions } from '../storage/sessionManager';
+import { createModalShell } from './modalShell';
+import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 
 interface OptionDef {
   key: keyof ExportOptions;
@@ -44,24 +46,19 @@ const OPTIONS: OptionDef[] = [
  */
 export function showExportOptionsDialog(): Promise<ExportOptions | null> {
   return new Promise((resolve) => {
-    document.querySelector('.export-options-overlay')?.remove();
-
-    const overlay = document.createElement('div');
-    overlay.className = 'export-options-overlay fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center';
-
-    const modal = document.createElement('div');
-    modal.className = 'bg-zinc-800 border border-zinc-600 rounded-xl shadow-2xl p-5 w-[min(28rem,calc(100vw-2rem))] mx-4 animate-modal-in';
-
-    const heading = document.createElement('h2');
-    heading.className = 'text-zinc-100 text-base font-semibold mb-1';
-    heading.textContent = 'Export session';
+    let result: ExportOptions | null = null;
+    const shell = createModalShell({
+      title: 'Export session',
+      onClose: () => {
+        document.removeEventListener('keydown', onEnter);
+        resolve(result);
+      },
+    });
 
     const sub = document.createElement('p');
-    sub.className = 'text-[11px] text-zinc-400 mb-4 leading-relaxed';
+    sub.className = 'text-[11px] text-zinc-400 leading-relaxed';
     sub.textContent = 'Choose what to include in the .partwright.json file.';
-
-    modal.appendChild(heading);
-    modal.appendChild(sub);
+    shell.body.appendChild(sub);
 
     const checkboxes = new Map<keyof ExportOptions, HTMLInputElement>();
 
@@ -91,55 +88,35 @@ export function showExportOptionsDialog(): Promise<ExportOptions | null> {
 
       row.appendChild(input);
       row.appendChild(text);
-      modal.appendChild(row);
+      shell.body.appendChild(row);
     }
 
-    const btnGroup = document.createElement('div');
-    btnGroup.className = 'flex items-center justify-end gap-2 mt-4';
+    function confirm() {
+      const opts: ExportOptions = {};
+      for (const [key, input] of checkboxes) opts[key] = input.checked;
+      result = opts;
+      shell.close();
+    }
 
     const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'px-4 py-1.5 rounded-lg text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors';
+    cancelBtn.className = BUTTON_CANCEL;
     cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => { result = null; shell.close(); });
+    shell.footer.appendChild(cancelBtn);
 
     const exportBtn = document.createElement('button');
-    exportBtn.className = 'px-4 py-1.5 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors';
+    exportBtn.className = BUTTON_PRIMARY;
     exportBtn.textContent = 'Export';
+    exportBtn.addEventListener('click', confirm);
+    shell.footer.appendChild(exportBtn);
 
-    btnGroup.appendChild(cancelBtn);
-    btnGroup.appendChild(exportBtn);
-    modal.appendChild(btnGroup);
-
-    overlay.appendChild(modal);
-
-    let resolved = false;
-    function finish(result: ExportOptions | null) {
-      if (resolved) return;
-      resolved = true;
-      overlay.remove();
-      document.removeEventListener('keydown', onKey);
-      resolve(result);
+    // Modal shell handles Escape; we add Enter-to-confirm so the keyboard
+    // flow matches the previous standalone implementation.
+    function onEnter(e: KeyboardEvent) {
+      if (e.key === 'Enter') { e.preventDefault(); confirm(); }
     }
+    document.addEventListener('keydown', onEnter);
 
-    exportBtn.addEventListener('click', () => {
-      const opts: ExportOptions = {};
-      for (const [key, input] of checkboxes) {
-        opts[key] = input.checked;
-      }
-      finish(opts);
-    });
-    cancelBtn.addEventListener('click', () => finish(null));
-
-    overlay.addEventListener('mousedown', (e) => {
-      if (e.target === overlay) finish(null);
-    });
-
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') finish(null);
-      if (e.key === 'Enter') exportBtn.click();
-    }
-    document.addEventListener('keydown', onKey);
-
-    document.body.appendChild(overlay);
     exportBtn.focus();
   });
 }

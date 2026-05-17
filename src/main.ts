@@ -1,3 +1,24 @@
+// Application entry point.
+//
+// Responsibilities:
+//   - Boot the geometry engine, renderer, editor, layout, and AI panel.
+//   - Wire cross-module events (route changes, session lifecycle, tab
+//     switches, drag-and-drop import).
+//   - Build the window.partwright public API surface inside main() and
+//     expose it on window for browser-console / AI-agent callers.
+//
+// What lives elsewhere:
+//   - Runtime argument validation: src/validation/apiValidation.ts
+//   - Geometry stats + assertion checks: src/geometry/statsComputation.ts
+//   - Per-subsystem UI: src/ui/* (toolbar, panels, modals, views)
+//   - Storage: src/storage/sessionManager.ts, src/storage/db.ts
+//   - AI chat backend: src/ai/* (anthropic, chatLoop, compaction, tools)
+//
+// Note: most of the window.partwright API is defined as a closure inside
+// main() because the methods read editor / engine / session state that
+// only exists once the app has bootstrapped. The validation helpers used
+// throughout that API are pure and live in the validation module above.
+
 import './style.css';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
@@ -127,6 +148,28 @@ import {
   type ExportOptions,
 } from './storage/sessionManager';
 import type { Version } from './storage/db';
+import {
+  ValidationError,
+  guard,
+  assertString,
+  assertNumber,
+  assertBoolean,
+  assertObject,
+  assertFunction,
+  assertEnum,
+  assertNumberTuple,
+  assertArray,
+  assertNoUnknownKeys,
+  validateAssertionsShape,
+} from './validation/apiValidation';
+import {
+  simpleHash,
+  bboxFromMesh,
+  computeGeometryStats,
+  computeStatDiff,
+  checkAssertions,
+  type GeometryAssertions,
+} from './geometry/statsComputation';
 
 // Load examples as raw text — JS and SCAD
 const jsExampleModules = import.meta.glob('../examples/*.js', { query: '?raw', import: 'default' });
@@ -205,14 +248,6 @@ function createGeometryDataElement(): HTMLElement {
   return el;
 }
 
-function simpleHash(str: string): string {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
-  }
-  return (h >>> 0).toString(16).padStart(8, '0');
-}
-
 function firstErrorLine(error: string): string {
   return error
     .split('\n')
@@ -265,221 +300,6 @@ function clearEditorErrorPanel(panel: HTMLElement): void {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-/** Bounding box scanned directly from a MeshData's vertex buffer. Used when no
- *  Manifold is available (e.g. render-only STL imports) so the rest of the
- *  stats pipeline still has a bbox to work with. */
-function bboxFromMesh(mesh: MeshData): { min: [number, number, number]; max: [number, number, number] } | null {
-  if (mesh.numVert === 0) return null;
-  const v = mesh.vertProperties;
-  const n = mesh.numProp;
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  for (let i = 0; i < mesh.numVert; i++) {
-    const x = v[i * n], y = v[i * n + 1], z = v[i * n + 2];
-    if (x < minX) minX = x; if (x > maxX) maxX = x;
-    if (y < minY) minY = y; if (y > maxY) maxY = y;
-    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-  }
-  return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
-}
-
-function computeGeometryStats(manifold: any, meshData: MeshData, executionTimeMs?: number, sourceCode?: string): Record<string, unknown> {
-  // Bounding box: prefer the manifold's own, but fall back to scanning the mesh
-  // verts so render-only imports (manifold==null) still get usable bbox/dims/slices.
-  const bbox = (manifold && getBoundingBox(manifold)) || bboxFromMesh(meshData);
-
-  let volume = 0;
-  let surfaceArea = 0;
-  if (manifold) {
-    try {
-      volume = manifold.volume();
-      surfaceArea = manifold.surfaceArea();
-    } catch {
-      // fallback if methods unavailable
-    }
-  }
-
-  const centroid = bbox
-    ? [(bbox.min[0] + bbox.max[0]) / 2, (bbox.min[1] + bbox.max[1]) / 2, (bbox.min[2] + bbox.max[2]) / 2]
-    : null;
-
-  const dimensions = bbox
-    ? [bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2]]
-    : null;
-
-  let componentCount = 1;
-  if (manifold) {
-    try {
-      const parts = manifold.decompose();
-      componentCount = parts.length;
-      for (const p of parts) p.delete();
-    } catch {
-      // fallback
-    }
-  }
-
-  // Render-only imports lack a manifold; surface that fact in stats so the
-  // status panel can show "not manifold" instead of a misleading default.
-  let isManifold = manifold !== null;
-  let manifoldStatus: string | null = manifold === null ? 'render-only (not manifold)' : null;
-  if (manifold) {
-    try {
-      const s = manifold.status();
-      isManifold = s === 0 || s === 'NoError';
-      if (!isManifold) {
-        manifoldStatus = String(s);
-      }
-    } catch {
-      // fallback
-    }
-  }
-
-  const quartileSlices: Record<string, { z: number; area: number; contours: number }> = {};
-  if (bbox && manifold) {
-    const zRange = bbox.max[2] - bbox.min[2];
-    for (const pct of [25, 50, 75]) {
-      const z = bbox.min[2] + zRange * (pct / 100);
-      const s = sliceAtZ(manifold, z);
-      if (s) {
-        quartileSlices[`z${pct}`] = { z, area: s.area, contours: s.polygons.length };
-      }
-    }
-  }
-
-  return {
-    status: 'ok' as const,
-    vertexCount: meshData.numVert,
-    triangleCount: meshData.numTri,
-    boundingBox: bbox ? {
-      x: [bbox.min[0], bbox.max[0]],
-      y: [bbox.min[1], bbox.max[1]],
-      z: [bbox.min[2], bbox.max[2]],
-      dimensions,
-    } : null,
-    centroid,
-    volume,
-    surfaceArea,
-    genus: manifold ? (() => { try { return manifold.genus(); } catch { return null; } })() : null,
-    isManifold,
-    ...(manifoldStatus ? { manifoldStatus } : {}),
-    componentCount,
-    crossSections: quartileSlices,
-    unit: _getUnits(),
-    executionTimeMs: executionTimeMs ?? null,
-    codeHash: sourceCode ? simpleHash(sourceCode) : null,
-  };
-}
-
-function computeStatDiff(prev: Record<string, unknown>, next: Record<string, unknown>): Record<string, unknown> {
-  const diff: Record<string, unknown> = {};
-
-  const numericFields = ['volume', 'surfaceArea', 'vertexCount', 'triangleCount', 'genus', 'componentCount'];
-  for (const field of numericFields) {
-    const from = prev[field] as number;
-    const to = next[field] as number;
-    if (from !== undefined && to !== undefined) {
-      const delta = to - from;
-      if (delta === 0) {
-        diff[field] = { from, to, delta: 'unchanged' };
-      } else {
-        const pct = from !== 0 ? ((delta / from) * 100).toFixed(1) : null;
-        diff[field] = {
-          from, to,
-          delta: `${delta > 0 ? '+' : ''}${Math.round(delta)}${pct ? ` (${delta > 0 ? '+' : ''}${pct}%)` : ''}`,
-        };
-      }
-    }
-  }
-
-  const prevBB = prev.boundingBox as Record<string, unknown> | null;
-  const nextBB = next.boundingBox as Record<string, unknown> | null;
-  if (prevBB?.dimensions && nextBB?.dimensions) {
-    diff.boundingBox = { dimensions: { from: prevBB.dimensions, to: nextBB.dimensions } };
-  }
-
-  return diff;
-}
-
-interface GeometryAssertions {
-  minVolume?: number;
-  maxVolume?: number;
-  isManifold?: boolean;
-  maxComponents?: number;
-  genus?: number;
-  minGenus?: number;
-  maxGenus?: number;
-  minBounds?: [number, number, number];
-  maxBounds?: [number, number, number];
-  minTriangles?: number;
-  maxTriangles?: number;
-  /** Proportion range assertions: { widthToDepth: [min, max], widthToHeight: [min, max], depthToHeight: [min, max] } */
-  boundsRatio?: {
-    widthToDepth?: [number, number];
-    widthToHeight?: [number, number];
-    depthToHeight?: [number, number];
-  };
-  /** Optional notes to attach to this version (design rationale, user feedback, etc.) */
-  notes?: string;
-}
-
-function checkAssertions(stats: Record<string, unknown>, assertions: GeometryAssertions): string[] {
-  const failures: string[] = [];
-  const v = stats.volume as number;
-  const tc = stats.triangleCount as number;
-  const cc = stats.componentCount as number;
-  const g = stats.genus as number | null;
-  const im = stats.isManifold as boolean;
-  const bb = stats.boundingBox as { dimensions?: number[] } | null;
-
-  if (assertions.minVolume !== undefined && v < assertions.minVolume)
-    failures.push(`volume ${v.toFixed(1)} < minVolume ${assertions.minVolume}`);
-  if (assertions.maxVolume !== undefined && v > assertions.maxVolume)
-    failures.push(`volume ${v.toFixed(1)} > maxVolume ${assertions.maxVolume}`);
-  if (assertions.isManifold !== undefined && im !== assertions.isManifold)
-    failures.push(`isManifold is ${im}, expected ${assertions.isManifold}`);
-  if (assertions.maxComponents !== undefined && cc > assertions.maxComponents)
-    failures.push(`componentCount ${cc} > maxComponents ${assertions.maxComponents}`);
-  if (assertions.genus !== undefined && g !== assertions.genus)
-    failures.push(`genus ${g} !== expected ${assertions.genus}`);
-  if (assertions.minGenus !== undefined && (g === null || g < assertions.minGenus))
-    failures.push(`genus ${g} < minGenus ${assertions.minGenus}`);
-  if (assertions.maxGenus !== undefined && (g === null || g > assertions.maxGenus))
-    failures.push(`genus ${g} > maxGenus ${assertions.maxGenus}`);
-  if (assertions.minTriangles !== undefined && tc < assertions.minTriangles)
-    failures.push(`triangleCount ${tc} < minTriangles ${assertions.minTriangles}`);
-  if (assertions.maxTriangles !== undefined && tc > assertions.maxTriangles)
-    failures.push(`triangleCount ${tc} > maxTriangles ${assertions.maxTriangles}`);
-  if (assertions.minBounds && bb?.dimensions) {
-    const d = bb.dimensions;
-    for (let i = 0; i < 3; i++) {
-      if (d[i] < assertions.minBounds[i])
-        failures.push(`dimension ${['X', 'Y', 'Z'][i]} ${d[i].toFixed(1)} < minBounds ${assertions.minBounds[i]}`);
-    }
-  }
-  if (assertions.maxBounds && bb?.dimensions) {
-    const d = bb.dimensions;
-    for (let i = 0; i < 3; i++) {
-      if (d[i] > assertions.maxBounds[i])
-        failures.push(`dimension ${['X', 'Y', 'Z'][i]} ${d[i].toFixed(1)} > maxBounds ${assertions.maxBounds[i]}`);
-    }
-  }
-  if (assertions.boundsRatio && bb?.dimensions) {
-    const [w, dep, h] = bb.dimensions;
-    const ratios: { name: string; value: number; range?: [number, number] }[] = [
-      { name: 'widthToDepth', value: w / dep, range: assertions.boundsRatio.widthToDepth },
-      { name: 'widthToHeight', value: w / h, range: assertions.boundsRatio.widthToHeight },
-      { name: 'depthToHeight', value: dep / h, range: assertions.boundsRatio.depthToHeight },
-    ];
-    for (const r of ratios) {
-      if (r.range) {
-        if (r.value < r.range[0]) failures.push(`${r.name} ratio ${r.value.toFixed(2)} < min ${r.range[0]}`);
-        if (r.value > r.range[1]) failures.push(`${r.name} ratio ${r.value.toFixed(2)} > max ${r.range[1]}`);
-      }
-    }
-  }
-  return failures;
-}
-
 function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
   if (!currentMeshData) {
     geometryDataEl.textContent = JSON.stringify({ status: 'error', error: 'No geometry' });
@@ -621,185 +441,6 @@ function enrichGeometryDataWithColors(geoData: Record<string, unknown> | null): 
     geoData.colorRegions = serializeRegions();
   }
   return geoData;
-}
-
-// === Argument validation helpers ==========================================
-//
-// Runtime type/shape validation for the window.partwright API. The public API
-// is reachable from untyped callers (browser console, MCP-driven AI agents,
-// automation scripts) so TypeScript's compile-time guarantees do not apply.
-// These helpers enforce argument contracts explicitly, with chatty error
-// messages pointing at /ai.md anchors so AI callers can self-correct.
-//
-// Convention:
-//   • Methods that already return a value use { error: "..." } on failure.
-//   • Void setters THROW so misuse is loud.
-//   • No coercion — "5" is not a number; wrong types are rejected outright.
-
-/** Thrown by assertion helpers on validation failure. Void setters let this
- *  propagate; value-returning methods catch via toValidationError(). */
-class ValidationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ValidationError';
-  }
-}
-
-function describeValue(val: unknown): string {
-  if (val === null) return 'null';
-  if (val === undefined) return 'undefined';
-  if (Array.isArray(val)) return `array(length=${val.length})`;
-  if (typeof val === 'object') return 'object';
-  if (typeof val === 'string') return `string("${val.length > 40 ? val.slice(0, 40) + '…' : val}")`;
-  return `${typeof val}(${String(val)})`;
-}
-
-/** Run a validation function; if it throws ValidationError, return { error } instead. */
-function guard<T>(fn: () => T): T | { error: string } {
-  try {
-    return fn();
-  } catch (e: unknown) {
-    if (e instanceof ValidationError) return { error: e.message };
-    throw e;
-  }
-}
-
-interface AssertStringOpts { optional?: boolean; allowEmpty?: boolean }
-function assertString(val: unknown, paramName: string, opts: AssertStringOpts = {}): string | undefined {
-  if (val === undefined || val === null) {
-    if (opts.optional) return undefined;
-    throw new ValidationError(`${paramName} is required (expected string, got ${describeValue(val)}). See /ai.md#argument-validation`);
-  }
-  if (typeof val !== 'string') {
-    throw new ValidationError(`${paramName} must be a string, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  if (!opts.allowEmpty && val.length === 0) {
-    throw new ValidationError(`${paramName} must not be an empty string. See /ai.md#argument-validation`);
-  }
-  return val;
-}
-
-interface AssertNumberOpts { optional?: boolean; min?: number; max?: number; integer?: boolean }
-function assertNumber(val: unknown, paramName: string, opts: AssertNumberOpts = {}): number | undefined {
-  if (val === undefined || val === null) {
-    if (opts.optional) return undefined;
-    throw new ValidationError(`${paramName} is required (expected number, got ${describeValue(val)}). See /ai.md#argument-validation`);
-  }
-  if (typeof val !== 'number' || !Number.isFinite(val)) {
-    throw new ValidationError(`${paramName} must be a finite number, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  if (opts.integer && !Number.isInteger(val)) {
-    throw new ValidationError(`${paramName} must be an integer, got ${val}. See /ai.md#argument-validation`);
-  }
-  if (opts.min !== undefined && val < opts.min) {
-    throw new ValidationError(`${paramName} must be >= ${opts.min}, got ${val}. See /ai.md#argument-validation`);
-  }
-  if (opts.max !== undefined && val > opts.max) {
-    throw new ValidationError(`${paramName} must be <= ${opts.max}, got ${val}. See /ai.md#argument-validation`);
-  }
-  return val;
-}
-
-interface AssertBooleanOpts { optional?: boolean }
-function assertBoolean(val: unknown, paramName: string, opts: AssertBooleanOpts = {}): boolean | undefined {
-  if (val === undefined || val === null) {
-    if (opts.optional) return undefined;
-    throw new ValidationError(`${paramName} is required (expected boolean, got ${describeValue(val)}). See /ai.md#argument-validation`);
-  }
-  if (typeof val !== 'boolean') {
-    throw new ValidationError(`${paramName} must be a boolean, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val;
-}
-
-interface AssertObjectOpts { optional?: boolean }
-function assertObject(val: unknown, paramName: string, opts: AssertObjectOpts = {}): Record<string, unknown> | undefined {
-  if (val === undefined || val === null) {
-    if (opts.optional) return undefined;
-    throw new ValidationError(`${paramName} is required (expected object, got ${describeValue(val)}). See /ai.md#argument-validation`);
-  }
-  if (typeof val !== 'object' || Array.isArray(val)) {
-    throw new ValidationError(`${paramName} must be a plain object (not array/null), got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val as Record<string, unknown>;
-}
-
-function assertFunction(val: unknown, paramName: string): (...args: unknown[]) => unknown {
-  if (typeof val !== 'function') {
-    throw new ValidationError(`${paramName} must be a function, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val as (...args: unknown[]) => unknown;
-}
-
-function assertEnum<T extends string>(val: unknown, allowed: readonly T[], paramName: string): T {
-  if (typeof val !== 'string' || !allowed.includes(val as T)) {
-    throw new ValidationError(`${paramName} must be one of: ${allowed.map(a => `"${a}"`).join(' | ')}. Got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val as T;
-}
-
-/** Validate a fixed-length tuple of numbers (e.g. [x,y,z]). */
-function assertNumberTuple(val: unknown, length: number, paramName: string): number[] {
-  if (!Array.isArray(val)) {
-    throw new ValidationError(`${paramName} must be an array of ${length} numbers, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  if (val.length !== length) {
-    throw new ValidationError(`${paramName} must have exactly ${length} elements, got length=${val.length}. See /ai.md#argument-validation`);
-  }
-  for (let i = 0; i < length; i++) {
-    if (typeof val[i] !== 'number' || !Number.isFinite(val[i])) {
-      throw new ValidationError(`${paramName}[${i}] must be a finite number, got ${describeValue(val[i])}. See /ai.md#argument-validation`);
-    }
-  }
-  return val as number[];
-}
-
-function assertArray(val: unknown, paramName: string): unknown[] {
-  if (!Array.isArray(val)) {
-    throw new ValidationError(`${paramName} must be an array, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val;
-}
-
-/** Reject any keys on `obj` that are not in the `allowed` set.
- *  Catches typos like `{ widthToDeep: [1,2] }` that would otherwise be silently ignored. */
-function assertNoUnknownKeys(obj: Record<string, unknown>, allowed: readonly string[], paramName: string): void {
-  for (const key of Object.keys(obj)) {
-    if (!allowed.includes(key)) {
-      throw new ValidationError(`${paramName}.${key} is not a recognized field. Allowed: ${allowed.join(', ')}. See /ai.md#argument-validation`);
-    }
-  }
-}
-
-/** Validate a GeometryAssertions object shape. Throws ValidationError on failure. */
-const ASSERTION_FIELDS = [
-  'minVolume', 'maxVolume', 'isManifold', 'maxComponents', 'genus', 'minGenus', 'maxGenus',
-  'minBounds', 'maxBounds', 'minTriangles', 'maxTriangles', 'boundsRatio', 'notes',
-] as const;
-const BOUNDS_RATIO_FIELDS = ['widthToDepth', 'widthToHeight', 'depthToHeight'] as const;
-
-function validateAssertionsShape(assertions: unknown, paramName: string): void {
-  const a = assertObject(assertions, paramName)!;
-  assertNoUnknownKeys(a, ASSERTION_FIELDS, paramName);
-  assertNumber(a.minVolume, `${paramName}.minVolume`, { optional: true });
-  assertNumber(a.maxVolume, `${paramName}.maxVolume`, { optional: true });
-  assertBoolean(a.isManifold, `${paramName}.isManifold`, { optional: true });
-  assertNumber(a.maxComponents, `${paramName}.maxComponents`, { optional: true, min: 0, integer: true });
-  assertNumber(a.genus, `${paramName}.genus`, { optional: true, integer: true });
-  assertNumber(a.minGenus, `${paramName}.minGenus`, { optional: true, integer: true });
-  assertNumber(a.maxGenus, `${paramName}.maxGenus`, { optional: true, integer: true });
-  if (a.minBounds !== undefined) assertNumberTuple(a.minBounds, 3, `${paramName}.minBounds`);
-  if (a.maxBounds !== undefined) assertNumberTuple(a.maxBounds, 3, `${paramName}.maxBounds`);
-  assertNumber(a.minTriangles, `${paramName}.minTriangles`, { optional: true, min: 0, integer: true });
-  assertNumber(a.maxTriangles, `${paramName}.maxTriangles`, { optional: true, min: 0, integer: true });
-  assertString(a.notes, `${paramName}.notes`, { optional: true, allowEmpty: true });
-  if (a.boundsRatio !== undefined) {
-    const br = assertObject(a.boundsRatio, `${paramName}.boundsRatio`)!;
-    assertNoUnknownKeys(br, BOUNDS_RATIO_FIELDS, `${paramName}.boundsRatio`);
-    for (const k of BOUNDS_RATIO_FIELDS) {
-      if (br[k] !== undefined) assertNumberTuple(br[k], 2, `${paramName}.boundsRatio.${k}`);
-    }
-  }
 }
 
 // ===========================================================================
@@ -1190,7 +831,10 @@ async function main() {
     }
   }
 
-  // Document-level drag-and-drop import
+  // Document-level drag-and-drop import. The editor UI is initialized once
+  // per page load and never torn down, so these document listeners live for
+  // the lifetime of the document — no cleanup needed. If editor teardown is
+  // ever added, store these handlers and pair with removeEventListener().
   function isImportableFile(file: File): boolean {
     const n = file.name.toLowerCase();
     return n.endsWith('.json') || n.endsWith('.js') || n.endsWith('.scad') || n.endsWith('.stl');

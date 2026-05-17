@@ -2,6 +2,17 @@
 // window.partwright. The set of tools the model receives is filtered by the
 // per-session scope toggles (see settings.ts). Disabled tools are removed
 // from the request payload entirely — the model can't call what isn't there.
+//
+// Flow per tool call:
+//   1. chatLoop.ts sends user input + history + system prompt to anthropic.ts.
+//   2. anthropic.ts streams back a tool_use content block.
+//   3. chatLoop.ts calls executeTool(name, input) defined in this file.
+//   4. executeTool reaches into window.partwright (built in main.ts) and
+//      wraps the return value into a tool_result block.
+//   5. The result is appended to history and fed back to Claude next turn.
+//
+// Argument validation lives on the API side (src/validation/apiValidation.ts)
+// so the same checks apply to console/MCP callers, not just the model.
 
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
