@@ -10,6 +10,8 @@ import {
   getTool,
   setBucketTolerance,
   getBucketTolerance,
+  setBrushRadius,
+  getBrushRadius,
   setSlabAxis,
   getSlabAxis,
   type PaintTool,
@@ -25,6 +27,8 @@ import {
   redoLastRegion,
   canRedoRegion,
   clearRegions,
+  removeRegion,
+  setRegionVisibility,
 } from './regions';
 import { forceDeactivate as forceDeactivateAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/textMode';
@@ -61,6 +65,7 @@ let undoBtn: HTMLButtonElement | null = null;
 let redoBtn: HTMLButtonElement | null = null;
 let toolButtons: Partial<Record<PaintTool, HTMLButtonElement>> = {};
 let bucketControls: HTMLElement | null = null;
+let brushControls: HTMLElement | null = null;
 let slabControls: HTMLElement | null = null;
 
 /** Initialize the paint UI inside the clip-controls overlay area. */
@@ -206,9 +211,13 @@ function createPickerPanel(): HTMLElement {
   customRow.appendChild(customLabel);
   panel.appendChild(customRow);
 
-  // === Bucket tool controls (tolerance slider) ===
+  // === Bucket tool controls (tolerance slider + number input) ===
   bucketControls = createBucketControls();
   panel.appendChild(bucketControls);
+
+  // === Brush tool controls (radius slider + number input) ===
+  brushControls = createBrushControls();
+  panel.appendChild(brushControls);
 
   // === Slab tool controls ===
   slabControls = createSlabControls();
@@ -286,6 +295,7 @@ function syncToolPanels(): void {
     if (btn) btn.className = toolButtonClass(t === tool);
   }
   if (bucketControls) bucketControls.classList.toggle('hidden', tool !== 'bucket');
+  if (brushControls) brushControls.classList.toggle('hidden', tool !== 'brush');
   if (slabControls) slabControls.classList.toggle('hidden', tool !== 'slab');
 }
 
@@ -294,36 +304,135 @@ function createBucketControls(): HTMLElement {
   wrap.className = 'mt-2 pt-2 border-t border-zinc-700';
 
   const label = document.createElement('div');
-  label.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium flex items-center justify-between';
-  const labelText = document.createElement('span');
-  labelText.textContent = 'Bucket tolerance';
-  const valueSpan = document.createElement('span');
-  valueSpan.className = 'text-zinc-400 normal-case tracking-normal';
-  valueSpan.textContent = formatTolerance(getBucketTolerance());
-  label.appendChild(labelText);
-  label.appendChild(valueSpan);
+  label.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium';
+  label.textContent = 'Bucket tolerance';
   wrap.appendChild(label);
 
-  // Slider exposes 1 - tolerance on a quasi-log scale so small changes near
-  // 1.0 (the strict end) are easy to dial in.
+  // Slider 0..100 maps to angle 0\u00B0..180\u00B0 (where tolerance = cos(angle)).
+  // Number input is the same angle in degrees, two-way synced with the slider
+  // so users who already know the angle they want (e.g. 5\u00B0) can just type it.
+  const row = document.createElement('div');
+  row.className = 'flex items-center gap-2';
+
   const slider = document.createElement('input');
   slider.type = 'range';
   slider.min = '0';
   slider.max = '100';
   slider.step = '1';
   slider.value = String(toleranceToSliderPct(getBucketTolerance()));
-  slider.className = 'w-full accent-blue-500';
+  slider.className = 'flex-1 accent-blue-500 min-w-0';
   slider.title = 'Maximum bend angle (0\u00B0\u2013180\u00B0) between adjacent faces the flood-fill is allowed to cross';
+
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = '0';
+  input.max = '180';
+  input.step = '0.1';
+  input.value = toleranceToAngleDeg(getBucketTolerance()).toFixed(1);
+  input.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  input.title = 'Bend angle in degrees (0\u2013180)';
+
+  const unit = document.createElement('span');
+  unit.className = 'text-[10px] text-zinc-500';
+  unit.textContent = '\u00B0';
+
   slider.addEventListener('input', () => {
     const tol = sliderPctToTolerance(parseInt(slider.value, 10));
     setBucketTolerance(tol);
-    valueSpan.textContent = formatTolerance(tol);
+    input.value = toleranceToAngleDeg(tol).toFixed(1);
   });
-  wrap.appendChild(slider);
+
+  const applyAngle = (): void => {
+    const raw = parseFloat(input.value);
+    if (!Number.isFinite(raw)) {
+      input.value = toleranceToAngleDeg(getBucketTolerance()).toFixed(1);
+      return;
+    }
+    const angle = Math.max(0, Math.min(180, raw));
+    const tol = Math.cos(angle * Math.PI / 180);
+    setBucketTolerance(tol);
+    slider.value = String(toleranceToSliderPct(tol));
+    input.value = angle.toFixed(1);
+  };
+  input.addEventListener('change', applyAngle);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyAngle(); input.blur(); } });
+
+  row.appendChild(slider);
+  row.appendChild(input);
+  row.appendChild(unit);
+  wrap.appendChild(row);
 
   const help = document.createElement('div');
   help.className = 'text-[10px] text-zinc-500 mt-1';
   help.textContent = 'Coplanar only \u2190\u2014\u2014\u2192 Whole connected mesh';
+  wrap.appendChild(help);
+
+  return wrap;
+}
+
+function createBrushControls(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'mt-2 pt-2 border-t border-zinc-700 hidden';
+
+  const label = document.createElement('div');
+  label.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium';
+  label.textContent = 'Brush size';
+  wrap.appendChild(label);
+
+  // Slider 0..200 = radius in tenths-of-a-unit (0..20 mesh units). Number input
+  // accepts any non-negative value so users on larger meshes can type past the
+  // slider cap.
+  const row = document.createElement('div');
+  row.className = 'flex items-center gap-2';
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = '0';
+  slider.max = '200';
+  slider.step = '1';
+  slider.value = String(Math.round(Math.min(getBrushRadius(), 20) * 10));
+  slider.className = 'flex-1 accent-blue-500 min-w-0';
+  slider.title = 'Brush radius in mesh units (0 = single triangle)';
+
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = '0';
+  input.step = '0.1';
+  input.value = getBrushRadius().toFixed(1);
+  input.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  input.title = 'Brush radius in mesh units';
+
+  const unit = document.createElement('span');
+  unit.className = 'text-[10px] text-zinc-500';
+  unit.textContent = 'u';
+
+  slider.addEventListener('input', () => {
+    const radius = parseInt(slider.value, 10) / 10;
+    setBrushRadius(radius);
+    input.value = radius.toFixed(1);
+  });
+
+  const applyRadius = (): void => {
+    const raw = parseFloat(input.value);
+    if (!Number.isFinite(raw) || raw < 0) {
+      input.value = getBrushRadius().toFixed(1);
+      return;
+    }
+    setBrushRadius(raw);
+    slider.value = String(Math.round(Math.min(raw, 20) * 10));
+    input.value = raw.toFixed(1);
+  };
+  input.addEventListener('change', applyRadius);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyRadius(); input.blur(); } });
+
+  row.appendChild(slider);
+  row.appendChild(input);
+  row.appendChild(unit);
+  wrap.appendChild(row);
+
+  const help = document.createElement('div');
+  help.className = 'text-[10px] text-zinc-500 mt-1';
+  help.textContent = 'Single triangle \u2190\u2014\u2014\u2192 Wider brush';
   wrap.appendChild(help);
 
   return wrap;
@@ -342,10 +451,8 @@ function sliderPctToTolerance(pct: number): number {
   return Math.cos(angleDeg * Math.PI / 180);
 }
 
-function formatTolerance(tol: number): string {
-  // Show as "θ ≤ N°" — the angle whose cosine is `tol`. Friendlier than 0.9995.
-  const angleDeg = Math.acos(Math.max(-1, Math.min(1, tol))) * 180 / Math.PI;
-  return `\u2264 ${angleDeg.toFixed(1)}\u00B0`;
+function toleranceToAngleDeg(tol: number): number {
+  return Math.acos(Math.max(-1, Math.min(1, tol))) * 180 / Math.PI;
 }
 
 function createSlabControls(): HTMLElement {
@@ -431,25 +538,61 @@ function updateRegionList(container: HTMLElement): void {
 
   for (const region of regions) {
     const row = document.createElement('div');
-    row.className = 'flex items-center gap-1.5 py-0.5';
+    row.className = 'flex items-center gap-1.5 py-0.5 group';
+    row.dataset.regionId = String(region.id);
 
     const dot = document.createElement('span');
     dot.className = 'w-3 h-3 rounded-sm shrink-0';
     dot.style.backgroundColor = rgbToCSS(region.color);
+    if (!region.visible) dot.classList.add('opacity-30');
 
     const label = document.createElement('span');
-    label.className = 'text-[11px] text-zinc-400 truncate flex-1';
+    label.className = `text-[11px] truncate flex-1 ${region.visible ? 'text-zinc-400' : 'text-zinc-600 line-through'}`;
     label.textContent = region.name;
 
     const count = document.createElement('span');
-    count.className = 'text-[10px] text-zinc-600';
+    count.className = 'text-[10px] text-zinc-600 tabular-nums';
     count.textContent = `${region.triangles.size}\u25B3`;
+
+    const eyeBtn = document.createElement('button');
+    eyeBtn.className = 'shrink-0 w-4 h-4 flex items-center justify-center text-zinc-500 hover:text-zinc-200 transition-colors';
+    eyeBtn.title = region.visible ? 'Hide this region' : 'Show this region';
+    eyeBtn.dataset.action = 'toggle-region-visibility';
+    eyeBtn.innerHTML = region.visible ? eyeIconSVG() : eyeOffIconSVG();
+    eyeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setRegionVisibility(region.id, !region.visible);
+    });
+
+    const trashBtn = document.createElement('button');
+    trashBtn.className = 'shrink-0 w-4 h-4 flex items-center justify-center text-zinc-500 hover:text-red-400 transition-colors';
+    trashBtn.title = 'Delete this region';
+    trashBtn.dataset.action = 'delete-region';
+    trashBtn.innerHTML = trashIconSVG();
+    trashBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeRegion(region.id);
+    });
 
     row.appendChild(dot);
     row.appendChild(label);
     row.appendChild(count);
+    row.appendChild(eyeBtn);
+    row.appendChild(trashBtn);
     container.appendChild(row);
   }
+}
+
+function eyeIconSVG(): string {
+  return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" class="w-3.5 h-3.5"><path d="M1 8c1.5-3 4-5 7-5s5.5 2 7 5c-1.5 3-4 5-7 5s-5.5-2-7-5z"/><circle cx="8" cy="8" r="2"/></svg>';
+}
+
+function eyeOffIconSVG(): string {
+  return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" class="w-3.5 h-3.5"><path d="M1 8c1.5-3 4-5 7-5s5.5 2 7 5c-1.5 3-4 5-7 5s-5.5-2-7-5z"/><line x1="2" y1="2" x2="14" y2="14"/></svg>';
+}
+
+function trashIconSVG(): string {
+  return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" class="w-3.5 h-3.5"><path d="M3 4h10M5 4V2.5a1 1 0 011-1h4a1 1 0 011 1V4m-6 0v9.5a1 1 0 001 1h4a1 1 0 001-1V4"/></svg>';
 }
 
 function rgbToCSS(color: [number, number, number]): string {

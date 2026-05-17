@@ -82,7 +82,8 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion } from './color/regions';
+import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius } from './color/paintMode';
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle } from './color/adjacency';
 import { findSlabTriangles } from './color/slabPaint';
@@ -564,7 +565,7 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): vo
     }
 
     if (triangles.size > 0) {
-      addRegion(region.name, region.color, region.source, region.descriptor, triangles);
+      addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false);
     }
   }
 
@@ -3520,6 +3521,7 @@ async function main() {
           source: r.source,
           triangles: r.triangles.size,
           order: r.order,
+          visible: r.visible,
           bbox: stats?.bbox ?? null,
           centroid: stats?.centroid ?? null,
         };
@@ -3918,6 +3920,67 @@ async function main() {
       scheduleColorRefresh();
       syncLockState();
       return { removed: true, id };
+    },
+
+    /** Toggle whether a single region is rendered in the viewport. Hidden
+     *  regions still ship in GLB/3MF exports — visibility is a UI-only flag
+     *  meant for previewing the model without a region's overlay. Mirrors the
+     *  eye-icon button in the paint panel's region list. Returns
+     *  `{ id, visible }` on success or `{ error }` if no region matches. */
+    setRegionVisibility(id: number, visible: boolean) {
+      if (!Number.isFinite(id)) return { error: 'setRegionVisibility(id, visible) requires a finite integer id from listRegions()' };
+      if (typeof visible !== 'boolean') return { error: 'setRegionVisibility(id, visible): visible must be a boolean (true | false)' };
+      const ok = setRegionVisibility(id, visible);
+      if (!ok) return { error: `No region with id=${id}. Call listRegions() to see current ids.` };
+      scheduleColorRefresh();
+      return { id, visible };
+    },
+
+    /** Shorthand for `setRegionVisibility(id, false)`. */
+    hideRegion(id: number) {
+      return this.setRegionVisibility(id, false);
+    },
+
+    /** Shorthand for `setRegionVisibility(id, true)`. */
+    showRegion(id: number) {
+      return this.setRegionVisibility(id, true);
+    },
+
+    /** Read or write the bucket-tool tolerance used by the interactive paint
+     *  panel and by `paintRegion` when no `tolerance` argument is passed.
+     *  Value is the cosine of the maximum allowed bend angle (1 = strict
+     *  coplanar, -1 = whole connected component). Use the angle form via
+     *  `paintRegion({tolerance})` if you'd rather think in degrees.
+     *  Returns the previous + new value on set. */
+    getBucketTolerance() {
+      return { tolerance: getPaintBucketTolerance() };
+    },
+    setBucketTolerance(tolerance: number) {
+      if (typeof tolerance !== 'number' || !Number.isFinite(tolerance)) {
+        return { error: 'setBucketTolerance(tolerance): tolerance must be a finite number in [-1, 1] (cosine of max bend angle)' };
+      }
+      const clamped = Math.max(-1, Math.min(1, tolerance));
+      const previous = getPaintBucketTolerance();
+      setPaintBucketTolerance(clamped);
+      return { previous, tolerance: clamped };
+    },
+
+    /** Read or write the brush-tool radius (in mesh units) used by the
+     *  interactive paint panel. `0` means single-triangle (legacy behavior);
+     *  any positive value expands the brush footprint to every triangle whose
+     *  centroid lies within the radius of the click/drag point.
+     *  Programmatic painters should use `paintNear({point, radius})` or
+     *  `paintFaces({triangleIds})` — this setter only changes the UI brush. */
+    getBrushSize() {
+      return { radius: getPaintBrushRadius() };
+    },
+    setBrushSize(radius: number) {
+      if (typeof radius !== 'number' || !Number.isFinite(radius) || radius < 0) {
+        return { error: 'setBrushSize(radius): radius must be a non-negative finite number (mesh units)' };
+      }
+      const previous = getPaintBrushRadius();
+      setPaintBrushRadius(radius);
+      return { previous, radius };
     },
 
     /** Undo the most recent paint operation. The removed region goes onto
@@ -4627,8 +4690,15 @@ async function main() {
         'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai.md#color-regions' },
         'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai.md#color-regions' },
         'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai.md#color-regions' },
+        'setRegionVisibility': { signature: 'setRegionVisibility(id, visible) -- Show/hide ONE region in the viewport. Hidden regions still export.', docs: '/ai.md#color-regions' },
+        'hideRegion':      { signature: 'hideRegion(id) -- Shorthand for setRegionVisibility(id, false).', docs: '/ai.md#color-regions' },
+        'showRegion':      { signature: 'showRegion(id) -- Shorthand for setRegionVisibility(id, true).', docs: '/ai.md#color-regions' },
         'undoLastPaint':   { signature: 'undoLastPaint() -- Undo the most recent paint op. Removed region goes on a redo stack.', docs: '/ai.md#color-regions' },
         'redoLastPaint':   { signature: 'redoLastPaint() -- Reapply the most recently undone paint op.', docs: '/ai.md#color-regions' },
+        'getBucketTolerance': { signature: 'getBucketTolerance() -- Read the bucket flood-fill tolerance (cosine of max bend angle).', docs: '/ai.md#color-regions' },
+        'setBucketTolerance': { signature: 'setBucketTolerance(tolerance) -- Set the bucket flood-fill tolerance (-1..1). Affects the UI bucket tool and the default for paintRegion.', docs: '/ai.md#color-regions' },
+        'getBrushSize':    { signature: 'getBrushSize() -- Read the UI brush radius (mesh units). 0 = single triangle.', docs: '/ai.md#color-regions' },
+        'setBrushSize':    { signature: 'setBrushSize(radius) -- Set the UI brush radius (mesh units, >= 0). Affects only the interactive brush tool; programmatic painting uses paintNear / paintFaces.', docs: '/ai.md#color-regions' },
         // Annotations
         'listAnnotations':    { signature: 'listAnnotations() -- List freehand strokes -> [{id, color, width, points}]', docs: '/ai.md#annotations' },
         'listTextAnnotations':{ signature: 'listTextAnnotations() -- List pinned text labels -> [{id, text, color, fontSizePx, anchor}]', docs: '/ai.md#annotations' },
