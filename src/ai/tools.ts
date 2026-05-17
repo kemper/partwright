@@ -2,6 +2,17 @@
 // window.partwright. The set of tools the model receives is filtered by the
 // per-session scope toggles (see settings.ts). Disabled tools are removed
 // from the request payload entirely — the model can't call what isn't there.
+//
+// Flow per tool call:
+//   1. chatLoop.ts sends user input + history + system prompt to anthropic.ts.
+//   2. anthropic.ts streams back a tool_use content block.
+//   3. chatLoop.ts calls executeTool(name, input) defined in this file.
+//   4. executeTool reaches into window.partwright (built in main.ts) and
+//      wraps the return value into a tool_result block.
+//   5. The result is appended to history and fed back to Claude next turn.
+//
+// Argument validation lives on the API side (src/validation/apiValidation.ts)
+// so the same checks apply to console/MCP callers, not just the model.
 
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
@@ -288,6 +299,16 @@ const ALL_TOOLS: ToolDefinition[] = [
   {
     name: 'cancelPendingStrokes',
     description: 'Discard all pending strokes (and any subdivision-in-progress) without saving. Resets the working mesh to the version\'s saved state. Useful if a stroke went wrong before save.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'undoLastSculptOp',
+    description: 'Undo the most recent pending sculpt stroke. The removed stroke goes onto a redo stack — call redoLastSculptOp() to re-apply it. Returns {error} if there are no strokes to undo. The redo stack is cleared by any new stroke, cancelPendingStrokes, or version navigation.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'redoLastSculptOp',
+    description: 'Re-apply the most recently undone sculpt stroke. Returns {error} if the redo stack is empty (nothing was undone, or a new stroke was added since the last undo).',
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -580,7 +601,7 @@ const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInB
  *  exists to persist a deformed mesh as a new locked version. Without
  *  saveVersions there's no way to commit and the pending state would
  *  just leak. */
-const SCULPT_GATED = new Set(['subdivideMesh', 'applyBrushDab', 'applyBrushStroke', 'saveSculptedVersion', 'cancelPendingStrokes']);
+const SCULPT_GATED = new Set(['subdivideMesh', 'applyBrushDab', 'applyBrushStroke', 'saveSculptedVersion', 'cancelPendingStrokes', 'undoLastSculptOp', 'redoLastSculptOp']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -773,6 +794,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return await api.saveSculptedVersion(input);
     case 'cancelPendingStrokes':
       return api.cancelPendingStrokes();
+    case 'undoLastSculptOp':
+      return await api.undoLastSculptOp();
+    case 'redoLastSculptOp':
+      return await api.redoLastSculptOp();
     case 'getFeatureCentroids':
       return api.getFeatureCentroids(input);
     case 'paintExplain': {

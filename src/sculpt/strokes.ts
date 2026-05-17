@@ -9,6 +9,27 @@ let strokes: SerializedStroke[] = [];
 let subdivisionLevel = 0;
 const listeners: ChangeListener[] = [];
 
+// In-memory redo stack for pending strokes. Each entry is a stroke that was
+// popped by undoLastPendingStroke. Cleared by any new addStroke, clearStrokes,
+// or deserialize (i.e. version navigation).
+let strokeRedoStack: SerializedStroke[] = [];
+
+export function getStrokeRedoStack(): readonly SerializedStroke[] {
+  return strokeRedoStack;
+}
+
+export function pushRedoStroke(s: SerializedStroke): void {
+  strokeRedoStack.push({ ...s, points: s.points.map(p => ({ ...p })) });
+}
+
+export function popRedoStroke(): SerializedStroke | null {
+  return strokeRedoStack.pop() ?? null;
+}
+
+export function clearStrokeRedo(): void {
+  strokeRedoStack = [];
+}
+
 function notify(): void {
   for (const fn of listeners) fn();
 }
@@ -52,10 +73,10 @@ export function addStroke(
     points,
     radius,
     strength,
-    // Pin to the level the user committed to before sculpting started.
     subdivisionLevel,
   };
   strokes.push(stroke);
+  clearStrokeRedo(); // new stroke invalidates redo branch
   notify();
   return stroke;
 }
@@ -66,10 +87,18 @@ export function popLastStroke(): SerializedStroke | null {
   return s;
 }
 
+/** Re-add a stroke from the redo stack without clearing the redo stack.
+ *  Only used by the redo flow; normal sculpt calls use addStroke. */
+export function restoreStroke(s: SerializedStroke): void {
+  strokes.push({ ...s, points: s.points.map(p => ({ ...p })) });
+  notify();
+}
+
 export function clearStrokes(): void {
-  if (strokes.length === 0 && subdivisionLevel === 0) return;
+  if (strokes.length === 0 && subdivisionLevel === 0 && strokeRedoStack.length === 0) return;
   strokes = [];
   subdivisionLevel = 0;
+  strokeRedoStack = [];
   notify();
 }
 
@@ -85,6 +114,7 @@ export function serialize(): SerializedStroke[] {
 }
 
 export function deserialize(data: SerializedStroke[] | undefined): void {
+  strokeRedoStack = []; // version navigation clears redo
   if (!data || data.length === 0) {
     strokes = [];
     subdivisionLevel = 0;

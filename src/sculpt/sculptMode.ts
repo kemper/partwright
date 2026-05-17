@@ -96,79 +96,6 @@ export function subdivideOnce(): MeshData | null {
   return workingMesh;
 }
 
-/** Subdivide the working mesh to an absolute level (replacing any
- *  previously-set subdivision count). Used by AI tool calls that want
- *  to specify "give me level N" rather than "click subdivide once".
- *  Rejected if there are already pending strokes — the existing strokes
- *  are pinned to the current level and changing it would invalidate
- *  their replay. */
-export function subdivideToLevel(level: number): { mesh: MeshData; level: number } | { error: string } {
-  if (!baseMesh) return { error: 'No base mesh available — run code first.' };
-  if (!Number.isFinite(level) || !Number.isInteger(level) || level < 0) {
-    return { error: 'level must be a non-negative integer' };
-  }
-  setSubdivisionLevel(level);
-  rebuildWorkingFromBase();
-  if (!workingMesh) return { error: 'Subdivision produced no mesh' };
-  return { mesh: workingMesh, level };
-}
-
-/** Ensure the working mesh exists. AI tool calls (applyBrushDab,
- *  applyBrushStroke) need the working mesh to act on, but the UI only
- *  creates it on `activate()`. This is the lazy-init equivalent for
- *  the non-UI path. Returns the working mesh or null if there's no
- *  base mesh to derive from. */
-export function ensureWorkingMesh(): MeshData | null {
-  if (workingMesh) return workingMesh;
-  if (!baseMesh) return null;
-  rebuildWorkingFromBase();
-  return workingMesh;
-}
-
-/** Apply a single brush sample to the working mesh and push the result
- *  to the viewport. Returns the affected vertex count (vertices within
- *  the brush radius). Used by both the UI drag path and the AI dab/
- *  stroke tools so brush math lives in one place. */
-export function applyBrushSampleToWorkingMesh(
-  brush: BrushKind,
-  point: [number, number, number],
-  normal: [number, number, number],
-  radius: number,
-  strength: number,
-): number {
-  if (!workingMesh) return 0;
-  const affected = countAffectedVertices(workingMesh, point, radius);
-  if (brush === 'push') {
-    applyPush(workingMesh, point, normal, radius, strength);
-  } else if (brush === 'smooth') {
-    applySmooth(workingMesh, point, radius, strength);
-  }
-  pushMeshToViewport();
-  return affected;
-}
-
-/** Count vertices within `radius` of `point` on `mesh`. Used as the
- *  affectedVertices return value for AI brush tools so the agent can
- *  tell whether its brush landed on geometry. */
-function countAffectedVertices(
-  mesh: MeshData,
-  point: [number, number, number],
-  radius: number,
-): number {
-  const { vertProperties, numVert, numProp } = mesh;
-  const r2 = radius * radius;
-  const px = point[0], py = point[1], pz = point[2];
-  let count = 0;
-  for (let i = 0; i < numVert; i++) {
-    const off = i * numProp;
-    const dx = vertProperties[off] - px;
-    const dy = vertProperties[off + 1] - py;
-    const dz = vertProperties[off + 2] - pz;
-    if (dx * dx + dy * dy + dz * dz <= r2) count++;
-  }
-  return count;
-}
-
 function rebuildWorkingFromBase(): void {
   if (!baseMesh) { workingMesh = null; return; }
   const level = getSubdivisionLevel();
@@ -272,8 +199,12 @@ function recordSample(
   lastSample = point;
 
   // Apply this single sample to the live mesh so the user sees it.
-  // Shared with the AI dab/stroke path so brush math is identical.
-  applyBrushSampleToWorkingMesh(dragBrush, point, normal, dragRadius, dragStrength);
+  if (dragBrush === 'push') {
+    applyPush(workingMesh, point, normal, dragRadius, dragStrength);
+  } else if (dragBrush === 'smooth') {
+    applySmooth(workingMesh, point, dragRadius, dragStrength);
+  }
+  pushMeshToViewport();
 }
 
 function finishStroke(): void {

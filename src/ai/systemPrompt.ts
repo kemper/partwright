@@ -178,9 +178,18 @@ Canonical sculpt workflows:
  - Coarse mesh: subdivideMesh({levels: 2}) BEFORE any brush calls (the
    first stroke pins the level for the whole pending queue, so you
    can't bump it mid-stream).
- - Recovery: if a brush landed in the wrong place, cancelPendingStrokes
-   wipes the working mesh back to the saved base. Use it instead of
-   trying to "un-push" with the smooth brush.
+ - Recovery: if a brush landed in the wrong place, use
+   undoLastSculptOp() to remove just the most recent stroke (it goes
+   onto a redo stack — call redoLastSculptOp() to put it back). For a
+   full restart, cancelPendingStrokes wipes the working mesh back to
+   the saved base. Prefer undoLastSculptOp over cancelPendingStrokes
+   when only the last stroke was wrong and you want to keep the rest.
+ - Undo/redo: undoLastSculptOp() pops the last pending stroke onto a
+   redo stack. redoLastSculptOp() re-applies it. Both return {error}
+   if the respective stack is empty. The redo stack is cleared by any
+   new stroke, cancelPendingStrokes, or version navigation — call
+   saveSculptedVersion before navigating if you want the state
+   preserved.
 
 The brush model is honest: AI can't really drag a continuous path the
 way a human can. Single-point dabs cover most useful cases (an indent
@@ -257,7 +266,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
     `Model: ${toggles.model}`,
     `Auto-retry on tool error: ${toggles.autoRetry}`,
     `Iteration cap (tool round-trips this turn): ${capLabel}. Pace your tool calls accordingly — if the cap is low, batch related work and prefer one-shot tools like paintComponent or paintInBox over verify-then-paint loops.`,
-    `Spend cap (USD this turn): ${spendLabel}. Vision tool calls (renderView, paintPreview withImage) are the most expensive — skip them when stats alone are enough.`,
+    `Spend cap (total USD this session): ${spendLabel}. Prior turns in this session count toward the same budget, so the cap can fire mid-turn even on a cheap iteration. Vision tool calls (renderView, paintPreview withImage) are the most expensive — skip them when stats alone are enough.`,
   ];
   if (restrictions.length > 0) {
     lines.push('');
