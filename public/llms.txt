@@ -2,6 +2,10 @@
 
 > AI-driven parametric CAD in the browser. Supports JavaScript (manifold-3d API) and OpenSCAD (.scad). All interaction is via the `window.partwright` console API. `window.mainifold` is a legacy alias.
 
+## Entrypoint
+
+Navigate to `/editor?view=ai` -- this bypasses the landing page and shows 4 isometric views so you can see your geometry from every angle without clicking any tabs.
+
 ## Quickstart
 
 ```js
@@ -13,6 +17,48 @@ await partwright.runAndSave(code, "v1 - description", {
 // JS code must end with: return <Manifold object>;
 // SCAD code uses standard OpenSCAD syntax (no return)
 ```
+
+`await` every async method. Without `await` you'll inspect a Promise object instead of the actual result.
+
+## Verify visually after structural changes
+
+Stats alone miss warped roofs, twisted spires, and wrong proportions:
+
+```js
+partwright.renderView({ elevation: 0,  azimuth: 0,  ortho: true })  // front
+partwright.renderView({ elevation: 0,  azimuth: 90, ortho: true })  // right
+partwright.renderView({ elevation: 90,              ortho: true })  // top
+```
+
+Or switch to the Elevations tab (`?view=elevations`) for a 6-view grid.
+
+## Resuming a session
+
+```js
+await partwright.openSession(id)
+const ctx = await partwright.getSessionContext()
+// ctx.notes -- [REQUIREMENT]/[DECISION]/[FEEDBACK] context from prior work
+// ctx.versions -- prior versions with geometry summary
+// ctx.agentHints.recentErrors -- last 5 validation errors (avoid repeating them)
+```
+
+## Tagging faces with color
+
+For a flat axis-aligned face, derive the seed from the bounding box:
+
+```js
+const bb = partwright.getBoundingBox();
+await partwright.paintRegion({
+  point:  [(bb.min[0]+bb.max[0])/2, (bb.min[1]+bb.max[1])/2, bb.max[2]],
+  normal: [0, 0, 1],          // outward-pointing normal of the top face
+  color:  [1, 0, 0],          // RGB 0..1
+  name:   "Top",
+})
+// Save the uncolored baseline first -- painting locks the editor for code edits.
+// Check {error} on the return and confirm with listRegions().
+```
+
+For organic shapes, code-authored features, or anything where flood-fill is unreliable, prefer `paintByLabels` (when you author the model with `api.label(...)`), `paintNear` / `paintInBox` (coordinate-driven), or `paintPreview` to dry-run a selector. See `/ai.md#color-regions`.
 
 ## Language switching
 

@@ -2283,6 +2283,7 @@ async function main() {
       await addSessionNote(
         '[WORKFLOW] Drive this app via window.partwright (see /ai.md). ' +
         'Use runAndSave(code, label, assertions) for iterations; ' +
+        'after structural changes verify visually via renderView({ortho:true}) or the Elevations tab; ' +
         'addSessionNote with [REQUIREMENT]/[DECISION]/[MEASUREMENT]/[FEEDBACK]/[ATTEMPT]/[TODO] prefixes; ' +
         'getSessionContext() when resuming.',
       );
