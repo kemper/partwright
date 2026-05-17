@@ -208,6 +208,8 @@ partwright.getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, max
 partwright.listRegions()                 // -> [{id, name, color, source, triangles, order, bbox, centroid}, ...]
 partwright.listComponents()              // -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- per-piece bbox for unioned models
 partwright.paintComponent({index, color, name?, topOnly?}) // One-call: paint the Nth boolean-distinct piece
+partwright.listLabels()                  // -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- labels registered via api.label(shape, name) in the current run
+partwright.paintByLabel({label, color, name?}) // Paint a labelled feature by name. Exact, survives boolean ops. manifold-js only.
 partwright.getFeatureCentroids({maxGroups?, withinBox?}?)  // Lightweight planning: centroids + normals + bbox per face group, NO triangleIds
 partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, coverageMode?, maxTriangleArea?, withImage?, view?}) // DRY-RUN -> {triangleCount, bbox, centroid, totalArea, largestTriangleArea, [thumbnail]}
 partwright.undoLastPaint()               // Reverse the SINGLE most recent paint op -> {undone, id, ...}
@@ -538,10 +540,43 @@ const preview = partwright.paintPreview({ box: { min: [-5, -5, 8], max: [5, 5, 1
 // otherwise: partwright.paintInBox({box: same, color: [1,0,0]})
 ```
 
-**Paint by feature on unioned models.** When the geometry is a boolean
-union of distinct pieces (head + eyes + mouth, body + arms + legs, etc.),
-the one-call form is `paintComponent(index, color)` — it decomposes and
-paints in a single round trip:
+**Labelled construction (the cleanest paint primitive on
+agent-authored manifold-js).** When you're writing the model code AND
+plan to paint features after, wrap each feature in `api.label(shape, name)`
+at construction time. Painting after is then a pure name lookup — no
+coordinates, no bounding boxes, no fan-bleed. The triangle set comes
+straight from manifold-3d's `runOriginalID` provenance and is exact
+even when shapes overlap.
+
+```js
+// In your model code:
+const head = api.label(api.Manifold.sphere(10), 'head');
+const eyeL = api.label(api.Manifold.sphere(2).translate([-3, 5, 7]), 'eyeL');
+const eyeR = api.label(api.Manifold.sphere(2).translate([ 3, 5, 7]), 'eyeR');
+return head.add(eyeL).add(eyeR);
+
+// After runAndSave, paint by name:
+partwright.paintByLabel({ label: 'eyeL', color: [0, 0, 1] });
+partwright.paintByLabel({ label: 'eyeR', color: [0, 0, 1] });
+// listLabels() returns what's available; check it if a paintByLabel
+// returns "no label X".
+```
+
+`api.labeledUnion([{name, shape}, ...])` is sugar that labels each
+entry and unions them in one call. Labels are runtime-only state
+(manifold-3d assigns fresh originalIDs every run); region descriptors
+persist the name, and rehydration re-resolves by name on the next
+load — so saved-version round-trips work as long as the code still
+defines the same label names.
+
+Limitations: manifold-js only (SCAD has no equivalent). For
+geometry you didn't author with labels (user-imported, legacy code),
+fall back to `paintComponent` below.
+
+**Paint by feature on unioned models (legacy fallback).** When the
+geometry is a boolean union of distinct pieces but the code didn't
+use `api.label`, the one-call form is `paintComponent(index, color)`
+— it decomposes and paints in a single round trip:
 
 ```js
 const { components } = partwright.listComponents();
@@ -554,6 +589,8 @@ for (const c of components) {
 
 This avoids guessing world coordinates, survives small parametric
 tweaks to the model, and skips the listComponents → paintInBox pair.
+Prefer `paintByLabel` when you control the code; reach for
+`paintComponent` when you don't.
 
 **Avoiding over-paint.** When `paintInBox` / `paintNear` catches side
 walls or the bottom face by mistake, pass `topOnly: true` — restricts

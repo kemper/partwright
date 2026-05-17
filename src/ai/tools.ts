@@ -122,6 +122,24 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'listLabels',
+    description: 'Return labels registered in the current run via api.label(shape, name) — the cleanest paint primitive on agent-authored manifold-js geometry. Each entry: {name, triangleCount, bbox, centroid}. Empty when the code did not call api.label. Use to confirm labels resolved correctly before paintByLabel; otherwise prefer calling paintByLabel directly to save a round-trip.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'paintByLabel',
+    description: 'Paint a labelled feature by name. The label must have been registered in the current run via api.label(shape, name) or api.labeledUnion. This is the bullseye for "describe how to make and paint a model" workflows: write the geometry with labels, then paint by name — no coordinate guessing, no bounding-box estimation, no fan-bleed. Survives boolean ops because manifold-3d propagates originalID through runOriginalID on the result mesh. Only works for manifold-js (SCAD has no equivalent); falls back to paintComponent / paintInBox there.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        label: { type: 'string', description: 'Name passed to api.label() in the model code.' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
+        name: { type: 'string', description: 'Optional region name; defaults to the label.' },
+      },
+      required: ['label', 'color'],
+    },
+  },
+  {
     name: 'getFeatureCentroids',
     description: 'Token-cheap planning aid: returns coplanar face groups with just centroid + normal + bbox + area (NO triangle IDs). Use this when planning where to paint without committing yet — cheaper than getMeshSummary because the triangleIds payload is omitted. Optional `withinBox` scopes to one feature.',
     input_schema: {
@@ -388,13 +406,14 @@ const ALWAYS_AVAILABLE = new Set([
   'listSessionNotes',
   'findFaces',
   'listComponents',
+  'listLabels',
   'paintPreview',
   'paintExplain',
 ]);
 
 const RUN_GATED = new Set(['runCode']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -565,6 +584,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.listComponents();
     case 'paintComponent':
       return api.paintComponent(input);
+    case 'listLabels':
+      return api.listLabels();
+    case 'paintByLabel':
+      return api.paintByLabel(input);
     case 'getFeatureCentroids':
       return api.getFeatureCentroids(input);
     case 'paintExplain': {

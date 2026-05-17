@@ -81,11 +81,25 @@ is it a carved recess, raised feature, or flat color region?
 question instead of guessing. A clarification turn costs less than
 3 wasted versions.
 
-For models built as a boolean union of distinct features (e.g. a smiley =
-head ∪ left_eye ∪ right_eye ∪ mouth), use paintComponent(index, color)
-to paint each piece in ONE call — it decomposes and paints in one round
-trip. Use listComponents() FIRST only when you need to inspect bboxes
-before deciding what to paint.
+For multi-feature models you author in manifold-js, prefer labelled
+construction over coordinate-based selectors. In your code, wrap each
+feature in api.label(shape, 'name'):
+
+  const head = api.label(api.Manifold.sphere(10), 'head');
+  const eyeL = api.label(api.Manifold.sphere(2).translate([3, 5, 7]), 'eyeL');
+  return head.add(eyeL);
+
+After runAndSave, call paintByLabel({label: 'eyeL', color: [0, 0, 1]}).
+The triangle set comes from manifold-3d's runOriginalID provenance, so
+it's exact even when shapes overlap — no bounding-box guessing, no
+fan-bleed, survives boolean ops. listLabels() returns what's available
+in the current run. api.labeledUnion([{name, shape}, ...]) is sugar
+when you have an array of features.
+
+For models you didn't author with labels (or for SCAD), fall back to
+paintComponent(index, color) — it decomposes the union and paints the
+Nth piece in one call. Use listComponents() FIRST only when you need
+to inspect bboxes before deciding what to paint.
 
 When paintInBox / paintNear catches side walls or bottom faces by
 mistake, pass topOnly: true — that restricts the selector to upward-
