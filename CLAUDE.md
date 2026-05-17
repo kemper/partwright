@@ -113,6 +113,7 @@ After any changes that touch routing, Vite config, index.html, or initialization
 11. **Gallery badges**: Colored versions in the gallery should show small color-swatch dots next to the version label.
 12. **Color export**: With color regions painted, export GLB — the file should carry vertex colors. Export 3MF — the file should include `<basematerials>` and per-triangle `pid` attributes.
 13. **Annotations are per-version**: Annotate v1, save v2 (annotations persist into v2). Clear annotations, draw a different one, save v3. Navigating v1↔v2↔v3 should swap annotations to match each version (v1 empty, v2 first set, v3 second set). Importing a schema-1.2 file (top-level `annotations`) should attach those annotations to the latest version on import.
+14. **STL import**: Click Import → "Choose file…" → pick an `.stl`. A new session is created named after the file, the editor shows a short `return Manifold.ofMesh(api.imports[0])` wrapper, and the mesh renders in the viewport. The version label is "imported" and editing the wrapper (e.g. adding `.subtract(Manifold.cube([5,5,5], true))`) re-renders correctly. Closing and reopening the session must restore the imported mesh from IndexedDB.
 
 ## AI Agent Workflow & API Reference
 
@@ -143,6 +144,9 @@ Static site, no backend. Vanilla TypeScript + Vite.
 - `src/export/stl.ts` — STL export
 - `src/export/obj.ts` — OBJ export
 - `src/export/threemf.ts` — 3MF export (ZIP-packaged XML)
+- `src/import/parsers/stl.ts` — STL import (binary + ASCII)
+- `src/import/codegen.ts` — Generates `Manifold.ofMesh(api.imports[i])` wrapper code
+- `src/import/importedMesh.ts` — Active-imports register exposed to the sandbox as `api.imports`
 
 ## Coordinate System
 

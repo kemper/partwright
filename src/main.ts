@@ -42,6 +42,9 @@ import {
   type ImportInboxEntry,
 } from './import/importInbox';
 import { showImportPreview, summarizeSessionImport } from './ui/importPreview';
+import { parseSTL } from './import/parsers/stl';
+import { generateImportCode } from './import/codegen';
+import { setActiveImports, type ImportedMesh } from './import/importedMesh';
 import type { BuiltExport } from './export/gltf';
 
 /** Register a freshly-built export blob in the inbox so it shows up in Recent Exports. */
@@ -260,16 +263,38 @@ function clearEditorErrorPanel(panel: HTMLElement): void {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+/** Bounding box scanned directly from a MeshData's vertex buffer. Used when no
+ *  Manifold is available (e.g. render-only STL imports) so the rest of the
+ *  stats pipeline still has a bbox to work with. */
+function bboxFromMesh(mesh: MeshData): { min: [number, number, number]; max: [number, number, number] } | null {
+  if (mesh.numVert === 0) return null;
+  const v = mesh.vertProperties;
+  const n = mesh.numProp;
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < mesh.numVert; i++) {
+    const x = v[i * n], y = v[i * n + 1], z = v[i * n + 2];
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
+}
+
 function computeGeometryStats(manifold: any, meshData: MeshData, executionTimeMs?: number, sourceCode?: string): Record<string, unknown> {
-  const bbox = getBoundingBox(manifold);
+  // Bounding box: prefer the manifold's own, but fall back to scanning the mesh
+  // verts so render-only imports (manifold==null) still get usable bbox/dims/slices.
+  const bbox = (manifold && getBoundingBox(manifold)) || bboxFromMesh(meshData);
 
   let volume = 0;
   let surfaceArea = 0;
-  try {
-    volume = manifold.volume();
-    surfaceArea = manifold.surfaceArea();
-  } catch {
-    // fallback if methods unavailable
+  if (manifold) {
+    try {
+      volume = manifold.volume();
+      surfaceArea = manifold.surfaceArea();
+    } catch {
+      // fallback if methods unavailable
+    }
   }
 
   const centroid = bbox
@@ -281,29 +306,34 @@ function computeGeometryStats(manifold: any, meshData: MeshData, executionTimeMs
     : null;
 
   let componentCount = 1;
-  try {
-    const parts = manifold.decompose();
-    componentCount = parts.length;
-    for (const p of parts) p.delete();
-  } catch {
-    // fallback
+  if (manifold) {
+    try {
+      const parts = manifold.decompose();
+      componentCount = parts.length;
+      for (const p of parts) p.delete();
+    } catch {
+      // fallback
+    }
   }
 
-  let isManifold = true;
-  let manifoldStatus: string | null = null;
-  try {
-    const s = manifold.status();
-    isManifold = s === 0 || s === 'NoError';
-    if (!isManifold) {
-      // Surface the actual status for diagnostics
-      manifoldStatus = String(s);
+  // Render-only imports lack a manifold; surface that fact in stats so the
+  // status panel can show "not manifold" instead of a misleading default.
+  let isManifold = manifold !== null;
+  let manifoldStatus: string | null = manifold === null ? 'render-only (not manifold)' : null;
+  if (manifold) {
+    try {
+      const s = manifold.status();
+      isManifold = s === 0 || s === 'NoError';
+      if (!isManifold) {
+        manifoldStatus = String(s);
+      }
+    } catch {
+      // fallback
     }
-  } catch {
-    // fallback
   }
 
   const quartileSlices: Record<string, { z: number; area: number; contours: number }> = {};
-  if (bbox) {
+  if (bbox && manifold) {
     const zRange = bbox.max[2] - bbox.min[2];
     for (const pct of [25, 50, 75]) {
       const z = bbox.min[2] + zRange * (pct / 100);
@@ -327,7 +357,7 @@ function computeGeometryStats(manifold: any, meshData: MeshData, executionTimeMs
     centroid,
     volume,
     surfaceArea,
-    genus: (() => { try { return manifold.genus(); } catch { return null; } })(),
+    genus: manifold ? (() => { try { return manifold.genus(); } catch { return null; } })() : null,
     isManifold,
     ...(manifoldStatus ? { manifoldStatus } : {}),
     componentCount,
@@ -449,11 +479,13 @@ function checkAssertions(stats: Record<string, unknown>, assertions: GeometryAss
 }
 
 function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
-  if (!currentManifold || !currentMeshData) {
+  if (!currentMeshData) {
     geometryDataEl.textContent = JSON.stringify({ status: 'error', error: 'No geometry' });
     return;
   }
 
+  // currentManifold may be null for render-only imports (sculpted STLs that
+  // can't form a watertight manifold). computeGeometryStats degrades gracefully.
   const data = computeGeometryStats(currentManifold, currentMeshData, executionTimeMs, sourceCode);
   // Surface session URLs in geometry-data so they're accessible even when getGalleryUrl() is sandbox-blocked
   const state = getState();
@@ -917,6 +949,30 @@ async function main() {
     return { sessionId: session.id };
   }
 
+  // Import a parsed mesh (STL today) as a new session.
+  //
+  // Unlike code imports, the parsed mesh bytes don't live in the editor — they
+  // ride on the Version via `importedMeshes`. We must persist v1 immediately
+  // so the imports survive a reload and so future saveVersion calls (which
+  // carry forward `importedMeshes` from the prior version) have something to
+  // build on.
+  async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean } = { manifold: true }): Promise<{ sessionId: string }> {
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+    const session = await createSession(sessionName, 'manifold-js');
+    setActiveImports([mesh]);
+    const code = generateImportCode([mesh], { manifold: opts.manifold });
+    setValue(code);
+    await runCodeSync(code);
+    const thumbnail = await captureThumbnail();
+    const geometryData = getGeometryDataObj();
+    const label = opts.manifold ? 'imported' : 'imported (render-only)';
+    await saveVersion(code, geometryData, thumbnail, label, undefined, {
+      force: true,
+      importedMeshes: [mesh],
+    });
+    return { sessionId: session.id };
+  }
+
   // Run a JSON session import end-to-end: validate, show the preview modal, import.
   async function importJSONFromText(filename: string, text: string): Promise<boolean> {
     let parsed: unknown;
@@ -938,12 +994,13 @@ async function main() {
     return true;
   }
 
-  // Import a .partwright.json session, or a raw .js / .scad file, into a new session.
-  // Returns whether the import committed (so callers know if the inbox should be updated).
+  // Import a .partwright.json session, a raw .js / .scad file, or an .stl mesh
+  // into a new session. Returns whether the import committed (so callers know
+  // if the inbox should be updated).
   async function handleImportFile(file: File, options: { skipPreActiveConfirm?: boolean } = {}): Promise<boolean> {
     const source = classifyImportSource(file.name);
     if (!source) {
-      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad`);
+      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl`);
       return false;
     }
 
@@ -971,6 +1028,13 @@ async function main() {
         const sessionName = file.name.replace(/\.(js|scad)$/i, '');
         await importCodePayload(code, lang, sessionName);
         committed = true;
+      } else if (source === 'STL') {
+        const parsed = await parseSTLFile(file);
+        if (parsed) {
+          const sessionName = file.name.replace(/\.stl$/i, '');
+          await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+          committed = true;
+        }
       }
       if (committed) registerImport(file, file.name, source);
       return committed;
@@ -980,6 +1044,111 @@ async function main() {
     }
   }
 
+  interface ParsedSTL {
+    mesh: ImportedMesh;
+    /** True if Manifold.ofMesh() succeeded — supports boolean ops, paint, slicing.
+     *  False if the user chose to import render-only after manifold construction failed. */
+    isManifold: boolean;
+  }
+
+  /** Read an STL file, parse it, and verify Manifold.ofMesh() accepts the result.
+   *  Tries progressively looser weld tolerances to absorb float-precision noise.
+   *  If the mesh still won't form a manifold (common for sculpted/scanned models
+   *  with self-intersections or open edges), prompts the user to import as
+   *  render-only — visible and exportable, but no booleans/paint/slice. */
+  async function parseSTLFile(file: File): Promise<ParsedSTL | null> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+
+    // Sanity-check that the file parses to *something* before doing the more
+    // expensive ofMesh trial.
+    const probe = parseSTL(bytes);
+    if (!probe || probe.numTri === 0) {
+      alert(`Could not parse "${file.name}" as an STL file.`);
+      return null;
+    }
+
+    // Scale-aware fallback tolerance: 5 ppm of the mesh's bounding-box diagonal
+    // catches imports that ship in unusual units (μm or m) where 1e-3 absolute
+    // is either way too tight or way too loose.
+    const bbox = bboxFromMesh(probe);
+    const diag = bbox
+      ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
+      : 0;
+    const scaleTolerance = Math.max(diag * 5e-6, 1e-6);
+
+    const tolerances = [1e-5, 1e-4, 1e-3, scaleTolerance];
+    let bestMesh = probe;
+    let maxTried = 0;
+    let manifoldError: string | null = null;
+    for (const tol of tolerances) {
+      const mesh = parseSTL(bytes, { weldTolerance: tol });
+      if (!mesh || mesh.numTri === 0) continue;
+      const trial = tryConstructManifold(mesh);
+      if (trial.ok) {
+        return { mesh: toImportedMesh(file.name, mesh), isManifold: true };
+      }
+      manifoldError = trial.error;
+      if (tol > maxTried) maxTried = tol;
+      bestMesh = mesh;
+    }
+
+    // All tolerances failed. Offer render-only fallback — most users importing
+    // a Baby Yoda / Eiffel Tower scan just want to look at it, not boolean-op it.
+    const accepted = await showInlineConfirm(
+      editorUI,
+      `${file.name} won't form a clean manifold — typical for sculpted or scanned models with self-intersections, open edges, or T-junctions.\n\n` +
+      `You can still import it as render-only: the mesh displays and exports normally, but boolean operations, paint, and cross-sections won't work.\n\n` +
+      `For full editing, repair the mesh first in MeshLab or Blender, then re-import.\n\n` +
+      `${probe.numTri.toLocaleString()} triangles · ${probe.numVert.toLocaleString()} vertices · tried weld tolerances up to ${maxTried.toExponential(1)} · ${manifoldError}`,
+      {
+        title: 'Import as render-only?',
+        confirmLabel: 'Import render-only',
+        cancelLabel: 'Cancel',
+      }
+    );
+    if (!accepted) return null;
+
+    return { mesh: toImportedMesh(file.name, bestMesh), isManifold: false };
+  }
+
+  function toImportedMesh(filename: string, mesh: MeshData): ImportedMesh {
+    return {
+      id: generateId(),
+      filename,
+      format: 'stl',
+      vertProperties: mesh.vertProperties,
+      triVerts: mesh.triVerts,
+      numVert: mesh.numVert,
+      numTri: mesh.numTri,
+      numProp: mesh.numProp,
+    };
+  }
+
+  /** Attempt Manifold.ofMesh() on a parsed mesh; report success/failure. The
+   *  trial manifold is disposed immediately — we only care whether construction
+   *  worked, not the geometry itself. */
+  function tryConstructManifold(mesh: MeshData): { ok: true } | { ok: false; error: string } {
+    const mod = getModule();
+    if (!mod) return { ok: true }; // engine not ready yet; assume good and let runtime surface any issue
+    let m: { isEmpty(): boolean; delete?: () => void } | null = null;
+    try {
+      m = mod.Manifold.ofMesh({
+        numProp: mesh.numProp,
+        vertProperties: mesh.vertProperties,
+        triVerts: mesh.triVerts,
+      });
+      if (!m || m.isEmpty()) {
+        return { ok: false, error: 'constructed manifold is empty' };
+      }
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    } finally {
+      try { m?.delete?.(); } catch { /* already gone */ }
+    }
+  }
+
+
   // Re-import an entry from the Recent Imports inbox. Reuses the same flow as
   // a fresh file import, including the JSON preview modal — it is still a
   // session-creating action and the user may want to verify before clobbering.
@@ -988,20 +1157,29 @@ async function main() {
       if (entry.source === 'JSON') {
         const text = await entry.blob.text();
         await importJSONFromText(entry.filename, text);
-      } else {
-        const cur = getState();
-        if (cur.session && cur.versionCount > 0) {
-          const ok = await showInlineConfirm(
-            editorUI,
-            `Re-import "${entry.filename}" as a new session? Your current session will be kept.`,
-          );
-          if (!ok) return;
-        }
-        const code = await entry.blob.text();
-        const lang: Language = entry.source === 'SCAD' ? 'scad' : 'manifold-js';
-        const sessionName = entry.filename.replace(/\.(js|scad)$/i, '');
-        await importCodePayload(code, lang, sessionName);
+        return;
       }
+      const cur = getState();
+      if (cur.session && cur.versionCount > 0) {
+        const ok = await showInlineConfirm(
+          editorUI,
+          `Re-import "${entry.filename}" as a new session? Your current session will be kept.`,
+        );
+        if (!ok) return;
+      }
+      if (entry.source === 'STL') {
+        const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
+        const parsed = await parseSTLFile(file);
+        if (parsed) {
+          const sessionName = entry.filename.replace(/\.stl$/i, '');
+          await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+        }
+        return;
+      }
+      const code = await entry.blob.text();
+      const lang: Language = entry.source === 'SCAD' ? 'scad' : 'manifold-js';
+      const sessionName = entry.filename.replace(/\.(js|scad)$/i, '');
+      await importCodePayload(code, lang, sessionName);
     } catch (e) {
       alert(`Failed to re-import "${entry.filename}": ${(e as Error).message}`);
     }
@@ -1010,7 +1188,7 @@ async function main() {
   // Document-level drag-and-drop import
   function isImportableFile(file: File): boolean {
     const n = file.name.toLowerCase();
-    return n.endsWith('.json') || n.endsWith('.js') || n.endsWith('.scad');
+    return n.endsWith('.json') || n.endsWith('.js') || n.endsWith('.scad') || n.endsWith('.stl');
   }
 
   document.addEventListener('dragover', (e) => {
@@ -1052,6 +1230,24 @@ async function main() {
       if (!getState().session) {
         alert('No active session to export. Save a version first.');
         return;
+      }
+      // STL imports live on Version.importedMeshes (typed-array mesh bytes),
+      // which the .partwright.json export schema doesn't carry yet. Warn so
+      // the user knows the resulting file will reopen with empty `api.imports`
+      // and the wrapper code will fail until the STL is re-imported.
+      const versions = await listCurrentVersions();
+      const hasImports = versions.some(v => Array.isArray((v as { importedMeshes?: unknown[] }).importedMeshes) && ((v as { importedMeshes?: unknown[] }).importedMeshes!).length > 0);
+      if (hasImports) {
+        const proceed = await showInlineConfirm(
+          editorUI,
+          `This session uses imported meshes (STL).\n\nThe .partwright.json file will include the code but not the mesh data — anyone reopening it will need to re-import the STL for the version to render.\n\nExport an STL/GLB instead if you just need the geometry.`,
+          {
+            title: 'Imported meshes won\'t be included',
+            confirmLabel: 'Export anyway',
+            cancelLabel: 'Cancel',
+          }
+        );
+        if (!proceed) return;
       }
       const opts = await showExportOptionsDialog();
       if (!opts) return;
@@ -1211,6 +1407,7 @@ async function main() {
     if (sessionLang !== getActiveLanguage()) {
       await switchLanguage(sessionLang);
     }
+    setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
     setValue(version.code);
     await runCodeSync(version.code);
     rehydrateColorRegions(version.geometryData);
@@ -5423,9 +5620,20 @@ function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'load
   }
 }
 
+interface ConfirmOptions {
+  /** Optional bold title above the message. */
+  title?: string;
+  /** Label for the confirm button. Default 'Continue'. */
+  confirmLabel?: string;
+  /** Label for the cancel button. Default 'Cancel'. */
+  cancelLabel?: string;
+}
+
 /** Modal confirmation dialog with semi-transparent backdrop overlay.
- *  Returns a Promise that resolves true (Continue) or false (Cancel / Escape / click overlay). */
-function showInlineConfirm(_container: HTMLElement, message: string): Promise<boolean> {
+ *  Message preserves newlines (single `\n` becomes a soft break, `\n\n` a
+ *  paragraph break) so callers can lay out multi-line prompts cleanly.
+ *  Returns a Promise that resolves true (confirm) or false (cancel / Escape / click overlay). */
+function showInlineConfirm(_container: HTMLElement, message: string, options: ConfirmOptions = {}): Promise<boolean> {
   return new Promise((resolve) => {
     // Remove any existing modal
     document.querySelector('.confirm-modal-overlay')?.remove();
@@ -5434,12 +5642,22 @@ function showInlineConfirm(_container: HTMLElement, message: string): Promise<bo
     const overlay = document.createElement('div');
     overlay.className = 'confirm-modal-overlay fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center';
 
-    // Modal box
+    // Modal box — wider than the default 'max-w-sm' so multi-line prompts
+    // don't reflow into long thin columns.
     const modal = document.createElement('div');
-    modal.className = 'bg-zinc-800 border border-zinc-600 rounded-xl shadow-2xl p-5 max-w-sm mx-4 animate-modal-in';
+    modal.className = 'bg-zinc-800 border border-zinc-600 rounded-xl shadow-2xl p-5 max-w-md mx-4 animate-modal-in';
+
+    if (options.title) {
+      const title = document.createElement('h2');
+      title.className = 'text-zinc-100 text-base font-semibold mb-2';
+      title.textContent = options.title;
+      modal.appendChild(title);
+    }
 
     const msg = document.createElement('p');
-    msg.className = 'text-zinc-200 text-sm leading-relaxed mb-5';
+    // `whitespace-pre-line` preserves \n as line breaks while still collapsing
+    // other whitespace runs, so single-line callers behave unchanged.
+    msg.className = 'text-zinc-200 text-sm leading-relaxed mb-5 whitespace-pre-line';
     msg.textContent = message;
 
     const btnGroup = document.createElement('div');
@@ -5447,11 +5665,11 @@ function showInlineConfirm(_container: HTMLElement, message: string): Promise<bo
 
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'px-4 py-1.5 rounded-lg text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors';
-    cancelBtn.textContent = 'Cancel';
+    cancelBtn.textContent = options.cancelLabel ?? 'Cancel';
 
     const continueBtn = document.createElement('button');
     continueBtn.className = 'px-4 py-1.5 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors';
-    continueBtn.textContent = 'Continue';
+    continueBtn.textContent = options.confirmLabel ?? 'Continue';
 
     btnGroup.appendChild(cancelBtn);
     btnGroup.appendChild(continueBtn);
