@@ -2,12 +2,14 @@ import './style.css';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible } from './renderer/viewport';
-import { renderCompositeCanvas, renderElevationsToContainer, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, type AttachedImage } from './renderer/multiview';
+import { renderCompositeCanvas, renderElevationsToContainer, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
 import { generateId } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic } from './editor/codeEditor';
 import { createLayout, type TabName } from './ui/layout';
-import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage } from './ui/toolbar';
+import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState } from './ui/toolbar';
+import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel } from './ui/aiPanel';
+import { getKey as getAiKey } from './ai/db';
 import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
@@ -79,7 +81,7 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, type SerializedColorRegion } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion } from './color/regions';
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
 import { buildAdjacency, findCoplanarRegion, resolveSeed, findNearestTriangle } from './color/adjacency';
 import { findSlabTriangles } from './color/slabPaint';
@@ -1005,6 +1007,7 @@ async function main() {
     },
     onImportFile: async (file) => { await handleImportFile(file); },
     onImportInboxEntry: handleReimportInboxEntry,
+    onToggleAi: () => { toggleAiPanel(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad') => {
       if (lang === getActiveLanguage()) return;
       // If current session has work, ask before switching
@@ -1357,6 +1360,16 @@ async function main() {
   }
 
   async function syncRouteFromURL() {
+    // Routing to a non-editor page (landing, catalog, help, 404) drops
+    // the AI chat back to the global bucket. The drawer is a body-level
+    // overlay that follows the user across pages, so without this the
+    // last session's transcript would still be visible after clicking
+    // Home — confusing because no editor / session is loaded to act on
+    // it. /editor's own loader updates the AI session via onStateChange
+    // when a session opens, so we don't need to set it explicitly here.
+    if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShow404()) {
+      void setAiActiveSession(null);
+    }
     if (shouldShowLanding()) {
       await showLandingPage();
     } else if (shouldShowHelp()) {
@@ -1541,7 +1554,35 @@ async function main() {
   // Update document title when session state changes (create, open, close, rename)
   onStateChange((state) => {
     updateDocumentTitle({ page: 'editor', sessionName: state.session?.name ?? null });
+    // Re-bind the AI panel to the current session so chat history follows.
+    void setAiActiveSession(state.session?.id ?? null);
   });
+
+  // Initialize the AI chat side drawer once the editor UI is mounted.
+  // Wraps initAiPanel + setAiToolbarState; tolerated if it fails (e.g.
+  // network blocks /ai.md) — toolbar still shows the Connect button.
+  void (async () => {
+    try {
+      await initAiPanel({
+        onNavigateToEditor: async () => {
+          updateAppHistory('/editor', 'push');
+          await syncRouteFromURL();
+        },
+      });
+      const cur = getState();
+      await setAiActiveSession(cur.session?.id ?? null);
+      const key = await getAiKey('anthropic');
+      setAiToolbarState(!!key);
+      // Watch for key changes via a poll-on-focus trigger — cheap, and
+      // matches the chip's update cadence in the AI settings modal.
+      window.addEventListener('focus', async () => {
+        const k = await getAiKey('anthropic');
+        setAiToolbarState(!!k);
+      });
+    } catch (err) {
+      console.warn('AI panel init failed:', err);
+    }
+  })();
 
   // Set initial editor title if we're on the editor page
   if (!showLanding && !showHelpPage && !showCatalog && !show404) {
@@ -2020,6 +2061,55 @@ async function main() {
       }
       if (!currentMeshData) return null;
       return renderSingleView(applyTriColorsIfVisible(currentMeshData), options ?? {});
+    },
+
+    /** Render multiple angles of the current model laid out in a single
+     *  labeled grid, returned as one PNG data URL. The killer use case
+     *  is "did this paint operation land where I thought" — a single
+     *  top-down view can hide errors that show clearly from the front.
+     *
+     *  `views: 'auto'` (default) picks the angles by bounding-box aspect:
+     *  flat models get [Top, Iso]; tall models get [Front, Right, Iso];
+     *  everything else gets [Front, Top, Iso]. `views: 'tri'` forces the
+     *  front/top/iso composite regardless of shape; `views: 'all'` is the
+     *  classic 4-view iso grid (front/right/top/iso). */
+    async renderViews(options?: { views?: RenderViewMode; size?: number }): Promise<string | null> {
+      if (options !== undefined) {
+        const o = assertObject(options, 'renderViews(options)')!;
+        assertNoUnknownKeys(o, ['views', 'size'], 'renderViews(options)');
+        if (o.views !== undefined) assertEnum(o.views, RENDER_VIEW_MODES, 'renderViews(options).views');
+        assertNumber(o.size, 'renderViews(options).size', { optional: true, min: 1, integer: true });
+      }
+      if (!currentMeshData) return null;
+      const which = options?.views ?? 'auto';
+      const tileSize = options?.size ?? 320;
+      const colored = applyTriColorsIfVisible(currentMeshData);
+      const angles = chooseRenderAngles(which);
+
+      const labelHeight = 24;
+      const cellHeight = tileSize + labelHeight;
+      const cols = angles.length === 1 ? 1 : 2;
+      const rows = Math.ceil(angles.length / cols);
+      const composite = document.createElement('canvas');
+      composite.width = tileSize * cols;
+      composite.height = cellHeight * rows;
+      const ctx = composite.getContext('2d');
+      if (!ctx) return null;
+      ctx.fillStyle = '#f4f4f5';
+      ctx.fillRect(0, 0, composite.width, composite.height);
+
+      // Render each angle to a data URL via renderSingleView (each call
+      // reuses the same offscreen WebGLRenderer), decode each to an
+      // HTMLImageElement, then stamp into the composite grid.
+      for (let i = 0; i < angles.length; i++) {
+        const { label, opts } = angles[i];
+        const dataUrl = renderSingleView(colored, { ...opts, size: tileSize });
+        if (!dataUrl) continue;
+        const img = await loadImageFromDataUrl(dataUrl);
+        if (!img) continue;
+        drawCell(ctx, img, i, tileSize, cellHeight, label, cols);
+      }
+      return composite.toDataURL('image/png');
     },
 
     /** Render a cross-section at Z height as an SVG string for visual verification */
@@ -3310,15 +3400,21 @@ async function main() {
       normalCone?: { axis: [number, number, number]; angleDeg: number };
       color: [number, number, number];
       name?: string;
+      /** Shortcut: paint only upward-facing triangles inside the box. Same
+       *  as `normalCone: { axis: [0, 0, 1], angleDeg: 30 }` — eliminates
+       *  the common over-paint where the box also catches side walls and
+       *  the bottom face. Ignored when `normalCone` is explicitly set. */
+      topOnly?: boolean;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintInBox requires { box, color }' };
-      const filterErr = validateBoxAndCone(opts.box, opts.normalCone);
+      const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
+      const filterErr = validateBoxAndCone(opts.box, cone);
       if (filterErr) return { error: filterErr };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
 
-      const triangles = collectTrianglesByFilter(currentMeshData, opts.box, opts.normalCone, null);
-      if (triangles.size === 0) return { error: 'paintInBox: no triangles matched the box (and normalCone, if any). Try widening the box, raising angleDeg, or call findFaces() to see what passes each filter individually.' };
+      const triangles = collectTrianglesByFilter(currentMeshData, opts.box, cone, null);
+      if (triangles.size === 0) return { error: `paintInBox: no triangles matched the box${cone ? ' (with the normalCone' + (opts.topOnly ? '/topOnly' : '') + ' filter)' : ''}. Try widening the box, dropping topOnly/normalCone, or call findFaces() to see what passes each filter individually.` };
 
       return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
     },
@@ -3342,6 +3438,8 @@ async function main() {
       normalCone?: { axis: [number, number, number]; angleDeg: number };
       color: [number, number, number];
       name?: string;
+      /** Shortcut: only upward-facing triangles. See paintInBox.topOnly. */
+      topOnly?: boolean;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintNear requires { point, radius, color }' };
@@ -3350,11 +3448,12 @@ async function main() {
         if (typeof opts.point[i] !== 'number' || !Number.isFinite(opts.point[i])) return { error: 'point components must be finite numbers' };
       }
       if (typeof opts.radius !== 'number' || !Number.isFinite(opts.radius) || opts.radius <= 0) return { error: 'radius must be a positive finite number' };
-      const coneErr = validateNormalCone(opts.normalCone);
+      const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
+      const coneErr = validateNormalCone(cone);
       if (coneErr) return { error: coneErr };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
 
-      const triangles = collectTrianglesBySphere(currentMeshData, opts.point as [number, number, number], opts.radius, opts.normalCone);
+      const triangles = collectTrianglesBySphere(currentMeshData, opts.point as [number, number, number], opts.radius, cone);
       if (triangles.size === 0) return { error: `paintNear: no triangles within ${opts.radius} of [${opts.point.join(', ')}]. Try a larger radius — call findFaces() with a bigger box first to see what's around.` };
 
       return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
@@ -3382,6 +3481,11 @@ async function main() {
       radius?: number;
       triangleIds?: number[];
       view?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number };
+      /** When `true`, render a yellow-highlighted thumbnail of the
+       *  would-be region and return it in `thumbnail`. Default `false` —
+       *  count-only is the cheap sanity check that should always be
+       *  affordable. */
+      withImage?: boolean;
     } = {}) {
       const mesh = currentMeshData;
       if (!mesh) return { error: 'No geometry loaded' };
@@ -3409,37 +3513,61 @@ async function main() {
       }
 
       const stats = regionTriangleStats(triangles, mesh);
-      // Build a temporary mesh with the candidate triangles tinted bright yellow,
-      // overlayed on top of any existing regions.
-      const baseColored = applyTriColors(mesh) ?? mesh;
-      const numTri = mesh.numTri;
-      const triColors = new Uint8Array(numTri * 3);
-      const baseBuf = baseColored.triColors as Uint8Array | undefined;
-      const basePainted = baseBuf ? (baseBuf as Uint8Array & { _painted?: Uint8Array })._painted : undefined;
-      const painted = new Uint8Array(numTri);
-      for (let t = 0; t < numTri; t++) {
-        if (baseBuf && basePainted && basePainted[t]) {
-          triColors[t * 3] = baseBuf[t * 3];
-          triColors[t * 3 + 1] = baseBuf[t * 3 + 1];
-          triColors[t * 3 + 2] = baseBuf[t * 3 + 2];
-          painted[t] = 1;
-        }
-      }
-      // Highlight color: bright yellow-orange, strongly distinct from skin/nail palettes.
-      for (const t of triangles) {
-        triColors[t * 3] = 255;
-        triColors[t * 3 + 1] = 230;
-        triColors[t * 3 + 2] = 0;
-        painted[t] = 1;
-      }
-      (triColors as Uint8Array & { _painted?: Uint8Array })._painted = painted;
-      const previewMesh: MeshData = { ...mesh, triColors };
-      const thumbnail = renderSingleView(previewMesh, opts.view ?? {});
+      const wantImage = opts.withImage === true;
+      const thumbnail = wantImage ? renderRegionHighlight(mesh, triangles, opts.view ?? {}) : undefined;
       return {
-        thumbnail,
+        ...(thumbnail !== undefined ? { thumbnail } : {}),
         triangleCount: triangles.size,
         bbox: stats.bbox,
         centroid: stats.centroid,
+      };
+    },
+
+    /** Diagnose an existing painted region: returns counts, bbox, area,
+     *  a normal-distribution histogram (axis-aligned bins), and a yellow-
+     *  highlighted thumbnail of just the region's triangles overlaid on
+     *  the current model. Use to self-correct after a bad paint without
+     *  the paint → render → undo → repaint cycle.
+     *
+     *  ```
+     *  partwright.paintExplain({ region: 'mouth' })       // by name
+     *  partwright.paintExplain({ region: 17042, withImage: false })  // stats-only
+     *  ``` */
+    paintExplain(opts: {
+      region: number | string;
+      withImage?: boolean;
+      view?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number };
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintExplain requires { region }' };
+      if (opts.region === undefined) return { error: 'paintExplain.region (id or name) is required' };
+
+      const regions = getRegions();
+      const region = typeof opts.region === 'number'
+        ? regions.find(r => r.id === opts.region)
+        : regions.find(r => r.name === opts.region);
+      if (!region) {
+        const existing = regions.map(r => `"${r.name}" (id=${r.id})`).join(', ') || '(none)';
+        return { error: `No region matching ${JSON.stringify(opts.region)}. Existing: ${existing}` };
+      }
+
+      const mesh = currentMeshData;
+      const stats = regionTriangleStats(region.triangles, mesh);
+      const { area, normalHistogram } = computeRegionAreaAndNormalHistogram(region.triangles, mesh);
+      const wantImage = opts.withImage !== false; // default true — explain wants visual
+      const thumbnail = wantImage ? renderRegionHighlight(mesh, region.triangles, opts.view ?? {}) : undefined;
+
+      return {
+        id: region.id,
+        name: region.name,
+        color: region.color,
+        source: region.source,
+        triangleCount: region.triangles.size,
+        area: Math.round(area * 1000) / 1000,
+        bbox: stats.bbox,
+        centroid: stats.centroid,
+        normalHistogram,
+        ...(thumbnail !== undefined ? { thumbnail } : {}),
       };
     },
 
@@ -3518,13 +3646,54 @@ async function main() {
     /** Clear all color regions */
     clearColors() {
       clearRegions();
-      if (currentMeshData) {
-        updateMesh(currentMeshData, { skipAutoFrame: true });
-        updateMultiView(currentMeshData);
-        renderElevationsToContainer(elevationsContainer, currentMeshData);
-      }
+      scheduleColorRefresh();
       syncLockState();
       return { cleared: true };
+    },
+
+    /** Remove a single color region by id. Reverses one paint operation
+     *  without nuking the rest. Returns `{ removed: true, id }` on success
+     *  or `{ error }` if no region matches. */
+    removeRegion(id: number) {
+      if (!Number.isFinite(id)) return { error: 'removeRegion(id) requires a finite integer id from listRegions()' };
+      const ok = removeRegion(id);
+      if (!ok) return { error: `No region with id=${id}. Call listRegions() to see current ids.` };
+      scheduleColorRefresh();
+      syncLockState();
+      return { removed: true, id };
+    },
+
+    /** Undo the most recent paint operation. The removed region goes onto
+     *  a redo stack — `redoLastPaint()` puts it back. Returns the removed
+     *  region's metadata, or `{ error }` if nothing to undo. */
+    undoLastPaint() {
+      const region = removeLastRegion();
+      if (!region) return { error: 'Nothing to undo — no paint operations on the current version.' };
+      scheduleColorRefresh();
+      syncLockState();
+      return {
+        undone: true,
+        id: region.id,
+        name: region.name,
+        color: region.color,
+        triangles: region.triangles.size,
+      };
+    },
+
+    /** Redo the most recently undone paint operation. Pairs with
+     *  `undoLastPaint()`. */
+    redoLastPaint() {
+      const region = redoLastRegion();
+      if (!region) return { error: 'Nothing to redo — call undoLastPaint() first.' };
+      scheduleColorRefresh();
+      syncLockState();
+      return {
+        redone: true,
+        id: region.id,
+        name: region.name,
+        color: region.color,
+        triangles: region.triangles.size,
+      };
     },
 
     /** Query triangles on the current mesh by geometric or color filters.
@@ -3610,25 +3779,7 @@ async function main() {
 
       const mesh = currentMeshData;
       const adjacency = nrm ? buildAdjacency(mesh) : null;
-      const triColors = colorTarget ? (() => {
-        const numTri = mesh.numTri;
-        return (function() {
-          const buf = new Uint8Array(numTri * 3);
-          for (const r of [...getRegions()].sort((a, b) => a.order - b.order)) {
-            const rr = Math.round(r.color[0] * 255);
-            const gg = Math.round(r.color[1] * 255);
-            const bb = Math.round(r.color[2] * 255);
-            for (const t of r.triangles) {
-              if (t >= 0 && t < numTri) {
-                buf[t * 3] = rr;
-                buf[t * 3 + 1] = gg;
-                buf[t * 3 + 2] = bb;
-              }
-            }
-          }
-          return buf;
-        })();
-      })() : null;
+      const triColors = colorTarget ? (buildTriColors(mesh.numTri) ?? new Uint8Array(mesh.numTri * 3)) : null;
 
       const result: number[] = [];
       let visited = 0;
@@ -3702,12 +3853,114 @@ async function main() {
       }
 
       const summary = computeFaceGroups(currentMeshData, o);
+
+      // Optional bbox filter — agents painting one feature of a complex
+      // model can pass `withinBox` to get only the groups in that region.
+      // Cheap to compute (we already have group bboxes); keeps the per-
+      // group `triangleIds` payload from drowning the response in groups
+      // the agent doesn't care about.
+      let groups = summary.groups;
+      const within = (opts as { withinBox?: { min?: unknown; max?: unknown } } | undefined)?.withinBox;
+      if (within && typeof within === 'object') {
+        const min = within.min as [number, number, number] | undefined;
+        const max = within.max as [number, number, number] | undefined;
+        if (Array.isArray(min) && min.length === 3 && Array.isArray(max) && max.length === 3) {
+          groups = groups.filter(g => bboxesIntersect(g.bbox, { min, max }));
+        }
+      }
+
       return {
-        groups: summary.groups,
+        groups,
         totalTriangles: summary.totalTriangles,
-        groupCount: summary.groups.length,
+        groupCount: groups.length,
         tolerance: summary.tolerance,
+        ...(groups.length < summary.groups.length ? { unfiltered: summary.groups.length } : {}),
       };
+    },
+
+    /** Paint a single boolean-distinct component by index from
+     *  `listComponents()`. Convenience wrapper that runs decompose, pulls
+     *  the component's bounding box, and calls paintInBox in one round
+     *  trip. Use this when you already know "the 3rd unioned part is the
+     *  mouth, paint it red" — saves the listComponents → paintInBox
+     *  two-call dance. */
+    paintComponent(opts: {
+      index: number;
+      color: [number, number, number];
+      name?: string;
+      /** Inherits the same topOnly shortcut as paintInBox. */
+      topOnly?: boolean;
+    }) {
+      if (!opts || typeof opts !== 'object') return { error: 'paintComponent requires { index, color }' };
+      if (!Number.isInteger(opts.index) || opts.index < 0) return { error: 'paintComponent.index must be a non-negative integer (from listComponents)' };
+      if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
+      if (!currentManifold) return { error: 'No geometry loaded — run code first.' };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let parts: any[] | null = null;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        parts = currentManifold.decompose() as any[];
+        if (opts.index >= parts.length) {
+          return { error: `paintComponent.index ${opts.index} out of range — listComponents has ${parts.length} component(s).` };
+        }
+        const bb = getBoundingBox(parts[opts.index]);
+        if (!bb) return { error: `Component ${opts.index} has no bounding box (degenerate geometry?).` };
+        // Pad the box slightly so a flat coplanar boundary doesn't miss
+        // triangles whose centroid lies exactly on the edge.
+        const pad = 1e-4;
+        const box = {
+          min: [bb.min[0] - pad, bb.min[1] - pad, bb.min[2] - pad] as [number, number, number],
+          max: [bb.max[0] + pad, bb.max[1] + pad, bb.max[2] + pad] as [number, number, number],
+        };
+        return partwrightAPI.paintInBox({ box, color: opts.color, name: opts.name ?? `Component ${opts.index}`, topOnly: opts.topOnly });
+      } catch (err) {
+        return { error: `paintComponent failed: ${err instanceof Error ? err.message : String(err)}` };
+      } finally {
+        if (parts) for (const p of parts) { try { p.delete(); } catch { /* noop */ } }
+      }
+    },
+
+    /** Token-cheap planning aid for paint workflows: returns just the
+     *  centroid + normal + bbox of each coplanar face group, no triangle
+     *  IDs. Same as `getMeshSummary({maxTrianglesPerGroup: 0, maxGroups})`
+     *  but a one-liner that signals "I'm planning, not painting yet". */
+    getFeatureCentroids(opts?: { maxGroups?: number; withinBox?: { min: [number, number, number]; max: [number, number, number] } }) {
+      const maxGroups = Math.max(1, opts?.maxGroups ?? 32);
+      return partwrightAPI.getMeshSummary({ maxTrianglesPerGroup: 0, maxGroups, ...(opts?.withinBox ? { withinBox: opts.withinBox } : {}) });
+    },
+
+    /** Decompose the current manifold into its boolean-distinct components
+     *  and return per-component metadata: `{index, centroid, boundingBox,
+     *  volume, surfaceArea}`. The killer use case is "paint each feature
+     *  of a unioned model" — for a smiley face built from a head + two
+     *  eyes + a mouth, this returns 4 components with their bboxes, and
+     *  the agent can then call `paintInBox({box: component.boundingBox,
+     *  color})` for each, with no coordinate guessing. */
+    listComponents() {
+      if (!currentManifold) return { error: 'No geometry loaded — run code first.' };
+      try {
+        const parts = currentManifold.decompose();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const components = parts.map((p: any, i: number) => {
+          const bb = getBoundingBox(p);
+          const vol = (() => { try { return p.volume(); } catch { return 0; } })();
+          const sa = (() => { try { return p.surfaceArea(); } catch { return 0; } })();
+          const centroid: [number, number, number] = bb
+            ? [(bb.min[0] + bb.max[0]) / 2, (bb.min[1] + bb.max[1]) / 2, (bb.min[2] + bb.max[2]) / 2]
+            : [0, 0, 0];
+          p.delete();
+          return {
+            index: i,
+            volume: Math.round(vol * 100) / 100,
+            surfaceArea: Math.round(sa * 100) / 100,
+            centroid,
+            boundingBox: bb ?? { min: [0, 0, 0], max: [0, 0, 0] },
+          };
+        });
+        return { count: components.length, components };
+      } catch (err) {
+        return { error: `decompose failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
     },
 
     // === Annotations API ===
@@ -3918,6 +4171,7 @@ async function main() {
         'sliceAtZ':        { signature: 'sliceAtZ(z) -- Cross-section at height -> {polygons, svg, area}', docs: '/ai.md#console-api--windowpartwright' },
         'getBoundingBox':  { signature: 'getBoundingBox() -- -> {min, max}', docs: '/ai.md#console-api--windowpartwright' },
         'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?}) -- Render from any angle -> data URL', docs: '/ai.md#visual-verification' },
+        'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
         'analyzeProfile':  { signature: 'analyzeProfile(sampleCount?) -- Z-profile feature summary', docs: '/ai.md#console-api--windowpartwright' },
         'measureAt':       { signature: 'measureAt([x,y]) -- Ray-cast probe at XY -> {hits, thickness, topZ, bottomZ}', docs: '/ai.md#console-api--windowpartwright' },
         // Viewport controls
@@ -3961,13 +4215,20 @@ async function main() {
         'paintInBox':      { signature: 'paintInBox({box, normalCone?, color, name?}) -- Paint triangles whose centroid is inside an axis-aligned box (and optional normal cone).', docs: '/ai.md#color-regions' },
         'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?}) -- Paint specific triangle indices', docs: '/ai.md#color-regions' },
         'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?}) -- Paint planar slab range', docs: '/ai.md#color-regions' },
-        'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, view?}) -- Highlight a candidate region without committing -> {thumbnail, triangleCount, bbox, centroid}', docs: '/ai.md#color-regions' },
+        'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai.md#color-regions' },
+        'paintExplain':    { signature: 'paintExplain({region, withImage?, view?}) -- Diagnose a committed region -> {triangleCount, area, bbox, centroid, normalHistogram, [thumbnail]}.', docs: '/ai.md#color-regions' },
         'assertPaint':     { signature: 'assertPaint({region, expectedTriangleCount?, expectedBoundingBox?, expectedCentroid?}) -- Verify a previously-painted region -> {passed, failures?}', docs: '/ai.md#color-regions' },
         'findFaces':       { signature: 'findFaces({box?, normal?, normalTolerance?, color?, region?, maxResults?}) -- Query triangle ids by geometry/color filters', docs: '/ai.md#color-regions' },
         'getMesh':         { signature: 'getMesh() -- Direct triangle/vertex/normal/centroid access for procedural paint workflows', docs: '/ai.md#color-regions' },
         'getMeshSummary':  { signature: 'getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) -- List coplanar face groups with centroid/normal/area/bbox', docs: '/ai.md#color-regions' },
         'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai.md#color-regions' },
-        'clearColors':     { signature: 'clearColors() -- Remove all color regions', docs: '/ai.md#color-regions' },
+        'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai.md#color-regions' },
+        'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- Decompose the manifold into boolean-distinct parts. For "paint each feature" workflows (e.g. unioned head + eyes + mouth).', docs: '/ai.md#color-regions' },
+        'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai.md#color-regions' },
+        'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai.md#color-regions' },
+        'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai.md#color-regions' },
+        'undoLastPaint':   { signature: 'undoLastPaint() -- Undo the most recent paint op. Removed region goes on a redo stack.', docs: '/ai.md#color-regions' },
+        'redoLastPaint':   { signature: 'redoLastPaint() -- Reapply the most recently undone paint op.', docs: '/ai.md#color-regions' },
         // Annotations
         'listAnnotations':    { signature: 'listAnnotations() -- List freehand strokes -> [{id, color, width, points}]', docs: '/ai.md#annotations' },
         'listTextAnnotations':{ signature: 'listTextAnnotations() -- List pinned text labels -> [{id, text, color, fontSizePx, anchor}]', docs: '/ai.md#annotations' },
@@ -4041,6 +4302,167 @@ async function main() {
 
   // === Internal functions ===
 
+  /** Draw one rendered angle into the renderViews composite grid:
+   *  the rendered tile occupies the top of the cell, with a labelled
+   *  footer band beneath it identifying the angle. `cols` controls
+   *  whether cellIndex wraps after 1 or 2 columns. */
+  function drawCell(
+    ctx: CanvasRenderingContext2D,
+    src: CanvasImageSource,
+    cellIndex: number,
+    tileSize: number,
+    cellHeight: number,
+    label: string,
+    cols: number,
+  ): void {
+    const col = cellIndex % cols;
+    const row = Math.floor(cellIndex / cols);
+    const x = col * tileSize;
+    const y = row * cellHeight;
+    ctx.drawImage(src, x, y, tileSize, tileSize);
+    ctx.fillStyle = '#27272a';
+    ctx.fillRect(x, y + tileSize, tileSize, cellHeight - tileSize);
+    ctx.fillStyle = '#f4f4f5';
+    ctx.font = '13px -apple-system, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, x + tileSize / 2, y + tileSize + 16);
+    ctx.textAlign = 'start';
+  }
+
+  /** Pick the angle set for `renderViews`. `auto` reads the current
+   *  manifold's bounding box and chooses based on aspect ratio:
+   *  - very flat (dz / max(dx, dy) < 0.15) → [Top, Iso]: front view
+   *    would be a thin sliver, top carries the information.
+   *  - very tall (max(dx, dy) / dz < 0.3) → [Front, Right, Iso]:
+   *    top view would be a tiny disk, the side elevations matter.
+   *  - otherwise the classic [Front, Top, Iso] trio. */
+  function chooseRenderAngles(which: RenderViewMode): { label: string; opts: { elevation: number; azimuth: number; ortho: boolean } }[] {
+    const view = (v: typeof STANDARD_VIEWS[keyof typeof STANDARD_VIEWS]) => ({
+      label: v.label,
+      opts: { elevation: v.elevation, azimuth: v.azimuth, ortho: v.ortho },
+    });
+    const FRONT = view(STANDARD_VIEWS.front);
+    const RIGHT = view(STANDARD_VIEWS.right);
+    const TOP   = view(STANDARD_VIEWS.top);
+    const ISO   = view(STANDARD_VIEWS.iso);
+    if (which === 'tri') return [FRONT, TOP, ISO];
+    if (which === 'all') return [FRONT, RIGHT, TOP, ISO];
+    // 'auto': inspect the current manifold's bounding box.
+    let bb: { min: [number, number, number]; max: [number, number, number] } | null = null;
+    if (currentManifold) {
+      try { bb = getBoundingBox(currentManifold); } catch { bb = null; }
+    }
+    if (!bb) return [FRONT, TOP, ISO];
+    const dx = bb.max[0] - bb.min[0];
+    const dy = bb.max[1] - bb.min[1];
+    const dz = bb.max[2] - bb.min[2];
+    const widest = Math.max(dx, dy);
+    if (widest <= 0 || dz <= 0) return [FRONT, TOP, ISO];
+    const flatness = dz / widest;
+    if (flatness < 0.15) return [TOP, ISO];
+    if (widest / dz < 0.3) return [FRONT, RIGHT, ISO];
+    return [FRONT, TOP, ISO];
+  }
+
+  /** Render the current mesh with `highlightTriangles` tinted bright
+   *  yellow on top of any existing color regions. Shared between
+   *  `paintPreview` (highlight a candidate selector) and `paintExplain`
+   *  (highlight an already-committed region). The yellow is intentionally
+   *  off-palette from anything a user would commit, so it reads as
+   *  "in-progress / unsaved" against real paint. */
+  function renderRegionHighlight(
+    mesh: MeshData,
+    highlightTriangles: Set<number>,
+    viewOpts: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number },
+  ): string | null {
+    const triColors = buildTriColors(mesh.numTri) ?? createEmptyTriColors(mesh.numTri);
+    overlayPainted(triColors, highlightTriangles, [1, 230 / 255, 0]);
+    return renderSingleView({ ...mesh, triColors }, viewOpts);
+  }
+
+  /** For a triangle set, compute total surface area and an area-weighted
+   *  histogram of face normals binned by cardinal axis (within 30°).
+   *  Triangles whose normal is more than 30° off every axis fall into
+   *  `oblique`. All bins normalize to sum ≈ 1. Useful for telling the
+   *  agent "this region is 70% top-facing, 25% wrap-around side" without
+   *  shipping the raw triangle list. */
+  function computeRegionAreaAndNormalHistogram(
+    triangles: Set<number>,
+    mesh: MeshData,
+  ): {
+    area: number;
+    normalHistogram: { xPos: number; xNeg: number; yPos: number; yNeg: number; zPos: number; zNeg: number; oblique: number };
+  } {
+    const adjacency = buildAdjacency(mesh);
+    const cosThresh = Math.cos(30 * Math.PI / 180); // ≈ 0.866
+    const bins = { xPos: 0, xNeg: 0, yPos: 0, yNeg: 0, zPos: 0, zNeg: 0, oblique: 0 };
+    let totalArea = 0;
+    const { triVerts, vertProperties, numProp } = mesh;
+    for (const t of triangles) {
+      const v0 = triVerts[t * 3];
+      const v1 = triVerts[t * 3 + 1];
+      const v2 = triVerts[t * 3 + 2];
+      const ax = vertProperties[v0 * numProp], ay = vertProperties[v0 * numProp + 1], az = vertProperties[v0 * numProp + 2];
+      const bx = vertProperties[v1 * numProp], by = vertProperties[v1 * numProp + 1], bz = vertProperties[v1 * numProp + 2];
+      const cx = vertProperties[v2 * numProp], cy = vertProperties[v2 * numProp + 1], cz = vertProperties[v2 * numProp + 2];
+      const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+      const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+      const crx = e1y * e2z - e1z * e2y;
+      const cry = e1z * e2x - e1x * e2z;
+      const crz = e1x * e2y - e1y * e2x;
+      const area = 0.5 * Math.sqrt(crx * crx + cry * cry + crz * crz);
+      totalArea += area;
+      const nx = adjacency.normals[t * 3];
+      const ny = adjacency.normals[t * 3 + 1];
+      const nz = adjacency.normals[t * 3 + 2];
+      if (nx > cosThresh) bins.xPos += area;
+      else if (nx < -cosThresh) bins.xNeg += area;
+      else if (ny > cosThresh) bins.yPos += area;
+      else if (ny < -cosThresh) bins.yNeg += area;
+      else if (nz > cosThresh) bins.zPos += area;
+      else if (nz < -cosThresh) bins.zNeg += area;
+      else bins.oblique += area;
+    }
+    if (totalArea > 0) {
+      const norm = (v: number) => Math.round((v / totalArea) * 1000) / 1000;
+      return {
+        area: totalArea,
+        normalHistogram: {
+          xPos: norm(bins.xPos), xNeg: norm(bins.xNeg),
+          yPos: norm(bins.yPos), yNeg: norm(bins.yNeg),
+          zPos: norm(bins.zPos), zNeg: norm(bins.zNeg),
+          oblique: norm(bins.oblique),
+        },
+      };
+    }
+    return { area: 0, normalHistogram: { xPos: 0, xNeg: 0, yPos: 0, yNeg: 0, zPos: 0, zNeg: 0, oblique: 0 } };
+  }
+
+  /** Decode a data: URL into an HTMLImageElement. Image decoding from a
+   *  data URL is async even when the bytes are local — returning a
+   *  promise here keeps the renderViews caller cleanly awaitable. */
+  function loadImageFromDataUrl(dataUrl: string): Promise<HTMLImageElement | null> {
+    return new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = dataUrl;
+    });
+  }
+
+  /** Axis-aligned bounding-box intersection test. Inclusive on both ends
+   *  so a face touching the box boundary counts as inside. */
+  function bboxesIntersect(
+    a: { min: [number, number, number]; max: [number, number, number] },
+    b: { min: [number, number, number]; max: [number, number, number] },
+  ): boolean {
+    return (
+      a.max[0] >= b.min[0] && a.min[0] <= b.max[0] &&
+      a.max[1] >= b.min[1] && a.min[1] <= b.max[1] &&
+      a.max[2] >= b.min[2] && a.min[2] <= b.max[2]
+    );
+  }
+
   /** Report bounding box + centroid for a triangle set, walking only the
    *  vertices used by those triangles. Returns `null` when the set is empty. */
   function regionTriangleStats(triangles: Set<number>, mesh: MeshData): { bbox: { min: [number, number, number]; max: [number, number, number] }; centroid: [number, number, number] } | { bbox: null; centroid: null } {
@@ -4109,8 +4531,18 @@ async function main() {
     };
   }
 
-  /** Validate `{ axis, angleDeg }` shape used by paint cone filters. Returns
-   *  an error string or `null`. */
+  /** Resolve the normalCone to use for a paint op. Explicit cone wins;
+   *  `topOnly: true` is sugar for "upward-facing within ~30° of +Z" and
+   *  is the most common case the agent over-paints without. */
+  function resolvePaintCone(
+    explicit: { axis: [number, number, number]; angleDeg: number } | undefined,
+    topOnly: boolean | undefined,
+  ): { axis: [number, number, number]; angleDeg: number } | undefined {
+    if (explicit) return explicit;
+    if (topOnly) return { axis: [0, 0, 1], angleDeg: 30 };
+    return undefined;
+  }
+
   function validateNormalCone(cone: { axis: [number, number, number]; angleDeg: number } | undefined): string | null {
     if (cone === undefined) return null;
     if (typeof cone !== 'object' || cone === null) return 'normalCone must be { axis: [x,y,z], angleDeg: number }';
@@ -4240,13 +4672,30 @@ async function main() {
       { kind: 'triangles', ids: [...triangles] },
       triangles,
     );
-    const colored = applyTriColorsIfVisible(currentMeshData);
-    updateMesh(colored, { skipAutoFrame: true });
-    updateMultiView(colored);
-    renderElevationsToContainer(elevationsContainer, colored);
+    scheduleColorRefresh();
     syncLockState();
     const stats = regionTriangleStats(triangles, currentMeshData);
     return { id: region.id, name: region.name, triangles: triangles.size, bbox: stats.bbox, centroid: stats.centroid };
+  }
+
+  /** Coalesce viewport + multi-view + elevations-strip refreshes triggered
+   *  by paint mutations (commit / undo / redo / removeRegion / clearColors).
+   *  An agent turn that paints N regions in a row otherwise pays the full
+   *  three-renderer cost N times; with rAF batching it pays once at the
+   *  next frame boundary. Each sub-renderer is 50-150ms on complex meshes,
+   *  so this was a primary source of the "page unresponsive" warning. */
+  let paintRefreshPending = false;
+  function scheduleColorRefresh(): void {
+    if (paintRefreshPending) return;
+    paintRefreshPending = true;
+    requestAnimationFrame(() => {
+      paintRefreshPending = false;
+      if (!currentMeshData) return;
+      const colored = applyTriColorsIfVisible(currentMeshData);
+      updateMesh(colored, { skipAutoFrame: true });
+      updateMultiView(colored);
+      renderElevationsToContainer(elevationsContainer, colored);
+    });
   }
 
   function runCode(code?: string) {

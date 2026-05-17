@@ -29,6 +29,11 @@ dist-ssr
 # Playwright MCP artifacts
 .playwright-mcp/
 
+# Playwright test runner output
+test-results/
+playwright-report/
+playwright/.cache/
+
 # Interstitial planning files
 .plans/
 

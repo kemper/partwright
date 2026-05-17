@@ -1,0 +1,1172 @@
+// Right-side floating chat drawer. The single largest UI surface of the AI
+// feature — owns the transcript view, the cost-control toggle strip, the
+// input row, the cost meter, and the compact button. State lives in the
+// ai/* modules; this file is mostly DOM wiring.
+
+import { runTurn, totalCost, totalTokensEstimate, estimateCachedPrefixTokens } from '../ai/chatLoop';
+import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey } from '../ai/db';
+import { proposeCompaction } from '../ai/compaction';
+import { captureIsoViews, fileToImageSource } from '../ai/images';
+import { loadSettings, saveSettings, applyPreset, setModel, setToggles, MODEL_OPTIONS, PRESET_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, type AiSettings } from '../ai/settings';
+import { buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
+import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
+import { generateId } from '../storage/db';
+import { showAiKeyModal } from './aiKeyModal';
+import { showAiSettingsModal } from './aiSettingsModal';
+import { showCompactConfirmModal } from './aiCompactModal';
+import type { ChatBlock, ChatMessage, ChatToggles, ImageSource, ModelId, PersistedToolResult, TurnOutcomeReason } from '../ai/types';
+
+interface PanelState {
+  open: boolean;
+  sessionId: string;
+  history: ChatMessage[];
+  pendingImages: ImageSource[];
+  systemPromptChars: number;
+  inFlight: boolean;
+  /** Live for the duration of a turn. Stop button aborts via this. Null
+   *  when no turn is in flight. */
+  inFlightController: AbortController | null;
+}
+
+const state: PanelState = {
+  open: false,
+  sessionId: GLOBAL_CHAT_BUCKET,
+  history: [],
+  pendingImages: [],
+  systemPromptChars: 0,
+  inFlight: false,
+  inFlightController: null,
+};
+
+let sendBtnRef: HTMLButtonElement | null = null;
+
+let drawerEl: HTMLElement | null = null;
+let transcriptEl: HTMLElement | null = null;
+let inputEl: HTMLTextAreaElement | null = null;
+let pendingImagesEl: HTMLElement | null = null;
+let toggleStripEl: HTMLElement | null = null;
+let costMeterEl: HTMLElement | null = null;
+let panelStatusEl: HTMLElement | null = null;
+let progressEl: HTMLElement | null = null;
+let progressTickerId: number | null = null;
+let navigateToEditorFn: (() => Promise<void> | void) | null = null;
+
+/** Set by the watchdog when it abort()s mid-stream so sendMessage knows
+ *  this was a stall recovery (auto-resume), not a user-initiated stop. */
+let stalledByWatchdog = false;
+
+export interface AiPanelOptions {
+  /** main.ts hands in a navigation helper so the panel can move the user
+   *  to the editor before firing a request from another page. Avoids a
+   *  silent-modeling-on-landing-page UX bug where the AI runs code but
+   *  the user can't see the result. */
+  onNavigateToEditor?: () => Promise<void> | void;
+}
+
+/** Mount the drawer once on app start. Idempotent. */
+export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
+  if (drawerEl) return;
+  navigateToEditorFn = opts.onNavigateToEditor ?? null;
+  // Pre-load ai.md so the first turn doesn't pay the fetch latency on top
+  // of the API round trip. Also seeds the systemPromptChars estimate.
+  const aiMd = await loadAiMd();
+  state.systemPromptChars = buildSystemPrompt(aiMd).length;
+
+  const settings = loadSettings();
+  state.open = settings.drawerOpen;
+
+  buildDrawer();
+  // Don't try to load history until a session is opened or we know we're
+  // in the global bucket. main.ts will call setActiveSession when ready.
+  await loadHistoryForCurrentSession();
+  if (state.open) showDrawer();
+  else hideDrawer();
+}
+
+/** Called by main.ts whenever the active session changes (open / close).
+ *  When the user isn't on /editor (landing, catalog, help, 404), we
+ *  ignore whatever session the session manager is holding and pin the
+ *  chat to the global bucket — prior session chat shouldn't leak across
+ *  navigation. */
+export async function setActiveSession(sessionId: string | null): Promise<void> {
+  const onEditor = window.location.pathname === '/editor';
+  const effective = (onEditor && sessionId) ? sessionId : GLOBAL_CHAT_BUCKET;
+  if (state.sessionId === effective && state.history.length > 0) {
+    // Already showing this bucket — skip the IndexedDB round trip and
+    // avoid a transcript re-render that scrolls the user to the bottom.
+    return;
+  }
+  state.sessionId = effective;
+  await loadHistoryForCurrentSession();
+  renderTranscript();
+  renderCostMeter();
+}
+
+export function toggleAiPanel(): void {
+  if (state.open) hideDrawer();
+  else showDrawer();
+}
+
+function showDrawer(): void {
+  if (!drawerEl) return;
+  state.open = true;
+  drawerEl.classList.remove('translate-x-full');
+  drawerEl.classList.add('translate-x-0');
+  saveSettings({ ...loadSettings(), drawerOpen: true });
+  inputEl?.focus();
+}
+
+function hideDrawer(): void {
+  if (!drawerEl) return;
+  state.open = false;
+  drawerEl.classList.remove('translate-x-0');
+  drawerEl.classList.add('translate-x-full');
+  saveSettings({ ...loadSettings(), drawerOpen: false });
+}
+
+async function loadHistoryForCurrentSession(): Promise<void> {
+  state.history = await listMessages(state.sessionId);
+}
+
+// === DOM construction ===
+
+function buildDrawer(): void {
+  const root = document.createElement('div');
+  root.id = 'ai-panel';
+  root.className = 'fixed top-0 right-0 h-screen w-[420px] bg-zinc-900 border-l border-zinc-700 shadow-2xl z-40 flex flex-col transition-transform duration-200 translate-x-full';
+  drawerEl = root;
+
+  // Header — title, model picker, preset picker, close
+  const header = document.createElement('div');
+  header.className = 'flex items-center gap-2 px-3 py-2 border-b border-zinc-700 shrink-0';
+
+  const titleEl = document.createElement('div');
+  titleEl.className = 'text-sm font-semibold text-zinc-100 mr-1';
+  titleEl.textContent = 'AI';
+  header.appendChild(titleEl);
+
+  const modelSelect = createModelSelect();
+  header.appendChild(modelSelect);
+
+  const presetSelect = createPresetSelect();
+  header.appendChild(presetSelect);
+
+  const compactBtn = createIconButton('Compact', '⤓ Compact');
+  compactBtn.title = 'Compact the conversation: summarize older turns and promote insights to session notes.';
+  compactBtn.addEventListener('click', () => { void runCompact(); });
+  header.appendChild(compactBtn);
+
+  const settingsBtn = createIconButton('Settings', '⚙');
+  settingsBtn.title = 'AI settings: provider, key, lifetime usage.';
+  settingsBtn.addEventListener('click', () => {
+    void showAiSettingsModal({ onChange: () => { renderTranscript(); renderToggleStrip(); renderCostMeter(); panelStatusUpdate(); } });
+  });
+  header.appendChild(settingsBtn);
+
+  const spacer = document.createElement('div');
+  spacer.className = 'flex-1';
+  header.appendChild(spacer);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'px-2 py-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 text-sm';
+  closeBtn.textContent = '✕';
+  closeBtn.addEventListener('click', hideDrawer);
+  header.appendChild(closeBtn);
+
+  root.appendChild(header);
+
+  // Status bar — surfaces "no key" / "ready" / errors
+  panelStatusEl = document.createElement('div');
+  panelStatusEl.className = 'px-3 py-1.5 text-[11px] border-b border-zinc-800 hidden';
+  root.appendChild(panelStatusEl);
+
+  // Transcript
+  transcriptEl = document.createElement('div');
+  transcriptEl.className = 'flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-3';
+  root.appendChild(transcriptEl);
+
+  // Toggle strip
+  toggleStripEl = document.createElement('div');
+  toggleStripEl.className = 'px-3 py-1.5 border-t border-zinc-800 flex flex-wrap items-center gap-1.5 shrink-0';
+  root.appendChild(toggleStripEl);
+
+  // Cost meter
+  costMeterEl = document.createElement('div');
+  costMeterEl.className = 'px-3 pb-1.5 text-[10px] text-zinc-500 flex items-center gap-2 shrink-0';
+  root.appendChild(costMeterEl);
+
+  // Pending image attachments row (hidden until something is pending)
+  pendingImagesEl = document.createElement('div');
+  pendingImagesEl.className = 'px-3 pb-1.5 flex flex-wrap gap-1.5 shrink-0 hidden';
+  root.appendChild(pendingImagesEl);
+
+  // In-progress indicator — shown while a turn is in flight so the user
+  // knows we haven't frozen. Hidden by default; populated by
+  // showProgress() / hideProgress() driven by runTurn's onProgress callback
+  // and the stall watchdog.
+  progressEl = document.createElement('div');
+  progressEl.className = 'px-3 pb-1.5 text-[11px] text-zinc-400 flex items-center gap-2 shrink-0 hidden';
+  root.appendChild(progressEl);
+
+  // Input row
+  const inputRow = document.createElement('div');
+  inputRow.className = 'px-3 py-2 border-t border-zinc-700 flex items-end gap-2 shrink-0';
+
+  const showAiBtn = document.createElement('button');
+  showAiBtn.className = 'shrink-0 px-2 py-1 rounded text-[11px] text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700';
+  showAiBtn.textContent = '📷 Show AI';
+  showAiBtn.title = 'Snapshot the 4 iso views and attach to your next message.';
+  showAiBtn.addEventListener('click', () => { void attachIsoViews(); });
+  inputRow.appendChild(showAiBtn);
+
+  const fileBtn = document.createElement('button');
+  fileBtn.className = 'shrink-0 px-2 py-1 rounded text-[11px] text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700';
+  fileBtn.textContent = '📎';
+  fileBtn.title = 'Attach an image from disk.';
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = 'image/*';
+  fileInput.multiple = true;
+  fileInput.className = 'hidden';
+  fileInput.addEventListener('change', async () => {
+    if (!fileInput.files) return;
+    for (const file of Array.from(fileInput.files)) await attachFile(file);
+    fileInput.value = '';
+  });
+  fileBtn.addEventListener('click', () => fileInput.click());
+  inputRow.appendChild(fileBtn);
+  inputRow.appendChild(fileInput);
+
+  const ta = document.createElement('textarea');
+  ta.placeholder = 'Ask the AI to model something...';
+  ta.rows = 2;
+  ta.className = 'flex-1 px-2 py-1 rounded bg-zinc-800 border border-zinc-600 text-zinc-100 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 resize-none';
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      void sendMessage();
+    }
+  });
+  ta.addEventListener('paste', e => {
+    if (!e.clipboardData) return;
+    for (const item of Array.from(e.clipboardData.items)) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile();
+        if (file) {
+          e.preventDefault();
+          void attachFile(file);
+        }
+      }
+    }
+  });
+  inputEl = ta;
+  inputRow.appendChild(ta);
+
+  const sendBtn = document.createElement('button');
+  sendBtn.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
+  sendBtn.textContent = 'Send';
+  sendBtn.addEventListener('click', () => {
+    // While a turn is in flight the button is "Stop" — click aborts the
+    // controller, which propagates through runTurn → streamTurn → SDK.
+    if (state.inFlight) {
+      state.inFlightController?.abort();
+      return;
+    }
+    void sendMessage();
+  });
+  sendBtnRef = sendBtn;
+  inputRow.appendChild(sendBtn);
+
+  root.appendChild(inputRow);
+
+  // Drag-drop image handling
+  root.addEventListener('dragover', e => { e.preventDefault(); root.classList.add('ring-2', 'ring-blue-500'); });
+  root.addEventListener('dragleave', e => { if (e.target === root) root.classList.remove('ring-2', 'ring-blue-500'); });
+  root.addEventListener('drop', async e => {
+    e.preventDefault();
+    root.classList.remove('ring-2', 'ring-blue-500');
+    if (!e.dataTransfer) return;
+    for (const file of Array.from(e.dataTransfer.files)) await attachFile(file);
+  });
+
+  document.body.appendChild(root);
+
+  renderToggleStrip();
+  renderCostMeter();
+  renderTranscript();
+  panelStatusUpdate();
+}
+
+function createIconButton(_label: string, glyph: string): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.className = 'px-2 py-1 rounded text-[11px] text-zinc-300 hover:bg-zinc-800 border border-transparent hover:border-zinc-700';
+  btn.textContent = glyph;
+  return btn;
+}
+
+function createModelSelect(): HTMLSelectElement {
+  const sel = document.createElement('select');
+  sel.className = 'px-2 py-1 rounded text-[11px] bg-zinc-800 border border-zinc-700 text-zinc-200 focus:outline-none';
+  sel.title = 'Claude model. Haiku is cheap and fast for simple iteration; Sonnet is the balanced default; Opus is the most capable but the most expensive.';
+  for (const opt of MODEL_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = opt.id;
+    o.textContent = opt.label;
+    sel.appendChild(o);
+  }
+  sel.value = loadSettings().toggles.model;
+  sel.addEventListener('change', () => {
+    saveSettings(setModel(loadSettings(), sel.value as ModelId));
+    renderToggleStrip();
+    renderCostMeter();
+  });
+  return sel;
+}
+
+function createPresetSelect(): HTMLSelectElement {
+  const sel = document.createElement('select');
+  sel.className = 'px-2 py-1 rounded text-[11px] bg-zinc-800 border border-zinc-700 text-zinc-200 focus:outline-none';
+  sel.title = 'Preset bundles the model + toggle settings. Picking a preset resets the toggles below to its defaults; manually changing any toggle switches you to "Custom".';
+  for (const opt of PRESET_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = opt.id;
+    o.textContent = opt.label;
+    o.title = opt.hint;
+    sel.appendChild(o);
+  }
+  sel.value = loadSettings().preset;
+  sel.addEventListener('change', () => {
+    const next = applyPreset(loadSettings(), sel.value as AiSettings['preset']);
+    saveSettings(next);
+    // Sync the model picker too
+    const modelSelect = drawerEl?.querySelector('select') as HTMLSelectElement | null;
+    if (modelSelect) modelSelect.value = next.toggles.model;
+    renderToggleStrip();
+    renderCostMeter();
+  });
+  return sel;
+}
+
+// === Toggle strip rendering ===
+
+function renderToggleStrip(): void {
+  if (!toggleStripEl) return;
+  toggleStripEl.replaceChildren();
+  const settings = loadSettings();
+  const { toggles } = settings;
+
+  toggleStripEl.appendChild(togglePill(
+    '📸 Auto-render',
+    toggles.vision.views,
+    'Auto-render: lets the model call renderView() to take its own screenshots after paint / geometry changes. Each render ≈ 1500 tokens of input on the next turn — verification is valuable but it adds up. The 📷 Show AI button still works manually when this is OFF.',
+    () => {
+      saveSettings(setToggles(loadSettings(), { vision: { views: !toggles.vision.views } }));
+      renderToggleStrip();
+      renderCostMeter();
+    },
+  ));
+  toggleStripEl.appendChild(togglePill(
+    '▶ Run',
+    toggles.scope.runCode,
+    'Run code: allow the AI to execute geometry code (runCode, runAndSave). OFF makes it suggest code in chat without running.',
+    () => {
+      saveSettings(setToggles(loadSettings(), { scope: { runCode: !toggles.scope.runCode } }));
+      renderToggleStrip();
+    },
+  ));
+  toggleStripEl.appendChild(togglePill(
+    '💾 Save',
+    toggles.scope.saveVersions,
+    'Save versions: allow the AI to commit results to the gallery (runAndSave, loadVersion). OFF keeps the model in run-only / dry-run mode.',
+    () => {
+      saveSettings(setToggles(loadSettings(), { scope: { saveVersions: !toggles.scope.saveVersions } }));
+      renderToggleStrip();
+    },
+  ));
+  toggleStripEl.appendChild(togglePill(
+    '🎨 Paint',
+    toggles.scope.paintFaces,
+    'Paint: allow the AI to set color regions (paintInBox, paintSlab, paintNear, etc.). OFF by default — painting locks the editor and is the easiest place for the AI to over-select.',
+    () => {
+      saveSettings(setToggles(loadSettings(), { scope: { paintFaces: !toggles.scope.paintFaces } }));
+      renderToggleStrip();
+    },
+  ));
+
+  const retry = document.createElement('select');
+  retry.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
+  retry.title = 'Auto-retry on tool error: how many times to feed the error back before surfacing it.';
+  for (const n of [0, 1, 3]) {
+    const opt = document.createElement('option');
+    opt.value = String(n);
+    opt.textContent = `↻ ${n}`;
+    retry.appendChild(opt);
+  }
+  retry.value = String(toggles.autoRetry);
+  retry.addEventListener('change', () => {
+    saveSettings(setToggles(loadSettings(), { autoRetry: Number(retry.value) as 0 | 1 | 3 }));
+  });
+  toggleStripEl.appendChild(retry);
+
+  // Iteration cap — how many tool round-trips per user turn before the
+  // loop forces a stop. Lower = safer (model can't run away on cost or
+  // time), higher = more autonomous (long paint runs complete in one go).
+  const iterCap = document.createElement('select');
+  iterCap.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
+  iterCap.title = 'Iteration cap: how many agent loop rounds before the loop forces a stop. Lower = safer (the model can\'t run away on cost or time), higher = more autonomous (long paint runs complete in one go). ∞ relies entirely on the model declaring done or you clicking Stop.';
+  for (const opt of MAX_ITERATIONS_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = opt.id;
+    o.textContent = `⟲ ${opt.label}`;
+    o.title = opt.hint;
+    iterCap.appendChild(o);
+  }
+  iterCap.value = toggles.maxIterations;
+  iterCap.addEventListener('change', () => {
+    saveSettings(setToggles(loadSettings(), { maxIterations: iterCap.value as ChatToggles['maxIterations'] }));
+  });
+  toggleStripEl.appendChild(iterCap);
+
+  // Spend cap — alternative / parallel control to iteration cap. Both
+  // apply; whichever trips first stops the loop. Useful when iteration
+  // count is hard to predict (vision-heavy turns can run a few
+  // iterations but spend $0.50+ each).
+  const spendCap = document.createElement('select');
+  spendCap.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
+  spendCap.title = 'Spend cap: max USD this turn can cost before the loop forces a stop. Applies alongside the iteration cap — whichever trips first wins. Useful when iteration count is unpredictable (a vision-heavy iteration may spend $0.50). Set ∞ to disable.';
+  for (const opt of MAX_SPEND_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = opt.id;
+    o.textContent = `$ ${opt.label}`;
+    o.title = opt.hint;
+    spendCap.appendChild(o);
+  }
+  spendCap.value = toggles.maxSpend;
+  spendCap.addEventListener('change', () => {
+    saveSettings(setToggles(loadSettings(), { maxSpend: spendCap.value as ChatToggles['maxSpend'] }));
+  });
+  toggleStripEl.appendChild(spendCap);
+}
+
+function togglePill(label: string, on: boolean, tooltip: string, onClick: () => void): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.className = on
+    ? 'px-2 py-0.5 rounded text-[10px] bg-emerald-700/40 border border-emerald-700/60 text-emerald-200'
+    : 'px-2 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-500';
+  btn.textContent = label;
+  btn.title = `${tooltip}\n\nCurrently: ${on ? 'ON' : 'OFF'} — click to ${on ? 'disable' : 'enable'}.`;
+  btn.setAttribute('aria-pressed', String(on));
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+// === Cost meter ===
+
+function renderCostMeter(): void {
+  if (!costMeterEl) return;
+  const settings = loadSettings();
+  const tokens = totalTokensEstimate(state.history, state.systemPromptChars);
+  const cost = totalCost(state.history);
+  const cachedPrefix = estimateCachedPrefixTokens(state.systemPromptChars);
+  // Per-turn estimate covers the user's input + a typical response. Image
+  // tokens (Show AI snapshot + any renderView calls the model makes) are
+  // observed on the post-turn meter rather than predicted here — they're
+  // too variable to estimate up front without lying to the user.
+  const turnEst = estimateTurnCostUsd(settings.toggles.model, cachedPrefix, 500);
+
+  // Color the context bar by % of model context window
+  const ctxLimit = settings.toggles.model === 'claude-haiku-4-5' ? 200_000 : 1_000_000;
+  const pct = Math.min(100, Math.round((tokens / ctxLimit) * 100));
+  const barColor = pct < 60 ? 'bg-emerald-500' : pct < 85 ? 'bg-amber-500' : 'bg-red-500';
+
+  costMeterEl.replaceChildren();
+  const meter = document.createElement('div');
+  meter.className = 'flex items-center gap-1.5';
+  meter.innerHTML = `
+    <span>ctx</span>
+    <span class="w-16 h-1.5 bg-zinc-800 rounded-full overflow-hidden inline-block">
+      <span class="block h-full ${barColor}" style="width: ${pct}%"></span>
+    </span>
+    <span class="text-zinc-400">${pct}%</span>
+  `;
+  costMeterEl.appendChild(meter);
+
+  const sep = document.createElement('span');
+  sep.className = 'text-zinc-700';
+  sep.textContent = '·';
+  costMeterEl.appendChild(sep);
+
+  const session = document.createElement('span');
+  session.textContent = `session: ${formatUsd(cost)}`;
+  costMeterEl.appendChild(session);
+
+  const sep2 = document.createElement('span');
+  sep2.className = 'text-zinc-700';
+  sep2.textContent = '·';
+  costMeterEl.appendChild(sep2);
+
+  const next = document.createElement('span');
+  next.textContent = `next turn ~${formatUsd(turnEst)}`;
+  costMeterEl.appendChild(next);
+}
+
+// === Status bar ===
+
+function panelStatusUpdate(): void {
+  if (!panelStatusEl) return;
+  void getKey('anthropic').then(key => {
+    if (!panelStatusEl) return;
+    if (!key) {
+      panelStatusEl.classList.remove('hidden', 'text-emerald-400');
+      panelStatusEl.classList.add('text-amber-400');
+      panelStatusEl.replaceChildren();
+      const text = document.createTextNode('Not connected. ');
+      panelStatusEl.appendChild(text);
+      const link = document.createElement('button');
+      link.className = 'underline text-amber-200 hover:text-amber-100';
+      link.textContent = 'Connect Anthropic API';
+      link.addEventListener('click', () => {
+        void showAiKeyModal({ onConnected: () => { panelStatusUpdate(); } });
+      });
+      panelStatusEl.appendChild(link);
+    } else {
+      panelStatusEl.classList.add('hidden');
+    }
+  });
+}
+
+// === Transcript rendering ===
+
+function renderTranscript(): void {
+  if (!transcriptEl) return;
+  transcriptEl.replaceChildren();
+  if (state.history.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'flex-1 flex items-center justify-center text-zinc-600 text-xs text-center px-6';
+    empty.textContent = state.sessionId === GLOBAL_CHAT_BUCKET
+      ? 'Open a session and ask the AI to model something. Try: "Build a coffee mug, 80mm tall."'
+      : 'Ask the AI to model, modify, or describe this session.';
+    transcriptEl.appendChild(empty);
+    return;
+  }
+  for (const msg of state.history) {
+    transcriptEl.appendChild(renderMessage(msg));
+  }
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+function renderMessage(msg: ChatMessage): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = msg.role === 'user' ? 'flex flex-col items-end gap-1' : 'flex flex-col items-start gap-1';
+  wrap.dataset.messageId = msg.id;
+
+  // Tool results (user role) get rendered as collapsed bubbles
+  if (msg.role === 'user' && msg.toolResults && msg.toolResults.length > 0) {
+    for (const tr of msg.toolResults) {
+      wrap.appendChild(renderToolResultBubble(tr));
+    }
+  }
+
+  for (const b of msg.blocks) {
+    if (b.type === 'text' && b.text.trim().length > 0) {
+      wrap.appendChild(renderTextBubble(msg.role, b.text, msg.compacted));
+    } else if (b.type === 'image') {
+      wrap.appendChild(renderImageBubble(b.source));
+    }
+  }
+
+  if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
+    for (const tc of msg.toolCalls) {
+      wrap.appendChild(renderToolCallChip(tc.name, tc.input));
+    }
+  }
+
+  if (msg.role === 'assistant' && msg.costUsd !== undefined) {
+    const meta = document.createElement('div');
+    meta.className = 'text-[10px] text-zinc-600';
+    meta.textContent = `${formatUsd(msg.costUsd)}${msg.usage ? ` · ${msg.usage.outputTokens}t out` : ''}`;
+    wrap.appendChild(meta);
+  }
+
+  if (msg.role === 'assistant' && msg.aborted) {
+    const banner = document.createElement('div');
+    banner.className = 'flex items-center gap-2 text-[10px] text-amber-400';
+    const label = document.createElement('span');
+    label.textContent = '⊘ Stopped by user.';
+    banner.appendChild(label);
+    const discard = document.createElement('button');
+    discard.className = 'underline hover:text-amber-200';
+    discard.textContent = 'Discard partial';
+    discard.title = 'Delete this aborted message so the next turn starts clean.';
+    discard.addEventListener('click', () => { void discardPartial(msg.id); });
+    banner.appendChild(discard);
+    wrap.appendChild(banner);
+  }
+
+  return wrap;
+}
+
+async function discardPartial(messageId: string): Promise<void> {
+  // Drop the aborted assistant message from both the DB and the in-memory
+  // history so the next turn doesn't see (or have to refer to) it. We also
+  // drop any tool_result message that immediately followed — that pair
+  // only makes sense together.
+  const idx = state.history.findIndex(m => m.id === messageId);
+  if (idx < 0) return;
+  const toDelete = [state.history[idx].id];
+  const next = state.history[idx + 1];
+  if (next && next.role === 'user' && next.toolResults && next.toolResults.length > 0) {
+    toDelete.push(next.id);
+  }
+  await deleteMessages(toDelete);
+  await loadHistoryForCurrentSession();
+  renderTranscript();
+  renderCostMeter();
+}
+
+function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: boolean): HTMLElement {
+  const bubble = document.createElement('div');
+  const baseClass = 'max-w-[90%] px-3 py-2 rounded-lg text-sm whitespace-pre-wrap leading-snug';
+  if (compacted) {
+    bubble.className = `${baseClass} bg-zinc-800/60 border border-zinc-700 text-zinc-300 italic`;
+  } else if (role === 'user') {
+    bubble.className = `${baseClass} bg-blue-600 text-white`;
+  } else {
+    bubble.className = `${baseClass} bg-zinc-800 text-zinc-100`;
+  }
+  bubble.textContent = text;
+  return bubble;
+}
+
+function renderImageBubble(source: ImageSource): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'max-w-[90%] rounded-lg overflow-hidden border border-zinc-700';
+  const img = document.createElement('img');
+  img.src = `data:${source.mediaType};base64,${source.data}`;
+  img.alt = source.label ?? 'image';
+  img.className = 'block max-w-full max-h-64';
+  wrap.appendChild(img);
+  if (source.label) {
+    const label = document.createElement('div');
+    label.className = 'px-2 py-1 text-[10px] text-zinc-400 bg-zinc-800';
+    label.textContent = source.label;
+    wrap.appendChild(label);
+  }
+  return wrap;
+}
+
+function renderToolCallChip(name: string, input: Record<string, unknown>): HTMLElement {
+  const chip = document.createElement('details');
+  chip.className = 'max-w-[90%] text-[11px] rounded border border-zinc-700 bg-zinc-800/40 px-2 py-1';
+  const summary = document.createElement('summary');
+  summary.className = 'cursor-pointer text-zinc-300 select-none';
+  summary.textContent = `◆ ${name}(…)`;
+  chip.appendChild(summary);
+  const pre = document.createElement('pre');
+  pre.className = 'mt-1 text-[10px] text-zinc-400 overflow-x-auto whitespace-pre-wrap';
+  pre.textContent = JSON.stringify(input, null, 2);
+  chip.appendChild(pre);
+  return chip;
+}
+
+function renderToolResultBubble(result: PersistedToolResult): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col items-start gap-1 max-w-[90%]';
+  const chip = document.createElement('details');
+  const tone = result.isError ? 'border-red-700/60 bg-red-900/20 text-red-200' : 'border-emerald-700/40 bg-emerald-900/10 text-emerald-200';
+  chip.className = `text-[11px] rounded border ${tone} px-2 py-1`;
+  // If the tool returned an image, default to open so the user can see
+  // it without expanding — that's the whole point of the affordance.
+  if (result.image) chip.open = true;
+  const summary = document.createElement('summary');
+  summary.className = 'cursor-pointer select-none';
+  const head = result.content.split('\n')[0].slice(0, 80);
+  summary.textContent = `${result.isError ? '✗' : '✓'} ${head}${result.content.length > head.length ? '…' : ''}`;
+  chip.appendChild(summary);
+  const pre = document.createElement('pre');
+  pre.className = 'mt-1 text-[10px] opacity-80 overflow-x-auto whitespace-pre-wrap';
+  pre.textContent = result.content;
+  chip.appendChild(pre);
+  wrap.appendChild(chip);
+  // Image bubble — the same render the AI sees, so the human and the
+  // model are looking at literally the same pixels.
+  if (result.image) {
+    wrap.appendChild(renderImageBubble(result.image));
+  }
+  return wrap;
+}
+
+// === Pending images ===
+
+async function attachIsoViews(): Promise<void> {
+  const img = await captureIsoViews();
+  if (!img) {
+    setTransientStatus('No geometry to snapshot — run some code first.');
+    return;
+  }
+  state.pendingImages.push(img);
+  renderPendingImages();
+}
+
+async function attachFile(file: File): Promise<void> {
+  const img = await fileToImageSource(file);
+  if (!img) {
+    setTransientStatus(`Skipped non-image: ${file.name}`);
+    return;
+  }
+  state.pendingImages.push(img);
+  renderPendingImages();
+}
+
+function renderPendingImages(): void {
+  if (!pendingImagesEl) return;
+  pendingImagesEl.replaceChildren();
+  if (state.pendingImages.length === 0) {
+    pendingImagesEl.classList.add('hidden');
+    return;
+  }
+  pendingImagesEl.classList.remove('hidden');
+  state.pendingImages.forEach((img, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'relative w-12 h-12 rounded border border-zinc-600 overflow-hidden';
+    const el = document.createElement('img');
+    el.src = `data:${img.mediaType};base64,${img.data}`;
+    el.className = 'w-full h-full object-cover';
+    chip.appendChild(el);
+    const rm = document.createElement('button');
+    rm.className = 'absolute top-0 right-0 w-4 h-4 bg-black/70 text-white text-[10px] rounded-bl';
+    rm.textContent = '✕';
+    rm.title = `Remove ${img.label ?? 'image'}`;
+    rm.addEventListener('click', () => {
+      state.pendingImages.splice(i, 1);
+      renderPendingImages();
+    });
+    chip.appendChild(rm);
+    pendingImagesEl!.appendChild(chip);
+  });
+}
+
+// === Send message ===
+
+async function sendMessage(): Promise<void> {
+  if (state.inFlight) return;
+  if (!inputEl) return;
+  const text = inputEl.value.trim();
+  if (text.length === 0 && state.pendingImages.length === 0) return;
+
+  const key = await getKey('anthropic');
+  if (!key) {
+    void showAiKeyModal({ onConnected: () => { panelStatusUpdate(); void sendMessage(); } });
+    return;
+  }
+
+  // The drawer is a fixed overlay on every page (landing, catalog, help),
+  // but the AI's tools (runAndSave, setCode, paint*) target the editor.
+  // If the user fires from anywhere else, navigate to /editor and give
+  // the route handler a beat to mount the editor + engine before runTurn
+  // starts calling window.partwright methods.
+  if (window.location.pathname !== '/editor' && navigateToEditorFn) {
+    setTransientStatus('Switching to editor…');
+    try {
+      await navigateToEditorFn();
+    } catch (err) {
+      setTransientStatus(`Navigation failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    // Wait for window.partwright to actually be live before proceeding.
+    // The editor mount + engine init is async; polling is simpler than
+    // wiring a dedicated ready event for one caller.
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const w = window as unknown as { partwright?: { run?: unknown } };
+      if (w.partwright?.run) break;
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
+
+  const settings = loadSettings();
+  const blocks: ChatBlock[] = [];
+  if (text.length > 0) blocks.push({ type: 'text', text });
+  // Only attach images the user added if vision is on. Iso views are
+  // user-initiated via Show AI; pending images get sent regardless because
+  // the user's intent is explicit when they attached them.
+  for (const img of state.pendingImages) blocks.push({ type: 'image', source: img });
+
+  inputEl.value = '';
+  state.pendingImages = [];
+  renderPendingImages();
+  progressState.retryCount = 0;
+  stalledByWatchdog = false;
+  await runTurnWithStallRetry(key.apiKey, settings.toggles, blocks);
+}
+
+/** Wraps runTurn with: in-progress indicator, stall watchdog, and bounded
+ *  auto-retry. When the watchdog fires we abort and re-issue the same
+ *  conversation; on retry attempts userBlocks is empty because the user
+ *  message is already in history from the first attempt. */
+interface TurnOutcome {
+  totalCostUsd: number;
+  toolCalls: number;
+  reason: TurnOutcomeReason;
+  detail?: string;
+  iterations: number;
+}
+
+function formatTurnOutcome(o: TurnOutcome): string {
+  const cost = formatUsd(o.totalCostUsd);
+  const iters = `${o.iterations} iter`;
+  const tools = o.toolCalls > 0 ? `, ${o.toolCalls} tool call${o.toolCalls === 1 ? '' : 's'}` : '';
+  switch (o.reason) {
+    case 'end_turn':
+      return `✓ done · ${cost} · ${iters}${tools}`;
+    case 'empty_final':
+      return `⚠ model exited without a final message · ${cost} · ${iters}${tools} — last visible content is above`;
+    case 'iteration_cap':
+      return `⚠ stopped at agent iteration cap (${o.iterations}) — try a more focused prompt, click Compact, or raise the ⟲ cap · ${cost}${tools}`;
+    case 'spend_cap':
+      return `⚠ stopped at spend cap${o.detail ? ` (${o.detail})` : ''} — raise the $ cap or click Send to continue · ${cost} · ${iters}${tools}`;
+    case 'max_tokens':
+      return `⚠ hit max_tokens before finishing · ${cost} · ${iters}${tools} — ask the model to continue`;
+    case 'refusal':
+      return `⊘ model refused · ${cost} · ${iters}${tools}`;
+    case 'aborted':
+      return `⊘ stopped · ${cost} · ${iters}${tools}`;
+    case 'error':
+      return `✗ ${o.detail ?? 'error'} · ${cost} · ${iters}${tools}`;
+    default:
+      return `· ended (${o.detail ?? 'other'}) · ${cost} · ${iters}${tools}`;
+  }
+}
+
+async function runTurnWithStallRetry(apiKey: string, toggles: ChatToggles, userBlocks: ChatBlock[]): Promise<void> {
+  let attempt = 0;
+  let lastTurnOutcome: TurnOutcome | null = null;
+  while (true) {
+    attempt++;
+    const controller = new AbortController();
+    state.inFlight = true;
+    state.inFlightController = controller;
+    setSendButtonMode('stop');
+    showProgress('thinking', 'starting…');
+
+    let activeAssistantId: string | null = null;
+    let liveTextEl: HTMLElement | null = null;
+    const blocksForThisAttempt = attempt === 1 ? userBlocks : [];
+
+    await runTurn({
+      apiKey,
+      toggles,
+      sessionId: state.sessionId,
+      history: state.history,
+      userBlocks: blocksForThisAttempt,
+      signal: controller.signal,
+    }, {
+      onUserPersisted: msg => {
+        state.history.push(msg);
+        renderTranscript();
+      },
+      onAssistantStart: id => {
+        activeAssistantId = id;
+        const placeholder: ChatMessage = {
+          id, sessionId: state.sessionId, role: 'assistant',
+          blocks: [{ type: 'text', text: '' }], createdAt: Date.now(),
+          seq: (state.history[state.history.length - 1]?.seq ?? 0) + 1,
+        };
+        state.history.push(placeholder);
+        renderTranscript();
+        if (transcriptEl) {
+          const wrap = transcriptEl.querySelector(`[data-message-id="${id}"]`) as HTMLElement | null;
+          liveTextEl = wrap?.querySelector('.bg-zinc-800') as HTMLElement | null;
+          if (liveTextEl) liveTextEl.textContent = '';
+        }
+      },
+      onAssistantText: delta => {
+        if (liveTextEl) {
+          liveTextEl.textContent = (liveTextEl.textContent ?? '') + delta;
+          if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+        }
+      },
+      onProgress: info => showProgress(info.phase, info.detail),
+      onAssistantPersisted: msg => {
+        const idx = state.history.findIndex(m => m.id === activeAssistantId);
+        if (idx >= 0) state.history[idx] = msg;
+        activeAssistantId = null;
+        liveTextEl = null;
+        renderTranscript();
+        renderCostMeter();
+      },
+      onToolResult: (_id, _name, result) => {
+        if (result.isError) setTransientStatus('A tool errored. The agent will retry or surface the issue.');
+      },
+      onError: err => {
+        // Capture as the outcome too so the sticky final-state banner
+        // shows the error instead of disappearing silently. The transient
+        // status still flashes for users watching that strip.
+        setTransientStatus(`Error: ${err.message}`);
+        lastTurnOutcome = { totalCostUsd: 0, toolCalls: 0, reason: 'error', detail: err.message, iterations: 0 };
+      },
+      onAborted: () => {
+        // Only show the user-stopped notice if the user actually clicked
+        // Stop — when the watchdog fires, the message is misleading.
+        if (!stalledByWatchdog) {
+          setTransientStatus('Stopped. Type a new message to continue or redirect.');
+          inputEl?.focus();
+        }
+      },
+      onTurnComplete: info => {
+        void loadHistoryForCurrentSession().then(() => {
+          renderTranscript();
+          renderCostMeter();
+        });
+        lastTurnOutcome = info;
+      },
+    });
+
+    state.inFlight = false;
+    state.inFlightController = null;
+    setSendButtonMode('send');
+
+    // Surface a sticky completion banner so the user knows the turn
+    // actually ended and why — better than a silent hideProgress that
+    // reads as "the model stalled and gave up".
+    if (lastTurnOutcome) {
+      showProgressFinal(formatTurnOutcome(lastTurnOutcome));
+      lastTurnOutcome = null;
+    } else {
+      hideProgress();
+    }
+
+    if (stalledByWatchdog && progressState.retryCount <= MAX_STALL_RETRIES) {
+      // Strip the empty/partial assistant message left by the stalled
+      // attempt so the retry doesn't see (or send back to the model) a
+      // ghost bubble.
+      await stripLastAbortedAssistant();
+      stalledByWatchdog = false;
+      continue;
+    }
+    return;
+  }
+}
+
+/** Find the last assistant message marked `aborted` at the tail of the
+ *  in-memory history, delete it from IndexedDB, and reload. Used to clean
+ *  up after the stall watchdog. */
+async function stripLastAbortedAssistant(): Promise<void> {
+  for (let i = state.history.length - 1; i >= 0; i--) {
+    const m = state.history[i];
+    if (m.role !== 'assistant') continue;
+    if (m.aborted) {
+      await deleteMessages([m.id]);
+      await loadHistoryForCurrentSession();
+      renderTranscript();
+      return;
+    }
+    break;
+  }
+}
+
+function setSendButtonMode(mode: 'send' | 'stop'): void {
+  if (!sendBtnRef) return;
+  if (mode === 'stop') {
+    sendBtnRef.textContent = 'Stop';
+    sendBtnRef.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-red-600 hover:bg-red-500 text-white';
+    sendBtnRef.title = 'Stop the model. Partial output is kept so you can redirect.';
+  } else {
+    sendBtnRef.textContent = 'Send';
+    sendBtnRef.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
+    sendBtnRef.title = 'Send your message (Enter). Shift+Enter for newline.';
+  }
+}
+
+// === Progress indicator + stall watchdog ===
+
+interface ProgressTracker {
+  phase: 'thinking' | 'streaming' | 'tool' | 'final' | 'idle';
+  detail?: string;
+  lastBeat: number;
+  retryCount: number;
+}
+
+const progressState: ProgressTracker = { phase: 'idle', lastBeat: 0, retryCount: 0 };
+
+/** Wall-clock seconds without a stream beat before we treat the request as
+ *  stalled. Anthropic's adaptive thinking can pause output for tens of
+ *  seconds during deep reasoning, so this threshold needs to be generous —
+ *  smaller numbers cause spurious "auto-resume" loops on Opus 4.7. The
+ *  watchdog beats on every text delta, so this is the gap BETWEEN tokens,
+ *  not total turn time. */
+const STALL_THRESHOLD_MS = 35_000;
+const MAX_STALL_RETRIES = 2;
+/** Phases where a long silence indicates a real stall — not 'tool' (tool
+ *  execution is synchronous JS and may legitimately run for a few seconds
+ *  with no progress events) and not 'idle' (we shouldn't be running). */
+const STALL_PHASES = new Set<ProgressTracker['phase']>(['thinking', 'streaming']);
+
+function showProgress(phase: ProgressTracker['phase'], detail?: string): void {
+  // Per-text-delta calls land here too (the watchdog needs lastBeat fresh
+  // to know the stream is healthy). Skip the DOM rebuild when nothing the
+  // user can see has changed — the 1s ticker keeps the "(15s silent)"
+  // counter accurate, and avoiding replaceChildren() on every token saves
+  // hundreds of DOM rewrites/sec during a streaming response.
+  const visualChanged = progressState.phase !== phase || progressState.detail !== detail;
+  progressState.phase = phase;
+  progressState.detail = detail;
+  progressState.lastBeat = Date.now();
+  if (visualChanged) renderProgress();
+  if (!progressEl) return;
+  progressEl.classList.remove('hidden');
+  if (progressTickerId === null) {
+    // Re-render every second so the "(15s)" elapsed counter updates and
+    // the stall watchdog can fire from the same tick.
+    progressTickerId = window.setInterval(renderProgress, 1000);
+  }
+}
+
+function hideProgress(): void {
+  progressState.phase = 'idle';
+  if (progressEl) progressEl.classList.add('hidden');
+  if (progressTickerId !== null) {
+    clearInterval(progressTickerId);
+    progressTickerId = null;
+  }
+}
+
+function renderProgress(): void {
+  if (!progressEl) return;
+  if (progressState.phase === 'idle') return;
+  const elapsedSec = Math.max(0, Math.round((Date.now() - progressState.lastBeat) / 1000));
+  const silentSuffix = elapsedSec > 3 ? ` (${elapsedSec}s silent)` : '';
+  const label =
+    progressState.phase === 'thinking' ? `🧠 thinking…${silentSuffix}` :
+    progressState.phase === 'streaming' ? `✎ streaming response…${silentSuffix}` :
+    progressState.phase === 'tool' ? `🔧 ${progressState.detail ?? 'running tool'}…` :
+    progressState.phase === 'final' ? (progressState.detail ?? '✓ done') :
+    '';
+  progressEl.replaceChildren();
+  const dot = document.createElement('span');
+  // Final-state dot is static and colored by outcome rather than pulsing.
+  const dotColor =
+    progressState.phase === 'final'
+      ? (label.startsWith('⚠') ? 'bg-amber-400' : label.startsWith('✗') || label.startsWith('⊘') ? 'bg-red-400' : 'bg-emerald-400')
+      : 'bg-blue-400 animate-pulse';
+  dot.className = `inline-block w-2 h-2 rounded-full ${dotColor}`;
+  progressEl.appendChild(dot);
+  const text = document.createElement('span');
+  text.textContent = label;
+  progressEl.appendChild(text);
+  if (
+    state.inFlightController &&
+    STALL_PHASES.has(progressState.phase) &&
+    elapsedSec * 1000 > STALL_THRESHOLD_MS
+  ) {
+    triggerStallRetry();
+  }
+}
+
+/** Display a sticky completion / failure status for ~6s after a turn
+ *  ends. Replaces the silent hideProgress() that left users wondering
+ *  whether the model finished, errored, or just stopped speaking. */
+function showProgressFinal(detail: string): void {
+  if (!progressEl) return;
+  progressState.phase = 'final';
+  progressState.detail = detail;
+  progressState.lastBeat = Date.now();
+  progressEl.classList.remove('hidden');
+  renderProgress();
+  if (progressTickerId !== null) {
+    clearInterval(progressTickerId);
+    progressTickerId = null;
+  }
+  window.setTimeout(() => {
+    if (progressState.phase === 'final' && progressState.detail === detail) {
+      hideProgress();
+    }
+  }, 6000);
+}
+
+function triggerStallRetry(): void {
+  if (progressState.retryCount >= MAX_STALL_RETRIES) {
+    // Hand off to the user — surface that we've given up auto-retrying.
+    setTransientStatus(`Model stalled (no tokens for ${Math.round(STALL_THRESHOLD_MS / 1000)}s) after ${MAX_STALL_RETRIES} retries — stopping.`);
+    state.inFlightController?.abort();
+    return;
+  }
+  // Abort the current attempt with a stall marker so sendMessage knows to
+  // re-issue rather than treat it as a user-initiated stop.
+  progressState.retryCount++;
+  setTransientStatus(`No response for ${Math.round(STALL_THRESHOLD_MS / 1000)}s — auto-resuming (retry ${progressState.retryCount}/${MAX_STALL_RETRIES})...`);
+  stalledByWatchdog = true;
+  state.inFlightController?.abort();
+}
+
+// === Compaction ===
+
+async function runCompact(): Promise<void> {
+  if (state.inFlight) {
+    setTransientStatus('Wait for the current turn to finish before compacting.');
+    return;
+  }
+  const key = await getKey('anthropic');
+  if (!key) {
+    void showAiKeyModal({ onConnected: () => panelStatusUpdate() });
+    return;
+  }
+  setTransientStatus('Asking Haiku to summarize...');
+  let proposal;
+  try {
+    proposal = await proposeCompaction(key.apiKey, state.history);
+  } catch (err) {
+    setTransientStatus(`Compaction failed: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  setTransientStatus('');
+
+  showCompactConfirmModal(proposal, async ({ summary, notes }) => {
+    // Promote selected notes to durable session log via the existing API
+    const w = window as unknown as { partwright?: { addSessionNote?: (t: string) => Promise<unknown> } };
+    if (w.partwright?.addSessionNote && state.sessionId !== GLOBAL_CHAT_BUCKET) {
+      for (const note of notes) {
+        try { await w.partwright.addSessionNote(note); } catch { /* noop */ }
+      }
+    }
+    // Replace the dropped tail with one synthetic summary message
+    const summaryMsg: ChatMessage = {
+      id: generateId(),
+      sessionId: state.sessionId,
+      role: 'assistant',
+      blocks: [{ type: 'text', text: `[compacted summary]\n${summary}` }],
+      createdAt: Date.now(),
+      seq: -1, // sorts before everything kept
+      compacted: true,
+    };
+    await deleteMessages(proposal.drop.map(m => m.id));
+    await putMessages([summaryMsg]);
+    await loadHistoryForCurrentSession();
+    renderTranscript();
+    renderCostMeter();
+    setTransientStatus(`Compacted ${proposal.drop.length} turn(s); promoted ${notes.length} note(s).`);
+  });
+}
+
+// === Status flash ===
+
+let statusTimer: number | null = null;
+
+function setTransientStatus(text: string): void {
+  if (!panelStatusEl) return;
+  if (statusTimer !== null) {
+    clearTimeout(statusTimer);
+    statusTimer = null;
+  }
+  if (!text) {
+    panelStatusUpdate();
+    return;
+  }
+  panelStatusEl.classList.remove('hidden', 'text-amber-400');
+  panelStatusEl.classList.add('text-blue-300');
+  panelStatusEl.textContent = text;
+  statusTimer = window.setTimeout(() => {
+    statusTimer = null;
+    panelStatusUpdate();
+  }, 4000);
+}

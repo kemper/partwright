@@ -5,6 +5,7 @@
 ```bash
 npm run dev          # Start dev server at http://localhost:5173
 npm run build        # Production build to dist/
+npm run test:e2e     # Run Playwright smoke tests (auto-starts dev server)
 ```
 
 Open `http://localhost:5173/editor?view=ai` to start with the 4 isometric views visible (instead of the interactive viewport). This is the recommended URL for AI agents — all views are visible on page load without clicking any tabs.
@@ -29,6 +30,68 @@ Hosted on **Cloudflare Pages** with production custom domain `www.partwrightstud
 - **SPA routing:** `public/_redirects` (`/* /index.html 200`)
 - **Headers:** `public/_headers` (COEP, COOP, CSP) — Cloudflare Pages serves these automatically
 - **Environment variable:** Set `SITE_URL` in Cloudflare Pages dashboard (Settings > Environment variables) to the production URL (`https://www.partwrightstudio.com`). This is used at build time by the `absoluteUrls` Vite plugin to make Open Graph image URLs and canonical links absolute. If `SITE_URL` is not set, the plugin falls back to `CF_PAGES_URL` (provided automatically by Cloudflare Pages for each deployment).
+
+## Browser Tests (Playwright)
+
+End-to-end smoke tests live in `tests/*.spec.ts` and run against a Vite dev
+server that Playwright starts automatically. Run them with:
+
+```bash
+npm run test:e2e               # full suite
+npx playwright test --grep "AI chat"   # one describe block
+npx playwright test --headed   # watch the browser run (local only)
+```
+
+**Run these whenever you touch UI, routing, or anything in `src/ai/` or
+`src/ui/ai*`** — the suite covers landing → editor → AI panel toggle →
+key modal → toggle pills → ai.md serving in ~15s.
+
+### Multi-environment browser detection
+
+`playwright.config.ts` auto-picks the right Chromium binary so the same
+test command works on a developer laptop and inside the Anthropic Claude
+Code on the web sandbox without per-environment setup:
+
+- **Sandbox** (`/opt/pw-browsers/` exists): config picks the highest
+  installed `chromium-N` directory and uses its `chrome` binary directly
+  via `launchOptions.executablePath`. The version pinned by the
+  `playwright` npm package may differ from what's cached, but the
+  installed browser still satisfies the test runner — no download
+  needed (which is good, because the sandbox often blocks Chrome for
+  Testing's CDN).
+- **Local laptop** (no `/opt/pw-browsers/`): config leaves
+  `executablePath` unset, and Playwright finds its own cache at
+  `~/.cache/ms-playwright/` (Linux) or `~/Library/Caches/ms-playwright/`
+  (macOS). Run `npx playwright install chromium` once on a new machine.
+
+If the auto-detection picks the wrong binary, override it at the shell:
+
+```bash
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/path/to/chrome npm run test:e2e
+```
+
+### When AI agents need to run a browser test
+
+1. Don't reinstall browsers blindly. Check `/opt/pw-browsers/` first; the
+   sandbox image already has Chromium. `playwright.config.ts` handles the
+   wiring.
+2. The default Desktop Chrome viewport (1280×720) clips the AI panel's
+   toggle strip. The config sets 1280×900 — keep it that way for
+   anything that interacts with elements in the bottom half of the
+   panel.
+3. Tiny flex children of recently-transformed parents sometimes fail
+   Playwright's viewport hit-test (`Element is outside of the viewport`).
+   When the bounding box is verifiably inside, prefer
+   `locator.dispatchEvent('click')` over `locator.click({ force: true })`
+   — the latter still enforces the viewport bound.
+4. Each Playwright test gets a fresh `BrowserContext`, so localStorage
+   and IndexedDB are isolated by default. **Don't add `localStorage.clear()`
+   in `beforeEach`** unless you mean it — it'll fire on `page.reload()`
+   inside a test too, breaking any "state persists across reload"
+   assertion.
+5. Tests must run with no external network. The `validateKey` flow hits
+   `api.anthropic.com`; assert on the surfaced error message, not on
+   whether the request succeeded.
 
 ## Smoke Test — Verifying the App Works
 

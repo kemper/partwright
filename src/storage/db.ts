@@ -68,7 +68,13 @@ export interface SessionNote {
 const DB_NAME = 'partwright';
 const LEGACY_DB_NAME = 'mainifold';
 const LEGACY_MIGRATION_KEY = 'partwright-migrated-mainifold-db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
+
+/** Opens the partwright IndexedDB. Exposed so the AI subsystem can attach
+ *  its own stores (`aiKeys`, `aiChats`) without duplicating the connection. */
+export function openPartwrightDB(): Promise<IDBDatabase> {
+  return openDB();
+}
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -88,6 +94,16 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('notes')) {
         const store = db.createObjectStore('notes', { keyPath: 'id' });
+        store.createIndex('sessionId', 'sessionId', { unique: false });
+      }
+      // Bumped to v3 with stores backing the in-app AI chat — one row per
+      // provider in `aiKeys`, one row per chat message in `aiChats` indexed
+      // by sessionId so opening a session restores its transcript.
+      if (!db.objectStoreNames.contains('aiKeys')) {
+        db.createObjectStore('aiKeys', { keyPath: 'provider' });
+      }
+      if (!db.objectStoreNames.contains('aiChats')) {
+        const store = db.createObjectStore('aiChats', { keyPath: 'id' });
         store.createIndex('sessionId', 'sessionId', { unique: false });
       }
     };

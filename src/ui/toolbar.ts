@@ -29,6 +29,24 @@ export interface ToolbarCallbacks {
   onOpenCatalog: () => void;
   onLanguageSwitch: (lang: 'manifold-js' | 'scad') => void;
   onGoHome: () => void;
+  /** Toggle the AI chat side panel. */
+  onToggleAi: () => void;
+}
+
+let _aiBtn: HTMLButtonElement | null = null;
+
+/** Update the AI chip label/state from outside (e.g. when key connects/disconnects). */
+export function setAiToolbarState(connected: boolean): void {
+  if (!_aiBtn) return;
+  if (connected) {
+    _aiBtn.className = 'flex items-center gap-1.5 px-2 py-1 rounded text-xs text-blue-300 bg-blue-900/30 border border-blue-700/50 hover:bg-blue-900/50 transition-colors';
+    _aiBtn.innerHTML = '<span>✦ AI</span>';
+    _aiBtn.title = 'Open AI chat panel';
+  } else {
+    _aiBtn.className = 'flex items-center gap-1.5 px-2 py-1 rounded text-xs text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100 transition-colors';
+    _aiBtn.innerHTML = '<span>✦ Connect AI</span>';
+    _aiBtn.title = 'Connect an Anthropic API key to chat with the AI';
+  }
 }
 
 /** File extensions accepted by the Import button and drag-and-drop. */
@@ -468,6 +486,16 @@ export function createToolbar(
   });
 
   toolbar.appendChild(exportWrapper);
+
+  // AI chat toggle — opens the side drawer; switches between "Connect AI"
+  // (no key yet) and a connected chip via setAiToolbarState() from main.ts.
+  _aiBtn = document.createElement('button');
+  _aiBtn.id = 'btn-ai';
+  _aiBtn.className = 'flex items-center gap-1.5 px-2 py-1 rounded text-xs text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100 transition-colors ml-1';
+  _aiBtn.innerHTML = '<span>✦ Connect AI</span>';
+  _aiBtn.title = 'Connect an Anthropic API key to chat with the AI';
+  _aiBtn.addEventListener('click', callbacks.onToggleAi);
+  toolbar.appendChild(_aiBtn);
 
   // Dark mode toggle — text button, on by default, off when clicked
   const themeBtn = document.createElement('button');

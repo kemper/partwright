@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "deploy": "npm audit --audit-level=high && tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
     "@types/three": "^0.183.1",
@@ -16,6 +17,7 @@
     "vite": "^6.3.5"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.92.0",
     "@codemirror/lang-javascript": "^6.2.5",
     "@codemirror/lint": "^6.9.5",
     "@codemirror/merge": "^6.12.1",
