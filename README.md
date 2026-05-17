@@ -44,6 +44,12 @@ Manifold.cube([10, 10, 10], true)
   .translate([0, 0, 5]);
 ```
 
+## A note on AI costs & risk
+
+Partwright is an experiment — a passion project exploring what happens when you put generative AI inside a browser-based 3D modeling tool. I've spent my own money building it; I'm not trying to make money from it, and I hope it brings others the same joy and curiosity it's brought me.
+
+That said: **when you connect your own AI agent, it uses your API tokens.** AI-driven CAD is genuinely hard — the agent may iterate many times before producing good geometry (or not). There are some guardrails in place to help limit runaway spend, but there's no guarantee they work perfectly in every situation. **By connecting your own AI agent, you accept responsibility for any API costs incurred, regardless of output quality.** Start small, run a quick test first, and go in eyes open.
+
 ## AI Agent Setup
 
 AI agents (Claude Code, etc.) interact with the app via `window.partwright` in the browser. The legacy `window.mainifold` alias still works for older prompts and tools. There are several ways to give an AI agent browser access:

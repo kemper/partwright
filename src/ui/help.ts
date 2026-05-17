@@ -170,6 +170,13 @@ export function createHelpPage(
         '<strong class="text-zinc-300">Theme</strong> — Toggle <strong class="text-zinc-300">Dark Mode</strong> in the toolbar to switch the entire UI, viewport background, and grid colors between dark and light. Your choice persists across sessions.',
     },
     {
+      id: 'ai-costs-risk',
+      heading: 'A note on AI costs & risk',
+      body: 'Partwright is an experiment — a passion project exploring what happens when you put generative AI inside a 3D modeling tool, shared openly because I\'ve found real joy in building it and hope others find value in it too. I\'ve spent my own money on this and I\'m not trying to make money from it.<br><br>' +
+        'That said: <strong class="text-zinc-300">when you connect your own AI agent, it uses your API tokens.</strong> AI-driven CAD is genuinely hard and unpredictable — the agent might iterate many times before landing on something good (or give up trying). There are some guardrails in place to help limit runaway spend, but there\'s no guarantee they work perfectly in every situation. <strong class="text-zinc-300">By connecting your own AI agent, you accept responsibility for any API costs incurred, regardless of output quality.</strong><br><br>' +
+        'Go in eyes open, start with small experiments, and enjoy the ride.',
+    },
+    {
       id: 'ai-browser',
       heading: 'AI assistant in the browser (Anthropic API key)',
       body:
