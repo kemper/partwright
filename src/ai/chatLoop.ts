@@ -224,12 +224,13 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       void recordUsage('anthropic', result.usage.inputTokens + result.usage.cacheReadInputTokens + result.usage.cacheCreationInputTokens, result.usage.outputTokens, turnCost);
     }
 
-    // Local-provider truncation surface (max_tokens or unclosed tool-call).
-    if (toggles.provider === 'local' && (result as { truncated?: boolean }).truncated) {
-      callbacks.onError?.(new Error(
-        'The local model\'s response was cut off before it finished. ' +
-        'Try a shorter prompt, switch to the Large (Hermes 3) model, or compact the chat to free up context.'
-      ));
+    // Local-provider truncation: max_tokens or unclosed tool-call. We
+    // don't fire `onError` here — that would race with `onTurnComplete`
+    // below and stomp the outcome. Instead we flag a synthetic stopReason
+    // so the outcome formatter in the panel surfaces a useful hint.
+    const localTruncated = toggles.provider === 'local' && (result as { truncated?: boolean }).truncated;
+    if (localTruncated && result.stopReason !== 'tool_use') {
+      result = { ...result, stopReason: 'max_tokens' };
     }
 
     if (aborted) {

@@ -477,7 +477,8 @@ const ALWAYS_AVAILABLE = new Set([
   'getFeatureCentroids',
   'getSessionContext',
   'listVersions',
-  'loadVersion',
+  // loadVersion is intentionally NOT here — it's listed in SAVE_GATED so
+  // the model can't rewind state when the user has paused commits.
   'addSessionNote',
   'listSessionNotes',
   'findFaces',

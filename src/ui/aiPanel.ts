@@ -16,7 +16,7 @@ import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiLocalModal } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { showCompactConfirmModal } from './aiCompactModal';
-import { ensureModelLoaded, isModelLoaded, resolveLocalModel } from '../ai/local';
+import { ensureModelLoaded, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
 import { activeModel, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type TurnOutcomeReason } from '../ai/types';
 
 interface PanelState {
@@ -67,10 +67,17 @@ function effectiveSystemPromptChars(): number {
 }
 
 /** Token limit for the active provider/model — drives the % full bar
- *  on the cost meter and the auto-compaction thresholds. */
+ *  on the cost meter and the auto-compaction thresholds. Reads the
+ *  per-model declared context window so 4K models don't lie at "70%
+ *  full = 11K" and 16K models don't lie at "70% = 5.6K". */
 function contextLimitFor(settings: AiSettings): number {
   if (settings.toggles.provider === 'local') {
-    return settings.localContext.windowSizeOverride ?? 8192;
+    if (settings.localContext.windowSizeOverride) return settings.localContext.windowSizeOverride;
+    if (settings.toggles.localModel) {
+      try { return resolveLocalModel(settings.toggles.localModel).contextWindowSize ?? 8192; }
+      catch { /* stale id — fall through */ }
+    }
+    return 8192;
   }
   if (settings.toggles.anthropicModel === 'claude-haiku-4-5') return 200_000;
   return 1_000_000;
@@ -327,10 +334,15 @@ function buildDrawer(): void {
   sendBtn.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
   sendBtn.textContent = 'Send';
   sendBtn.addEventListener('click', () => {
-    // While a turn is in flight the button is "Stop" — click aborts the
-    // controller, which propagates through runTurn → streamTurn → SDK.
+    // While a turn is in flight the button is "Stop" — abort the
+    // controller (which propagates through runTurn → streamTurn → SDK on
+    // the Anthropic path) AND call interruptLocal so any in-progress
+    // WebLLM generation halts at the next token. The local path doesn't
+    // accept the AbortSignal so this is the only way to stop it mid-
+    // stream rather than at the next iteration boundary.
     if (state.inFlight) {
       state.inFlightController?.abort();
+      void interruptLocal();
       return;
     }
     void sendMessage();
@@ -780,9 +792,27 @@ function renderMessage(msg: ChatMessage): HTMLElement {
     }
   }
 
+  // Errored placeholder: render a distinct red bubble with Retry / Dismiss
+  // and skip the normal text/tool/cost rendering.
+  if (msg.errored) {
+    wrap.appendChild(renderErrorBubble(msg));
+    return wrap;
+  }
+
+  // Assistant placeholders are pushed with an empty text block during a
+  // streaming turn so the live bubble exists *before* any tokens arrive —
+  // otherwise the streaming scanner finds nothing to update and the user
+  // sees nothing until the final persist. We render the empty bubble and
+  // tag it with `data-live-bubble` so onAssistantText can target it.
   for (const b of msg.blocks) {
-    if (b.type === 'text' && b.text.trim().length > 0) {
-      wrap.appendChild(renderTextBubble(msg.role, b.text, msg.compacted));
+    if (b.type === 'text') {
+      const isEmpty = b.text.length === 0;
+      if (isEmpty && msg.role !== 'assistant') continue;
+      const bubble = renderTextBubble(msg.role, b.text, msg.compacted);
+      if (isEmpty && msg.role === 'assistant') bubble.dataset.liveBubble = msg.id;
+      if (b.text.trim().length > 0 || (isEmpty && msg.role === 'assistant')) {
+        wrap.appendChild(bubble);
+      }
     } else if (b.type === 'image') {
       wrap.appendChild(renderImageBubble(b.source));
     }
@@ -835,6 +865,74 @@ async function discardPartial(messageId: string): Promise<void> {
   await loadHistoryForCurrentSession();
   renderTranscript();
   renderCostMeter();
+}
+
+/** Rendered for turns that errored mid-flight — visually distinct so the
+ *  user can spot the failure point in a long chat, and offers a Retry that
+ *  re-sends the immediately preceding user message. */
+function renderErrorBubble(msg: ChatMessage): HTMLElement {
+  const card = document.createElement('div');
+  card.className = 'max-w-[95%] rounded border border-red-700/60 bg-red-900/15 px-3 py-2 flex flex-col gap-2';
+
+  const head = document.createElement('div');
+  head.className = 'flex items-center gap-1.5 text-xs font-medium text-red-200';
+  head.innerHTML = '<span>⚠</span><span>Turn failed</span>';
+  card.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'text-[12px] text-red-100 whitespace-pre-wrap leading-snug';
+  body.textContent = msg.blocks.find(b => b.type === 'text')?.text ?? 'The model didn\'t finish the turn.';
+  card.appendChild(body);
+
+  const actions = document.createElement('div');
+  actions.className = 'flex items-center gap-2 pt-1';
+  const retryBtn = document.createElement('button');
+  retryBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
+  retryBtn.textContent = '↻ Retry last message';
+  retryBtn.addEventListener('click', () => { void retryLastUserMessage(msg.id); });
+  actions.appendChild(retryBtn);
+
+  const dismissBtn = document.createElement('button');
+  dismissBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800';
+  dismissBtn.textContent = 'Dismiss';
+  dismissBtn.title = 'Hide this error from the chat (it\'s not stored anyway).';
+  dismissBtn.addEventListener('click', () => {
+    state.history = state.history.filter(m => m.id !== msg.id);
+    renderTranscript();
+  });
+  actions.appendChild(dismissBtn);
+  card.appendChild(actions);
+  return card;
+}
+
+/** Find the most recent user message before this error, dismiss the error
+ *  bubble, and replay the user message verbatim. */
+async function retryLastUserMessage(errorMsgId: string): Promise<void> {
+  if (state.inFlight) {
+    setTransientStatus('Wait for the current turn to finish before retrying.');
+    return;
+  }
+  const errorIdx = state.history.findIndex(m => m.id === errorMsgId);
+  if (errorIdx < 0) return;
+  let lastUser: ChatMessage | null = null;
+  for (let i = errorIdx - 1; i >= 0; i--) {
+    const m = state.history[i];
+    if (m.role === 'user' && m.blocks.some(b => b.type === 'text' || b.type === 'image')) {
+      lastUser = m;
+      break;
+    }
+  }
+  if (!lastUser) {
+    setTransientStatus('Nothing to retry — couldn\'t find your last message.');
+    return;
+  }
+  state.history = state.history.filter(m => m.id !== errorMsgId);
+  renderTranscript();
+  if (!inputEl) return;
+  const text = lastUser.blocks.find(b => b.type === 'text')?.text ?? '';
+  state.pendingImages = lastUser.blocks.filter(b => b.type === 'image').map(b => (b as { source: ImageSource }).source);
+  inputEl.value = text;
+  await sendMessage();
 }
 
 function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: boolean): HTMLElement {
@@ -1060,8 +1158,13 @@ function formatTurnOutcome(o: TurnOutcome): string {
       return `⚠ stopped at agent iteration cap (${o.iterations}) — try a more focused prompt, click Compact, or raise the ⟲ cap · ${cost}${tools}`;
     case 'spend_cap':
       return `⚠ stopped at spend cap${o.detail ? ` (${o.detail})` : ''} — raise the $ cap or click Send to continue · ${cost} · ${iters}${tools}`;
-    case 'max_tokens':
-      return `⚠ hit max_tokens before finishing · ${cost} · ${iters}${tools} — ask the model to continue`;
+    case 'max_tokens': {
+      const isLocal = loadSettings().toggles.provider === 'local';
+      const hint = isLocal
+        ? 'try a shorter prompt, switch to the Large (Hermes 3) model, or compact the chat'
+        : 'ask the model to continue';
+      return `⚠ hit max_tokens before finishing · ${cost} · ${iters}${tools} — ${hint}`;
+    }
     case 'refusal':
       return `⊘ model refused · ${cost} · ${iters}${tools}`;
     case 'aborted':
@@ -1109,9 +1212,11 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         };
         state.history.push(placeholder);
         renderTranscript();
+        // renderMessage tags the empty placeholder bubble with
+        // `data-live-bubble` so we can find it reliably — `bg-zinc-800` is
+        // shared by tool-call chips and other UI and isn't a stable target.
         if (transcriptEl) {
-          const wrap = transcriptEl.querySelector(`[data-message-id="${id}"]`) as HTMLElement | null;
-          liveTextEl = wrap?.querySelector('.bg-zinc-800') as HTMLElement | null;
+          liveTextEl = transcriptEl.querySelector(`[data-live-bubble="${id}"]`) as HTMLElement | null;
           if (liveTextEl) liveTextEl.textContent = '';
         }
       },
@@ -1134,9 +1239,28 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         if (result.isError) setTransientStatus('A tool errored. The agent will retry or surface the issue.');
       },
       onError: err => {
-        // Capture as the outcome too so the sticky final-state banner
-        // shows the error instead of disappearing silently. The transient
-        // status still flashes for users watching that strip.
+        // Replace the in-memory "Thinking…" placeholder with a visible
+        // error bubble so the user can see what failed and recover via
+        // the Retry button. The bubble is in-memory only (not persisted),
+        // so a session change wipes it. We also capture the outcome and
+        // flash the transient status for visibility.
+        if (activeAssistantId) {
+          const idx = state.history.findIndex(m => m.id === activeAssistantId);
+          const errorMsg: ChatMessage = {
+            id: activeAssistantId,
+            sessionId: state.sessionId,
+            role: 'assistant',
+            blocks: [{ type: 'text', text: err.message }],
+            createdAt: Date.now(),
+            seq: idx >= 0 ? state.history[idx].seq : (state.history[state.history.length - 1]?.seq ?? 0) + 1,
+            errored: true,
+          };
+          if (idx >= 0) state.history[idx] = errorMsg;
+          else state.history.push(errorMsg);
+          activeAssistantId = null;
+          liveTextEl = null;
+          renderTranscript();
+        }
         setTransientStatus(`Error: ${err.message}`);
         lastTurnOutcome = { totalCostUsd: 0, toolCalls: 0, reason: 'error', detail: err.message, iterations: 0 };
       },
@@ -1149,9 +1273,18 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         }
       },
       onTurnComplete: info => {
-        void loadHistoryForCurrentSession().then(() => {
+        // Preserve in-memory errored placeholders across the IndexedDB
+        // reload — they were never persisted, so a naive reload wipes
+        // them. Auto-compaction only fires on clean turns (no errored
+        // bubble was emitted for this turn).
+        const erroredFromThisTurn = state.history.filter(m => m.errored);
+        void loadHistoryForCurrentSession().then(async () => {
+          for (const m of erroredFromThisTurn) state.history.push(m);
           renderTranscript();
           renderCostMeter();
+          if (erroredFromThisTurn.length === 0 && info.reason !== 'aborted' && info.reason !== 'error') {
+            await maybeAutoCompact();
+          }
         });
         lastTurnOutcome = info;
       },
@@ -1324,6 +1457,7 @@ function triggerStallRetry(): void {
     // Hand off to the user — surface that we've given up auto-retrying.
     setTransientStatus(`Model stalled (no tokens for ${Math.round(STALL_THRESHOLD_MS / 1000)}s) after ${MAX_STALL_RETRIES} retries — stopping.`);
     state.inFlightController?.abort();
+    void interruptLocal();
     return;
   }
   // Abort the current attempt with a stall marker so sendMessage knows to
@@ -1332,9 +1466,85 @@ function triggerStallRetry(): void {
   setTransientStatus(`No response for ${Math.round(STALL_THRESHOLD_MS / 1000)}s — auto-resuming (retry ${progressState.retryCount}/${MAX_STALL_RETRIES})...`);
   stalledByWatchdog = true;
   state.inFlightController?.abort();
+  void interruptLocal();
 }
 
 // === Compaction ===
+
+// === Auto-compaction ===
+
+/** Runs after every successful turn. Honors the user's autoCompactMode:
+ *  - off:           do nothing.
+ *  - conservative:  no auto-fire (the persistent "Compact now" link on
+ *                   the cost meter at ≥80% is the canonical surface).
+ *  - standard:      silently compact at 70% full, keep last 4 turns.
+ *  - aggressive:    compact after every turn, keep just the last
+ *                   exchange. Best when full history doesn't matter —
+ *                   like driving the modeler. */
+async function maybeAutoCompact(): Promise<void> {
+  const settings = loadSettings();
+  const mode = settings.autoCompactMode;
+  if (mode === 'off' || mode === 'conservative') return;
+
+  const tokens = totalTokensEstimate(state.history, effectiveSystemPromptChars());
+  const ctxLimit = contextLimitFor(settings);
+  const pct = ctxLimit > 0 ? tokens / ctxLimit : 0;
+
+  let keepTail: number;
+  if (mode === 'aggressive') {
+    keepTail = 2;
+    if (state.history.length <= keepTail + 1) return;
+  } else {
+    // standard
+    keepTail = 4;
+    if (pct < 0.7) return;
+    if (state.history.length <= keepTail + 1) return;
+  }
+
+  let apiKey: string | undefined;
+  if (settings.toggles.provider === 'anthropic') {
+    const key = await getKey('anthropic');
+    if (!key) return;
+    apiKey = key.apiKey;
+  } else if (!settings.toggles.localModel) {
+    return;
+  }
+
+  let proposal;
+  try {
+    proposal = await proposeCompaction({ toggles: settings.toggles, apiKey }, state.history, keepTail);
+  } catch (err) {
+    // Don't block the user's actual conversation on a flaky compactor —
+    // but DO surface it so a quietly-broken auto-compact doesn't leave
+    // them wondering why context keeps growing.
+    const msg = err instanceof Error ? err.message : String(err);
+    setTransientStatus(`Auto-compact skipped: ${msg}. Click Compact to retry.`);
+    return;
+  }
+
+  // Promote any proposed notes silently so insights survive.
+  const w = window as unknown as { partwright?: { addSessionNote?: (t: string) => Promise<unknown> } };
+  if (w.partwright?.addSessionNote && state.sessionId !== GLOBAL_CHAT_BUCKET) {
+    for (const note of proposal.proposedNotes) {
+      try { await w.partwright.addSessionNote(note); } catch { /* noop */ }
+    }
+  }
+
+  const summaryMsg: ChatMessage = {
+    id: generateId(),
+    sessionId: state.sessionId,
+    role: 'assistant',
+    blocks: [{ type: 'text', text: `[auto-compacted ${proposal.drop.length} turn(s)]\n${proposal.summary}` }],
+    createdAt: Date.now(),
+    seq: nextCompactedSeq(state.history),
+    compacted: true,
+  };
+  await deleteMessages(proposal.drop.map(m => m.id));
+  await putMessages([summaryMsg]);
+  await loadHistoryForCurrentSession();
+  renderTranscript();
+  renderCostMeter();
+}
 
 async function runCompact(): Promise<void> {
   if (state.inFlight) {

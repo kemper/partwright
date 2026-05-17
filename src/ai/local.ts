@@ -219,6 +219,21 @@ export async function getCachedModels(): Promise<Set<string>> {
  *  local-model modal. Waits for any in-flight load to settle first so we
  *  don't race the SDK populating `loaded` with a freshly-loaded engine
  *  whose cache we're about to wipe. */
+/** Unload whatever model is currently resident in the GPU, without
+ *  touching the on-disk cache. Used when the user changes settings that
+ *  bake into engine.reload() — context window override, sliding window
+ *  toggle — so the next sendMessage rebuilds the engine with the new
+ *  config. The on-cache weights survive so the rebuild is fast. */
+export async function unloadActiveLocalModel(): Promise<void> {
+  if (loadInFlight) {
+    try { await loadInFlight; } catch { /* noop */ }
+  }
+  if (loaded) {
+    try { await loaded.engine.unload?.(); } catch { /* noop */ }
+    loaded = null;
+  }
+}
+
 export async function deleteCachedModel(modelId: string): Promise<void> {
   if (loadInFlight) {
     try { await loadInFlight; } catch { /* noop — failed loads still finalize */ }

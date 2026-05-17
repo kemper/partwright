@@ -9,7 +9,7 @@ import { showAiLocalModal } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { createModalShell } from './modalShell';
 import { loadSettings, saveSettings, setAutoCompactMode, setLocalContext, setProvider, AUTO_COMPACT_OPTIONS } from '../ai/settings';
-import { resolveLocalModel, isModelLoaded } from '../ai/local';
+import { resolveLocalModel, isModelLoaded, unloadActiveLocalModel } from '../ai/local';
 
 export interface AiSettingsCallbacks {
   onChange: () => void;
@@ -147,6 +147,9 @@ function buildLocalContextSection(cb: AiSettingsCallbacks): HTMLElement {
     const v = parseInt(overrideInput.value, 10);
     const next = Number.isFinite(v) && v > 0 ? v : null;
     saveSettings(setLocalContext(loadSettings(), { windowSizeOverride: next }));
+    // Unload so the next message rebuilds the engine with the new window.
+    // Cached weights survive — the rebuild is just a fast reload.
+    void unloadActiveLocalModel();
     cb.onChange();
   });
   overrideRow.appendChild(overrideInput);
@@ -164,6 +167,7 @@ function buildLocalContextSection(cb: AiSettingsCallbacks): HTMLElement {
   slidingCheckbox.checked = settings.localContext.sliding;
   slidingCheckbox.addEventListener('change', () => {
     saveSettings(setLocalContext(loadSettings(), { sliding: slidingCheckbox.checked }));
+    void unloadActiveLocalModel();
     cb.onChange();
   });
   slidingRow.appendChild(slidingCheckbox);
@@ -181,7 +185,7 @@ function buildLocalContextSection(cb: AiSettingsCallbacks): HTMLElement {
 
   const reloadHint = document.createElement('div');
   reloadHint.className = 'text-[10px] text-zinc-500';
-  reloadHint.textContent = 'Changes apply the next time the model is loaded into GPU.';
+  reloadHint.textContent = 'Changing these unloads the GPU engine; the next message rebuilds it (cached weights survive — just a fast reload).';
   wrap.appendChild(reloadHint);
   return wrap;
 }
