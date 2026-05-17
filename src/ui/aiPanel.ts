@@ -26,6 +26,12 @@ interface PanelState {
   /** Live for the duration of a turn. Stop button aborts via this. Null
    *  when no turn is in flight. */
   inFlightController: AbortController | null;
+  /** Blocks the human queued while a turn was in flight. Delivered to the
+   *  agent at the next natural pause (between iterations via the chatLoop
+   *  drain hook, or as the userBlocks of a follow-up turn if the loop
+   *  exits with the queue still non-empty). In-memory only — lost on
+   *  refresh, which matches the ephemeral "queue while running" use case. */
+  queuedBlocks: ChatBlock[];
 }
 
 const state: PanelState = {
@@ -36,9 +42,12 @@ const state: PanelState = {
   systemPromptChars: 0,
   inFlight: false,
   inFlightController: null,
+  queuedBlocks: [],
 };
 
 let sendBtnRef: HTMLButtonElement | null = null;
+let stopBtnRef: HTMLButtonElement | null = null;
+let queuedBadgeRef: HTMLElement | null = null;
 
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
@@ -97,6 +106,10 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
     return;
   }
   state.sessionId = effective;
+  // Drop any queued follow-ups — they were aimed at the prior chat bucket
+  // and the human's instructions almost never make sense out of context.
+  state.queuedBlocks = [];
+  renderQueuedBadge();
   await loadHistoryForCurrentSession();
   renderTranscript();
   renderCostMeter();
@@ -208,6 +221,14 @@ function buildDrawer(): void {
   progressEl.className = 'px-3 pb-1.5 text-[11px] text-zinc-400 flex items-center gap-2 shrink-0 hidden';
   root.appendChild(progressEl);
 
+  // Queued-message badge — shown when the human has typed a follow-up
+  // mid-run. Sits just above the input row so the user can see at a glance
+  // that the next iteration will pick up what they queued.
+  queuedBadgeRef = document.createElement('div');
+  queuedBadgeRef.id = 'queued-message-badge';
+  queuedBadgeRef.className = 'px-3 pb-1.5 text-[11px] text-amber-300 flex items-center gap-2 shrink-0 hidden';
+  root.appendChild(queuedBadgeRef);
+
   // Input row
   const inputRow = document.createElement('div');
   inputRow.className = 'px-3 py-2 border-t border-zinc-700 flex items-end gap-2 shrink-0';
@@ -262,14 +283,30 @@ function buildDrawer(): void {
   inputEl = ta;
   inputRow.appendChild(ta);
 
+  // Stop button — separate from Send so the human can queue follow-ups
+  // mid-run (clicking Send) without losing the ability to actually halt
+  // the agent. Hidden until a turn is in flight.
+  const stopBtn = document.createElement('button');
+  stopBtn.id = 'btn-ai-stop';
+  stopBtn.className = 'shrink-0 px-2 py-1.5 rounded text-xs font-medium bg-red-600 hover:bg-red-500 text-white hidden';
+  stopBtn.textContent = '⊘ Stop';
+  stopBtn.title = 'Stop the model. Partial output is kept so you can redirect. Any queued message stays queued.';
+  stopBtn.addEventListener('click', () => {
+    state.inFlightController?.abort();
+  });
+  stopBtnRef = stopBtn;
+  inputRow.appendChild(stopBtn);
+
   const sendBtn = document.createElement('button');
   sendBtn.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
   sendBtn.textContent = 'Send';
   sendBtn.addEventListener('click', () => {
-    // While a turn is in flight the button is "Stop" — click aborts the
-    // controller, which propagates through runTurn → streamTurn → SDK.
+    // While a turn is in flight, Send queues — the agent picks the
+    // message up at the next natural pause (between tool round-trips or
+    // at end-of-turn) without us aborting the current run. Stop is the
+    // separate red button to the left for that.
     if (state.inFlight) {
-      state.inFlightController?.abort();
+      queueCurrentInput();
       return;
     }
     void sendMessage();
@@ -540,7 +577,9 @@ function panelStatusUpdate(): void {
 function renderTranscript(): void {
   if (!transcriptEl) return;
   transcriptEl.replaceChildren();
-  if (state.history.length === 0) {
+  const hasHistory = state.history.length > 0;
+  const hasQueue = state.queuedBlocks.length > 0;
+  if (!hasHistory && !hasQueue) {
     const empty = document.createElement('div');
     empty.className = 'flex-1 flex items-center justify-center text-zinc-600 text-xs text-center px-6';
     empty.textContent = state.sessionId === GLOBAL_CHAT_BUCKET
@@ -552,7 +591,39 @@ function renderTranscript(): void {
   for (const msg of state.history) {
     transcriptEl.appendChild(renderMessage(msg));
   }
+  // Pending preview — render queued follow-ups as faded user bubbles at the
+  // bottom of the transcript so the human sees their typed message land
+  // immediately, before the agent's loop drains the queue. When the drain
+  // fires, the merged tool_result message takes the queued blocks' place
+  // (and renderTranscript runs again to clear the preview).
+  if (hasQueue) {
+    transcriptEl.appendChild(renderQueuedPreview());
+  }
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+function renderQueuedPreview(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col items-end gap-1';
+  wrap.dataset.queuedPreview = 'true';
+  for (const b of state.queuedBlocks) {
+    if (b.type === 'text' && b.text.trim().length > 0) {
+      const bubble = document.createElement('div');
+      bubble.className = 'max-w-[90%] px-3 py-2 rounded-lg text-sm whitespace-pre-wrap leading-snug bg-blue-600/70 text-white border border-amber-400/50 ring-1 ring-amber-400/30';
+      bubble.textContent = b.text;
+      bubble.title = 'Queued — will be delivered to the AI at the next pause.';
+      wrap.appendChild(bubble);
+    } else if (b.type === 'image') {
+      const imgWrap = renderImageBubble(b.source);
+      imgWrap.classList.add('opacity-70', 'ring-1', 'ring-amber-400/40');
+      wrap.appendChild(imgWrap);
+    }
+  }
+  const tag = document.createElement('div');
+  tag.className = 'text-[10px] text-amber-300/80 italic';
+  tag.textContent = '⏳ queued — waiting for the agent to pause';
+  wrap.appendChild(tag);
+  return wrap;
 }
 
 function renderMessage(msg: ChatMessage): HTMLElement {
@@ -746,6 +817,87 @@ function renderPendingImages(): void {
   });
 }
 
+// === Queue message (mid-run follow-up) ===
+
+/** Append the current textarea + pending-images contents to the mid-run
+ *  queue. The chatLoop's `onDrainQueuedBlocks` hook drains this at the
+ *  next safe seam (between tool round-trips). If the loop exits with the
+ *  queue still non-empty, runTurnWithStallRetry auto-fires a follow-up
+ *  turn with the queued blocks as the new user message. */
+function queueCurrentInput(): void {
+  if (!inputEl) return;
+  const text = inputEl.value.trim();
+  if (text.length === 0 && state.pendingImages.length === 0) return;
+  const blocks: ChatBlock[] = [];
+  if (text.length > 0) blocks.push({ type: 'text', text });
+  for (const img of state.pendingImages) blocks.push({ type: 'image', source: img });
+  state.queuedBlocks.push(...blocks);
+  inputEl.value = '';
+  state.pendingImages = [];
+  renderPendingImages();
+  renderQueuedBadge();
+  // Surface the queued blocks as a preview bubble at the bottom of the
+  // transcript so the human gets immediate visual confirmation — without
+  // this they'd see no feedback until end-of-turn reload.
+  renderTranscript();
+  inputEl.focus();
+}
+
+function renderQueuedBadge(): void {
+  if (!queuedBadgeRef) return;
+  if (state.queuedBlocks.length === 0) {
+    queuedBadgeRef.classList.add('hidden');
+    queuedBadgeRef.replaceChildren();
+    return;
+  }
+  const textBlocks = state.queuedBlocks.filter(b => b.type === 'text');
+  const imageCount = state.queuedBlocks.length - textBlocks.length;
+  // Prefer the first queued text as the badge preview so the human can see
+  // which message they queued at a glance (handy if they queued more than
+  // one before the agent paused).
+  const preview = textBlocks.length > 0 && textBlocks[0].type === 'text'
+    ? textBlocks[0].text.split('\n')[0].slice(0, 80)
+    : `${imageCount} image${imageCount === 1 ? '' : 's'}`;
+  const more = state.queuedBlocks.length > 1 ? ` (+${state.queuedBlocks.length - 1} more)` : '';
+
+  queuedBadgeRef.classList.remove('hidden');
+  queuedBadgeRef.replaceChildren();
+  const dot = document.createElement('span');
+  dot.className = 'inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse';
+  queuedBadgeRef.appendChild(dot);
+  const label = document.createElement('span');
+  label.className = 'flex-1 truncate';
+  label.textContent = `Queued: ${preview}${more} — will send at next pause`;
+  label.title = 'Queued for delivery on the agent\'s next response. Click ✕ to discard.';
+  queuedBadgeRef.appendChild(label);
+  const clearBtn = document.createElement('button');
+  clearBtn.type = 'button';
+  clearBtn.className = 'shrink-0 text-amber-400 hover:text-amber-200 px-1';
+  clearBtn.textContent = '✕';
+  clearBtn.title = 'Discard the queued message';
+  clearBtn.addEventListener('click', () => {
+    state.queuedBlocks = [];
+    renderQueuedBadge();
+    renderTranscript();
+  });
+  queuedBadgeRef.appendChild(clearBtn);
+}
+
+/** Pop the queue and return its contents. Called by chatLoop's
+ *  `onDrainQueuedBlocks` hook and by the end-of-turn auto-restart. */
+function drainQueuedBlocks(): ChatBlock[] {
+  if (state.queuedBlocks.length === 0) return [];
+  const drained = state.queuedBlocks;
+  state.queuedBlocks = [];
+  renderQueuedBadge();
+  // Clear the preview bubble — onUserMessageUpdated (mid-loop case) or the
+  // end-of-turn reload (auto-restart case) will replace it with the real
+  // delivered bubble. Re-rendering here drops the now-stale preview
+  // immediately so it doesn't visually duplicate when the real one lands.
+  renderTranscript();
+  return drained;
+}
+
 // === Send message ===
 
 async function sendMessage(): Promise<void> {
@@ -860,7 +1012,7 @@ async function runTurnWithStallRetry(apiKey: string, toggles: ChatToggles, userB
     const controller = new AbortController();
     state.inFlight = true;
     state.inFlightController = controller;
-    setSendButtonMode('stop');
+    setSendButtonMode('inflight');
     showProgress('thinking', 'starting…');
 
     let activeAssistantId: string | null = null;
@@ -874,10 +1026,29 @@ async function runTurnWithStallRetry(apiKey: string, toggles: ChatToggles, userB
       history: state.history,
       userBlocks: blocksForThisAttempt,
       signal: controller.signal,
+      onDrainQueuedBlocks: drainQueuedBlocks,
     }, {
       onUserPersisted: msg => {
         state.history.push(msg);
         renderTranscript();
+      },
+      onUserMessageUpdated: msg => {
+        // chatLoop persists tool_result user messages directly without
+        // firing onUserPersisted, so the first time we hear about one mid-
+        // turn (because the human's queue triggered a merge) we have to
+        // insert it ourselves at the right seq position — otherwise
+        // renderTranscript can't show the human's bubble until end-of-turn
+        // reload, and the user thinks their message vanished.
+        const idx = state.history.findIndex(m => m.id === msg.id);
+        if (idx >= 0) {
+          state.history[idx] = msg;
+        } else {
+          const insertAt = state.history.findIndex(m => m.seq > msg.seq);
+          if (insertAt === -1) state.history.push(msg);
+          else state.history.splice(insertAt, 0, msg);
+        }
+        renderTranscript();
+        setTransientStatus('Queued message delivered to the AI.');
       },
       onAssistantStart: id => {
         activeAssistantId = id;
@@ -958,6 +1129,21 @@ async function runTurnWithStallRetry(apiKey: string, toggles: ChatToggles, userB
       stalledByWatchdog = false;
       continue;
     }
+
+    // If the human queued a message and the agent loop exited (end_turn,
+    // refusal, iteration cap, spend cap, abort…) without the drain hook
+    // picking it up, fire it now as a fresh user turn. This covers the
+    // common case where the human queued a follow-up while the model was
+    // streaming its final assistant turn (no tool_use → no drain seam).
+    if (state.queuedBlocks.length > 0) {
+      const next = drainQueuedBlocks();
+      progressState.retryCount = 0;
+      stalledByWatchdog = false;
+      lastTurnOutcome = null;
+      userBlocks = next;
+      attempt = 0;
+      continue;
+    }
     return;
   }
 }
@@ -979,15 +1165,18 @@ async function stripLastAbortedAssistant(): Promise<void> {
   }
 }
 
-function setSendButtonMode(mode: 'send' | 'stop'): void {
+function setSendButtonMode(mode: 'send' | 'inflight'): void {
+  if (stopBtnRef) {
+    stopBtnRef.classList.toggle('hidden', mode !== 'inflight');
+  }
   if (!sendBtnRef) return;
-  if (mode === 'stop') {
-    sendBtnRef.textContent = 'Stop';
-    sendBtnRef.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-red-600 hover:bg-red-500 text-white';
-    sendBtnRef.title = 'Stop the model. Partial output is kept so you can redirect.';
+  // Button label stays "Send" in both states. The semantics are: Send when
+  // idle dispatches immediately; Send while in-flight queues the message
+  // for delivery at the next agent pause. The tooltip surfaces the queue
+  // semantics so the human isn't surprised by the click outcome.
+  if (mode === 'inflight') {
+    sendBtnRef.title = 'Queue this message for the AI (Enter). It will be delivered at the next pause, no need to stop the agent.';
   } else {
-    sendBtnRef.textContent = 'Send';
-    sendBtnRef.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
     sendBtnRef.title = 'Send your message (Enter). Shift+Enter for newline.';
   }
 }

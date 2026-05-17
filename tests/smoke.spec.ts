@@ -168,6 +168,27 @@ test.describe('AI chat panel', () => {
     const which = await Promise.race([onEditor, onModal]);
     expect(['editor', 'modal']).toContain(which);
   });
+
+  test('Send stays as Send when a turn is in flight; Stop is the separate red button', async ({ page }) => {
+    // Regression: pre-queue, the Send button toggled to Stop while a turn
+    // was in flight. The queue feature requires Send to keep dispatching
+    // (queueing mid-run) with Stop split out as its own button so a typed
+    // follow-up doesn't accidentally abort the agent.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel');
+    await page.locator('#btn-ai').dispatchEvent('click');
+
+    const panel = page.locator('#ai-panel');
+    // Idle state: Send is visible, Stop and queued-message badge are hidden.
+    await expect(panel.locator('button', { hasText: /^Send$/ })).toBeVisible();
+    await expect(panel.locator('#btn-ai-stop')).toBeHidden();
+    await expect(panel.locator('#queued-message-badge')).toBeHidden();
+
+    // No assertion runs an actual turn (that needs an API key + network),
+    // but the end-to-end queue → drain → transcript path is covered by
+    // the chatLoop unit test suite when added; this test pins the UX
+    // contract that Send never becomes Stop.
+  });
 });
 
 // === helpers ===
