@@ -60,6 +60,12 @@ export function createHelpPage(
       body: 'Partwright is designed to be driven by AI agents. An agent navigates to the app, writes geometry code, and uses the <code class="text-emerald-400 bg-zinc-800 px-1 rounded">window.partwright</code> console API to create sessions, run code, validate results, and save versions — all programmatically. The legacy <code class="text-emerald-400 bg-zinc-800 px-1 rounded">window.mainifold</code> alias still works during migration. <a href="/ai.md" class="text-blue-400 hover:underline">Full agent instructions \u2192</a>',
     },
     {
+      heading: 'A note on AI costs & risk',
+      body: 'Partwright is an experiment — a passion project exploring what happens when you put generative AI inside a 3D modeling tool, shared openly because I\'ve found real joy in building it and hope others find value in it too. I\'ve spent my own money on this and I\'m not trying to make money from it.<br><br>' +
+        'That said: <strong class="text-zinc-300">when you connect your own AI agent, it uses your API tokens.</strong> AI-driven CAD is genuinely hard and unpredictable — the agent might iterate many times before landing on something good (or give up trying). There are some guardrails in place to help limit runaway spend, but there\'s no guarantee they work perfectly in every situation. <strong class="text-zinc-300">By connecting your own AI agent, you accept responsibility for any API costs incurred, regardless of output quality.</strong><br><br>' +
+        'Go in eyes open, start with small experiments, and enjoy the ride.',
+    },
+    {
       heading: 'Connecting an AI agent',
       body: 'There are three ways to give an AI agent browser access:<br><br>' +
         '<strong class="text-zinc-300">Claude in Chrome extension</strong> — Install the extension and Claude Desktop can control your active tab directly. Best for interactive sessions.<br><br>' +
