@@ -1,8 +1,11 @@
 // Modal that shows a summary of a `.partwright.json` payload before committing
-// it to IndexedDB. Mirrors the styling of showInlineConfirm so importing feels
-// like the existing confirmation flow, just with more detail.
+// it to IndexedDB. Built on the shared modalShell so Escape, click-outside,
+// and listener cleanup behave identically to the other AI / export dialogs.
 
 import type { ExportedSession } from '../storage/sessionManager';
+import { createModalShell } from './modalShell';
+import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
+import { escapeHtml } from './htmlUtils';
 
 export interface SessionImportSummary {
   sessionName: string;
@@ -69,37 +72,33 @@ function formatTimestamp(ts: number | null): string {
  */
 export function showImportPreview(filename: string, summary: SessionImportSummary): Promise<boolean> {
   return new Promise((resolve) => {
-    document.querySelector('.import-preview-overlay')?.remove();
+    let result = false;
+    const shell = createModalShell({
+      title: 'Import session?',
+      onClose: () => {
+        document.removeEventListener('keydown', onEnter);
+        resolve(result);
+      },
+    });
 
-    const overlay = document.createElement('div');
-    overlay.className = 'import-preview-overlay fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center';
-
-    const modal = document.createElement('div');
-    modal.className = 'bg-zinc-800 border border-zinc-600 rounded-xl shadow-2xl p-5 max-w-md mx-4 animate-modal-in';
-
-    const heading = document.createElement('div');
-    heading.className = 'flex items-baseline justify-between gap-3 mb-1';
-    const title = document.createElement('h2');
-    title.className = 'text-zinc-100 text-base font-semibold';
-    title.textContent = 'Import session?';
-    const schema = document.createElement('span');
-    schema.className = 'text-[10px] uppercase tracking-wide text-zinc-400 border border-zinc-600 rounded px-1.5 py-0.5';
+    const schema = document.createElement('p');
+    schema.className = 'text-[10px] uppercase tracking-wide text-zinc-400';
     schema.textContent = `schema ${summary.schemaVersion}`;
-    heading.appendChild(title);
-    heading.appendChild(schema);
+    shell.body.appendChild(schema);
 
     const file = document.createElement('p');
-    file.className = 'text-[11px] text-zinc-500 mb-3 truncate';
+    file.className = 'text-[11px] text-zinc-500 truncate';
     file.title = filename;
     file.textContent = filename;
+    shell.body.appendChild(file);
 
     const sessionName = document.createElement('p');
-    sessionName.className = 'text-zinc-200 text-sm mb-3';
+    sessionName.className = 'text-zinc-200 text-sm';
     sessionName.innerHTML = `Session: <span class="font-medium">${escapeHtml(summary.sessionName)}</span>`;
+    shell.body.appendChild(sessionName);
 
     const grid = document.createElement('div');
-    grid.className = 'grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-zinc-300 mb-4';
-
+    grid.className = 'grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-zinc-300';
     function addRow(label: string, value: string) {
       const k = document.createElement('div');
       k.className = 'text-zinc-500';
@@ -111,67 +110,38 @@ export function showImportPreview(filename: string, summary: SessionImportSummar
       grid.appendChild(k);
       grid.appendChild(v);
     }
-
     addRow('Versions', String(summary.versionCount));
     addRow('Language', summary.language);
     addRow('Notes', String(summary.noteCount));
     addRow('Annotations', String(summary.annotationCount));
     addRow('Reference images', summary.referenceSides.length ? summary.referenceSides.join(', ') : 'none');
     addRow('Last updated', formatTimestamp(summary.updatedAt));
+    shell.body.appendChild(grid);
 
     const note = document.createElement('p');
-    note.className = 'text-[11px] text-zinc-500 leading-relaxed mb-4';
+    note.className = 'text-[11px] text-zinc-500 leading-relaxed';
     note.textContent = 'Imports as a new session — your current session is kept.';
-
-    const btnGroup = document.createElement('div');
-    btnGroup.className = 'flex items-center justify-end gap-2';
+    shell.body.appendChild(note);
 
     const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'px-4 py-1.5 rounded-lg text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors';
+    cancelBtn.className = BUTTON_CANCEL;
     cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => { result = false; shell.close(); });
+    shell.footer.appendChild(cancelBtn);
 
     const importBtn = document.createElement('button');
-    importBtn.className = 'px-4 py-1.5 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-500 transition-colors';
+    importBtn.className = BUTTON_PRIMARY;
     importBtn.textContent = 'Import';
+    importBtn.addEventListener('click', () => { result = true; shell.close(); });
+    shell.footer.appendChild(importBtn);
 
-    btnGroup.appendChild(cancelBtn);
-    btnGroup.appendChild(importBtn);
-
-    modal.appendChild(heading);
-    modal.appendChild(file);
-    modal.appendChild(sessionName);
-    modal.appendChild(grid);
-    modal.appendChild(note);
-    modal.appendChild(btnGroup);
-    overlay.appendChild(modal);
-
-    let resolved = false;
-    function finish(result: boolean) {
-      if (resolved) return;
-      resolved = true;
-      overlay.remove();
-      document.removeEventListener('keydown', onKey);
-      resolve(result);
+    // Modal shell handles Escape; we add an extra Enter-to-confirm shortcut
+    // so the keyboard flow matches the previous standalone implementation.
+    function onEnter(e: KeyboardEvent) {
+      if (e.key === 'Enter') { e.preventDefault(); result = true; shell.close(); }
     }
+    document.addEventListener('keydown', onEnter);
 
-    importBtn.addEventListener('click', () => finish(true));
-    cancelBtn.addEventListener('click', () => finish(false));
-
-    overlay.addEventListener('mousedown', (e) => {
-      if (e.target === overlay) finish(false);
-    });
-
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') finish(false);
-      if (e.key === 'Enter') finish(true);
-    }
-    document.addEventListener('keydown', onKey);
-
-    document.body.appendChild(overlay);
     importBtn.focus();
   });
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
