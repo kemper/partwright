@@ -134,6 +134,10 @@ export interface ExampleEntry {
 let currentMeshData: MeshData | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let currentManifold: any = null;
+/** Per-run map from labels (assigned in user code via api.label(shape, name))
+ *  to the triangle ids that came from the labelled input. Rebuilt on every
+ *  successful run; null when no labels were registered or no code has run. */
+let currentLabelMap: Map<string, Set<number>> | null = null;
 
 // #geometry-data element — always-updated machine-readable state
 let geometryDataEl: HTMLElement;
@@ -505,6 +509,15 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): vo
     } else if (region.descriptor.kind === 'slab') {
       const { normal, offset, thickness } = region.descriptor;
       triangles = findSlabTriangles(mesh, normal, offset, thickness);
+    } else if (region.descriptor.kind === 'byLabel') {
+      // Labels are runtime state — manifold-3d assigns fresh
+      // originalIDs on every run, so we re-resolve by name from the
+      // labelMap the engine just built. If the user edited the code
+      // and the label no longer exists, the region drops silently
+      // (same graceful-skip path the coplanar descriptor uses when
+      // its seed no longer hits a face).
+      const ids = currentLabelMap?.get(region.descriptor.label);
+      if (ids) triangles = new Set(ids);
     }
 
     if (triangles.size > 0) {
@@ -3963,6 +3976,77 @@ async function main() {
       }
     },
 
+    /** List labels registered by `api.label(shape, name)` in the current
+     *  run's code. Returns `[{name, triangleCount, bbox}]`. The triangle
+     *  buckets survive boolean ops cleanly (manifold-3d propagates the
+     *  originalID of every input through `runOriginalID` on the result
+     *  mesh) — so for a model built as
+     *  `api.label(head, 'head').add(api.label(eye, 'eye'))` you get one
+     *  entry per labelled piece, no matter how they overlap. Empty list
+     *  when the code didn't use `api.label`. */
+    listLabels() {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!currentLabelMap || currentLabelMap.size === 0) return { count: 0, labels: [] };
+      const mesh = currentMeshData;
+      const labels = [...currentLabelMap.entries()].map(([name, ids]) => {
+        const stats = regionTriangleStats(ids, mesh);
+        return {
+          name,
+          triangleCount: ids.size,
+          bbox: stats.bbox,
+          centroid: stats.centroid,
+        };
+      });
+      return { count: labels.length, labels };
+    },
+
+    /** Paint a labelled feature by name. The label must have been
+     *  registered in the current run's code via `api.label(shape, name)`
+     *  or `api.labeledUnion([{name, shape}, ...])`. This is the cleanest
+     *  paint primitive on agent-authored geometry — no coordinate
+     *  guessing, no bounding-box estimation, no fan-bleed: the
+     *  triangle set comes straight from manifold-3d's provenance
+     *  tracking and is exact even for overlapping inputs.
+     *
+     *  ```
+     *  // In user code:
+     *  return api.label(Manifold.sphere(10), 'head')
+     *    .add(api.label(Manifold.sphere(2).translate([3, 5, 7]), 'eyeL'));
+     *
+     *  // After running:
+     *  partwright.paintByLabel({ label: 'eyeL', color: [0, 0, 1] });
+     *  ```
+     *  Returns `{ id, name, triangles, bbox, centroid }` on success or
+     *  `{ error }` if no such label exists or no labels were registered. */
+    paintByLabel(opts: { label: string; color: [number, number, number]; name?: string }) {
+      if (!opts || typeof opts !== 'object') return { error: 'paintByLabel requires { label, color }' };
+      if (typeof opts.label !== 'string' || opts.label.length === 0) return { error: 'paintByLabel.label must be a non-empty string' };
+      if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'paintByLabel.color must be [r,g,b] in 0..1' };
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
+      if (!currentLabelMap || currentLabelMap.size === 0) {
+        return { error: 'No labels registered in the current run. Wrap features with api.label(shape, "name") in your code, then runAndSave, then call paintByLabel.' };
+      }
+      const ids = currentLabelMap.get(opts.label);
+      if (!ids || ids.size === 0) {
+        const known = [...currentLabelMap.keys()].map(k => `"${k}"`).join(', ');
+        return { error: `paintByLabel: no label "${opts.label}". Known labels: ${known}.` };
+      }
+      const triangles = new Set(ids);
+      const mesh = currentMeshData;
+      const regionName = opts.name ?? opts.label;
+      const region = addRegion(
+        regionName,
+        opts.color as [number, number, number],
+        'paintbrush',
+        { kind: 'byLabel', label: opts.label },
+        triangles,
+      );
+      scheduleColorRefresh();
+      syncLockState();
+      const stats = regionTriangleStats(triangles, mesh);
+      return { id: region.id, name: region.name, triangles: triangles.size, bbox: stats.bbox, centroid: stats.centroid };
+    },
+
     // === Annotations API ===
 
     /** List all freehand annotation strokes drawn on the model surface.
@@ -4225,6 +4309,8 @@ async function main() {
         'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai.md#color-regions' },
         'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- Decompose the manifold into boolean-distinct parts. For "paint each feature" workflows (e.g. unioned head + eyes + mouth).', docs: '/ai.md#color-regions' },
         'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai.md#color-regions' },
+        'listLabels':      { signature: 'listLabels() -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- Labels registered in the current run via api.label(shape, name). Survives boolean ops; the cleanest paint primitive on agent-authored geometry.', docs: '/ai.md#color-regions' },
+        'paintByLabel':    { signature: 'paintByLabel({label, color, name?}) -- Paint a labelled feature by name. Pair with api.label/labeledUnion in your code. No coordinate guessing.', docs: '/ai.md#color-regions' },
         'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai.md#color-regions' },
         'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai.md#color-regions' },
         'undoLastPaint':   { signature: 'undoLastPaint() -- Undo the most recent paint op. Removed region goes on a redo stack.', docs: '/ai.md#color-regions' },
@@ -4743,6 +4829,10 @@ async function main() {
         try { currentManifold.delete(); } catch { /* already deleted */ }
       }
       currentManifold = result.manifold;
+      // Capture the labelled-construction map for this run. byLabel
+      // region descriptors look up their triangles here; rehydrating a
+      // saved version re-runs the code first, which rebuilds the map.
+      currentLabelMap = result.labelMap ?? null;
 
       // Apply any existing color regions to the mesh
       const displayMesh = hasColorRegions() ? applyTriColorsIfVisible(result.mesh) : result.mesh;

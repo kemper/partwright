@@ -59,8 +59,13 @@ import {
  *           {@link ExportOptions.includeThumbnails}. Importers prefer the
  *           embedded thumbnail when present and fall back to regenerating from
  *           code; older readers ignore the field.
+ *  - `1.5` — color regions support `{kind: 'byLabel', label: string}`
+ *           descriptors that resolve at runtime from manifold-js's
+ *           `runOriginalID` provenance. Persists the label name only;
+ *           the triangle set is rebuilt on each load by re-running the
+ *           code. Older readers ignore the new discriminant variant.
  */
-export const SCHEMA_VERSION = '1.4';
+export const SCHEMA_VERSION = '1.5';
 
 const CURRENT_MAJOR = 1;
 
