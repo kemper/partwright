@@ -7,6 +7,9 @@ export interface AdjacencyGraph {
   neighbors: Uint32Array[];
   /** Triangle normals — 3 floats per triangle (nx, ny, nz). */
   normals: Float32Array;
+  /** Triangle centroids — 3 floats per triangle (cx, cy, cz). Used by the
+   *  brush tool's radius expansion (sphere query against centroids). */
+  centroids: Float32Array;
 }
 
 /** Create a canonical edge key from two vertex indices (order-independent). */
@@ -83,9 +86,21 @@ export function buildAdjacency(mesh: MeshData): AdjacencyGraph {
     normals[t * 3 + 2] = nz;
   }
 
+  // Compute triangle centroids (mean of three vertex positions).
+  const centroids = new Float32Array(numTri * 3);
+  for (let t = 0; t < numTri; t++) {
+    const v0 = triVerts[t * 3];
+    const v1 = triVerts[t * 3 + 1];
+    const v2 = triVerts[t * 3 + 2];
+    centroids[t * 3]     = (vertProperties[v0 * numProp]     + vertProperties[v1 * numProp]     + vertProperties[v2 * numProp])     / 3;
+    centroids[t * 3 + 1] = (vertProperties[v0 * numProp + 1] + vertProperties[v1 * numProp + 1] + vertProperties[v2 * numProp + 1]) / 3;
+    centroids[t * 3 + 2] = (vertProperties[v0 * numProp + 2] + vertProperties[v1 * numProp + 2] + vertProperties[v2 * numProp + 2]) / 3;
+  }
+
   return {
     neighbors: neighbors.map(s => new Uint32Array(s)),
     normals,
+    centroids,
   };
 }
 

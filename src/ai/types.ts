@@ -33,12 +33,14 @@ export interface ChatToggles {
    *  turn. The agent stops with a "stopped at cap" banner if it would
    *  exceed this. 'low'=4, 'medium'=16, 'high'=64, 'infinity'=unlimited. */
   maxIterations: 'low' | 'medium' | 'high' | 'infinity';
-  /** Hard cap on USD spend per user turn. Sums input + output + cache
-   *  read/write across every iteration. When exceeded the loop stops
-   *  with a "stopped at spend cap" banner. Both this and maxIterations
-   *  apply — whichever trips first stops the turn. 'infinity' disables
-   *  the cap. */
-  maxSpend: 'cheap' | 'low' | 'medium' | 'high' | 'infinity';
+  /** Hard cap on total USD spent in this session. Sums input + output +
+   *  cache read/write across every iteration of every turn so far.
+   *  Enforced two ways: the active turn stops with a "stopped at spend
+   *  cap" banner when this iteration would push the session total over,
+   *  and the panel blocks further sends once the cap has been reached
+   *  until the user raises it. Both this and maxIterations apply —
+   *  whichever trips first stops the turn. 'infinity' disables the cap. */
+  maxSpend: 'cheap' | 'low' | 'medium' | 'medHigh' | 'high' | 'veryHigh' | 'infinity';
   model: ModelId;
 }
 
@@ -56,10 +58,12 @@ export const MAX_ITERATIONS: Record<ChatToggles['maxIterations'], { value: numbe
 /** Source of truth for the spend-cap dropdown. Same pattern as
  *  MAX_ITERATIONS. */
 export const MAX_SPEND: Record<ChatToggles['maxSpend'], { value: number; label: string; promptLabel: string; hint: string }> = {
-  cheap:    { value: 0.10,  label: '$0.10', promptLabel: '$0.10',     hint: 'Tight budget. Pairs well with Haiku and short turns.' },
+  cheap:    { value: 0.10,  label: '$0.10', promptLabel: '$0.10',     hint: 'Tight session budget. Pairs well with Haiku and short turns.' },
   low:      { value: 0.50,  label: '$0.50', promptLabel: '$0.50',     hint: 'Safety net for casual iteration.' },
-  medium:   { value: 2.00,  label: '$2',    promptLabel: '$2',        hint: 'Default. Comfortable for most Sonnet turns including a few vision calls.' },
+  medium:   { value: 2.00,  label: '$2',    promptLabel: '$2',        hint: 'Default. Comfortable for a Sonnet session with a few vision calls.' },
+  medHigh:  { value: 5.00,  label: '$5',    promptLabel: '$5',        hint: 'Multi-turn Sonnet session with steady vision verification.' },
   high:     { value: 10.00, label: '$10',   promptLabel: '$10',       hint: 'Long autonomous runs on Opus, lots of vision verification.' },
+  veryHigh: { value: 20.00, label: '$20',   promptLabel: '$20',       hint: 'Marathon Opus sessions. Watch the cost meter.' },
   infinity: { value: Number.POSITIVE_INFINITY, label: '∞', promptLabel: 'unlimited', hint: 'No budget cap. The model can spend whatever it wants.' },
 };
 

@@ -102,6 +102,10 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   let totalToolCalls = 0;
   const maxIter = ITERATION_CAP[toggles.maxIterations];
   const maxSpend = SPEND_CAP_USD[toggles.maxSpend];
+  // Spend cap is a session budget — count what prior turns already
+  // burned so this turn stops when the running total tips over the cap,
+  // not when this single turn would exceed the whole cap on its own.
+  const priorSessionCost = totalCost(history);
 
   for (let iter = 0; Number.isFinite(maxIter) ? iter < maxIter : true; iter++) {
     // Give the browser a frame between iterations so an agent running
@@ -172,11 +176,11 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       return workingHistory;
     }
 
-    // Spend cap — stop BEFORE the next iteration if we've already
-    // exceeded the user's per-turn budget. We check after persisting
-    // the current iteration so the assistant message they paid for
-    // still lands in the transcript.
-    if (Number.isFinite(maxSpend) && totalCostUsd > maxSpend) {
+    // Spend cap — stop BEFORE the next iteration if the running session
+    // total (prior turns + this turn so far) has tipped over the user's
+    // budget. Checked after persisting the current iteration so the
+    // assistant message they paid for still lands in the transcript.
+    if (Number.isFinite(maxSpend) && (priorSessionCost + totalCostUsd) > maxSpend) {
       callbacks.onTurnComplete?.({
         totalCostUsd,
         toolCalls: totalToolCalls,

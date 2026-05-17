@@ -14,7 +14,7 @@ import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showCompactConfirmModal } from './aiCompactModal';
-import type { ChatBlock, ChatMessage, ChatToggles, ImageSource, ModelId, PersistedToolResult, TurnOutcomeReason } from '../ai/types';
+import { SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type ModelId, type PersistedToolResult, type TurnOutcomeReason } from '../ai/types';
 
 interface PanelState {
   open: boolean;
@@ -433,11 +433,11 @@ function renderToggleStrip(): void {
   // iterations but spend $0.50+ each).
   const spendCap = document.createElement('select');
   spendCap.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
-  spendCap.title = 'Spend cap: max USD this turn can cost before the loop forces a stop. Applies alongside the iteration cap — whichever trips first wins. Useful when iteration count is unpredictable (a vision-heavy iteration may spend $0.50). Set ∞ to disable.';
+  spendCap.title = 'Spend cap: total USD this session can cost before the loop forces a stop and further sends are blocked until you raise the cap. Applies alongside the iteration cap — whichever trips first wins. Set ∞ to disable.';
   for (const opt of MAX_SPEND_OPTIONS) {
     const o = document.createElement('option');
     o.value = opt.id;
-    o.textContent = `$ ${opt.label}`;
+    o.textContent = opt.label;
     o.title = opt.hint;
     spendCap.appendChild(o);
   }
@@ -760,6 +760,20 @@ async function sendMessage(): Promise<void> {
     return;
   }
 
+  // Session spend gate. The dropdown is a session-total budget, so block
+  // a new turn once historical spend has reached it. The user has to
+  // raise the cap (or pick ∞) to keep going — otherwise the dropdown
+  // would be advisory only and continued prompting would silently sail
+  // past the chosen budget.
+  const sessionCap = SPEND_CAP_USD[loadSettings().toggles.maxSpend];
+  if (Number.isFinite(sessionCap)) {
+    const sessionTotal = totalCost(state.history);
+    if (sessionTotal >= sessionCap) {
+      setTransientStatus(`Session has spent ${formatUsd(sessionTotal)} — at or over the ${formatUsd(sessionCap)} cap. Raise the $ cap in the toggle strip to continue.`);
+      return;
+    }
+  }
+
   // The drawer is a fixed overlay on every page (landing, catalog, help),
   // but the AI's tools (runAndSave, setCode, paint*) target the editor.
   // If the user fires from anywhere else, navigate to /editor and give
@@ -824,7 +838,7 @@ function formatTurnOutcome(o: TurnOutcome): string {
     case 'iteration_cap':
       return `⚠ stopped at agent iteration cap (${o.iterations}) — try a more focused prompt, click Compact, or raise the ⟲ cap · ${cost}${tools}`;
     case 'spend_cap':
-      return `⚠ stopped at spend cap${o.detail ? ` (${o.detail})` : ''} — raise the $ cap or click Send to continue · ${cost} · ${iters}${tools}`;
+      return `⚠ stopped at session spend cap${o.detail ? ` (${o.detail})` : ''} — raise the $ cap to continue · ${cost} · ${iters}${tools}`;
     case 'max_tokens':
       return `⚠ hit max_tokens before finishing · ${cost} · ${iters}${tools} — ask the model to continue`;
     case 'refusal':

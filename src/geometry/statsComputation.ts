@@ -25,21 +25,44 @@ export function simpleHash(str: string): string {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
+/** Bounding box scanned directly from a MeshData's vertex buffer. Used when no
+ *  Manifold is available (e.g. render-only STL imports) so the rest of the
+ *  stats pipeline still has a bbox to work with. Also used by the STL import
+ *  path to size a scale-aware weld tolerance. */
+export function bboxFromMesh(mesh: MeshData): { min: [number, number, number]; max: [number, number, number] } | null {
+  if (mesh.numVert === 0) return null;
+  const v = mesh.vertProperties;
+  const n = mesh.numProp;
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < mesh.numVert; i++) {
+    const x = v[i * n], y = v[i * n + 1], z = v[i * n + 2];
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
+}
+
 export function computeGeometryStats(
-  manifold: Manifold,
+  manifold: Manifold | null,
   meshData: MeshData,
   executionTimeMs?: number,
   sourceCode?: string,
 ): Record<string, unknown> {
-  const bbox = getBoundingBox(manifold);
+  // Bounding box: prefer the manifold's own, but fall back to scanning the mesh
+  // verts so render-only imports (manifold==null) still get usable bbox/dims/slices.
+  const bbox = (manifold && getBoundingBox(manifold)) || bboxFromMesh(meshData);
 
   let volume = 0;
   let surfaceArea = 0;
-  try {
-    volume = manifold.volume();
-    surfaceArea = manifold.surfaceArea();
-  } catch {
-    // fallback if methods unavailable
+  if (manifold) {
+    try {
+      volume = manifold.volume();
+      surfaceArea = manifold.surfaceArea();
+    } catch {
+      // fallback if methods unavailable
+    }
   }
 
   const centroid = bbox
@@ -51,28 +74,34 @@ export function computeGeometryStats(
     : null;
 
   let componentCount = 1;
-  try {
-    const parts = manifold.decompose();
-    componentCount = parts.length;
-    for (const p of parts) p.delete();
-  } catch {
-    // fallback
+  if (manifold) {
+    try {
+      const parts = manifold.decompose();
+      componentCount = parts.length;
+      for (const p of parts) p.delete();
+    } catch {
+      // fallback
+    }
   }
 
-  let isManifold = true;
-  let manifoldStatus: string | null = null;
-  try {
-    const s = manifold.status();
-    isManifold = s === 0 || s === 'NoError';
-    if (!isManifold) {
-      manifoldStatus = String(s);
+  // Render-only imports lack a manifold; surface that fact in stats so the
+  // status panel can show "not manifold" instead of a misleading default.
+  let isManifold = manifold !== null;
+  let manifoldStatus: string | null = manifold === null ? 'render-only (not manifold)' : null;
+  if (manifold) {
+    try {
+      const s = manifold.status();
+      isManifold = s === 0 || s === 'NoError';
+      if (!isManifold) {
+        manifoldStatus = String(s);
+      }
+    } catch {
+      // fallback
     }
-  } catch {
-    // fallback
   }
 
   const quartileSlices: Record<string, { z: number; area: number; contours: number }> = {};
-  if (bbox) {
+  if (bbox && manifold) {
     const zRange = bbox.max[2] - bbox.min[2];
     for (const pct of [25, 50, 75]) {
       const z = bbox.min[2] + zRange * (pct / 100);
@@ -96,7 +125,7 @@ export function computeGeometryStats(
     centroid,
     volume,
     surfaceArea,
-    genus: (() => { try { return manifold.genus(); } catch { return null; } })(),
+    genus: manifold ? (() => { try { return manifold.genus(); } catch { return null; } })() : null,
     isManifold,
     ...(manifoldStatus ? { manifoldStatus } : {}),
     componentCount,
