@@ -1,5 +1,6 @@
 import { resetTour, startTour } from './tour';
 import { partwrightMarkSvg } from './brand';
+import { showQualitySettingsModal } from './qualitySettingsModal';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
 import { downloadBlob } from '../export/download';
 import {
@@ -515,10 +516,22 @@ export function createToolbar(
   onThemeChange(syncThemeBtn);
   toolbar.appendChild(themeBtn);
 
+  // Modeling-quality settings — gear icon opens a modal where users
+  // pick the default curve resolution. Defaults to "Highest" so the
+  // out-of-the-box rendering is smooth.
+  const qualityBtn = document.createElement('button');
+  qualityBtn.id = 'btn-quality';
+  qualityBtn.className = 'flex items-center justify-center w-10 h-10 md:w-6 md:h-6 rounded-full text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700 transition-colors text-sm md:text-xs ml-2';
+  qualityBtn.textContent = '⚙';
+  qualityBtn.title = 'Modeling quality (default curve resolution)';
+  qualityBtn.setAttribute('aria-label', 'Modeling quality settings');
+  qualityBtn.addEventListener('click', () => { showQualitySettingsModal(); });
+  toolbar.appendChild(qualityBtn);
+
   // Help button
   const helpBtn = document.createElement('button');
   helpBtn.id = 'btn-help';
-  helpBtn.className = 'flex items-center justify-center w-10 h-10 md:w-6 md:h-6 rounded-full text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700 transition-colors text-sm md:text-xs font-bold ml-2';
+  helpBtn.className = 'flex items-center justify-center w-10 h-10 md:w-6 md:h-6 rounded-full text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700 transition-colors text-sm md:text-xs font-bold ml-1';
   helpBtn.textContent = '?';
   helpBtn.title = 'Help';
   helpBtn.addEventListener('click', () => {
