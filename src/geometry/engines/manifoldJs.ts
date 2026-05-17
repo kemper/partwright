@@ -36,12 +36,63 @@ export const manifoldJsEngine: Engine = {
       setCircularSegments,
     } = manifoldModule;
 
+    // Per-run registry mapping a fresh `originalID()` (assigned by
+    // shape.asOriginal()) back to the human-readable name the user
+    // passed to `api.label`. After the user's code finishes, we walk
+    // the result mesh's `runOriginalID` array and build the inverse:
+    // `{name -> Set<triangleId>}`. Cleared on every run.
+    const labelRegistry = new Map<number, string>();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const label = (shape: any, name: unknown): any => {
+      if (!shape || typeof shape.asOriginal !== 'function' || typeof shape.add !== 'function') {
+        throw new Error('api.label(shape, name): shape must be a Manifold (returned by Manifold.cube/sphere/cylinder/extrude/etc.)');
+      }
+      if (typeof name !== 'string' || name.length === 0) {
+        throw new Error('api.label(shape, name): name must be a non-empty string');
+      }
+      // asOriginal() returns a copy with a fresh, unique originalID().
+      // We register that id against the user-supplied name. After
+      // boolean ops the result mesh's runOriginalID array will carry
+      // this id for every triangle that traces back to this input.
+      const original = shape.asOriginal();
+      const id = original.originalID();
+      if (id < 0) {
+        // Shouldn't happen — asOriginal() always produces a valid id —
+        // but defensive in case manifold-3d's behavior changes.
+        throw new Error('api.label(shape, name): asOriginal() did not produce a valid originalID; cannot register label.');
+      }
+      labelRegistry.set(id, name);
+      return original;
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const labeledUnion = (parts: unknown): any => {
+      if (!Array.isArray(parts) || parts.length === 0) {
+        throw new Error('api.labeledUnion(parts): non-empty array required, each element { name: string, shape: Manifold }');
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let acc: any = null;
+      for (const p of parts) {
+        if (!p || typeof p !== 'object') {
+          throw new Error('api.labeledUnion: each entry must be { name: string, shape: Manifold }');
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const entry = p as { name?: unknown; shape?: any };
+        const labelled = label(entry.shape, entry.name);
+        acc = acc === null ? labelled : acc.add(labelled);
+      }
+      return acc;
+    };
+
     const api = {
       Manifold,
       CrossSection,
       setMinCircularAngle,
       setMinCircularEdgeLength,
       setCircularSegments,
+      label,
+      labeledUnion,
     };
 
     let result: InstanceType<typeof Manifold> | null = null;
@@ -60,6 +111,7 @@ export const manifoldJsEngine: Engine = {
       }
 
       const mesh = result.getMesh();
+      const labelMap = resolveLabelMap(mesh, labelRegistry);
       return {
         mesh: {
           vertProperties: mesh.vertProperties,
@@ -69,9 +121,12 @@ export const manifoldJsEngine: Engine = {
           numProp: mesh.numProp,
           mergeFromVert: mesh.mergeFromVert,
           mergeToVert: mesh.mergeToVert,
+          runIndex: mesh.runIndex,
+          runOriginalID: mesh.runOriginalID,
         },
         manifold: result,
         error: null,
+        labelMap,
       };
     } catch (e: unknown) {
       let msg = e instanceof Error ? e.message : String(e);
@@ -116,3 +171,32 @@ export const manifoldJsEngine: Engine = {
     }
   },
 };
+
+/** Walk the result mesh's `runOriginalID` + `runIndex` arrays and bucket
+ *  triangles by the human-readable name registered for each id at
+ *  `api.label()` time. Multiple runs may carry the same id (a labelled
+ *  shape used in two places of the union) — the bucket merges them. */
+function resolveLabelMap(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mesh: any,
+  registry: Map<number, string>,
+): Map<string, Set<number>> | undefined {
+  if (registry.size === 0) return undefined;
+  const out = new Map<string, Set<number>>();
+  const runOriginalID: Uint32Array | undefined = mesh.runOriginalID;
+  const runIndex: Uint32Array | undefined = mesh.runIndex;
+  if (!runOriginalID || !runIndex || runOriginalID.length === 0) return out;
+  for (let i = 0; i < runOriginalID.length; i++) {
+    const name = registry.get(runOriginalID[i]);
+    if (name === undefined) continue;
+    const startTri = runIndex[i] / 3;
+    const endTri = runIndex[i + 1] / 3;
+    let set = out.get(name);
+    if (!set) {
+      set = new Set<number>();
+      out.set(name, set);
+    }
+    for (let t = startTri; t < endTri; t++) set.add(t);
+  }
+  return out;
+}

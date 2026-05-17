@@ -23,6 +23,14 @@ export const STANDARD_VIEWS = {
 } as const;
 export type StandardViewAngle = typeof STANDARD_VIEWS[keyof typeof STANDARD_VIEWS];
 
+/** Solid-shaded grey applied to triangles that have no color region.
+ *  Sits between the white render background and the brightest painted
+ *  RGB so silhouettes stay visible without overpowering painted
+ *  features. ~0.85 is roughly halfway in perceptual luminance between
+ *  white and middle-gray (#bfbfbf). Picking a value too dark obscures
+ *  pastel paints; too light and the mesh disappears against the bg. */
+const UNPAINTED_BASE = 0.85;
+
 interface ViewConfig {
   name: string;
   position: (d: number) => [number, number, number];
@@ -63,9 +71,14 @@ function meshDataToGeometry(meshData: MeshData): THREE.BufferGeometry {
       const b = triColors[t * 3 + 2] / 255;
       const painted = (triColors as Uint8Array & { _painted?: Uint8Array })._painted;
       const isPainted = painted ? painted[t] === 1 : (r !== 0 || g !== 0 || b !== 0);
-      const cr = isPainted ? r : 1;
-      const cg = isPainted ? g : 1;
-      const cb = isPainted ? b : 1;
+      // Unpainted base is light gray, NOT pure white, so the mesh
+      // silhouette is visible against the white render background.
+      // Pure white made unpainted parts of a model invisible against
+      // the bg — only the painted patches showed, which read as
+      // "the renderer is broken" to a model reasoning from the image.
+      const cr = isPainted ? r : UNPAINTED_BASE;
+      const cg = isPainted ? g : UNPAINTED_BASE;
+      const cb = isPainted ? b : UNPAINTED_BASE;
 
       for (let v = 0; v < 3; v++) {
         colors[t * 9 + v * 3] = cr;
@@ -367,9 +380,18 @@ function createElevationScene(geometry: THREE.BufferGeometry, bgColor: number): 
   scene.add(dir2);
   const hasColors = geometry.hasAttribute('color');
   const solidMesh = new THREE.Mesh(geometry, createWhiteMaterial(hasColors));
-  const wireMesh = new THREE.Mesh(geometry, createBlackWireframeMaterial());
   scene.add(solidMesh);
-  scene.add(wireMesh);
+  // Wireframe overlay obscures vertex-color verification on dense
+  // organic meshes — at 320px tile size, the 30% black edges of tens
+  // of thousands of triangles compound into a dark mass that washes
+  // out painted regions. Skip the wireframe when the mesh carries
+  // per-triangle colors (the user is in a paint workflow and wants
+  // to read colors, not topology). Keep it for uncolored renders
+  // where topology IS the subject.
+  if (!hasColors) {
+    const wireMesh = new THREE.Mesh(geometry, createBlackWireframeMaterial());
+    scene.add(wireMesh);
+  }
   return scene;
 }
 

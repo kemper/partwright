@@ -39,10 +39,19 @@ clearColors for "start completely over from scratch" requests.
 Paint workflow for any non-trivial selector:
 1. paintPreview({box / point+radius / etc.}) — ALWAYS call before
    committing. Count alone is essentially free and catches most bad
-   selectors. If the count is surprising (way more or fewer than you
-   expected), call again with withImage: true for a yellow-highlighted
-   thumbnail. Either way, much cheaper than paint → renderViews → undo.
-2. paintInBox / paintNear / paintSlab to commit.
+   selectors. ALSO inspect largestTriangleArea / (totalArea /
+   triangleCount): ratios above ~10 mean a long radial fan triangle is
+   in the selection and paint will bleed visibly outside it. If the
+   count or ratio looks off, call again with withImage: true for a
+   yellow-highlighted thumbnail — the yellow streaks show real bleed,
+   not a rendering artifact.
+2. paintInBox / paintNear / paintSlab to commit. On meshes built from
+   cylinder / revolve / linear_extrude (radial-fan topology), pass
+   coverageMode: 'fully_inside' so only triangles whose vertices ALL
+   lie in the selection are painted; or pass maxTriangleArea: <N> as
+   a backstop. Either one prevents fan-bleed at the cost of one extra
+   parameter. For meshes built from sphere / cube / hull (small local
+   triangles), the default 'centroid' mode is fine.
 3. renderViews() to visually verify. The default views: 'auto' picks
    angles by the model's bounding box (flat disks get [Top, Iso],
    tall columns get [Front, Right, Iso], otherwise [Front, Top, Iso])
@@ -50,8 +59,15 @@ Paint workflow for any non-trivial selector:
    angle can hide an asymmetric error.
 4. If wrong: paintExplain({region: id}) FIRST — its normal histogram
    tells you whether the region wrapped onto a face you didn't want
-   (e.g. zPos: 0.4 + xPos: 0.3 means it caught the top AND a side).
+   (e.g. zPos: 0.4 + xPos: 0.3 means it caught the top AND a side),
+   and largestTriangleArea confirms whether fan-bleed is to blame.
    Then undoLastPaint() (NOT clearColors), tweak, retry.
+
+Authoring tip: if you're writing model code that will be painted
+afterwards, prefer sphere / cube / hull over cylinder / revolve /
+linear_extrude for surfaces that need precise paint, or call
+.refine(2) on a cylinder/revolve part in your code before runAndSave
+to break the fan topology into small local triangles.
 
 Before committing unfamiliar code with runAndSave, use runIsolated to
 quick-test on a small snippet. Examples worth verifying first: revolve
@@ -65,11 +81,25 @@ is it a carved recess, raised feature, or flat color region?
 question instead of guessing. A clarification turn costs less than
 3 wasted versions.
 
-For models built as a boolean union of distinct features (e.g. a smiley =
-head ∪ left_eye ∪ right_eye ∪ mouth), use paintComponent(index, color)
-to paint each piece in ONE call — it decomposes and paints in one round
-trip. Use listComponents() FIRST only when you need to inspect bboxes
-before deciding what to paint.
+For multi-feature models you author in manifold-js, prefer labelled
+construction over coordinate-based selectors. In your code, wrap each
+feature in api.label(shape, 'name'):
+
+  const head = api.label(api.Manifold.sphere(10), 'head');
+  const eyeL = api.label(api.Manifold.sphere(2).translate([3, 5, 7]), 'eyeL');
+  return head.add(eyeL);
+
+After runAndSave, call paintByLabel({label: 'eyeL', color: [0, 0, 1]}).
+The triangle set comes from manifold-3d's runOriginalID provenance, so
+it's exact even when shapes overlap — no bounding-box guessing, no
+fan-bleed, survives boolean ops. listLabels() returns what's available
+in the current run. api.labeledUnion([{name, shape}, ...]) is sugar
+when you have an array of features.
+
+For models you didn't author with labels (or for SCAD), fall back to
+paintComponent(index, color) — it decomposes the union and paints the
+Nth piece in one call. Use listComponents() FIRST only when you need
+to inspect bboxes before deciding what to paint.
 
 For organic / character meshes where bounding boxes won't separate the
 features (a hand from a sleeve at the same Z height; an ear from a

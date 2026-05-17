@@ -16,6 +16,7 @@ export type RegionDescriptor =
   | { kind: 'coplanar'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; normalTolerance: number }
   | { kind: 'slab'; normal: [number, number, number]; offset: number; thickness: number }
   | { kind: 'triangles'; ids: number[] }
+  | { kind: 'byLabel'; label: string }
   | { kind: 'connectedFromSeed'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; maxDeviationDeg: number };
 
 export interface SerializedColorRegion {
