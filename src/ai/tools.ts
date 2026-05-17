@@ -140,6 +140,49 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'probePixel',
+    description: 'Click in your own perception. Translates a pixel in a renderView image back to a world-space surface hit on the mesh: {point, normal, distance, triangleId} or null when the pixel is background. The view must match the renderView call (same elevation/azimuth/ortho/size). This is THE tool for organic geometry: render → identify the feature visually → probePixel to get exact coords → paintConnected or paintNear. The returned point is exactly on the mesh surface (raycast, not snap), so paintRegion-style seed-precision worries are gone. Front-most hit = occlusion correct.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pixel: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: '[x, y] pixel position. (0, 0) is top-left.' },
+        view: {
+          type: 'object',
+          description: 'Camera spec. MUST match the renderView call that produced the image — same elevation, azimuth, ortho, size.',
+          properties: {
+            elevation: { type: 'number' },
+            azimuth: { type: 'number' },
+            ortho: { type: 'boolean' },
+            size: { type: 'integer' },
+          },
+        },
+      },
+      required: ['pixel', 'view'],
+    },
+  },
+  {
+    name: 'paintConnected',
+    description: 'Flood-fill paint from a surface seed, gated by deviation from the SEED normal (not adjacent-face). This is what paintRegion should have been on smooth meshes — paintRegion compares adjacent pairs and is bimodal (all or nothing) on capsules / spheres / organic surfaces, paintConnected keeps the reference fixed at the seed so 30° gives you "this region of the surface facing roughly this way", regardless of how curved the connecting topology is. Best paired with probePixel — probe a pixel in a render, hand the {point, normal} straight to paintConnected.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        seed: {
+          type: 'object',
+          description: 'Surface seed. `point` is required; `normal` optional (defaults to the nearest triangle\'s normal).',
+          properties: {
+            point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+            normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+          },
+          required: ['point'],
+        },
+        maxDeviationDeg: { type: 'number', description: 'Maximum angle (degrees) a neighbor\'s normal may deviate from the seed normal. Default 30. Use larger values to follow curved features; smaller values to stay on a single facet.' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+        name: { type: 'string' },
+      },
+      required: ['seed', 'color'],
+    },
+  },
+  {
     name: 'getFeatureCentroids',
     description: 'Token-cheap planning aid: returns coplanar face groups with just centroid + normal + bbox + area (NO triangle IDs). Use this when planning where to paint without committing yet — cheaper than getMeshSummary because the triangleIds payload is omitted. Optional `withinBox` scopes to one feature.',
     input_schema: {
@@ -407,13 +450,14 @@ const ALWAYS_AVAILABLE = new Set([
   'findFaces',
   'listComponents',
   'listLabels',
+  'probePixel',
   'paintPreview',
   'paintExplain',
 ]);
 
 const RUN_GATED = new Set(['runCode']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -588,6 +632,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.listLabels();
     case 'paintByLabel':
       return api.paintByLabel(input);
+    case 'probePixel':
+      return api.probePixel(input);
+    case 'paintConnected':
+      return api.paintConnected(input);
     case 'getFeatureCentroids':
       return api.getFeatureCentroids(input);
     case 'paintExplain': {

@@ -574,24 +574,36 @@ export function renderElevationsToContainer(container: HTMLElement, meshData: Me
  *  For orthographic views, pass ortho: true.
  *  elevation/azimuth are in degrees: elevation 0 = horizon, 90 = top-down.
  *  azimuth 0 = front (-Y), 90 = right (+X), 180 = back (+Y), 270 = left (-X). */
-export function renderSingleView(meshData: MeshData, options: {
+/** Build the same THREE.Camera that `renderSingleView` would render
+ *  through for these options. Exported so `probePixel` (in
+ *  geometry/rayCast.ts) can replay the camera exactly and unproject
+ *  pixel coordinates back to world rays that hit the same triangles
+ *  the agent sees in the rendered image. Camera setup MUST match
+ *  renderSingleView byte-for-byte — both call sites read from this
+ *  function so they can't drift. */
+export function buildViewCamera(meshData: MeshData, options: {
   elevation?: number;
   azimuth?: number;
   ortho?: boolean;
-  size?: number;
-} = {}): string {
+}): THREE.Camera {
   const elevation = (options.elevation ?? 30) * Math.PI / 180;
   const azimuth = (options.azimuth ?? 315) * Math.PI / 180;
-  const viewSize = options.size ?? 500;
 
-  const geometry = meshDataToGeometry(meshData);
-  const scene = createElevationScene(geometry, 0xffffff);
-
-  const box = new THREE.Box3().setFromBufferAttribute(
-    geometry.getAttribute('position') as THREE.BufferAttribute,
-  );
-  const center = box.getCenter(new THREE.Vector3());
-  const bsize = box.getSize(new THREE.Vector3());
+  // Bounding box from the raw vertProperties — same numbers
+  // renderSingleView computes after constructing the BufferGeometry.
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  const { vertProperties, numVert, numProp } = meshData;
+  for (let i = 0; i < numVert; i++) {
+    const x = vertProperties[i * numProp];
+    const y = vertProperties[i * numProp + 1];
+    const z = vertProperties[i * numProp + 2];
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  const center = new THREE.Vector3((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
+  const bsize = new THREE.Vector3(maxX - minX, maxY - minY, maxZ - minZ);
   const maxDim = Math.max(bsize.x, bsize.y, bsize.z);
   const dist = maxDim * 2;
 
@@ -617,7 +629,20 @@ export function renderSingleView(meshData: MeshData, options: {
     perspCamera.updateProjectionMatrix();
     camera = perspCamera;
   }
+  return camera;
+}
 
+export function renderSingleView(meshData: MeshData, options: {
+  elevation?: number;
+  azimuth?: number;
+  ortho?: boolean;
+  size?: number;
+} = {}): string {
+  const viewSize = options.size ?? 500;
+
+  const geometry = meshDataToGeometry(meshData);
+  const scene = createElevationScene(geometry, 0xffffff);
+  const camera = buildViewCamera(meshData, options);
   const renderer = getOffscreenRenderer(viewSize);
 
   const annotations = buildStrokesGroup(new THREE.Vector2(viewSize, viewSize));

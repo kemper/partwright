@@ -136,6 +136,58 @@ export function findCoplanarRegion(
   return result;
 }
 
+/** BFS from a seed triangle, accepting each neighbor whose normal is
+ *  within `maxSeedDeviationDeg` of the SEED's normal — not the parent's.
+ *
+ *  This is the right primitive for "paint everything contiguous to my
+ *  seed that's facing the same general direction." Unlike
+ *  `findCoplanarRegion`, which compares each adjacent pair, the seed-
+ *  relative threshold doesn't accumulate around curvature: a smooth
+ *  cylinder side won't suck in the whole component when you pick a 30°
+ *  deviation, because the floor for inclusion stays anchored to the
+ *  seed orientation instead of drifting around the surface.
+ *
+ *  Both the seed triangle's own normal and every successive candidate
+ *  must dot the seed normal >= `cos(maxSeedDeviationDeg)`. The seed
+ *  triangle is always included; it's the starting point. */
+export function findConnectedFromSeed(
+  seedTri: number,
+  adjacency: AdjacencyGraph,
+  maxSeedDeviationCos: number,
+): Set<number> {
+  const { neighbors, normals } = adjacency;
+  const result = new Set<number>();
+  if (seedTri < 0 || seedTri >= neighbors.length) return result;
+
+  const snx = normals[seedTri * 3];
+  const sny = normals[seedTri * 3 + 1];
+  const snz = normals[seedTri * 3 + 2];
+
+  const queue = [seedTri];
+  result.add(seedTri);
+
+  while (queue.length > 0) {
+    const current = queue.pop()!;
+    const adj = neighbors[current];
+    for (let i = 0; i < adj.length; i++) {
+      const neighbor = adj[i];
+      if (result.has(neighbor)) continue;
+
+      const nx = normals[neighbor * 3];
+      const ny = normals[neighbor * 3 + 1];
+      const nz = normals[neighbor * 3 + 2];
+
+      const dot = snx * nx + sny * ny + snz * nz;
+      if (dot >= maxSeedDeviationCos) {
+        result.add(neighbor);
+        queue.push(neighbor);
+      }
+    }
+  }
+
+  return result;
+}
+
 /** Get the normal of a specific triangle. */
 export function getTriangleNormal(triIndex: number, adjacency: AdjacencyGraph): [number, number, number] {
   return [

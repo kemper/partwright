@@ -17,7 +17,14 @@ export interface ProbeResult {
 }
 
 export interface GeneralRayResult {
-  hits: { point: [number, number, number]; normal: [number, number, number]; distance: number }[];
+  hits: { point: [number, number, number]; normal: [number, number, number]; distance: number; triangleId: number }[];
+}
+
+export interface PixelHit {
+  point: [number, number, number];
+  normal: [number, number, number];
+  distance: number;
+  triangleId: number;
 }
 
 function meshDataToBufferGeometry(mesh: MeshData): THREE.BufferGeometry {
@@ -119,6 +126,7 @@ export function probeRay(
       ? [hit.face.normal.x, hit.face.normal.y, hit.face.normal.z] as [number, number, number]
       : [0, 0, 0] as [number, number, number],
     distance: Math.round(hit.distance * 1000) / 1000,
+    triangleId: hit.faceIndex ?? -1,
   }));
 
   // Deduplicate hits at the same distance (triangulated faces produce duplicates)
@@ -142,4 +150,50 @@ export function measureDistance(
   const dy = p2[1] - p1[1];
   const dz = p2[2] - p1[2];
   return Math.round(Math.sqrt(dx * dx + dy * dy + dz * dz) * 1000) / 1000;
+}
+
+/** Cast a ray from a pixel in a rendered view back into the mesh and
+ *  return the first hit (front-most along the ray — so occlusion is
+ *  correct by construction). Pixel coordinates use the rendered image's
+ *  convention: (0, 0) is top-left, (size-1, size-1) is bottom-right.
+ *  `camera` must be the same camera the render was produced with; use
+ *  `buildViewCamera` from the renderer module to construct it from the
+ *  same view options passed to `renderView`. Returns null when the
+ *  pixel ray misses the mesh entirely (background pixel). */
+export function probePixel(
+  meshData: MeshData,
+  camera: THREE.Camera,
+  pixel: [number, number],
+  size: number,
+): PixelHit | null {
+  const geometry = meshDataToBufferGeometry(meshData);
+  const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+  const tempMesh = new THREE.Mesh(geometry, material);
+
+  // NDC: pixel (0,0) → (-1, +1); pixel (size, size) → (+1, -1). Y is
+  // flipped because canvas pixel-y grows downward while NDC y grows
+  // upward.
+  const ndcX = (pixel[0] / size) * 2 - 1;
+  const ndcY = -((pixel[1] / size) * 2 - 1);
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+  const intersections = raycaster.intersectObject(tempMesh);
+
+  geometry.dispose();
+  material.dispose();
+
+  if (intersections.length === 0) return null;
+  const hit = intersections[0];
+  return {
+    point: [
+      Math.round(hit.point.x * 1000) / 1000,
+      Math.round(hit.point.y * 1000) / 1000,
+      Math.round(hit.point.z * 1000) / 1000,
+    ],
+    normal: hit.face
+      ? [hit.face.normal.x, hit.face.normal.y, hit.face.normal.z]
+      : [0, 0, 0],
+    distance: Math.round(hit.distance * 1000) / 1000,
+    triangleId: hit.faceIndex ?? -1,
+  };
 }

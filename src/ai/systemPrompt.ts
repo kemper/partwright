@@ -101,6 +101,29 @@ paintComponent(index, color) — it decomposes the union and paints the
 Nth piece in one call. Use listComponents() FIRST only when you need
 to inspect bboxes before deciding what to paint.
 
+For organic / character meshes where bounding boxes won't separate the
+features (a hand from a sleeve at the same Z height; an ear from a
+head), use the paint-by-vision loop:
+1. renderView (or renderViews) — pick the angle that shows the feature
+   you want to paint clearly.
+2. Identify the feature's pixel position in the returned PNG visually.
+3. probePixel({pixel, view}) — translates the pixel back to an exact
+   world-space surface point + normal + triangleId. The view object
+   MUST match the renderView call's view (same elevation/azimuth/
+   ortho/size). Returns null if you picked a background pixel; try a
+   different pixel on the silhouette.
+4. paintConnected({seed: {point, normal}, maxDeviationDeg: 30, color})
+   — flood-fills from the seed, gated by deviation from the SEED
+   normal (not adjacent-face). Stays on the feature instead of bleeding
+   across to side faces with different orientations. paintRegion is
+   bimodal on smooth meshes and won't work here.
+
+This is also the workflow when the agent did NOT author the geometry
+(imported STL, code provided by the user) and api.label is not
+available. Pixel-estimation has ~±10-20px uncertainty at 320px — fine
+for paintConnected (the seed is exactly on the surface from the
+raycast); for paintNear, pick a radius generous enough to absorb that.
+
 When paintInBox / paintNear catches side walls or bottom faces by
 mistake, pass topOnly: true — that restricts the selector to upward-
 facing triangles only (axis +Z within 30°) and eliminates the most
