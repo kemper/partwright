@@ -1014,25 +1014,109 @@ async function main() {
     }
   }
 
-  /** Read an STL file and parse it into an ImportedMesh. Reports parse failure
-   *  to the user inline and returns null. */
+  /** Read an STL file, parse it, and verify Manifold.ofMesh() accepts the result.
+   *  Tries progressively looser weld tolerances to absorb float-precision noise
+   *  in real-world CAD exports. Reports a useful error and returns null if the
+   *  mesh can't be made manifold at any tolerance — caller is then responsible
+   *  for leaving session state untouched. */
   async function parseSTLFile(file: File): Promise<ImportedMesh | null> {
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const mesh = parseSTL(bytes);
-    if (!mesh || mesh.numTri === 0) {
+
+    // Sanity-check that the file parses to *something* before doing the more
+    // expensive ofMesh trial.
+    const probe = parseSTL(bytes);
+    if (!probe || probe.numTri === 0) {
       alert(`Could not parse "${file.name}" as an STL file.`);
       return null;
     }
+
+    // Scale-aware fallback tolerance: 5 ppm of the mesh's bounding-box diagonal
+    // catches imports that ship in unusual units (μm or m) where 1e-3 absolute
+    // is either way too tight or way too loose.
+    const diag = boundingBoxDiagonal(probe);
+    const scaleTolerance = Math.max(diag * 5e-6, 1e-6);
+
+    const tolerances = [1e-5, 1e-4, 1e-3, scaleTolerance];
+    let lastMesh = probe;
+    let lastTolerance = 1e-5;
+    let manifoldError: string | null = null;
+    for (const tol of tolerances) {
+      const mesh = parseSTL(bytes, { weldTolerance: tol });
+      if (!mesh || mesh.numTri === 0) continue;
+      const trial = tryConstructManifold(mesh);
+      if (trial.ok) {
+        lastMesh = mesh;
+        lastTolerance = tol;
+        manifoldError = null;
+        break;
+      }
+      manifoldError = trial.error;
+      lastMesh = mesh;
+      lastTolerance = tol;
+    }
+
+    if (manifoldError) {
+      alert(
+        `"${file.name}" couldn't be imported as a manifold.\n\n` +
+        `${probe.numTri.toLocaleString()} triangles, ${probe.numVert.toLocaleString()} vertices. ` +
+        `Tried weld tolerances up to ${lastTolerance.toExponential(1)} — ` +
+        `Manifold reports: ${manifoldError}\n\n` +
+        `This usually means the STL has open edges, T-junctions, or duplicated faces. ` +
+        `Repair the mesh in MeshLab or Blender (Edit → Mesh → Clean Up) and try again.`
+      );
+      return null;
+    }
+
     return {
       id: generateId(),
       filename: file.name,
       format: 'stl',
-      vertProperties: mesh.vertProperties,
-      triVerts: mesh.triVerts,
-      numVert: mesh.numVert,
-      numTri: mesh.numTri,
-      numProp: mesh.numProp,
+      vertProperties: lastMesh.vertProperties,
+      triVerts: lastMesh.triVerts,
+      numVert: lastMesh.numVert,
+      numTri: lastMesh.numTri,
+      numProp: lastMesh.numProp,
     };
+  }
+
+  /** Attempt Manifold.ofMesh() on a parsed mesh; report success/failure. The
+   *  trial manifold is disposed immediately — we only care whether construction
+   *  worked, not the geometry itself. */
+  function tryConstructManifold(mesh: MeshData): { ok: true } | { ok: false; error: string } {
+    const mod = getModule();
+    if (!mod) return { ok: true }; // engine not ready yet; assume good and let runtime surface any issue
+    let m: { isEmpty(): boolean; delete?: () => void } | null = null;
+    try {
+      m = mod.Manifold.ofMesh({
+        numProp: mesh.numProp,
+        vertProperties: mesh.vertProperties,
+        triVerts: mesh.triVerts,
+      });
+      if (!m || m.isEmpty()) {
+        return { ok: false, error: 'constructed manifold is empty' };
+      }
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    } finally {
+      try { m?.delete?.(); } catch { /* already gone */ }
+    }
+  }
+
+  function boundingBoxDiagonal(mesh: MeshData): number {
+    const v = mesh.vertProperties;
+    const n = mesh.numProp;
+    if (mesh.numVert === 0) return 0;
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < mesh.numVert; i++) {
+      const x = v[i * n], y = v[i * n + 1], z = v[i * n + 2];
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    }
+    const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
   }
 
   // Re-import an entry from the Recent Imports inbox. Reuses the same flow as
