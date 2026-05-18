@@ -463,6 +463,28 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'paintInOrientedBox',
+    description: 'Paint every triangle whose centroid lies inside a rotated oriented bounding box (OBB). Same selector as the UI Box paint tool. Reach for this when paintInBox catches the wrong faces because the feature is at an angle to the world axes — diagonal handles, tilted lids, rotated wings, etc. Defaults to the identity quaternion (no rotation) when `quaternion` is omitted, making it equivalent to paintInBox with the same center+size.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        box: {
+          type: 'object',
+          description: '{center: [x,y,z], size: [sx,sy,sz], quaternion?: [x,y,z,w]} — size is the full extent along each box-local axis, not half-extent. Quaternion defaults to identity [0,0,0,1] if omitted.',
+          properties: {
+            center: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+            size: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+            quaternion: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4 },
+          },
+          required: ['center', 'size'],
+        },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+        name: { type: 'string' },
+      },
+      required: ['box', 'color'],
+    },
+  },
+  {
     name: 'paintSlab',
     description: 'Paint everything in a Z-slab (or arbitrary-axis slab). One call. Use for "paint the rim of this disk", "paint the side walls", "paint the top 5mm". Same coverageMode / maxTriangleArea options as the other selectors.',
     input_schema: {
@@ -843,7 +865,7 @@ const ALWAYS_AVAILABLE = new Set([
 
 const RUN_GATED = new Set(['runCode']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -1118,6 +1140,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintNear(input);
     case 'paintInBox':
       return api.paintInBox(input);
+    case 'paintInOrientedBox':
+      return api.paintInOrientedBox(input);
     case 'paintSlab':
       return api.paintSlab(input);
     case 'paintNearestRegion':
