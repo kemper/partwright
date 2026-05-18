@@ -6,12 +6,13 @@ import type { MeshData } from '../geometry/types';
 import { pickFace } from './facePicker';
 import { buildAdjacency, findCoplanarRegion, getTriangleNormal, type AdjacencyGraph } from './adjacency';
 import { addRegion, getRegions } from './regions';
-import { getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel } from '../renderer/viewport';
+import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
 export type PaintTool = 'bucket' | 'brush' | 'slab' | 'box';
+export type BrushShape = 'circle' | 'square' | 'diamond';
 
 let active = false;
 let currentColor: [number, number, number] = [1, 0.2, 0.2]; // default red
@@ -21,12 +22,18 @@ let bucketTolerance = 0.9995;
  *  every triangle whose centroid is within `brushRadius` of the picked surface
  *  point. */
 let brushRadius = 0;
+let brushShape: BrushShape = 'circle';
 let adjacency: AdjacencyGraph | null = null;
 let currentMesh: MeshData | null = null;
 
 // Hover highlight state
 let highlightMesh: THREE.Mesh | null = null;
 let hoveredTriangles: Set<number> | null = null;
+
+// Brush ring indicator — outline showing the brush footprint in world space
+let brushRingMesh: THREE.LineLoop | null = null;
+let brushRingBuiltRadius = -1;
+let brushRingBuiltShape: BrushShape | '' = '';
 
 // Brush drag state
 let brushPainting = false;
@@ -88,6 +95,14 @@ export function setBrushRadius(r: number): void {
 
 export function getBrushRadius(): number {
   return brushRadius;
+}
+
+export function setBrushShape(s: BrushShape): void {
+  brushShape = s;
+}
+
+export function getBrushShape(): BrushShape {
+  return brushShape;
 }
 
 export function setOnRegionPainted(fn: () => void): void {
@@ -162,6 +177,7 @@ export function deactivate(): void {
   canvas.removeEventListener('mouseleave', onMouseLeave);
   canvas.style.cursor = '';
   clearHighlight();
+  clearBrushRing();
   brushPainting = false;
   brushSession = null;
   mouseDownOffModel = false;
@@ -190,6 +206,11 @@ function onMouseMove(event: MouseEvent): void {
     if (result) {
       addBrushFootprint(result.triangleIndex, result.point, brushSession);
       showHighlight(brushSession);
+      // Ring must come after showHighlight (which calls clearHighlight internally).
+      if (brushRadius > 0) showBrushRing(result.point, result.normal);
+      else clearBrushRing();
+    } else {
+      clearBrushRing();
     }
     return;
   }
@@ -197,6 +218,7 @@ function onMouseMove(event: MouseEvent): void {
   const result = pickFace(event);
   if (!result) {
     clearHighlight();
+    clearBrushRing();
     return;
   }
 
@@ -205,13 +227,21 @@ function onMouseMove(event: MouseEvent): void {
     region = new Set<number>();
     addBrushFootprint(result.triangleIndex, result.point, region);
   } else {
+    clearBrushRing();
     region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
   }
 
-  if (hoveredTriangles && setsEqual(hoveredTriangles, region)) return;
+  if (hoveredTriangles && setsEqual(hoveredTriangles, region)) {
+    // Triangles unchanged — just update ring position without rebuilding highlight.
+    if (currentTool === 'brush' && brushRadius > 0) showBrushRing(result.point, result.normal);
+    return;
+  }
 
   hoveredTriangles = region;
   showHighlight(region);
+  // Ring must come after showHighlight.
+  if (currentTool === 'brush' && brushRadius > 0) showBrushRing(result.point, result.normal);
+  else if (currentTool === 'brush') clearBrushRing();
 }
 
 function onMouseDown(event: MouseEvent): void {
@@ -238,16 +268,19 @@ function onMouseDown(event: MouseEvent): void {
 }
 
 /** Expand a single picked triangle into the brush's full footprint.
- *  At brushRadius=0 this just adds the picked triangle (legacy behavior).
- *  At brushRadius>0 it adds every triangle whose centroid lies within
- *  `brushRadius` of the picked surface point. */
+ *  At brushRadius=0 this just adds the picked triangle.
+ *  At brushRadius>0 the footprint shape is controlled by brushShape:
+ *    circle  — sphere test: distance ≤ radius
+ *    square  — cube test:   |dx|, |dy|, |dz| all ≤ radius
+ *    diamond — L1 test:     |dx|+|dy|+|dz| ≤ radius */
 function addBrushFootprint(seedTri: number, seedPoint: [number, number, number], target: Set<number>): void {
   target.add(seedTri);
   if (brushRadius <= 0 || !adjacency) return;
 
   const { centroids } = adjacency;
   const numTri = centroids.length / 3;
-  const r2 = brushRadius * brushRadius;
+  const r = brushRadius;
+  const r2 = r * r;
   const sx = seedPoint[0], sy = seedPoint[1], sz = seedPoint[2];
 
   for (let t = 0; t < numTri; t++) {
@@ -255,7 +288,78 @@ function addBrushFootprint(seedTri: number, seedPoint: [number, number, number],
     const dx = centroids[t * 3]     - sx;
     const dy = centroids[t * 3 + 1] - sy;
     const dz = centroids[t * 3 + 2] - sz;
-    if (dx * dx + dy * dy + dz * dz <= r2) target.add(t);
+    let inside: boolean;
+    if (brushShape === 'square') {
+      inside = Math.abs(dx) <= r && Math.abs(dy) <= r && Math.abs(dz) <= r;
+    } else if (brushShape === 'diamond') {
+      inside = Math.abs(dx) + Math.abs(dy) + Math.abs(dz) <= r;
+    } else {
+      inside = dx * dx + dy * dy + dz * dz <= r2;
+    }
+    if (inside) target.add(t);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Brush ring indicator
+// ---------------------------------------------------------------------------
+
+function buildRingPoints(shape: BrushShape, r: number): THREE.Vector3[] {
+  if (shape === 'square') {
+    return [
+      new THREE.Vector3(-r, -r, 0),
+      new THREE.Vector3( r, -r, 0),
+      new THREE.Vector3( r,  r, 0),
+      new THREE.Vector3(-r,  r, 0),
+    ];
+  }
+  if (shape === 'diamond') {
+    return [
+      new THREE.Vector3( 0, -r, 0),
+      new THREE.Vector3( r,  0, 0),
+      new THREE.Vector3( 0,  r, 0),
+      new THREE.Vector3(-r,  0, 0),
+    ];
+  }
+  // circle — LineLoop auto-closes, so stop before 2π
+  const pts: THREE.Vector3[] = [];
+  const segments = 48;
+  for (let i = 0; i < segments; i++) {
+    const a = (i / segments) * Math.PI * 2;
+    pts.push(new THREE.Vector3(Math.cos(a) * r, Math.sin(a) * r, 0));
+  }
+  return pts;
+}
+
+function showBrushRing(point: [number, number, number], normal: [number, number, number]): void {
+  if (brushRadius <= 0) { clearBrushRing(); return; }
+
+  // Rebuild when radius or shape changes.
+  if (!brushRingMesh || brushRingBuiltRadius !== brushRadius || brushRingBuiltShape !== brushShape) {
+    clearBrushRing();
+    brushRingBuiltRadius = brushRadius;
+    brushRingBuiltShape = brushShape;
+    const geo = new THREE.BufferGeometry().setFromPoints(buildRingPoints(brushShape, brushRadius));
+    const mat = new THREE.LineBasicMaterial({ color: 0xffffff, opacity: 0.75, transparent: true, depthTest: false });
+    brushRingMesh = new THREE.LineLoop(geo, mat);
+    brushRingMesh.name = 'brush-ring';
+    brushRingMesh.renderOrder = 1001;
+    getScene().add(brushRingMesh);
+  }
+
+  brushRingMesh.position.set(point[0], point[1], point[2]);
+  const nrm = new THREE.Vector3(normal[0], normal[1], normal[2]).normalize();
+  brushRingMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), nrm);
+}
+
+function clearBrushRing(): void {
+  if (brushRingMesh) {
+    brushRingMesh.parent?.remove(brushRingMesh);
+    brushRingMesh.geometry.dispose();
+    (brushRingMesh.material as THREE.Material).dispose();
+    brushRingMesh = null;
+    brushRingBuiltRadius = -1;
+    brushRingBuiltShape = '';
   }
 }
 
@@ -318,7 +422,6 @@ function onMouseUp(event: MouseEvent): void {
 
 function onMouseLeave(): void {
   if (currentTool === 'brush' && brushPainting && brushSession && brushSession.size > 0) {
-    // Commit whatever the user has painted so far.
     const triangles = brushSession;
     const existingCount = getRegions().length;
     addRegion(
@@ -333,6 +436,7 @@ function onMouseLeave(): void {
   brushPainting = false;
   brushSession = null;
   clearHighlight();
+  clearBrushRing();
 }
 
 /** Public helper: render a hover-style highlight over a triangle set.
