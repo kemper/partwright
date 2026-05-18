@@ -36,6 +36,13 @@ undoLastPaint() to reverse just the most recent paint, or removeRegion(id)
 to delete a specific older mistake (get the id from listRegions). Save
 clearColors for "start completely over from scratch" requests.
 
+When a tool call result shows "Tool call was interrupted and did not
+complete", do NOT assume the operation failed. The underlying call may
+have completed just before the stream was cut. Verify actual state with
+getSessionContext() (includes currentCode and version list) and
+getGeometryData() before re-running anything — re-running a runAndSave
+that actually succeeded creates a duplicate version.
+
 Paint workflow for any non-trivial selector:
 1. paintPreview({box / point+radius / etc.}) — ALWAYS call before
    committing. Count alone is essentially free and catches most bad
@@ -45,13 +52,14 @@ Paint workflow for any non-trivial selector:
    count or ratio looks off, call again with withImage: true for a
    yellow-highlighted thumbnail — the yellow streaks show real bleed,
    not a rendering artifact.
-2. paintInBox / paintNear / paintSlab to commit. On meshes built from
-   cylinder / revolve / linear_extrude (radial-fan topology), pass
-   coverageMode: 'fully_inside' so only triangles whose vertices ALL
-   lie in the selection are painted; or pass maxTriangleArea: <N> as
-   a backstop. Either one prevents fan-bleed at the cost of one extra
-   parameter. For meshes built from sphere / cube / hull (small local
-   triangles), the default 'centroid' mode is fine.
+2. paintInBox / paintNear / paintSlab / paintInCylinder to commit.
+   Use paintInCylinder for inner walls of hollow cylinders, mugs, or
+   any revolved shape (rMin = inner radius, rMax = outer radius, set
+   zMin/zMax to the height range of the inner surface). On meshes built
+   from cylinder / revolve / linear_extrude (radial-fan topology), pass
+   coverageMode: 'fully_inside' or maxTriangleArea to avoid fan-bleed.
+   For meshes built from sphere / cube / hull, the default 'centroid'
+   mode is fine.
 3. renderViews() to visually verify. The default views: 'auto' picks
    angles by the model's bounding box (flat disks get [Top, Iso],
    tall columns get [Front, Right, Iso], otherwise [Front, Top, Iso])
@@ -96,6 +104,22 @@ fan-bleed, survives boolean ops. listLabels() returns what's available
 in the current run. api.labeledUnion([{name, shape}, ...]) is sugar
 when you have an array of features.
 
+IMPORTANT label limitation: api.label tracks surfaces that existed in
+the ORIGINAL labeled shape. Boolean subtraction (.subtract()) creates
+NEW triangles at the cut surface — these new triangles inherit NO label.
+Example: label the outer body, subtract an inner void to hollow it out
+→ the inner wall surface is unlabeled. Don't waste attempts calling
+paintByLabel('inner') on a subtraction surface. Instead:
+- Use probePixel + paintConnected for inner surfaces from boolean ops.
+- Or design around it: label a thin shell geometry that approximates
+  the inner surface, then subtract separately.
+- Or use paintInCylinder for cylindrical inner walls (e.g. mug interiors).
+
+Labels are version-specific: loadVersion(N) re-runs that version's code,
+so listLabels() after loadVersion returns THAT version's labels — not
+the current version's. If v1 didn't use api.label but v3 did, loading
+v1 gives empty labels. This is correct behavior.
+
 For models you didn't author with labels (or for SCAD), fall back to
 paintComponent(index, color) — it decomposes the union and paints the
 Nth piece in one call. Use listComponents() FIRST only when you need
@@ -105,6 +129,9 @@ For multi-feature labelled models, batch with paintByLabels([...]) —
 one tool call paints all features and coalesces the viewport refresh
 under a single rAF, so a 9-feature smiley costs one round-trip instead
 of nine. Reach for paintByLabel only when you need just one feature.
+paintByLabel and paintByLabels now support optional topOnly/normalCone
+per-item to filter the label's triangles by face direction — useful when
+a label covers both top and side faces and you only want the top surface.
 
 Paint tools are SEPARATE tool calls — they cannot be invoked from
 inside runCode / runAndSave / runIsolated model code. The model code
