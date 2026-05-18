@@ -1,8 +1,11 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
+import { createCurvesNamespace } from '../curves';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let manifoldModule: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let curvesNamespace: any = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getManifoldModule(): any {
@@ -17,6 +20,7 @@ export const manifoldJsEngine: Engine = {
     const Module = await import('manifold-3d');
     manifoldModule = await Module.default();
     manifoldModule.setup();
+    curvesNamespace = createCurvesNamespace(manifoldModule);
   },
 
   isReady() {
@@ -39,6 +43,7 @@ export const manifoldJsEngine: Engine = {
     const api = {
       Manifold,
       CrossSection,
+      Curves: curvesNamespace,
       setMinCircularAngle,
       setMinCircularEdgeLength,
       setCircularSegments,
