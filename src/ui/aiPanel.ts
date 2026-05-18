@@ -257,9 +257,10 @@ function buildDrawer(): void {
   initPanelResizer(panelResizeHandle);
   root.appendChild(panelResizeHandle);
 
-  // Header — single row: title · model picker · prompt chip · actions · (spacer) · ✕
+  // Header — single row that wraps gracefully when the panel is narrow.
+  // flex-wrap prevents overlap; items truncate or wrap rather than collide.
   const header = document.createElement('div');
-  header.className = 'flex items-center gap-1.5 px-3 py-1.5 border-b border-zinc-700 shrink-0 min-w-0';
+  header.className = 'flex items-center flex-wrap gap-1.5 px-3 py-1.5 border-b border-zinc-700 shrink-0';
 
   const titleEl = document.createElement('div');
   titleEl.className = 'text-sm font-semibold text-zinc-100 shrink-0';
@@ -267,11 +268,12 @@ function buildDrawer(): void {
   header.appendChild(titleEl);
 
   modelPickerEl = document.createElement('div');
-  modelPickerEl.className = 'flex items-center gap-1 min-w-0 shrink';
+  modelPickerEl.className = 'flex items-center gap-1 shrink-0';
   header.appendChild(modelPickerEl);
   renderModelPicker();
 
   promptChipEl = document.createElement('span');
+  promptChipEl.className = 'shrink-0';
   header.appendChild(promptChipEl);
   renderPromptChip();
 
@@ -576,7 +578,7 @@ function initInputResizer(handle: HTMLElement, bottomSection: HTMLElement): void
 
 function createIconButton(_label: string, glyph: string): HTMLButtonElement {
   const btn = document.createElement('button');
-  btn.className = 'px-2 py-1 rounded text-[11px] text-zinc-300 hover:bg-zinc-800 border border-transparent hover:border-zinc-700';
+  btn.className = 'shrink-0 h-6 px-2 inline-flex items-center rounded text-[11px] text-zinc-300 hover:bg-zinc-800 border border-transparent hover:border-zinc-700';
   btn.textContent = glyph;
   return btn;
 }
@@ -592,7 +594,7 @@ function renderModelPicker(): void {
 
   if (settings.toggles.provider === 'anthropic') {
     const sel = document.createElement('select');
-    sel.className = 'px-2 py-1 rounded text-[11px] bg-zinc-800 border border-zinc-700 text-zinc-200 focus:outline-none';
+    sel.className = 'h-6 px-2 rounded text-[11px] bg-zinc-800 border border-zinc-700 text-zinc-200 focus:outline-none';
     sel.title = 'Anthropic model (hosted).';
     for (const opt of ANTHROPIC_MODEL_OPTIONS) {
       const o = document.createElement('option');
@@ -612,7 +614,7 @@ function renderModelPicker(): void {
 
   const chip = document.createElement('button');
   chip.type = 'button';
-  chip.className = 'px-2 py-1 rounded text-[11px] bg-emerald-900/30 border border-emerald-700/50 text-emerald-200 hover:bg-emerald-900/50';
+  chip.className = 'h-6 px-2 inline-flex items-center rounded text-[11px] bg-emerald-900/30 border border-emerald-700/50 text-emerald-200 hover:bg-emerald-900/50';
   if (settings.toggles.localModel) {
     try {
       const info = resolveLocalModel(settings.toggles.localModel);
@@ -649,7 +651,7 @@ function renderPromptChip(): void {
   let title: string;
   if (override !== null) {
     label = '✎ Custom prompt';
-    cls = 'px-1.5 py-0.5 rounded text-[10px] bg-amber-900/40 text-amber-200 border border-amber-800/60 hover:bg-amber-900/60';
+    cls = 'h-6 px-1.5 inline-flex items-center rounded text-[10px] bg-amber-900/40 text-amber-200 border border-amber-800/60 hover:bg-amber-900/60';
     title = 'A custom system prompt is in use. Click to view or edit.';
   } else if (provider === 'local') {
     const tier = settings.toggles.localModel
@@ -658,11 +660,11 @@ function renderPromptChip(): void {
     const tierLabel = tier === 'medium' ? 'Medium' : 'Slim';
     const tierSize = tier === 'medium' ? '~1.1K tokens' : '~700 tokens';
     label = `· ${tierLabel} prompt`;
-    cls = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
+    cls = 'h-6 px-1.5 inline-flex items-center rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
     title = `Local models use a compact built-in prompt (${tierSize}) and pull subdoc detail on demand via the readDoc tool. Click to view or pin a different tier.`;
   } else {
     label = '· Full ai.md';
-    cls = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
+    cls = 'h-6 px-1.5 inline-flex items-center rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
     title = 'Anthropic gets the full ai.md (~15K tokens) cached on the API. Click to view or edit.';
   }
   chip.className = cls;
