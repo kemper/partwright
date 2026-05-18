@@ -7,7 +7,7 @@ import { runTurn, totalCost, totalTokensEstimate, estimateCachedPrefixTokens } f
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, applyPreset, setAnthropicModel, setToggles, ANTHROPIC_MODEL_OPTIONS, PRESET_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, setAnthropicModel, setToggles, ANTHROPIC_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { generateId } from '../storage/db';
@@ -257,66 +257,51 @@ function buildDrawer(): void {
   initPanelResizer(panelResizeHandle);
   root.appendChild(panelResizeHandle);
 
-  // Header — 2 rows so close button is always visible regardless of content width
+  // Header — single row: title · model picker · prompt chip · actions · (spacer) · ✕
   const header = document.createElement('div');
-  header.className = 'flex flex-col border-b border-zinc-700 shrink-0';
-
-  // Row 1: title, model picker, (spacer), close button — always fits
-  const headerRow1 = document.createElement('div');
-  headerRow1.className = 'flex items-center gap-2 px-3 py-1.5 min-w-0';
+  header.className = 'flex items-center gap-1.5 px-3 py-1.5 border-b border-zinc-700 shrink-0 min-w-0';
 
   const titleEl = document.createElement('div');
   titleEl.className = 'text-sm font-semibold text-zinc-100 shrink-0';
   titleEl.textContent = 'AI';
-  headerRow1.appendChild(titleEl);
+  header.appendChild(titleEl);
 
   modelPickerEl = document.createElement('div');
   modelPickerEl.className = 'flex items-center gap-1 min-w-0 shrink';
-  headerRow1.appendChild(modelPickerEl);
+  header.appendChild(modelPickerEl);
   renderModelPicker();
 
-  const headerSpacer = document.createElement('div');
-  headerSpacer.className = 'flex-1';
-  headerRow1.appendChild(headerSpacer);
-
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'shrink-0 px-2 py-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 text-sm';
-  closeBtn.textContent = '✕';
-  closeBtn.title = 'Close AI panel';
-  closeBtn.addEventListener('click', hideDrawer);
-  headerRow1.appendChild(closeBtn);
-
-  header.appendChild(headerRow1);
-
-  // Row 2: prompt chip, preset picker, compact, clear, settings — secondary controls
-  const headerRow2 = document.createElement('div');
-  headerRow2.className = 'flex items-center gap-1.5 px-3 pb-1.5 flex-wrap';
-
   promptChipEl = document.createElement('span');
-  headerRow2.appendChild(promptChipEl);
+  header.appendChild(promptChipEl);
   renderPromptChip();
-
-  const presetSelect = createPresetSelect();
-  headerRow2.appendChild(presetSelect);
 
   const compactBtn = createIconButton('Compact', '⤓ Compact');
   compactBtn.title = 'Compact the conversation: summarize older turns and promote insights to session notes.';
   compactBtn.addEventListener('click', () => { void runCompact(); });
-  headerRow2.appendChild(compactBtn);
+  header.appendChild(compactBtn);
 
   const clearBtn = createIconButton('Clear', '🗑');
   clearBtn.title = 'Clear the chat history for the current session. The conversation is removed from your browser; saved versions and notes are untouched.';
   clearBtn.addEventListener('click', () => { void clearCurrentChat(); });
-  headerRow2.appendChild(clearBtn);
+  header.appendChild(clearBtn);
 
   const settingsBtn = createIconButton('Settings', '⚙');
   settingsBtn.title = 'AI settings: provider, key, lifetime usage.';
   settingsBtn.addEventListener('click', () => {
     void showAiSettingsModal({ onChange: () => { renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); renderPromptChip(); panelStatusUpdate(); } });
   });
-  headerRow2.appendChild(settingsBtn);
+  header.appendChild(settingsBtn);
 
-  header.appendChild(headerRow2);
+  const headerSpacer = document.createElement('div');
+  headerSpacer.className = 'flex-1';
+  header.appendChild(headerSpacer);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'shrink-0 px-2 py-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 text-sm';
+  closeBtn.textContent = '✕';
+  closeBtn.title = 'Close AI panel';
+  closeBtn.addEventListener('click', hideDrawer);
+  header.appendChild(closeBtn);
 
   root.appendChild(header);
 
@@ -687,28 +672,6 @@ function renderPromptChip(): void {
     void showSystemPromptModal(provider, { onChange: () => renderPromptChip() });
   });
   promptChipEl.replaceChildren(chip);
-}
-
-function createPresetSelect(): HTMLSelectElement {
-  const sel = document.createElement('select');
-  sel.className = 'px-2 py-1 rounded text-[11px] bg-zinc-800 border border-zinc-700 text-zinc-200 focus:outline-none';
-  sel.title = 'Preset bundles the model + toggle settings. Picking a preset resets the toggles below to its defaults; manually changing any toggle switches you to "Custom".';
-  for (const opt of PRESET_OPTIONS) {
-    const o = document.createElement('option');
-    o.value = opt.id;
-    o.textContent = opt.label;
-    o.title = opt.hint;
-    sel.appendChild(o);
-  }
-  sel.value = loadSettings().preset;
-  sel.addEventListener('change', () => {
-    const next = applyPreset(loadSettings(), sel.value as AiSettings['preset']);
-    saveSettings(next);
-    renderModelPicker();
-    renderToggleStrip();
-    renderCostMeter();
-  });
-  return sel;
 }
 
 // === Toggle strip rendering ===
