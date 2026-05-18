@@ -385,6 +385,21 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'readDoc',
+    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, colors, print-safety, reference-images, file-io, annotations.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          enum: ['curves', 'bosl2', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations'],
+          description: 'Subdoc name without the .md extension.',
+        },
+      },
+      required: ['name'],
+    },
+  },
+  {
     name: 'paintRegion',
     description: 'Paint the coplanar region containing a point with the given color. Best paint primitive when you know exactly where to click.',
     input_schema: {
@@ -806,6 +821,7 @@ const ALWAYS_AVAILABLE = new Set([
   // the model can't rewind state when the user has paused commits.
   'addSessionNote',
   'listSessionNotes',
+  'readDoc',
   'findFaces',
   'listComponents',
   'listLabels',
@@ -931,6 +947,26 @@ function detectLanguageMismatch(code: string): string | null {
  *  `tools.ts` to import the engine module statically. The function lives
  *  in `src/geometry/engine.ts` and is already loaded by the app shell at
  *  startup, so a require-style lookup via `window.partwright` is safe. */
+const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations']);
+
+/** Fetch a topic subdoc by short name. Same fetch path for Anthropic and
+ *  local providers — both run inside the user's browser tab, so this is
+ *  served by the dev server / Cloudflare Pages alongside the rest of the
+ *  static site. The model gets the raw markdown back as the tool result. */
+async function readSubdoc(name: string): Promise<{ content: string; isError: boolean }> {
+  if (!SUBDOC_NAMES.has(name)) {
+    return { content: `Unknown subdoc "${name}". Valid names: ${Array.from(SUBDOC_NAMES).join(', ')}.`, isError: true };
+  }
+  try {
+    const res = await fetch(`/ai/${name}.md`, { cache: 'force-cache' });
+    if (!res.ok) return { content: `Failed to fetch /ai/${name}.md: ${res.status} ${res.statusText}`, isError: true };
+    const text = await res.text();
+    return { content: text, isError: false };
+  } catch (err) {
+    return { content: `Failed to fetch /ai/${name}.md: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+  }
+}
+
 function readActiveLanguage(): 'manifold-js' | 'scad' | null {
   try {
     const w = window as unknown as { partwright?: { getActiveLanguage?: () => 'manifold-js' | 'scad' } };
@@ -1072,6 +1108,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.addSessionNote(input.text as string);
     case 'listSessionNotes':
       return api.listSessionNotes();
+    case 'readDoc':
+      return readSubdoc(input.name as string);
     case 'paintRegion':
       return api.paintRegion(input);
     case 'paintFaces':

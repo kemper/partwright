@@ -313,6 +313,16 @@ Available tools you'll use most:
   after a save. Use to verify the result.
 - getSessionContext: prior notes and version history. Call before
   starting work in an existing session.
+- readDoc({name}): fetch a topic-specific subdoc. Call BEFORE writing
+  code that touches its area — the subdoc has the API + examples this
+  prompt doesn't have room for. Available names:
+  curves (smooth shapes / lofts / airfoils),
+  bosl2 (OpenSCAD rounding / threads / gears),
+  colors (paintRegion + paint helpers),
+  print-safety (FDM rules before exporting STL/3MF),
+  reference-images (when the user attaches photos),
+  file-io (programmatic export/import),
+  annotations (when the user has drawn on the model).
 
 After a tool call returns, write ONE short sentence in chat ("Saved a
 smiley face — head with two eye sockets and a curved mouth.") and stop.
@@ -436,9 +446,13 @@ arbitrary — treat as mm unless the user says otherwise.
 - \`listVersions()\`, \`loadVersion({index})\`.
 - \`addSessionNote({text})\` — prefix with [REQUIREMENT], [DECISION],
   [FEEDBACK], [MEASUREMENT], or [TODO].
+- \`readDoc({name})\` — fetch a topic subdoc with full API + examples.
+  Call BEFORE writing code in that area. Names: curves, bosl2, colors,
+  print-safety, reference-images, file-io, annotations.
 - \`findFaces({box?, normal?, ...})\` — query triangles before painting.
 - \`paintRegion({point, color})\`, \`paintFaces({triangleIds, color})\`,
-  \`clearColors()\` — color assignment helpers.
+  \`clearColors()\` — color assignment helpers (read \`readDoc("colors")\`
+  before doing anything non-trivial — the picker has 10+ paint verbs).
 
 ## Example — a successful turn
 

@@ -8,9 +8,14 @@ overlay). Two kinds of annotations:
 - **Text labels** placed with the text sub-mode -- pinned to a 3D anchor on the surface and
   rendered as a screen-facing label (so they stay readable from any angle).
 
-Both kinds are **not part of the model** -- they're an ephemeral, in-memory visual layer that
+Both kinds are **not part of the model** -- they're a visual feedback layer that
 survives orbiting and appears in **every** rendered output: the live viewport, `renderView()`
 output, the AI Views tab, and the Elevations tab.
+
+**Lifecycle**: annotations are scoped to the current version. `runAndSave` /
+`saveVersion` snapshots the current annotations into the new version, and
+`loadVersion` / `navigateVersion` swap them back in when you return. Unsaved
+annotations are dropped when you switch versions -- same as unsaved code.
 
 When the user has annotated, treat the marks as a directional cue tied to the geometry under
 them. Inspect them via `listAnnotations()` / `listTextAnnotations()`, infer which feature is
@@ -46,7 +51,7 @@ Each stroke and text label records its own color/width/font-size at creation, so
 active settings only affects new annotations.
 
 Annotations are intentionally separate from `paintRegion` colorization:
-- **Annotations** are floating visual marks on top of the surface -- ephemeral, not exported,
-  do not lock the editor.
+- **Annotations** are floating visual marks on top of the surface -- per-version, included in
+  session exports (`.partwright.json`), but do not modify the model geometry or lock the editor.
 - **Color regions** (`paintRegion`) modify the model's vertex colors -- persist with the
-  version, export with the model, and lock the editor while present.
+  version, export with the model (GLB/3MF), and lock the editor while present.
