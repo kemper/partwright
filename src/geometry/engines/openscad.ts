@@ -2,6 +2,7 @@ import type { Engine, MeshResult, ValidateResult } from './types';
 import { parseBinarySTLToMeshGL } from './scadToManifold';
 import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
 import { scadDiagnostics } from '../sourceDiagnostics';
+import { ensureBosl2InMemfs, sourceUsesBosl2 } from '../bosl2Loader';
 import { getDefaultCircularSegments } from '../qualitySettings';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -121,6 +122,14 @@ export async function runScadAsync(source: string): Promise<MeshResult> {
   }
 
   try {
+    if (sourceUsesBosl2(source)) {
+      try {
+        await ensureBosl2InMemfs(instance);
+      } catch (e) {
+        const error = `Failed to load BOSL2 library: ${e instanceof Error ? e.message : String(e)}`;
+        return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
+      }
+    }
     instance.FS.writeFile('/in.scad', source);
 
     // Seed $fn from the user's quality preset. The script can still
@@ -230,6 +239,14 @@ export async function validateScadAsync(source: string): Promise<ValidateResult>
   }
 
   try {
+    if (sourceUsesBosl2(source)) {
+      try {
+        await ensureBosl2InMemfs(instance);
+      } catch (e) {
+        const error = `Failed to load BOSL2 library: ${e instanceof Error ? e.message : String(e)}`;
+        return { valid: false, error, diagnostics: scadDiagnostics(source, error) };
+      }
+    }
     instance.FS.writeFile('/v.scad', source);
     const code = instance.callMain([
       '--export-format=ast',
