@@ -1680,11 +1680,14 @@ async function main() {
       };
     }
 
-    const stats = computeGeometryStats(result.manifold, result.mesh!, elapsed, code);
+    // Reconstruct the Manifold if the Worker path returned manifold=null.
+    const mod = getModule();
+    const manifold = result.manifold ?? (mod && result.mesh ? mod.Manifold.ofMesh(result.mesh) : null);
+    const stats = computeGeometryStats(manifold, result.mesh!, elapsed, code);
     return {
       geometryData: stats,
       meshData: result.mesh,
-      manifold: result.manifold,
+      manifold,
     };
   }
 
@@ -5527,10 +5530,19 @@ async function main() {
       currentMeshData = result.mesh;
       // Release the previous Manifold's WASM-heap memory before overwriting.
       // Manifold objects live outside the JS heap and require manual .delete().
-      if (currentManifold && currentManifold !== result.manifold && typeof currentManifold.delete === 'function') {
+      if (currentManifold && typeof currentManifold.delete === 'function') {
         try { currentManifold.delete(); } catch { /* already deleted */ }
       }
-      currentManifold = result.manifold;
+      // The geometry Worker returns manifold=null (live WASM objects can't
+      // cross thread boundaries). Reconstruct a queryable Manifold from the
+      // transferred mesh data so sliceAtZ, getBoundingBox, decompose, etc.
+      // keep working without changes on the main thread.
+      if (result.manifold) {
+        currentManifold = result.manifold;
+      } else {
+        const mod = getModule();
+        currentManifold = (mod && result.mesh) ? mod.Manifold.ofMesh(result.mesh) : null;
+      }
       // Capture the labelled-construction map for this run. byLabel
       // region descriptors look up their triangles here; rehydrating a
       // saved version re-runs the code first, which rebuilds the map.

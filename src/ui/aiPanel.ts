@@ -3,7 +3,8 @@
 // input row, the cost meter, and the compact button. State lives in the
 // ai/* modules; this file is mostly DOM wiring.
 
-import { runTurn, totalCost, totalTokensEstimate, estimateCachedPrefixTokens } from '../ai/chatLoop';
+import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens } from '../ai/chatLoop';
+import { runTurn, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
@@ -1356,6 +1357,9 @@ function queueCurrentInput(): void {
   if (text.length > 0) blocks.push({ type: 'text', text });
   for (const img of state.pendingImages) blocks.push({ type: 'image', source: img });
   state.queuedBlocks.push(...blocks);
+  // Relay newly-queued blocks into the Worker so its drain hook picks them
+  // up at the next tool-round boundary without waiting for end-of-turn.
+  if (state.inFlight) pushQueuedBlocks(blocks);
   inputEl.value = '';
   state.pendingImages = [];
   renderPendingImages();

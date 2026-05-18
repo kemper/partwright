@@ -54,6 +54,11 @@ function absoluteUrls(): Plugin {
 export default defineConfig({
   base: '/',
   plugins: [tailwindcss(), absoluteUrls(), markdownCharset()],
+  worker: {
+    // ES module Workers support code-splitting and are required when
+    // Worker files import other modules (agentWorker, engineWorker).
+    format: 'es',
+  },
   optimizeDeps: {
     exclude: ['manifold-3d']
   },

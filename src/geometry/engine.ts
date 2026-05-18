@@ -3,6 +3,8 @@ import type { Engine, Language, ValidateResult } from './engines/types';
 import { DEFAULT_LANGUAGE, isLanguage } from './engines/types';
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
 import { openscadEngine, runScadAsync, validateScadAsync } from './engines/openscad';
+import { getActiveImports } from '../import/importedMesh';
+import { getDefaultCircularSegments } from './qualitySettings';
 
 export type { Language };
 export { isLanguage, DEFAULT_LANGUAGE };
@@ -24,13 +26,16 @@ export function setActiveLanguage(lang: Language): void {
 }
 
 /** Initialize the specified engine (defaults to the manifold-js engine, which
- * is always eager-loaded since OpenSCAD needs it for the round-trip). */
+ * is always eager-loaded since OpenSCAD needs it for the round-trip).
+ * Also boots the geometry Worker so it's warm before first code execution. */
 export async function initEngine(lang: Language = DEFAULT_LANGUAGE): Promise<void> {
   // Always make sure manifold-js is ready (exports + slicing + ofMesh rely on it).
   await manifoldJsEngine.init();
   if (lang !== 'manifold-js') {
     await engines[lang].init();
   }
+  // Boot the geometry Worker eagerly so it's warm before the first run.
+  initEngineWorker();
 }
 
 /** The manifold-3d module — used by crossSection.ts, exports, and the SCAD round-trip. */
@@ -44,7 +49,10 @@ function pickLang(lang?: Language): Language {
   return activeLanguage;
 }
 
-/** Synchronous execution — works for manifold-js. For SCAD, use executeCodeAsync(). */
+/** Synchronous execution — works for manifold-js only, stays on the main
+ *  thread. Use for cases that need the live Manifold object immediately
+ *  (e.g. phantom/reference geometry that inspects volume/bbox inline).
+ *  For all other code execution use executeCodeAsync(). */
 export function executeCode(source: string, lang?: Language): MeshResult {
   const l = pickLang(lang);
   if (l === 'scad') {
@@ -65,14 +73,114 @@ export function executeCode(source: string, lang?: Language): MeshResult {
   return engine.run(source);
 }
 
-/** Async execution — works for all engines. SCAD creates a fresh WASM instance per run. */
+// ── Geometry Worker client ──────────────────────────────────────────────────
+
+let engineWorker: Worker | null = null;
+let workerReadyResolve: (() => void) | null = null;
+const workerReady: Promise<void> = new Promise(r => { workerReadyResolve = r; });
+let callIdCounter = 0;
+
+const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void }>();
+const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => void; reject: (e: Error) => void }>();
+
+function initEngineWorker(): void {
+  if (engineWorker) return;
+  engineWorker = new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' });
+  engineWorker.onmessage = handleEngineWorkerMessage;
+  engineWorker.onerror = (ev) => {
+    // Reject all pending calls if the Worker crashes.
+    const err = new Error(`Geometry Worker crashed: ${ev.message}`);
+    for (const p of pendingExecutions.values()) p.reject(err);
+    for (const p of pendingValidations.values()) p.reject(err);
+    pendingExecutions.clear();
+    pendingValidations.clear();
+    engineWorker = null;
+    // eslint-disable-next-line no-console
+    console.error('[EngineWorker] crashed — next call will restart it', ev.message);
+  };
+  engineWorker.postMessage({ type: 'init' });
+}
+
+function handleEngineWorkerMessage(event: MessageEvent): void {
+  const msg = event.data as { type: string } & Record<string, unknown>;
+
+  if (msg.type === 'ready') {
+    workerReadyResolve?.();
+    workerReadyResolve = null;
+    return;
+  }
+
+  if (msg.type === 'execute_result') {
+    const callId = msg.callId as string;
+    const pending = pendingExecutions.get(callId);
+    if (!pending) return;
+    pendingExecutions.delete(callId);
+
+    const mesh = msg.mesh as MeshResult['mesh'];
+    const labelMapEntries = msg.labelMapEntries as [string, number[]][] | null;
+    const result: MeshResult = {
+      mesh,
+      manifold: null, // live WASM object can't cross threads; caller reconstructs via ofMesh()
+      error: msg.error as string | null,
+      diagnostics: msg.diagnostics as MeshResult['diagnostics'],
+      labelMap: labelMapEntries
+        ? new Map(labelMapEntries.map(([k, v]) => [k, new Set(v)]))
+        : undefined,
+    };
+    pending.resolve(result);
+    return;
+  }
+
+  if (msg.type === 'validate_result') {
+    const callId = msg.callId as string;
+    const pending = pendingValidations.get(callId);
+    if (!pending) return;
+    pendingValidations.delete(callId);
+    pending.resolve(msg.result as ValidateResult);
+    return;
+  }
+
+  if (msg.type === 'error') {
+    const callId = msg.callId as string | null;
+    const err = new Error(msg.message as string);
+    if (callId) {
+      pendingExecutions.get(callId)?.reject(err);
+      pendingExecutions.delete(callId ?? '');
+      pendingValidations.get(callId)?.reject(err);
+      pendingValidations.delete(callId ?? '');
+    }
+  }
+}
+
+/** Async execution via the geometry Worker. Returns mesh data with
+ *  manifold=null; callers that need the live Manifold should reconstruct
+ *  it with getModule().Manifold.ofMesh(result.mesh). */
 export async function executeCodeAsync(source: string, lang?: Language): Promise<MeshResult> {
   const l = pickLang(lang);
-  if (l === 'scad') {
-    return runScadAsync(source);
-  }
-  // manifold-js is sync — just wrap it
-  return executeCode(source, l);
+
+  // Ensure the Worker is booted.
+  initEngineWorker();
+  await workerReady;
+
+  const callId = `exec-${++callIdCounter}`;
+
+  // Include the currently-active imports so user code can access api.imports.
+  const imports = getActiveImports().map(m => ({
+    id:             m.id,
+    filename:       m.filename,
+    format:         m.format,
+    numProp:        m.numProp,
+    numVert:        m.numVert,
+    numTri:         m.numTri,
+    // Copy typed arrays so the main thread retains ownership.
+    vertProperties: m.vertProperties.slice(),
+    triVerts:       m.triVerts.slice(),
+  }));
+
+  return new Promise<MeshResult>((resolve, reject) => {
+    pendingExecutions.set(callId, { resolve, reject });
+    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments() });
+  });
 }
 
 /** Ensure the specified engine is initialized. Async; use to pre-warm SCAD. */
@@ -82,7 +190,7 @@ export async function ensureEngineReady(lang: Language): Promise<void> {
   }
 }
 
-/** Sync validation — works for manifold-js. */
+/** Sync validation — works for manifold-js (cheap parse check). */
 export function validateCode(source: string, lang?: Language): ValidateResult {
   const l = pickLang(lang);
   if (l === 'scad') {
@@ -95,11 +203,19 @@ export function validateCode(source: string, lang?: Language): ValidateResult {
   return engine.validate(source);
 }
 
-/** Async validation — works for all engines. */
+/** Async validation — works for all engines. For manifold-js the syntax
+ *  check is cheap enough to run on the main thread; SCAD uses the Worker. */
 export async function validateCodeAsync(source: string, lang?: Language): Promise<ValidateResult> {
   const l = pickLang(lang);
   if (l === 'scad') {
-    return validateScadAsync(source);
+    // Route SCAD through the Worker so its Emscripten init doesn't block.
+    initEngineWorker();
+    await workerReady;
+    const callId = `val-${++callIdCounter}`;
+    return new Promise<ValidateResult>((resolve, reject) => {
+      pendingValidations.set(callId, { resolve, reject });
+      engineWorker!.postMessage({ type: 'validate', callId, code: source, lang: l });
+    });
   }
   return validateCode(source, l);
 }
