@@ -39,11 +39,16 @@ let visible = true;
 const listeners: ChangeListener[] = [];
 const visibilityListeners: ChangeListener[] = [];
 const redoListeners: ChangeListener[] = [];
+const clearSnapshotListeners: ChangeListener[] = [];
 
 // Redo stack — regions removed via `removeLastRegion()`. Any other mutation
 // (add, clear, deserialize) drops the stack so redo can never resurrect a
 // region into a state where the user wouldn't expect it.
 let regionRedoStack: ColorRegion[] = [];
+
+// Clear snapshot — saved when clearRegions() is called. Nulled when a new
+// region is added so undo-clear is only valid until the next paint operation.
+let clearSnapshot: ColorRegion[] | null = null;
 
 function notify(): void {
   for (const fn of listeners) fn();
@@ -55,6 +60,10 @@ function notifyVisibility(): void {
 
 function notifyRedo(): void {
   for (const fn of redoListeners) fn();
+}
+
+function notifyClearSnapshot(): void {
+  for (const fn of clearSnapshotListeners) fn();
 }
 
 function clearRedoStack(): void {
@@ -86,6 +95,28 @@ export function onRedoChange(fn: ChangeListener): () => void {
     const i = redoListeners.indexOf(fn);
     if (i >= 0) redoListeners.splice(i, 1);
   };
+}
+
+export function onClearSnapshotChange(fn: ChangeListener): () => void {
+  clearSnapshotListeners.push(fn);
+  return () => {
+    const i = clearSnapshotListeners.indexOf(fn);
+    if (i >= 0) clearSnapshotListeners.splice(i, 1);
+  };
+}
+
+export function canUndoClear(): boolean {
+  return clearSnapshot !== null;
+}
+
+export function undoClear(): void {
+  if (!clearSnapshot) return;
+  regions = [...clearSnapshot];
+  nextOrder = regions.reduce((max, r) => Math.max(max, r.order + 1), 1);
+  clearSnapshot = null;
+  clearRedoStack();
+  notify();
+  notifyClearSnapshot();
 }
 
 export function isVisible(): boolean {
@@ -127,6 +158,10 @@ export function addRegion(
   };
   regions.push(region);
   clearRedoStack();
+  if (clearSnapshot !== null) {
+    clearSnapshot = null;
+    notifyClearSnapshot();
+  }
   notify();
   return region;
 }
@@ -192,10 +227,12 @@ export function updateRegionColor(id: number, color: [number, number, number]): 
 
 export function clearRegions(): void {
   if (regions.length === 0) return;
+  clearSnapshot = [...regions];
   regions = [];
   nextOrder = 1;
   clearRedoStack();
   notify();
+  notifyClearSnapshot();
 }
 
 /** Build triColors (Uint8Array, numTri*3 RGB) from current regions.

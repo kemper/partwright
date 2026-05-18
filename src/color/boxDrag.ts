@@ -1,8 +1,10 @@
-// Box drag — interactive oriented-box paint tool. Spawns a translucent box
-// in the viewport sized to the model's bounding box, gives the user a
-// transform gizmo (translate / rotate / scale) to position it, and commits
-// every triangle whose centroid is inside the box when the user clicks
-// "Paint inside box".
+// Shape drag — interactive paint-by-shape tool. Spawns a translucent shape
+// (box, sphere, cylinder, or cone) in the viewport, gives the user a transform
+// gizmo to position/rotate/scale it, and paints every triangle whose centroid
+// is inside the shape when the user clicks "Paint inside shape".
+//
+// After painting the shape fades to low opacity so the user can see the result.
+// It brightens again the moment the user hovers a gizmo handle or starts a drag.
 
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
@@ -10,16 +12,20 @@ import type { MeshData } from '../geometry/types';
 import { getScene, getCamera, getRenderer, getMeshGroup, setGizmoLock } from '../renderer/viewport';
 import { addRegion, getRegions } from './regions';
 import { getColor, getCurrentMesh } from './paintMode';
-import { findBoxTriangles, type OrientedBox } from './boxPaint';
+import { findShapeTriangles, type OrientedBox, type ShapeType } from './boxPaint';
 import { meshBounds } from './slabPaint';
 
+export type { ShapeType };
 export type BoxMode = 'translate' | 'rotate' | 'scale';
 
 let active = false;
 let mode: BoxMode = 'translate';
+let shapeType: ShapeType = 'box';
+let boxCommitted = false; // true after a paint — dims the shape until next interaction
+
 let proxy: THREE.Object3D | null = null; // invisible — TransformControls attaches here
-let boxMesh: THREE.Mesh | null = null;   // translucent box rendered in the viewport
-let boxEdges: THREE.LineSegments | null = null;
+let shapeMesh: THREE.Mesh | null = null; // translucent shape rendered in the viewport
+let shapeEdges: THREE.LineSegments | null = null;
 let gizmo: TransformControls | null = null;
 let gizmoHelper: THREE.Object3D | null = null;
 
@@ -47,6 +53,18 @@ export function setBoxMode(m: BoxMode): void {
 
 export function getBoxMode(): BoxMode { return mode; }
 
+export function getShapeType(): ShapeType { return shapeType; }
+
+export function setShapeType(s: ShapeType): void {
+  if (shapeType === s) return;
+  shapeType = s;
+  boxCommitted = false;
+  if (active) {
+    rebuildShapeVisual();
+    notifyChange();
+  }
+}
+
 export function getBox(): OrientedBox {
   if (!proxy) return { center: [0, 0, 0], size: [1, 1, 1], quaternion: [0, 0, 0, 1] };
   return {
@@ -56,9 +74,9 @@ export function getBox(): OrientedBox {
   };
 }
 
-/** Programmatically set the box transform. Use for numeric-input edits. */
+/** Programmatically set the box transform (from numeric-input edits). */
 export function setBox(box: Partial<OrientedBox>): void {
-  if (!proxy || !boxMesh || !boxEdges) return;
+  if (!proxy || !shapeMesh || !shapeEdges) return;
   if (box.center) proxy.position.set(box.center[0], box.center[1], box.center[2]);
   if (box.size) proxy.scale.set(Math.max(0.001, box.size[0]), Math.max(0.001, box.size[1]), Math.max(0.001, box.size[2]));
   if (box.quaternion) proxy.quaternion.set(box.quaternion[0], box.quaternion[1], box.quaternion[2], box.quaternion[3]);
@@ -69,13 +87,9 @@ export function setBox(box: Partial<OrientedBox>): void {
 export function activate(): void {
   if (active) return;
   active = true;
-
-  // Orbit stays enabled — the gizmo locks it only while a handle is hovered
-  // or being dragged (see buildGizmo's axis-changed / dragging-changed
-  // handlers). Clicks outside the gizmo and box still rotate the camera.
-  buildBox();
+  buildShape();
   buildGizmo();
-  notifyChange(); // populate the panel's numeric readouts with initial values
+  notifyChange();
 }
 
 export function deactivate(): void {
@@ -83,17 +97,16 @@ export function deactivate(): void {
   active = false;
   setGizmoLock(false);
   disposeGizmo();
-  disposeBox();
+  disposeShape();
+  boxCommitted = false;
 }
 
 export function onMeshChanged(): void {
   if (!active) return;
-  // Reset the box to fit the new mesh, but preserve the user's chosen mode.
-  disposeBox();
-  buildBox();
+  disposeShape();
+  buildShape();
   if (gizmo && proxy) {
     gizmo.attach(proxy);
-    // Re-add the gizmo helper in case the mesh swap reset the scene.
     if (gizmoHelper && !gizmoHelper.parent) getScene().add(gizmoHelper);
   }
   syncVisuals();
@@ -107,9 +120,6 @@ function defaultBoxFor(mesh: MeshData): { center: THREE.Vector3; size: THREE.Vec
     (bb.min[1] + bb.max[1]) / 2,
     (bb.min[2] + bb.max[2]) / 2,
   );
-  // Default size = 110% of the model bbox so the box fully contains the
-  // model on activation. A "Paint" with default settings paints everything;
-  // the user shrinks/rotates/moves the box from there.
   const size = new THREE.Vector3(
     Math.max(0.1, (bb.max[0] - bb.min[0]) * 1.1),
     Math.max(0.1, (bb.max[1] - bb.min[1]) * 1.1),
@@ -118,7 +128,16 @@ function defaultBoxFor(mesh: MeshData): { center: THREE.Vector3; size: THREE.Vec
   return { center, size };
 }
 
-function buildBox(): void {
+function makeShapeGeometry(shape: ShapeType): THREE.BufferGeometry {
+  switch (shape) {
+    case 'sphere':   return new THREE.SphereGeometry(0.5, 16, 10);
+    case 'cylinder': return new THREE.CylinderGeometry(0.5, 0.5, 1, 24);
+    case 'cone':     return new THREE.ConeGeometry(0.5, 1, 24);
+    default:         return new THREE.BoxGeometry(1, 1, 1);
+  }
+}
+
+function buildShape(): void {
   const mesh = getCurrentMesh();
   if (!mesh) return;
 
@@ -129,10 +148,7 @@ function buildBox(): void {
   proxy.scale.copy(size);
   getMeshGroup().add(proxy);
 
-  // Box mesh is a unit cube; we scale it via the proxy. The proxy ALSO scales
-  // the gizmo handles unfortunately — so we make the renderable box a child
-  // of the proxy and apply our own visual scale to keep things clean.
-  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const geo = makeShapeGeometry(shapeType);
   const hex = colorToHex(getColor());
   const mat = new THREE.MeshBasicMaterial({
     color: hex,
@@ -141,31 +157,47 @@ function buildBox(): void {
     side: THREE.DoubleSide,
     depthWrite: false,
   });
-  boxMesh = new THREE.Mesh(geo, mat);
-  boxMesh.name = 'paint-box';
-  boxMesh.renderOrder = 998;
-  proxy.add(boxMesh);
+  shapeMesh = new THREE.Mesh(geo, mat);
+  shapeMesh.name = 'paint-shape';
+  shapeMesh.renderOrder = 998;
+  proxy.add(shapeMesh);
 
   const edgeGeo = new THREE.EdgesGeometry(geo);
   const edgeMat = new THREE.LineBasicMaterial({ color: hex, transparent: true, opacity: 0.8, depthTest: false });
-  boxEdges = new THREE.LineSegments(edgeGeo, edgeMat);
-  boxEdges.name = 'paint-box-edges';
-  boxEdges.renderOrder = 999;
-  proxy.add(boxEdges);
+  shapeEdges = new THREE.LineSegments(edgeGeo, edgeMat);
+  shapeEdges.name = 'paint-shape-edges';
+  shapeEdges.renderOrder = 999;
+  proxy.add(shapeEdges);
 }
 
-function disposeBox(): void {
-  if (boxMesh) {
-    boxMesh.geometry.dispose();
-    (boxMesh.material as THREE.Material).dispose();
-    boxMesh.parent?.remove(boxMesh);
-    boxMesh = null;
+/** Swap out the visual geometry for the new shape type while preserving position/scale/rotation. */
+function rebuildShapeVisual(): void {
+  if (!proxy || !shapeMesh || !shapeEdges) return;
+  const oldGeo = shapeMesh.geometry;
+  const oldEdgeGeo = shapeEdges.geometry;
+
+  const newGeo = makeShapeGeometry(shapeType);
+  shapeMesh.geometry = newGeo;
+
+  const newEdgeGeo = new THREE.EdgesGeometry(newGeo);
+  shapeEdges.geometry = newEdgeGeo;
+
+  oldGeo.dispose();
+  oldEdgeGeo.dispose();
+}
+
+function disposeShape(): void {
+  if (shapeMesh) {
+    shapeMesh.geometry.dispose();
+    (shapeMesh.material as THREE.Material).dispose();
+    shapeMesh.parent?.remove(shapeMesh);
+    shapeMesh = null;
   }
-  if (boxEdges) {
-    boxEdges.geometry.dispose();
-    (boxEdges.material as THREE.Material).dispose();
-    boxEdges.parent?.remove(boxEdges);
-    boxEdges = null;
+  if (shapeEdges) {
+    shapeEdges.geometry.dispose();
+    (shapeEdges.material as THREE.Material).dispose();
+    shapeEdges.parent?.remove(shapeEdges);
+    shapeEdges = null;
   }
   if (proxy) {
     proxy.parent?.remove(proxy);
@@ -181,8 +213,6 @@ function buildGizmo(): void {
   gizmo.setMode(mode);
   gizmo.setSize(0.8);
   gizmo.attach(proxy);
-  // The visual helper is a separate Object3D returned by getHelper(); the
-  // TransformControls itself is event-only in the modern three.js API.
   gizmoHelper = gizmo.getHelper();
   getScene().add(gizmoHelper);
 
@@ -190,14 +220,12 @@ function buildGizmo(): void {
     syncVisuals();
     notifyChange();
   });
-  // Lock orbit the moment the cursor enters a handle (axis-changed fires
-  // before pointerdown) so OrbitControls never starts rotating, and again
-  // explicitly during the drag itself for any pointer that arrives without
-  // a hover (touch / pen).
   gizmo.addEventListener('axis-changed', (e) => {
+    if (e.value !== null) restoreFromCommitted();
     setGizmoLock(e.value !== null || gizmo!.dragging);
   });
   gizmo.addEventListener('dragging-changed', (e) => {
+    if (e.value === true) restoreFromCommitted();
     setGizmoLock(e.value === true || gizmo!.axis !== null);
   });
 }
@@ -214,38 +242,59 @@ function disposeGizmo(): void {
   }
 }
 
-/** Sync any visual props that depend on current state (e.g. paint color). */
-function syncVisuals(): void {
-  if (!boxMesh || !boxEdges) return;
-  const hex = colorToHex(getColor());
-  (boxMesh.material as THREE.MeshBasicMaterial).color.setHex(hex);
-  (boxEdges.material as THREE.LineBasicMaterial).color.setHex(hex);
+function restoreFromCommitted(): void {
+  if (!boxCommitted) return;
+  boxCommitted = false;
+  applyOpacity(0.18, 0.8);
 }
 
-/** Refresh visuals after the active paint color changed. */
+function applyOpacity(meshOpacity: number, edgeOpacity: number): void {
+  if (shapeMesh) (shapeMesh.material as THREE.MeshBasicMaterial).opacity = meshOpacity;
+  if (shapeEdges) (shapeEdges.material as THREE.LineBasicMaterial).opacity = edgeOpacity;
+}
+
+function syncVisuals(): void {
+  if (!shapeMesh || !shapeEdges) return;
+  const hex = colorToHex(getColor());
+  (shapeMesh.material as THREE.MeshBasicMaterial).color.setHex(hex);
+  (shapeEdges.material as THREE.LineBasicMaterial).color.setHex(hex);
+}
+
 export function refreshColor(): void {
   if (active) syncVisuals();
 }
 
-/** Commit the box's current footprint as a paint region. Returns the painted
- *  triangle count, or 0 if the box was empty or no mesh was loaded. */
+/** Commit the shape's current footprint as a paint region. Returns the painted
+ *  triangle count, or 0 if the shape was empty or no mesh was loaded. */
 export function commitBox(): number {
   const mesh = getCurrentMesh();
   if (!mesh || !proxy) return 0;
 
   const box = getBox();
-  const triangles = findBoxTriangles(mesh, box);
+  const triangles = findShapeTriangles(mesh, shapeType, box);
   if (triangles.size === 0) return 0;
 
   const existingCount = getRegions().length;
   addRegion(
-    `Box ${existingCount + 1}`,
+    `${shapeLabel(shapeType)} ${existingCount + 1}`,
     [...getColor()] as [number, number, number],
-    'slab', // reuse the 'slab' source bucket — region badges treat it the same
+    'slab',
     { kind: 'box', center: box.center, size: box.size, quaternion: box.quaternion },
     triangles,
   );
+
+  // Dim the shape so the user can see the painted result underneath.
+  boxCommitted = true;
+  applyOpacity(0.05, 0.25);
+
   return triangles.size;
+}
+
+function shapeLabel(s: ShapeType): string {
+  if (s === 'sphere')   return 'Sphere';
+  if (s === 'cylinder') return 'Cylinder';
+  if (s === 'cone')     return 'Cone';
+  return 'Box';
 }
 
 function colorToHex(color: [number, number, number]): number {

@@ -12,21 +12,27 @@ import {
   getBucketTolerance,
   setBrushRadius,
   getBrushRadius,
+  setBrushShape,
+  getBrushShape,
   setSlabAxis,
   getSlabAxis,
   previewTriangles,
   type PaintTool,
+  type BrushShape,
 } from './paintMode';
 import {
   getRegions,
   onChange as onRegionsChange,
   onRedoChange,
   onVisibilityChange,
+  onClearSnapshotChange,
   isVisible as isPaintVisible,
   setVisible as setPaintVisible,
   removeLastRegion,
   redoLastRegion,
   canRedoRegion,
+  canUndoClear,
+  undoClear,
   clearRegions,
   removeRegion,
   setRegionVisibility,
@@ -34,7 +40,7 @@ import {
 import { forceDeactivate as forceDeactivateAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
-import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, type BoxMode } from './boxDrag';
+import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, setShapeType, getShapeType, type BoxMode, type ShapeType } from './boxDrag';
 
 const PRESET_COLORS: [number, number, number][] = [
   // Warm
@@ -65,6 +71,8 @@ let regionCountBadge: HTMLElement | null = null;
 let visibilityBtn: HTMLButtonElement | null = null;
 let undoBtn: HTMLButtonElement | null = null;
 let redoBtn: HTMLButtonElement | null = null;
+let undoClearBtn: HTMLButtonElement | null = null;
+let paintShapeBtn: HTMLButtonElement | null = null; // "Paint inside shape" action button
 let toolButtons: Partial<Record<PaintTool, HTMLButtonElement>> = {};
 let bucketControls: HTMLElement | null = null;
 let brushControls: HTMLElement | null = null;
@@ -101,10 +109,12 @@ export function initPaintUI(controlsContainer: HTMLElement): void {
   });
   onRedoChange(updateRedoButton);
   onVisibilityChange(updateVisibilityButton);
+  onClearSnapshotChange(updateUndoClearButton);
   updateBadge();
   updateUndoButton();
   updateRedoButton();
   updateVisibilityButton();
+  updateUndoClearButton();
 }
 
 function togglePaintMode(): void {
@@ -161,7 +171,7 @@ function createPickerPanel(): HTMLElement {
   toolRow.appendChild(createToolButton('bucket', '\u{1FAA3} Bucket', 'Flood-fill across coplanar faces'));
   toolRow.appendChild(createToolButton('brush', '\u{1F58C}\uFE0F Brush', 'Paint individual triangles (drag to paint)'));
   toolRow.appendChild(createToolButton('slab', '\u{1F9F1} Slab', 'Paint all faces inside an axis-aligned range'));
-  toolRow.appendChild(createToolButton('box', '\u{1F4E6} Box', 'Paint everything inside a positionable, rotatable, scalable 3D box'));
+  toolRow.appendChild(createToolButton('box', '\u25C6 Shape', 'Paint everything inside a positionable, rotatable, scalable 3D shape (box, sphere, cylinder, or cone)'));
   panel.appendChild(toolRow);
 
   // === Color picker ===
@@ -245,13 +255,13 @@ function createPickerPanel(): HTMLElement {
 
   visibilityBtn = document.createElement('button');
   visibilityBtn.className = 'px-2 py-1 rounded text-[10px] bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600/60 transition-colors';
-  visibilityBtn.title = 'Toggle paint region visibility in viewport (exports keep colors regardless)';
+  visibilityBtn.title = 'Toggle all paint region visibility in viewport (exports keep colors regardless)';
   visibilityBtn.addEventListener('click', () => { setPaintVisible(!isPaintVisible()); });
   actions.appendChild(visibilityBtn);
 
   undoBtn = document.createElement('button');
   undoBtn.className = 'px-2 py-1 rounded text-[10px] bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600/60 transition-colors opacity-40 cursor-not-allowed';
-  undoBtn.textContent = 'Undo paint';
+  undoBtn.textContent = 'Undo';
   undoBtn.title = 'Remove the most recent paint region';
   undoBtn.disabled = true;
   undoBtn.addEventListener('click', () => { removeLastRegion(); });
@@ -259,11 +269,19 @@ function createPickerPanel(): HTMLElement {
 
   redoBtn = document.createElement('button');
   redoBtn.className = 'px-2 py-1 rounded text-[10px] bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600/60 transition-colors opacity-40 cursor-not-allowed';
-  redoBtn.textContent = 'Redo paint';
+  redoBtn.textContent = 'Redo';
   redoBtn.title = 'Restore the most recently undone paint region';
   redoBtn.disabled = true;
   redoBtn.addEventListener('click', () => { redoLastRegion(); });
   actions.appendChild(redoBtn);
+
+  undoClearBtn = document.createElement('button');
+  undoClearBtn.className = 'px-2 py-1 rounded text-[10px] bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600/60 transition-colors opacity-40 cursor-not-allowed';
+  undoClearBtn.textContent = 'Undo clear';
+  undoClearBtn.title = 'Restore all regions removed by the last Clear (only available until the next paint)';
+  undoClearBtn.disabled = true;
+  undoClearBtn.addEventListener('click', () => { undoClear(); });
+  actions.appendChild(undoClearBtn);
 
   const clearBtn = document.createElement('button');
   clearBtn.className = 'px-2 py-1 rounded text-[10px] bg-red-700/60 text-red-200 hover:bg-red-600/60 transition-colors';
@@ -444,6 +462,35 @@ function createBrushControls(): HTMLElement {
   help.textContent = 'Single triangle \u2190\u2014\u2014\u2192 Wider brush';
   wrap.appendChild(help);
 
+  // Brush shape selector
+  const shapeLabel = document.createElement('div');
+  shapeLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+  shapeLabel.textContent = 'Brush shape';
+  wrap.appendChild(shapeLabel);
+
+  const shapeRow = document.createElement('div');
+  shapeRow.className = 'grid grid-cols-3 gap-1';
+  const brushShapeButtons: Partial<Record<BrushShape, HTMLButtonElement>> = {};
+  for (const [s, icon, tip] of [
+    ['circle',  '\u25cf Circle',  'Circular brush (sphere test in 3D)'],
+    ['square',  '\u25a0 Square',  'Cubic brush (axis-aligned box test in 3D)'],
+    ['diamond', '\u25c6 Diamond', 'Diamond brush (L1 distance test in 3D)'],
+  ] as const) {
+    const btn = document.createElement('button');
+    btn.textContent = icon;
+    btn.title = tip;
+    btn.className = axisButtonClass(s === getBrushShape());
+    btn.addEventListener('click', () => {
+      setBrushShape(s);
+      for (const [k, b] of Object.entries(brushShapeButtons)) {
+        if (b) b.className = axisButtonClass(k === getBrushShape());
+      }
+    });
+    shapeRow.appendChild(btn);
+    brushShapeButtons[s] = btn;
+  }
+  wrap.appendChild(shapeRow);
+
   return wrap;
 }
 
@@ -515,10 +562,41 @@ function createBoxControls(): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'mt-2 pt-2 border-t border-zinc-700 hidden';
 
-  // Mode buttons — translate / rotate / scale, drives the gizmo.
+  // Shape type selector
+  const shapeTypeLabel = document.createElement('div');
+  shapeTypeLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium';
+  shapeTypeLabel.textContent = 'Shape';
+  wrap.appendChild(shapeTypeLabel);
+
+  const shapeRow = document.createElement('div');
+  shapeRow.className = 'grid grid-cols-4 gap-1 mb-2';
+  const shapeBtns: Partial<Record<ShapeType, HTMLButtonElement>> = {};
+  for (const [s, label, tip] of [
+    ['box',      '□ Box',    'Oriented bounding box'],
+    ['sphere',   '○ Sphere', 'Sphere centered on the gizmo origin; size X = diameter'],
+    ['cylinder', '⊖ Cyl',   'Cylinder aligned to local Y; size X = diameter, Y = height'],
+    ['cone',     '△ Cone',  'Cone: apex at top, base at bottom; size X = base diameter, Y = height'],
+  ] as const) {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    btn.title = tip;
+    btn.className = axisButtonClass(s === getShapeType());
+    btn.addEventListener('click', () => {
+      setShapeType(s);
+      for (const [k, b] of Object.entries(shapeBtns)) {
+        if (b) b.className = axisButtonClass(k === getShapeType());
+      }
+      updatePaintShapeButton();
+    });
+    shapeRow.appendChild(btn);
+    shapeBtns[s] = btn;
+  }
+  wrap.appendChild(shapeRow);
+
+  // Transform mode buttons — translate / rotate / scale, drives the gizmo.
   const modeLabel = document.createElement('div');
   modeLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium';
-  modeLabel.textContent = 'Box transform';
+  modeLabel.textContent = 'Transform';
   wrap.appendChild(modeLabel);
 
   const modeRow = document.createElement('div');
@@ -547,7 +625,6 @@ function createBoxControls(): HTMLElement {
   const centerInputs = makeVectorRow(grid, 'Pos',  -1e6, 1e6, 0.1, (v) => setBox({ center: v }));
   const sizeInputs   = makeVectorRow(grid, 'Size',  0.001, 1e6, 0.1, (v) => setBox({ size: v }));
   const rotInputs    = makeVectorRow(grid, 'Rot°', -360, 360, 1, (v) => {
-    // Convert Euler degrees -> quaternion (XYZ order).
     const ex = v[0] * Math.PI / 180;
     const ey = v[1] * Math.PI / 180;
     const ez = v[2] * Math.PI / 180;
@@ -556,26 +633,25 @@ function createBoxControls(): HTMLElement {
   });
   wrap.appendChild(grid);
 
-  // Action: paint inside the current box.
+  // Action: paint inside the current shape.
   const actionRow = document.createElement('div');
   actionRow.className = 'mt-2 flex flex-col gap-1';
 
-  const paintBtn = document.createElement('button');
-  paintBtn.className = 'w-full px-2 py-1.5 rounded text-[11px] bg-blue-500/30 text-blue-200 hover:bg-blue-500/50 border border-blue-500/50 transition-colors font-medium';
-  paintBtn.textContent = 'Paint inside box';
-  paintBtn.title = 'Commit every triangle inside the box as a new color region';
-  paintBtn.addEventListener('click', () => {
+  paintShapeBtn = document.createElement('button');
+  paintShapeBtn.className = 'w-full px-2 py-1.5 rounded text-[11px] bg-blue-500/30 text-blue-200 hover:bg-blue-500/50 border border-blue-500/50 transition-colors font-medium';
+  updatePaintShapeButton();
+  paintShapeBtn.addEventListener('click', () => {
     const painted = commitBox();
     if (painted === 0) {
-      paintBtn.textContent = 'No triangles in box';
-      window.setTimeout(() => { paintBtn.textContent = 'Paint inside box'; }, 1200);
+      paintShapeBtn!.textContent = 'No triangles in shape';
+      window.setTimeout(() => { if (paintShapeBtn) updatePaintShapeButton(); }, 1200);
     }
   });
-  actionRow.appendChild(paintBtn);
+  actionRow.appendChild(paintShapeBtn);
 
   const help = document.createElement('div');
   help.className = 'text-[10px] text-zinc-500 leading-relaxed';
-  help.textContent = 'Drag the gizmo handles in the viewport, or edit values above. The box is rendered in the active paint color.';
+  help.textContent = 'Drag the gizmo handles in the viewport, or edit values above. The shape is rendered in the active paint color. It fades after painting and brightens when you interact with it again.';
   actionRow.appendChild(help);
 
   wrap.appendChild(actionRow);
@@ -591,6 +667,18 @@ function createBoxControls(): HTMLElement {
   });
 
   return wrap;
+}
+
+function updatePaintShapeButton(): void {
+  if (!paintShapeBtn) return;
+  const labels: Record<ShapeType, string> = {
+    box: 'Paint inside box',
+    sphere: 'Paint inside sphere',
+    cylinder: 'Paint inside cylinder',
+    cone: 'Paint inside cone',
+  };
+  paintShapeBtn.textContent = labels[getShapeType()];
+  paintShapeBtn.title = `Commit every triangle inside the ${getShapeType()} as a new color region`;
 }
 
 /** Build a label + 3 number inputs (X/Y/Z) for a vector property. */
@@ -668,7 +756,15 @@ function quatToEulerXYZ(q: [number, number, number, number]): [number, number, n
 
 function updateVisibilityButton(): void {
   if (!visibilityBtn) return;
-  visibilityBtn.textContent = isPaintVisible() ? 'Hide' : 'Show';
+  visibilityBtn.textContent = isPaintVisible() ? 'Hide all' : 'Show all';
+}
+
+function updateUndoClearButton(): void {
+  if (!undoClearBtn) return;
+  const can = canUndoClear();
+  undoClearBtn.disabled = !can;
+  undoClearBtn.classList.toggle('opacity-40', !can);
+  undoClearBtn.classList.toggle('cursor-not-allowed', !can);
 }
 
 function updateUndoButton(): void {
