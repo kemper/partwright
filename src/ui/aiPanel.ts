@@ -32,6 +32,10 @@ interface PanelState {
    *  exits with the queue still non-empty). In-memory only — lost on
    *  refresh, which matches the ephemeral "queue while running" use case. */
   queuedBlocks: ChatBlock[];
+  /** Undo stack for the rewind button. Each entry is the slice of messages
+   *  removed by one rewind operation. Popped by fast-forward to restore.
+   *  Cleared when the user sends a new message (conversation has diverged). */
+  rewindStack: ChatMessage[][];
 }
 
 const state: PanelState = {
@@ -43,11 +47,14 @@ const state: PanelState = {
   inFlight: false,
   inFlightController: null,
   queuedBlocks: [],
+  rewindStack: [],
 };
 
 let sendBtnRef: HTMLButtonElement | null = null;
 let stopBtnRef: HTMLButtonElement | null = null;
 let queuedBadgeRef: HTMLElement | null = null;
+let rewindBtnRef: HTMLButtonElement | null = null;
+let forwardBtnRef: HTMLButtonElement | null = null;
 
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
@@ -106,6 +113,12 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
     return;
   }
   state.sessionId = effective;
+  // If a turn is in flight the session change was triggered by the model
+  // calling createSession mid-turn. Don't reload/re-render now — the
+  // callbacks (onUserPersisted etc.) are keeping state.history current
+  // for the running turn. Reloading here would wipe the user's message
+  // from the transcript. The reload happens after the turn completes.
+  if (state.inFlight) return;
   // Drop any queued follow-ups — they were aimed at the prior chat bucket
   // and the human's instructions almost never make sense out of context.
   state.queuedBlocks = [];
@@ -139,6 +152,7 @@ function hideDrawer(): void {
 
 async function loadHistoryForCurrentSession(): Promise<void> {
   state.history = await listMessages(state.sessionId);
+  updateRewindButtons();
 }
 
 // === DOM construction ===
@@ -197,6 +211,31 @@ function buildDrawer(): void {
   transcriptEl = document.createElement('div');
   transcriptEl.className = 'flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-3';
   root.appendChild(transcriptEl);
+
+  // Rewind / fast-forward row — sits just above the controls so it's
+  // near the input and clearly associated with conversation history.
+  const rewindRow = document.createElement('div');
+  rewindRow.className = 'px-3 pt-1.5 pb-0.5 flex gap-2 shrink-0 border-t border-zinc-800';
+
+  const rewindBtn = document.createElement('button');
+  rewindBtn.className = 'flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium text-zinc-300 bg-zinc-800 hover:bg-zinc-700 hover:text-white border border-zinc-700 hover:border-zinc-500 disabled:opacity-30 disabled:cursor-not-allowed transition-all';
+  rewindBtn.innerHTML = '↩ Undo turn';
+  rewindBtn.title = 'Remove the last turn from history. Use ↪ Redo to restore it.';
+  rewindBtn.disabled = true;
+  rewindBtn.addEventListener('click', () => { void rewindTurn(); });
+  rewindBtnRef = rewindBtn;
+  rewindRow.appendChild(rewindBtn);
+
+  const forwardBtn = document.createElement('button');
+  forwardBtn.className = 'flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium text-zinc-300 bg-zinc-800 hover:bg-zinc-700 hover:text-white border border-zinc-700 hover:border-zinc-500 disabled:opacity-30 disabled:cursor-not-allowed transition-all';
+  forwardBtn.innerHTML = '↪ Redo turn';
+  forwardBtn.title = 'Restore the last undone turn. Cleared when you send a new message.';
+  forwardBtn.disabled = true;
+  forwardBtn.addEventListener('click', () => { void fastForwardTurn(); });
+  forwardBtnRef = forwardBtn;
+  rewindRow.appendChild(forwardBtn);
+
+  root.appendChild(rewindRow);
 
   // Toggle strip
   toggleStripEl = document.createElement('div');
@@ -898,6 +937,55 @@ function drainQueuedBlocks(): ChatBlock[] {
   return drained;
 }
 
+// === Rewind / fast-forward ===
+
+/** Remove the last user-initiated turn (the last user message with actual
+ *  typed content, plus everything that follows it) from history and IndexedDB.
+ *  The removed slice is pushed onto rewindStack so fast-forward can restore it.
+ *  Clears itself when the user sends a new message (conversation has diverged). */
+async function rewindTurn(): Promise<void> {
+  if (state.inFlight) return;
+  // Find the last message the user actually typed (has blocks — not a pure
+  // tool_result carrier which has toolResults but empty blocks).
+  let cutIndex = -1;
+  for (let i = state.history.length - 1; i >= 0; i--) {
+    if (state.history[i].role === 'user' && state.history[i].blocks.length > 0) {
+      cutIndex = i;
+      break;
+    }
+  }
+  if (cutIndex < 0) return;
+  const removed = state.history.splice(cutIndex);
+  state.rewindStack.push(removed);
+  await deleteMessages(removed.map(m => m.id));
+  renderTranscript();
+  updateRewindButtons();
+}
+
+/** Restore the most recently rewound turn from the rewindStack back into
+ *  history and IndexedDB. */
+async function fastForwardTurn(): Promise<void> {
+  if (state.inFlight) return;
+  const toRestore = state.rewindStack.pop();
+  if (!toRestore?.length) return;
+  await putMessages(toRestore);
+  for (const msg of toRestore) {
+    const insertAt = state.history.findIndex(m => m.seq > msg.seq);
+    if (insertAt === -1) state.history.push(msg);
+    else state.history.splice(insertAt, 0, msg);
+  }
+  renderTranscript();
+  updateRewindButtons();
+}
+
+function updateRewindButtons(): void {
+  const canRewind = !state.inFlight &&
+    state.history.some(m => m.role === 'user' && m.blocks.length > 0);
+  const canForward = !state.inFlight && state.rewindStack.length > 0;
+  if (rewindBtnRef) rewindBtnRef.disabled = !canRewind;
+  if (forwardBtnRef) forwardBtnRef.disabled = !canForward;
+}
+
 // === Send message ===
 
 async function sendMessage(): Promise<void> {
@@ -961,6 +1049,9 @@ async function sendMessage(): Promise<void> {
   inputEl.value = '';
   state.pendingImages = [];
   renderPendingImages();
+  // Sending a new message commits to this branch of the conversation —
+  // any rewound turns can no longer be re-applied.
+  state.rewindStack = [];
   progressState.retryCount = 0;
   stalledByWatchdog = false;
   await runTurnWithStallRetry(key.apiKey, settings.toggles, blocks);
@@ -1031,6 +1122,7 @@ async function runTurnWithStallRetry(apiKey: string, toggles: ChatToggles, userB
       onUserPersisted: msg => {
         state.history.push(msg);
         renderTranscript();
+        updateRewindButtons();
       },
       onUserMessageUpdated: msg => {
         // chatLoop persists tool_result user messages directly without
@@ -1099,10 +1191,17 @@ async function runTurnWithStallRetry(apiKey: string, toggles: ChatToggles, userB
         }
       },
       onTurnComplete: info => {
-        void loadHistoryForCurrentSession().then(() => {
-          renderTranscript();
-          renderCostMeter();
-        });
+        // Do NOT reload from IndexedDB here. Every message callback
+        // (onUserPersisted, onAssistantPersisted, onUserMessageUpdated) keeps
+        // state.history current throughout the turn, so the in-memory state is
+        // already correct. A DB reload races with the next queued turn: if the
+        // user queued a message mid-turn, turn 2 starts immediately after drain
+        // and its onUserPersisted write may not have committed before the reload
+        // transaction opened — IndexedDB snapshot isolation means the reload
+        // returns a stale snapshot that drops the new message, causing it to
+        // flash and vanish from the transcript.
+        renderTranscript();
+        renderCostMeter();
         lastTurnOutcome = info;
       },
     });
@@ -1110,6 +1209,7 @@ async function runTurnWithStallRetry(apiKey: string, toggles: ChatToggles, userB
     state.inFlight = false;
     state.inFlightController = null;
     setSendButtonMode('send');
+    updateRewindButtons();
 
     // Surface a sticky completion banner so the user knows the turn
     // actually ended and why — better than a silent hideProgress that

@@ -220,18 +220,39 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     // flight, but we check the signal between calls so a stop request
     // takes effect within ~one tool's duration.
     callbacks.onProgress?.({ phase: 'tool', detail: `running ${result.toolCalls.length} tool(s)...` });
-    const toolResults = await executeAllWithRetry(result.toolCalls, toggles, callbacks, signal);
-    totalToolCalls += result.toolCalls.length;
 
+    // Persist a placeholder tool-result message immediately after the assistant
+    // message so that a page kill (tab switch, browser GC, system sleep) between
+    // now and when tools finish doesn't leave orphaned tool_use blocks in
+    // IndexedDB. Orphaned blocks cause a synthetic "interrupted" error on every
+    // future resume of this session. Each slot is updated in-place as its tool
+    // completes; the final await below writes the authoritative copy.
     const toolResultMsg: ChatMessage = {
       id: generateId(),
       sessionId,
       role: 'user',
       blocks: [],
-      toolResults,
+      toolResults: result.toolCalls.map(tc => ({
+        toolUseId: tc.id,
+        content: '[Tool call was interrupted and did not complete]',
+        isError: true,
+      })),
       createdAt: Date.now(),
       seq: seqStart + 2 + iter * 2,
     };
+    await putMessages([toolResultMsg]);
+
+    const toolResults = await executeAllWithRetry(
+      result.toolCalls, toggles, callbacks, signal,
+      (eachResult, i) => {
+        toolResultMsg.toolResults![i] = eachResult;
+        void putMessages([toolResultMsg]);
+      },
+    );
+    totalToolCalls += result.toolCalls.length;
+
+    // Final authoritative persist: same id, complete result set.
+    toolResultMsg.toolResults = toolResults;
     await putMessages([toolResultMsg]);
     workingHistory = [...workingHistory, toolResultMsg];
 
@@ -268,9 +289,11 @@ async function executeAllWithRetry(
   toggles: ChatToggles,
   callbacks: RunTurnCallbacks,
   signal?: AbortSignal,
+  onEachResult?: (result: PersistedToolResult, index: number) => void,
 ): Promise<PersistedToolResult[]> {
   const results: PersistedToolResult[] = [];
-  for (const tc of toolCalls) {
+  for (let i = 0; i < toolCalls.length; i++) {
+    const tc = toolCalls[i];
     // If the user hit Stop, every remaining tool call gets a synthetic
     // "aborted by user" result. The API requires every tool_use to have a
     // matching tool_result on the next turn, so we can't just drop them.
@@ -282,6 +305,7 @@ async function executeAllWithRetry(
       };
       results.push(aborted);
       callbacks.onToolResult?.(tc.id, tc.name, aborted);
+      onEachResult?.(aborted, i);
       continue;
     }
     let attempt = 0;
@@ -298,6 +322,7 @@ async function executeAllWithRetry(
     };
     results.push(persisted);
     callbacks.onToolResult?.(tc.id, tc.name, persisted);
+    onEachResult?.(persisted, i);
     // Yield BETWEEN tool calls so the browser can flush a frame and the
     // user can interact (click Stop, scroll the transcript). A run of 5
     // paint tools without yields is enough to trigger Chrome's "page

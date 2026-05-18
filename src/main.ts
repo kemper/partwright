@@ -1592,7 +1592,9 @@ async function main() {
 
     /** Get current geometry stats without re-running */
     getGeometryData(): Record<string, unknown> {
-      return JSON.parse(geometryDataEl.textContent || '{}');
+      const geo = JSON.parse(geometryDataEl.textContent || '{}');
+      const warnings = geometryWarnings(geo);
+      return warnings.length > 0 ? { ...geo, warnings } : geo;
     },
 
     /** Get current editor code */
@@ -2261,7 +2263,9 @@ async function main() {
     },
 
     /** Run code and save as a new version in one call. Returns stat diff vs previous version.
-     *  Optional assertions — if provided, validates before saving. Fails fast without saving if assertions don't pass. */
+     *  Optional assertions — if provided, validates after running. Saves only if assertions pass.
+     *  The editor and viewport always update to reflect the new code (including on assertion failure),
+     *  so the model can inspect the failing geometry. The version is NOT saved on failure. */
     async runAndSave(code: string, label?: string, assertions?: GeometryAssertions) {
       const check = guard(() => {
         assertString(code, 'runAndSave(code)', { allowEmpty: false });
@@ -2270,17 +2274,23 @@ async function main() {
         return true;
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      // If assertions provided, validate in isolation first (no side effects if it fails)
+
+      const prevGeoData = getState().currentVersion?.geometryData as Record<string, unknown> | null;
+
+      // Single execution — run the code, update editor + viewport, read geometry.
+      // Assertions are checked against the live result rather than a separate
+      // isolation run. This halves execution time for assertion-guarded saves.
+      setValue(code);
+      await runCodeSync(code);
+      const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
+
       if (assertions) {
-        const { geometryData: testData, manifold: testManifold } = await executeIsolated(code);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        try { (testManifold as any)?.delete?.(); } catch { /* ignore */ }
-        if (testData.status === 'error') {
-          return { passed: false, failures: [testData.error as string], geometry: testData, version: null, diff: null, galleryUrl: getGalleryUrl() };
+        if (newGeoData.status === 'error') {
+          return { passed: false, failures: [newGeoData.error as string], geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl() };
         }
-        const failures = checkAssertions(testData, assertions);
+        const failures = checkAssertions(newGeoData, assertions);
         if (failures.length > 0) {
-          return { passed: false, failures, geometry: testData, version: null, diff: null, galleryUrl: getGalleryUrl() };
+          return { passed: false, failures, geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl() };
         }
       }
 
@@ -2290,11 +2300,6 @@ async function main() {
         await createSession(sessionName, getActiveLanguage());
       }
 
-      const prevGeoData = getState().currentVersion?.geometryData as Record<string, unknown> | null;
-
-      setValue(code);
-      await runCodeSync(code);
-      const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
       const thumbnail = await captureThumbnail();
       const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes);
 
@@ -2303,12 +2308,14 @@ async function main() {
         diff = computeStatDiff(prevGeoData, newGeoData);
       }
 
+      const warnings = geometryWarnings(newGeoData);
       return {
         ...(assertions ? { passed: true } : {}),
         geometry: newGeoData,
         version: version ? { id: version.id, index: version.index, label: version.label } : null,
         diff,
         galleryUrl: getGalleryUrl(),
+        ...(warnings.length > 0 ? { warnings } : {}),
       };
     },
 
@@ -2383,6 +2390,7 @@ async function main() {
         diff = computeStatDiff(prevGeoData, newGeoData);
       }
 
+      const forkWarnings = geometryWarnings(newGeoData);
       return {
         ...(assertions ? { passed: true } : {}),
         parent: { id: parent.id, index: parent.index, label: parent.label },
@@ -2390,6 +2398,7 @@ async function main() {
         version: version ? { id: version.id, index: version.index, label: version.label } : null,
         diff,
         galleryUrl: getGalleryUrl(),
+        ...(forkWarnings.length > 0 ? { warnings: forkWarnings } : {}),
       };
     },
 
@@ -2452,7 +2461,13 @@ async function main() {
     async getSessionContext() {
       const ctx = await getSessionContext();
       if (!ctx) return { error: 'No active session' };
-      return ctx;
+      const geo = JSON.parse(geometryDataEl.textContent || '{}');
+      const warnings = geometryWarnings(geo);
+      return {
+        ...ctx,
+        currentCode: getValue(),
+        ...(warnings.length > 0 ? { geometryWarnings: warnings } : {}),
+      };
     },
 
     /** Export a session as JSON (defaults to current session) */
@@ -2735,14 +2750,14 @@ async function main() {
         return true;
       });
       if (typeof check === 'object' && check !== null && 'error' in check) {
-        return { error: check.error, modifiedCode: null, stats: null };
+        return { error: check.error, stats: null };
       }
       const currentCode = getValue();
       let modifiedCode: string;
       try {
         modifiedCode = patchFn(currentCode);
       } catch (e: unknown) {
-        return { error: `Patch function failed: ${e instanceof Error ? e.message : String(e)}`, modifiedCode: null, stats: null };
+        return { error: `Patch function failed: ${e instanceof Error ? e.message : String(e)}`, stats: null };
       }
 
       const { geometryData, manifold } = await executeIsolated(modifiedCode);
@@ -2750,15 +2765,15 @@ async function main() {
       try { (manifold as any)?.delete?.(); } catch { /* ignore */ }
 
       if (geometryData.status === 'error') {
-        return { error: geometryData.error, modifiedCode, stats: geometryData, ...(assertions ? { passed: false, failures: [geometryData.error as string] } : {}) };
+        return { error: geometryData.error, stats: geometryData, ...(assertions ? { passed: false, failures: [geometryData.error as string] } : {}) };
       }
 
       if (assertions) {
         const failures = checkAssertions(geometryData, assertions);
-        return { modifiedCode, stats: geometryData, passed: failures.length === 0, failures: failures.length > 0 ? failures : undefined };
+        return { stats: geometryData, passed: failures.length === 0, failures: failures.length > 0 ? failures : undefined };
       }
 
-      return { modifiedCode, stats: geometryData };
+      return { stats: geometryData };
     },
 
     /** Query multiple properties of the current geometry in a single call. Avoids multiple round-trips. */
@@ -3598,6 +3613,49 @@ async function main() {
       return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
     },
 
+    /** Paint triangles whose centroids fall inside a cylindrical shell:
+     *  rMin ≤ dist(centroid, axis) ≤ rMax AND zMin ≤ centroid.z ≤ zMax.
+     *  The canonical tool for inner walls of hollow cylinders, mugs, vases,
+     *  and any revolved shape where `paintInBox` catches too many faces.
+     *  Set rMin > 0 to exclude the axis core and select only the inner surface. */
+    paintInCylinder(opts: {
+      center?: [number, number];
+      rMin: number;
+      rMax: number;
+      zMin: number;
+      zMax: number;
+      color: [number, number, number];
+      name?: string;
+      normalCone?: { axis: [number, number, number]; angleDeg: number };
+      topOnly?: boolean;
+      coverageMode?: CoverageMode;
+      maxTriangleArea?: number;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintInCylinder requires { rMin, rMax, zMin, zMax, color }' };
+      if (typeof opts.rMin !== 'number' || typeof opts.rMax !== 'number') return { error: 'rMin and rMax must be numbers' };
+      if (typeof opts.zMin !== 'number' || typeof opts.zMax !== 'number') return { error: 'zMin and zMax must be numbers' };
+      if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] in 0..1' };
+      const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
+      const coneErr = validateNormalCone(cone);
+      if (coneErr) return { error: coneErr };
+      const areaErr = validateMaxTriangleArea(opts.maxTriangleArea);
+      if (areaErr) return { error: areaErr };
+      const triangles = collectTrianglesByCylinder(
+        currentMeshData,
+        opts.center ?? [0, 0],
+        opts.rMin, opts.rMax,
+        opts.zMin, opts.zMax,
+        cone,
+        opts.coverageMode,
+        opts.maxTriangleArea,
+      );
+      if (triangles.size === 0) {
+        return { error: `paintInCylinder: no triangles in cylindrical shell (rMin=${opts.rMin}, rMax=${opts.rMax}, z=${opts.zMin}..${opts.zMax})${cone ? ' with normalCone filter' : ''}. Try widening the shell, checking the center, or calling paintPreview with a box first to locate the geometry.` };
+      }
+      return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
+    },
+
     /** Render a preview of the current model with a candidate region tinted
      *  bright yellow, *without* committing the paint to the regions list.
      *  Accepts the same selectors as `paintInBox` / `paintNear` plus an
@@ -4243,7 +4301,7 @@ async function main() {
      *  ```
      *  Returns `{ id, name, triangles, bbox, centroid }` on success or
      *  `{ error }` if no such label exists or no labels were registered. */
-    paintByLabel(opts: { label: string; color: [number, number, number]; name?: string }) {
+    paintByLabel(opts: { label: string; color: [number, number, number]; name?: string; topOnly?: boolean; normalCone?: { axis: [number, number, number]; angleDeg: number } }) {
       if (!opts || typeof opts !== 'object') return { error: 'paintByLabel requires { label, color }' };
       if (typeof opts.label !== 'string' || opts.label.length === 0) return { error: 'paintByLabel.label must be a non-empty string' };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'paintByLabel.color must be [r,g,b] in 0..1' };
@@ -4256,9 +4314,28 @@ async function main() {
         const known = [...currentLabelMap.keys()].map(k => `"${k}"`).join(', ');
         return { error: `paintByLabel: no label "${opts.label}". Known labels: ${known}.` };
       }
-      const triangles = new Set(ids);
       const mesh = currentMeshData;
       const regionName = opts.name ?? opts.label;
+      const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
+      if (cone) {
+        // Filter the label's triangle set by normal direction. Use a
+        // triangles descriptor (not byLabel) so the exact filtered set
+        // is preserved on re-hydration rather than restoring the full set.
+        const adjacency = buildAdjacency(mesh);
+        const axLen = Math.hypot(cone.axis[0], cone.axis[1], cone.axis[2]);
+        const cax = cone.axis[0] / axLen, cay = cone.axis[1] / axLen, caz = cone.axis[2] / axLen;
+        const coneCos = Math.cos(cone.angleDeg * Math.PI / 180);
+        const filtered = new Set<number>();
+        for (const t of ids) {
+          const dot = cax * adjacency.normals[t * 3] + cay * adjacency.normals[t * 3 + 1] + caz * adjacency.normals[t * 3 + 2];
+          if (dot >= coneCos) filtered.add(t);
+        }
+        if (filtered.size === 0) {
+          return { error: `paintByLabel: label "${opts.label}" matched ${ids.size} triangles but none passed the ${opts.topOnly ? 'topOnly' : 'normalCone'} filter. Try widening angleDeg or removing the filter.` };
+        }
+        return commitPaintFromSet(filtered, opts.color as [number, number, number], regionName, 'paintbrush');
+      }
+      const triangles = new Set(ids);
       const region = addRegion(
         regionName,
         opts.color as [number, number, number],
@@ -4291,8 +4368,8 @@ async function main() {
      *    { label: 'mouth', color: [0.8, 0.2, 0.2] },
      *  ]);
      *  ``` */
-    paintByLabels(items: Array<{ label: string; color: [number, number, number]; name?: string }>) {
-      if (!Array.isArray(items)) return { error: 'paintByLabels requires an array of { label, color, name? }' };
+    paintByLabels(items: Array<{ label: string; color: [number, number, number]; name?: string; topOnly?: boolean; normalCone?: { axis: [number, number, number]; angleDeg: number } }>) {
+      if (!Array.isArray(items)) return { error: 'paintByLabels requires an array of { label, color, name?, topOnly?, normalCone? }' };
       if (items.length === 0) return { results: [], failed: [] };
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
       if (!currentLabelMap || currentLabelMap.size === 0) {
@@ -5097,6 +5174,90 @@ async function main() {
       result.add(t);
     }
     return result;
+  }
+
+  /** Collect triangle ids whose centroids fall within a cylindrical shell
+   *  (rMin ≤ radial dist from axis ≤ rMax, zMin ≤ z ≤ zMax). */
+  function collectTrianglesByCylinder(
+    mesh: MeshData,
+    center: [number, number],
+    rMin: number,
+    rMax: number,
+    zMin: number,
+    zMax: number,
+    cone: { axis: [number, number, number]; angleDeg: number } | undefined,
+    coverage: CoverageMode = 'centroid',
+    maxArea: number | undefined = undefined,
+  ): Set<number> {
+    const adjacency = cone ? buildAdjacency(mesh) : null;
+    let coneAxis: [number, number, number] | null = null;
+    let coneCos = -1;
+    if (cone) {
+      const len = Math.hypot(cone.axis[0], cone.axis[1], cone.axis[2]);
+      coneAxis = [cone.axis[0] / len, cone.axis[1] / len, cone.axis[2] / len];
+      coneCos = Math.cos(cone.angleDeg * Math.PI / 180);
+    }
+    const rMin2 = rMin * rMin, rMax2 = rMax * rMax;
+    const [cx, cy] = center;
+    const result = new Set<number>();
+    const { triVerts, vertProperties, numProp, numTri } = mesh;
+
+    function radial2(x: number, y: number): number {
+      const dx = x - cx, dy = y - cy;
+      return dx * dx + dy * dy;
+    }
+    function inShell(x: number, y: number, z: number): boolean {
+      const r2 = radial2(x, y);
+      return r2 >= rMin2 && r2 <= rMax2 && z >= zMin && z <= zMax;
+    }
+
+    for (let t = 0; t < numTri; t++) {
+      const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+      const ax = vertProperties[v0 * numProp], ay = vertProperties[v0 * numProp + 1], az = vertProperties[v0 * numProp + 2];
+      const bx = vertProperties[v1 * numProp], by = vertProperties[v1 * numProp + 1], bz = vertProperties[v1 * numProp + 2];
+      const cx2 = vertProperties[v2 * numProp], cy2 = vertProperties[v2 * numProp + 1], cz2 = vertProperties[v2 * numProp + 2];
+
+      if (coverage === 'fully_inside') {
+        if (!inShell(ax, ay, az) || !inShell(bx, by, bz) || !inShell(cx2, cy2, cz2)) continue;
+      } else if (coverage === 'any_vertex_inside') {
+        if (!inShell(ax, ay, az) && !inShell(bx, by, bz) && !inShell(cx2, cy2, cz2)) continue;
+      } else {
+        const ccx = (ax + bx + cx2) / 3, ccy = (ay + by + cy2) / 3, ccz = (az + bz + cz2) / 3;
+        if (!inShell(ccx, ccy, ccz)) continue;
+      }
+
+      if (coneAxis && adjacency) {
+        const nx = adjacency.normals[t * 3], ny = adjacency.normals[t * 3 + 1], nz = adjacency.normals[t * 3 + 2];
+        if (coneAxis[0] * nx + coneAxis[1] * ny + coneAxis[2] * nz < coneCos) continue;
+      }
+      if (maxArea !== undefined && triangleArea(t, mesh) > maxArea) continue;
+      result.add(t);
+    }
+    return result;
+  }
+
+  /** Produce advisory warnings for geometry that was saved or queried.
+   *  Returns an empty array when the geometry is clean.
+   *  These are non-blocking — the save has already happened. */
+  function geometryWarnings(geo: Record<string, unknown>): string[] {
+    if (!geo || geo.status !== 'ok') return [];
+    const warnings: string[] = [];
+    if (geo.isManifold === false) {
+      warnings.push(
+        'isManifold: false — the mesh has non-manifold edges or gaps. ' +
+        'Export and slicing will fail with most tools. Fix the geometry ' +
+        'before finalizing: ensure boolean operands overlap by ≥ 0.5 units, ' +
+        'avoid zero-thickness walls, and check for duplicate faces.',
+      );
+    }
+    if (typeof geo.componentCount === 'number' && geo.componentCount > 1) {
+      warnings.push(
+        `componentCount: ${geo.componentCount} — model has ${geo.componentCount} disconnected pieces. ` +
+        'If unintentional, check that boolean union shapes overlap by ≥ 0.5 units. ' +
+        'If intentional (separate printable parts), ignore this warning.',
+      );
+    }
+    return warnings;
   }
 
   /** Commit a triangle set as a region and refresh the viewport — shared by
