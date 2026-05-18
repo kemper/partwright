@@ -2263,7 +2263,9 @@ async function main() {
     },
 
     /** Run code and save as a new version in one call. Returns stat diff vs previous version.
-     *  Optional assertions — if provided, validates before saving. Fails fast without saving if assertions don't pass. */
+     *  Optional assertions — if provided, validates after running. Saves only if assertions pass.
+     *  The editor and viewport always update to reflect the new code (including on assertion failure),
+     *  so the model can inspect the failing geometry. The version is NOT saved on failure. */
     async runAndSave(code: string, label?: string, assertions?: GeometryAssertions) {
       const check = guard(() => {
         assertString(code, 'runAndSave(code)', { allowEmpty: false });
@@ -2272,17 +2274,23 @@ async function main() {
         return true;
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      // If assertions provided, validate in isolation first (no side effects if it fails)
+
+      const prevGeoData = getState().currentVersion?.geometryData as Record<string, unknown> | null;
+
+      // Single execution — run the code, update editor + viewport, read geometry.
+      // Assertions are checked against the live result rather than a separate
+      // isolation run. This halves execution time for assertion-guarded saves.
+      setValue(code);
+      await runCodeSync(code);
+      const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
+
       if (assertions) {
-        const { geometryData: testData, manifold: testManifold } = await executeIsolated(code);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        try { (testManifold as any)?.delete?.(); } catch { /* ignore */ }
-        if (testData.status === 'error') {
-          return { passed: false, failures: [testData.error as string], geometry: testData, version: null, diff: null, galleryUrl: getGalleryUrl() };
+        if (newGeoData.status === 'error') {
+          return { passed: false, failures: [newGeoData.error as string], geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl() };
         }
-        const failures = checkAssertions(testData, assertions);
+        const failures = checkAssertions(newGeoData, assertions);
         if (failures.length > 0) {
-          return { passed: false, failures, geometry: testData, version: null, diff: null, galleryUrl: getGalleryUrl() };
+          return { passed: false, failures, geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl() };
         }
       }
 
@@ -2292,11 +2300,6 @@ async function main() {
         await createSession(sessionName, getActiveLanguage());
       }
 
-      const prevGeoData = getState().currentVersion?.geometryData as Record<string, unknown> | null;
-
-      setValue(code);
-      await runCodeSync(code);
-      const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
       const thumbnail = await captureThumbnail();
       const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes);
 
@@ -2747,14 +2750,14 @@ async function main() {
         return true;
       });
       if (typeof check === 'object' && check !== null && 'error' in check) {
-        return { error: check.error, modifiedCode: null, stats: null };
+        return { error: check.error, stats: null };
       }
       const currentCode = getValue();
       let modifiedCode: string;
       try {
         modifiedCode = patchFn(currentCode);
       } catch (e: unknown) {
-        return { error: `Patch function failed: ${e instanceof Error ? e.message : String(e)}`, modifiedCode: null, stats: null };
+        return { error: `Patch function failed: ${e instanceof Error ? e.message : String(e)}`, stats: null };
       }
 
       const { geometryData, manifold } = await executeIsolated(modifiedCode);
@@ -2762,15 +2765,15 @@ async function main() {
       try { (manifold as any)?.delete?.(); } catch { /* ignore */ }
 
       if (geometryData.status === 'error') {
-        return { error: geometryData.error, modifiedCode, stats: geometryData, ...(assertions ? { passed: false, failures: [geometryData.error as string] } : {}) };
+        return { error: geometryData.error, stats: geometryData, ...(assertions ? { passed: false, failures: [geometryData.error as string] } : {}) };
       }
 
       if (assertions) {
         const failures = checkAssertions(geometryData, assertions);
-        return { modifiedCode, stats: geometryData, passed: failures.length === 0, failures: failures.length > 0 ? failures : undefined };
+        return { stats: geometryData, passed: failures.length === 0, failures: failures.length > 0 ? failures : undefined };
       }
 
-      return { modifiedCode, stats: geometryData };
+      return { stats: geometryData };
     },
 
     /** Query multiple properties of the current geometry in a single call. Avoids multiple round-trips. */
