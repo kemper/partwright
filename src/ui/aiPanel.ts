@@ -1099,10 +1099,17 @@ async function runTurnWithStallRetry(apiKey: string, toggles: ChatToggles, userB
         }
       },
       onTurnComplete: info => {
-        void loadHistoryForCurrentSession().then(() => {
-          renderTranscript();
-          renderCostMeter();
-        });
+        // Do NOT reload from IndexedDB here. Every message callback
+        // (onUserPersisted, onAssistantPersisted, onUserMessageUpdated) keeps
+        // state.history current throughout the turn, so the in-memory state is
+        // already correct. A DB reload races with the next queued turn: if the
+        // user queued a message mid-turn, turn 2 starts immediately after drain
+        // and its onUserPersisted write may not have committed before the reload
+        // transaction opened — IndexedDB snapshot isolation means the reload
+        // returns a stale snapshot that drops the new message, causing it to
+        // flash and vanish from the transcript.
+        renderTranscript();
+        renderCostMeter();
         lastTurnOutcome = info;
       },
     });
