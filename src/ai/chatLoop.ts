@@ -17,14 +17,31 @@ import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
 import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type TurnOutcomeReason } from './types';
 
-/** Yield to the browser between heavy synchronous work blocks so the
- *  page stays responsive. requestAnimationFrame lets the browser paint
- *  pending frames and process input events; without it, a chain of
- *  paint tools can lock the main thread long enough for Chrome to show
- *  "page unresponsive". Used between tool executions and between agent
- *  loop iterations. */
+/** Yield to the browser between heavy synchronous work blocks.
+ *
+ *  When the tab is hidden there's nothing to paint and Chrome suppresses
+ *  "page unresponsive" dialogs — skip the yield and let the loop run at
+ *  full speed. This is the key fix for the tab-backgrounding stall: the
+ *  old requestAnimationFrame approach throttled to ~1 fps (≥1000 ms/call)
+ *  when backgrounded, so a 5-tool iteration could stall for 5+ seconds.
+ *
+ *  For visible tabs we prefer scheduler.yield() (Chrome 129+) — designed
+ *  for cooperative scheduling and not subject to throttling. The fallback
+ *  is MessageChannel, which fires as a regular macrotask and is NOT
+ *  throttled like requestAnimationFrame or short setTimeout calls. */
 function yieldToBrowser(): Promise<void> {
-  return new Promise(resolve => requestAnimationFrame(() => resolve()));
+  if (document.hidden) return Promise.resolve();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (typeof scheduler !== 'undefined' && typeof (scheduler as any).yield === 'function') {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (scheduler as any).yield() as Promise<void>;
+  }
+  return new Promise<void>(resolve => {
+    const { port1, port2 } = new MessageChannel();
+    port1.onmessage = () => { port1.close(); resolve(); };
+    port2.postMessage(undefined);
+    port2.close();
+  });
 }
 
 /** Log tool execution time. Anything over this threshold is flagged in
