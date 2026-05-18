@@ -1,6 +1,6 @@
 # Partwright -- AI Agent Instructions
 
-Partwright is a browser-based parametric CAD tool with two modeling engines: **manifold-js** (default, JavaScript DSL with manifold-3d API) and **OpenSCAD** (SCAD language via WASM). You write code that constructs 3D geometry, which renders live. All interaction is via the `window.partwright` programmatic API -- do not drive the app through clicks or keystrokes. `window.mainifold` remains available as a legacy alias for older prompts.
+Partwright is a browser-based parametric CAD tool with two modeling engines: **manifold-js** (default, JavaScript DSL with manifold-3d API + a `Curves` helper namespace) and **OpenSCAD** (SCAD language via WASM, with BOSL2 bundled). You write code that constructs 3D geometry, which renders live. All interaction is via the `window.partwright` programmatic API -- do not drive the app through clicks or keystrokes. `window.mainifold` remains available as a legacy alias for older prompts.
 
 **Coordinate system:** Right-handed, Z-up. XY plane is the ground. Units are arbitrary.
 
@@ -8,23 +8,18 @@ Partwright is a browser-based parametric CAD tool with two modeling engines: **m
 
 - [Before you start](#before-you-start)
 - [Choosing an engine](#choosing-an-engine)
+- [What do I do for X? (verb decision tree)](#what-do-i-do-for-x-verb-decision-tree)
+- [Topic index (subdocs)](#topic-index-subdocs)
 - [Common agent mistakes](#common-agent-mistakes)
 - [Argument validation](#argument-validation)
 - [Console API -- window.partwright](#console-api--windowpartwright)
 - [Geometry data](#geometry-data)
-- [Writing model code](#writing-model-code)
+- [Writing model code (manifold-js)](#writing-model-code-manifold-js)
 - [Writing OpenSCAD code](#writing-openscad-code)
 - [Common pitfalls for boolean operations](#common-pitfalls-for-boolean-operations)
-- [Print-safe geometry](#print-safe-geometry)
-- [Color regions](#color-regions)
-- [AI-friendly file I/O](#ai-friendly-file-io)
-- [Reference images](#reference-images)
-- [Photo-to-model workflow](#photo-to-model-workflow) (optional tooling)
 - [Iteration workflow](#iteration-workflow)
-- [Visual verification](#visual-verification)
-- [Annotations](#annotations)
 - [Stat-based verification](#stat-based-verification)
-- [Resuming a session](#resuming-a-session)
+- [Visual verification](#visual-verification)
 
 ## Before you start
 
@@ -41,36 +36,69 @@ Partwright supports two modeling engines. Pick whichever is best for the task:
 | | **manifold-js** (default) | **OpenSCAD** (SCAD) |
 |---|---|---|
 | Language | JavaScript | OpenSCAD `.scad` |
-| Best for | Algorithmic/parametric geometry, complex math, programmatic iteration | Standard OpenSCAD idioms, porting existing `.scad` files, users who think in CSG |
+| Best for | Algorithmic geometry, smooth curves (with `Curves` helpers), mesh-level operations (smooth/refine/SDF/warp) | Mechanical parts with rounding/chamfer/threads (with BOSL2), porting existing `.scad` files |
 | Code style | `return Manifold.cube([10,10,10], true);` | `cube([10,10,10], center=true);` |
-| Strengths | Fast execution, rich JS ecosystem, direct Manifold API access | Familiar to OpenSCAD users, large body of existing `.scad` code online |
-| Limitations | Must learn the manifold-3d API | No `text()` (fonts not loaded), no `use<>`/`include<>` with external libraries, slower (fresh WASM instance per run) |
+| Unique strengths | `Curves.loft`, `Curves.sweep`, `Curves.naca4`; `levelSet`, `warp`, `smoothOut` (mesh-level) | BOSL2's `cuboid(rounding=)`, `skin()`, `path_sweep()`, `threaded_rod()`, `spur_gear()` |
+| Limitations | Must learn the manifold-3d API | No `text()` (fonts not loaded), slower per-run (~100-300ms WASM init) |
 
 ### Switching engines
 
 ```js
-// Check current engine
 partwright.getActiveLanguage()        // -> 'manifold-js' or 'scad'
-
-// Switch engine (also updates the code editor's syntax highlighting)
 await partwright.setActiveLanguage('scad')
 await partwright.setActiveLanguage('manifold-js')
-
-// Run code with a specific engine (one-shot, doesn't change active engine)
-await partwright.run(scadCode)        // uses active engine
-// To force a specific engine, switch first then run
 ```
 
-Selecting a SCAD example from the toolbar dropdown auto-switches to OpenSCAD mode. Session versions remember which engine was used and restore it when loaded.
+Selecting a SCAD example from the toolbar dropdown auto-switches to OpenSCAD mode. Session versions remember which engine was used.
+
+## What do I do for X? (verb decision tree)
+
+Reach for the right tool the first time. If the table sends you to a subdoc, fetch it before writing code.
+
+| Want | manifold-js | OpenSCAD |
+|---|---|---|
+| Cube / sphere / cylinder | `Manifold.cube/sphere/cylinder(...)` | `cube()`, `sphere()`, `cylinder()` |
+| Boolean union / difference / intersection | `.add(o)`, `.subtract(o)`, `.intersect(o)` | `union(){...}`, `difference(){...}`, `intersection(){...}` |
+| 2D shape extruded to 3D | `cs.extrude(h, nDiv?, twist?, scaleTop?)` | `linear_extrude(h, twist=, slices=, scale=) polygon(...)` |
+| Surface of revolution (vase, lens, bottle) | `cs.revolve(n?, degrees?)` | `rotate_extrude(angle=) polygon(...)` |
+| Smooth curve from a few points | `Curves.bezier(controls)` -> `/ai/curves.md` | `bezier_curve()` (BOSL2) -> `/ai/bosl2.md` |
+| Arc between two points | `Curves.arc({from, to, radius})` | `arc()` (BOSL2) |
+| Airfoil cross-section | `Curves.naca4("2412")` | (write your own with BOSL2 paths) |
+| Polygon with rounded corners | `Curves.polyline(points, {fillet: r})` | BOSL2 `round_corners(...)` |
+| Wing, hull, fuselage (varying profile along axis) | `Curves.loft([profA, profB], [zA, zB])` -> `/ai/curves.md` | BOSL2 `skin([profiles], z=, slices=)` -> `/ai/bosl2.md` |
+| Handle, tube, propeller (profile along 3D path) | `Curves.sweep(profile, pathPoints)` | BOSL2 `path_sweep(profile, path)` |
+| Revolve around an arbitrary axis | `Curves.revolveAxis(profile, [ax,ay,az])` | `rotate([...]) rotate_extrude() polygon()` |
+| Round/chamfer all sharp edges of a solid | `Curves.fillet(solid, {angle: 60})` | BOSL2 `cuboid(rounding=...)`, `round3d(...)` |
+| Ring/linear/mirror copies | `Curves.ringCopy / linearCopy / mirrorCopy` | BOSL2 `ring_copies()`, `xcopies()`, `mirror_copy()` |
+| Threaded rod / bolt / nut | (write a helix manually) | BOSL2 `threaded_rod()`, `screw()`, `nut()` |
+| Spur / bevel / worm gear | (sample involute manually) | BOSL2 `spur_gear()`, `bevel_gear()`, `worm_gear()` |
+| Implicit surface (gyroid, metaball, SDF blend) | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) |
+| Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) |
+| Arbitrary vertex warp (bend extrusion) | `.warp(fn)` | (not available) |
+
+**Rule of thumb:** if you find yourself writing a `for` loop to manually compute curve points, stop and check whether `Curves` (manifold-js) or BOSL2 (SCAD) already has the verb. AI-generated point-sampling math is brittle; the helpers are deterministic.
+
+## Topic index (subdocs)
+
+The main reference splits into focused subdocs. Fetch them on demand instead of loading everything up front.
+
+- **[/ai/curves.md](/ai/curves.md)** — `Curves.loft/sweep/bezier/arc/naca4/polyline/fillet/...` helpers in manifold-js. Read **before** writing any code involving smooth curves, organic shapes, airfoils, or lofted surfaces.
+- **[/ai/bosl2.md](/ai/bosl2.md)** — BOSL2 cheatsheet for OpenSCAD: `cuboid(rounding=)`, `skin()`, `path_sweep()`, `screw()`, `spur_gear()`, attachables. Read **before** writing SCAD code that needs edge rounding, threads, gears, or path-following.
+- **[/ai/print-safety.md](/ai/print-safety.md)** — FDM-specific rules: minimum wall thickness, taper traps, sub-extrusion-width layer detection. Read **before** exporting STL/3MF for printing.
+- **[/ai/colors.md](/ai/colors.md)** — `paintRegion()` for multi-material output; how colors flow through GLB/3MF/OBJ exports.
+- **[/ai/reference-images.md](/ai/reference-images.md)** — Loading photos for elevation comparison; optional photo-to-model workflow.
+- **[/ai/file-io.md](/ai/file-io.md)** — `exportGLBData()`, `importSessionData()`, Recent Exports inbox — agent-friendly I/O that skips browser file pickers.
+- **[/ai/annotations.md](/ai/annotations.md)** — Reading and writing freehand strokes / text labels the user has placed on the model.
 
 ## Common agent mistakes
 
 - **Driving the UI with clicks/keystrokes** -- CodeMirror's auto-close-brackets will corrupt your code. Use `partwright.setCode()` and `partwright.run()` instead.
 - **Forgetting `return`** -- code runs in `new Function()`, so a trailing expression is NOT automatically returned. You must write `return Manifold.cube(...)`.
+- **Hand-rolling curve math instead of using helpers** -- if you need a smooth surface or curve, check the verb table above. `Curves.loft` / BOSL2 `skin()` are far more reliable than a hand-written polygon-sampling loop.
 - **Skipping sessions** -- always create a session (`createSession`) and save versions (`runAndSave`) so the user can review your work in the gallery.
 - **Skipping visual verification** -- stats alone can't catch visual defects. After structural changes, screenshot the Elevations tab or use `renderView()`.
 - **Flush boolean placement** -- shapes must overlap by at least 0.5 units to union correctly. Merely touching at a face produces disconnected components.
-- **Tapering to a near-point on printed geometry** -- `scaleTop=[0.01, 0.01]` or chamfers that collapse the top to sub-millimeter area look fine in `geometry-data` but FDM slicers silently drop sub-extrusion-width layers, so the cap disappears on the print. See [Print-safe geometry](#print-safe-geometry).
+- **Tapering to a near-point on printed geometry** -- `scaleTop=[0.01, 0.01]` or chamfers that collapse the top to sub-millimeter area look fine in `geometry-data` but FDM slicers silently drop sub-extrusion-width layers, so the cap disappears on the print. See [/ai/print-safety.md](/ai/print-safety.md).
 - **Not reading session context before modifying** -- when opening an existing session, always call `getSessionContext()` first and read the notes/version history before making changes. See [Resuming a session](#resuming-a-session).
 - **Branching off a prior version by hand** -- don't chain `loadVersion` -> `getCode` -> modify -> `runAndSave`. A silent failure (blocked return value, stale buffer) can drop parts of the parent. Use [`forkVersion({index} | {id}, transformFn, label, assertions?)`](#forking-a-prior-version) instead -- it loads the parent's code server-side, applies your transform, validates, and saves atomically.
 - **Passing a bare index or id instead of `{index}` / `{id}`** -- `loadVersion` and `forkVersion` take an object with exactly one of `{index: number}` or `{id: string}`, e.g. `loadVersion({index: 2})` or `loadVersion({id: "Kx3Pq9mA2wEr"})`. Bare `loadVersion(2)` will return `{error: "...target must be { index: number } or { id: string }..."}`.
@@ -133,7 +161,7 @@ await partwright.exportGLB()   // Download GLB (browser file dialog -- prefer ex
 partwright.exportSTL()         // Download STL ("                                       exportSTLData() ")
 partwright.exportOBJ()         // Download OBJ ("                                       exportOBJData() ")
 partwright.export3MF()         // Download 3MF ("                                       export3MFData() ")
-// Agent-friendly variants -- bytes return inline, no file dialog. See AI-friendly file I/O.
+// Agent-friendly variants -- bytes return inline, no file dialog. See /ai/file-io.md.
 await partwright.exportGLBData()        // -> {filename, mimeType, base64, sizeBytes}
 await partwright.exportSTLData()
 await partwright.exportOBJData()        // text or base64 depending on whether colors are painted
@@ -157,10 +185,21 @@ partwright.renderView({elevation?, azimuth?, ortho?, size?}) // Render from any 
 partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}
 partwright.isRunning()                   // -> boolean (is code executing?)
 
-// Reference images -- compare model against photos
+// Reference images & annotations & color regions -- see subdocs:
+//   /ai/reference-images.md, /ai/annotations.md, /ai/colors.md
+
 partwright.setReferenceImages({front?, right?, back?, left?, top?, perspective?})
 partwright.clearReferenceImages()
 partwright.getReferenceImages()
+
+partwright.paintRegion({point, normal, color, name?, tolerance?})
+partwright.listRegions()
+partwright.clearColors()
+
+partwright.listAnnotations()
+partwright.listTextAnnotations()
+partwright.addTextAnnotation({anchor, text})
+partwright.clearAnnotations()
 
 // Sessions -- save/compare design iterations
 await partwright.createSession(name?)    // -> {id, url, galleryUrl}
@@ -176,11 +215,6 @@ await partwright.listSessions()          // -> [{id, name, updated}]
 await partwright.openSession(id)         // Open existing session
 await partwright.clearAllSessions()      // Delete all sessions & versions
 
-// Color regions -- tag coplanar face regions with a color (see #color-regions)
-partwright.paintRegion({point, normal, color, name?, tolerance?}) // -> {id, name, triangles} or {error}
-partwright.listRegions()                 // -> [{id, name, color, source, triangles, order}, ...]
-partwright.clearColors()                 // Remove all regions
-
 // Notes -- track design context, decisions, and measurements
 await partwright.addSessionNote(text)    // -> {id, text, timestamp}
 await partwright.listSessionNotes()      // -> [{id, text, timestamp}, ...]
@@ -189,7 +223,6 @@ await partwright.deleteSessionNote(noteId)       // Remove a note
 
 // Session context -- get everything in one call (for resuming sessions)
 await partwright.getSessionContext()     // -> {session, versions[], notes[], currentVersion, versionCount, agentHints}
-// agentHints: {apiDocsUrl, recommendedEntrypoint, codeMustReturnManifold, recentErrors[]}
 ```
 
 ## Geometry data
@@ -223,16 +256,21 @@ On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}
 - `function _Cylinder called with N arguments` -- wrong arg count
 - Geometry looks wrong -- check `isManifold` and `componentCount` (failed booleans = extra components)
 
-## Writing model code
+## Writing model code (manifold-js)
 
 Code runs in a sandbox via `new Function('api', code)`. All transforms return new immutable Manifold instances -- chaining works.
 
 ```js
-const { Manifold, CrossSection, setCircularSegments } = api;
+const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 // MUST return a Manifold object
 ```
 
-**Sandbox environment:** The `api` object provides `Manifold`, `CrossSection`, and `setCircularSegments`. Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.
+**Sandbox environment:** The `api` object provides:
+- `Manifold` and `CrossSection` -- the raw manifold-3d bindings
+- `Curves` -- helpers for smooth/organic shapes (loft, sweep, bezier, arc, naca4, polyline with fillet, arbitrary-axis revolve, fillet/chamfer, pattern arrays). See **[/ai/curves.md](/ai/curves.md)**.
+- `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
+
+Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.
 
 ### Primitive origins and orientations
 
@@ -257,6 +295,8 @@ Manifold: cube, sphere, cylinder, tetrahedron, extrude, revolve,
           union, difference, intersection, hull, compose, smooth, levelSet, ofMesh
 CrossSection: square, circle, ofPolygons (CCW outer, CW holes),
               compose, union, difference, intersection, hull
+Curves: arc, bezier, naca4, polyline, loft, sweep, revolveAxis,
+        fillet, chamfer, ringCopy, linearCopy, mirrorCopy   (see /ai/curves.md)
 ```
 
 ### Manifold instance methods
@@ -265,8 +305,9 @@ CrossSection: square, circle, ofPolygons (CCW outer, CW holes),
 Booleans:   .add(other)  .subtract(other)  .intersect(other)  .hull()
 Transforms: .translate([x,y,z])  .rotate([rx,ry,rz]) (degrees, applied X->Y->Z)
             .scale(s) or .scale([x,y,z])  .mirror([nx,ny,nz]) (plane normal)
-            .warp(fn)  .transform(mat4x3)
-Mesh ops:   .refine(n)  .simplify()  .smoothOut()  .calculateNormals(idx, angle?)
+            .warp(fn)  .transform(mat4)
+Mesh ops:   .refine(n)  .simplify()  .smoothOut(minSharpAngle?, minSmoothness?)
+            .calculateNormals(idx, angle?)
 Queries:    .volume()  .surfaceArea()  .genus()  .numVert()  .numTri()  .isEmpty()
             .boundingBox()  .status() (0=valid)  .decompose()
 Slicing:    .slice(z)  .project()  .trimByPlane(n,off)  .splitByPlane(n,off)
@@ -285,6 +326,8 @@ Queries:    .area()  .isEmpty()  .numVert()  .numContour()  .bounds()
 Output:     .toPolygons()  .decompose()  .delete()
 ```
 
+For smooth curve helpers (`loft`, `sweep`, `naca4`, `bezier`, `polyline` with fillet, etc.), see **[/ai/curves.md](/ai/curves.md)**.
+
 ## Writing OpenSCAD code
 
 When the engine is set to `scad`, code is compiled by OpenSCAD (WASM) instead of running as JavaScript.
@@ -296,21 +339,30 @@ When the engine is set to `scad`, code is compiled by OpenSCAD (WASM) instead of
 - **Transforms** -- `translate`, `rotate`, `scale`, `mirror`, `multmatrix`, `color`, `resize`.
 - **Booleans** -- `union()`, `difference()`, `intersection()`, `hull()`, `minkowski()`.
 - **Extrusion** -- `linear_extrude(height, twist, slices, scale)`, `rotate_extrude(angle)`.
+- **2D rounding** -- `offset(r=...)` for rounded outlines; `minkowski() { shape; circle(r); }` for rounded interiors.
+- **Curve resolution** -- `$fn=N` for explicit segments, or `$fa`/`$fs` for angle/length-based segmentation.
 - **The `--enable=manifold` flag is set automatically** -- OpenSCAD uses the same manifold-3d boolean backend, so CSG results match the JS engine.
 
-**Known limitations (v1):**
+**BOSL2 library is bundled** -- start your file with `include <BOSL2/std.scad>` to unlock rounded cuboids, skin/loft, sweep, threaded rods, gears, attachables, and pattern distributors. See **[/ai/bosl2.md](/ai/bosl2.md)**. First BOSL2 run on a fresh page fetches ~4 MB of library source (one-time, then cached).
+
+**Known limitations:**
 - `text()` is not available (font data not loaded to save ~8MB).
-- `use <...>` / `include <...>` with external `.scad` libraries does not work (no external file system). Inline all modules.
-- BOSL2 and MCAD libraries are not available.
+- External `.scad` libraries (other than the bundled BOSL2) can't be `include`d -- there's no filesystem to read from.
 - Each SCAD run creates a fresh WASM instance (~100-300ms overhead). For fast iteration, manifold-js is snappier.
 
-**Example SCAD code:**
+**Example SCAD code (stock):**
 ```scad
 // Cube with cylindrical hole
 difference() {
   cube([10, 10, 10], center=true);
   cylinder(h=12, r=4, center=true, $fn=32);
 }
+```
+
+**Example SCAD code (BOSL2):**
+```scad
+include <BOSL2/std.scad>
+cuboid([40, 30, 20], rounding=3);     // all edges filleted
 ```
 
 ## Common pitfalls for boolean operations
@@ -350,206 +402,7 @@ const r = await partwright.runAndExplain(code);
 // ]
 ```
 
-## Print-safe geometry
-
-If the output will be 3D-printed (FDM/FFF), geometry thinner than the nozzle's extrusion width is silently dropped by slicers. This is a real class of bug that passes every `geometry-data` check (volume, `componentCount`, `genus`, `isManifold` all correct) but renders the top of the model as "missing" on the physical print.
-
-### The classic trap: `scaleTop` near zero
-
-An extrusion with `scaleTop=[0.01, 0.01]` (or any small fraction) tapers linearly to a near-point. The last slices have areas well under 1 mm², which most slicers drop at typical nozzle widths. Example failure mode observed in the wild: a hook band extruded with `scaleTop=[0.01, 0.01]` had layer areas of 118 mm² at z=5.8 collapsing to 0.07 mm² at z=6.55 -- the slicer dropped every layer under ~0.4 mm² and the cap disappeared.
-
-```js
-// BAD -- lead-in chamfer via scaleTop=0, tapers to sub-extrusion-width
-ring.extrude(6, 4, 0, [0.01, 0.01])
-
-// GOOD -- explicit 45deg chamfer that stops at a flat-top ring of finite width.
-// Stack a full-width body + a chamfer frustum whose smaller radius is still >= wall thickness.
-const body    = ringCS.extrude(bodyH);
-const chamfer = ringCS.extrude(chamferH, 1, 0, outerFrac)  // outerFrac chosen so top width >= wallT
-                    .translate([0, 0, bodyH]);
-const result  = body.add(chamfer);
-```
-
-### Rules of thumb (assume ~0.4 mm nozzle, ~0.2 mm layer height)
-
-- **Minimum wall / feature thickness:** `>= 0.4 mm` (one nozzle width). Prefer `>= 0.8 mm` for anything load-bearing.
-- **Minimum cross-sectional area on any printed layer:** `>= ~0.4 mm²` (roughly nozzle width x 1 mm of extruded line).
-- **Never taper to a true point on a printed face.** Chamfers, drafts, and lead-ins must land on a flat plateau wider than the nozzle.
-- **Decorative points** (spires, finials) either need to be printed as a separate top piece, or accept that the tip will be missing up to the slicer's minimum width.
-
-### Catch this before the user does
-
-After any change that uses `scaleTop` < 1, tapers via `hull`, or brings two surfaces toward a vanishing edge, dense-sample near `zMax` and flag sub-extrusion-width layers:
-
-```js
-const bb = partwright.getBoundingBox();
-const zMax = bb.max[2];
-const layerH = 0.2;
-const minArea = 0.4;  // mm^2, assuming ~0.4mm nozzle
-
-const problems = [];
-for (let z = zMax - 2; z <= zMax - layerH; z += layerH) {
-  const s = partwright.sliceAtZ(z);
-  if (s && s.area > 0 && s.area < minArea) {
-    problems.push({ z: +z.toFixed(2), area: +s.area.toFixed(3) });
-  }
-}
-if (problems.length) {
-  console.warn("Sub-extrusion-width layers detected:", problems);
-}
-```
-
-Or batch it with `query({ sliceAt: [zMax - 2, zMax - 1.8, ..., zMax - 0.2] })` and check each slice's `area`. If any layer below the actual geometry end falls under threshold, redesign the top to terminate with a flat plateau instead of a near-point taper.
-
-## Color regions
-
-Color regions tag a coplanar set of triangles with an RGB color. Regions are persisted on the saved version, ride through GLB and 3MF exports, and show as swatch badges in the gallery. They do **not** modify the geometry -- the underlying mesh, volume, manifoldness, etc. are unchanged.
-
-```js
-// Paint the face that contains [10, 0, 5] with normal [0, 0, 1] (top face) bright red.
-const r = partwright.paintRegion({
-  point:  [10, 0, 5],
-  normal: [0, 0, 1],
-  color:  [1, 0, 0],         // RGB in 0..1
-  name:   "Top",             // optional, defaults to "Region N"
-  tolerance: 0.9995,         // optional cosine threshold for coplanarity (default 0.9995)
-});
-// r = { id, name, triangles } on success, or { error } if no matching face found
-
-partwright.listRegions()    // [{ id, name, color, source, triangles, order }, ...]
-partwright.clearColors()    // remove all regions
-```
-
-**How face matching works.** `paintRegion` flood-fills outward from the seed triangle, including any neighbor whose normal is within `tolerance` of the seed's. Pick `point` slightly inside the model surface and pass the outward-pointing `normal` -- the seed resolver looks for the triangle whose plane the point lies on and whose normal aligns with yours.
-
-**Editor lock.** When color regions exist, the editor is locked (the model can't be re-run, because new geometry would invalidate the saved triangle indices). To edit code, the user clicks "Unlock to edit" in the UI. Agents that need to iterate on the geometry should call `clearColors()` first, or fork a new uncolored version with `forkVersion`.
-
-**Export behavior.**
-- `exportGLB()` -- vertex colors flow through automatically.
-- `export3MF()` -- regions become `<basematerials>` entries with per-triangle `pid` attributes (compatible with PrusaSlicer / Bambu Studio multi-material slicing).
-- `exportSTL()` and `exportOBJ()` -- formats don't carry color, so colors are dropped.
-
-## AI-friendly file I/O
-
-The standard `exportGLB()` / `exportSTL()` / `exportOBJ()` / `export3MF()` methods trigger a browser download — the file goes to the user's Downloads folder, which an AI agent can't observe. Likewise, `Import` opens an OS file picker that an agent can't dismiss. Use the `*Data()` methods below instead: they return file contents over the API and skip the picker entirely.
-
-### Export — return bytes over the API
-```js
-// 3D model formats — binary blobs come back as base64
-const glb = await partwright.exportGLBData()
-// -> { filename: "model_2026-04-28.glb", mimeType: "model/gltf-binary", base64: "...", sizeBytes: 12345 }
-
-const stl = await partwright.exportSTLData()
-const tmf = await partwright.export3MFData()
-
-// OBJ is text-typed when the mesh has no painted color regions, otherwise a ZIP.
-// Inspect mimeType to tell which: "text/plain" -> use `text`, "application/zip" -> use `base64`.
-const obj = await partwright.exportOBJData()
-
-// Session JSON — returns the parsed object directly, no decoding needed
-const ses = await partwright.exportSessionData()
-// -> { filename: "...partwright.json", mimeType: "application/json", data: { partwright: "1.2", session: {...}, versions: [...] }, sizeBytes }
-
-// Editor source as text
-const src = await partwright.exportCodeData()
-// -> { filename, mimeType: "text/plain", language: "manifold-js", text, sizeBytes }
-```
-
-Each call also adds the export to the Recent Exports inbox so the user can re-download it from the toolbar's Export → Recent Exports list.
-
-### Import — supply the payload directly
-```js
-// Import a parsed .partwright.json (object or string) as a new active session
-const r = await partwright.importSessionData(parsedJson)
-// -> { sessionId } or { error }
-
-// Import raw source as a new session
-await partwright.importCodeData(code, 'manifold-js')           // optional sessionName arg
-await partwright.importCodeData(scadCode, 'scad', 'my-shape')
-```
-
-### Recent Exports inbox
-Every export — whether the human clicked Export or the agent called `*Data()` — is kept in a small in-memory ring buffer (last 10). The user sees them in the Export dropdown's "Recent Exports" section; agents can read them too.
-```js
-partwright.listRecentExports()
-// -> [{ id, filename, mimeType, source, sizeBytes, timestamp }, ...]   // newest first
-
-await partwright.getRecentExport(id)   // adds bytes (text or base64) to the metadata
-partwright.downloadRecentExport(id)    // re-trigger the browser download
-partwright.clearRecentExports()
-```
-
-This is also the easiest way to inspect what the user just exported manually: the bytes stay in memory until they're pushed out by newer exports.
-
-## Reference images
-
-Load reference photos to compare against your model's elevations:
-```js
-// Load reference images for side-by-side comparison in Elevations tab
-partwright.setReferenceImages({
-  front: 'data:image/jpeg;base64,...',   // or a URL
-  right: 'data:image/jpeg;base64,...',
-  back: 'data:image/jpeg;base64,...',
-  left: 'data:image/jpeg;base64,...',
-  top: 'data:image/jpeg;base64,...',     // optional
-  perspective: 'data:image/jpeg;base64,...', // optional - original photo
-})
-
-// Clear reference images
-partwright.clearReferenceImages()
-
-// Get current reference image state
-partwright.getReferenceImages()  // -> {front?, right?, ...} or null
-```
-
-When reference images are loaded, the Elevations tab shows each model view side-by-side with the corresponding reference image. This enables direct visual comparison for accuracy.
-
-## Photo-to-model workflow
-
-> **Optional tooling.** This workflow uses `scripts/generate-views.js` and Gemini, which may not be installed in every environment. If unavailable, skip the analysis step and supply reference images manually via `setReferenceImages()`.
-
-To recreate a building or object from a photo:
-
-### 1. Analyze the reference (optional helper)
-Use `scripts/generate-views.js` to extract structural analysis:
-```bash
-node scripts/generate-views.js /path/to/photo.jpg
-```
-This calls Gemini to analyze the photo and produces a JSON file with:
-- Building mass decomposition (main body, wings, garage, etc.)
-- Proportion estimates (width:depth:height ratios)
-- Roof style, pitch angle, overhangs
-- Feature positions (windows, doors, porches) as percentages
-- Elevation descriptions for all 4 sides
-
-### 2. Load reference images
-If you have multiple angle photos (or Gemini-generated views), load them:
-```js
-partwright.setReferenceImages({ front: frontDataUrl, right: rightDataUrl, ... })
-```
-
-### 3. Build major masses first
-Start with the largest geometric volumes and get proportions right before adding detail:
-```js
-// Decompose into: main body -> wings -> roof -> porch -> details
-// Build each mass, validate proportions against reference
-const r = await partwright.runAndAssert(code, {
-  isManifold: true, maxComponents: 1,
-  // Use proportion assertions to match reference
-  boundsRatio: { widthToDepth: [1.2, 1.8], widthToHeight: [1.5, 2.5] }
-});
-```
-
-### 4. Compare elevations after each structural change
-Switch to Elevations tab and compare model silhouette against reference at each angle. Focus on:
-- Overall proportions and mass placement
-- Roof profile (side view reveals pitch and overhangs)
-- Feature alignment (windows, doors at correct heights)
-- Porch depth and column spacing
-
-### 5. Iterate on details
-Add features in order of visual impact: roof -> porch -> windows/doors -> trim details.
-After each addition, verify the relevant elevation matches the reference.
+For FDM print-safety pitfalls (sub-extrusion-width layers, taper traps), see **[/ai/print-safety.md](/ai/print-safety.md)**.
 
 ## Iteration workflow
 
@@ -769,59 +622,6 @@ const s = partwright.sliceAtZVisual(10);  // returns {svg, area, contours}
 - `?view=ai` -- 4 isometric views (alternating cube corners)
 - `?view=elevations` -- Front, Right, Back, Left, Top orthographic + 1 isometric (6 views)
 - Use Elevations for shape verification, AI Views for overall appearance.
-
-## Annotations
-
-The user can mark up the model surface using the **Annotate** tool (✏️ button in the viewport
-overlay). Two kinds of annotations:
-
-- **Freehand strokes** drawn with the pen sub-mode -- raycast onto the mesh and stored as 3D
-  polylines (color + pixel-width per stroke).
-- **Text labels** placed with the text sub-mode -- pinned to a 3D anchor on the surface and
-  rendered as a screen-facing label (so they stay readable from any angle).
-
-Both kinds are **not part of the model** -- they're an ephemeral, in-memory visual layer that
-survives orbiting and appears in **every** rendered output: the live viewport, `renderView()`
-output, the AI Views tab, and the Elevations tab.
-
-When the user has annotated, treat the marks as a directional cue tied to the geometry under
-them. Inspect them via `listAnnotations()` / `listTextAnnotations()`, infer which feature is
-being pointed at from the 3D points/anchors, and confirm your interpretation before making
-changes.
-
-```js
-partwright.listAnnotations()
-// -> [{id, color: [r,g,b], width: 4, pointCount: 24, points: [[x,y,z], ...]}]
-
-partwright.listTextAnnotations()
-// -> [{id, text: "shorter here", color: [r,g,b], fontSizePx: 28, anchor: [x,y,z]}]
-
-partwright.addTextAnnotation({ anchor: [4, -5, 3], text: "round this corner" })
-// -> {id: "..."}
-
-partwright.getAnnotationCount()         // total: strokes + text
-partwright.undoAnnotation()             // removes the most recent annotation of either kind
-partwright.removeAnnotation("<id>")     // remove a specific one
-partwright.clearAnnotations()           // remove all
-partwright.clearAnnotationStrokes()     // remove only strokes
-partwright.clearTextAnnotations()       // remove only text labels
-
-partwright.setAnnotationsVisible(false) // hides everything (and excludes from renders)
-partwright.areAnnotationsVisible()
-
-partwright.setAnnotationColor([r, g, b])  // applies to new strokes AND new text
-partwright.setAnnotationWidth(6)          // pixels, for strokes (0.5..64)
-partwright.setAnnotationFontSize(32)      // pixels, for text labels (4..256)
-```
-
-Each stroke and text label records its own color/width/font-size at creation, so changing the
-active settings only affects new annotations.
-
-Annotations are intentionally separate from `paintRegion` colorization:
-- **Annotations** are floating visual marks on top of the surface -- ephemeral, not exported,
-  do not lock the editor.
-- **Color regions** (`paintRegion`) modify the model's vertex colors -- persist with the
-  version, export with the model, and lock the editor while present.
 
 ## Stat-based verification
 
