@@ -431,20 +431,28 @@ function parseCustomModelInput(raw: string): { modelUrl: string; modelId: string
   };
 }
 
-/** Honest note about context window tradeoffs — KV cache is the real
- *  bottleneck in the browser, not the WASM compilation. */
+/** Honest note about how the displayed context number is chosen and
+ *  what changes it. KV cache is the real bottleneck in the browser, not
+ *  the WASM compilation. */
 function buildContextNote(): HTMLElement {
   const note = document.createElement('div');
   note.className = 'mt-2 rounded border border-zinc-700 bg-zinc-900/40 p-3 text-[11px] text-zinc-400 leading-snug';
   note.innerHTML = `
-    <strong class="text-zinc-300">A note on context window.</strong>
-    We default to <strong>8K</strong> for 3B models, <strong>16K</strong>
-    for 7-9B, and <strong>4K</strong> for the 70B — chosen so KV-cache
-    memory stays in the practical browser-GPU budget. You can override
-    globally or enable sliding-window mode in <em>AI settings → Local
-    context</em>. 100K+ windows aren't realistic in the browser today:
-    KV cache alone would consume 16+ GB of GPU memory on an 8B model.
-    If you need long context, use the Anthropic provider.
+    <strong class="text-zinc-300">About the context window.</strong>
+    We request <strong>32K tokens</strong> for most models and
+    <strong>4K for the 70B</strong> (its KV cache is too expensive at
+    higher windows). The actual ceiling is whatever the model's compiled
+    WASM accepts — we fetch <code>mlc-chat-config.json</code> on first
+    load to find it, and walk a fallback ladder (32K → 16K → 8K → 4K)
+    if our request is rejected. The card above shows the requested value;
+    the chosen value is committed after the first load and persists in
+    cache across sessions.
+    <br><br>
+    Clamp lower or enable sliding-window mode in <em>AI settings →
+    Local context</em>. KV-cache memory grows linearly with window size:
+    a 32K window on an 8B model needs ~4 GB of GPU memory just for the
+    cache. Six-figure context isn't realistic in the browser today — use
+    the Anthropic provider if you need it.
   `;
   return note;
 }

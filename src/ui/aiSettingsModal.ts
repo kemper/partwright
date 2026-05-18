@@ -10,6 +10,7 @@ import { showSystemPromptModal } from './aiSystemPromptModal';
 import { createModalShell } from './modalShell';
 import { loadSettings, saveSettings, setAutoCompactMode, setLocalContext, setProvider, AUTO_COMPACT_OPTIONS } from '../ai/settings';
 import { effectiveContextCeiling, resolveLocalModel, isModelLoaded, unloadActiveLocalModel } from '../ai/local';
+import { getCachedCeiling } from '../ai/modelMetadata';
 
 export interface AiSettingsCallbacks {
   onChange: () => void;
@@ -131,7 +132,7 @@ function buildLocalContextSection(cb: AiSettingsCallbacks): HTMLElement {
 
   const desc = document.createElement('div');
   desc.className = 'text-[11px] text-zinc-400 leading-snug';
-  desc.innerHTML = `WebLLM caps every prebuilt model's context window at compile time. We default to <strong>8K for 3B models</strong>, <strong>16K for 7-9B</strong>, and <strong>4K for the 70B</strong> (KV cache is too expensive at higher). You can override globally below; if the model's compiled WASM rejects the override, we fall back to 4K automatically and surface the error.`;
+  desc.innerHTML = `We request <strong>32K tokens</strong> for most models at load time, and <strong>4K for the 70B</strong> (its KV cache is too expensive at higher windows). The actual ceiling is whatever the model's compiled WASM accepts — fetched once from its config and cached. Set an override below to clamp lower; the value we'll request is <code>min(your override, model default, WASM ceiling)</code>. If a load still fails we walk down 32K → 16K → 8K → 4K until one sticks.`;
   wrap.appendChild(desc);
 
   const settings = loadSettings();
@@ -164,8 +165,15 @@ function buildLocalContextSection(cb: AiSettingsCallbacks): HTMLElement {
   if (settings.toggles.localModel) {
     try {
       const info = resolveLocalModel(settings.toggles.localModel);
+      // Distinguish "fetched from the model's config and known good"
+      // from "registry default we'll request on first load." The former
+      // is a hard ceiling; the latter is provisional until we've actually
+      // loaded the model once.
+      const fetched = getCachedCeiling(settings.toggles.localModel);
       const ceiling = effectiveContextCeiling(settings.toggles.localModel, info.contextWindowSize);
-      ceilingHint = ` · ${formatK(ceiling)} max for ${info.label}`;
+      ceilingHint = fetched !== null
+        ? ` · ${formatK(ceiling)} ceiling for ${info.label} (confirmed)`
+        : ` · ${formatK(ceiling)} requested for ${info.label} (real ceiling fetched on first load)`;
     } catch { /* stale id — skip ceiling hint */ }
   }
   overrideHint.textContent = `tokens · blank = per-model default${ceilingHint}`;
