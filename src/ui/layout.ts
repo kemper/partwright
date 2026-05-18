@@ -53,9 +53,9 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   editorHeader.appendChild(statusBar);
 
   const collapseEditorBtn = document.createElement('button');
-  collapseEditorBtn.className = 'shrink-0 p-1 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none';
-  collapseEditorBtn.textContent = '◀';
-  collapseEditorBtn.title = 'Hide code editor';
+  collapseEditorBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
+  collapseEditorBtn.textContent = 'Hide code';
+  collapseEditorBtn.title = 'Hide the code editor pane';
   editorHeader.appendChild(collapseEditorBtn);
 
   editorPane.appendChild(editorHeader);
@@ -203,9 +203,11 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   // flex sizing drives height.
   // Expand button — floats at the left edge of rightPane when editor is collapsed.
   const expandEditorBtn = document.createElement('button');
-  expandEditorBtn.className = 'absolute left-0 top-8 z-20 px-0.5 py-2 bg-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-r border-r border-t border-b border-zinc-700 text-xs leading-none hidden md:flex';
-  expandEditorBtn.textContent = '▶';
-  expandEditorBtn.title = 'Show code editor';
+  // No md:flex here — visibility is controlled entirely via classList.add/remove('hidden')
+  // so the toggle logic works correctly on all screen sizes.
+  expandEditorBtn.className = 'absolute left-0 top-8 z-20 px-2 py-1.5 bg-zinc-800 text-zinc-300 hover:text-zinc-100 hover:bg-zinc-700 rounded-r border-r border-t border-b border-zinc-700 text-xs leading-none whitespace-nowrap hidden';
+  expandEditorBtn.textContent = '▶ Show code';
+  expandEditorBtn.title = 'Show the code editor pane';
   rightPane.appendChild(expandEditorBtn);
 
   function collapseEditor(): void {
@@ -213,8 +215,6 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     editorPane.style.width = '0';
     editorPane.style.overflow = 'hidden';
     expandEditorBtn.classList.remove('hidden');
-    collapseEditorBtn.textContent = '▶';
-    collapseEditorBtn.title = 'Show code editor';
     splitter.classList.add('hidden');
     window.dispatchEvent(new Event('resize'));
   }
@@ -224,8 +224,6 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     editorPane.style.width = '35%';
     editorPane.style.overflow = '';
     expandEditorBtn.classList.add('hidden');
-    collapseEditorBtn.textContent = '◀';
-    collapseEditorBtn.title = 'Hide code editor';
     syncPaneVisibility();
     window.dispatchEvent(new Event('resize'));
   }
