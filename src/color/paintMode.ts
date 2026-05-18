@@ -6,7 +6,7 @@ import type { MeshData } from '../geometry/types';
 import { pickFace } from './facePicker';
 import { buildAdjacency, findCoplanarRegion, getTriangleNormal, type AdjacencyGraph } from './adjacency';
 import { addRegion, getRegions } from './regions';
-import { getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel } from '../renderer/viewport';
+import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
@@ -205,7 +205,11 @@ function onMouseMove(event: MouseEvent): void {
     if (result) {
       addBrushFootprint(result.triangleIndex, result.point, brushSession);
       showHighlight(brushSession);
+      // Ring must come after showHighlight (which calls clearHighlight internally).
       if (brushRadius > 0) showBrushRing(result.point, result.normal);
+      else clearBrushRing();
+    } else {
+      clearBrushRing();
     }
     return;
   }
@@ -213,6 +217,7 @@ function onMouseMove(event: MouseEvent): void {
   const result = pickFace(event);
   if (!result) {
     clearHighlight();
+    clearBrushRing();
     return;
   }
 
@@ -220,17 +225,22 @@ function onMouseMove(event: MouseEvent): void {
   if (currentTool === 'brush') {
     region = new Set<number>();
     addBrushFootprint(result.triangleIndex, result.point, region);
-    if (brushRadius > 0) showBrushRing(result.point, result.normal);
-    else clearBrushRing();
   } else {
     clearBrushRing();
     region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
   }
 
-  if (hoveredTriangles && setsEqual(hoveredTriangles, region)) return;
+  if (hoveredTriangles && setsEqual(hoveredTriangles, region)) {
+    // Triangles unchanged — just update ring position without rebuilding highlight.
+    if (currentTool === 'brush' && brushRadius > 0) showBrushRing(result.point, result.normal);
+    return;
+  }
 
   hoveredTriangles = region;
   showHighlight(region);
+  // Ring must come after showHighlight.
+  if (currentTool === 'brush' && brushRadius > 0) showBrushRing(result.point, result.normal);
+  else if (currentTool === 'brush') clearBrushRing();
 }
 
 function onMouseDown(event: MouseEvent): void {
@@ -311,7 +321,8 @@ function showBrushRing(point: [number, number, number], normal: [number, number,
     brushRingMesh = new THREE.LineLoop(geo, mat);
     brushRingMesh.name = 'brush-ring';
     brushRingMesh.renderOrder = 1001;
-    getMeshGroup().add(brushRingMesh);
+    // Use scene (not meshGroup) so updateMesh() clearing meshGroup doesn't remove it.
+    getScene().add(brushRingMesh);
   }
 
   brushRingMesh.position.set(point[0], point[1], point[2]);
@@ -321,7 +332,7 @@ function showBrushRing(point: [number, number, number], normal: [number, number,
 
 function clearBrushRing(): void {
   if (brushRingMesh) {
-    getMeshGroup().remove(brushRingMesh);
+    brushRingMesh.parent?.remove(brushRingMesh);
     brushRingMesh.geometry.dispose();
     (brushRingMesh.material as THREE.Material).dispose();
     brushRingMesh = null;
@@ -467,7 +478,6 @@ function clearHighlight(): void {
     highlightMesh = null;
   }
   hoveredTriangles = null;
-  clearBrushRing();
 }
 
 function setsEqual(a: Set<number>, b: Set<number>): boolean {

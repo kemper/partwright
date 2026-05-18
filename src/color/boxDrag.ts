@@ -146,7 +146,9 @@ function buildShape(): void {
   proxy = new THREE.Object3D();
   proxy.position.copy(center);
   proxy.scale.copy(size);
-  getMeshGroup().add(proxy);
+  // Attach to the scene (not meshGroup) so updateMesh() clearing meshGroup
+  // children doesn't wipe the proxy when a paint region is committed.
+  getScene().add(proxy);
 
   const geo = makeShapeGeometry(shapeType);
   const hex = colorToHex(getColor());
@@ -284,8 +286,9 @@ export function commitBox(): number {
   );
 
   // Dim the shape so the user can see the painted result underneath.
+  // Stays faint until the user hovers a gizmo handle or drags again.
   boxCommitted = true;
-  applyOpacity(0.05, 0.25);
+  applyOpacity(0.08, 0.4);
 
   return triangles.size;
 }
