@@ -72,7 +72,7 @@ export interface SessionNote {
 const DB_NAME = 'partwright';
 const LEGACY_DB_NAME = 'mainifold';
 const LEGACY_MIGRATION_KEY = 'partwright-migrated-mainifold-db';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 /** Opens the partwright IndexedDB. Exposed so the AI subsystem can attach
  *  its own stores (`aiKeys`, `aiChats`) without duplicating the connection. */
@@ -109,6 +109,13 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('aiChats')) {
         const store = db.createObjectStore('aiChats', { keyPath: 'id' });
         store.createIndex('sessionId', 'sessionId', { unique: false });
+      }
+      // v4: backing store for the attach-image picker's "recent" list.
+      // Keyed by SHA-256 of the image bytes so re-uploading the same file
+      // bumps lastUsedAt instead of duplicating the row.
+      if (!db.objectStoreNames.contains('aiAttachments')) {
+        const store = db.createObjectStore('aiAttachments', { keyPath: 'id' });
+        store.createIndex('lastUsedAt', 'lastUsedAt', { unique: false });
       }
     };
     req.onsuccess = () => {

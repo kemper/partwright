@@ -16,6 +16,8 @@ import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiLocalModal } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { showCompactConfirmModal } from './aiCompactModal';
+import { showAttachmentModal } from './aiAttachmentModal';
+import { putAttachment } from '../ai/attachments';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
 import { activeModel, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type TurnOutcomeReason } from '../ai/types';
 
@@ -298,20 +300,15 @@ function buildDrawer(): void {
   const fileBtn = document.createElement('button');
   fileBtn.className = 'shrink-0 px-2 py-1 rounded text-[11px] text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700';
   fileBtn.textContent = '📎';
-  fileBtn.title = 'Attach an image from disk.';
-  const fileInput = document.createElement('input');
-  fileInput.type = 'file';
-  fileInput.accept = 'image/*';
-  fileInput.multiple = true;
-  fileInput.className = 'hidden';
-  fileInput.addEventListener('change', async () => {
-    if (!fileInput.files) return;
-    for (const file of Array.from(fileInput.files)) await attachFile(file);
-    fileInput.value = '';
+  fileBtn.title = 'Attach an image — pick from recent files or upload a new one.';
+  fileBtn.addEventListener('click', () => {
+    showAttachmentModal({
+      onAttach: images => {
+        for (const img of images) attachImageSource(img);
+      },
+    });
   });
-  fileBtn.addEventListener('click', () => fileInput.click());
   inputRow.appendChild(fileBtn);
-  inputRow.appendChild(fileInput);
 
   const ta = document.createElement('textarea');
   ta.placeholder = 'Ask the AI to model something...';
@@ -1033,8 +1030,19 @@ async function attachFile(file: File): Promise<void> {
     setTransientStatus(`Skipped non-image: ${file.name}`);
     return;
   }
+  attachImageSource(img);
+}
+
+/** Single entry point that pushes an image into the pending row AND
+ *  records it in the recent-attachments store. Both the modal callback
+ *  and the paste/drag-drop helpers route through this so re-attaches
+ *  always show up in the picker on the next open. */
+function attachImageSource(img: ImageSource): void {
   state.pendingImages.push(img);
   renderPendingImages();
+  // Fire-and-forget — IDB write failures shouldn't block the UI; the
+  // image is already attached to this turn either way.
+  void putAttachment(img).catch(err => console.warn('Recent attachments: write failed', err));
 }
 
 function renderPendingImages(): void {
