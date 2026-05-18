@@ -10,9 +10,9 @@
 //   * Tool calls come back as `{ id, function: { name, arguments } }` with
 //     arguments as a JSON-encoded string. We parse it here so chatLoop only
 //     ever deals with parsed objects (matching what Anthropic returns).
-//   * Every shipped model uses the prompt-engineered `<tool_call>` path
-//     today — see `supportsNativeToolCalls` for why Hermes-3 doesn't take
-//     the OpenAI-native path even though WebLLM advertises it as capable.
+//   * Every curated model uses the prompt-engineered `<tool_call>` path —
+//     WebLLM's native path is blocked for Hermes-2-Pro (rejects custom system
+//     prompts) and unreliable for the rest. See `supportsNativeToolCalls`.
 
 import type {
   ChatBlock,
@@ -461,10 +461,10 @@ export interface LocalRequestSpec {
  *
  *  Two tool-calling strategies, chosen per model:
  *    * Native — models we've verified work with WebLLM's OpenAI `tools`
- *      path (see `supportsNativeToolCalls`). Currently empty: WebLLM 0.2.83
- *      only wires up the Hermes-2-Pro family end-to-end, and we don't ship
- *      a Hermes-2-Pro model.
- *    * Prompt-engineered — every other model rejects the `tools` field
+ *      path (see `supportsNativeToolCalls`). Currently unused for all curated
+ *      models: WebLLM rejects a custom system prompt when tools are passed for
+ *      Hermes-2-Pro, making the path incompatible with Partwright's prompts.
+ *    * Prompt-engineered — every curated model uses this path: the `tools`
  *      with an UnsupportedModelIdError. We inject tool descriptions into
  *      the system prompt and ask the model to emit `<tool_call>{...}</tool_call>`
  *      blocks, then parse them out post-stream. */
@@ -664,13 +664,13 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
 /** Cached lookup of WebLLM's `functionCallingModelIds`. Async because the
  *  list lives inside the lazy-loaded WebLLM chunk.
  *
- *  We also gate on our own `officialToolCalling` flag because WebLLM's list
- *  is over-inclusive: as of 0.2.83 it advertises Hermes-3-Llama-3.1-8B as
- *  function-calling capable, but only `Hermes-2-Pro-*` models get the
- *  hardcoded system-prompt + JSON schema injection that actually makes
- *  native tool calls work. Hermes-3 just sees the `tools` field with no
- *  output-format constraint and responds in plain prose. Routing it
- *  through our prompt-engineered `<tool_call>` path is far more reliable. */
+ *  We gate on our own `officialToolCalling` flag (currently false for all
+ *  curated models) because WebLLM's list is over-inclusive: Hermes-3 is
+ *  listed but receives no JSON-schema injection, so it responds in plain
+ *  prose. Hermes-2-Pro does get schema injection but WebLLM rejects any
+ *  custom system prompt when tools are passed — incompatible with
+ *  Partwright's prompts. Both are routed through the prompt-engineered
+ *  `<tool_call>` path instead. */
 let nativeIdsCache: Set<string> | null = null;
 async function supportsNativeToolCalls(modelId: string): Promise<boolean> {
   if (!nativeIdsCache) {

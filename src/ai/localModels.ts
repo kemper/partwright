@@ -60,13 +60,12 @@ export interface LocalModelInfo {
    *  user-added models can opt in, even though no built-in model currently
    *  supports vision. */
   supportsVision: boolean;
-  /** True when WebLLM's native tool-calling path actually works end-to-end
-   *  for this model — meaning WebLLM both accepts the OpenAI `tools` field
-   *  AND injects the JSON-output system prompt + schema constraint. As of
-   *  WebLLM 0.2.83 the only model where both pieces are wired up is the
-   *  Hermes-2-Pro family. Hermes-3 is on `functionCallingModelIds` but
-   *  doesn't get the schema injection, so it goes through our prompt-
-   *  engineered `<tool_call>` path like the rest. */
+  /** True when WebLLM's native tool-calling path works end-to-end for this
+   *  model — WebLLM accepts the OpenAI `tools` field AND injects a JSON-schema
+   *  constrained system prompt. Currently false for all curated models: WebLLM
+   *  rejects any custom system prompt when tools are passed for Hermes-2-Pro,
+   *  and Hermes-3 / other models don't get schema injection at all. Every
+   *  curated model uses our prompt-engineered `<tool_call>` path instead. */
   officialToolCalling: boolean;
   /** Subjective quality rating for *this app's* use case (driving Partwright
    *  with tool calls), 1-3 stars. Not a generic LLM benchmark. */
@@ -97,14 +96,14 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     id: 'Hermes-2-Pro-Llama-3-8B-q4f16_1-MLC',
     group: 'recommended',
     label: 'Hermes 2 Pro 8B',
-    blurb: 'The only model on this list that uses WebLLM\'s native function-calling pipeline — JSON-schema constrained decoding makes tool-call format failures essentially impossible. Start here.',
+    blurb: 'NousResearch\'s function-call–tuned Llama 3 8B. Reliable at the prompt-engineered <tool_call> format and strong at multi-step reasoning. Start here.',
     downloadGB: 4.5,
     vramMB: 4976,
     // Llama 3 8B: 32 layers × 8 KV heads × 128 head_dim × 4 bytes × 1000 / 1024² ≈ 128 MB/1K
     kvCacheMBPer1kTokens: 128,
     recommendedSystem: 'Discrete GPU with 8+ GB VRAM, or Apple Silicon with 16+ GB unified RAM.',
     supportsVision: false,
-    officialToolCalling: true,
+    officialToolCalling: false,
     qualityStars: 3,
     promptTier: 'medium',
     contextWindowSize: 32768,
