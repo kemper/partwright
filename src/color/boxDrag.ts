@@ -9,7 +9,7 @@
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import type { MeshData } from '../geometry/types';
-import { getScene, getCamera, getRenderer, getMeshGroup, setGizmoLock } from '../renderer/viewport';
+import { getScene, getCamera, getRenderer, setGizmoLock } from '../renderer/viewport';
 import { addRegion, getRegions } from './regions';
 import { getColor, getCurrentMesh } from './paintMode';
 import { findShapeTriangles, type OrientedBox, type ShapeType } from './boxPaint';
