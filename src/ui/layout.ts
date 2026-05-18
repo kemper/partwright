@@ -34,7 +34,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   editorPane.className = 'flex flex-col flex-1 md:flex-none min-h-0 border-b md:border-b-0 md:border-r border-zinc-700';
 
   const editorHeader = document.createElement('div');
-  editorHeader.className = 'flex items-center justify-between px-3 py-1.5 bg-zinc-800 border-b border-zinc-700';
+  editorHeader.className = 'flex items-center px-3 py-1.5 bg-zinc-800 border-b border-zinc-700 gap-2';
 
   const editorTitle = document.createElement('span');
   editorTitle.id = 'editor-title';
@@ -42,11 +42,21 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   editorTitle.textContent = 'editor.js';
   editorHeader.appendChild(editorTitle);
 
+  const editorHeaderSpacer = document.createElement('div');
+  editorHeaderSpacer.className = 'flex-1';
+  editorHeader.appendChild(editorHeaderSpacer);
+
   const statusBar = document.createElement('span');
   statusBar.id = 'status-indicator';
   statusBar.className = 'text-xs text-emerald-400 font-mono';
   statusBar.textContent = 'Ready';
   editorHeader.appendChild(statusBar);
+
+  const collapseEditorBtn = document.createElement('button');
+  collapseEditorBtn.className = 'shrink-0 p-1 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none';
+  collapseEditorBtn.textContent = '◀';
+  collapseEditorBtn.title = 'Hide code editor';
+  editorHeader.appendChild(collapseEditorBtn);
 
   editorPane.appendChild(editorHeader);
 
@@ -73,7 +83,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
 
   // === Right (or bottom on mobile): Tabbed viewport ===
   const rightPane = document.createElement('div');
-  rightPane.className = 'flex-1 flex flex-col min-w-0 min-h-0';
+  rightPane.className = 'flex-1 flex flex-col min-w-0 min-h-0 relative';
 
   // Tab bar — horizontally scrollable on narrow viewports so all tabs stay reachable.
   const tabBar = document.createElement('div');
@@ -184,28 +194,66 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   // Tracks the most recently activated tab so breakpoint or mobile-pane
   // changes can recompose visibility without re-running tab DOM toggling.
   let _currentTab: TabName = 'interactive';
+  let editorCollapsed = false;
   const mqDesktop = window.matchMedia('(min-width: 768px)');
 
   // Composes desktop/mobile pane visibility from the active tab and (on mobile)
   // the persisted mobile pane choice. Also keeps the editor pane's inline
   // width in sync with the breakpoint: only set at md+, cleared on mobile so
   // flex sizing drives height.
+  // Expand button — floats at the left edge of rightPane when editor is collapsed.
+  const expandEditorBtn = document.createElement('button');
+  expandEditorBtn.className = 'absolute left-0 top-8 z-20 px-0.5 py-2 bg-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-r border-r border-t border-b border-zinc-700 text-xs leading-none hidden md:flex';
+  expandEditorBtn.textContent = '▶';
+  expandEditorBtn.title = 'Show code editor';
+  rightPane.appendChild(expandEditorBtn);
+
+  function collapseEditor(): void {
+    editorCollapsed = true;
+    editorPane.style.width = '0';
+    editorPane.style.overflow = 'hidden';
+    expandEditorBtn.classList.remove('hidden');
+    collapseEditorBtn.textContent = '▶';
+    collapseEditorBtn.title = 'Show code editor';
+    splitter.classList.add('hidden');
+    window.dispatchEvent(new Event('resize'));
+  }
+
+  function expandEditor(): void {
+    editorCollapsed = false;
+    editorPane.style.width = '35%';
+    editorPane.style.overflow = '';
+    expandEditorBtn.classList.add('hidden');
+    collapseEditorBtn.textContent = '◀';
+    collapseEditorBtn.title = 'Hide code editor';
+    syncPaneVisibility();
+    window.dispatchEvent(new Event('resize'));
+  }
+
+  collapseEditorBtn.addEventListener('click', () => {
+    if (editorCollapsed) expandEditor(); else collapseEditor();
+  });
+  expandEditorBtn.addEventListener('click', expandEditor);
+
   function syncPaneVisibility() {
     const tab = _currentTab;
     const tabHidesEditor = tab === 'ai' || tab === 'elevations' || tab === 'diff';
     const isDesktop = mqDesktop.matches;
 
     if (isDesktop) {
-      // Restore inline width if it was cleared on mobile.
-      if (!editorPane.style.width) editorPane.style.width = '35%';
+      // Restore inline width if it was cleared on mobile, but not if collapsed.
+      if (!editorCollapsed && !editorPane.style.width) editorPane.style.width = '35%';
       editorPane.classList.toggle('hidden', tabHidesEditor);
-      splitter.classList.toggle('hidden', tabHidesEditor);
+      splitter.classList.toggle('hidden', tabHidesEditor || editorCollapsed);
+      expandEditorBtn.classList.toggle('hidden', tabHidesEditor || !editorCollapsed);
       rightPane.classList.remove('hidden');
       mobilePaneToggle.classList.add('hidden');
     } else {
       // Mobile: clear inline width so flex sizing controls the editor's height.
       editorPane.style.width = '';
+      editorPane.style.overflow = '';
       splitter.classList.add('hidden');
+      expandEditorBtn.classList.add('hidden');
       if (tabHidesEditor) {
         editorPane.classList.add('hidden');
         rightPane.classList.remove('hidden');
@@ -326,6 +374,12 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   } else if (initParams.get('view') === 'ai') {
     applyTab('ai');
   }
+
+  const expandEditorBtn = document.createElement('button');
+  expandEditorBtn.className = 'absolute left-0 top-8 z-20 px-0.5 py-2 bg-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-r border-r border-t border-b border-zinc-700 text-xs leading-none hidden';
+  expandEditorBtn.textContent = '▶';
+  expandEditorBtn.title = 'Show code editor';
+  rightPane.appendChild(expandEditorBtn);
 
   rightPane.appendChild(tabBar);
   rightPane.appendChild(viewportPane);

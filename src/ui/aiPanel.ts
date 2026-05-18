@@ -134,6 +134,7 @@ let progressTickerId: number | null = null;
 let navigateToEditorFn: (() => Promise<void> | void) | null = null;
 let modelPickerEl: HTMLElement | null = null;
 let promptChipEl: HTMLElement | null = null;
+let panelWidth = 420;
 
 /** Set by the watchdog when it abort()s mid-stream so sendMessage knows
  *  this was a stall recovery (auto-resume), not a user-initiated stop. */
@@ -157,6 +158,7 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   cachedAiMdLength = buildSystemPrompt(aiMd).length;
 
   const settings = loadSettings();
+  panelWidth = settings.aiPanelWidth;
   state.open = settings.drawerOpen;
 
   buildDrawer();
@@ -206,6 +208,9 @@ function showDrawer(): void {
   state.open = true;
   drawerEl.classList.remove('translate-x-full');
   drawerEl.classList.add('translate-x-0');
+  const app = document.getElementById('app');
+  if (app) app.style.paddingRight = `${panelWidth}px`;
+  window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: true });
   inputEl?.focus();
 }
@@ -215,6 +220,9 @@ function hideDrawer(): void {
   state.open = false;
   drawerEl.classList.remove('translate-x-0');
   drawerEl.classList.add('translate-x-full');
+  const app = document.getElementById('app');
+  if (app) app.style.paddingRight = '0';
+  window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: false });
 }
 
@@ -228,56 +236,82 @@ async function loadHistoryForCurrentSession(): Promise<void> {
 function buildDrawer(): void {
   const root = document.createElement('div');
   root.id = 'ai-panel';
-  root.className = 'fixed top-0 right-0 h-screen w-[420px] bg-zinc-900 border-l border-zinc-700 shadow-2xl z-40 flex flex-col transition-transform duration-200 translate-x-full';
+  root.className = 'fixed top-0 right-0 h-screen bg-zinc-900 border-l border-zinc-700 shadow-2xl z-40 flex flex-col transition-transform duration-200 translate-x-full';
+  root.style.width = `${panelWidth}px`;
   drawerEl = root;
 
-  // Header — title, model picker, preset picker, close
+  const app = document.getElementById('app');
+  if (app) app.style.transition = 'padding-right 200ms ease';
+
+  // Left-edge drag handle for resizing panel width
+  const panelResizeHandle = document.createElement('div');
+  panelResizeHandle.className = 'absolute top-0 left-0 h-full w-1.5 cursor-col-resize z-10 touch-none group';
+  const panelResizeStripe = document.createElement('div');
+  panelResizeStripe.className = 'absolute inset-y-0 left-0 w-px bg-zinc-700 group-hover:bg-blue-500 group-[.is-dragging]:bg-blue-500 transition-colors';
+  panelResizeHandle.appendChild(panelResizeStripe);
+  initPanelResizer(panelResizeHandle);
+  root.appendChild(panelResizeHandle);
+
+  // Header — 2 rows so close button is always visible regardless of content width
   const header = document.createElement('div');
-  header.className = 'flex items-center gap-2 px-3 py-2 border-b border-zinc-700 shrink-0';
+  header.className = 'flex flex-col border-b border-zinc-700 shrink-0';
+
+  // Row 1: title, model picker, (spacer), close button — always fits
+  const headerRow1 = document.createElement('div');
+  headerRow1.className = 'flex items-center gap-2 px-3 py-1.5 min-w-0';
 
   const titleEl = document.createElement('div');
-  titleEl.className = 'text-sm font-semibold text-zinc-100 mr-1';
+  titleEl.className = 'text-sm font-semibold text-zinc-100 shrink-0';
   titleEl.textContent = 'AI';
-  header.appendChild(titleEl);
+  headerRow1.appendChild(titleEl);
 
   modelPickerEl = document.createElement('div');
-  modelPickerEl.className = 'flex items-center gap-1';
-  header.appendChild(modelPickerEl);
+  modelPickerEl.className = 'flex items-center gap-1 min-w-0 shrink';
+  headerRow1.appendChild(modelPickerEl);
   renderModelPicker();
 
+  const headerSpacer = document.createElement('div');
+  headerSpacer.className = 'flex-1';
+  headerRow1.appendChild(headerSpacer);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'shrink-0 px-2 py-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 text-sm';
+  closeBtn.textContent = '✕';
+  closeBtn.title = 'Close AI panel';
+  closeBtn.addEventListener('click', hideDrawer);
+  headerRow1.appendChild(closeBtn);
+
+  header.appendChild(headerRow1);
+
+  // Row 2: prompt chip, preset picker, compact, clear, settings — secondary controls
+  const headerRow2 = document.createElement('div');
+  headerRow2.className = 'flex items-center gap-1.5 px-3 pb-1.5 flex-wrap';
+
   promptChipEl = document.createElement('span');
-  header.appendChild(promptChipEl);
+  headerRow2.appendChild(promptChipEl);
   renderPromptChip();
 
   const presetSelect = createPresetSelect();
-  header.appendChild(presetSelect);
+  headerRow2.appendChild(presetSelect);
 
   const compactBtn = createIconButton('Compact', '⤓ Compact');
   compactBtn.title = 'Compact the conversation: summarize older turns and promote insights to session notes.';
   compactBtn.addEventListener('click', () => { void runCompact(); });
-  header.appendChild(compactBtn);
+  headerRow2.appendChild(compactBtn);
 
   const clearBtn = createIconButton('Clear', '🗑');
   clearBtn.title = 'Clear the chat history for the current session. The conversation is removed from your browser; saved versions and notes are untouched.';
   clearBtn.addEventListener('click', () => { void clearCurrentChat(); });
-  header.appendChild(clearBtn);
+  headerRow2.appendChild(clearBtn);
 
   const settingsBtn = createIconButton('Settings', '⚙');
   settingsBtn.title = 'AI settings: provider, key, lifetime usage.';
   settingsBtn.addEventListener('click', () => {
     void showAiSettingsModal({ onChange: () => { renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); renderPromptChip(); panelStatusUpdate(); } });
   });
-  header.appendChild(settingsBtn);
+  headerRow2.appendChild(settingsBtn);
 
-  const spacer = document.createElement('div');
-  spacer.className = 'flex-1';
-  header.appendChild(spacer);
-
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'px-2 py-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 text-sm';
-  closeBtn.textContent = '✕';
-  closeBtn.addEventListener('click', hideDrawer);
-  header.appendChild(closeBtn);
+  header.appendChild(headerRow2);
 
   root.appendChild(header);
 
@@ -290,6 +324,20 @@ function buildDrawer(): void {
   transcriptEl = document.createElement('div');
   transcriptEl.className = 'flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-3';
   root.appendChild(transcriptEl);
+
+  // Vertical drag handle for resizing input area
+  const inputResizeHandle = document.createElement('div');
+  inputResizeHandle.className = 'shrink-0 h-1.5 cursor-row-resize touch-none group relative';
+  const inputResizeStripe = document.createElement('div');
+  inputResizeStripe.className = 'absolute inset-x-0 top-1/2 h-px bg-zinc-700 group-hover:bg-blue-500 group-[.is-dragging]:bg-blue-500 transition-colors';
+  inputResizeHandle.appendChild(inputResizeStripe);
+  root.appendChild(inputResizeHandle);
+
+  // Bottom section — rewind, toggles, cost, input
+  const bottomSection = document.createElement('div');
+  bottomSection.className = 'flex flex-col shrink-0 overflow-hidden';
+  bottomSection.style.height = '220px';
+  initInputResizer(inputResizeHandle, bottomSection);
 
   // Rewind / fast-forward row — sits just above the controls so it's
   // near the input and clearly associated with conversation history.
@@ -314,22 +362,22 @@ function buildDrawer(): void {
   forwardBtnRef = forwardBtn;
   rewindRow.appendChild(forwardBtn);
 
-  root.appendChild(rewindRow);
+  bottomSection.appendChild(rewindRow);
 
   // Toggle strip
   toggleStripEl = document.createElement('div');
   toggleStripEl.className = 'px-3 py-1.5 border-t border-zinc-800 flex flex-wrap items-center gap-1.5 shrink-0';
-  root.appendChild(toggleStripEl);
+  bottomSection.appendChild(toggleStripEl);
 
   // Cost meter
   costMeterEl = document.createElement('div');
   costMeterEl.className = 'px-3 pb-1.5 text-[10px] text-zinc-500 flex items-center gap-2 shrink-0';
-  root.appendChild(costMeterEl);
+  bottomSection.appendChild(costMeterEl);
 
   // Pending image attachments row (hidden until something is pending)
   pendingImagesEl = document.createElement('div');
   pendingImagesEl.className = 'px-3 pb-1.5 flex flex-wrap gap-1.5 shrink-0 hidden';
-  root.appendChild(pendingImagesEl);
+  bottomSection.appendChild(pendingImagesEl);
 
   // In-progress indicator — shown while a turn is in flight so the user
   // knows we haven't frozen. Hidden by default; populated by
@@ -337,7 +385,7 @@ function buildDrawer(): void {
   // and the stall watchdog.
   progressEl = document.createElement('div');
   progressEl.className = 'px-3 pb-1.5 text-[11px] text-zinc-400 flex items-center gap-2 shrink-0 hidden';
-  root.appendChild(progressEl);
+  bottomSection.appendChild(progressEl);
 
   // Queued-message badge — shown when the human has typed a follow-up
   // mid-run. Sits just above the input row so the user can see at a glance
@@ -345,7 +393,7 @@ function buildDrawer(): void {
   queuedBadgeRef = document.createElement('div');
   queuedBadgeRef.id = 'queued-message-badge';
   queuedBadgeRef.className = 'px-3 pb-1.5 text-[11px] text-amber-300 flex items-center gap-2 shrink-0 hidden';
-  root.appendChild(queuedBadgeRef);
+  bottomSection.appendChild(queuedBadgeRef);
 
   // Input row
   const inputRow = document.createElement('div');
@@ -431,7 +479,8 @@ function buildDrawer(): void {
   sendBtnRef = sendBtn;
   inputRow.appendChild(sendBtn);
 
-  root.appendChild(inputRow);
+  bottomSection.appendChild(inputRow);
+  root.appendChild(bottomSection);
 
   // Drag-drop image handling
   root.addEventListener('dragover', e => { e.preventDefault(); root.classList.add('ring-2', 'ring-blue-500'); });
@@ -449,6 +498,83 @@ function buildDrawer(): void {
   renderCostMeter();
   renderTranscript();
   panelStatusUpdate();
+}
+
+function initPanelResizer(handle: HTMLElement): void {
+  let startX = 0;
+  let startWidth = 0;
+
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    e.preventDefault();
+    startX = e.clientX;
+    startWidth = drawerEl!.getBoundingClientRect().width;
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add('is-dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  handle.addEventListener('pointermove', (e) => {
+    if (!handle.hasPointerCapture(e.pointerId)) return;
+    const delta = startX - e.clientX;
+    const minW = 280;
+    const maxW = Math.min(900, window.innerWidth - 200);
+    panelWidth = Math.max(minW, Math.min(maxW, startWidth + delta));
+    if (drawerEl) drawerEl.style.width = `${panelWidth}px`;
+    if (state.open) {
+      const app = document.getElementById('app');
+      if (app) app.style.paddingRight = `${panelWidth}px`;
+    }
+    window.dispatchEvent(new Event('resize'));
+  });
+
+  const onPanelResizeEnd = (e: PointerEvent) => {
+    if (!handle.hasPointerCapture(e.pointerId)) return;
+    handle.releasePointerCapture(e.pointerId);
+    handle.classList.remove('is-dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    saveSettings({ ...loadSettings(), aiPanelWidth: panelWidth });
+  };
+
+  handle.addEventListener('pointerup', onPanelResizeEnd);
+  handle.addEventListener('pointercancel', onPanelResizeEnd);
+}
+
+function initInputResizer(handle: HTMLElement, bottomSection: HTMLElement): void {
+  let startY = 0;
+  let startHeight = 0;
+
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    e.preventDefault();
+    startY = e.clientY;
+    startHeight = bottomSection.getBoundingClientRect().height;
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add('is-dragging');
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  handle.addEventListener('pointermove', (e) => {
+    if (!handle.hasPointerCapture(e.pointerId)) return;
+    const delta = startY - e.clientY;
+    const minH = 100;
+    const maxH = 520;
+    bottomSection.style.height = `${Math.max(minH, Math.min(maxH, startHeight + delta))}px`;
+  });
+
+  const onInputResizeEnd = (e: PointerEvent) => {
+    if (!handle.hasPointerCapture(e.pointerId)) return;
+    handle.releasePointerCapture(e.pointerId);
+    handle.classList.remove('is-dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  };
+
+  handle.addEventListener('pointerup', onInputResizeEnd);
+  handle.addEventListener('pointercancel', onInputResizeEnd);
 }
 
 function createIconButton(_label: string, glyph: string): HTMLButtonElement {

@@ -31,6 +31,8 @@ export interface AiSettings {
    *  VRAM for longer conversations, or flip into sliding-window mode so
    *  old turns drop off silently instead of erroring. */
   localContext: LocalContextSettings;
+  /** Saved width of the AI chat drawer in pixels. */
+  aiPanelWidth: number;
 }
 
 export interface CustomLocalModel {
@@ -110,6 +112,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   systemPromptOverrides: { anthropic: null, local: null },
   customLocalModels: [],
   localContext: { windowSizeOverride: null, sliding: false },
+  aiPanelWidth: 420,
 };
 
 let cached: AiSettings | null = null;
@@ -247,6 +250,7 @@ interface LegacyAiSettings {
   systemPromptOverrides?: Partial<AiSettings['systemPromptOverrides']>;
   customLocalModels?: CustomLocalModel[];
   localContext?: Partial<LocalContextSettings>;
+  aiPanelWidth?: number;
 }
 
 function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
@@ -281,6 +285,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
     },
     customLocalModels: Array.isArray(partial.customLocalModels) ? partial.customLocalModels : [],
     localContext: normalizeLocalContext(partial.localContext),
+    aiPanelWidth: typeof partial.aiPanelWidth === 'number' && partial.aiPanelWidth >= 280 ? partial.aiPanelWidth : DEFAULT_SETTINGS.aiPanelWidth,
   };
 }
 
