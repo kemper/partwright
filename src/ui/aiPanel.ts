@@ -402,9 +402,10 @@ function buildDrawer(): void {
   queuedBadgeRef.className = 'px-3 pb-1.5 text-[11px] text-amber-300 flex items-center gap-2 shrink-0 hidden';
   bottomSection.appendChild(queuedBadgeRef);
 
-  // Input row
+  // Input row — flex-1 so it absorbs any extra height when the user drags
+  // the resize handle above the bottom section upward.
   const inputRow = document.createElement('div');
-  inputRow.className = 'px-3 py-2 border-t border-zinc-700 flex items-end gap-2 shrink-0';
+  inputRow.className = 'px-3 py-2 border-t border-zinc-700 flex items-end gap-2 flex-1 min-h-0';
 
   const showAiBtn = document.createElement('button');
   showAiBtn.className = 'shrink-0 px-2 py-1 rounded text-[11px] text-zinc-300 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700';
@@ -429,7 +430,10 @@ function buildDrawer(): void {
   const ta = document.createElement('textarea');
   ta.placeholder = 'Ask the AI to model something...';
   ta.rows = 2;
-  ta.className = 'flex-1 px-2 py-1 rounded bg-zinc-800 border border-zinc-600 text-zinc-100 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 resize-none';
+  // self-stretch overrides the items-end alignment for this element only,
+  // letting the textarea fill the full height of inputRow while buttons
+  // remain bottom-aligned.
+  ta.className = 'flex-1 self-stretch px-2 py-1 rounded bg-zinc-800 border border-zinc-600 text-zinc-100 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 resize-none';
   ta.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
