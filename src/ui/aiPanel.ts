@@ -208,8 +208,11 @@ function showDrawer(): void {
   state.open = true;
   drawerEl.classList.remove('translate-x-full');
   drawerEl.classList.add('translate-x-0');
-  const app = document.getElementById('app');
-  if (app) app.style.paddingRight = `${panelWidth}px`;
+  // Only push content on desktop — mobile layout is stacked, not side-by-side.
+  if (window.matchMedia('(min-width: 768px)').matches) {
+    const app = document.getElementById('app');
+    if (app) app.style.paddingRight = `${panelWidth}px`;
+  }
   window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: true });
   inputEl?.focus();
@@ -243,11 +246,13 @@ function buildDrawer(): void {
   const app = document.getElementById('app');
   if (app) app.style.transition = 'padding-right 200ms ease';
 
-  // Left-edge drag handle for resizing panel width
+  // Left-edge drag handle for resizing panel width.
+  // w-5 (20px) gives a finger-friendly touch target; the visible stripe stays
+  // 1px wide so it doesn't look like a thick border.
   const panelResizeHandle = document.createElement('div');
-  panelResizeHandle.className = 'absolute top-0 left-0 h-full w-1.5 cursor-col-resize z-10 touch-none group';
+  panelResizeHandle.className = 'absolute top-0 left-0 h-full w-5 -translate-x-1/2 cursor-col-resize z-10 touch-none group';
   const panelResizeStripe = document.createElement('div');
-  panelResizeStripe.className = 'absolute inset-y-0 left-0 w-px bg-zinc-700 group-hover:bg-blue-500 group-[.is-dragging]:bg-blue-500 transition-colors';
+  panelResizeStripe.className = 'absolute inset-y-0 left-1/2 w-px bg-zinc-700 group-hover:bg-blue-500 group-[.is-dragging]:bg-blue-500 transition-colors';
   panelResizeHandle.appendChild(panelResizeStripe);
   initPanelResizer(panelResizeHandle);
   root.appendChild(panelResizeHandle);
@@ -325,11 +330,13 @@ function buildDrawer(): void {
   transcriptEl.className = 'flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-3';
   root.appendChild(transcriptEl);
 
-  // Vertical drag handle for resizing input area
+  // Vertical drag handle for resizing input area.
+  // h-5 (20px) gives a finger-friendly touch target; the visible stripe stays
+  // 1px tall centered in the hit area.
   const inputResizeHandle = document.createElement('div');
-  inputResizeHandle.className = 'shrink-0 h-1.5 cursor-row-resize touch-none group relative';
+  inputResizeHandle.className = 'shrink-0 h-5 cursor-row-resize touch-none group relative';
   const inputResizeStripe = document.createElement('div');
-  inputResizeStripe.className = 'absolute inset-x-0 top-1/2 h-px bg-zinc-700 group-hover:bg-blue-500 group-[.is-dragging]:bg-blue-500 transition-colors';
+  inputResizeStripe.className = 'absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-zinc-700 group-hover:bg-blue-500 group-[.is-dragging]:bg-blue-500 transition-colors';
   inputResizeHandle.appendChild(inputResizeStripe);
   root.appendChild(inputResizeHandle);
 
@@ -522,7 +529,7 @@ function initPanelResizer(handle: HTMLElement): void {
     const maxW = Math.min(900, window.innerWidth - 200);
     panelWidth = Math.max(minW, Math.min(maxW, startWidth + delta));
     if (drawerEl) drawerEl.style.width = `${panelWidth}px`;
-    if (state.open) {
+    if (state.open && window.matchMedia('(min-width: 768px)').matches) {
       const app = document.getElementById('app');
       if (app) app.style.paddingRight = `${panelWidth}px`;
     }
