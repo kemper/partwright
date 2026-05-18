@@ -103,10 +103,13 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   const { apiKey, toggles, sessionId, history, userBlocks, signal } = input;
   const tools = buildToolList(toggles);
 
-  // The full ai.md is ~15K tokens — fine for hosted Claude with prompt
-  // caching, but ruinous for a local 1-8B model with a 4K window. Use a
-  // hand-tuned slim/medium prompt on the local path. Either path honors
-  // the per-provider user override if one is set in AI settings.
+  // The full ai.md is ~12.5K tokens — fine for hosted Claude with prompt
+  // caching. Most local models have 32K context so it technically fits
+  // there too, but smaller models do better with the hand-tuned
+  // slim/medium prompts (which leave more room for tool docs +
+  // conversation + the reply) and call readDoc to pull subdocs on demand.
+  // Either path honors the per-provider user override if one is set in
+  // AI settings.
   const settings = loadSettings();
   const override = settings.systemPromptOverrides?.[toggles.provider] ?? null;
   let systemPrompt: string;

@@ -276,21 +276,23 @@ export function buildSystemPrompt(aiMd: string): string {
   return PREAMBLE + aiMd;
 }
 
-/** Local models cap at 4K context. The full `ai.md` is ~15K tokens — it
- *  blows the budget before the user even speaks. This is a hand-tuned
- *  ~1K-token replacement covering the essentials a 1-8B model needs to
- *  drive Partwright: API surface, coordinate system, mandatory `return`,
- *  the session-versioning workflow, and a nudge to use tools instead of
- *  narrating. Tool calling format is appended separately in `local.ts`. */
+/** Slim local prompt (~700 tokens) — the default for smaller local models
+ *  (Phi-4-mini, Qwen 3B/4B, Llama 3.2 3B). Covers the essentials a 1-4B
+ *  model needs to drive Partwright: API surface, coordinate system,
+ *  mandatory `return`, the session-versioning workflow, and a nudge to
+ *  use tools instead of narrating. Tool calling format is appended
+ *  separately in `local.ts`. Detailed topic instructions live in the
+ *  /ai/<name>.md subdocs, fetched on demand via the readDoc tool. */
 export function buildLocalSystemPrompt(): string {
   return LOCAL_SYSTEM_PROMPT;
 }
 
-/** Beefier local prompt for models that can absorb more guidance — adds
- *  more API examples, a longer workflow section, and explicit common-error
- *  callouts. Still slim enough (~1200 tokens) to leave room for tool docs,
- *  conversation, and the model's reply in WebLLM's hard 4K-token window.
- *  Used when LocalModelInfo.promptTier === 'medium'. */
+/** Medium local prompt (~1100 tokens) — the default for the larger models
+ *  (Hermes 2 Pro 8B, Hermes 3 8B, Qwen3 8B+, Qwen 2.5 Coder 7B, Llama
+ *  3.1 70B). Adds more API examples, a longer workflow section, and
+ *  explicit common-error callouts. Still small enough to leave room for
+ *  tool docs, conversation, and the model's reply even on the 4K-context
+ *  70B. Used when LocalModelInfo.promptTier === 'medium'. */
 export function buildMediumLocalSystemPrompt(): string {
   return MEDIUM_LOCAL_SYSTEM_PROMPT;
 }

@@ -12,11 +12,11 @@
 //     on. These numbers come from local benchmarking + WebLLM's reported
 //     vram_required_MB; treat them as guidance, not guarantees.
 //   * `promptTier` decides which system prompt the model gets:
-//     'slim' (~540 tokens) for small models, 'medium' (~1200 tokens) for
-//     models that can take a richer brief. WebLLM caps every prebuilt at
-//     a 4096-token context window — the medium prompt is the upper bound
-//     of what fits while still leaving room for the conversation and
-//     tool docs.
+//     'slim' (~700 tokens) for small models, 'medium' (~1.1K tokens) for
+//     models that can take a richer brief. Both rely on the `readDoc`
+//     tool to pull /ai/<topic>.md subdocs on demand, so the in-prompt
+//     budget can stay small even when the model needs detailed paint /
+//     curves / BOSL2 instructions.
 
 export type LocalModelId =
   | 'Hermes-2-Pro-Llama-3-8B-q4f16_1-MLC'
@@ -240,8 +240,8 @@ export const LOCAL_GROUP_LABELS: Record<LocalSizeGroup, string> = {
 export const LOCAL_GROUP_HINTS: Record<LocalSizeGroup, string> = {
   recommended: 'Specifically trained for function calling. Use this unless you have a reason not to.',
   smaller: 'Fits on most laptops. Less reliable at multi-step tool sequences.',
-  larger: 'Needs a discrete GPU or beefy Apple Silicon. Better reasoning, still 4K context.',
-  flagship: 'Cloud-class capability — but the q3 quant + 4K context cap leaves some on the table.',
+  larger: 'Needs a discrete GPU or beefy Apple Silicon. Better reasoning, 32K context.',
+  flagship: 'Cloud-class capability — but the q3 quant + tight 4K context cap (KV cache cost) leaves some on the table.',
   custom: 'Models you added by URL. WebLLM loads them like any prebuilt — you trust the source.',
 };
 

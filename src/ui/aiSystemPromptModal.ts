@@ -1,11 +1,14 @@
 // System prompt editor with a tier switcher.
 //
 // Three built-in tiers are available regardless of provider:
-//   * Slim   — ~540 tokens, designed for tiny models / cramped contexts.
-//   * Medium — ~1200 tokens, more API examples + workflow.
-//   * Full   — the full public/ai.md (~15K tokens). Realistic only on
-//              Anthropic, but exposed for local too with a warning so a
-//              user with sliding-window mode + a beefy box can try it.
+//   * Slim   — ~700 tokens, designed for small local models. Relies on
+//              readDoc to fetch /ai/<topic>.md subdocs when needed.
+//   * Medium — ~1.1K tokens, more API examples + workflow. Default for
+//              larger local models (Hermes 2 Pro 8B, Qwen3 8B+, etc).
+//   * Full   — the slimmed public/ai.md (~12.5K tokens). The default on
+//              Anthropic. Fits comfortably in the 32K context most local
+//              models default to; only the 4K-context Llama 70B needs a
+//              tier swap or sliding-window mode to fit it.
 //
 // A fourth "Custom" state appears the moment the user edits the textarea
 // away from one of the three built-ins. Saving in that state writes the
@@ -99,11 +102,28 @@ export async function showSystemPromptModal(provider: Provider, cb: SystemPrompt
   body.className = 'px-5 py-4 flex flex-col gap-3 text-sm text-zinc-200 overflow-y-auto';
   modal.appendChild(body);
 
+  // Resolve the active local model's context ceiling so we can show a
+  // realistic "will Full fit?" judgement instead of the old blanket 4K
+  // assumption — most curated models now default to 32K.
+  const activeLocalContext: number | null =
+    provider === 'local' && settings.toggles.localModel
+      ? resolveLocalModel(settings.toggles.localModel).contextWindowSize
+      : null;
+  const fullPromptTokens = Math.round(built.full.length / 4);
+  const fullFitsLocal = activeLocalContext !== null && fullPromptTokens + 2000 < activeLocalContext;
+
   const intro = document.createElement('p');
   intro.className = 'text-zinc-300 leading-snug';
-  intro.innerHTML = provider === 'local'
-    ? `This is the wrapper prompt sent to every local-model turn. Pick a built-in tier or edit your own. WebLLM caps every prebuilt model at a <strong>4096-token context window</strong>, so anything bigger than the Medium tier won't fit unless you've enabled sliding-window mode in AI settings.`
-    : 'This is the wrapper prompt sent to every Anthropic turn. The Full tier is the default (it\'s prompt-cached, so you pay for it once per cache window). The Slim and Medium tiers are useful when you want to fit more conversation into context.';
+  if (provider === 'local') {
+    const ctxLine = activeLocalContext === null
+      ? 'No model is loaded yet — pick one in AI settings to see whether the Full tier fits its context window.'
+      : `Active model context window: <strong>${activeLocalContext.toLocaleString()} tokens</strong>. ${fullFitsLocal
+          ? 'The Full tier fits, but Slim or Medium leaves more room for tool docs, conversation, and the reply — and the model can pull subdoc detail on demand via <code>readDoc</code>.'
+          : 'The Full tier (~' + Math.round(fullPromptTokens / 1000) + 'K tokens) is too large for this model — pick Slim or Medium, or enable sliding-window mode in AI settings.'}`;
+    intro.innerHTML = `This is the wrapper prompt sent to every local-model turn. Pick a built-in tier or edit your own. ${ctxLine}`;
+  } else {
+    intro.innerHTML = 'This is the wrapper prompt sent to every Anthropic turn. The Full tier is the default (it\'s prompt-cached, so you pay for it once per cache window). The Slim and Medium tiers are useful when you want to fit more conversation into context, paired with <code>readDoc</code> to pull subdoc detail on demand.';
+  }
   body.appendChild(intro);
 
   // Tier switcher row
@@ -133,11 +153,14 @@ export async function showSystemPromptModal(provider: Provider, cb: SystemPrompt
   ta.spellcheck = false;
 
   // The visible warning slot is only populated for the Full tier on local
-  // (where it almost certainly won't fit) — kept here so the layout
+  // when the active model's context can't hold it (the 4K-context 70B,
+  // or custom models with a tight ceiling) — kept here so the layout
   // doesn't jump when switching tiers.
   const warn = document.createElement('div');
   warn.className = 'rounded border border-amber-700/40 bg-amber-900/15 px-3 py-2 text-[11px] text-amber-200 leading-snug hidden';
-  warn.innerHTML = 'The Full tier is <strong>~15,000 tokens</strong> — far larger than the 4096-token window WebLLM enforces. Sending this to a local model will fail unless sliding-window mode is on AND the window is bumped, and even then the model will probably ignore most of it. Try Slim or Medium first.';
+  warn.innerHTML = activeLocalContext !== null
+    ? `The Full tier is <strong>~${Math.round(fullPromptTokens / 1000)}K tokens</strong>, which doesn't fit in this model's ${activeLocalContext.toLocaleString()}-token context window. Pick Slim or Medium, or enable sliding-window mode in AI settings.`
+    : `The Full tier is <strong>~${Math.round(fullPromptTokens / 1000)}K tokens</strong>. Whether it fits depends on the active local model — most curated models default to 32K and have room, but the 4K-context Llama 70B will reject it.`;
 
   body.appendChild(tierWrap);
   body.appendChild(meta);
@@ -153,15 +176,18 @@ export async function showSystemPromptModal(provider: Provider, cb: SystemPrompt
     }
     rebuildTierButtons();
     updateMeta();
-    warn.classList.toggle('hidden', !(provider === 'local' && tier === 'full'));
+    // Show the warning only when picking Full on local AND the Full tier
+    // genuinely won't fit the active model's context. When it fits (most
+    // 32K models), skip the warning — Full is a reasonable choice there.
+    warn.classList.toggle('hidden', !(provider === 'local' && tier === 'full' && !fullFitsLocal));
   }
 
   function rebuildTierButtons(): void {
     tierRow.replaceChildren();
     const tiers: { id: Tier; label: string; size: string }[] = [
-      { id: 'slim', label: 'Slim', size: '~540 tokens' },
-      { id: 'medium', label: 'Medium', size: '~1.2K tokens' },
-      { id: 'full', label: 'Full', size: '~15K tokens' },
+      { id: 'slim', label: 'Slim', size: `~${Math.round(built.slim.length / 4 / 100) * 100} tokens` },
+      { id: 'medium', label: 'Medium', size: `~${(built.medium.length / 4 / 1000).toFixed(1)}K tokens` },
+      { id: 'full', label: 'Full', size: `~${Math.round(built.full.length / 4 / 1000)}K tokens` },
       { id: 'custom', label: 'Custom', size: 'your edits' },
     ];
     for (const t of tiers) {

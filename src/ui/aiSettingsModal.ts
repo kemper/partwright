@@ -276,12 +276,12 @@ function buildSystemPromptSection(close: () => void, cb: AiSettingsCallbacks): H
   desc.className = 'text-[11px] text-zinc-400 leading-snug';
   if (provider === 'local') {
     desc.innerHTML = override !== null
-      ? '<strong>Custom prompt active</strong> — your override is sent to local models instead of the built-in slim prompt.'
-      : '<strong>Built-in slim prompt</strong> — a ~540-token version tailored to the 4K-window local models. The full <code>ai.md</code> doesn\'t fit.';
+      ? '<strong>Custom prompt active</strong> — your override is sent to local models instead of the built-in tier.'
+      : '<strong>Built-in</strong> — a compact prompt tuned for local models, with the <code>readDoc</code> tool to pull in detailed subdocs on demand. The exact tier (Slim ~700 tok / Medium ~1.1K tok) depends on the active model; click to view or pin a different tier.';
   } else {
     desc.innerHTML = override !== null
       ? '<strong>Custom prompt active</strong> — your override is sent to Claude instead of the full <code>ai.md</code>.'
-      : '<strong>Built-in</strong> — the full <code>public/ai.md</code> (~15K tokens) cached on Anthropic\'s side.';
+      : '<strong>Built-in</strong> — the full <code>public/ai.md</code> (~12.5K tokens) cached on Anthropic\'s side. Subdocs are fetched on demand via the <code>readDoc</code> tool.';
   }
   wrap.appendChild(desc);
 

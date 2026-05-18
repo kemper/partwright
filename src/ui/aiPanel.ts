@@ -53,10 +53,11 @@ const state: PanelState = {
   rewindStack: [],
 };
 
-/** Cached length of `public/ai.md`, populated once on init. Used when the
- *  active provider is Anthropic. Defaults to a reasonable guess so the
- *  context meter is sensible before the fetch lands. */
-let cachedAiMdLength = 15_000;
+/** Cached length of `public/ai.md` + PREAMBLE, in characters, populated
+ *  once on init. Used when the active provider is Anthropic. Default is
+ *  a rough match for the current slimmed ai.md so the context meter is
+ *  sensible before the fetch lands. */
+let cachedAiMdLength = 55_000;
 
 /** Effective system-prompt length in characters for the active provider /
  *  model / override combo. Drives the context meter and the auto-compact
@@ -528,9 +529,14 @@ function renderPromptChip(): void {
     cls = 'px-1.5 py-0.5 rounded text-[10px] bg-amber-900/40 text-amber-200 border border-amber-800/60 hover:bg-amber-900/60';
     title = 'A custom system prompt is in use. Click to view or edit.';
   } else if (provider === 'local') {
-    label = '· Slim prompt';
+    const tier = settings.toggles.localModel
+      ? resolveLocalModel(settings.toggles.localModel).promptTier
+      : 'slim';
+    const tierLabel = tier === 'medium' ? 'Medium' : 'Slim';
+    const tierSize = tier === 'medium' ? '~1.1K tokens' : '~700 tokens';
+    label = `· ${tierLabel} prompt`;
     cls = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';
-    title = 'Local models use a ~540-token slim prompt (the full ai.md is too long). Click to view or edit.';
+    title = `Local models use a compact built-in prompt (${tierSize}) and pull subdoc detail on demand via the readDoc tool. Click to view or pin a different tier.`;
   } else {
     label = '· Full ai.md';
     cls = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700';

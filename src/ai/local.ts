@@ -428,9 +428,10 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
     throw new Error(`Local model ${spec.modelId} is not loaded. Open AI settings → Local model to download it first.`);
   }
   const { engine, info } = loaded;
-  // Default is intentionally modest — local models share a 4K context with
-  // the whole conversation. Reserving 768 for output leaves ~3300 tokens
-  // for the system prompt + tool docs + scrollback.
+  // Default is intentionally modest — local models share their context
+  // with the whole conversation, and the 70B is capped at 4K. Reserving
+  // 768 for output leaves room for the system prompt + tool docs +
+  // scrollback even on the tightest model.
   const maxTokens = spec.maxTokens ?? 768;
   const native = await supportsNativeToolCalls(spec.modelId);
 
@@ -697,8 +698,9 @@ function stripThinkBlocks(text: string): string {
 
 /** Build a tool-use instruction block to append to the system prompt for
  *  models that don't accept the OpenAI `tools` request field. Kept terse —
- *  local models share a 4K context window with the whole conversation, so
- *  every token counts. We summarize each tool as one line:
+ *  local models share their context window with the whole conversation,
+ *  and the 70B is capped at 4K, so every token counts. We summarize each
+ *  tool as one line:
  *      name(arg1: type[, ...]) — short description.
  *  Detailed JSON schema is omitted; the few tools whose arguments need
  *  call-time structure (paint, find) get a single-line example. */
