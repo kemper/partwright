@@ -81,7 +81,11 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     vramMB: 4876,
     recommendedSystem: 'Discrete GPU with 8+ GB VRAM, or Apple Silicon with 16+ GB unified RAM.',
     supportsVision: false,
-    officialToolCalling: true,
+    // WebLLM 0.2.83 lists Hermes-3 in `functionCallingModelIds` but only
+    // injects the JSON-output system prompt for Hermes-2-Pro, so the
+    // native path doesn't actually work for Hermes-3 today. Run it through
+    // the prompt-engineered `<tool_call>` path like every other model.
+    officialToolCalling: false,
     qualityStars: 3,
     promptTier: 'medium',
     contextWindowSize: 32768,

@@ -10,9 +10,9 @@
 //   * Tool calls come back as `{ id, function: { name, arguments } }` with
 //     arguments as a JSON-encoded string. We parse it here so chatLoop only
 //     ever deals with parsed objects (matching what Anthropic returns).
-//   * Hermes-3-Llama-3.1-8B is on WebLLM's `functionCallingModelIds`. The
-//     other models we ship still get JSON-schema-constrained decoding via
-//     XGrammar, which is enough for our tool list.
+//   * Every shipped model uses the prompt-engineered `<tool_call>` path
+//     today — see `supportsNativeToolCalls` for why Hermes-3 doesn't take
+//     the OpenAI-native path even though WebLLM advertises it as capable.
 
 import type {
   ChatBlock,
@@ -77,9 +77,9 @@ function resolveCustomContextWindow(modelId: string): number | null {
  *  `appendPromptToolDocs` if you change those. */
 function computeAttentionSink(info: LocalModelInfo): number {
   const promptBudget = info.promptTier === 'medium' ? 1300 : 600;
-  // Native function-callers (Hermes 3 family) get the OpenAI `tools` field,
-  // not a `<tool_call>` instruction block in the prompt, so they need less
-  // sink budget. Other models append a ~400-token tool documentation block.
+  // Native function-callers get the OpenAI `tools` field, not a `<tool_call>`
+  // instruction block in the prompt, so they need less sink budget. Other
+  // models append a ~400-token tool documentation block.
   const toolsBudget = info.officialToolCalling ? 100 : 500;
   const safetyMargin = 200;
   // Cap at half the smallest plausible window so we never accidentally
@@ -415,9 +415,10 @@ export interface LocalRequestSpec {
  *  returned by anthropic.streamTurn so chatLoop can swap providers cleanly.
  *
  *  Two tool-calling strategies, chosen per model:
- *    * Native — Hermes-2-Pro / Hermes-3 are in WebLLM's `functionCallingModelIds`
- *      and accept the OpenAI `tools` request field. The model emits
- *      `tool_calls` deltas the same way the OpenAI API does.
+ *    * Native — models we've verified work with WebLLM's OpenAI `tools`
+ *      path (see `supportsNativeToolCalls`). Currently empty: WebLLM 0.2.83
+ *      only wires up the Hermes-2-Pro family end-to-end, and we don't ship
+ *      a Hermes-2-Pro model.
  *    * Prompt-engineered — every other model rejects the `tools` field
  *      with an UnsupportedModelIdError. We inject tool descriptions into
  *      the system prompt and ask the model to emit `<tool_call>{...}</tool_call>`
@@ -485,10 +486,10 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
       const delta = choice.delta.content as string;
       rawText += delta;
       // Walk the buffer for both `<tool_call>` and `<think>` markers.
-      // Native function-calling models (Hermes 3 family) don't emit
-      // tool_call markup — the SDK exposes tool calls via `delta.tool_calls`
-      // below — but they CAN emit `<think>` tags if the user loaded a
-      // reasoning-style custom model, so the scanner runs in both modes.
+      // Native function-calling models don't emit tool_call markup — the
+      // SDK exposes tool calls via `delta.tool_calls` below — but they CAN
+      // emit `<think>` tags if the user loaded a reasoning-style custom
+      // model, so the scanner runs in both modes.
       while (emittedLen < rawText.length) {
         if (suppressMode === null) {
           const tcIdx = !native ? rawText.indexOf(TOOL_CALL_OPEN, emittedLen) : -1;
@@ -550,9 +551,9 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
     }
   } } catch (err: any) {
     // WebLLM throws ToolCallOutputParseError when a native function-calling
-    // model (Hermes 3) responds with plain text instead of a JSON tool call.
-    // The content deltas were already streamed into rawText, so we can treat
-    // this as a normal end-of-turn by resetting stopReason to 'stop'.
+    // model responds with plain text instead of a JSON tool call array. The
+    // content deltas were already streamed into rawText, so we treat this
+    // as a normal end-of-turn by resetting stopReason to 'stop'.
     if (err?.name !== 'ToolCallOutputParseError') throw err;
     stopReason = 'stop';
   }
@@ -615,14 +616,24 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
 }
 
 /** Cached lookup of WebLLM's `functionCallingModelIds`. Async because the
- *  list lives inside the lazy-loaded WebLLM chunk. */
+ *  list lives inside the lazy-loaded WebLLM chunk.
+ *
+ *  We also gate on our own `officialToolCalling` flag because WebLLM's list
+ *  is over-inclusive: as of 0.2.83 it advertises Hermes-3-Llama-3.1-8B as
+ *  function-calling capable, but only `Hermes-2-Pro-*` models get the
+ *  hardcoded system-prompt + JSON schema injection that actually makes
+ *  native tool calls work. Hermes-3 just sees the `tools` field with no
+ *  output-format constraint and responds in plain prose. Routing it
+ *  through our prompt-engineered `<tool_call>` path is far more reliable. */
 let nativeIdsCache: Set<string> | null = null;
 async function supportsNativeToolCalls(modelId: string): Promise<boolean> {
   if (!nativeIdsCache) {
     const webllm = await import('@mlc-ai/web-llm');
     nativeIdsCache = new Set(webllm.functionCallingModelIds as readonly string[]);
   }
-  return nativeIdsCache.has(modelId);
+  if (!nativeIdsCache.has(modelId)) return false;
+  const info = LOCAL_MODELS.find(m => m.id === modelId);
+  return info?.officialToolCalling === true;
 }
 
 function collectNativeToolCalls(toolBuf: Map<number, { id: string; name: string; argsRaw: string }>): PersistedToolCall[] {
