@@ -6,7 +6,7 @@ import type { MeshData } from '../geometry/types';
 import { pickFace } from './facePicker';
 import { buildAdjacency, findCoplanarRegion, getTriangleNormal, type AdjacencyGraph } from './adjacency';
 import { addRegion, getRegions } from './regions';
-import { getMeshGroup, getRenderer, setUserOrbitLock, isUserOrbitLocked } from '../renderer/viewport';
+import { getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
@@ -32,9 +32,13 @@ let hoveredTriangles: Set<number> | null = null;
 let brushPainting = false;
 let brushSession: Set<number> | null = null;
 
-// Orbit lock — paint mode locks model rotation by default. The lock-toggle
-// button in the toolbar reflects this; users can unlock manually to reposition.
-let priorOrbitLock = false;
+// True when the active mousedown missed the model. We let OrbitControls
+// rotate in that case and skip the matching mouseup paint commit so a
+// rotation that happens to release over the model doesn't paint by accident.
+let mouseDownOffModel = false;
+
+// Teardown for the capture-phase pointer suppressor registered on activate.
+let removeSuppressor: (() => void) | null = null;
 
 // Callbacks
 let onRegionPainted: (() => void) | null = null;
@@ -121,8 +125,14 @@ export function activate(): void {
     adjacency = buildAdjacency(currentMesh);
   }
 
-  priorOrbitLock = isUserOrbitLocked();
-  setUserOrbitLock(true);
+  // Veto OrbitControls only for left-button pointerdowns that hit the model
+  // and only when a tool wants the click. Off-model clicks fall through so
+  // OrbitControls can rotate; the Box tool's gizmo owns its own drag.
+  removeSuppressor = addPointerSuppressor((event) => {
+    if (event.button !== 0) return false;
+    if (currentTool === 'box') return false;
+    return isPointerOverModel(event);
+  });
 
   const canvas = getRenderer().domElement;
   canvas.addEventListener('mousemove', onMouseMove);
@@ -140,7 +150,7 @@ export function deactivate(): void {
   active = false;
   adjacency = null;
 
-  if (!priorOrbitLock) setUserOrbitLock(false);
+  if (removeSuppressor) { removeSuppressor(); removeSuppressor = null; }
 
   deactivateSlabDrag();
   deactivateBoxDrag();
@@ -154,6 +164,7 @@ export function deactivate(): void {
   clearHighlight();
   brushPainting = false;
   brushSession = null;
+  mouseDownOffModel = false;
 }
 
 function onMouseMove(event: MouseEvent): void {
@@ -162,6 +173,13 @@ function onMouseMove(event: MouseEvent): void {
   // Slab and box tools own their own gizmo / drag interactions; the
   // bucket-vs-brush hover preview gets out of the way.
   if (currentTool === 'slab' || currentTool === 'box') {
+    clearHighlight();
+    return;
+  }
+
+  // Mid-rotation (mousedown landed off the model) — skip hover preview so
+  // the highlight doesn't flicker on top of the model as the camera spins.
+  if (mouseDownOffModel) {
     clearHighlight();
     return;
   }
@@ -201,9 +219,16 @@ function onMouseDown(event: MouseEvent): void {
   if (event.button !== 0) return;
   if (currentTool === 'slab' || currentTool === 'box') return;
 
+  // Off-model click → OrbitControls is rotating; remember so mouseup doesn't
+  // paint if the user happens to release over the model after a rotation.
+  const result = pickFace(event);
+  if (!result) {
+    mouseDownOffModel = true;
+    return;
+  }
+  mouseDownOffModel = false;
+
   if (currentTool === 'brush') {
-    const result = pickFace(event);
-    if (!result) return;
     brushPainting = true;
     brushSession = new Set<number>();
     addBrushFootprint(result.triangleIndex, result.point, brushSession);
@@ -238,6 +263,11 @@ function onMouseUp(event: MouseEvent): void {
   if (!adjacency || !currentMesh) return;
   if (event.button !== 0) return;
   if (currentTool === 'slab' || currentTool === 'box') return;
+
+  if (mouseDownOffModel) {
+    mouseDownOffModel = false;
+    return;
+  }
 
   if (currentTool === 'brush') {
     if (!brushPainting || !brushSession || brushSession.size === 0) {

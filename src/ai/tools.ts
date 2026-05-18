@@ -2,6 +2,17 @@
 // window.partwright. The set of tools the model receives is filtered by the
 // per-session scope toggles (see settings.ts). Disabled tools are removed
 // from the request payload entirely — the model can't call what isn't there.
+//
+// Flow per tool call:
+//   1. chatLoop.ts sends user input + history + system prompt to anthropic.ts.
+//   2. anthropic.ts streams back a tool_use content block.
+//   3. chatLoop.ts calls executeTool(name, input) defined in this file.
+//   4. executeTool reaches into window.partwright (built in main.ts) and
+//      wraps the return value into a tool_result block.
+//   5. The result is appended to history and fed back to Claude next turn.
+//
+// Argument validation lives on the API side (src/validation/apiValidation.ts)
+// so the same checks apply to console/MCP callers, not just the model.
 
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
@@ -73,12 +84,39 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'runAndSave',
-    description: 'Run code and commit the result as a new gallery version in the current session. The preferred way to make progress — leaves a versioned record. Returns geometry stats and the saved version number.',
+    description: 'Run code and commit the result as a new gallery version in the current session. The preferred way to make progress — leaves a versioned record. Returns geometry stats and the saved version number. Optionally pass `assertions` to validate before saving — the version is NOT saved if assertions fail.',
     input_schema: {
       type: 'object',
       properties: {
         code: { type: 'string', description: 'Code to run (overwrites the editor with the run-passing variant).' },
         label: { type: 'string', description: 'Short label for the gallery (e.g. "tapered legs"). Defaults to v<index>.' },
+        assertions: {
+          type: 'object',
+          description: 'Optional geometry assertions. Version is NOT saved if any assertion fails.',
+          properties: {
+            isManifold: { type: 'boolean', description: 'Must be a valid manifold.' },
+            maxComponents: { type: 'integer', description: 'Max component count.' },
+            minVolume: { type: 'number', description: 'Minimum volume.' },
+            maxVolume: { type: 'number', description: 'Maximum volume.' },
+            genus: { type: 'integer', description: 'Exact genus.' },
+            minGenus: { type: 'integer', description: 'Minimum genus.' },
+            maxGenus: { type: 'integer', description: 'Maximum genus.' },
+            minBounds: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Minimum bounding box dimensions [x,y,z].' },
+            maxBounds: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Maximum bounding box dimensions [x,y,z].' },
+            minTriangles: { type: 'integer', description: 'Minimum triangle count.' },
+            maxTriangles: { type: 'integer', description: 'Maximum triangle count.' },
+            boundsRatio: {
+              type: 'object',
+              description: 'Proportion assertions.',
+              properties: {
+                widthToDepth: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: '[min, max] ratio of width to depth.' },
+                widthToHeight: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: '[min, max] ratio of width to height.' },
+                depthToHeight: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: '[min, max] ratio of depth to height.' },
+              },
+            },
+            notes: { type: 'string', description: 'Optional note text attached to the saved version.' },
+          },
+        },
       },
       required: ['code'],
     },
@@ -128,32 +166,51 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'paintByLabel',
-    description: 'Paint a labelled feature by name. The label must have been registered in the current run via api.label(shape, name) or api.labeledUnion. This is the bullseye for "describe how to make and paint a model" workflows: write the geometry with labels, then paint by name — no coordinate guessing, no bounding-box estimation, no fan-bleed. Survives boolean ops because manifold-3d propagates originalID through runOriginalID on the result mesh. Only works for manifold-js (SCAD has no equivalent); falls back to paintComponent / paintInBox there. For multi-feature models, batch with paintByLabels in one round-trip instead of N sequential paintByLabel calls.',
+    description: 'Paint a labelled feature by name. The label must have been registered in the current run via api.label(shape, name) or api.labeledUnion. This is the bullseye for "describe how to make and paint a model" workflows: write the geometry with labels, then paint by name — no coordinate guessing, no bounding-box estimation, no fan-bleed. Survives boolean ops because manifold-3d propagates originalID through runOriginalID on the result mesh. Only works for manifold-js (SCAD has no equivalent); falls back to paintComponent / paintInBox there. For multi-feature models, batch with paintByLabels in one round-trip instead of N sequential paintByLabel calls. IMPORTANT: api.label only tracks surfaces that exist in the original labeled shape. Boolean subtraction creates NEW triangles at the cut surface (e.g. the inner wall of a mug after subtracting the void) — those new triangles have NO label. Use probePixel + paintConnected for inner surfaces created by boolean ops.',
     input_schema: {
       type: 'object',
       properties: {
         label: { type: 'string', description: 'Name passed to api.label() in the model code.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
         name: { type: 'string', description: 'Optional region name; defaults to the label.' },
+        topOnly: { type: 'boolean', description: 'Restrict to upward-facing triangles only (normal within 30° of +Z). Useful when a label covers both top and side faces and you only want the top.' },
+        normalCone: {
+          type: 'object',
+          description: 'Restrict to triangles whose normal is within angleDeg of the given axis. Overrides topOnly.',
+          properties: {
+            axis: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+            angleDeg: { type: 'number' },
+          },
+          required: ['axis', 'angleDeg'],
+        },
       },
       required: ['label', 'color'],
     },
   },
   {
     name: 'paintByLabels',
-    description: 'Batch sibling of paintByLabel. Paint N labelled features in one tool call. Use this for any multi-feature paint job — a 9-feature smiley paints in 1 round-trip instead of 9. The viewport refresh coalesces under rAF so total cost is one frame regardless of batch size. Returns {results: [...], failed: [{label, error}]} — partial failures are reported per-label and do not abort the batch.',
+    description: 'Batch sibling of paintByLabel. Paint N labelled features in one tool call. Use this for any multi-feature paint job — a 9-feature smiley paints in 1 round-trip instead of 9. The viewport refresh coalesces under rAF so total cost is one frame regardless of batch size. Returns {results: [...], failed: [{label, error}]} — partial failures are reported per-label and do not abort the batch. Each item supports optional topOnly/normalCone to filter the label\'s triangle set — useful when a label spans top and side faces but you only want the top.',
     input_schema: {
       type: 'object',
       properties: {
         items: {
           type: 'array',
-          description: 'Array of paint specs, each {label, color, name?} — same shape as a single paintByLabel call.',
+          description: 'Array of paint specs, each {label, color, name?, topOnly?, normalCone?}.',
           items: {
             type: 'object',
             properties: {
               label: { type: 'string' },
               color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
               name: { type: 'string' },
+              topOnly: { type: 'boolean', description: 'Restrict to upward-facing triangles (normal within 30° of +Z).' },
+              normalCone: {
+                type: 'object',
+                properties: {
+                  axis: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+                  angleDeg: { type: 'number' },
+                },
+                required: ['axis', 'angleDeg'],
+              },
             },
             required: ['label', 'color'],
           },
@@ -465,6 +522,274 @@ const ALL_TOOLS: ToolDefinition[] = [
     description: 'Remove ALL color regions from the current version. Destructive — only use when you want a completely clean slate. To fix a single mistake, call undoLastPaint or removeRegion(id) instead.',
     input_schema: { type: 'object', properties: {} },
   },
+  {
+    name: 'forkVersion',
+    description: 'Fork a prior version: load version N, apply new code or patches, validate against optional assertions, and save as a new version — all atomically. Use this to branch off a known-good version without the fragile loadVersion → getCode → modify → runAndSave chain. Provide either `code` (full replacement) or `patches` (find/replace array applied to the parent\'s code — more concise when only a few values change). Returns {parent, version, geometry, diff, galleryUrl} on success, or {error} / {passed: false, failures} on failure.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        index: { type: 'integer', description: '1-based version index to fork from (from listVersions).' },
+        code: { type: 'string', description: 'Full replacement code for the forked version. Provide this or patches, not both.' },
+        patches: {
+          type: 'array',
+          description: 'Find/replace substitutions applied in sequence to the parent version\'s code. More concise than providing the full program when only a few values change.',
+          items: {
+            type: 'object',
+            properties: {
+              find: { type: 'string', description: 'Exact string to find.' },
+              replace: { type: 'string', description: 'Replacement string.' },
+            },
+            required: ['find', 'replace'],
+          },
+        },
+        label: { type: 'string', description: 'Short label for the new version.' },
+        assertions: {
+          type: 'object',
+          description: 'Optional geometry assertions. Version is NOT saved if any assertion fails.',
+          properties: {
+            isManifold: { type: 'boolean' },
+            maxComponents: { type: 'integer' },
+            minVolume: { type: 'number' },
+            maxVolume: { type: 'number' },
+            genus: { type: 'integer' },
+            minGenus: { type: 'integer' },
+            maxGenus: { type: 'integer' },
+            minBounds: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+            maxBounds: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+            minTriangles: { type: 'integer' },
+            maxTriangles: { type: 'integer' },
+            boundsRatio: {
+              type: 'object',
+              properties: {
+                widthToDepth: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+                widthToHeight: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+                depthToHeight: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+              },
+            },
+            notes: { type: 'string' },
+          },
+        },
+      },
+      required: ['index'],
+    },
+  },
+  {
+    name: 'runAndAssert',
+    description: 'Run code and check geometry assertions WITHOUT saving a version. Returns {passed, failures?, stats}. Use for "does this code produce valid geometry?" checks before committing with runAndSave.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        code: { type: 'string', description: 'Code to run.' },
+        assertions: {
+          type: 'object',
+          description: 'Geometry assertions to check.',
+          properties: {
+            isManifold: { type: 'boolean' },
+            maxComponents: { type: 'integer' },
+            minVolume: { type: 'number' },
+            maxVolume: { type: 'number' },
+            genus: { type: 'integer' },
+            minGenus: { type: 'integer' },
+            maxGenus: { type: 'integer' },
+            minBounds: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+            maxBounds: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+            minTriangles: { type: 'integer' },
+            maxTriangles: { type: 'integer' },
+            boundsRatio: {
+              type: 'object',
+              properties: {
+                widthToDepth: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+                widthToHeight: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+                depthToHeight: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+              },
+            },
+            notes: { type: 'string' },
+          },
+        },
+      },
+      required: ['code', 'assertions'],
+    },
+  },
+  {
+    name: 'query',
+    description: 'Multi-query the current geometry in one call. Pass any combination of sliceAt (cross-section areas at given Z heights), decompose (component breakdown), boundingBox. Returns only the keys you asked for. Cheaper than separate calls.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        sliceAt: { type: 'array', items: { type: 'number' }, description: 'Z heights to slice at.' },
+        decompose: { type: 'boolean', description: 'Include component breakdown.' },
+        boundingBox: { type: 'boolean', description: 'Include bounding box.' },
+      },
+    },
+  },
+  {
+    name: 'modifyAndTest',
+    description: 'Apply string substitution(s) to the current editor code, run the result, and return stats — WITHOUT saving a version or changing the editor. Use to test a tweak before committing. Provide either a single `find`/`replace` pair or a `patches` array for multiple simultaneous substitutions. Returns {modifiedCode, stats, passed?, failures?}.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        find: { type: 'string', description: 'Exact string to find in current code. Use this for a single substitution.' },
+        replace: { type: 'string', description: 'Replacement string (paired with find).' },
+        patches: {
+          type: 'array',
+          description: 'Multiple find/replace pairs applied in sequence. Use when adjusting several parameters at once.',
+          items: {
+            type: 'object',
+            properties: {
+              find: { type: 'string', description: 'Exact string to find.' },
+              replace: { type: 'string', description: 'Replacement string.' },
+            },
+            required: ['find', 'replace'],
+          },
+        },
+        assertions: {
+          type: 'object',
+          description: 'Optional geometry assertions.',
+          properties: {
+            isManifold: { type: 'boolean' },
+            maxComponents: { type: 'integer' },
+            minVolume: { type: 'number' },
+            maxVolume: { type: 'number' },
+            genus: { type: 'integer' },
+            minGenus: { type: 'integer' },
+            maxGenus: { type: 'integer' },
+            minBounds: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+            maxBounds: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+            minTriangles: { type: 'integer' },
+            maxTriangles: { type: 'integer' },
+            boundsRatio: {
+              type: 'object',
+              properties: {
+                widthToDepth: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+                widthToHeight: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+                depthToHeight: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+              },
+            },
+            notes: { type: 'string' },
+          },
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'probeRay',
+    description: 'Cast a ray from `origin` in `direction` and return mesh intersection hits: [{point, normal, distance, triangleId}]. Use to find exact surface coordinates and normals when you know the ray but not the pixel. Pairs well with paintRegion (feed hit.point + hit.normal as seed).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        origin: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Ray origin in world space [x,y,z].' },
+        direction: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Ray direction (need not be normalized).' },
+      },
+      required: ['origin', 'direction'],
+    },
+  },
+  {
+    name: 'createSession',
+    description: 'Create a new named session and make it active. Returns {id, url, galleryUrl}. Call before runAndSave when there is no active session, or when starting a new design.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Session name (e.g. "Castle v2").' },
+      },
+    },
+  },
+  {
+    name: 'listSessions',
+    description: 'List all sessions saved in this browser. Returns [{id, name, updated}] newest first. Use to find a session to open, or to check what work exists.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'openSession',
+    description: 'Open an existing session by id (from listSessions). Makes it the active session. Always call getSessionContext() after opening to read notes and version history.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Session id from listSessions().' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'assertPaint',
+    description: 'Verify a painted region matches expected geometry. Returns {passed, failures?}. Use after painting to catch regressions when the mesh changes. `region` is the region id (integer) or name (string) from listRegions().',
+    input_schema: {
+      type: 'object',
+      properties: {
+        region: { description: 'Region id (integer) or name (string) from listRegions().' },
+        expectedTriangleCount: { description: 'Exact integer or {min?, max?} object.' },
+        expectedBoundingBox: {
+          type: 'object',
+          description: 'Object with any subset of axis keys {x?, y?, z?} each [min, max].',
+          properties: {
+            x: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+            y: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+            z: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+          },
+        },
+        expectedCentroid: {
+          type: 'object',
+          description: 'Object with any subset of axis keys {x?, y?, z?} each [min, max].',
+          properties: {
+            x: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+            y: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+            z: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+          },
+        },
+      },
+      required: ['region'],
+    },
+  },
+  {
+    name: 'sliceAtZVisual',
+    description: 'Cross-section at height z. Returns a rasterized PNG thumbnail of the profile (attached as an image) plus {area, contours} — area is the cross-sectional area, contours is the count of closed loops (1 = solid, >1 = hollow or multi-piece). Use to visually inspect wall thickness, hollow interiors, or layer profiles — you can actually see the cross-section shape.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        z: { type: 'number', description: 'Height at which to slice.' },
+      },
+      required: ['z'],
+    },
+  },
+  {
+    name: 'paintInCylinder',
+    description: 'Paint triangles whose centroids fall within a cylindrical shell: rMin ≤ dist(centroid, axis) ≤ rMax AND zMin ≤ centroid.z ≤ zMax. The canonical tool for inner walls of hollow cylinders, mugs, vases, and any revolved shape where paintInBox catches too many faces. Set rMin > 0 to exclude the axis core; set rMax to the inner radius to select only the inner surface. Optional normalCone/topOnly for further filtering.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        center: {
+          type: 'array',
+          items: { type: 'number' },
+          minItems: 2,
+          maxItems: 2,
+          description: 'Center of the cylinder axis in the XY plane [cx, cy]. Use [0, 0] for Z-centered models.',
+        },
+        rMin: { type: 'number', description: 'Minimum radial distance from axis (0 to include everything up to rMax).' },
+        rMax: { type: 'number', description: 'Maximum radial distance from axis.' },
+        zMin: { type: 'number', description: 'Bottom of the cylindrical band.' },
+        zMax: { type: 'number', description: 'Top of the cylindrical band.' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: '[r, g, b] in 0..1.' },
+        name: { type: 'string', description: 'Optional region name.' },
+        normalCone: {
+          type: 'object',
+          description: 'Further restrict to triangles whose normal is within angleDeg of the given axis.',
+          properties: {
+            axis: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+            angleDeg: { type: 'number' },
+          },
+          required: ['axis', 'angleDeg'],
+        },
+        topOnly: { type: 'boolean', description: 'Shortcut: only upward-facing triangles (normal within 30° of +Z).' },
+        coverageMode: {
+          type: 'string',
+          enum: ['centroid', 'fully_inside', 'any_vertex_inside'],
+          description: 'centroid (default): centroid inside the shell. fully_inside: all 3 vertices inside. any_vertex_inside: at least 1 vertex inside.',
+        },
+        maxTriangleArea: { type: 'number', description: 'Skip triangles larger than this area. Use to avoid fan-bleed on cylinder topology.' },
+      },
+      required: ['rMin', 'rMax', 'zMin', 'zMax', 'color'],
+    },
+  },
 ];
 
 const ALWAYS_AVAILABLE = new Set([
@@ -487,6 +812,17 @@ const ALWAYS_AVAILABLE = new Set([
   'probePixel',
   'paintPreview',
   'paintExplain',
+  'forkVersion',
+  'runAndAssert',
+  'query',
+  'modifyAndTest',
+  'probeRay',
+  'createSession',
+  'listSessions',
+  'openSession',
+  'assertPaint',
+  'sliceAtZVisual',
+  'paintInCylinder',
 ]);
 
 const RUN_GATED = new Set(['runCode']);
@@ -548,6 +884,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
     if (name === 'renderView') return executeRenderView(api, input);
     if (name === 'renderViews') return await executeRenderViews(api, input);
     if (name === 'runIsolated') return await executeRunIsolated(api, input);
+    if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
 
     const result = await dispatch(api, name, input);
     if (result === undefined) return { content: '(ok)', isError: false };
@@ -642,6 +979,46 @@ async function executeRunIsolated(api: PartwrightAPI, input: Record<string, unkn
   };
 }
 
+async function executeSliceAtZVisual(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {
+  const result = api.sliceAtZVisual(input.z as number) as { svg: string; area: number; contours: number } | null;
+  if (!result) return { content: 'sliceAtZVisual: no geometry loaded — run code first.', isError: true };
+  const contourDesc = result.contours === 1 ? 'solid' : result.contours > 1 ? 'hollow/multi-piece' : 'empty';
+  const summary = `Cross-section at z=${input.z}: area=${result.area.toFixed(3)}, contours=${result.contours} (${contourDesc})`;
+  try {
+    const pngBase64 = await rasterizeSvg(result.svg, 320);
+    return {
+      content: `${summary}\n\nProfile image attached — inspect for wall thickness, hollow interior shape, and contour count.`,
+      isError: false,
+      image: { data: pngBase64, mediaType: 'image/png', label: `slice z=${input.z}` },
+    };
+  } catch {
+    return { content: summary, isError: false };
+  }
+}
+
+function rasterizeSvg(svg: string, size: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) { reject(new Error('no canvas context')); return; }
+    const blob = new Blob([svg], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      ctx.fillStyle = '#1c1c1c';
+      ctx.fillRect(0, 0, size, size);
+      ctx.drawImage(img, 0, 0, size, size);
+      const dataUrl = canvas.toDataURL('image/png');
+      resolve(dataUrl.replace(/^data:image\/png;base64,/, ''));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('SVG rasterization failed')); };
+    img.src = url;
+  });
+}
+
 function wrapImageResult(result: string | { error: string } | null | undefined, toolName: string, label: string): ToolExecResult {
   if (result == null) return { content: `${toolName} returned no image — is there geometry loaded? Run code first.`, isError: true };
   if (typeof result === 'object' && 'error' in result) return { content: result.error, isError: true };
@@ -680,11 +1057,11 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'runCode':
       return api.run(input.code as string | undefined);
     case 'runAndSave':
-      return api.runAndSave(input.code as string, input.label as string | undefined);
+      return api.runAndSave(input.code as string, input.label as string | undefined, input.assertions as Record<string, unknown> | undefined);
     case 'getGeometryData':
       return api.getGeometryData();
     case 'getMeshSummary':
-      return api.getMeshSummary();
+      return api.getMeshSummary(input);
     case 'getSessionContext':
       return api.getSessionContext();
     case 'listVersions':
@@ -780,6 +1157,37 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.removeRegion(input.id as number);
     case 'clearColors':
       return api.clearColors();
+    case 'forkVersion': {
+      const forkPatches = input.patches as Array<{ find: string; replace: string }> | undefined;
+      const forkTransform = forkPatches
+        ? (code: string) => forkPatches.reduce((c, p) => c.replace(p.find, p.replace), code)
+        : (_code: string) => input.code as string;
+      return api.forkVersion({ index: input.index }, forkTransform, input.label as string | undefined, input.assertions as Record<string, unknown> | undefined);
+    }
+    case 'runAndAssert':
+      return api.runAndAssert(input.code, input.assertions);
+    case 'query':
+      return api.query(input);
+    case 'modifyAndTest': {
+      const mtPatches = input.patches as Array<{ find: string; replace: string }> | undefined;
+      return api.modifyAndTest((code: unknown) => {
+        let s = code as string;
+        if (mtPatches) return mtPatches.reduce((c, p) => c.replace(p.find, p.replace), s);
+        return s.replace(input.find as string, input.replace as string);
+      }, input.assertions as Record<string, unknown> | undefined);
+    }
+    case 'probeRay':
+      return api.probeRay(input.origin, input.direction);
+    case 'createSession':
+      return api.createSession(input.name as string | undefined);
+    case 'listSessions':
+      return api.listSessions();
+    case 'openSession':
+      return api.openSession(input.id as string);
+    case 'assertPaint':
+      return api.assertPaint(input);
+    case 'paintInCylinder':
+      return api.paintInCylinder(input);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

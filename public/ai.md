@@ -1,6 +1,6 @@
 # Partwright -- AI Agent Instructions
 
-Partwright is a browser-based parametric CAD tool with two modeling engines: **manifold-js** (default, JavaScript DSL with manifold-3d API) and **OpenSCAD** (SCAD language via WASM). You write code that constructs 3D geometry, which renders live. All interaction is via the `window.partwright` programmatic API -- do not drive the app through clicks or keystrokes. `window.mainifold` remains available as a legacy alias for older prompts.
+Partwright is a browser-based parametric CAD tool with two modeling engines: **manifold-js** (default, JavaScript DSL with manifold-3d API + a `Curves` helper namespace) and **OpenSCAD** (SCAD language via WASM, with BOSL2 bundled). You write code that constructs 3D geometry, which renders live. All interaction is via the `window.partwright` programmatic API -- do not drive the app through clicks or keystrokes. `window.mainifold` remains available as a legacy alias for older prompts.
 
 **Coordinate system:** Right-handed, Z-up. XY plane is the ground. Units are arbitrary.
 
@@ -8,24 +8,19 @@ Partwright is a browser-based parametric CAD tool with two modeling engines: **m
 
 - [Before you start](#before-you-start)
 - [Choosing an engine](#choosing-an-engine)
+- [What do I do for X? (verb decision tree)](#what-do-i-do-for-x-verb-decision-tree)
+- [Topic index (subdocs)](#topic-index-subdocs)
 - [Common agent mistakes](#common-agent-mistakes)
 - [Argument validation](#argument-validation)
 - [Console API -- window.partwright](#console-api--windowpartwright)
 - [Geometry data](#geometry-data)
-- [Writing model code](#writing-model-code)
+- [Writing model code (manifold-js)](#writing-model-code-manifold-js)
 - [Writing OpenSCAD code](#writing-openscad-code)
 - [Common pitfalls for boolean operations](#common-pitfalls-for-boolean-operations)
-- [Print-safe geometry](#print-safe-geometry)
-- [Color regions](#color-regions)
 - [Common gotchas](#common-gotchas)
-- [AI-friendly file I/O](#ai-friendly-file-io)
-- [Images](#images)
-- [Photo-to-model workflow](#photo-to-model-workflow) (optional tooling)
 - [Iteration workflow](#iteration-workflow)
-- [Visual verification](#visual-verification)
-- [Annotations](#annotations)
 - [Stat-based verification](#stat-based-verification)
-- [Resuming a session](#resuming-a-session)
+- [Visual verification](#visual-verification)
 
 ## Before you start
 
@@ -44,36 +39,69 @@ Partwright supports two modeling engines. Pick whichever is best for the task:
 | | **manifold-js** (default) | **OpenSCAD** (SCAD) |
 |---|---|---|
 | Language | JavaScript | OpenSCAD `.scad` |
-| Best for | Algorithmic/parametric geometry, complex math, programmatic iteration | Standard OpenSCAD idioms, porting existing `.scad` files, users who think in CSG |
+| Best for | Algorithmic geometry, smooth curves (with `Curves` helpers), mesh-level operations (smooth/refine/SDF/warp) | Mechanical parts with rounding/chamfer/threads (with BOSL2), porting existing `.scad` files |
 | Code style | `return Manifold.cube([10,10,10], true);` | `cube([10,10,10], center=true);` |
-| Strengths | Fast execution, rich JS ecosystem, direct Manifold API access | Familiar to OpenSCAD users, large body of existing `.scad` code online |
-| Limitations | Must learn the manifold-3d API | No `text()` (fonts not loaded), no `use<>`/`include<>` with external libraries, slower (fresh WASM instance per run) |
+| Unique strengths | `Curves.loft`, `Curves.sweep`, `Curves.naca4`; `levelSet`, `warp`, `smoothOut` (mesh-level) | BOSL2's `cuboid(rounding=)`, `skin()`, `path_sweep()`, `threaded_rod()`, `spur_gear()` |
+| Limitations | Must learn the manifold-3d API | No `text()` (fonts not loaded), slower per-run (~100-300ms WASM init) |
 
 ### Switching engines
 
 ```js
-// Check current engine
 partwright.getActiveLanguage()        // -> 'manifold-js' or 'scad'
-
-// Switch engine (also updates the code editor's syntax highlighting)
 await partwright.setActiveLanguage('scad')
 await partwright.setActiveLanguage('manifold-js')
-
-// Run code with a specific engine (one-shot, doesn't change active engine)
-await partwright.run(scadCode)        // uses active engine
-// To force a specific engine, switch first then run
 ```
 
-Selecting a SCAD example from the toolbar dropdown auto-switches to OpenSCAD mode. Session versions remember which engine was used and restore it when loaded.
+Selecting a SCAD example from the toolbar dropdown auto-switches to OpenSCAD mode. Session versions remember which engine was used.
+
+## What do I do for X? (verb decision tree)
+
+Reach for the right tool the first time. If the table sends you to a subdoc, fetch it before writing code.
+
+| Want | manifold-js | OpenSCAD |
+|---|---|---|
+| Cube / sphere / cylinder | `Manifold.cube/sphere/cylinder(...)` | `cube()`, `sphere()`, `cylinder()` |
+| Boolean union / difference / intersection | `.add(o)`, `.subtract(o)`, `.intersect(o)` | `union(){...}`, `difference(){...}`, `intersection(){...}` |
+| 2D shape extruded to 3D | `cs.extrude(h, nDiv?, twist?, scaleTop?)` | `linear_extrude(h, twist=, slices=, scale=) polygon(...)` |
+| Surface of revolution (vase, lens, bottle) | `cs.revolve(n?, degrees?)` | `rotate_extrude(angle=) polygon(...)` |
+| Smooth curve from a few points | `Curves.bezier(controls)` -> `/ai/curves.md` | `bezier_curve()` (BOSL2) -> `/ai/bosl2.md` |
+| Arc between two points | `Curves.arc({from, to, radius})` | `arc()` (BOSL2) |
+| Airfoil cross-section | `Curves.naca4("2412")` | (write your own with BOSL2 paths) |
+| Polygon with rounded corners | `Curves.polyline(points, {fillet: r})` | BOSL2 `round_corners(...)` |
+| Wing, hull, fuselage (varying profile along axis) | `Curves.loft([profA, profB], [zA, zB])` -> `/ai/curves.md` | BOSL2 `skin([profiles], z=, slices=)` -> `/ai/bosl2.md` |
+| Handle, tube, propeller (profile along 3D path) | `Curves.sweep(profile, pathPoints)` | BOSL2 `path_sweep(profile, path)` |
+| Revolve around an arbitrary axis | `Curves.revolveAxis(profile, [ax,ay,az])` | `rotate([...]) rotate_extrude() polygon()` |
+| Round/chamfer all sharp edges of a solid | `Curves.fillet(solid, {angle: 60})` | BOSL2 `cuboid(rounding=...)`, `round3d(...)` |
+| Ring/linear/mirror copies | `Curves.ringCopy / linearCopy / mirrorCopy` | BOSL2 `ring_copies()`, `xcopies()`, `mirror_copy()` |
+| Threaded rod / bolt / nut | (write a helix manually) | BOSL2 `threaded_rod()`, `screw()`, `nut()` |
+| Spur / bevel / worm gear | (sample involute manually) | BOSL2 `spur_gear()`, `bevel_gear()`, `worm_gear()` |
+| Implicit surface (gyroid, metaball, SDF blend) | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) |
+| Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) |
+| Arbitrary vertex warp (bend extrusion) | `.warp(fn)` | (not available) |
+
+**Rule of thumb:** if you find yourself writing a `for` loop to manually compute curve points, stop and check whether `Curves` (manifold-js) or BOSL2 (SCAD) already has the verb. AI-generated point-sampling math is brittle; the helpers are deterministic.
+
+## Topic index (subdocs)
+
+The main reference splits into focused subdocs. Fetch them on demand instead of loading everything up front.
+
+- **[/ai/curves.md](/ai/curves.md)** — `Curves.loft/sweep/bezier/arc/naca4/polyline/fillet/...` helpers in manifold-js. Read **before** writing any code involving smooth curves, organic shapes, airfoils, or lofted surfaces.
+- **[/ai/bosl2.md](/ai/bosl2.md)** — BOSL2 cheatsheet for OpenSCAD: `cuboid(rounding=)`, `skin()`, `path_sweep()`, `screw()`, `spur_gear()`, attachables. Read **before** writing SCAD code that needs edge rounding, threads, gears, or path-following.
+- **[/ai/print-safety.md](/ai/print-safety.md)** — FDM-specific rules: minimum wall thickness, taper traps, sub-extrusion-width layer detection. Read **before** exporting STL/3MF for printing.
+- **[/ai/colors.md](/ai/colors.md)** — `paintRegion()` for multi-material output; how colors flow through GLB/3MF/OBJ exports.
+- **[/ai/reference-images.md](/ai/reference-images.md)** — Loading photos for elevation comparison; optional photo-to-model workflow.
+- **[/ai/file-io.md](/ai/file-io.md)** — `exportGLBData()`, `importSessionData()`, Recent Exports inbox — agent-friendly I/O that skips browser file pickers.
+- **[/ai/annotations.md](/ai/annotations.md)** — Reading and writing freehand strokes / text labels the user has placed on the model.
 
 ## Common agent mistakes
 
 - **Driving the UI with clicks/keystrokes** -- CodeMirror's auto-close-brackets will corrupt your code. Use `partwright.setCode()` and `partwright.run()` instead.
 - **Forgetting `return`** -- code runs in `new Function()`, so a trailing expression is NOT automatically returned. You must write `return Manifold.cube(...)`.
+- **Hand-rolling curve math instead of using helpers** -- if you need a smooth surface or curve, check the verb table above. `Curves.loft` / BOSL2 `skin()` are far more reliable than a hand-written polygon-sampling loop.
 - **Skipping sessions** -- always create a session (`createSession`) and save versions (`runAndSave`) so the user can review your work in the gallery.
 - **Skipping visual verification** -- stats alone can't catch visual defects. After structural changes, screenshot the Elevations tab or use `renderView()`.
 - **Flush boolean placement** -- shapes must overlap by at least 0.5 units to union correctly. Merely touching at a face produces disconnected components.
-- **Tapering to a near-point on printed geometry** -- `scaleTop=[0.01, 0.01]` or chamfers that collapse the top to sub-millimeter area look fine in `geometry-data` but FDM slicers silently drop sub-extrusion-width layers, so the cap disappears on the print. See [Print-safe geometry](#print-safe-geometry).
+- **Tapering to a near-point on printed geometry** -- `scaleTop=[0.01, 0.01]` or chamfers that collapse the top to sub-millimeter area look fine in `geometry-data` but FDM slicers silently drop sub-extrusion-width layers, so the cap disappears on the print. See [/ai/print-safety.md](/ai/print-safety.md).
 - **Not reading session context before modifying** -- when opening an existing session, always call `getSessionContext()` first and read the notes/version history before making changes. See [Resuming a session](#resuming-a-session).
 - **Branching off a prior version by hand** -- don't chain `loadVersion` -> `getCode` -> modify -> `runAndSave`. A silent failure (blocked return value, stale buffer) can drop parts of the parent. Use [`forkVersion({index} | {id}, transformFn, label, assertions?)`](#forking-a-prior-version) instead -- it loads the parent's code server-side, applies your transform, validates, and saves atomically.
 - **Passing a bare index or id instead of `{index}` / `{id}`** -- `loadVersion` and `forkVersion` take an object with exactly one of `{index: number}` or `{id: string}`, e.g. `loadVersion({index: 2})` or `loadVersion({id: "Kx3Pq9mA2wEr"})`. Bare `loadVersion(2)` will return `{error: "...target must be { index: number } or { id: string }..."}`.
@@ -149,7 +177,7 @@ await partwright.exportGLB()   // Download GLB (browser file dialog -- prefer ex
 partwright.exportSTL()         // Download STL ("                                       exportSTLData() ")
 partwright.exportOBJ()         // Download OBJ ("                                       exportOBJData() ")
 partwright.export3MF()         // Download 3MF ("                                       export3MFData() ")
-// Agent-friendly variants -- bytes return inline, no file dialog. See AI-friendly file I/O.
+// Agent-friendly variants -- bytes return inline, no file dialog. See /ai/file-io.md.
 await partwright.exportGLBData()        // -> {filename, mimeType, base64, sizeBytes}
 await partwright.exportSTLData()
 await partwright.exportOBJData()        // text or base64 depending on whether colors are painted
@@ -174,12 +202,23 @@ await partwright.renderViews({views?: 'auto'|'tri'|'all', size?})  // multi-angl
 partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}
 partwright.isRunning()                   // -> boolean (is code executing?)
 
-// Images -- attach photos to compare model against
+// Images -- attach photos to compare model against (see /ai/reference-images.md)
 partwright.setImages([{src, label?}, ...])  // replace all; src is data URL or http(s) URL; label is an optional caption
 partwright.addImage({src, label?})          // append one; returns {id, src, label?}
 partwright.removeImage(id)                  // remove by id; returns true if removed
 partwright.clearImages()
 partwright.getImages()                      // -> [{id, src, label?}, ...]
+
+// Annotations & color regions -- see /ai/annotations.md and /ai/colors.md
+
+partwright.paintRegion({point, normal, color, name?, tolerance?})
+partwright.listRegions()
+partwright.clearColors()
+
+partwright.listAnnotations()
+partwright.listTextAnnotations()
+partwright.addTextAnnotation({anchor, text})
+partwright.clearAnnotations()
 
 // Sessions -- save/compare design iterations
 await partwright.createSession(name?)    // -> {id, url, galleryUrl}
@@ -195,41 +234,33 @@ await partwright.listSessions()          // -> [{id, name, updated}]
 await partwright.openSession(id)         // Open existing session
 await partwright.clearAllSessions()      // Delete all sessions & versions
 
-// Color regions -- tag face regions with a color (see #color-regions)
-partwright.probePixel({pixel, view})                                      // "click in your perception": pixel in a rendered view -> {point, normal, distance, triangleId} or null
-partwright.paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?}) // BFS-flood from seed gated by seed-normal deviation (not adjacent). For organic / smooth meshes paintRegion can't handle.
-partwright.paintRegion({point, normal, color, name?, tolerance?})         // bucket: coplanar flood-fill -> {id, name, triangles} or {error, nearest?}
-partwright.paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) // snap seed to nearest face, then flood-fill -> {id, name, triangles, snappedTo} or {error}
-partwright.paintNear({point, radius, normalCone?, topOnly?, coverageMode?, maxTriangleArea?, color, name?})    // sphere: paint triangles within radius -> {id, name, triangles, bbox, centroid} or {error}
-partwright.paintInBox({box, normalCone?, topOnly?, coverageMode?, maxTriangleArea?, color, name?})             // box: paint triangles inside an AABB -> {id, name, triangles, bbox, centroid} or {error}
-partwright.paintInOrientedBox({box: {center, size, quaternion?}, color, name?})                                 // rotated box: paint triangles inside an oriented bounding box. quaternion defaults to identity. Same selector as the UI Box tool.
-partwright.paintFaces({triangleIds, color, name?})                        // brush: paint specific triangle indices -> {id, name, triangles} or {error}
-partwright.paintSlab({axis|normal, offset, thickness, coverageMode?, maxTriangleArea?, color, name?})      // slab: paint a planar range -> {id, name, triangles} or {error}
-partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, coverageMode?, maxTriangleArea?, withImage?, view?}) // dry-run -> {triangleCount, bbox, centroid, totalArea, largestTriangleArea, [thumbnail]}
-partwright.paintExplain({region, withImage?, view?}) // diagnose committed region -> {triangleCount, area, largestTriangleArea, bbox, centroid, normalHistogram, [thumbnail]}
-partwright.assertPaint({region, expectedTriangleCount?, expectedBoundingBox?, expectedCentroid?}) // verify a region -> {passed, failures?}
-partwright.findFaces({box?, normal?, normalTolerance?, color?, region?, maxResults?}) // query triangle ids by geometry/color -> {triangleIds, count, matched, truncated}
-partwright.getMesh()                     // -> {numVert, numTri, vertices, triangles, normals, centroids, boundingBox} (typed arrays)
-partwright.getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?, withinBox?}?) // -> {groups[{id, normal, centroid, area, triangleCount, bbox, triangleIds}], totalTriangles, groupCount, tolerance, unfiltered?}
-partwright.listRegions()                 // -> [{id, name, color, source, triangles, order, visible, bbox, centroid}, ...]
-partwright.listComponents()              // -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- per-piece bbox for unioned models
-partwright.paintComponent({index, color, name?, topOnly?}) // One-call: paint the Nth boolean-distinct piece
-partwright.listLabels()                  // -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- labels registered via api.label(shape, name) in the current run
-partwright.paintByLabel({label, color, name?}) // Paint a labelled feature by name. Exact, survives boolean ops. manifold-js only.
-partwright.paintByLabels([{label, color, name?}, ...]) // Batch sibling. N features in one call -> {results, failed}. Coalesces viewport refresh under one rAF.
-partwright.getFeatureCentroids({maxGroups?, withinBox?}?)  // Lightweight planning: centroids + normals + bbox per face group, NO triangleIds
-partwright.paintPreview({box?|point+radius?|triangleIds?, normalCone?, coverageMode?, maxTriangleArea?, withImage?, view?}) // DRY-RUN -> {triangleCount, bbox, centroid, totalArea, largestTriangleArea, [thumbnail]}
-partwright.undoLastPaint()               // Reverse the SINGLE most recent paint op -> {undone, id, ...}
-partwright.redoLastPaint()               // Reapply the most recently undone paint -> {redone, id, ...}
-partwright.removeRegion(id)              // Delete ONE region by id from listRegions()
-partwright.setRegionVisibility(id, visible) // Show/hide ONE region in the viewport (hidden regions still export)
-partwright.hideRegion(id)                // Shorthand for setRegionVisibility(id, false)
-partwright.showRegion(id)                // Shorthand for setRegionVisibility(id, true)
-partwright.clearColors()                 // Remove ALL regions (destructive — prefer undoLastPaint/removeRegion for fixing single mistakes)
-partwright.getBucketTolerance()          // -> {tolerance} (cosine of max bend angle, -1..1)
-partwright.setBucketTolerance(t)         // Set the UI bucket tool's tolerance + the default for paintRegion
-partwright.getBrushSize()                // -> {radius} (mesh units, 0 = single triangle)
-partwright.setBrushSize(r)               // Set the UI brush radius (>= 0). Programmatic painting uses paintNear / paintFaces.
+// Color regions -- tag face regions with a color. Full API in /ai/colors.md.
+// Quick reference (~30 methods total):
+partwright.probePixel({pixel, view})                                      // pixel-in-render -> {point, normal, distance, triangleId}
+partwright.paintConnected({seed, maxDeviationDeg?, color, name?})         // BFS-flood by seed-normal deviation (organic meshes)
+partwright.paintRegion({point, normal, color, name?, tolerance?})         // bucket: coplanar flood-fill (edge-bounded)
+partwright.paintNearestRegion({point, color, searchRadius?, name?})       // snap-to-nearest variant
+partwright.paintNear({point, radius, normalCone?, color, name?})          // sphere selector
+partwright.paintInBox({box, normalCone?, color, name?})                   // AABB selector
+partwright.paintInOrientedBox({box: {center, size, quaternion?}, color})  // rotated box selector (same as UI Box tool)
+partwright.paintFaces({triangleIds, color, name?})                        // explicit triangle ids
+partwright.paintSlab({axis|normal, offset, thickness, color, name?})      // planar range
+partwright.paintByLabel({label, color, name?})                            // by api.label() name (manifold-js only)
+partwright.paintByLabels([{label, color, name?}, ...])                    // batch sibling
+partwright.paintComponent({index, color, name?, topOnly?})                // by listComponents() index
+partwright.paintPreview({...selector, withImage?, view?})                 // dry-run
+partwright.paintExplain({region, withImage?, view?})                      // diagnose committed region
+partwright.assertPaint({region, expectedTriangleCount?, ...})             // verify
+partwright.findFaces({box?, normal?, normalTolerance?, color?, ...})      // query by geometry/color
+partwright.getMesh()                     // raw mesh access for procedural workflows
+partwright.getMeshSummary({tolerance?, ...}?)                             // grouped coplanar faces
+partwright.getFeatureCentroids({maxGroups?, withinBox?}?)                 // lightweight planning
+partwright.listRegions() / listComponents() / listLabels()                // inventory
+partwright.undoLastPaint() / redoLastPaint()                              // single-op undo
+partwright.removeRegion(id) / setRegionVisibility(id, visible)            // per-region edits
+partwright.hideRegion(id) / showRegion(id) / clearColors()
+partwright.getBucketTolerance() / setBucketTolerance(t)                   // UI bucket tool config
+partwright.getBrushSize() / setBrushSize(r)                               // UI brush tool config
 
 // Notes -- track design context, decisions, and measurements
 await partwright.addSessionNote(text)    // -> {id, text, timestamp}
@@ -239,7 +270,6 @@ await partwright.deleteSessionNote(noteId)       // Remove a note
 
 // Session context -- get everything in one call (for resuming sessions)
 await partwright.getSessionContext()     // -> {session, versions[], notes[], currentVersion, versionCount, agentHints}
-// agentHints: {apiDocsUrl, recommendedEntrypoint, codeMustReturnManifold, recentErrors[]}
 ```
 
 ## Geometry data
@@ -273,16 +303,21 @@ On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}
 - `function _Cylinder called with N arguments` -- wrong arg count
 - Geometry looks wrong -- check `isManifold` and `componentCount` (failed booleans = extra components)
 
-## Writing model code
+## Writing model code (manifold-js)
 
 Code runs in a sandbox via `new Function('api', code)`. All transforms return new immutable Manifold instances -- chaining works.
 
 ```js
-const { Manifold, CrossSection, setCircularSegments } = api;
+const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 // MUST return a Manifold object
 ```
 
-**Sandbox environment:** The `api` object provides `Manifold`, `CrossSection`, and `setCircularSegments`. Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.
+**Sandbox environment:** The `api` object provides:
+- `Manifold` and `CrossSection` -- the raw manifold-3d bindings
+- `Curves` -- helpers for smooth/organic shapes (loft, sweep, bezier, arc, naca4, polyline with fillet, arbitrary-axis revolve, fillet/chamfer, pattern arrays). See **[/ai/curves.md](/ai/curves.md)**.
+- `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
+
+Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.
 
 ### Primitive origins and orientations
 
@@ -309,6 +344,8 @@ Manifold: cube, sphere, cylinder, tetrahedron, extrude, revolve,
           union, difference, intersection, hull, compose, smooth, levelSet, ofMesh
 CrossSection: square, circle, ofPolygons (CCW outer, CW holes),
               compose, union, difference, intersection, hull
+Curves: arc, bezier, naca4, polyline, loft, sweep, revolveAxis,
+        fillet, chamfer, ringCopy, linearCopy, mirrorCopy   (see /ai/curves.md)
 ```
 
 ### Manifold instance methods
@@ -317,8 +354,9 @@ CrossSection: square, circle, ofPolygons (CCW outer, CW holes),
 Booleans:   .add(other)  .subtract(other)  .intersect(other)  .hull()
 Transforms: .translate([x,y,z])  .rotate([rx,ry,rz]) (degrees, applied X->Y->Z)
             .scale(s) or .scale([x,y,z])  .mirror([nx,ny,nz]) (plane normal)
-            .warp(fn)  .transform(mat4x3)
-Mesh ops:   .refine(n)  .simplify()  .smoothOut()  .calculateNormals(idx, angle?)
+            .warp(fn)  .transform(mat4)
+Mesh ops:   .refine(n)  .simplify()  .smoothOut(minSharpAngle?, minSmoothness?)
+            .calculateNormals(idx, angle?)
 Queries:    .volume()  .surfaceArea()  .genus()  .numVert()  .numTri()  .isEmpty()
             .boundingBox()  .status() (0=valid)  .decompose()
 Slicing:    .slice(z)  .project()  .trimByPlane(n,off)  .splitByPlane(n,off)
@@ -337,6 +375,8 @@ Queries:    .area()  .isEmpty()  .numVert()  .numContour()  .bounds()
 Output:     .toPolygons()  .decompose()  .delete()
 ```
 
+For smooth curve helpers (`loft`, `sweep`, `naca4`, `bezier`, `polyline` with fillet, etc.), see **[/ai/curves.md](/ai/curves.md)**.
+
 ## Writing OpenSCAD code
 
 When the engine is set to `scad`, code is compiled by OpenSCAD (WASM) instead of running as JavaScript.
@@ -348,21 +388,30 @@ When the engine is set to `scad`, code is compiled by OpenSCAD (WASM) instead of
 - **Transforms** -- `translate`, `rotate`, `scale`, `mirror`, `multmatrix`, `color`, `resize`.
 - **Booleans** -- `union()`, `difference()`, `intersection()`, `hull()`, `minkowski()`.
 - **Extrusion** -- `linear_extrude(height, twist, slices, scale)`, `rotate_extrude(angle)`.
+- **2D rounding** -- `offset(r=...)` for rounded outlines; `minkowski() { shape; circle(r); }` for rounded interiors.
+- **Curve resolution** -- `$fn=N` for explicit segments, or `$fa`/`$fs` for angle/length-based segmentation.
 - **The `--enable=manifold` flag is set automatically** -- OpenSCAD uses the same manifold-3d boolean backend, so CSG results match the JS engine.
 
-**Known limitations (v1):**
+**BOSL2 library is bundled** -- start your file with `include <BOSL2/std.scad>` to unlock rounded cuboids, skin/loft, sweep, threaded rods, gears, attachables, and pattern distributors. See **[/ai/bosl2.md](/ai/bosl2.md)**. First BOSL2 run on a fresh page fetches ~4 MB of library source (one-time, then cached).
+
+**Known limitations:**
 - `text()` is not available (font data not loaded to save ~8MB).
-- `use <...>` / `include <...>` with external `.scad` libraries does not work (no external file system). Inline all modules.
-- BOSL2 and MCAD libraries are not available.
+- External `.scad` libraries (other than the bundled BOSL2) can't be `include`d -- there's no filesystem to read from.
 - Each SCAD run creates a fresh WASM instance (~100-300ms overhead). For fast iteration, manifold-js is snappier.
 
-**Example SCAD code:**
+**Example SCAD code (stock):**
 ```scad
 // Cube with cylindrical hole
 difference() {
   cube([10, 10, 10], center=true);
   cylinder(h=12, r=4, center=true, $fn=32);
 }
+```
+
+**Example SCAD code (BOSL2):**
+```scad
+include <BOSL2/std.scad>
+cuboid([40, 30, 20], rounding=3);     // all edges filleted
 ```
 
 ## Common pitfalls for boolean operations

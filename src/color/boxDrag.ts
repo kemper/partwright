@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import type { MeshData } from '../geometry/types';
-import { getScene, getCamera, getRenderer, getMeshGroup, setUserOrbitLock, isUserOrbitLocked } from '../renderer/viewport';
+import { getScene, getCamera, getRenderer, getMeshGroup, setGizmoLock } from '../renderer/viewport';
 import { addRegion, getRegions } from './regions';
 import { getColor, getCurrentMesh } from './paintMode';
 import { findBoxTriangles, type OrientedBox } from './boxPaint';
@@ -22,7 +22,6 @@ let boxMesh: THREE.Mesh | null = null;   // translucent box rendered in the view
 let boxEdges: THREE.LineSegments | null = null;
 let gizmo: TransformControls | null = null;
 let gizmoHelper: THREE.Object3D | null = null;
-let priorOrbitLock = false;
 
 const changeListeners: Array<(box: OrientedBox) => void> = [];
 
@@ -71,12 +70,9 @@ export function activate(): void {
   if (active) return;
   active = true;
 
-  // Reuse the global orbit lock the way other paint tools do. The gizmo also
-  // listens for its own dragging-changed event below to lock during a drag,
-  // but locking up-front matches the paint mode's "stop orbiting" contract.
-  priorOrbitLock = isUserOrbitLocked();
-  setUserOrbitLock(true);
-
+  // Orbit stays enabled — the gizmo locks it only while a handle is hovered
+  // or being dragged (see buildGizmo's axis-changed / dragging-changed
+  // handlers). Clicks outside the gizmo and box still rotate the camera.
   buildBox();
   buildGizmo();
   notifyChange(); // populate the panel's numeric readouts with initial values
@@ -85,7 +81,7 @@ export function activate(): void {
 export function deactivate(): void {
   if (!active) return;
   active = false;
-  if (!priorOrbitLock) setUserOrbitLock(false);
+  setGizmoLock(false);
   disposeGizmo();
   disposeBox();
 }
@@ -194,8 +190,15 @@ function buildGizmo(): void {
     syncVisuals();
     notifyChange();
   });
+  // Lock orbit the moment the cursor enters a handle (axis-changed fires
+  // before pointerdown) so OrbitControls never starts rotating, and again
+  // explicitly during the drag itself for any pointer that arrives without
+  // a hover (touch / pen).
+  gizmo.addEventListener('axis-changed', (e) => {
+    setGizmoLock(e.value !== null || gizmo!.dragging);
+  });
   gizmo.addEventListener('dragging-changed', (e) => {
-    if (e.value === true) setUserOrbitLock(true);
+    setGizmoLock(e.value === true || gizmo!.axis !== null);
   });
 }
 

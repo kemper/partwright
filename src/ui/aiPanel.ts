@@ -19,7 +19,7 @@ import { showCompactConfirmModal } from './aiCompactModal';
 import { showAttachmentModal } from './aiAttachmentModal';
 import { putAttachment } from '../ai/attachments';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
-import { activeModel, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type TurnOutcomeReason } from '../ai/types';
+import { activeModel, SPEND_CAP_USD, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type TurnOutcomeReason } from '../ai/types';
 
 interface PanelState {
   open: boolean;
@@ -30,6 +30,16 @@ interface PanelState {
   /** Live for the duration of a turn. Stop button aborts via this. Null
    *  when no turn is in flight. */
   inFlightController: AbortController | null;
+  /** Blocks the human queued while a turn was in flight. Delivered to the
+   *  agent at the next natural pause (between iterations via the chatLoop
+   *  drain hook, or as the userBlocks of a follow-up turn if the loop
+   *  exits with the queue still non-empty). In-memory only — lost on
+   *  refresh, which matches the ephemeral "queue while running" use case. */
+  queuedBlocks: ChatBlock[];
+  /** Undo stack for the rewind button. Each entry is the slice of messages
+   *  removed by one rewind operation. Popped by fast-forward to restore.
+   *  Cleared when the user sends a new message (conversation has diverged). */
+  rewindStack: ChatMessage[][];
 }
 
 const state: PanelState = {
@@ -39,6 +49,8 @@ const state: PanelState = {
   pendingImages: [],
   inFlight: false,
   inFlightController: null,
+  queuedBlocks: [],
+  rewindStack: [],
 };
 
 /** Cached length of `public/ai.md`, populated once on init. Used when the
@@ -104,6 +116,10 @@ function nextCompactedSeq(history: ChatMessage[]): number {
 }
 
 let sendBtnRef: HTMLButtonElement | null = null;
+let stopBtnRef: HTMLButtonElement | null = null;
+let queuedBadgeRef: HTMLElement | null = null;
+let rewindBtnRef: HTMLButtonElement | null = null;
+let forwardBtnRef: HTMLButtonElement | null = null;
 
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
@@ -164,6 +180,16 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
     return;
   }
   state.sessionId = effective;
+  // If a turn is in flight the session change was triggered by the model
+  // calling createSession mid-turn. Don't reload/re-render now — the
+  // callbacks (onUserPersisted etc.) are keeping state.history current
+  // for the running turn. Reloading here would wipe the user's message
+  // from the transcript. The reload happens after the turn completes.
+  if (state.inFlight) return;
+  // Drop any queued follow-ups — they were aimed at the prior chat bucket
+  // and the human's instructions almost never make sense out of context.
+  state.queuedBlocks = [];
+  renderQueuedBadge();
   await loadHistoryForCurrentSession();
   renderTranscript();
   renderCostMeter();
@@ -193,6 +219,7 @@ function hideDrawer(): void {
 
 async function loadHistoryForCurrentSession(): Promise<void> {
   state.history = await listMessages(state.sessionId);
+  updateRewindButtons();
 }
 
 // === DOM construction ===
@@ -263,6 +290,31 @@ function buildDrawer(): void {
   transcriptEl.className = 'flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-3';
   root.appendChild(transcriptEl);
 
+  // Rewind / fast-forward row — sits just above the controls so it's
+  // near the input and clearly associated with conversation history.
+  const rewindRow = document.createElement('div');
+  rewindRow.className = 'px-3 pt-1.5 pb-0.5 flex gap-2 shrink-0 border-t border-zinc-800';
+
+  const rewindBtn = document.createElement('button');
+  rewindBtn.className = 'flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium text-zinc-300 bg-zinc-800 hover:bg-zinc-700 hover:text-white border border-zinc-700 hover:border-zinc-500 disabled:opacity-30 disabled:cursor-not-allowed transition-all';
+  rewindBtn.innerHTML = '↩ Undo turn';
+  rewindBtn.title = 'Remove the last turn from history. Use ↪ Redo to restore it.';
+  rewindBtn.disabled = true;
+  rewindBtn.addEventListener('click', () => { void rewindTurn(); });
+  rewindBtnRef = rewindBtn;
+  rewindRow.appendChild(rewindBtn);
+
+  const forwardBtn = document.createElement('button');
+  forwardBtn.className = 'flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium text-zinc-300 bg-zinc-800 hover:bg-zinc-700 hover:text-white border border-zinc-700 hover:border-zinc-500 disabled:opacity-30 disabled:cursor-not-allowed transition-all';
+  forwardBtn.innerHTML = '↪ Redo turn';
+  forwardBtn.title = 'Restore the last undone turn. Cleared when you send a new message.';
+  forwardBtn.disabled = true;
+  forwardBtn.addEventListener('click', () => { void fastForwardTurn(); });
+  forwardBtnRef = forwardBtn;
+  rewindRow.appendChild(forwardBtn);
+
+  root.appendChild(rewindRow);
+
   // Toggle strip
   toggleStripEl = document.createElement('div');
   toggleStripEl.className = 'px-3 py-1.5 border-t border-zinc-800 flex flex-wrap items-center gap-1.5 shrink-0';
@@ -285,6 +337,14 @@ function buildDrawer(): void {
   progressEl = document.createElement('div');
   progressEl.className = 'px-3 pb-1.5 text-[11px] text-zinc-400 flex items-center gap-2 shrink-0 hidden';
   root.appendChild(progressEl);
+
+  // Queued-message badge — shown when the human has typed a follow-up
+  // mid-run. Sits just above the input row so the user can see at a glance
+  // that the next iteration will pick up what they queued.
+  queuedBadgeRef = document.createElement('div');
+  queuedBadgeRef.id = 'queued-message-badge';
+  queuedBadgeRef.className = 'px-3 pb-1.5 text-[11px] text-amber-300 flex items-center gap-2 shrink-0 hidden';
+  root.appendChild(queuedBadgeRef);
 
   // Input row
   const inputRow = document.createElement('div');
@@ -335,19 +395,34 @@ function buildDrawer(): void {
   inputEl = ta;
   inputRow.appendChild(ta);
 
+  // Stop button — separate from Send so the human can queue follow-ups
+  // mid-run (clicking Send) without losing the ability to actually halt
+  // the agent. Hidden until a turn is in flight.
+  const stopBtn = document.createElement('button');
+  stopBtn.id = 'btn-ai-stop';
+  stopBtn.className = 'shrink-0 px-2 py-1.5 rounded text-xs font-medium bg-red-600 hover:bg-red-500 text-white hidden';
+  stopBtn.textContent = '⊘ Stop';
+  stopBtn.title = 'Stop the model. Partial output is kept so you can redirect. Any queued message stays queued.';
+  stopBtn.addEventListener('click', () => {
+    // Anthropic stops via AbortSignal propagated through the SDK. Local
+    // (WebLLM) doesn't accept the signal, so interruptLocal() is the only
+    // way to halt mid-token rather than at the next iteration boundary.
+    state.inFlightController?.abort();
+    void interruptLocal();
+  });
+  stopBtnRef = stopBtn;
+  inputRow.appendChild(stopBtn);
+
   const sendBtn = document.createElement('button');
   sendBtn.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
   sendBtn.textContent = 'Send';
   sendBtn.addEventListener('click', () => {
-    // While a turn is in flight the button is "Stop" — abort the
-    // controller (which propagates through runTurn → streamTurn → SDK on
-    // the Anthropic path) AND call interruptLocal so any in-progress
-    // WebLLM generation halts at the next token. The local path doesn't
-    // accept the AbortSignal so this is the only way to stop it mid-
-    // stream rather than at the next iteration boundary.
+    // While a turn is in flight, Send queues — the agent picks the
+    // message up at the next natural pause (between tool round-trips or
+    // at end-of-turn) without us aborting the current run. Stop is the
+    // separate red button to the left for that.
     if (state.inFlight) {
-      state.inFlightController?.abort();
-      void interruptLocal();
+      queueCurrentInput();
       return;
     }
     void sendMessage();
@@ -578,11 +653,11 @@ function renderToggleStrip(): void {
   // iterations but spend $0.50+ each).
   const spendCap = document.createElement('select');
   spendCap.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
-  spendCap.title = 'Spend cap: max USD this turn can cost before the loop forces a stop. Applies alongside the iteration cap — whichever trips first wins. Useful when iteration count is unpredictable (a vision-heavy iteration may spend $0.50). Set ∞ to disable.';
+  spendCap.title = 'Spend cap: total USD this session can cost before the loop forces a stop and further sends are blocked until you raise the cap. Applies alongside the iteration cap — whichever trips first wins. Set ∞ to disable.';
   for (const opt of MAX_SPEND_OPTIONS) {
     const o = document.createElement('option');
     o.value = opt.id;
-    o.textContent = `$ ${opt.label}`;
+    o.textContent = opt.label;
     o.title = opt.hint;
     spendCap.appendChild(o);
   }
@@ -770,7 +845,9 @@ async function clearCurrentChat(): Promise<void> {
 function renderTranscript(): void {
   if (!transcriptEl) return;
   transcriptEl.replaceChildren();
-  if (state.history.length === 0) {
+  const hasHistory = state.history.length > 0;
+  const hasQueue = state.queuedBlocks.length > 0;
+  if (!hasHistory && !hasQueue) {
     const empty = document.createElement('div');
     empty.className = 'flex-1 flex items-center justify-center text-zinc-600 text-xs text-center px-6';
     empty.textContent = state.sessionId === GLOBAL_CHAT_BUCKET
@@ -782,7 +859,39 @@ function renderTranscript(): void {
   for (const msg of state.history) {
     transcriptEl.appendChild(renderMessage(msg));
   }
+  // Pending preview — render queued follow-ups as faded user bubbles at the
+  // bottom of the transcript so the human sees their typed message land
+  // immediately, before the agent's loop drains the queue. When the drain
+  // fires, the merged tool_result message takes the queued blocks' place
+  // (and renderTranscript runs again to clear the preview).
+  if (hasQueue) {
+    transcriptEl.appendChild(renderQueuedPreview());
+  }
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+function renderQueuedPreview(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col items-end gap-1';
+  wrap.dataset.queuedPreview = 'true';
+  for (const b of state.queuedBlocks) {
+    if (b.type === 'text' && b.text.trim().length > 0) {
+      const bubble = document.createElement('div');
+      bubble.className = 'max-w-[90%] px-3 py-2 rounded-lg text-sm whitespace-pre-wrap leading-snug bg-blue-600/70 text-white border border-amber-400/50 ring-1 ring-amber-400/30';
+      bubble.textContent = b.text;
+      bubble.title = 'Queued — will be delivered to the AI at the next pause.';
+      wrap.appendChild(bubble);
+    } else if (b.type === 'image') {
+      const imgWrap = renderImageBubble(b.source);
+      imgWrap.classList.add('opacity-70', 'ring-1', 'ring-amber-400/40');
+      wrap.appendChild(imgWrap);
+    }
+  }
+  const tag = document.createElement('div');
+  tag.className = 'text-[10px] text-amber-300/80 italic';
+  tag.textContent = '⏳ queued — waiting for the agent to pause';
+  wrap.appendChild(tag);
+  return wrap;
 }
 
 function renderMessage(msg: ChatMessage): HTMLElement {
@@ -1073,6 +1182,136 @@ function renderPendingImages(): void {
   });
 }
 
+// === Queue message (mid-run follow-up) ===
+
+/** Append the current textarea + pending-images contents to the mid-run
+ *  queue. The chatLoop's `onDrainQueuedBlocks` hook drains this at the
+ *  next safe seam (between tool round-trips). If the loop exits with the
+ *  queue still non-empty, runTurnWithStallRetry auto-fires a follow-up
+ *  turn with the queued blocks as the new user message. */
+function queueCurrentInput(): void {
+  if (!inputEl) return;
+  const text = inputEl.value.trim();
+  if (text.length === 0 && state.pendingImages.length === 0) return;
+  const blocks: ChatBlock[] = [];
+  if (text.length > 0) blocks.push({ type: 'text', text });
+  for (const img of state.pendingImages) blocks.push({ type: 'image', source: img });
+  state.queuedBlocks.push(...blocks);
+  inputEl.value = '';
+  state.pendingImages = [];
+  renderPendingImages();
+  renderQueuedBadge();
+  // Surface the queued blocks as a preview bubble at the bottom of the
+  // transcript so the human gets immediate visual confirmation — without
+  // this they'd see no feedback until end-of-turn reload.
+  renderTranscript();
+  inputEl.focus();
+}
+
+function renderQueuedBadge(): void {
+  if (!queuedBadgeRef) return;
+  if (state.queuedBlocks.length === 0) {
+    queuedBadgeRef.classList.add('hidden');
+    queuedBadgeRef.replaceChildren();
+    return;
+  }
+  const textBlocks = state.queuedBlocks.filter(b => b.type === 'text');
+  const imageCount = state.queuedBlocks.length - textBlocks.length;
+  // Prefer the first queued text as the badge preview so the human can see
+  // which message they queued at a glance (handy if they queued more than
+  // one before the agent paused).
+  const preview = textBlocks.length > 0 && textBlocks[0].type === 'text'
+    ? textBlocks[0].text.split('\n')[0].slice(0, 80)
+    : `${imageCount} image${imageCount === 1 ? '' : 's'}`;
+  const more = state.queuedBlocks.length > 1 ? ` (+${state.queuedBlocks.length - 1} more)` : '';
+
+  queuedBadgeRef.classList.remove('hidden');
+  queuedBadgeRef.replaceChildren();
+  const dot = document.createElement('span');
+  dot.className = 'inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse';
+  queuedBadgeRef.appendChild(dot);
+  const label = document.createElement('span');
+  label.className = 'flex-1 truncate';
+  label.textContent = `Queued: ${preview}${more} — will send at next pause`;
+  label.title = 'Queued for delivery on the agent\'s next response. Click ✕ to discard.';
+  queuedBadgeRef.appendChild(label);
+  const clearBtn = document.createElement('button');
+  clearBtn.type = 'button';
+  clearBtn.className = 'shrink-0 text-amber-400 hover:text-amber-200 px-1';
+  clearBtn.textContent = '✕';
+  clearBtn.title = 'Discard the queued message';
+  clearBtn.addEventListener('click', () => {
+    state.queuedBlocks = [];
+    renderQueuedBadge();
+    renderTranscript();
+  });
+  queuedBadgeRef.appendChild(clearBtn);
+}
+
+/** Pop the queue and return its contents. Called by chatLoop's
+ *  `onDrainQueuedBlocks` hook and by the end-of-turn auto-restart. */
+function drainQueuedBlocks(): ChatBlock[] {
+  if (state.queuedBlocks.length === 0) return [];
+  const drained = state.queuedBlocks;
+  state.queuedBlocks = [];
+  renderQueuedBadge();
+  // Clear the preview bubble — onUserMessageUpdated (mid-loop case) or the
+  // end-of-turn reload (auto-restart case) will replace it with the real
+  // delivered bubble. Re-rendering here drops the now-stale preview
+  // immediately so it doesn't visually duplicate when the real one lands.
+  renderTranscript();
+  return drained;
+}
+
+// === Rewind / fast-forward ===
+
+/** Remove the last user-initiated turn (the last user message with actual
+ *  typed content, plus everything that follows it) from history and IndexedDB.
+ *  The removed slice is pushed onto rewindStack so fast-forward can restore it.
+ *  Clears itself when the user sends a new message (conversation has diverged). */
+async function rewindTurn(): Promise<void> {
+  if (state.inFlight) return;
+  // Find the last message the user actually typed (has blocks — not a pure
+  // tool_result carrier which has toolResults but empty blocks).
+  let cutIndex = -1;
+  for (let i = state.history.length - 1; i >= 0; i--) {
+    if (state.history[i].role === 'user' && state.history[i].blocks.length > 0) {
+      cutIndex = i;
+      break;
+    }
+  }
+  if (cutIndex < 0) return;
+  const removed = state.history.splice(cutIndex);
+  state.rewindStack.push(removed);
+  await deleteMessages(removed.map(m => m.id));
+  renderTranscript();
+  updateRewindButtons();
+}
+
+/** Restore the most recently rewound turn from the rewindStack back into
+ *  history and IndexedDB. */
+async function fastForwardTurn(): Promise<void> {
+  if (state.inFlight) return;
+  const toRestore = state.rewindStack.pop();
+  if (!toRestore?.length) return;
+  await putMessages(toRestore);
+  for (const msg of toRestore) {
+    const insertAt = state.history.findIndex(m => m.seq > msg.seq);
+    if (insertAt === -1) state.history.push(msg);
+    else state.history.splice(insertAt, 0, msg);
+  }
+  renderTranscript();
+  updateRewindButtons();
+}
+
+function updateRewindButtons(): void {
+  const canRewind = !state.inFlight &&
+    state.history.some(m => m.role === 'user' && m.blocks.length > 0);
+  const canForward = !state.inFlight && state.rewindStack.length > 0;
+  if (rewindBtnRef) rewindBtnRef.disabled = !canRewind;
+  if (forwardBtnRef) forwardBtnRef.disabled = !canForward;
+}
+
 // === Send message ===
 
 async function sendMessage(): Promise<void> {
@@ -1110,6 +1349,20 @@ async function sendMessage(): Promise<void> {
     }
   }
 
+  // Session spend gate. The dropdown is a session-total budget, so block
+  // a new turn once historical spend has reached it. The user has to
+  // raise the cap (or pick ∞) to keep going — otherwise the dropdown
+  // would be advisory only and continued prompting would silently sail
+  // past the chosen budget.
+  const sessionCap = SPEND_CAP_USD[loadSettings().toggles.maxSpend];
+  if (Number.isFinite(sessionCap)) {
+    const sessionTotal = totalCost(state.history);
+    if (sessionTotal >= sessionCap) {
+      setTransientStatus(`Session has spent ${formatUsd(sessionTotal)} — at or over the ${formatUsd(sessionCap)} cap. Raise the $ cap in the toggle strip to continue.`);
+      return;
+    }
+  }
+
   // The drawer is a fixed overlay on every page (landing, catalog, help),
   // but the AI's tools (runAndSave, setCode, paint*) target the editor.
   // If the user fires from anywhere else, navigate to /editor and give
@@ -1144,6 +1397,9 @@ async function sendMessage(): Promise<void> {
   inputEl.value = '';
   state.pendingImages = [];
   renderPendingImages();
+  // Sending a new message commits to this branch of the conversation —
+  // any rewound turns can no longer be re-applied.
+  state.rewindStack = [];
   progressState.retryCount = 0;
   stalledByWatchdog = false;
   await runTurnWithStallRetry(apiKey, settings.toggles, blocks);
@@ -1173,11 +1429,11 @@ function formatTurnOutcome(o: TurnOutcome): string {
     case 'iteration_cap':
       return `⚠ stopped at agent iteration cap (${o.iterations}) — try a more focused prompt, click Compact, or raise the ⟲ cap · ${cost}${tools}`;
     case 'spend_cap':
-      return `⚠ stopped at spend cap${o.detail ? ` (${o.detail})` : ''} — raise the $ cap or click Send to continue · ${cost} · ${iters}${tools}`;
+      return `⚠ stopped at session spend cap${o.detail ? ` (${o.detail})` : ''} — raise the $ cap to continue · ${cost} · ${iters}${tools}`;
     case 'max_tokens': {
       const isLocal = loadSettings().toggles.provider === 'local';
       const hint = isLocal
-        ? 'try a shorter prompt, switch to the Large (Hermes 3) model, or compact the chat'
+        ? 'try a shorter prompt, switch to a larger local model, or compact the chat'
         : 'ask the model to continue';
       return `⚠ hit max_tokens before finishing · ${cost} · ${iters}${tools} — ${hint}`;
     }
@@ -1200,7 +1456,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
     const controller = new AbortController();
     state.inFlight = true;
     state.inFlightController = controller;
-    setSendButtonMode('stop');
+    setSendButtonMode('inflight');
     showProgress('thinking', 'starting…');
 
     let activeAssistantId: string | null = null;
@@ -1214,10 +1470,30 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
       history: state.history,
       userBlocks: blocksForThisAttempt,
       signal: controller.signal,
+      onDrainQueuedBlocks: drainQueuedBlocks,
     }, {
       onUserPersisted: msg => {
         state.history.push(msg);
         renderTranscript();
+        updateRewindButtons();
+      },
+      onUserMessageUpdated: msg => {
+        // chatLoop persists tool_result user messages directly without
+        // firing onUserPersisted, so the first time we hear about one mid-
+        // turn (because the human's queue triggered a merge) we have to
+        // insert it ourselves at the right seq position — otherwise
+        // renderTranscript can't show the human's bubble until end-of-turn
+        // reload, and the user thinks their message vanished.
+        const idx = state.history.findIndex(m => m.id === msg.id);
+        if (idx >= 0) {
+          state.history[idx] = msg;
+        } else {
+          const insertAt = state.history.findIndex(m => m.seq > msg.seq);
+          if (insertAt === -1) state.history.push(msg);
+          else state.history.splice(insertAt, 0, msg);
+        }
+        renderTranscript();
+        setTransientStatus('Queued message delivered to the AI.');
       },
       onAssistantStart: id => {
         activeAssistantId = id;
@@ -1289,19 +1565,24 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         }
       },
       onTurnComplete: info => {
-        // Preserve in-memory errored placeholders across the IndexedDB
-        // reload — they were never persisted, so a naive reload wipes
-        // them. Auto-compaction only fires on clean turns (no errored
-        // bubble was emitted for this turn).
-        const erroredFromThisTurn = state.history.filter(m => m.errored);
-        void loadHistoryForCurrentSession().then(async () => {
-          for (const m of erroredFromThisTurn) state.history.push(m);
-          renderTranscript();
-          renderCostMeter();
-          if (erroredFromThisTurn.length === 0 && info.reason !== 'aborted' && info.reason !== 'error') {
-            await maybeAutoCompact();
-          }
-        });
+        // Do NOT reload from IndexedDB here. Every message callback
+        // (onUserPersisted, onAssistantPersisted, onUserMessageUpdated) keeps
+        // state.history current throughout the turn, so the in-memory state is
+        // already correct. A DB reload races with the next queued turn: if the
+        // user queued a message mid-turn, turn 2 starts immediately after drain
+        // and its onUserPersisted write may not have committed before the reload
+        // transaction opened — IndexedDB snapshot isolation means the reload
+        // returns a stale snapshot that drops the new message, causing it to
+        // flash and vanish from the transcript.
+        renderTranscript();
+        renderCostMeter();
+        // Auto-compaction only fires on clean turns — skip it after an
+        // abort, error, or errored placeholder so the user can keep
+        // context for retry/recovery.
+        const erroredFromThisTurn = state.history.some(m => m.errored);
+        if (!erroredFromThisTurn && info.reason !== 'aborted' && info.reason !== 'error') {
+          void maybeAutoCompact();
+        }
         lastTurnOutcome = info;
       },
     });
@@ -1309,6 +1590,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
     state.inFlight = false;
     state.inFlightController = null;
     setSendButtonMode('send');
+    updateRewindButtons();
 
     // Surface a sticky completion banner so the user knows the turn
     // actually ended and why — better than a silent hideProgress that
@@ -1326,6 +1608,21 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
       // ghost bubble.
       await stripLastAbortedAssistant();
       stalledByWatchdog = false;
+      continue;
+    }
+
+    // If the human queued a message and the agent loop exited (end_turn,
+    // refusal, iteration cap, spend cap, abort…) without the drain hook
+    // picking it up, fire it now as a fresh user turn. This covers the
+    // common case where the human queued a follow-up while the model was
+    // streaming its final assistant turn (no tool_use → no drain seam).
+    if (state.queuedBlocks.length > 0) {
+      const next = drainQueuedBlocks();
+      progressState.retryCount = 0;
+      stalledByWatchdog = false;
+      lastTurnOutcome = null;
+      userBlocks = next;
+      attempt = 0;
       continue;
     }
     return;
@@ -1349,15 +1646,18 @@ async function stripLastAbortedAssistant(): Promise<void> {
   }
 }
 
-function setSendButtonMode(mode: 'send' | 'stop'): void {
+function setSendButtonMode(mode: 'send' | 'inflight'): void {
+  if (stopBtnRef) {
+    stopBtnRef.classList.toggle('hidden', mode !== 'inflight');
+  }
   if (!sendBtnRef) return;
-  if (mode === 'stop') {
-    sendBtnRef.textContent = 'Stop';
-    sendBtnRef.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-red-600 hover:bg-red-500 text-white';
-    sendBtnRef.title = 'Stop the model. Partial output is kept so you can redirect.';
+  // Button label stays "Send" in both states. The semantics are: Send when
+  // idle dispatches immediately; Send while in-flight queues the message
+  // for delivery at the next agent pause. The tooltip surfaces the queue
+  // semantics so the human isn't surprised by the click outcome.
+  if (mode === 'inflight') {
+    sendBtnRef.title = 'Queue this message for the AI (Enter). It will be delivered at the next pause, no need to stop the agent.';
   } else {
-    sendBtnRef.textContent = 'Send';
-    sendBtnRef.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
     sendBtnRef.title = 'Send your message (Enter). Shift+Enter for newline.';
   }
 }

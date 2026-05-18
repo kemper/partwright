@@ -228,7 +228,70 @@ export function buildApiMessages(history: ChatMessage[]): Anthropic.MessageParam
       if (content.length > 0) out.push({ role: 'assistant', content });
     }
   }
-  return out;
+  return sanitizeToolUse(out);
+}
+
+/** Repair dangling tool_use/tool_result invariant violations before the
+ *  messages array is sent to the API. When a turn is aborted or stalls
+ *  mid-tool-call, the history can contain an assistant message with
+ *  tool_use blocks that has no matching tool_result in the next message —
+ *  the API rejects this with a 400.
+ *
+ *  Two cases:
+ *  1. Orphaned tool_use at the tail (no following user message at all) —
+ *     strip the assistant message entirely so the conversation ends cleanly
+ *     on the last complete user message.
+ *  2. Orphaned tool_use mid-conversation (next message is a user message
+ *     that doesn't carry the matching tool_results) — inject synthetic
+ *     tool_result blocks marked is_error so the invariant is satisfied and
+ *     the model understands those tools didn't complete. */
+function sanitizeToolUse(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+
+    const content = msg.content as Anthropic.ContentBlockParam[];
+    const toolUseIds = content
+      .filter(b => b.type === 'tool_use')
+      .map(b => (b as { type: 'tool_use'; id: string }).id);
+    if (toolUseIds.length === 0) continue;
+
+    const next = messages[i + 1];
+
+    if (!next) {
+      // Trailing assistant message with unexecuted tool calls — strip it so
+      // the conversation ends on a user message the model can respond to.
+      messages.splice(i, 1);
+      i--;
+      continue;
+    }
+
+    const nextContent = (Array.isArray(next.content) ? next.content : []) as Anthropic.ContentBlockParam[];
+    const coveredIds = new Set(
+      nextContent
+        .filter(b => b.type === 'tool_result')
+        .map(b => (b as { type: 'tool_result'; tool_use_id: string }).tool_use_id)
+    );
+    const missing = toolUseIds.filter(id => !coveredIds.has(id));
+    if (missing.length === 0) continue;
+
+    // Inject synthetic results for the missing IDs, prepended so tool_results
+    // appear before any user text (required by the API).
+    const synthetic: Anthropic.ContentBlockParam[] = missing.map(id => ({
+      type: 'tool_result' as const,
+      tool_use_id: id,
+      content: 'Tool call was interrupted and did not complete.',
+      is_error: true,
+    }));
+
+    if (next.role === 'user' && Array.isArray(next.content)) {
+      (next.content as Anthropic.ContentBlockParam[]).unshift(...synthetic);
+    } else {
+      messages.splice(i + 1, 0, { role: 'user', content: synthetic });
+      i++;
+    }
+  }
+  return messages;
 }
 
 function userBlocksToApi(blocks: ChatBlock[], toolResults: PersistedToolResult[]): Anthropic.ContentBlockParam[] {

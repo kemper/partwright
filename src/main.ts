@@ -1,3 +1,24 @@
+// Application entry point.
+//
+// Responsibilities:
+//   - Boot the geometry engine, renderer, editor, layout, and AI panel.
+//   - Wire cross-module events (route changes, session lifecycle, tab
+//     switches, drag-and-drop import).
+//   - Build the window.partwright public API surface inside main() and
+//     expose it on window for browser-console / AI-agent callers.
+//
+// What lives elsewhere:
+//   - Runtime argument validation: src/validation/apiValidation.ts
+//   - Geometry stats + assertion checks: src/geometry/statsComputation.ts
+//   - Per-subsystem UI: src/ui/* (toolbar, panels, modals, views)
+//   - Storage: src/storage/sessionManager.ts, src/storage/db.ts
+//   - AI chat backend: src/ai/* (anthropic, chatLoop, compaction, tools)
+//
+// Note: most of the window.partwright API is defined as a closure inside
+// main() because the methods read editor / engine / session state that
+// only exists once the app has bootstrapped. The validation helpers used
+// throughout that API are pure and live in the validation module above.
+
 import './style.css';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
@@ -128,6 +149,28 @@ import {
   type ExportOptions,
 } from './storage/sessionManager';
 import type { Version } from './storage/db';
+import {
+  ValidationError,
+  guard,
+  assertString,
+  assertNumber,
+  assertBoolean,
+  assertObject,
+  assertFunction,
+  assertEnum,
+  assertNumberTuple,
+  assertArray,
+  assertNoUnknownKeys,
+  validateAssertionsShape,
+} from './validation/apiValidation';
+import {
+  simpleHash,
+  bboxFromMesh,
+  computeGeometryStats,
+  computeStatDiff,
+  checkAssertions,
+  type GeometryAssertions,
+} from './geometry/statsComputation';
 
 // Load examples as raw text — JS and SCAD
 const jsExampleModules = import.meta.glob('../examples/*.js', { query: '?raw', import: 'default' });
@@ -206,14 +249,6 @@ function createGeometryDataElement(): HTMLElement {
   return el;
 }
 
-function simpleHash(str: string): string {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
-  }
-  return (h >>> 0).toString(16).padStart(8, '0');
-}
-
 function firstErrorLine(error: string): string {
   return error
     .split('\n')
@@ -266,221 +301,6 @@ function clearEditorErrorPanel(panel: HTMLElement): void {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-/** Bounding box scanned directly from a MeshData's vertex buffer. Used when no
- *  Manifold is available (e.g. render-only STL imports) so the rest of the
- *  stats pipeline still has a bbox to work with. */
-function bboxFromMesh(mesh: MeshData): { min: [number, number, number]; max: [number, number, number] } | null {
-  if (mesh.numVert === 0) return null;
-  const v = mesh.vertProperties;
-  const n = mesh.numProp;
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  for (let i = 0; i < mesh.numVert; i++) {
-    const x = v[i * n], y = v[i * n + 1], z = v[i * n + 2];
-    if (x < minX) minX = x; if (x > maxX) maxX = x;
-    if (y < minY) minY = y; if (y > maxY) maxY = y;
-    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-  }
-  return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
-}
-
-function computeGeometryStats(manifold: any, meshData: MeshData, executionTimeMs?: number, sourceCode?: string): Record<string, unknown> {
-  // Bounding box: prefer the manifold's own, but fall back to scanning the mesh
-  // verts so render-only imports (manifold==null) still get usable bbox/dims/slices.
-  const bbox = (manifold && getBoundingBox(manifold)) || bboxFromMesh(meshData);
-
-  let volume = 0;
-  let surfaceArea = 0;
-  if (manifold) {
-    try {
-      volume = manifold.volume();
-      surfaceArea = manifold.surfaceArea();
-    } catch {
-      // fallback if methods unavailable
-    }
-  }
-
-  const centroid = bbox
-    ? [(bbox.min[0] + bbox.max[0]) / 2, (bbox.min[1] + bbox.max[1]) / 2, (bbox.min[2] + bbox.max[2]) / 2]
-    : null;
-
-  const dimensions = bbox
-    ? [bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2]]
-    : null;
-
-  let componentCount = 1;
-  if (manifold) {
-    try {
-      const parts = manifold.decompose();
-      componentCount = parts.length;
-      for (const p of parts) p.delete();
-    } catch {
-      // fallback
-    }
-  }
-
-  // Render-only imports lack a manifold; surface that fact in stats so the
-  // status panel can show "not manifold" instead of a misleading default.
-  let isManifold = manifold !== null;
-  let manifoldStatus: string | null = manifold === null ? 'render-only (not manifold)' : null;
-  if (manifold) {
-    try {
-      const s = manifold.status();
-      isManifold = s === 0 || s === 'NoError';
-      if (!isManifold) {
-        manifoldStatus = String(s);
-      }
-    } catch {
-      // fallback
-    }
-  }
-
-  const quartileSlices: Record<string, { z: number; area: number; contours: number }> = {};
-  if (bbox && manifold) {
-    const zRange = bbox.max[2] - bbox.min[2];
-    for (const pct of [25, 50, 75]) {
-      const z = bbox.min[2] + zRange * (pct / 100);
-      const s = sliceAtZ(manifold, z);
-      if (s) {
-        quartileSlices[`z${pct}`] = { z, area: s.area, contours: s.polygons.length };
-      }
-    }
-  }
-
-  return {
-    status: 'ok' as const,
-    vertexCount: meshData.numVert,
-    triangleCount: meshData.numTri,
-    boundingBox: bbox ? {
-      x: [bbox.min[0], bbox.max[0]],
-      y: [bbox.min[1], bbox.max[1]],
-      z: [bbox.min[2], bbox.max[2]],
-      dimensions,
-    } : null,
-    centroid,
-    volume,
-    surfaceArea,
-    genus: manifold ? (() => { try { return manifold.genus(); } catch { return null; } })() : null,
-    isManifold,
-    ...(manifoldStatus ? { manifoldStatus } : {}),
-    componentCount,
-    crossSections: quartileSlices,
-    unit: _getUnits(),
-    executionTimeMs: executionTimeMs ?? null,
-    codeHash: sourceCode ? simpleHash(sourceCode) : null,
-  };
-}
-
-function computeStatDiff(prev: Record<string, unknown>, next: Record<string, unknown>): Record<string, unknown> {
-  const diff: Record<string, unknown> = {};
-
-  const numericFields = ['volume', 'surfaceArea', 'vertexCount', 'triangleCount', 'genus', 'componentCount'];
-  for (const field of numericFields) {
-    const from = prev[field] as number;
-    const to = next[field] as number;
-    if (from !== undefined && to !== undefined) {
-      const delta = to - from;
-      if (delta === 0) {
-        diff[field] = { from, to, delta: 'unchanged' };
-      } else {
-        const pct = from !== 0 ? ((delta / from) * 100).toFixed(1) : null;
-        diff[field] = {
-          from, to,
-          delta: `${delta > 0 ? '+' : ''}${Math.round(delta)}${pct ? ` (${delta > 0 ? '+' : ''}${pct}%)` : ''}`,
-        };
-      }
-    }
-  }
-
-  const prevBB = prev.boundingBox as Record<string, unknown> | null;
-  const nextBB = next.boundingBox as Record<string, unknown> | null;
-  if (prevBB?.dimensions && nextBB?.dimensions) {
-    diff.boundingBox = { dimensions: { from: prevBB.dimensions, to: nextBB.dimensions } };
-  }
-
-  return diff;
-}
-
-interface GeometryAssertions {
-  minVolume?: number;
-  maxVolume?: number;
-  isManifold?: boolean;
-  maxComponents?: number;
-  genus?: number;
-  minGenus?: number;
-  maxGenus?: number;
-  minBounds?: [number, number, number];
-  maxBounds?: [number, number, number];
-  minTriangles?: number;
-  maxTriangles?: number;
-  /** Proportion range assertions: { widthToDepth: [min, max], widthToHeight: [min, max], depthToHeight: [min, max] } */
-  boundsRatio?: {
-    widthToDepth?: [number, number];
-    widthToHeight?: [number, number];
-    depthToHeight?: [number, number];
-  };
-  /** Optional notes to attach to this version (design rationale, user feedback, etc.) */
-  notes?: string;
-}
-
-function checkAssertions(stats: Record<string, unknown>, assertions: GeometryAssertions): string[] {
-  const failures: string[] = [];
-  const v = stats.volume as number;
-  const tc = stats.triangleCount as number;
-  const cc = stats.componentCount as number;
-  const g = stats.genus as number | null;
-  const im = stats.isManifold as boolean;
-  const bb = stats.boundingBox as { dimensions?: number[] } | null;
-
-  if (assertions.minVolume !== undefined && v < assertions.minVolume)
-    failures.push(`volume ${v.toFixed(1)} < minVolume ${assertions.minVolume}`);
-  if (assertions.maxVolume !== undefined && v > assertions.maxVolume)
-    failures.push(`volume ${v.toFixed(1)} > maxVolume ${assertions.maxVolume}`);
-  if (assertions.isManifold !== undefined && im !== assertions.isManifold)
-    failures.push(`isManifold is ${im}, expected ${assertions.isManifold}`);
-  if (assertions.maxComponents !== undefined && cc > assertions.maxComponents)
-    failures.push(`componentCount ${cc} > maxComponents ${assertions.maxComponents}`);
-  if (assertions.genus !== undefined && g !== assertions.genus)
-    failures.push(`genus ${g} !== expected ${assertions.genus}`);
-  if (assertions.minGenus !== undefined && (g === null || g < assertions.minGenus))
-    failures.push(`genus ${g} < minGenus ${assertions.minGenus}`);
-  if (assertions.maxGenus !== undefined && (g === null || g > assertions.maxGenus))
-    failures.push(`genus ${g} > maxGenus ${assertions.maxGenus}`);
-  if (assertions.minTriangles !== undefined && tc < assertions.minTriangles)
-    failures.push(`triangleCount ${tc} < minTriangles ${assertions.minTriangles}`);
-  if (assertions.maxTriangles !== undefined && tc > assertions.maxTriangles)
-    failures.push(`triangleCount ${tc} > maxTriangles ${assertions.maxTriangles}`);
-  if (assertions.minBounds && bb?.dimensions) {
-    const d = bb.dimensions;
-    for (let i = 0; i < 3; i++) {
-      if (d[i] < assertions.minBounds[i])
-        failures.push(`dimension ${['X', 'Y', 'Z'][i]} ${d[i].toFixed(1)} < minBounds ${assertions.minBounds[i]}`);
-    }
-  }
-  if (assertions.maxBounds && bb?.dimensions) {
-    const d = bb.dimensions;
-    for (let i = 0; i < 3; i++) {
-      if (d[i] > assertions.maxBounds[i])
-        failures.push(`dimension ${['X', 'Y', 'Z'][i]} ${d[i].toFixed(1)} > maxBounds ${assertions.maxBounds[i]}`);
-    }
-  }
-  if (assertions.boundsRatio && bb?.dimensions) {
-    const [w, dep, h] = bb.dimensions;
-    const ratios: { name: string; value: number; range?: [number, number] }[] = [
-      { name: 'widthToDepth', value: w / dep, range: assertions.boundsRatio.widthToDepth },
-      { name: 'widthToHeight', value: w / h, range: assertions.boundsRatio.widthToHeight },
-      { name: 'depthToHeight', value: dep / h, range: assertions.boundsRatio.depthToHeight },
-    ];
-    for (const r of ratios) {
-      if (r.range) {
-        if (r.value < r.range[0]) failures.push(`${r.name} ratio ${r.value.toFixed(2)} < min ${r.range[0]}`);
-        if (r.value > r.range[1]) failures.push(`${r.name} ratio ${r.value.toFixed(2)} > max ${r.range[1]}`);
-      }
-    }
-  }
-  return failures;
-}
-
 function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
   if (!currentMeshData) {
     geometryDataEl.textContent = JSON.stringify({ status: 'error', error: 'No geometry' });
@@ -622,185 +442,6 @@ function enrichGeometryDataWithColors(geoData: Record<string, unknown> | null): 
     geoData.colorRegions = serializeRegions();
   }
   return geoData;
-}
-
-// === Argument validation helpers ==========================================
-//
-// Runtime type/shape validation for the window.partwright API. The public API
-// is reachable from untyped callers (browser console, MCP-driven AI agents,
-// automation scripts) so TypeScript's compile-time guarantees do not apply.
-// These helpers enforce argument contracts explicitly, with chatty error
-// messages pointing at /ai.md anchors so AI callers can self-correct.
-//
-// Convention:
-//   • Methods that already return a value use { error: "..." } on failure.
-//   • Void setters THROW so misuse is loud.
-//   • No coercion — "5" is not a number; wrong types are rejected outright.
-
-/** Thrown by assertion helpers on validation failure. Void setters let this
- *  propagate; value-returning methods catch via toValidationError(). */
-class ValidationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ValidationError';
-  }
-}
-
-function describeValue(val: unknown): string {
-  if (val === null) return 'null';
-  if (val === undefined) return 'undefined';
-  if (Array.isArray(val)) return `array(length=${val.length})`;
-  if (typeof val === 'object') return 'object';
-  if (typeof val === 'string') return `string("${val.length > 40 ? val.slice(0, 40) + '…' : val}")`;
-  return `${typeof val}(${String(val)})`;
-}
-
-/** Run a validation function; if it throws ValidationError, return { error } instead. */
-function guard<T>(fn: () => T): T | { error: string } {
-  try {
-    return fn();
-  } catch (e: unknown) {
-    if (e instanceof ValidationError) return { error: e.message };
-    throw e;
-  }
-}
-
-interface AssertStringOpts { optional?: boolean; allowEmpty?: boolean }
-function assertString(val: unknown, paramName: string, opts: AssertStringOpts = {}): string | undefined {
-  if (val === undefined || val === null) {
-    if (opts.optional) return undefined;
-    throw new ValidationError(`${paramName} is required (expected string, got ${describeValue(val)}). See /ai.md#argument-validation`);
-  }
-  if (typeof val !== 'string') {
-    throw new ValidationError(`${paramName} must be a string, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  if (!opts.allowEmpty && val.length === 0) {
-    throw new ValidationError(`${paramName} must not be an empty string. See /ai.md#argument-validation`);
-  }
-  return val;
-}
-
-interface AssertNumberOpts { optional?: boolean; min?: number; max?: number; integer?: boolean }
-function assertNumber(val: unknown, paramName: string, opts: AssertNumberOpts = {}): number | undefined {
-  if (val === undefined || val === null) {
-    if (opts.optional) return undefined;
-    throw new ValidationError(`${paramName} is required (expected number, got ${describeValue(val)}). See /ai.md#argument-validation`);
-  }
-  if (typeof val !== 'number' || !Number.isFinite(val)) {
-    throw new ValidationError(`${paramName} must be a finite number, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  if (opts.integer && !Number.isInteger(val)) {
-    throw new ValidationError(`${paramName} must be an integer, got ${val}. See /ai.md#argument-validation`);
-  }
-  if (opts.min !== undefined && val < opts.min) {
-    throw new ValidationError(`${paramName} must be >= ${opts.min}, got ${val}. See /ai.md#argument-validation`);
-  }
-  if (opts.max !== undefined && val > opts.max) {
-    throw new ValidationError(`${paramName} must be <= ${opts.max}, got ${val}. See /ai.md#argument-validation`);
-  }
-  return val;
-}
-
-interface AssertBooleanOpts { optional?: boolean }
-function assertBoolean(val: unknown, paramName: string, opts: AssertBooleanOpts = {}): boolean | undefined {
-  if (val === undefined || val === null) {
-    if (opts.optional) return undefined;
-    throw new ValidationError(`${paramName} is required (expected boolean, got ${describeValue(val)}). See /ai.md#argument-validation`);
-  }
-  if (typeof val !== 'boolean') {
-    throw new ValidationError(`${paramName} must be a boolean, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val;
-}
-
-interface AssertObjectOpts { optional?: boolean }
-function assertObject(val: unknown, paramName: string, opts: AssertObjectOpts = {}): Record<string, unknown> | undefined {
-  if (val === undefined || val === null) {
-    if (opts.optional) return undefined;
-    throw new ValidationError(`${paramName} is required (expected object, got ${describeValue(val)}). See /ai.md#argument-validation`);
-  }
-  if (typeof val !== 'object' || Array.isArray(val)) {
-    throw new ValidationError(`${paramName} must be a plain object (not array/null), got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val as Record<string, unknown>;
-}
-
-function assertFunction(val: unknown, paramName: string): (...args: unknown[]) => unknown {
-  if (typeof val !== 'function') {
-    throw new ValidationError(`${paramName} must be a function, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val as (...args: unknown[]) => unknown;
-}
-
-function assertEnum<T extends string>(val: unknown, allowed: readonly T[], paramName: string): T {
-  if (typeof val !== 'string' || !allowed.includes(val as T)) {
-    throw new ValidationError(`${paramName} must be one of: ${allowed.map(a => `"${a}"`).join(' | ')}. Got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val as T;
-}
-
-/** Validate a fixed-length tuple of numbers (e.g. [x,y,z]). */
-function assertNumberTuple(val: unknown, length: number, paramName: string): number[] {
-  if (!Array.isArray(val)) {
-    throw new ValidationError(`${paramName} must be an array of ${length} numbers, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  if (val.length !== length) {
-    throw new ValidationError(`${paramName} must have exactly ${length} elements, got length=${val.length}. See /ai.md#argument-validation`);
-  }
-  for (let i = 0; i < length; i++) {
-    if (typeof val[i] !== 'number' || !Number.isFinite(val[i])) {
-      throw new ValidationError(`${paramName}[${i}] must be a finite number, got ${describeValue(val[i])}. See /ai.md#argument-validation`);
-    }
-  }
-  return val as number[];
-}
-
-function assertArray(val: unknown, paramName: string): unknown[] {
-  if (!Array.isArray(val)) {
-    throw new ValidationError(`${paramName} must be an array, got ${describeValue(val)}. See /ai.md#argument-validation`);
-  }
-  return val;
-}
-
-/** Reject any keys on `obj` that are not in the `allowed` set.
- *  Catches typos like `{ widthToDeep: [1,2] }` that would otherwise be silently ignored. */
-function assertNoUnknownKeys(obj: Record<string, unknown>, allowed: readonly string[], paramName: string): void {
-  for (const key of Object.keys(obj)) {
-    if (!allowed.includes(key)) {
-      throw new ValidationError(`${paramName}.${key} is not a recognized field. Allowed: ${allowed.join(', ')}. See /ai.md#argument-validation`);
-    }
-  }
-}
-
-/** Validate a GeometryAssertions object shape. Throws ValidationError on failure. */
-const ASSERTION_FIELDS = [
-  'minVolume', 'maxVolume', 'isManifold', 'maxComponents', 'genus', 'minGenus', 'maxGenus',
-  'minBounds', 'maxBounds', 'minTriangles', 'maxTriangles', 'boundsRatio', 'notes',
-] as const;
-const BOUNDS_RATIO_FIELDS = ['widthToDepth', 'widthToHeight', 'depthToHeight'] as const;
-
-function validateAssertionsShape(assertions: unknown, paramName: string): void {
-  const a = assertObject(assertions, paramName)!;
-  assertNoUnknownKeys(a, ASSERTION_FIELDS, paramName);
-  assertNumber(a.minVolume, `${paramName}.minVolume`, { optional: true });
-  assertNumber(a.maxVolume, `${paramName}.maxVolume`, { optional: true });
-  assertBoolean(a.isManifold, `${paramName}.isManifold`, { optional: true });
-  assertNumber(a.maxComponents, `${paramName}.maxComponents`, { optional: true, min: 0, integer: true });
-  assertNumber(a.genus, `${paramName}.genus`, { optional: true, integer: true });
-  assertNumber(a.minGenus, `${paramName}.minGenus`, { optional: true, integer: true });
-  assertNumber(a.maxGenus, `${paramName}.maxGenus`, { optional: true, integer: true });
-  if (a.minBounds !== undefined) assertNumberTuple(a.minBounds, 3, `${paramName}.minBounds`);
-  if (a.maxBounds !== undefined) assertNumberTuple(a.maxBounds, 3, `${paramName}.maxBounds`);
-  assertNumber(a.minTriangles, `${paramName}.minTriangles`, { optional: true, min: 0, integer: true });
-  assertNumber(a.maxTriangles, `${paramName}.maxTriangles`, { optional: true, min: 0, integer: true });
-  assertString(a.notes, `${paramName}.notes`, { optional: true, allowEmpty: true });
-  if (a.boundsRatio !== undefined) {
-    const br = assertObject(a.boundsRatio, `${paramName}.boundsRatio`)!;
-    assertNoUnknownKeys(br, BOUNDS_RATIO_FIELDS, `${paramName}.boundsRatio`);
-    for (const k of BOUNDS_RATIO_FIELDS) {
-      if (br[k] !== undefined) assertNumberTuple(br[k], 2, `${paramName}.boundsRatio.${k}`);
-    }
-  }
 }
 
 // ===========================================================================
@@ -1191,7 +832,10 @@ async function main() {
     }
   }
 
-  // Document-level drag-and-drop import
+  // Document-level drag-and-drop import. The editor UI is initialized once
+  // per page load and never torn down, so these document listeners live for
+  // the lifetime of the document — no cleanup needed. If editor teardown is
+  // ever added, store these handlers and pair with removeEventListener().
   function isImportableFile(file: File): boolean {
     const n = file.name.toLowerCase();
     return n.endsWith('.json') || n.endsWith('.js') || n.endsWith('.scad') || n.endsWith('.stl');
@@ -1959,7 +1603,9 @@ async function main() {
 
     /** Get current geometry stats without re-running */
     getGeometryData(): Record<string, unknown> {
-      return JSON.parse(geometryDataEl.textContent || '{}');
+      const geo = JSON.parse(geometryDataEl.textContent || '{}');
+      const warnings = geometryWarnings(geo);
+      return warnings.length > 0 ? { ...geo, warnings } : geo;
     },
 
     /** Get current editor code */
@@ -2628,7 +2274,9 @@ async function main() {
     },
 
     /** Run code and save as a new version in one call. Returns stat diff vs previous version.
-     *  Optional assertions — if provided, validates before saving. Fails fast without saving if assertions don't pass. */
+     *  Optional assertions — if provided, validates after running. Saves only if assertions pass.
+     *  The editor and viewport always update to reflect the new code (including on assertion failure),
+     *  so the model can inspect the failing geometry. The version is NOT saved on failure. */
     async runAndSave(code: string, label?: string, assertions?: GeometryAssertions) {
       const check = guard(() => {
         assertString(code, 'runAndSave(code)', { allowEmpty: false });
@@ -2637,17 +2285,23 @@ async function main() {
         return true;
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      // If assertions provided, validate in isolation first (no side effects if it fails)
+
+      const prevGeoData = getState().currentVersion?.geometryData as Record<string, unknown> | null;
+
+      // Single execution — run the code, update editor + viewport, read geometry.
+      // Assertions are checked against the live result rather than a separate
+      // isolation run. This halves execution time for assertion-guarded saves.
+      setValue(code);
+      await runCodeSync(code);
+      const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
+
       if (assertions) {
-        const { geometryData: testData, manifold: testManifold } = await executeIsolated(code);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        try { (testManifold as any)?.delete?.(); } catch { /* ignore */ }
-        if (testData.status === 'error') {
-          return { passed: false, failures: [testData.error as string], geometry: testData, version: null, diff: null, galleryUrl: getGalleryUrl() };
+        if (newGeoData.status === 'error') {
+          return { passed: false, failures: [newGeoData.error as string], geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl() };
         }
-        const failures = checkAssertions(testData, assertions);
+        const failures = checkAssertions(newGeoData, assertions);
         if (failures.length > 0) {
-          return { passed: false, failures, geometry: testData, version: null, diff: null, galleryUrl: getGalleryUrl() };
+          return { passed: false, failures, geometry: newGeoData, version: null, diff: null, galleryUrl: getGalleryUrl() };
         }
       }
 
@@ -2657,11 +2311,6 @@ async function main() {
         await createSession(sessionName, getActiveLanguage());
       }
 
-      const prevGeoData = getState().currentVersion?.geometryData as Record<string, unknown> | null;
-
-      setValue(code);
-      await runCodeSync(code);
-      const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
       const thumbnail = await captureThumbnail();
       const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes);
 
@@ -2670,12 +2319,14 @@ async function main() {
         diff = computeStatDiff(prevGeoData, newGeoData);
       }
 
+      const warnings = geometryWarnings(newGeoData);
       return {
         ...(assertions ? { passed: true } : {}),
         geometry: newGeoData,
         version: version ? { id: version.id, index: version.index, label: version.label } : null,
         diff,
         galleryUrl: getGalleryUrl(),
+        ...(warnings.length > 0 ? { warnings } : {}),
       };
     },
 
@@ -2750,6 +2401,7 @@ async function main() {
         diff = computeStatDiff(prevGeoData, newGeoData);
       }
 
+      const forkWarnings = geometryWarnings(newGeoData);
       return {
         ...(assertions ? { passed: true } : {}),
         parent: { id: parent.id, index: parent.index, label: parent.label },
@@ -2757,6 +2409,7 @@ async function main() {
         version: version ? { id: version.id, index: version.index, label: version.label } : null,
         diff,
         galleryUrl: getGalleryUrl(),
+        ...(forkWarnings.length > 0 ? { warnings: forkWarnings } : {}),
       };
     },
 
@@ -2819,7 +2472,13 @@ async function main() {
     async getSessionContext() {
       const ctx = await getSessionContext();
       if (!ctx) return { error: 'No active session' };
-      return ctx;
+      const geo = JSON.parse(geometryDataEl.textContent || '{}');
+      const warnings = geometryWarnings(geo);
+      return {
+        ...ctx,
+        currentCode: getValue(),
+        ...(warnings.length > 0 ? { geometryWarnings: warnings } : {}),
+      };
     },
 
     /** Export a session as JSON (defaults to current session) */
@@ -3102,14 +2761,14 @@ async function main() {
         return true;
       });
       if (typeof check === 'object' && check !== null && 'error' in check) {
-        return { error: check.error, modifiedCode: null, stats: null };
+        return { error: check.error, stats: null };
       }
       const currentCode = getValue();
       let modifiedCode: string;
       try {
         modifiedCode = patchFn(currentCode);
       } catch (e: unknown) {
-        return { error: `Patch function failed: ${e instanceof Error ? e.message : String(e)}`, modifiedCode: null, stats: null };
+        return { error: `Patch function failed: ${e instanceof Error ? e.message : String(e)}`, stats: null };
       }
 
       const { geometryData, manifold } = await executeIsolated(modifiedCode);
@@ -3117,15 +2776,15 @@ async function main() {
       try { (manifold as any)?.delete?.(); } catch { /* ignore */ }
 
       if (geometryData.status === 'error') {
-        return { error: geometryData.error, modifiedCode, stats: geometryData, ...(assertions ? { passed: false, failures: [geometryData.error as string] } : {}) };
+        return { error: geometryData.error, stats: geometryData, ...(assertions ? { passed: false, failures: [geometryData.error as string] } : {}) };
       }
 
       if (assertions) {
         const failures = checkAssertions(geometryData, assertions);
-        return { modifiedCode, stats: geometryData, passed: failures.length === 0, failures: failures.length > 0 ? failures : undefined };
+        return { stats: geometryData, passed: failures.length === 0, failures: failures.length > 0 ? failures : undefined };
       }
 
-      return { modifiedCode, stats: geometryData };
+      return { stats: geometryData };
     },
 
     /** Query multiple properties of the current geometry in a single call. Avoids multiple round-trips. */
@@ -3965,6 +3624,49 @@ async function main() {
       return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
     },
 
+    /** Paint triangles whose centroids fall inside a cylindrical shell:
+     *  rMin ≤ dist(centroid, axis) ≤ rMax AND zMin ≤ centroid.z ≤ zMax.
+     *  The canonical tool for inner walls of hollow cylinders, mugs, vases,
+     *  and any revolved shape where `paintInBox` catches too many faces.
+     *  Set rMin > 0 to exclude the axis core and select only the inner surface. */
+    paintInCylinder(opts: {
+      center?: [number, number];
+      rMin: number;
+      rMax: number;
+      zMin: number;
+      zMax: number;
+      color: [number, number, number];
+      name?: string;
+      normalCone?: { axis: [number, number, number]; angleDeg: number };
+      topOnly?: boolean;
+      coverageMode?: CoverageMode;
+      maxTriangleArea?: number;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintInCylinder requires { rMin, rMax, zMin, zMax, color }' };
+      if (typeof opts.rMin !== 'number' || typeof opts.rMax !== 'number') return { error: 'rMin and rMax must be numbers' };
+      if (typeof opts.zMin !== 'number' || typeof opts.zMax !== 'number') return { error: 'zMin and zMax must be numbers' };
+      if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] in 0..1' };
+      const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
+      const coneErr = validateNormalCone(cone);
+      if (coneErr) return { error: coneErr };
+      const areaErr = validateMaxTriangleArea(opts.maxTriangleArea);
+      if (areaErr) return { error: areaErr };
+      const triangles = collectTrianglesByCylinder(
+        currentMeshData,
+        opts.center ?? [0, 0],
+        opts.rMin, opts.rMax,
+        opts.zMin, opts.zMax,
+        cone,
+        opts.coverageMode,
+        opts.maxTriangleArea,
+      );
+      if (triangles.size === 0) {
+        return { error: `paintInCylinder: no triangles in cylindrical shell (rMin=${opts.rMin}, rMax=${opts.rMax}, z=${opts.zMin}..${opts.zMax})${cone ? ' with normalCone filter' : ''}. Try widening the shell, checking the center, or calling paintPreview with a box first to locate the geometry.` };
+      }
+      return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
+    },
+
     /** Render a preview of the current model with a candidate region tinted
      *  bright yellow, *without* committing the paint to the regions list.
      *  Accepts the same selectors as `paintInBox` / `paintNear` plus an
@@ -4610,7 +4312,7 @@ async function main() {
      *  ```
      *  Returns `{ id, name, triangles, bbox, centroid }` on success or
      *  `{ error }` if no such label exists or no labels were registered. */
-    paintByLabel(opts: { label: string; color: [number, number, number]; name?: string }) {
+    paintByLabel(opts: { label: string; color: [number, number, number]; name?: string; topOnly?: boolean; normalCone?: { axis: [number, number, number]; angleDeg: number } }) {
       if (!opts || typeof opts !== 'object') return { error: 'paintByLabel requires { label, color }' };
       if (typeof opts.label !== 'string' || opts.label.length === 0) return { error: 'paintByLabel.label must be a non-empty string' };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'paintByLabel.color must be [r,g,b] in 0..1' };
@@ -4623,9 +4325,28 @@ async function main() {
         const known = [...currentLabelMap.keys()].map(k => `"${k}"`).join(', ');
         return { error: `paintByLabel: no label "${opts.label}". Known labels: ${known}.` };
       }
-      const triangles = new Set(ids);
       const mesh = currentMeshData;
       const regionName = opts.name ?? opts.label;
+      const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
+      if (cone) {
+        // Filter the label's triangle set by normal direction. Use a
+        // triangles descriptor (not byLabel) so the exact filtered set
+        // is preserved on re-hydration rather than restoring the full set.
+        const adjacency = buildAdjacency(mesh);
+        const axLen = Math.hypot(cone.axis[0], cone.axis[1], cone.axis[2]);
+        const cax = cone.axis[0] / axLen, cay = cone.axis[1] / axLen, caz = cone.axis[2] / axLen;
+        const coneCos = Math.cos(cone.angleDeg * Math.PI / 180);
+        const filtered = new Set<number>();
+        for (const t of ids) {
+          const dot = cax * adjacency.normals[t * 3] + cay * adjacency.normals[t * 3 + 1] + caz * adjacency.normals[t * 3 + 2];
+          if (dot >= coneCos) filtered.add(t);
+        }
+        if (filtered.size === 0) {
+          return { error: `paintByLabel: label "${opts.label}" matched ${ids.size} triangles but none passed the ${opts.topOnly ? 'topOnly' : 'normalCone'} filter. Try widening angleDeg or removing the filter.` };
+        }
+        return commitPaintFromSet(filtered, opts.color as [number, number, number], regionName, 'paintbrush');
+      }
+      const triangles = new Set(ids);
       const region = addRegion(
         regionName,
         opts.color as [number, number, number],
@@ -4658,8 +4379,8 @@ async function main() {
      *    { label: 'mouth', color: [0.8, 0.2, 0.2] },
      *  ]);
      *  ``` */
-    paintByLabels(items: Array<{ label: string; color: [number, number, number]; name?: string }>) {
-      if (!Array.isArray(items)) return { error: 'paintByLabels requires an array of { label, color, name? }' };
+    paintByLabels(items: Array<{ label: string; color: [number, number, number]; name?: string; topOnly?: boolean; normalCone?: { axis: [number, number, number]; angleDeg: number } }>) {
+      if (!Array.isArray(items)) return { error: 'paintByLabels requires an array of { label, color, name?, topOnly?, normalCone? }' };
       if (items.length === 0) return { results: [], failed: [] };
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
       if (!currentLabelMap || currentLabelMap.size === 0) {
@@ -4915,71 +4636,71 @@ async function main() {
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
         // AI-friendly export — return bytes over the API instead of triggering a download
-        'exportGLBData':   { signature: 'await exportGLBData() -- Return GLB as {filename, mimeType, base64, sizeBytes}', docs: '/ai.md#ai-friendly-file-io' },
-        'exportSTLData':   { signature: 'await exportSTLData() -- Return STL as {filename, mimeType, base64, sizeBytes}', docs: '/ai.md#ai-friendly-file-io' },
-        'exportOBJData':   { signature: 'await exportOBJData() -- Return OBJ as {filename, mimeType, text? | base64, sizeBytes}', docs: '/ai.md#ai-friendly-file-io' },
-        'export3MFData':   { signature: 'await export3MFData() -- Return 3MF as {filename, mimeType, base64, sizeBytes}', docs: '/ai.md#ai-friendly-file-io' },
-        'exportSessionData': { signature: 'await exportSessionData(sessionId?) -- Return parsed session JSON {filename, mimeType, data, sizeBytes}', docs: '/ai.md#ai-friendly-file-io' },
-        'exportCodeData':  { signature: 'exportCodeData() -- Return editor source as {filename, mimeType, language, text, sizeBytes}', docs: '/ai.md#ai-friendly-file-io' },
+        'exportGLBData':   { signature: 'await exportGLBData() -- Return GLB as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
+        'exportSTLData':   { signature: 'await exportSTLData() -- Return STL as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
+        'exportOBJData':   { signature: 'await exportOBJData() -- Return OBJ as {filename, mimeType, text? | base64, sizeBytes}', docs: '/ai/file-io.md' },
+        'export3MFData':   { signature: 'await export3MFData() -- Return 3MF as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
+        'exportSessionData': { signature: 'await exportSessionData(sessionId?) -- Return parsed session JSON {filename, mimeType, data, sizeBytes}', docs: '/ai/file-io.md' },
+        'exportCodeData':  { signature: 'exportCodeData() -- Return editor source as {filename, mimeType, language, text, sizeBytes}', docs: '/ai/file-io.md' },
         // AI-friendly import — bypass the file picker
-        'importSessionData': { signature: 'await importSessionData(jsonObjectOrString) -- Import .partwright.json payload -> {sessionId} or {error}', docs: '/ai.md#ai-friendly-file-io' },
-        'importCodeData':  { signature: 'await importCodeData(code, language, sessionName?) -- Import raw source as new session', docs: '/ai.md#ai-friendly-file-io' },
+        'importSessionData': { signature: 'await importSessionData(jsonObjectOrString) -- Import .partwright.json payload -> {sessionId} or {error}', docs: '/ai/file-io.md' },
+        'importCodeData':  { signature: 'await importCodeData(code, language, sessionName?) -- Import raw source as new session', docs: '/ai/file-io.md' },
         // Recent Exports inbox (also visible in toolbar Export dropdown)
-        'listRecentExports': { signature: 'listRecentExports() -- Recent export metadata, newest first', docs: '/ai.md#ai-friendly-file-io' },
-        'getRecentExport': { signature: 'await getRecentExport(id) -- Look up bytes by id -> {filename, mimeType, text? | base64, ...}', docs: '/ai.md#ai-friendly-file-io' },
-        'downloadRecentExport': { signature: 'downloadRecentExport(id) -- Re-trigger browser download for an inbox entry', docs: '/ai.md#ai-friendly-file-io' },
-        'clearRecentExports': { signature: 'clearRecentExports() -- Empty the Recent Exports list', docs: '/ai.md#ai-friendly-file-io' },
+        'listRecentExports': { signature: 'listRecentExports() -- Recent export metadata, newest first', docs: '/ai/file-io.md' },
+        'getRecentExport': { signature: 'await getRecentExport(id) -- Look up bytes by id -> {filename, mimeType, text? | base64, ...}', docs: '/ai/file-io.md' },
+        'downloadRecentExport': { signature: 'downloadRecentExport(id) -- Re-trigger browser download for an inbox entry', docs: '/ai/file-io.md' },
+        'clearRecentExports': { signature: 'clearRecentExports() -- Empty the Recent Exports list', docs: '/ai/file-io.md' },
         // Color regions
-        'paintRegion':     { signature: 'paintRegion({point, normal, color, name?, tolerance?}) -- Paint coplanar face region (flood-fill, edge-bounded). Diagnostic error on failure.', docs: '/ai.md#color-regions' },
-        'paintNearestRegion': { signature: 'paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) -- Snap seed to nearest face, then paint coplanar region', docs: '/ai.md#color-regions' },
-        'paintNear':       { signature: 'paintNear({point, radius, normalCone?, color, name?}) -- Paint triangles whose centroid is within `radius` of `point`. Predictable, no flood-fill tolerance to tune.', docs: '/ai.md#color-regions' },
-        'paintInBox':      { signature: 'paintInBox({box, normalCone?, color, name?}) -- Paint triangles whose centroid is inside an axis-aligned box (and optional normal cone).', docs: '/ai.md#color-regions' },
-        'paintInOrientedBox': { signature: 'paintInOrientedBox({box: {center, size, quaternion?}, color, name?}) -- Paint triangles whose centroid is inside a rotated oriented box. Same selector as the UI Box tool.', docs: '/ai.md#color-regions' },
-        'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?}) -- Paint specific triangle indices', docs: '/ai.md#color-regions' },
-        'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?}) -- Paint planar slab range', docs: '/ai.md#color-regions' },
-        'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai.md#color-regions' },
-        'paintExplain':    { signature: 'paintExplain({region, withImage?, view?}) -- Diagnose a committed region -> {triangleCount, area, bbox, centroid, normalHistogram, [thumbnail]}.', docs: '/ai.md#color-regions' },
-        'assertPaint':     { signature: 'assertPaint({region, expectedTriangleCount?, expectedBoundingBox?, expectedCentroid?}) -- Verify a previously-painted region -> {passed, failures?}', docs: '/ai.md#color-regions' },
-        'findFaces':       { signature: 'findFaces({box?, normal?, normalTolerance?, color?, region?, maxResults?}) -- Query triangle ids by geometry/color filters', docs: '/ai.md#color-regions' },
-        'getMesh':         { signature: 'getMesh() -- Direct triangle/vertex/normal/centroid access for procedural paint workflows', docs: '/ai.md#color-regions' },
-        'getMeshSummary':  { signature: 'getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) -- List coplanar face groups with centroid/normal/area/bbox', docs: '/ai.md#color-regions' },
-        'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai.md#color-regions' },
-        'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai.md#color-regions' },
-        'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- Decompose the manifold into boolean-distinct parts. For "paint each feature" workflows (e.g. unioned head + eyes + mouth).', docs: '/ai.md#color-regions' },
-        'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai.md#color-regions' },
-        'listLabels':      { signature: 'listLabels() -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- Labels registered in the current run via api.label(shape, name). Survives boolean ops; the cleanest paint primitive on agent-authored geometry.', docs: '/ai.md#color-regions' },
-        'paintByLabel':    { signature: 'paintByLabel({label, color, name?}) -- Paint a labelled feature by name. Pair with api.label/labeledUnion in your code. No coordinate guessing.', docs: '/ai.md#color-regions' },
-        'paintByLabels':   { signature: 'paintByLabels([{label, color, name?}, ...]) -- Batch sibling. N features painted in one call -> {results, failed}. Use for any multi-feature paint job.', docs: '/ai.md#color-regions' },
-        'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai.md#color-regions' },
-        'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai.md#color-regions' },
-        'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai.md#color-regions' },
-        'setRegionVisibility': { signature: 'setRegionVisibility(id, visible) -- Show/hide ONE region in the viewport. Hidden regions still export.', docs: '/ai.md#color-regions' },
-        'hideRegion':      { signature: 'hideRegion(id) -- Shorthand for setRegionVisibility(id, false).', docs: '/ai.md#color-regions' },
-        'showRegion':      { signature: 'showRegion(id) -- Shorthand for setRegionVisibility(id, true).', docs: '/ai.md#color-regions' },
-        'undoLastPaint':   { signature: 'undoLastPaint() -- Undo the most recent paint op. Removed region goes on a redo stack.', docs: '/ai.md#color-regions' },
-        'redoLastPaint':   { signature: 'redoLastPaint() -- Reapply the most recently undone paint op.', docs: '/ai.md#color-regions' },
-        'getBucketTolerance': { signature: 'getBucketTolerance() -- Read the bucket flood-fill tolerance (cosine of max bend angle).', docs: '/ai.md#color-regions' },
-        'setBucketTolerance': { signature: 'setBucketTolerance(tolerance) -- Set the bucket flood-fill tolerance (-1..1). Affects the UI bucket tool and the default for paintRegion.', docs: '/ai.md#color-regions' },
-        'getBrushSize':    { signature: 'getBrushSize() -- Read the UI brush radius (mesh units). 0 = single triangle.', docs: '/ai.md#color-regions' },
-        'setBrushSize':    { signature: 'setBrushSize(radius) -- Set the UI brush radius (mesh units, >= 0). Affects only the interactive brush tool; programmatic painting uses paintNear / paintFaces.', docs: '/ai.md#color-regions' },
+        'paintRegion':     { signature: 'paintRegion({point, normal, color, name?, tolerance?}) -- Paint coplanar face region (flood-fill, edge-bounded). Diagnostic error on failure.', docs: '/ai/colors.md' },
+        'paintNearestRegion': { signature: 'paintNearestRegion({point, color, searchRadius?, name?, tolerance?}) -- Snap seed to nearest face, then paint coplanar region', docs: '/ai/colors.md' },
+        'paintNear':       { signature: 'paintNear({point, radius, normalCone?, color, name?}) -- Paint triangles whose centroid is within `radius` of `point`. Predictable, no flood-fill tolerance to tune.', docs: '/ai/colors.md' },
+        'paintInBox':      { signature: 'paintInBox({box, normalCone?, color, name?}) -- Paint triangles whose centroid is inside an axis-aligned box (and optional normal cone).', docs: '/ai/colors.md' },
+        'paintInOrientedBox': { signature: 'paintInOrientedBox({box: {center, size, quaternion?}, color, name?}) -- Paint triangles whose centroid is inside a rotated oriented box. Same selector as the UI Box tool.', docs: '/ai/colors.md' },
+        'paintFaces':      { signature: 'paintFaces({triangleIds, color, name?}) -- Paint specific triangle indices', docs: '/ai/colors.md' },
+        'paintSlab':       { signature: 'paintSlab({axis|normal, offset, thickness, color, name?}) -- Paint planar slab range', docs: '/ai/colors.md' },
+        'paintPreview':    { signature: 'paintPreview({box?|point+radius?|triangleIds?, normalCone?, withImage?, view?}) -- DRY-RUN -> {triangleCount, bbox, centroid, [thumbnail]}. Default count-only; pass withImage:true for the yellow-highlighted thumbnail.', docs: '/ai/colors.md' },
+        'paintExplain':    { signature: 'paintExplain({region, withImage?, view?}) -- Diagnose a committed region -> {triangleCount, area, bbox, centroid, normalHistogram, [thumbnail]}.', docs: '/ai/colors.md' },
+        'assertPaint':     { signature: 'assertPaint({region, expectedTriangleCount?, expectedBoundingBox?, expectedCentroid?}) -- Verify a previously-painted region -> {passed, failures?}', docs: '/ai/colors.md' },
+        'findFaces':       { signature: 'findFaces({box?, normal?, normalTolerance?, color?, region?, maxResults?}) -- Query triangle ids by geometry/color filters', docs: '/ai/colors.md' },
+        'getMesh':         { signature: 'getMesh() -- Direct triangle/vertex/normal/centroid access for procedural paint workflows', docs: '/ai/colors.md' },
+        'getMeshSummary':  { signature: 'getMeshSummary({tolerance?, minTriangles?, maxTrianglesPerGroup?, maxGroups?}?) -- List coplanar face groups with centroid/normal/area/bbox', docs: '/ai/colors.md' },
+        'listRegions':     { signature: 'listRegions() -- List all color regions with bbox + centroid for each', docs: '/ai/colors.md' },
+        'clearColors':     { signature: 'clearColors() -- Remove ALL color regions (use undoLastPaint to reverse just one)', docs: '/ai/colors.md' },
+        'listComponents':  { signature: 'listComponents() -> {count, components: [{index, centroid, boundingBox, volume, surfaceArea}]} -- Decompose the manifold into boolean-distinct parts. For "paint each feature" workflows (e.g. unioned head + eyes + mouth).', docs: '/ai/colors.md' },
+        'paintComponent':  { signature: 'paintComponent({index, color, name?, topOnly?}) -- One-call shortcut: listComponents + paintInBox for the Nth piece.', docs: '/ai/colors.md' },
+        'listLabels':      { signature: 'listLabels() -> {count, labels: [{name, triangleCount, bbox, centroid}]} -- Labels registered in the current run via api.label(shape, name). Survives boolean ops; the cleanest paint primitive on agent-authored geometry.', docs: '/ai/colors.md' },
+        'paintByLabel':    { signature: 'paintByLabel({label, color, name?}) -- Paint a labelled feature by name. Pair with api.label/labeledUnion in your code. No coordinate guessing.', docs: '/ai/colors.md' },
+        'paintByLabels':   { signature: 'paintByLabels([{label, color, name?}, ...]) -- Batch sibling. N features painted in one call -> {results, failed}. Use for any multi-feature paint job.', docs: '/ai/colors.md' },
+        'paintConnected':  { signature: 'paintConnected({seed: {point, normal?}, maxDeviationDeg?, color, name?}) -- BFS-flood from a surface seed, gated by deviation from SEED normal (not adjacent). Pairs with probePixel for "paint everything contiguous and facing this way".', docs: '/ai/colors.md' },
+        'getFeatureCentroids': { signature: 'getFeatureCentroids({maxGroups?, withinBox?}?) -- Token-cheap: face-group centroids + normals + bbox, no triangleIds. Use to plan paint targets.', docs: '/ai/colors.md' },
+        'removeRegion':    { signature: 'removeRegion(id) -- Remove ONE color region by id from listRegions(). Use this to fix a single mistake without nuking the rest.', docs: '/ai/colors.md' },
+        'setRegionVisibility': { signature: 'setRegionVisibility(id, visible) -- Show/hide ONE region in the viewport. Hidden regions still export.', docs: '/ai/colors.md' },
+        'hideRegion':      { signature: 'hideRegion(id) -- Shorthand for setRegionVisibility(id, false).', docs: '/ai/colors.md' },
+        'showRegion':      { signature: 'showRegion(id) -- Shorthand for setRegionVisibility(id, true).', docs: '/ai/colors.md' },
+        'undoLastPaint':   { signature: 'undoLastPaint() -- Undo the most recent paint op. Removed region goes on a redo stack.', docs: '/ai/colors.md' },
+        'redoLastPaint':   { signature: 'redoLastPaint() -- Reapply the most recently undone paint op.', docs: '/ai/colors.md' },
+        'getBucketTolerance': { signature: 'getBucketTolerance() -- Read the bucket flood-fill tolerance (cosine of max bend angle).', docs: '/ai/colors.md' },
+        'setBucketTolerance': { signature: 'setBucketTolerance(tolerance) -- Set the bucket flood-fill tolerance (-1..1). Affects the UI bucket tool and the default for paintRegion.', docs: '/ai/colors.md' },
+        'getBrushSize':    { signature: 'getBrushSize() -- Read the UI brush radius (mesh units). 0 = single triangle.', docs: '/ai/colors.md' },
+        'setBrushSize':    { signature: 'setBrushSize(radius) -- Set the UI brush radius (mesh units, >= 0). Affects only the interactive brush tool; programmatic painting uses paintNear / paintFaces.', docs: '/ai/colors.md' },
         // Annotations
-        'listAnnotations':    { signature: 'listAnnotations() -- List freehand strokes -> [{id, color, width, points}]', docs: '/ai.md#annotations' },
-        'listTextAnnotations':{ signature: 'listTextAnnotations() -- List pinned text labels -> [{id, text, color, fontSizePx, anchor}]', docs: '/ai.md#annotations' },
-        'addTextAnnotation':  { signature: 'addTextAnnotation({anchor, text, color?, fontSizePx?}) -- Pin a text label at a 3D point', docs: '/ai.md#annotations' },
-        'getAnnotationCount': { signature: 'getAnnotationCount() -- Total annotations (strokes + text)', docs: '/ai.md#annotations' },
-        'undoAnnotation':     { signature: 'undoAnnotation() -- Remove the most recently added annotation -> {removed, remaining}', docs: '/ai.md#annotations' },
-        'removeAnnotation':   { signature: 'removeAnnotation(id) -- Remove a specific annotation by id', docs: '/ai.md#annotations' },
-        'clearAnnotations':   { signature: 'clearAnnotations() -- Remove all annotations (strokes + text) -> {cleared}', docs: '/ai.md#annotations' },
-        'clearAnnotationStrokes': { signature: 'clearAnnotationStrokes() -- Remove only freehand strokes', docs: '/ai.md#annotations' },
-        'clearTextAnnotations':   { signature: 'clearTextAnnotations() -- Remove only text labels', docs: '/ai.md#annotations' },
-        'setAnnotationsVisible': { signature: 'setAnnotationsVisible(bool) -- Show/hide all annotations (also affects renderView output)', docs: '/ai.md#annotations' },
-        'areAnnotationsVisible': { signature: 'areAnnotationsVisible() -- Whether annotations are currently visible', docs: '/ai.md#annotations' },
-        'setAnnotationColor': { signature: 'setAnnotationColor([r,g,b]) -- Set draw color for new strokes/text (RGB 0..1)', docs: '/ai.md#annotations' },
-        'setAnnotationWidth': { signature: 'setAnnotationWidth(px) -- Set line width for new strokes (0.5..64 px)', docs: '/ai.md#annotations' },
-        'getAnnotationWidth': { signature: 'getAnnotationWidth() -- Current line width (pixels)', docs: '/ai.md#annotations' },
-        'setAnnotationFontSize': { signature: 'setAnnotationFontSize(px) -- Set font size for new text labels (4..256 px)', docs: '/ai.md#annotations' },
-        'getAnnotationFontSize': { signature: 'getAnnotationFontSize() -- Current text label font size (pixels)', docs: '/ai.md#annotations' },
-        'restoreAnnotationView': { signature: 'restoreAnnotationView(id) -- Snap the camera to the angle the annotation was made from', docs: '/ai.md#annotations' },
+        'listAnnotations':    { signature: 'listAnnotations() -- List freehand strokes -> [{id, color, width, points}]', docs: '/ai/annotations.md' },
+        'listTextAnnotations':{ signature: 'listTextAnnotations() -- List pinned text labels -> [{id, text, color, fontSizePx, anchor}]', docs: '/ai/annotations.md' },
+        'addTextAnnotation':  { signature: 'addTextAnnotation({anchor, text, color?, fontSizePx?}) -- Pin a text label at a 3D point', docs: '/ai/annotations.md' },
+        'getAnnotationCount': { signature: 'getAnnotationCount() -- Total annotations (strokes + text)', docs: '/ai/annotations.md' },
+        'undoAnnotation':     { signature: 'undoAnnotation() -- Remove the most recently added annotation -> {removed, remaining}', docs: '/ai/annotations.md' },
+        'removeAnnotation':   { signature: 'removeAnnotation(id) -- Remove a specific annotation by id', docs: '/ai/annotations.md' },
+        'clearAnnotations':   { signature: 'clearAnnotations() -- Remove all annotations (strokes + text) -> {cleared}', docs: '/ai/annotations.md' },
+        'clearAnnotationStrokes': { signature: 'clearAnnotationStrokes() -- Remove only freehand strokes', docs: '/ai/annotations.md' },
+        'clearTextAnnotations':   { signature: 'clearTextAnnotations() -- Remove only text labels', docs: '/ai/annotations.md' },
+        'setAnnotationsVisible': { signature: 'setAnnotationsVisible(bool) -- Show/hide all annotations (also affects renderView output)', docs: '/ai/annotations.md' },
+        'areAnnotationsVisible': { signature: 'areAnnotationsVisible() -- Whether annotations are currently visible', docs: '/ai/annotations.md' },
+        'setAnnotationColor': { signature: 'setAnnotationColor([r,g,b]) -- Set draw color for new strokes/text (RGB 0..1)', docs: '/ai/annotations.md' },
+        'setAnnotationWidth': { signature: 'setAnnotationWidth(px) -- Set line width for new strokes (0.5..64 px)', docs: '/ai/annotations.md' },
+        'getAnnotationWidth': { signature: 'getAnnotationWidth() -- Current line width (pixels)', docs: '/ai/annotations.md' },
+        'setAnnotationFontSize': { signature: 'setAnnotationFontSize(px) -- Set font size for new text labels (4..256 px)', docs: '/ai/annotations.md' },
+        'getAnnotationFontSize': { signature: 'getAnnotationFontSize() -- Current text label font size (pixels)', docs: '/ai/annotations.md' },
+        'restoreAnnotationView': { signature: 'restoreAnnotationView(id) -- Snap the camera to the angle the annotation was made from', docs: '/ai/annotations.md' },
       };
 
       if (method) {
@@ -5464,6 +5185,90 @@ async function main() {
       result.add(t);
     }
     return result;
+  }
+
+  /** Collect triangle ids whose centroids fall within a cylindrical shell
+   *  (rMin ≤ radial dist from axis ≤ rMax, zMin ≤ z ≤ zMax). */
+  function collectTrianglesByCylinder(
+    mesh: MeshData,
+    center: [number, number],
+    rMin: number,
+    rMax: number,
+    zMin: number,
+    zMax: number,
+    cone: { axis: [number, number, number]; angleDeg: number } | undefined,
+    coverage: CoverageMode = 'centroid',
+    maxArea: number | undefined = undefined,
+  ): Set<number> {
+    const adjacency = cone ? buildAdjacency(mesh) : null;
+    let coneAxis: [number, number, number] | null = null;
+    let coneCos = -1;
+    if (cone) {
+      const len = Math.hypot(cone.axis[0], cone.axis[1], cone.axis[2]);
+      coneAxis = [cone.axis[0] / len, cone.axis[1] / len, cone.axis[2] / len];
+      coneCos = Math.cos(cone.angleDeg * Math.PI / 180);
+    }
+    const rMin2 = rMin * rMin, rMax2 = rMax * rMax;
+    const [cx, cy] = center;
+    const result = new Set<number>();
+    const { triVerts, vertProperties, numProp, numTri } = mesh;
+
+    function radial2(x: number, y: number): number {
+      const dx = x - cx, dy = y - cy;
+      return dx * dx + dy * dy;
+    }
+    function inShell(x: number, y: number, z: number): boolean {
+      const r2 = radial2(x, y);
+      return r2 >= rMin2 && r2 <= rMax2 && z >= zMin && z <= zMax;
+    }
+
+    for (let t = 0; t < numTri; t++) {
+      const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+      const ax = vertProperties[v0 * numProp], ay = vertProperties[v0 * numProp + 1], az = vertProperties[v0 * numProp + 2];
+      const bx = vertProperties[v1 * numProp], by = vertProperties[v1 * numProp + 1], bz = vertProperties[v1 * numProp + 2];
+      const cx2 = vertProperties[v2 * numProp], cy2 = vertProperties[v2 * numProp + 1], cz2 = vertProperties[v2 * numProp + 2];
+
+      if (coverage === 'fully_inside') {
+        if (!inShell(ax, ay, az) || !inShell(bx, by, bz) || !inShell(cx2, cy2, cz2)) continue;
+      } else if (coverage === 'any_vertex_inside') {
+        if (!inShell(ax, ay, az) && !inShell(bx, by, bz) && !inShell(cx2, cy2, cz2)) continue;
+      } else {
+        const ccx = (ax + bx + cx2) / 3, ccy = (ay + by + cy2) / 3, ccz = (az + bz + cz2) / 3;
+        if (!inShell(ccx, ccy, ccz)) continue;
+      }
+
+      if (coneAxis && adjacency) {
+        const nx = adjacency.normals[t * 3], ny = adjacency.normals[t * 3 + 1], nz = adjacency.normals[t * 3 + 2];
+        if (coneAxis[0] * nx + coneAxis[1] * ny + coneAxis[2] * nz < coneCos) continue;
+      }
+      if (maxArea !== undefined && triangleArea(t, mesh) > maxArea) continue;
+      result.add(t);
+    }
+    return result;
+  }
+
+  /** Produce advisory warnings for geometry that was saved or queried.
+   *  Returns an empty array when the geometry is clean.
+   *  These are non-blocking — the save has already happened. */
+  function geometryWarnings(geo: Record<string, unknown>): string[] {
+    if (!geo || geo.status !== 'ok') return [];
+    const warnings: string[] = [];
+    if (geo.isManifold === false) {
+      warnings.push(
+        'isManifold: false — the mesh has non-manifold edges or gaps. ' +
+        'Export and slicing will fail with most tools. Fix the geometry ' +
+        'before finalizing: ensure boolean operands overlap by ≥ 0.5 units, ' +
+        'avoid zero-thickness walls, and check for duplicate faces.',
+      );
+    }
+    if (typeof geo.componentCount === 'number' && geo.componentCount > 1) {
+      warnings.push(
+        `componentCount: ${geo.componentCount} — model has ${geo.componentCount} disconnected pieces. ` +
+        'If unintentional, check that boolean union shapes overlap by ≥ 0.5 units. ' +
+        'If intentional (separate printable parts), ignore this warning.',
+      );
+    }
+    return warnings;
   }
 
   /** Commit a triangle set as a region and refresh the viewport — shared by
