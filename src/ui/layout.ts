@@ -375,12 +375,6 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     applyTab('ai');
   }
 
-  const expandEditorBtn = document.createElement('button');
-  expandEditorBtn.className = 'absolute left-0 top-8 z-20 px-0.5 py-2 bg-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-r border-r border-t border-b border-zinc-700 text-xs leading-none hidden';
-  expandEditorBtn.textContent = '▶';
-  expandEditorBtn.title = 'Show code editor';
-  rightPane.appendChild(expandEditorBtn);
-
   rightPane.appendChild(tabBar);
   rightPane.appendChild(viewportPane);
   rightPane.appendChild(viewsContainer);
