@@ -120,9 +120,20 @@ async function rerender(body: HTMLElement, cb: AiLocalModalCallbacks): Promise<v
   body.appendChild(storageBanner);
   void renderStorageBanner(storageBanner);
 
+  // Cache scan can take several seconds the first time it runs in a tab
+  // because it triggers WebLLM's dynamic import (~14 MB chunk) and then
+  // probes hasModelInCache() once per prebuilt entry. Without a visible
+  // placeholder the modal sits at its tiny intro-only size and looks
+  // frozen. Show a spinner + "Scanning…" line until the scan resolves.
+  const loadingEl = document.createElement('div');
+  loadingEl.className = 'flex items-center gap-2 px-3 py-3 mt-1 rounded border border-zinc-700 bg-zinc-900/50 text-xs text-zinc-400';
+  loadingEl.innerHTML = '<span class="inline-block w-3 h-3 rounded-full border-2 border-zinc-600 border-t-blue-400 animate-spin"></span><span>Scanning model cache…</span>';
+  body.appendChild(loadingEl);
+
   // Scan the cache once on open so we know which models show "Loaded" vs
   // "Download". A second open will repeat the scan — cheap, all-promises.
   cachedSet = await getCachedModels();
+  loadingEl.remove();
   const settings = loadSettings();
 
   // Group models by tier so the picker reads like a curated shopping list
