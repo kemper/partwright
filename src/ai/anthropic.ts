@@ -114,10 +114,16 @@ export async function streamTurn(
     system.push({ type: 'text', text: spec.systemSuffix });
   }
 
-  const tools: Anthropic.Tool[] = spec.tools.map(t => ({
+  // Cache the tool list at the last entry. The Anthropic API treats everything
+  // up to and including the cache_control marker as one cacheable prefix, so
+  // a single marker on the last tool covers the entire list. The cache
+  // invalidates automatically whenever the list changes (e.g. toggles flip a
+  // tool on/off), so stale cache hits are not a concern.
+  const tools: Anthropic.Tool[] = spec.tools.map((t, i, arr) => ({
     name: t.name,
     description: t.description,
     input_schema: t.input_schema,
+    ...(i === arr.length - 1 ? { cache_control: { type: 'ephemeral' } } : {}),
   }));
 
   const stream = client.messages.stream({
