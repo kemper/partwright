@@ -99,6 +99,24 @@ test.describe('AI chat panel', () => {
     await expect(page.locator('#btn-ai')).toContainText(/Connect AI/);
   });
 
+  test('stale local-model id falls back to the dual connect prompt', async ({ page }) => {
+    // Regression: when the curated local-model list is pruned, a user whose
+    // saved provider was 'local' would get stuck on "No local model picked.
+    // Choose a model" instead of the friendlier "Connect Anthropic API or
+    // run a local model" dual prompt. Simulate by planting localStorage with
+    // a provider=local + bogus model id before the app boots.
+    await page.addInitScript(() => {
+      localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({
+        toggles: { provider: 'local', localModel: 'Bogus-Removed-Model-MLC' },
+      }));
+    });
+    await page.goto('/editor?view=ai');
+    await page.click('#btn-ai');
+    const panel = page.locator('#ai-panel');
+    await expect(panel.locator('button:has-text("Connect Anthropic API")')).toBeVisible();
+    await expect(panel.locator('button:has-text("run a local model")')).toBeVisible();
+  });
+
   test('toggle pills flip state on click', async ({ page }) => {
     await page.goto('/editor?view=ai');
     await page.click('#btn-ai');

@@ -283,6 +283,20 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
     : undefined;
 
   const overrides = partial.systemPromptOverrides ?? {};
+  const rawLocalModel = tgls.localModel ?? (legacyIsLocal ? (legacyModel as string) : null);
+  const validLocalModel = resolveValidLocalModel(
+    rawLocalModel,
+    Array.isArray(partial.customLocalModels) ? partial.customLocalModels : [],
+  );
+  const requestedProvider = tgls.provider ?? (legacyIsLocal ? 'local' : DEFAULT_SETTINGS.toggles.provider);
+  // If we had to drop a saved local-model id (curated list pruned it), also
+  // revert the provider. Otherwise the AI panel sticks on "No local model
+  // picked" instead of offering the dual "Connect Anthropic API or run a
+  // local model" prompt that fresh users get.
+  const localModelCleared = rawLocalModel !== null && validLocalModel === null;
+  const provider = localModelCleared && requestedProvider === 'local'
+    ? DEFAULT_SETTINGS.toggles.provider
+    : requestedProvider;
   return {
     preset: partial.preset ?? DEFAULT_SETTINGS.preset,
     autoCompactMode: partial.autoCompactMode ?? DEFAULT_SETTINGS.autoCompactMode,
@@ -293,12 +307,9 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       autoRetry: tgls.autoRetry ?? DEFAULT_SETTINGS.toggles.autoRetry,
       maxIterations: tgls.maxIterations ?? DEFAULT_SETTINGS.toggles.maxIterations,
       maxSpend: tgls.maxSpend ?? DEFAULT_SETTINGS.toggles.maxSpend,
-      provider: tgls.provider ?? (legacyIsLocal ? 'local' : DEFAULT_SETTINGS.toggles.provider),
+      provider,
       anthropicModel: tgls.anthropicModel ?? legacyAnthropic ?? DEFAULT_SETTINGS.toggles.anthropicModel,
-      localModel: resolveValidLocalModel(
-        tgls.localModel ?? (legacyIsLocal ? (legacyModel as string) : null),
-        Array.isArray(partial.customLocalModels) ? partial.customLocalModels : [],
-      ),
+      localModel: validLocalModel,
     },
     systemPromptOverrides: {
       anthropic: overrides.anthropic ?? null,
