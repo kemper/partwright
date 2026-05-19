@@ -146,6 +146,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   let workingHistory: ChatMessage[] = [...history, userMsg];
   let totalCostUsd = 0;
   let totalToolCalls = 0;
+  let turnApiTimeMs = 0;
   const maxIter = ITERATION_CAP[toggles.maxIterations];
   const maxSpend = SPEND_CAP_USD[toggles.maxSpend];
   // Spend cap is a session budget — count what prior turns already
@@ -184,6 +185,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       },
     };
 
+    const apiCallStart = Date.now();
     let result;
     try {
       if (toggles.provider === 'anthropic') {
@@ -218,6 +220,9 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       return workingHistory;
     }
 
+    const durationMs = Date.now() - apiCallStart;
+    turnApiTimeMs += durationMs;
+
     const turnCost = turnCostUsd(model, result.usage);
     totalCostUsd += turnCost;
 
@@ -233,6 +238,8 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       costUsd: turnCost,
       createdAt: Date.now(),
       seq: seqStart + 1 + iter * 2,
+      durationMs,
+      turnElapsedMs: turnApiTimeMs,
       ...(aborted ? { aborted: true } : {}),
     };
     await putMessages([assistantMsg]);

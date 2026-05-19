@@ -141,6 +141,11 @@ export interface ChatMessage {
    *  a red border so it stands out from a normal reply, and offers a
    *  Retry button next to it. Not persisted to IndexedDB. */
   errored?: boolean;
+  /** Wall-clock milliseconds for this single model request/response cycle. */
+  durationMs?: number;
+  /** Cumulative model time in milliseconds across all API calls since the
+   *  user triggered this turn (resets each time the user sends a message). */
+  turnElapsedMs?: number;
 }
 
 export type ChatBlock =

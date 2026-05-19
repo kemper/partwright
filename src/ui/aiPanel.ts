@@ -950,6 +950,10 @@ async function clearCurrentChat(): Promise<void> {
   setTransientStatus('Chat cleared.');
 }
 
+function formatDuration(ms: number): string {
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
 // === Transcript rendering ===
 
 function renderTranscript(): void {
@@ -1048,10 +1052,19 @@ function renderMessage(msg: ChatMessage): HTMLElement {
     }
   }
 
-  if (msg.role === 'assistant' && msg.costUsd !== undefined) {
+  if (msg.role === 'assistant' && (msg.costUsd !== undefined || msg.durationMs !== undefined)) {
     const meta = document.createElement('div');
     meta.className = 'text-[10px] text-zinc-600';
-    meta.textContent = `${formatUsd(msg.costUsd)}${msg.usage ? ` · ${msg.usage.outputTokens}t out` : ''}`;
+    const parts: string[] = [];
+    if (msg.costUsd !== undefined) parts.push(formatUsd(msg.costUsd));
+    if (msg.usage) parts.push(`${msg.usage.outputTokens}t out`);
+    if (msg.durationMs !== undefined) {
+      parts.push(formatDuration(msg.durationMs));
+      if (msg.turnElapsedMs !== undefined && msg.turnElapsedMs > msg.durationMs) {
+        parts.push(`Σ${formatDuration(msg.turnElapsedMs)}`);
+      }
+    }
+    meta.textContent = parts.join(' · ');
     wrap.appendChild(meta);
   }
 
