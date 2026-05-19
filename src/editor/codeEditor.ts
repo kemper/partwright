@@ -5,6 +5,7 @@ import { StreamLanguage } from '@codemirror/language';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { basicSetup } from 'codemirror';
 import { lintGutter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
+import { js as jsBeautify } from 'js-beautify';
 import type { SourceDiagnostic } from '../geometry/types';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
 
@@ -13,6 +14,8 @@ export type EditorLanguage = 'manifold-js' | 'scad';
 let editorView: EditorView | null = null;
 let debounceTimer: number | null = null;
 let activeDiagnostics: Diagnostic[] = [];
+let currentLanguage: EditorLanguage = 'manifold-js';
+let autoFormatEnabled: boolean = localStorage.getItem('editor-auto-format') !== 'false';
 const languageCompartment = new Compartment();
 const readOnlyCompartment = new Compartment();
 const themeCompartment = new Compartment();
@@ -165,6 +168,7 @@ export function initEditor(
 
 export function setLanguage(lang: EditorLanguage): void {
   if (!editorView) return;
+  currentLanguage = lang;
   editorView.dispatch({
     effects: languageCompartment.reconfigure(languageExt(lang)),
   });
@@ -176,9 +180,60 @@ export function getValue(): string {
 
 export function setValue(code: string): void {
   if (!editorView) return;
+  const formatted = autoFormatEnabled ? applyFormat(code, currentLanguage) : code;
   editorView.dispatch({
-    changes: { from: 0, to: editorView.state.doc.length, insert: code },
+    changes: { from: 0, to: editorView.state.doc.length, insert: formatted },
   });
+}
+
+function applyFormat(code: string, lang: EditorLanguage): string {
+  try {
+    if (lang === 'scad') {
+      return jsBeautify(code, {
+        indent_size: 2,
+        brace_style: 'collapse',
+        preserve_newlines: true,
+        max_preserve_newlines: 2,
+        end_with_newline: true,
+      });
+    }
+    return jsBeautify(code, {
+      indent_size: 2,
+      indent_with_tabs: false,
+      brace_style: 'preserve-inline',
+      preserve_newlines: true,
+      max_preserve_newlines: 2,
+      keep_array_indentation: false,
+      break_chained_methods: false,
+      end_with_newline: true,
+      wrap_line_length: 0,
+      comma_first: false,
+      e4x: false,
+      jslint_happy: false,
+    });
+  } catch {
+    return code;
+  }
+}
+
+export function formatCode(): void {
+  if (!editorView) return;
+  const raw = editorView.state.doc.toString();
+  const formatted = applyFormat(raw, currentLanguage);
+  if (formatted !== raw) {
+    editorView.dispatch({
+      changes: { from: 0, to: editorView.state.doc.length, insert: formatted },
+    });
+  }
+}
+
+export function getAutoFormat(): boolean {
+  return autoFormatEnabled;
+}
+
+export function setAutoFormat(enabled: boolean): void {
+  autoFormatEnabled = enabled;
+  localStorage.setItem('editor-auto-format', enabled ? 'true' : 'false');
 }
 
 export function setEditorDiagnostics(diagnostics: SourceDiagnostic[]): void {

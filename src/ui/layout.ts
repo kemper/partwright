@@ -15,6 +15,8 @@ export interface LayoutElements {
   notesContainer: HTMLElement;
   statusBar: HTMLElement;
   clipControls: HTMLElement;
+  formatBtn: HTMLButtonElement;
+  autoFormatToggle: HTMLButtonElement;
   switchTab: (tab: TabName, options?: SwitchTabOptions) => void;
 }
 
@@ -45,6 +47,19 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   const editorHeaderSpacer = document.createElement('div');
   editorHeaderSpacer.className = 'flex-1';
   editorHeader.appendChild(editorHeaderSpacer);
+
+  const formatBtn = document.createElement('button');
+  formatBtn.id = 'format-btn';
+  formatBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
+  formatBtn.textContent = 'Format';
+  formatBtn.title = 'Format code (Shift+Alt+F)';
+  editorHeader.appendChild(formatBtn);
+
+  const autoFormatToggle = document.createElement('button');
+  autoFormatToggle.id = 'auto-format-toggle';
+  autoFormatToggle.className = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border';
+  autoFormatToggle.title = 'Toggle automatic formatting when code is loaded';
+  editorHeader.appendChild(autoFormatToggle);
 
   const statusBar = document.createElement('span');
   statusBar.id = 'status-indicator';
@@ -414,7 +429,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, editorContainer, editorErrorPanel, viewportPane, viewsContainer, elevationsContainer, galleryContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, switchTab };
+  return { editorPane, editorContainer, editorErrorPanel, viewportPane, viewsContainer, elevationsContainer, galleryContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab };
 }
 
 const TAB_ACTIVE_CLASS = 'shrink-0 whitespace-nowrap px-4 py-2 md:py-1.5 text-sm md:text-xs font-medium text-zinc-100 border-b-2 border-blue-500 bg-zinc-900';
