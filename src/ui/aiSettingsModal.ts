@@ -1,5 +1,7 @@
-// AI Settings modal — provider toggle, per-provider key/model info,
-// auto-compaction, system prompt, local context tuning.
+// AI Settings modal — tabbed by provider. Clicking a tab previews that
+// provider's settings; the user must click "Enable" to actually switch
+// the active provider. Auto-compaction is provider-agnostic and shown
+// once at the bottom.
 
 import { deleteKey, getKey } from '../ai/db';
 import { resetClient } from '../ai/anthropic';
@@ -8,35 +10,53 @@ import { showAiKeyModal } from './aiKeyModal';
 import { showAiLocalModal } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { createModalShell } from './modalShell';
-import { loadSettings, saveSettings, setAutoCompactMode, setLocalContext, setProvider, AUTO_COMPACT_OPTIONS } from '../ai/settings';
+import {
+  loadSettings,
+  saveSettings,
+  setAutoCompactMode,
+  setLocalContext,
+  setProvider,
+  setAnthropicModel,
+  AUTO_COMPACT_OPTIONS,
+  ANTHROPIC_MODEL_OPTIONS,
+} from '../ai/settings';
 import { effectiveContextCeiling, resolveLocalModel, isModelLoaded, unloadActiveLocalModel } from '../ai/local';
 import { getCachedCeiling } from '../ai/modelMetadata';
+import type { AnthropicModelId, Provider } from '../ai/types';
 
 export interface AiSettingsCallbacks {
   onChange: () => void;
 }
 
-export async function showAiSettingsModal(cb: AiSettingsCallbacks): Promise<void> {
+export interface AiSettingsOptions {
+  /** Tab to show first. Defaults to the active provider. */
+  initialTab?: Provider;
+}
+
+export async function showAiSettingsModal(cb: AiSettingsCallbacks, opts: AiSettingsOptions = {}): Promise<void> {
   const shell = createModalShell({ title: 'AI Settings', scrollable: true });
   shell.body.classList.remove('gap-3');
   shell.body.classList.add('gap-4');
 
-  shell.body.appendChild(buildProviderRow(shell.close, cb));
-  shell.body.appendChild(makeDivider());
-  shell.body.appendChild(buildLocalSection(shell.close, cb));
-  shell.body.appendChild(makeDivider());
-  shell.body.appendChild(buildLocalContextSection(cb));
-  shell.body.appendChild(makeDivider());
-  shell.body.appendChild(buildAutoCompactSection(shell.close, cb));
-  shell.body.appendChild(makeDivider());
-  shell.body.appendChild(buildSystemPromptSection(shell.close, cb));
-  shell.body.appendChild(makeDivider());
-  await buildAnthropicSection(shell.close, shell.footer, shell.body, cb);
-}
+  let viewedTab: Provider = opts.initialTab ?? loadSettings().toggles.provider;
 
-function formatK(n: number): string {
-  if (n >= 1024 && n % 1024 === 0) return `${n / 1024}K`;
-  return n.toLocaleString();
+  const rerender = async (): Promise<void> => {
+    shell.body.replaceChildren();
+    shell.footer.replaceChildren();
+    const tabBar = buildTabBar(viewedTab, tab => {
+      viewedTab = tab;
+      void rerender();
+    });
+    shell.body.appendChild(tabBar);
+    const tabContent = document.createElement('div');
+    tabContent.className = 'flex flex-col gap-4';
+    shell.body.appendChild(tabContent);
+    await renderTabContent(viewedTab, tabContent, shell.footer, shell.close, cb, () => { void rerender(); });
+    shell.body.appendChild(makeDivider());
+    shell.body.appendChild(buildAutoCompactSection(cb, () => { void rerender(); }));
+  };
+
+  await rerender();
 }
 
 function makeDivider(): HTMLElement {
@@ -45,38 +65,188 @@ function makeDivider(): HTMLElement {
   return hr;
 }
 
-function buildProviderRow(close: () => void, cb: AiSettingsCallbacks): HTMLElement {
+function buildTabBar(viewedTab: Provider, onSwitch: (tab: Provider) => void): HTMLElement {
   const wrap = document.createElement('div');
-  wrap.className = 'flex flex-col gap-2';
-  const label = document.createElement('div');
-  label.className = 'text-xs text-zinc-400';
-  label.textContent = 'Provider';
-  wrap.appendChild(label);
+  wrap.className = 'flex border-b border-zinc-700 -mx-1 -mt-1';
 
   const settings = loadSettings();
-  const seg = document.createElement('div');
-  seg.className = 'inline-flex rounded border border-zinc-700 overflow-hidden';
-  const mkBtn = (id: 'anthropic' | 'local', text: string, hint: string) => {
-    const b = document.createElement('button');
-    const active = settings.toggles.provider === id;
-    b.className = active
-      ? 'px-3 py-1 text-xs bg-zinc-700 text-zinc-100'
-      : 'px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700/60';
-    b.textContent = text;
-    b.title = hint;
-    b.addEventListener('click', () => {
-      saveSettings(setProvider(loadSettings(), id));
-      cb.onChange();
-      close();
-      // Reopen so the modal reflects the new provider's section state.
-      void showAiSettingsModal(cb);
-    });
-    seg.appendChild(b);
+  const activeProvider = settings.toggles.provider;
+
+  const mkTab = (id: Provider, text: string) => {
+    const btn = document.createElement('button');
+    const isViewed = viewedTab === id;
+    const isActive = activeProvider === id;
+    btn.className = isViewed
+      ? 'px-4 py-2 text-xs font-medium text-zinc-100 border-b-2 border-blue-500 -mb-px'
+      : 'px-4 py-2 text-xs text-zinc-400 hover:text-zinc-200 border-b-2 border-transparent';
+    btn.textContent = text;
+    if (isActive) {
+      const pill = document.createElement('span');
+      pill.className = 'ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wide bg-emerald-900/40 text-emerald-300 border border-emerald-700/50';
+      const dot = document.createElement('span');
+      dot.className = 'w-1 h-1 rounded-full bg-emerald-400';
+      pill.appendChild(dot);
+      pill.appendChild(document.createTextNode('Active'));
+      btn.appendChild(pill);
+    }
+    btn.addEventListener('click', () => onSwitch(id));
+    wrap.appendChild(btn);
   };
-  mkBtn('anthropic', 'Anthropic (cloud)', 'Use a hosted Claude model with your API key.');
-  mkBtn('local', 'Local (WebGPU)', 'Run a small/medium/large model in this browser.');
+
+  mkTab('anthropic', 'Anthropic (cloud)');
+  mkTab('local', 'Local (WebGPU)');
+  return wrap;
+}
+
+async function renderTabContent(
+  viewedTab: Provider,
+  container: HTMLElement,
+  footer: HTMLElement,
+  close: () => void,
+  cb: AiSettingsCallbacks,
+  rerender: () => void,
+): Promise<void> {
+  container.appendChild(buildEnableRow(viewedTab, cb, rerender));
+
+  if (viewedTab === 'anthropic') {
+    container.appendChild(buildAnthropicIntro());
+    container.appendChild(makeDivider());
+    await buildAnthropicKeySection(close, footer, container, cb);
+    container.appendChild(makeDivider());
+    container.appendChild(buildAnthropicModelSection(cb));
+    container.appendChild(makeDivider());
+    container.appendChild(buildSystemPromptSection('anthropic', close, cb));
+  } else {
+    container.appendChild(buildLocalIntro());
+    container.appendChild(makeDivider());
+    container.appendChild(buildLocalSection(close, cb));
+    container.appendChild(makeDivider());
+    container.appendChild(buildLocalContextSection(cb));
+    container.appendChild(makeDivider());
+    container.appendChild(buildSystemPromptSection('local', close, cb));
+  }
+}
+
+/** Row beneath the tab strip that surfaces whether the viewed provider is
+ *  the active one — and, when it isn't, the "Enable" button that actually
+ *  switches. Making this a deliberate click step fixes the prior bug where
+ *  users couldn't tell that tab clicks already changed the provider. */
+function buildEnableRow(viewedTab: Provider, cb: AiSettingsCallbacks, rerender: () => void): HTMLElement {
+  const settings = loadSettings();
+  const activeProvider = settings.toggles.provider;
+  const isActive = activeProvider === viewedTab;
+  const otherLabel = viewedTab === 'anthropic' ? 'Anthropic' : 'Local';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'flex items-center justify-between gap-3 rounded border px-3 py-2 ' + (
+    isActive
+      ? 'bg-emerald-900/15 border-emerald-700/40'
+      : 'bg-zinc-900 border-zinc-700'
+  );
+
+  const left = document.createElement('div');
+  left.className = 'flex flex-col gap-0.5 min-w-0';
+  const title = document.createElement('div');
+  title.className = 'text-xs font-medium ' + (isActive ? 'text-emerald-200' : 'text-zinc-200');
+  title.textContent = isActive ? `${otherLabel} is the active provider.` : `${otherLabel} is not active.`;
+  left.appendChild(title);
+  const sub = document.createElement('div');
+  sub.className = 'text-[11px] text-zinc-400';
+  sub.textContent = isActive
+    ? 'Chat turns are sent to this provider.'
+    : `Viewing settings only — click Enable to send chat turns through ${otherLabel}.`;
+  left.appendChild(sub);
+  wrap.appendChild(left);
+
+  if (!isActive) {
+    const btn = document.createElement('button');
+    btn.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white';
+    btn.textContent = `Enable ${otherLabel}`;
+    btn.title = `Switch the active provider to ${otherLabel}. You can switch back any time.`;
+    btn.addEventListener('click', () => {
+      saveSettings(setProvider(loadSettings(), viewedTab));
+      cb.onChange();
+      // Re-render the modal in place so the Active pill lands on the
+      // right tab and the Enable row flips to its "active" state.
+      rerender();
+    });
+    wrap.appendChild(btn);
+  }
+  return wrap;
+}
+
+function buildAnthropicIntro(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col gap-2';
+  const head = document.createElement('div');
+  head.className = 'text-xs text-zinc-400';
+  head.textContent = 'About';
+  wrap.appendChild(head);
+  const body = document.createElement('p');
+  body.className = 'text-[11px] text-zinc-300 leading-snug';
+  body.innerHTML = 'Sends chat turns to <strong>Anthropic\'s hosted Claude</strong> models. Higher quality, vision support, and full <code>ai.md</code> system prompt — but each turn costs a few cents charged to your Anthropic account. The API key is stored only in this browser and never sent to a Partwright server.';
+  wrap.appendChild(body);
+  return wrap;
+}
+
+function buildLocalIntro(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col gap-2';
+  const head = document.createElement('div');
+  head.className = 'text-xs text-zinc-400';
+  head.textContent = 'About';
+  wrap.appendChild(head);
+  const body = document.createElement('p');
+  body.className = 'text-[11px] text-zinc-300 leading-snug';
+  body.innerHTML = 'Runs a <strong>WebLLM model entirely in this browser</strong> on your GPU. No API key, no per-turn cost, no network traffic after the one-time weight download — but quality is noticeably lower than Claude, and you\'ll need a few GB of GPU memory. Best on Chrome / Edge / Safari 26+ on a recent discrete GPU.';
+  wrap.appendChild(body);
+  return wrap;
+}
+
+/** Default Anthropic model picker. The toggle-strip chip in the panel
+ *  header drives the same setting; surfacing it here makes "change my
+ *  default model" findable in the Settings dialog where users look. */
+function buildAnthropicModelSection(cb: AiSettingsCallbacks): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col gap-2';
+  const head = document.createElement('div');
+  head.className = 'text-xs text-zinc-400';
+  head.textContent = 'Default model';
+  wrap.appendChild(head);
+
+  const desc = document.createElement('div');
+  desc.className = 'text-[11px] text-zinc-400 leading-snug';
+  desc.innerHTML = 'Claude tier used for new turns. <strong>Haiku</strong> is fast and cheap; <strong>Sonnet</strong> is the balanced default; <strong>Opus</strong> is the smartest and most expensive. You can also switch on the fly from the dropdown in the chat header.';
+  wrap.appendChild(desc);
+
+  const seg = document.createElement('div');
+  seg.className = 'flex flex-wrap gap-1';
+  const renderButtons = () => {
+    seg.replaceChildren();
+    const current = loadSettings().toggles.anthropicModel;
+    for (const opt of ANTHROPIC_MODEL_OPTIONS) {
+      const b = document.createElement('button');
+      const active = current === opt.id;
+      b.className = active
+        ? 'px-2 py-1 rounded text-[11px] bg-zinc-700 text-zinc-100 border border-zinc-600'
+        : 'px-2 py-1 rounded text-[11px] text-zinc-300 border border-zinc-700 hover:bg-zinc-700/60';
+      b.textContent = opt.label;
+      b.addEventListener('click', () => {
+        saveSettings(setAnthropicModel(loadSettings(), opt.id as AnthropicModelId));
+        cb.onChange();
+        renderButtons();
+      });
+      seg.appendChild(b);
+    }
+  };
+  renderButtons();
   wrap.appendChild(seg);
   return wrap;
+}
+
+function formatK(n: number): string {
+  if (n >= 1024 && n % 1024 === 0) return `${n / 1024}K`;
+  return n.toLocaleString();
 }
 
 function buildLocalSection(close: () => void, cb: AiSettingsCallbacks): HTMLElement {
@@ -240,7 +410,7 @@ function buildLocalContextSection(cb: AiSettingsCallbacks): HTMLElement {
  *  assistant turn, keeping just the last exchange — ideal for an app like
  *  this where the live editor + version gallery hold the actual state and
  *  the chat is mostly a tool-driving channel. */
-function buildAutoCompactSection(close: () => void, cb: AiSettingsCallbacks): HTMLElement {
+function buildAutoCompactSection(cb: AiSettingsCallbacks, rerenderModal: () => void): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'flex flex-col gap-2';
   const head = document.createElement('div');
@@ -267,8 +437,7 @@ function buildAutoCompactSection(close: () => void, cb: AiSettingsCallbacks): HT
     b.addEventListener('click', () => {
       saveSettings(setAutoCompactMode(loadSettings(), opt.id));
       cb.onChange();
-      close();
-      void showAiSettingsModal(cb);
+      rerenderModal();
     });
     seg.appendChild(b);
   }
@@ -282,7 +451,7 @@ function buildAutoCompactSection(close: () => void, cb: AiSettingsCallbacks): HT
   return wrap;
 }
 
-function buildSystemPromptSection(close: () => void, cb: AiSettingsCallbacks): HTMLElement {
+function buildSystemPromptSection(provider: Provider, close: () => void, cb: AiSettingsCallbacks): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'flex flex-col gap-2';
   const head = document.createElement('div');
@@ -294,7 +463,6 @@ function buildSystemPromptSection(close: () => void, cb: AiSettingsCallbacks): H
   wrap.appendChild(head);
 
   const settings = loadSettings();
-  const provider = settings.toggles.provider;
   const override = settings.systemPromptOverrides?.[provider] ?? null;
 
   const desc = document.createElement('div');
@@ -321,10 +489,10 @@ function buildSystemPromptSection(close: () => void, cb: AiSettingsCallbacks): H
   return wrap;
 }
 
-/** Anthropic key + lifetime usage panel. Only renders when a key exists;
- *  the empty state is owned by the provider toggle's "switch to Anthropic
- *  then connect a key" flow. */
-async function buildAnthropicSection(close: () => void, footer: HTMLElement, body: HTMLElement, cb: AiSettingsCallbacks): Promise<void> {
+/** Anthropic key + lifetime usage panel. Renders the empty-state connect
+ *  button inline, and (when a key exists) puts Replace / Disconnect into
+ *  the modal footer. */
+async function buildAnthropicKeySection(close: () => void, footer: HTMLElement, body: HTMLElement, cb: AiSettingsCallbacks): Promise<void> {
   const wrap = document.createElement('div');
   wrap.className = 'flex flex-col gap-2';
   const head = document.createElement('div');

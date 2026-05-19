@@ -850,8 +850,8 @@ function panelStatusUpdate(): void {
   const settings = loadSettings();
   if (settings.toggles.provider === 'local') {
     panelStatusEl.replaceChildren();
+    panelStatusEl.classList.remove('hidden', 'text-emerald-400', 'text-amber-400', 'text-blue-300');
     if (!settings.toggles.localModel) {
-      panelStatusEl.classList.remove('hidden', 'text-emerald-400');
       panelStatusEl.classList.add('text-amber-400');
       panelStatusEl.appendChild(document.createTextNode('No local model picked. '));
       const link = document.createElement('button');
@@ -862,7 +862,6 @@ function panelStatusUpdate(): void {
       });
       panelStatusEl.appendChild(link);
     } else if (!isModelLoaded(settings.toggles.localModel)) {
-      panelStatusEl.classList.remove('hidden', 'text-emerald-400');
       panelStatusEl.classList.add('text-blue-300');
       let label = 'Model';
       try { label = resolveLocalModel(settings.toggles.localModel).label; } catch { /* stale id */ }
@@ -874,8 +873,26 @@ function panelStatusUpdate(): void {
       panelStatusEl.appendChild(link);
       panelStatusEl.appendChild(document.createTextNode(' or send a message to auto-load.'));
     } else {
-      panelStatusEl.classList.add('hidden');
+      panelStatusEl.classList.add('text-zinc-400');
     }
+    // Quality hint — always shown when local is the active provider so the
+    // user knows Anthropic exists and is sharper. Click opens settings on
+    // the Anthropic tab where the explicit Enable button lives.
+    const hint = document.createElement('div');
+    hint.className = 'text-zinc-400 mt-0.5';
+    hint.appendChild(document.createTextNode('Switch to the '));
+    const switchLink = document.createElement('button');
+    switchLink.className = 'underline text-zinc-200 hover:text-zinc-50';
+    switchLink.textContent = 'Anthropic provider';
+    switchLink.addEventListener('click', () => {
+      void showAiSettingsModal(
+        { onChange: () => { renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); renderPromptChip(); panelStatusUpdate(); } },
+        { initialTab: 'anthropic' },
+      );
+    });
+    hint.appendChild(switchLink);
+    hint.appendChild(document.createTextNode(' for better quality.'));
+    panelStatusEl.appendChild(hint);
     return;
   }
   void getKey('anthropic').then(key => {
