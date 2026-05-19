@@ -17,7 +17,7 @@ export interface AiSettingsCallbacks {
 }
 
 export async function showAiSettingsModal(cb: AiSettingsCallbacks): Promise<void> {
-  const shell = createModalShell({ title: 'AI Settings' });
+  const shell = createModalShell({ title: 'AI Settings', scrollable: true });
   shell.body.classList.remove('gap-3');
   shell.body.classList.add('gap-4');
 
