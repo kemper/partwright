@@ -8,6 +8,7 @@ import {
   LOCAL_MODELS,
   LOCAL_GROUP_LABELS,
   LOCAL_GROUP_HINTS,
+  totalMemoryMB,
   type LocalModelInfo,
   type LocalSizeGroup,
 } from '../ai/localModels';
@@ -16,6 +17,7 @@ import {
   getCachedModels,
   deleteCachedModel,
   probeWebGpu,
+  probeGpuBudgetMB,
   isModelLoaded,
   getStorageUsage,
   effectiveContextCeiling,
@@ -98,10 +100,13 @@ export async function showAiLocalModal(cb: AiLocalModalCallbacks): Promise<void>
 
 async function rerender(body: HTMLElement, cb: AiLocalModalCallbacks): Promise<void> {
   body.replaceChildren();
+  body.appendChild(buildCrashRiskWarning());
   body.appendChild(buildIntro());
 
   // Run the WebGPU probe lazily so the modal opens instantly. The probe
-  // result is shown right under the intro once it lands.
+  // result is shown right under the intro once it lands. Run the GPU budget
+  // probe in parallel — it re-uses the same adapter request under the hood
+  // so there's no extra round-trip cost.
   const gpuBanner = document.createElement('div');
   body.appendChild(gpuBanner);
   void probeWebGpu().then(r => {
@@ -114,6 +119,9 @@ async function rerender(body: HTMLElement, cb: AiLocalModalCallbacks): Promise<v
     renderGpuBanner(gpuBanner);
   });
   renderGpuBanner(gpuBanner);
+  // Fire the GPU budget probe so ensureModelLoaded can use a cached result
+  // the next time it's called (the adapter stays alive after requestAdapter).
+  void probeGpuBudgetMB();
 
   // Storage usage line — populated async via navigator.storage.estimate().
   const storageBanner = document.createElement('div');
@@ -496,10 +504,36 @@ function buildTrustPanel(): HTMLElement {
   return panel;
 }
 
+/** Prominent crash-risk warning shown at the top of the local model modal.
+ *  Local model inference runs entirely in your browser and can exhaust
+ *  device memory, which causes different outcomes per OS:
+ *  - macOS: jetsam OOM killer can terminate system processes and log you out
+ *  - Linux: kernel OOM killer terminates the browser; session survives
+ *  - Windows: Chrome tab crashes (Aw, Snap); session survives
+ *  This warning is intentionally loud and always visible — the auto-reduce
+ *  logic in ensureModelLoaded helps but is heuristic and not guaranteed. */
+function buildCrashRiskWarning(): HTMLElement {
+  const box = document.createElement('div');
+  box.className = 'rounded border border-amber-600/70 bg-amber-900/20 px-4 py-3 flex flex-col gap-1.5 text-sm text-amber-100';
+  const head = document.createElement('div');
+  head.className = 'font-semibold flex items-center gap-2';
+  head.innerHTML = '⚠ Local models are experimental and can crash your computer';
+  box.appendChild(head);
+  const body = document.createElement('div');
+  body.className = 'text-[12px] text-amber-200/90 leading-snug space-y-1';
+  body.innerHTML = `
+    <p>The model weights and KV cache are loaded entirely into GPU memory at startup — if they exceed what your device has free, the OS will forcibly kill processes.</p>
+    <p><strong>On macOS this can terminate your login session</strong> (log you out). On Linux the browser process is killed but the session survives. On Windows the tab crashes.</p>
+    <p>The app tries to auto-reduce the context window to fit your device, but this estimate is not guaranteed. <strong>If you are on a 16 GB Mac, use a model from the Smaller tier, or reduce the context window to 8 192 tokens in AI settings → Local context before loading any 8 B+ model.</strong></p>
+  `;
+  box.appendChild(body);
+  return box;
+}
+
 function buildIntro(): HTMLElement {
   const intro = document.createElement('p');
   intro.className = 'text-zinc-300 leading-snug';
-  intro.textContent = 'Pick a size that matches your hardware. Small fits on most laptops, Large needs a discrete GPU with ~5 GB free VRAM, and Vision lets the model see screenshots of your work.';
+  intro.textContent = 'Pick a size that matches your hardware. The "Total GPU" figure on each card is the estimated memory at the current context window — weights plus KV cache pre-allocated at startup.';
   return intro;
 }
 
@@ -668,14 +702,29 @@ function renderModelCard(
   const stats = document.createElement('div');
   stats.className = 'text-[10px] text-zinc-500';
   const ctx = effectiveContextWindow(model.id, model.contextWindowSize);
-  stats.textContent = `~${model.downloadGB.toFixed(1)} GB download · ${(model.vramMB / 1024).toFixed(1)} GB VRAM · ${formatTokens(ctx)} context · ${model.promptTier} prompt`;
+
+  function renderStats(ctxTokens: number): void {
+    const totalMB = totalMemoryMB(model, ctxTokens);
+    const totalGB = (totalMB / 1024).toFixed(1);
+    // Colour-code based on absolute thresholds (device budget probe is async and
+    // may not be ready; absolute numbers are more actionable than percentages).
+    // ≤7 GB: green (safe on 16 GB), 7–10 GB: amber (tight on 16 GB), >10 GB: red
+    const riskColor = totalMB <= 7168 ? 'text-emerald-400'
+      : totalMB <= 10240 ? 'text-amber-400'
+      : 'text-red-400';
+    stats.innerHTML =
+      `~${model.downloadGB.toFixed(1)} GB download · ${(model.vramMB / 1024).toFixed(1)} GB weights · ${formatTokens(ctxTokens)} ctx · ${model.promptTier} prompt` +
+      ` · Total GPU: <span class="${riskColor} font-medium">~${totalGB} GB</span>`;
+  }
+  renderStats(ctx);
+
   // Kick off a background fetch of the model's mlc-chat-config.json so
   // the displayed context tightens up to the actual WASM ceiling on a
   // subsequent re-render. First open shows the curated default; later
   // opens show the precise number.
   if (effectiveContextCeiling(model.id, -1) < 0) {
     void getModelCeiling(model.id, `https://huggingface.co/mlc-ai/${model.id}`).then(c => {
-      if (c !== null) stats.textContent = `~${model.downloadGB.toFixed(1)} GB download · ${(model.vramMB / 1024).toFixed(1)} GB VRAM · ${formatTokens(effectiveContextWindow(model.id, model.contextWindowSize))} context · ${model.promptTier} prompt`;
+      if (c !== null) renderStats(effectiveContextWindow(model.id, model.contextWindowSize));
     });
   }
   left.appendChild(stats);

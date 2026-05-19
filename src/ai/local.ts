@@ -135,6 +135,8 @@ function customModelToInfo(custom: CustomLocalModel): LocalModelInfo {
     blurb: `Custom model from ${custom.modelUrl}`,
     downloadGB: 0,
     vramMB: custom.vramMB ?? 0,
+    // Unknown architecture — use a conservative 128 MB/1K estimate (typical 8B Llama).
+    kvCacheMBPer1kTokens: 128,
     recommendedSystem: 'Depends on the model — set by whoever published it.',
     supportsVision: false,
     officialToolCalling: false,
@@ -192,6 +194,24 @@ export async function getStorageUsage(): Promise<StorageUsage> {
     };
   } catch {
     return { usageBytes: 0, quotaBytes: 0, persistent: false, unavailable: true };
+  }
+}
+
+/** Estimate total device GPU memory in MB using the WebGPU adapter.
+ *  Chrome reports maxBufferSize as ~25% of total GPU/unified memory, so
+ *  multiplying by 4 approximates the total pool available to GPU workloads.
+ *  On Apple Silicon this equals device RAM; on discrete-GPU systems it equals
+ *  VRAM. Returns null when WebGPU is unavailable or the probe fails. */
+export async function probeGpuBudgetMB(): Promise<number | null> {
+  if (!isWebGpuAvailable()) return null;
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) return null;
+    const maxBuf = adapter.limits.maxBufferSize;
+    if (!maxBuf || maxBuf <= 0) return null;
+    return (maxBuf / (1024 * 1024)) * 4;
+  } catch {
+    return null;
   }
 }
 
@@ -346,7 +366,32 @@ export async function ensureModelLoaded(modelId: string, opts: LoadOptions = {})
         // fallback ladder if the WASM rejects.
       }
     }
-    const desired = ceiling !== null ? Math.min(requested, ceiling) : requested;
+    let desired = ceiling !== null ? Math.min(requested, ceiling) : requested;
+
+    // Probe available GPU memory and auto-reduce the context window if the
+    // model + KV-cache pre-allocation would exceed ~50% of device memory.
+    // The KV cache is allocated in full at reload() time — exceeding device
+    // memory causes a hard OOM that can kill the browser or, on macOS, log
+    // the user out entirely. We prefer a smaller context over a system crash.
+    const budgetMB = await probeGpuBudgetMB();
+    if (budgetMB !== null && budgetMB > 0) {
+      const safeModelMB = budgetMB * 0.5; // 50% leaves headroom for OS + browser
+      const kvAtDesired = info.kvCacheMBPer1kTokens * desired / 1000;
+      if (info.vramMB + kvAtDesired > safeModelMB) {
+        for (const c of [16384, 8192, 4096]) {
+          if (c >= desired) continue;
+          if (info.vramMB + info.kvCacheMBPer1kTokens * c / 1000 <= safeModelMB) {
+            opts.onProgress?.({
+              progress: 0,
+              text: `Context auto-reduced from ${desired} to ${c} tokens — model + KV cache would exceed ~${Math.round(budgetMB / 1024)} GB GPU memory budget`,
+            });
+            desired = c;
+            break;
+          }
+        }
+      }
+    }
+
     const sinkSize = computeAttentionSink(info);
     const ladder = buildFallbackLadder(desired);
 

@@ -142,13 +142,19 @@ function getOffscreenRenderer(size: number): THREE.WebGLRenderer {
   return offRenderer;
 }
 
-/** Dispose scene contents (meshes, materials, lights) to prevent WebGL memory leaks */
+/** Dispose scene contents (meshes, geometries, materials) to prevent WebGL memory leaks */
 function disposeScene(scene: THREE.Scene): void {
   scene.traverse((obj) => {
     if (obj instanceof THREE.Mesh) {
-      obj.material?.dispose?.();
+      obj.geometry?.dispose();
+      if (Array.isArray(obj.material)) {
+        obj.material.forEach(m => m.dispose());
+      } else {
+        obj.material?.dispose?.();
+      }
     }
   });
+  scene.clear();
 }
 
 export function renderViewsToContainer(container: HTMLElement, meshData: MeshData): void {

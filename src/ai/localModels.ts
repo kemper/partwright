@@ -47,6 +47,13 @@ export interface LocalModelInfo {
   downloadGB: number;
   /** VRAM the model needs once loaded — from WebLLM's prebuilt config. */
   vramMB: number;
+  /** Approximate KV-cache memory in MB per 1 K context tokens (float16).
+   *  Derived from the model's layer count, number of KV heads, and head
+   *  dimension: layers × kvHeads × headDim × 2 (K+V) × 2 bytes × 1000 tokens.
+   *  Used at load time to estimate total GPU memory and auto-reduce the
+   *  context window on memory-constrained devices.
+   *  Total estimate: vramMB + kvCacheMBPer1kTokens × contextTokens / 1000 */
+  kvCacheMBPer1kTokens: number;
   /** Human-readable system recommendation (RAM/VRAM combination needed). */
   recommendedSystem: string;
   /** Whether the model can see image inputs. Kept as a property so custom
@@ -77,6 +84,13 @@ export interface LocalModelInfo {
   contextWindowSize: number;
 }
 
+/** Estimate total GPU memory required for a model at a given context window.
+ *  Returns megabytes. Used by the modal for display and by ensureModelLoaded
+ *  for memory-budget auto-reduction. */
+export function totalMemoryMB(model: { vramMB: number; kvCacheMBPer1kTokens: number }, contextTokens: number): number {
+  return model.vramMB + (model.kvCacheMBPer1kTokens * contextTokens) / 1000;
+}
+
 export const LOCAL_MODELS: LocalModelInfo[] = [
   // === Recommended ===
   {
@@ -86,6 +100,8 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'The only model on this list that uses WebLLM\'s native function-calling pipeline — JSON-schema constrained decoding makes tool-call format failures essentially impossible. Start here.',
     downloadGB: 4.5,
     vramMB: 4976,
+    // Llama 3 8B: 32 layers × 8 KV heads × 128 head_dim × 4 bytes × 1000 / 1024² ≈ 128 MB/1K
+    kvCacheMBPer1kTokens: 128,
     recommendedSystem: 'Discrete GPU with 8+ GB VRAM, or Apple Silicon with 16+ GB unified RAM.',
     supportsVision: false,
     officialToolCalling: true,
@@ -100,6 +116,8 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'Newer Hermes generation on Llama 3.1. Same size as Hermes 2 Pro but routes through the prompt-engineered tool path; reasoning quality is a touch better, format reliability a touch worse.',
     downloadGB: 4.5,
     vramMB: 4876,
+    // Llama 3.1 8B: same architecture as Llama 3 8B
+    kvCacheMBPer1kTokens: 128,
     recommendedSystem: 'Discrete GPU with 8+ GB VRAM, or Apple Silicon with 16+ GB unified RAM.',
     supportsVision: false,
     officialToolCalling: false,
@@ -116,6 +134,8 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'Hermes function-call training on a 3B base — most reliable small tool-caller on this list.',
     downloadGB: 1.9,
     vramMB: 2264,
+    // Llama 3.2 3B: 28 layers × 8 KV heads × 128 head_dim × 4 bytes × 1000 / 1024² ≈ 112 MB/1K
+    kvCacheMBPer1kTokens: 112,
     recommendedSystem: '4+ GB VRAM, or 8+ GB Apple Silicon.',
     supportsVision: false,
     officialToolCalling: false,
@@ -130,6 +150,8 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'Microsoft\'s latest mini (3.8B) with function-calling training. Punches above its weight on structured output.',
     downloadGB: 2.4,
     vramMB: 3438,
+    // Phi-4-mini: 32 layers × 8 KV heads × 96 head_dim × 4 bytes × 1000 / 1024² ≈ 96 MB/1K
+    kvCacheMBPer1kTokens: 96,
     recommendedSystem: '6+ GB VRAM, or 8+ GB Apple Silicon.',
     supportsVision: false,
     officialToolCalling: false,
@@ -144,6 +166,8 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'Smallest Qwen 3. Tool-calling support is baked into the chat template; faster than the 8B with most of the structured-output quality.',
     downloadGB: 2.3,
     vramMB: 3432,
+    // Qwen 3 4B: 36 layers × 8 KV heads × 128 head_dim × 4 bytes × 1000 / 1024² ≈ 144 MB/1K
+    kvCacheMBPer1kTokens: 144,
     recommendedSystem: '6+ GB VRAM, or 8+ GB Apple Silicon.',
     supportsVision: false,
     officialToolCalling: false,
@@ -158,6 +182,8 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'Tuned on code; better at JSON tool args than general 3B models. Decent for simple shapes.',
     downloadGB: 2.0,
     vramMB: 2400,
+    // Qwen 2.5 3B: 36 layers × 2 KV heads (aggressive GQA) × 128 head_dim × 4 bytes × 1000 / 1024² ≈ 36 MB/1K
+    kvCacheMBPer1kTokens: 36,
     recommendedSystem: '4+ GB VRAM, or any Apple Silicon Mac with 8+ GB.',
     supportsVision: false,
     officialToolCalling: false,
@@ -174,6 +200,8 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'Code-specialized at 7B; produces cleaner manifold-js than Llama 3.1 8B in practice.',
     downloadGB: 4.7,
     vramMB: 5100,
+    // Qwen 2.5 7B: 28 layers × 8 KV heads × 128 head_dim × 4 bytes × 1000 / 1024² ≈ 112 MB/1K
+    kvCacheMBPer1kTokens: 112,
     recommendedSystem: '12+ GB VRAM, or Apple Silicon with 16+ GB unified RAM.',
     supportsVision: false,
     officialToolCalling: false,
@@ -188,6 +216,8 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'Newer Qwen base, strong instruction following. Good middle ground when you want non-Hermes.',
     downloadGB: 5.4,
     vramMB: 5696,
+    // Qwen 3 8B: 36 layers × 8 KV heads × 128 head_dim × 4 bytes × 1000 / 1024² ≈ 144 MB/1K
+    kvCacheMBPer1kTokens: 144,
     recommendedSystem: '12+ GB VRAM, or 16+ GB Apple Silicon.',
     supportsVision: false,
     officialToolCalling: false,
@@ -202,6 +232,8 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'Latest Qwen iteration. Modest upgrade over Qwen 3 8B; same prompt-engineered tool path.',
     downloadGB: 6.0,
     vramMB: 6433,
+    // Qwen 3.5 9B: 40 layers × 8 KV heads × 128 head_dim × 4 bytes × 1000 / 1024² ≈ 160 MB/1K
+    kvCacheMBPer1kTokens: 160,
     recommendedSystem: '12+ GB VRAM, or 16+ GB Apple Silicon.',
     supportsVision: false,
     officialToolCalling: false,
@@ -218,6 +250,8 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     blurb: 'Cloud-class quality, but the 3-bit quant trades some quality for fit. Needs heavy hardware to be tolerable.',
     downloadGB: 29,
     vramMB: 31153,
+    // Llama 3.1 70B: 80 layers × 8 KV heads × 128 head_dim × 4 bytes × 1000 / 1024² ≈ 320 MB/1K
+    kvCacheMBPer1kTokens: 320,
     recommendedSystem: 'Apple Silicon with 64+ GB unified memory, or a desktop GPU with 40+ GB VRAM. Expect slow first-token latency.',
     supportsVision: false,
     officialToolCalling: false,
