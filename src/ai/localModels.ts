@@ -19,11 +19,7 @@
 //     budget can stay small even when the model needs detailed paint /
 //     curves / BOSL2 instructions.
 
-export type LocalModelId =
-  | 'Hermes-3-Llama-3.1-8B-q4f16_1-MLC'
-  | 'Qwen3-4B-q4f16_1-MLC'
-  | 'Qwen3-8B-q4f16_1-MLC'
-  | 'Llama-3.1-70B-Instruct-q3f16_1-MLC';
+export type LocalModelId = 'Hermes-3-Llama-3.1-8B-q4f16_1-MLC';
 
 /** Coarse grouping shown as section headers in the picker. The `custom`
  *  group is reserved for user-added models from AiSettings.customLocalModels;
@@ -102,61 +98,6 @@ export const LOCAL_MODELS: LocalModelInfo[] = [
     contextWindowSize: 32768,
   },
 
-  // === Smaller (laptop-friendly) ===
-  {
-    id: 'Qwen3-4B-q4f16_1-MLC',
-    group: 'smaller',
-    label: 'Qwen 3 4B',
-    blurb: 'Tool-calling support baked into the Qwen 3 chat template — same training approach as the 8B, just smaller. Best bet for laptops. Expect less reliable multi-step reasoning.',
-    downloadGB: 2.3,
-    vramMB: 3432,
-    // Qwen 3 4B: 36 layers × 8 KV heads × 128 head_dim × 4 bytes × 1000 / 1024² ≈ 144 MB/1K
-    kvCacheMBPer1kTokens: 144,
-    recommendedSystem: '6+ GB VRAM, or 8+ GB Apple Silicon.',
-    supportsVision: false,
-    officialToolCalling: false,
-    qualityStars: 2,
-    promptTier: 'slim',
-    contextWindowSize: 32768,
-  },
-
-  // === Larger (workstation-ish) ===
-  {
-    id: 'Qwen3-8B-q4f16_1-MLC',
-    group: 'larger',
-    label: 'Qwen 3 8B',
-    blurb: 'Strong instruction following with native Qwen 3 tool-calling in its chat template. Good alternative to Hermes 3 if you want a different model family.',
-    downloadGB: 5.4,
-    vramMB: 5696,
-    // Qwen 3 8B: 36 layers × 8 KV heads × 128 head_dim × 4 bytes × 1000 / 1024² ≈ 144 MB/1K
-    kvCacheMBPer1kTokens: 144,
-    recommendedSystem: '12+ GB VRAM, or 16+ GB Apple Silicon.',
-    supportsVision: false,
-    officialToolCalling: false,
-    qualityStars: 3,
-    promptTier: 'medium',
-    contextWindowSize: 32768,
-  },
-
-  // === Flagship — needs serious hardware ===
-  {
-    id: 'Llama-3.1-70B-Instruct-q3f16_1-MLC',
-    group: 'flagship',
-    label: 'Llama 3.1 70B (q3)',
-    blurb: 'Cloud-class quality, but the 3-bit quant and tight 4K context cap (KV cache cost) leave some on the table. Only viable on very beefy hardware.',
-    downloadGB: 29,
-    vramMB: 31153,
-    // Llama 3.1 70B: 80 layers × 8 KV heads × 128 head_dim × 4 bytes × 1000 / 1024² ≈ 320 MB/1K
-    kvCacheMBPer1kTokens: 320,
-    recommendedSystem: 'Apple Silicon with 64+ GB unified memory, or a desktop GPU with 40+ GB VRAM. Expect slow first-token latency.',
-    supportsVision: false,
-    officialToolCalling: false,
-    qualityStars: 3,
-    promptTier: 'medium',
-    // Keep 70B at 4K — KV cache for this model is ~1.2 GB per 4K tokens of
-    // context, so 16K would add ~5 GB on top of 31 GB weights.
-    contextWindowSize: 4096,
-  },
 ];
 
 export const LOCAL_GROUP_LABELS: Record<LocalSizeGroup, string> = {
