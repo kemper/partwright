@@ -32,9 +32,25 @@ export interface ToolbarCallbacks {
   onGoHome: () => void;
   /** Toggle the AI chat side panel. */
   onToggleAi: () => void;
+  /** Toggle the diagnostic log panel. */
+  onToggleDiagnostics: () => void;
 }
 
 let _aiBtn: HTMLButtonElement | null = null;
+
+let _diagBadgeEl: HTMLElement | null = null;
+
+/** Update the unseen-error badge count on the diagnostics toolbar button.
+ *  Called by diagnosticsPanel when new entries arrive while the panel is closed. */
+export function setDiagnosticsToolbarBadge(count: number): void {
+  if (!_diagBadgeEl) return;
+  if (count === 0) {
+    _diagBadgeEl.classList.add('hidden');
+  } else {
+    _diagBadgeEl.classList.remove('hidden');
+    _diagBadgeEl.textContent = count > 99 ? '99+' : String(count);
+  }
+}
 
 export type AiToolbarMode = 'disconnected' | 'cloud' | 'local';
 
@@ -538,6 +554,21 @@ export function createToolbar(
   qualityBtn.setAttribute('aria-label', 'Modeling quality settings');
   qualityBtn.addEventListener('click', () => { showQualitySettingsModal(); });
   toolbar.appendChild(qualityBtn);
+
+  // Diagnostic log toggle — shows a badge when unseen errors/warnings exist.
+  const diagBtn = document.createElement('button');
+  diagBtn.id = 'btn-diagnostics';
+  diagBtn.className = 'relative flex items-center justify-center w-10 h-10 md:w-6 md:h-6 rounded-full text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700 transition-colors text-sm md:text-xs ml-1';
+  diagBtn.title = 'Diagnostic log — errors and warnings';
+  diagBtn.setAttribute('aria-label', 'Diagnostic log');
+  diagBtn.innerHTML = '⚠';
+
+  _diagBadgeEl = document.createElement('span');
+  _diagBadgeEl.className = 'hidden absolute -top-0.5 -right-0.5 text-[8px] font-bold bg-red-500 text-white rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5 leading-none pointer-events-none';
+  diagBtn.appendChild(_diagBadgeEl);
+
+  diagBtn.addEventListener('click', callbacks.onToggleDiagnostics);
+  toolbar.appendChild(diagBtn);
 
   // Help button
   const helpBtn = document.createElement('button');

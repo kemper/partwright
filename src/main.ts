@@ -20,6 +20,8 @@
 // throughout that API are pure and live in the validation module above.
 
 import './style.css';
+import { errorLog } from './diagnostics/errorLog';
+import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
@@ -532,6 +534,10 @@ function showEditorUI(landingEl: HTMLElement | null, helpEl: HTMLElement | null,
 }
 
 async function main() {
+  // Install global error/warning capture as early as possible so nothing
+  // slips through before the rest of the app is ready.
+  errorLog.install();
+
   // Apply persisted theme before any UI renders
   initTheme();
 
@@ -910,6 +916,7 @@ async function main() {
     onImportFile: async (file) => { await handleImportFile(file); },
     onImportInboxEntry: handleReimportInboxEntry,
     onToggleAi: () => { toggleAiPanel(); },
+    onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad') => {
       if (lang === getActiveLanguage()) return;
       // If current session has work, ask before switching
@@ -931,6 +938,9 @@ async function main() {
       runCode(code);
     },
   });
+
+  // Init diagnostic panel — attaches to document.body, registers badge subscriber.
+  initDiagnosticsPanel();
 
   // Create session bar
   createSessionBar(editorUI, {
@@ -1568,7 +1578,9 @@ async function main() {
     try {
       await ensureEngineReady(lang);
     } catch (e) {
-      setStatus(statusBar, 'error', `Failed to load ${lang}: ${e instanceof Error ? e.message : String(e)}`);
+      const msg = `Failed to load ${lang}: ${e instanceof Error ? e.message : String(e)}`;
+      setStatus(statusBar, 'error', msg);
+      errorLog.capture({ level: 'error', source: 'engine', message: msg });
       throw e;
     }
     // Persist the language to the active session so reopening it loads in the
@@ -5357,6 +5369,7 @@ async function main() {
 
     if (result.error) {
       recordError(result.error);
+      errorLog.capture({ level: 'error', source: 'engine', message: result.error });
       const diagnostics = result.diagnostics ?? [];
       setStatus(statusBar, 'error', summarizeDiagnostics(result.error, diagnostics));
       setEditorDiagnostics(diagnostics);

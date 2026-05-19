@@ -20,6 +20,7 @@ import { showAttachmentModal } from './aiAttachmentModal';
 import { putAttachment } from '../ai/attachments';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
 import { activeModel, SPEND_CAP_USD, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type TurnOutcomeReason } from '../ai/types';
+import { errorLog } from '../diagnostics/errorLog';
 
 interface PanelState {
   open: boolean;
@@ -1640,6 +1641,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         if (result.isError) setTransientStatus('A tool errored. The agent will retry or surface the issue.');
       },
       onError: err => {
+        errorLog.capture({ level: 'error', source: 'ai', message: err.message, detail: err.stack });
         // Replace the in-memory "Thinking…" placeholder with a visible
         // error bubble so the user can see what failed and recover via
         // the Retry button. The bubble is in-memory only (not persisted),
