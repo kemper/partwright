@@ -257,6 +257,20 @@ interface LegacyAiSettings {
   aiPanelWidth?: number;
 }
 
+/** Return `id` as a valid LocalModelId when it exists in the curated list
+ *  or the user's custom model list; null otherwise.  Called at settings-load
+ *  time so stale IDs (e.g. models removed from the curated list) are silently
+ *  cleared rather than propagating to `resolveLocalModel` and throwing. */
+function resolveValidLocalModel(
+  id: string | null | undefined,
+  customModels: Array<{ id: string }>,
+): LocalModelId | null {
+  if (!id) return null;
+  if (LOCAL_MODELS.some(m => m.id === id)) return id as LocalModelId;
+  if (customModels.some(m => m.id === id)) return id as LocalModelId;
+  return null;
+}
+
 function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
   const tgls = partial.toggles ?? {};
   // Pre-provider builds stored a single `model` field on toggles. Detect
@@ -281,7 +295,10 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       maxSpend: tgls.maxSpend ?? DEFAULT_SETTINGS.toggles.maxSpend,
       provider: tgls.provider ?? (legacyIsLocal ? 'local' : DEFAULT_SETTINGS.toggles.provider),
       anthropicModel: tgls.anthropicModel ?? legacyAnthropic ?? DEFAULT_SETTINGS.toggles.anthropicModel,
-      localModel: tgls.localModel ?? (legacyIsLocal ? (legacyModel as LocalModelId) : DEFAULT_SETTINGS.toggles.localModel),
+      localModel: resolveValidLocalModel(
+        tgls.localModel ?? (legacyIsLocal ? (legacyModel as string) : null),
+        Array.isArray(partial.customLocalModels) ? partial.customLocalModels : [],
+      ),
     },
     systemPromptOverrides: {
       anthropic: overrides.anthropic ?? null,
