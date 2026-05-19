@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { Clock } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { MeshData } from '../geometry/types';
 import { createDefaultMaterial, createWireframeMaterial } from './materials';
@@ -195,7 +196,7 @@ export function initViewport(container: HTMLElement): {
   );
 
   // Animate
-  const clock = new THREE.Clock();
+  const clock = new Clock();
   function animate() {
     animationId = requestAnimationFrame(animate);
     const delta = clock.getDelta();
