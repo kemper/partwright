@@ -1785,12 +1785,12 @@ interface ProgressTracker {
 const progressState: ProgressTracker = { phase: 'idle', lastBeat: 0, retryCount: 0 };
 
 /** Wall-clock seconds without a stream beat before we treat the request as
- *  stalled. Anthropic's adaptive thinking can pause output for tens of
- *  seconds during deep reasoning, so this threshold needs to be generous —
- *  smaller numbers cause spurious "auto-resume" loops on Opus 4.7. The
- *  watchdog beats on every text delta, so this is the gap BETWEEN tokens,
- *  not total turn time. */
-const STALL_THRESHOLD_MS = 35_000;
+ *  stalled. Read from localContext.stallTimeoutSec at fire time so the user
+ *  can raise it for slow models without reloading. The watchdog beats on
+ *  every text delta so this is the gap BETWEEN tokens, not total turn time. */
+function getStallThresholdMs(): number {
+  return loadSettings().localContext.stallTimeoutSec * 1000;
+}
 const MAX_STALL_RETRIES = 2;
 /** Phases where a long silence indicates a real stall — not 'tool' (tool
  *  execution is synchronous JS and may legitimately run for a few seconds
@@ -1852,7 +1852,7 @@ function renderProgress(): void {
   if (
     state.inFlightController &&
     STALL_PHASES.has(progressState.phase) &&
-    elapsedSec * 1000 > STALL_THRESHOLD_MS
+    elapsedSec * 1000 > getStallThresholdMs()
   ) {
     triggerStallRetry();
   }
@@ -1880,17 +1880,15 @@ function showProgressFinal(detail: string): void {
 }
 
 function triggerStallRetry(): void {
+  const threshSec = Math.round(getStallThresholdMs() / 1000);
   if (progressState.retryCount >= MAX_STALL_RETRIES) {
-    // Hand off to the user — surface that we've given up auto-retrying.
-    setTransientStatus(`Model stalled (no tokens for ${Math.round(STALL_THRESHOLD_MS / 1000)}s) after ${MAX_STALL_RETRIES} retries — stopping.`);
+    setTransientStatus(`Model stalled (no tokens for ${threshSec}s) after ${MAX_STALL_RETRIES} retries — stopping. Increase "Stall timeout" in AI settings if using a slow model.`);
     state.inFlightController?.abort();
     void interruptLocal();
     return;
   }
-  // Abort the current attempt with a stall marker so sendMessage knows to
-  // re-issue rather than treat it as a user-initiated stop.
   progressState.retryCount++;
-  setTransientStatus(`No response for ${Math.round(STALL_THRESHOLD_MS / 1000)}s — auto-resuming (retry ${progressState.retryCount}/${MAX_STALL_RETRIES})...`);
+  setTransientStatus(`No response for ${threshSec}s — auto-resuming (retry ${progressState.retryCount}/${MAX_STALL_RETRIES})...`);
   stalledByWatchdog = true;
   state.inFlightController?.abort();
   void interruptLocal();

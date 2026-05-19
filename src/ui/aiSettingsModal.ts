@@ -17,7 +17,7 @@ export interface AiSettingsCallbacks {
 }
 
 export async function showAiSettingsModal(cb: AiSettingsCallbacks): Promise<void> {
-  const shell = createModalShell({ title: 'AI Settings' });
+  const shell = createModalShell({ title: 'AI Settings', scrollable: true });
   shell.body.classList.remove('gap-3');
   shell.body.classList.add('gap-4');
 
@@ -208,6 +208,31 @@ function buildLocalContextSection(cb: AiSettingsCallbacks): HTMLElement {
   reloadHint.className = 'text-[10px] text-zinc-500';
   reloadHint.textContent = 'Changing these unloads the GPU engine; the next message rebuilds it (cached weights survive — just a fast reload).';
   wrap.appendChild(reloadHint);
+
+  const stallRow = document.createElement('label');
+  stallRow.className = 'flex items-center gap-2 text-xs text-zinc-300';
+  stallRow.innerHTML = '<span>Stall timeout:</span>';
+  const stallInput = document.createElement('input');
+  stallInput.type = 'number';
+  stallInput.min = '5';
+  stallInput.max = '600';
+  stallInput.step = '5';
+  stallInput.className = 'w-20 px-2 py-1 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-xs focus:outline-none focus:border-blue-500';
+  stallInput.value = String(settings.localContext.stallTimeoutSec);
+  stallInput.addEventListener('change', () => {
+    const v = parseInt(stallInput.value, 10);
+    const next = Number.isFinite(v) && v >= 5 ? v : 35;
+    stallInput.value = String(next);
+    saveSettings(setLocalContext(loadSettings(), { stallTimeoutSec: next }));
+    cb.onChange();
+  });
+  stallRow.appendChild(stallInput);
+  const stallHint = document.createElement('span');
+  stallHint.className = 'text-[10px] text-zinc-500';
+  stallHint.textContent = 'seconds · gap between tokens before auto-retry fires. Raise to 120+ for large models on slow hardware.';
+  stallRow.appendChild(stallHint);
+  wrap.appendChild(stallRow);
+
   return wrap;
 }
 

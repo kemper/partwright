@@ -10,9 +10,9 @@
 //   * Tool calls come back as `{ id, function: { name, arguments } }` with
 //     arguments as a JSON-encoded string. We parse it here so chatLoop only
 //     ever deals with parsed objects (matching what Anthropic returns).
-//   * Every shipped model uses the prompt-engineered `<tool_call>` path
-//     today — see `supportsNativeToolCalls` for why Hermes-3 doesn't take
-//     the OpenAI-native path even though WebLLM advertises it as capable.
+//   * Every curated model uses the prompt-engineered `<tool_call>` path.
+//     WebLLM's native path is unreliable across the board — see
+//     `supportsNativeToolCalls` for why it stays off for all curated models.
 
 import type {
   ChatBlock,
@@ -77,13 +77,11 @@ function resolveCustomContextWindow(modelId: string): number | null {
  *  `appendPromptToolDocs` if you change those. */
 function computeAttentionSink(info: LocalModelInfo): number {
   const promptBudget = info.promptTier === 'medium' ? 1300 : 600;
-  // Native function-callers get the OpenAI `tools` field, not a `<tool_call>`
-  // instruction block in the prompt, so they need less sink budget. Other
-  // models append a ~400-token tool documentation block.
+  // Native callers use the `tools` API field, not a system-prompt block,
+  // so need minimal sink budget. Other models append a ~400-token compact
+  // tool-docs block.
   const toolsBudget = info.officialToolCalling ? 100 : 500;
   const safetyMargin = 200;
-  // Cap at half the smallest plausible window so we never accidentally
-  // freeze the entire context as sink.
   return Math.min(2048, promptBudget + toolsBudget + safetyMargin);
 }
 
@@ -461,10 +459,10 @@ export interface LocalRequestSpec {
  *
  *  Two tool-calling strategies, chosen per model:
  *    * Native — models we've verified work with WebLLM's OpenAI `tools`
- *      path (see `supportsNativeToolCalls`). Currently empty: WebLLM 0.2.83
- *      only wires up the Hermes-2-Pro family end-to-end, and we don't ship
- *      a Hermes-2-Pro model.
- *    * Prompt-engineered — every other model rejects the `tools` field
+ *      path (see `supportsNativeToolCalls`). Currently unused: no curated
+ *      model has `officialToolCalling: true` because WebLLM's native path
+ *      is unreliable across the board for Partwright's use case.
+ *    * Prompt-engineered — every curated model uses this path: the `tools`
  *      with an UnsupportedModelIdError. We inject tool descriptions into
  *      the system prompt and ask the model to emit `<tool_call>{...}</tool_call>`
  *      blocks, then parse them out post-stream. */
@@ -664,13 +662,11 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
 /** Cached lookup of WebLLM's `functionCallingModelIds`. Async because the
  *  list lives inside the lazy-loaded WebLLM chunk.
  *
- *  We also gate on our own `officialToolCalling` flag because WebLLM's list
- *  is over-inclusive: as of 0.2.83 it advertises Hermes-3-Llama-3.1-8B as
- *  function-calling capable, but only `Hermes-2-Pro-*` models get the
- *  hardcoded system-prompt + JSON schema injection that actually makes
- *  native tool calls work. Hermes-3 just sees the `tools` field with no
- *  output-format constraint and responds in plain prose. Routing it
- *  through our prompt-engineered `<tool_call>` path is far more reliable. */
+ *  We gate on our own `officialToolCalling` flag (currently false for all
+ *  curated models) because WebLLM's list is over-inclusive — advertised
+ *  models either don't get JSON-schema injection or reject a custom system
+ *  prompt when tools are passed. All curated models use the prompt-
+ *  engineered `<tool_call>` path instead. */
 let nativeIdsCache: Set<string> | null = null;
 async function supportsNativeToolCalls(modelId: string): Promise<boolean> {
   if (!nativeIdsCache) {
@@ -741,14 +737,10 @@ function stripThinkBlocks(text: string): string {
   return unclosed >= 0 ? completed.slice(0, unclosed).trimEnd() : completed.trimEnd();
 }
 
-/** Build a tool-use instruction block to append to the system prompt for
- *  models that don't accept the OpenAI `tools` request field. Kept terse —
- *  local models share their context window with the whole conversation,
- *  and the 70B is capped at 4K, so every token counts. We summarize each
- *  tool as one line:
- *      name(arg1: type[, ...]) — short description.
- *  Detailed JSON schema is omitted; the few tools whose arguments need
- *  call-time structure (paint, find) get a single-line example. */
+/** Build a compact tool-use instruction block to append to the system
+ *  prompt. Kept terse — the 70B's 4K context window can't spare much for
+ *  tool docs, so we summarize each tool as one line and rely on the model's
+ *  instruction following to emit correct <tool_call> markup. */
 function appendPromptToolDocs(existingSuffix: string, tools: ToolDefinition[]): string {
   if (tools.length === 0) return existingSuffix;
   const lines: string[] = [];
