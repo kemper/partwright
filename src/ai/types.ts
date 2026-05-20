@@ -7,15 +7,37 @@
 import type { LocalModelId } from './localModels';
 
 /** Anthropic = hosted Claude (BYO API key). Local = WebLLM running on the
- *  user's GPU. Only one is active per chat at a time; switching is a UI
- *  affordance, not a per-turn decision. */
-export type Provider = 'anthropic' | 'local';
+ *  user's GPU. OpenAI / Gemini = hosted, BYO key. Only one is active per
+ *  chat at a time; switching is a UI affordance, not a per-turn decision. */
+export type Provider = 'anthropic' | 'local' | 'openai' | 'gemini';
 
 export type AnthropicModelId = 'claude-haiku-4-5' | 'claude-sonnet-4-6' | 'claude-opus-4-7';
 
-/** Either an Anthropic model name or a WebLLM model_id. The shape is the
- *  same at the type level (a string) so callers can treat it opaquely. */
-export type ModelId = AnthropicModelId | LocalModelId;
+/** Curated OpenAI model ids the picker offers up front. Stored as a plain
+ *  string on ChatToggles so custom ids the user types in the settings
+ *  modal still fit. */
+export type OpenaiModelId =
+  | 'gpt-5'
+  | 'gpt-5-mini'
+  | 'gpt-5-nano'
+  | 'o3'
+  | 'gpt-4.1'
+  | 'gpt-4o'
+  | 'gpt-4o-mini';
+
+/** Curated Gemini model ids. Same custom-id story as OpenAI. */
+export type GeminiModelId =
+  | 'gemini-3-pro'
+  | 'gemini-3-flash'
+  | 'gemini-3-pro-image'
+  | 'gemini-2.5-pro'
+  | 'gemini-2.5-flash'
+  | 'gemini-2.5-flash-lite';
+
+/** Either an Anthropic model name or a WebLLM model_id or a hosted-provider
+ *  model id. The shape is the same at the type level (a string) so callers
+ *  can treat it opaquely. */
+export type ModelId = AnthropicModelId | LocalModelId | OpenaiModelId | GeminiModelId;
 
 /** Named bundles of toggle settings the user can flip between with a
  *  single click. 'custom' means none of the named bundles match — the
@@ -65,6 +87,11 @@ export interface ChatToggles {
    *  fit too. Present from the first time the user picks one in the
    *  local-model modal. */
   localModel: string | null;
+  /** OpenAI model id. Plain string so the user can type a custom id (e.g.
+   *  a dated snapshot) and have it stick across provider switches. */
+  openaiModel: string;
+  /** Google Gemini model id. Same custom-id story as OpenAI. */
+  geminiModel: string;
 }
 
 /** Source of truth for the iteration-cap dropdown. The toggle pill,
@@ -150,7 +177,12 @@ export interface ChatMessage {
 
 export type ChatBlock =
   | { type: 'text'; text: string }
-  | { type: 'image'; source: ImageSource };
+  | { type: 'image'; source: ImageSource }
+  /** A review produced by an alternate provider via the Review feature.
+   *  Rendered with a distinct bubble in the panel; serialized as plain
+   *  prefixed text when sent to any provider on the next turn (none have
+   *  a native concept for "feedback from another model"). */
+  | { type: 'review'; provider: Provider; model: string; text: string };
 
 export interface ImageSource {
   /** base64-encoded PNG/JPEG bytes (no data: prefix). */
@@ -199,6 +231,10 @@ export interface KeyRecord {
  *  cost meter, the request builder, and the toolbar chip all agree on which
  *  model is in play for the next turn. */
 export function activeModel(toggles: ChatToggles): ModelId | string | null {
-  if (toggles.provider === 'anthropic') return toggles.anthropicModel;
-  return toggles.localModel;
+  switch (toggles.provider) {
+    case 'anthropic': return toggles.anthropicModel;
+    case 'openai': return toggles.openaiModel;
+    case 'gemini': return toggles.geminiModel;
+    case 'local': return toggles.localModel;
+  }
 }

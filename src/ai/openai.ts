@@ -1,0 +1,354 @@
+// OpenAI provider: hand-rolled fetch against the Chat Completions API,
+// SSE streaming. No SDK dependency — keeps the bundle small and the
+// wire format inspectable.
+//
+// Mirrors src/ai/anthropic.ts's exported shape (validateKey, streamTurn,
+// summarize, resetClient) so chatLoop.ts can dispatch via a sibling
+// branch without learning a new interface.
+
+import type {
+  ChatBlock,
+  ChatMessage,
+  ImageSource,
+  PersistedToolCall,
+  TurnUsage,
+} from './types';
+import type { ToolDefinition } from './tools';
+import { readSseStream } from './sse';
+
+const API_URL = 'https://api.openai.com/v1/chat/completions';
+
+function authHeaders(apiKey: string): HeadersInit {
+  return {
+    'Authorization': `Bearer ${apiKey}`,
+    'Content-Type': 'application/json',
+  };
+}
+
+export function resetClient(): void {
+  // Stateless — each request opens its own fetch.
+}
+
+/** Validate a key by issuing the cheapest possible request. */
+export async function validateKey(apiKey: string): Promise<string | null> {
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: authHeaders(apiKey),
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        max_tokens: 1,
+        messages: [{ role: 'user', content: 'ok' }],
+      }),
+    });
+    if (res.ok) return null;
+    if (res.status === 401) return 'Invalid API key.';
+    const body = await res.text().catch(() => '');
+    const snippet = body.slice(0, 200) || 'no body';
+    return `${res.status}: ${snippet}`;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+export interface StreamCallbacks {
+  onText?: (delta: string) => void;
+  onToolStart?: (toolUseId: string, toolName: string) => void;
+}
+
+export interface StreamResult {
+  text: string;
+  toolCalls: PersistedToolCall[];
+  stopReason: string;
+  usage: TurnUsage;
+}
+
+export interface OpenaiRequestSpec {
+  apiKey: string;
+  model: string;
+  systemPrompt: string;
+  systemSuffix: string;
+  /** Canonical history; converted to OpenAI message shape internally. */
+  history: ChatMessage[];
+  tools: ToolDefinition[];
+  maxTokens?: number;
+}
+
+interface OpenAIToolDef {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+interface OpenAIMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content?: string | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>;
+  tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
+  tool_call_id?: string;
+  name?: string;
+}
+
+export async function streamTurn(
+  spec: OpenaiRequestSpec,
+  callbacks: StreamCallbacks = {},
+  signal?: AbortSignal,
+): Promise<StreamResult> {
+  const max_tokens = spec.maxTokens ?? 8192;
+
+  const tools: OpenAIToolDef[] = spec.tools.map(t => ({
+    type: 'function',
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema,
+    },
+  }));
+
+  // OpenAI takes the system as the first message in the messages array.
+  // We merge our long prompt + suffix because OpenAI doesn't have a
+  // separate cache breakpoint we can pin the suffix outside of.
+  const systemText = spec.systemSuffix.trim().length > 0
+    ? `${spec.systemPrompt}\n\n${spec.systemSuffix}`
+    : spec.systemPrompt;
+
+  const messages: OpenAIMessage[] = [{ role: 'system', content: systemText }];
+  messages.push(...buildOpenaiMessages(spec.history));
+
+  const body: Record<string, unknown> = {
+    model: spec.model,
+    max_tokens,
+    messages,
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+  if (tools.length > 0) body.tools = tools;
+
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: authHeaders(spec.apiKey),
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!res.ok) {
+    if (signal?.aborted) return abortedResult();
+    const errText = await res.text().catch(() => '');
+    throw new Error(`OpenAI ${res.status}: ${errText.slice(0, 400) || res.statusText}`);
+  }
+
+  return await consumeOpenaiStream(res, callbacks, signal);
+}
+
+interface AccumulatedToolCall {
+  id: string;
+  name: string;
+  argsText: string;
+  startedNotified: boolean;
+}
+
+async function consumeOpenaiStream(
+  res: Response,
+  callbacks: StreamCallbacks,
+  signal?: AbortSignal,
+): Promise<StreamResult> {
+  let collectedText = '';
+  const toolBuffers: Record<number, AccumulatedToolCall> = {};
+  let stopReason = 'unknown';
+  let usage: TurnUsage = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
+
+  try {
+    for await (const event of readSseStream(res, signal)) {
+      if (event === '[DONE]') break;
+      let payload: any;
+      try { payload = JSON.parse(event); } catch { continue; }
+      // Usage frame comes at the end when stream_options.include_usage=true.
+      if (payload.usage) {
+        usage = {
+          inputTokens: payload.usage.prompt_tokens ?? 0,
+          outputTokens: payload.usage.completion_tokens ?? 0,
+          cacheCreationInputTokens: 0,
+          // OpenAI exposes cached tokens via prompt_tokens_details.cached_tokens
+          // — treat as cache reads so cost.ts can discount them.
+          cacheReadInputTokens: payload.usage.prompt_tokens_details?.cached_tokens ?? 0,
+        };
+      }
+      const choice = payload.choices?.[0];
+      if (!choice) continue;
+      const delta = choice.delta ?? {};
+      if (typeof delta.content === 'string' && delta.content.length > 0) {
+        collectedText += delta.content;
+        callbacks.onText?.(delta.content);
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          const idx: number = tc.index ?? 0;
+          let buf = toolBuffers[idx];
+          if (!buf) {
+            buf = { id: tc.id ?? `call_${idx}`, name: '', argsText: '', startedNotified: false };
+            toolBuffers[idx] = buf;
+          }
+          if (typeof tc.id === 'string' && tc.id.length > 0) buf.id = tc.id;
+          if (tc.function?.name && !buf.name) buf.name = tc.function.name;
+          if (typeof tc.function?.arguments === 'string') buf.argsText += tc.function.arguments;
+          if (!buf.startedNotified && buf.name) {
+            buf.startedNotified = true;
+            callbacks.onToolStart?.(buf.id, buf.name);
+          }
+        }
+      }
+      if (choice.finish_reason) stopReason = mapStopReason(choice.finish_reason);
+    }
+  } catch (err) {
+    if (signal?.aborted) return { text: collectedText, toolCalls: [], stopReason: 'aborted', usage };
+    throw err;
+  }
+
+  const toolCalls: PersistedToolCall[] = Object.values(toolBuffers).map(buf => ({
+    id: buf.id,
+    name: buf.name,
+    input: parseToolArgs(buf.argsText),
+  }));
+
+  return { text: collectedText, toolCalls, stopReason, usage };
+}
+
+function abortedResult(): StreamResult {
+  return {
+    text: '',
+    toolCalls: [],
+    stopReason: 'aborted',
+    usage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+  };
+}
+
+function parseToolArgs(argsText: string): Record<string, unknown> {
+  if (!argsText) return {};
+  try {
+    const parsed = JSON.parse(argsText);
+    return typeof parsed === 'object' && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function mapStopReason(reason: string): string {
+  if (reason === 'tool_calls') return 'tool_use';
+  if (reason === 'stop') return 'end_turn';
+  if (reason === 'length') return 'max_tokens';
+  if (reason === 'content_filter') return 'refusal';
+  return reason;
+}
+
+function buildOpenaiMessages(history: ChatMessage[]): OpenAIMessage[] {
+  const out: OpenAIMessage[] = [];
+  for (const msg of history) {
+    if (msg.role === 'assistant') {
+      const text = collectAssistantText(msg.blocks);
+      const calls = msg.toolCalls ?? [];
+      const am: OpenAIMessage = { role: 'assistant' };
+      if (text.length > 0) am.content = text;
+      if (calls.length > 0) {
+        am.tool_calls = calls.map(tc => ({
+          id: tc.id,
+          type: 'function',
+          function: { name: tc.name, arguments: JSON.stringify(tc.input ?? {}) },
+        }));
+      }
+      if (am.content || am.tool_calls) out.push(am);
+    } else {
+      // Tool results come BEFORE any new user text per OpenAI's rules.
+      for (const r of msg.toolResults ?? []) {
+        out.push({ role: 'tool', tool_call_id: r.toolUseId, content: r.content });
+        if (r.image) {
+          // OpenAI's tool role doesn't accept image blocks directly, so we
+          // surface the image on a user message right after.
+          out.push({
+            role: 'user',
+            content: [
+              { type: 'text', text: `(tool result image for ${r.toolUseId})` },
+              { type: 'image_url', image_url: { url: imageToDataUrl(r.image) } },
+            ],
+          });
+        }
+      }
+      const content = buildUserContent(msg.blocks);
+      if (content !== null) out.push({ role: 'user', content });
+    }
+  }
+  return out;
+}
+
+function collectAssistantText(blocks: ChatBlock[]): string {
+  let text = '';
+  for (const b of blocks) {
+    if (b.type === 'text') text += b.text;
+  }
+  return text;
+}
+
+function buildUserContent(blocks: ChatBlock[]): OpenAIMessage['content'] | null {
+  // String content is preferred when there are no images — keeps the
+  // payload small and matches the most common case.
+  const hasImage = blocks.some(b => b.type === 'image');
+  const items: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [];
+  let plainText = '';
+  for (const b of blocks) {
+    if (b.type === 'text' && b.text.trim().length > 0) {
+      if (hasImage) items.push({ type: 'text', text: b.text });
+      else plainText += b.text;
+    } else if (b.type === 'image') {
+      items.push({ type: 'image_url', image_url: { url: imageToDataUrl(b.source) } });
+    } else if (b.type === 'review') {
+      // Reviews from other providers serialize to text so any model can
+      // see them. Tag stays so the receiving model can tell it apart.
+      const reviewText = `[Review from ${b.provider}/${b.model}]\n${b.text}`;
+      if (hasImage) items.push({ type: 'text', text: reviewText });
+      else plainText += reviewText;
+    }
+  }
+  if (!hasImage) return plainText.length > 0 ? plainText : null;
+  return items.length > 0 ? items : null;
+}
+
+function imageToDataUrl(source: ImageSource): string {
+  return `data:${source.mediaType};base64,${source.data}`;
+}
+
+/** Single-shot non-streaming call used by compaction + review. */
+export async function summarize(
+  apiKey: string,
+  model: string,
+  system: string,
+  user: string,
+  maxTokens = 4096,
+): Promise<{ text: string; usage: TurnUsage }> {
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: authHeaders(apiKey),
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text().catch(() => '');
+    throw new Error(`OpenAI ${res.status}: ${err.slice(0, 400) || res.statusText}`);
+  }
+  const data = await res.json();
+  const text: string = data.choices?.[0]?.message?.content ?? '';
+  const usage: TurnUsage = {
+    inputTokens: data.usage?.prompt_tokens ?? 0,
+    outputTokens: data.usage?.completion_tokens ?? 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: data.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+  };
+  return { text, usage };
+}
+

@@ -5,6 +5,8 @@
 
 import { deleteKey, getKey } from '../ai/db';
 import { resetClient } from '../ai/anthropic';
+import { resetClient as resetOpenaiClient } from '../ai/openai';
+import { resetClient as resetGeminiClient } from '../ai/gemini';
 import { formatUsd } from '../ai/cost';
 import { showAiKeyModal } from './aiKeyModal';
 import { showAiLocalModal } from './aiLocalModal';
@@ -17,8 +19,13 @@ import {
   setLocalContext,
   setProvider,
   setAnthropicModel,
+  setOpenaiModel,
+  setGeminiModel,
+  providerLabel,
   AUTO_COMPACT_OPTIONS,
   ANTHROPIC_MODEL_OPTIONS,
+  OPENAI_MODEL_OPTIONS,
+  GEMINI_MODEL_OPTIONS,
 } from '../ai/settings';
 import { effectiveContextCeiling, resolveLocalModel, isModelLoaded, unloadActiveLocalModel } from '../ai/local';
 import { getCachedCeiling } from '../ai/modelMetadata';
@@ -94,6 +101,8 @@ function buildTabBar(viewedTab: Provider, onSwitch: (tab: Provider) => void): HT
   };
 
   mkTab('anthropic', 'Anthropic (cloud)');
+  mkTab('openai', 'OpenAI (cloud)');
+  mkTab('gemini', 'Gemini (cloud)');
   mkTab('local', 'Local (WebGPU)');
   return wrap;
 }
@@ -116,6 +125,14 @@ async function renderTabContent(
     container.appendChild(buildAnthropicModelSection(cb));
     container.appendChild(makeDivider());
     container.appendChild(buildSystemPromptSection('anthropic', close, cb));
+  } else if (viewedTab === 'openai' || viewedTab === 'gemini') {
+    container.appendChild(buildHostedIntro(viewedTab));
+    container.appendChild(makeDivider());
+    await buildHostedKeySection(viewedTab, close, footer, container, cb);
+    container.appendChild(makeDivider());
+    container.appendChild(buildHostedModelSection(viewedTab, cb));
+    container.appendChild(makeDivider());
+    container.appendChild(buildSystemPromptSection(viewedTab, close, cb));
   } else {
     container.appendChild(buildLocalIntro());
     container.appendChild(makeDivider());
@@ -135,7 +152,7 @@ function buildEnableRow(viewedTab: Provider, cb: AiSettingsCallbacks, rerender: 
   const settings = loadSettings();
   const activeProvider = settings.toggles.provider;
   const isActive = activeProvider === viewedTab;
-  const otherLabel = viewedTab === 'anthropic' ? 'Anthropic' : 'Local';
+  const otherLabel = providerLabel(viewedTab);
 
   const wrap = document.createElement('div');
   wrap.className = 'flex items-center justify-between gap-3 rounded border px-3 py-2 ' + (
@@ -242,6 +259,217 @@ function buildAnthropicModelSection(cb: AiSettingsCallbacks): HTMLElement {
   renderButtons();
   wrap.appendChild(seg);
   return wrap;
+}
+
+// === OpenAI / Gemini tabs ===
+// These two hosted providers share one set of builders (they differ only
+// in copy, model list, and which setter/resetClient to call). Anthropic
+// keeps its own bespoke builders above because its key section predates
+// this and the smoke test anchors on its exact "Connect Anthropic API"
+// string.
+
+type HostedProvider = 'openai' | 'gemini';
+
+function hostedConsoleUrl(provider: HostedProvider): { url: string; label: string } {
+  return provider === 'openai'
+    ? { url: 'https://platform.openai.com/api-keys', label: 'platform.openai.com' }
+    : { url: 'https://aistudio.google.com/app/apikey', label: 'aistudio.google.com' };
+}
+
+function buildHostedIntro(provider: HostedProvider): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col gap-2';
+  const head = document.createElement('div');
+  head.className = 'text-xs text-zinc-400';
+  head.textContent = 'About';
+  wrap.appendChild(head);
+  const body = document.createElement('p');
+  body.className = 'text-[11px] text-zinc-300 leading-snug';
+  body.innerHTML = provider === 'openai'
+    ? 'Sends chat turns to <strong>OpenAI\'s hosted GPT / o-series</strong> models. Vision support and the full <code>ai.md</code> system prompt; each turn is billed to your OpenAI account. The API key is stored only in this browser and never sent to a Partwright server.'
+    : 'Sends chat turns to <strong>Google\'s hosted Gemini</strong> models. Vision support and the full <code>ai.md</code> system prompt; each turn is billed to your Google AI account. The API key is stored only in this browser and never sent to a Partwright server.';
+  wrap.appendChild(body);
+  return wrap;
+}
+
+/** Default-model picker for a hosted provider. Mirrors
+ *  buildAnthropicModelSection but reads/writes the provider's own model
+ *  field and includes a custom-id input for dated snapshots / brand-new
+ *  releases not in the curated list. */
+function buildHostedModelSection(provider: HostedProvider, cb: AiSettingsCallbacks): HTMLElement {
+  const options = provider === 'openai' ? OPENAI_MODEL_OPTIONS : GEMINI_MODEL_OPTIONS;
+  const setModel = provider === 'openai' ? setOpenaiModel : setGeminiModel;
+  const currentOf = () => provider === 'openai' ? loadSettings().toggles.openaiModel : loadSettings().toggles.geminiModel;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col gap-2';
+  const head = document.createElement('div');
+  head.className = 'text-xs text-zinc-400';
+  head.textContent = 'Default model';
+  wrap.appendChild(head);
+
+  const desc = document.createElement('div');
+  desc.className = 'text-[11px] text-zinc-400 leading-snug';
+  desc.innerHTML = 'Model used for new turns. You can also switch on the fly from the dropdown in the chat header.';
+  wrap.appendChild(desc);
+
+  const seg = document.createElement('div');
+  seg.className = 'flex flex-wrap gap-1';
+  const renderButtons = () => {
+    seg.replaceChildren();
+    const current = currentOf();
+    let matched = false;
+    for (const opt of options) {
+      const b = document.createElement('button');
+      const active = current === opt.id;
+      if (active) matched = true;
+      b.className = active
+        ? 'px-2 py-1 rounded text-[11px] bg-zinc-700 text-zinc-100 border border-zinc-600'
+        : 'px-2 py-1 rounded text-[11px] text-zinc-300 border border-zinc-700 hover:bg-zinc-700/60';
+      b.textContent = opt.label;
+      b.addEventListener('click', () => {
+        saveSettings(setModel(loadSettings(), opt.id));
+        cb.onChange();
+        renderButtons();
+      });
+      seg.appendChild(b);
+    }
+    // Surface a custom id (one not in the curated list) as a selected pill.
+    if (!matched && current) {
+      const b = document.createElement('button');
+      b.className = 'px-2 py-1 rounded text-[11px] bg-zinc-700 text-zinc-100 border border-zinc-600';
+      b.textContent = `${current} (custom)`;
+      seg.appendChild(b);
+    }
+  };
+  renderButtons();
+  wrap.appendChild(seg);
+
+  // Custom-id input.
+  const customRow = document.createElement('div');
+  customRow.className = 'flex items-center gap-2';
+  const customInput = document.createElement('input');
+  customInput.type = 'text';
+  customInput.placeholder = provider === 'openai' ? 'custom id, e.g. gpt-5-2026-09-15' : 'custom id, e.g. gemini-3-pro-preview-12-2025';
+  customInput.className = 'flex-1 px-2 py-1 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-[11px] font-mono';
+  customRow.appendChild(customInput);
+  const setBtn = document.createElement('button');
+  setBtn.className = 'px-2 py-1 rounded text-[11px] bg-zinc-700 text-zinc-100 hover:bg-zinc-600';
+  setBtn.textContent = 'Use id';
+  setBtn.addEventListener('click', () => {
+    const id = customInput.value.trim();
+    if (!id) return;
+    saveSettings(setModel(loadSettings(), id));
+    customInput.value = '';
+    cb.onChange();
+    renderButtons();
+  });
+  customRow.appendChild(setBtn);
+  wrap.appendChild(customRow);
+
+  const customHint = document.createElement('p');
+  customHint.className = 'text-[10px] text-zinc-500';
+  customHint.textContent = 'Pricing for unknown ids falls back to median-tier rates — the cost meter will be approximate.';
+  wrap.appendChild(customHint);
+  return wrap;
+}
+
+/** Key status + connect/replace/disconnect for a hosted provider. Mirrors
+ *  buildAnthropicKeySection; actions live in the modal footer like the
+ *  Anthropic tab. */
+async function buildHostedKeySection(
+  provider: HostedProvider,
+  close: () => void,
+  footer: HTMLElement,
+  body: HTMLElement,
+  cb: AiSettingsCallbacks,
+): Promise<void> {
+  const label = providerLabel(provider);
+  const reset = provider === 'openai' ? resetOpenaiClient : resetGeminiClient;
+  const console = hostedConsoleUrl(provider);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col gap-2';
+  const head = document.createElement('div');
+  head.className = 'text-xs text-zinc-400';
+  head.textContent = `${label} key`;
+  wrap.appendChild(head);
+
+  const key = await getKey(provider);
+  if (!key) {
+    const empty = document.createElement('p');
+    empty.className = 'text-[11px] text-zinc-400';
+    empty.textContent = `No ${label} key connected.`;
+    wrap.appendChild(empty);
+    const linkRow = document.createElement('p');
+    linkRow.className = 'text-[11px]';
+    const a = document.createElement('a');
+    a.href = console.url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.className = 'text-blue-400 hover:text-blue-300 underline';
+    a.textContent = `Get a key at ${console.label} →`;
+    linkRow.appendChild(a);
+    wrap.appendChild(linkRow);
+    const connectBtn = document.createElement('button');
+    connectBtn.className = 'self-start px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white';
+    connectBtn.textContent = `Connect ${label}`;
+    connectBtn.addEventListener('click', () => {
+      close();
+      void showAiKeyModal({ provider, onConnected: cb.onChange });
+    });
+    wrap.appendChild(connectBtn);
+    body.appendChild(wrap);
+    return;
+  }
+
+  const last4 = key.apiKey.slice(-4);
+  const row = (rl: string, value: string) => {
+    const r = document.createElement('div');
+    r.className = 'flex justify-between gap-3 text-xs';
+    const l = document.createElement('span');
+    l.className = 'text-zinc-400';
+    l.textContent = rl;
+    const v = document.createElement('span');
+    v.className = 'text-zinc-100 font-mono';
+    v.textContent = value;
+    r.appendChild(l);
+    r.appendChild(v);
+    return r;
+  };
+  wrap.appendChild(row('Key', `…${last4}`));
+  wrap.appendChild(row('Connected', new Date(key.createdAt).toLocaleString()));
+  wrap.appendChild(row('Last used', new Date(key.lastUsed).toLocaleString()));
+  wrap.appendChild(row('Input tokens', key.totalInputTokens.toLocaleString()));
+  wrap.appendChild(row('Output tokens', key.totalOutputTokens.toLocaleString()));
+  wrap.appendChild(row('Spent (estimated)', formatUsd(key.totalCostUsd)));
+
+  const note = document.createElement('p');
+  note.className = 'text-[11px] text-zinc-500 leading-snug';
+  note.textContent = 'Estimated spend uses public list prices and may differ slightly from your provider invoice.';
+  wrap.appendChild(note);
+  body.appendChild(wrap);
+
+  const replaceBtn = document.createElement('button');
+  replaceBtn.className = 'px-3 py-1.5 rounded text-xs text-zinc-200 bg-zinc-700 hover:bg-zinc-600';
+  replaceBtn.textContent = 'Replace key';
+  replaceBtn.addEventListener('click', () => {
+    close();
+    void showAiKeyModal({ provider, onConnected: cb.onChange });
+  });
+  footer.appendChild(replaceBtn);
+
+  const disconnectBtn = document.createElement('button');
+  disconnectBtn.className = 'px-3 py-1.5 rounded text-xs text-red-300 bg-red-900/40 hover:bg-red-800/60';
+  disconnectBtn.textContent = 'Disconnect';
+  disconnectBtn.addEventListener('click', async () => {
+    if (!confirm(`Disconnect ${label}? Your chat history is kept; only the key is removed.`)) return;
+    await deleteKey(provider);
+    reset();
+    close();
+    cb.onChange();
+  });
+  footer.appendChild(disconnectBtn);
 }
 
 function formatK(n: number): string {

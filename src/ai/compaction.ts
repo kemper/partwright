@@ -6,8 +6,21 @@
 // window.partwright.addSessionNote so they survive future compactions.
 
 import { summarize } from './anthropic';
+import { summarize as summarizeOpenai } from './openai';
+import { summarize as summarizeGemini } from './gemini';
 import { summarizeLocal } from './local';
-import type { ChatMessage, ChatToggles } from './types';
+import { recordEvent } from './diagnostics';
+import { turnCostUsd } from './cost';
+import { getKey } from './db';
+import type { ChatMessage, ChatToggles, Provider } from './types';
+
+/** Per-provider cheap model used for compaction. The big models cost too
+ *  much for a summarize call we'll fire after most longer sessions. */
+const COMPACTION_MODEL: Record<Exclude<Provider, 'local'>, string> = {
+  anthropic: 'claude-haiku-4-5',
+  openai: 'gpt-4o-mini',
+  gemini: 'gemini-2.5-flash-lite',
+};
 
 export interface CompactionProposal {
   /** Plain-text summary of the conversation up to the kept tail. */
@@ -91,22 +104,55 @@ export async function proposeCompaction(
   const prompt = `Compact this transcript:\n\n${transcript}`;
 
   let text: string;
-  let usage: { inputTokens: number; outputTokens: number };
+  let usage: { inputTokens: number; outputTokens: number; cacheCreationInputTokens: number; cacheReadInputTokens: number };
   let costUsd: number;
+  let compactionModel: string;
 
-  if (ctx.toggles.provider === 'anthropic') {
-    if (!ctx.apiKey) throw new Error('Anthropic API key required for compaction.');
-    const r = await summarize(ctx.apiKey, 'claude-haiku-4-5', COMPACTION_SYSTEM, prompt);
-    text = r.text;
-    usage = { inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens };
-    costUsd = (usage.inputTokens * 1.0 + usage.outputTokens * 5.0) / 1_000_000;
-  } else {
-    if (!ctx.toggles.localModel) throw new Error('Local model required for compaction.');
-    const r = await summarizeLocal(ctx.toggles.localModel, COMPACTION_SYSTEM, prompt);
-    text = r.text;
-    usage = { inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens };
-    costUsd = 0;
+  const t0 = performance.now();
+  try {
+    if (ctx.toggles.provider === 'local') {
+      if (!ctx.toggles.localModel) throw new Error('Local model required for compaction.');
+      compactionModel = ctx.toggles.localModel;
+      const r = await summarizeLocal(ctx.toggles.localModel, COMPACTION_SYSTEM, prompt);
+      text = r.text;
+      usage = { inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
+      costUsd = 0;
+    } else {
+      const apiKey = ctx.apiKey ?? (await getKey(ctx.toggles.provider))?.apiKey;
+      if (!apiKey) throw new Error(`${ctx.toggles.provider} API key required for compaction.`);
+      compactionModel = COMPACTION_MODEL[ctx.toggles.provider];
+      const summarizer = ctx.toggles.provider === 'anthropic' ? summarize
+        : ctx.toggles.provider === 'openai' ? summarizeOpenai
+        : summarizeGemini;
+      const r = await summarizer(apiKey, compactionModel, COMPACTION_SYSTEM, prompt);
+      text = r.text;
+      usage = r.usage;
+      costUsd = turnCostUsd(ctx.toggles.provider, compactionModel, usage);
+    }
+  } catch (err) {
+    recordEvent({
+      provider: ctx.toggles.provider,
+      model: ctx.toggles.provider === 'local' ? (ctx.toggles.localModel ?? '(no model)') : COMPACTION_MODEL[ctx.toggles.provider],
+      kind: 'summarize',
+      durationMs: Math.round(performance.now() - t0),
+      status: 'error',
+      errorMessage: err instanceof Error ? err.message : String(err),
+      requestSummary: `${drop.length} drop / ${keep.length} keep`,
+    });
+    throw err;
   }
+  recordEvent({
+    provider: ctx.toggles.provider,
+    model: compactionModel,
+    kind: 'summarize',
+    durationMs: Math.round(performance.now() - t0),
+    status: 'ok',
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cachedTokens: usage.cacheReadInputTokens,
+    textPreview: text.slice(0, 200),
+    requestSummary: `${drop.length} drop / ${keep.length} keep`,
+  });
 
   const parsed = parseProposal(text);
   return {

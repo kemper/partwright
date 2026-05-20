@@ -50,8 +50,13 @@ function renderMessage(msg: ChatMessage): string {
     if (block.type === 'text') {
       const text = block.text.trim();
       if (text) parts.push(text);
-    } else {
+    } else if (block.type === 'image') {
       parts.push(`_[image${block.source.label ? `: ${block.source.label}` : ''}]_`);
+    } else {
+      // Cross-provider review block: render the feedback with its
+      // attribution so the transcript captures the second opinion.
+      const reviewText = block.text.trim();
+      parts.push(`**👁 review — ${block.provider}/${block.model}**${reviewText ? `\n\n${reviewText}` : ''}`);
     }
   }
 

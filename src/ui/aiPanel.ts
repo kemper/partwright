@@ -7,12 +7,14 @@ import { runTurn, totalCost, totalTokensEstimate, estimateCachedPrefixTokens } f
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, setAnthropicModel, setToggles, ANTHROPIC_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setToggles, providerLabel, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
 import { showAiSettingsModal } from './aiSettingsModal';
+import { showAiReviewModal } from './aiReviewModal';
+import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiLocalModal } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { showCompactConfirmModal } from './aiCompactModal';
@@ -21,7 +23,7 @@ import { putAttachment } from '../ai/attachments';
 import { exportChatMarkdown } from '../export/chat';
 import { getState } from '../storage/sessionManager';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
-import { activeModel, SPEND_CAP_USD, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type TurnOutcomeReason } from '../ai/types';
+import { activeModel, SPEND_CAP_USD, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { errorLog } from '../diagnostics/errorLog';
 
 interface PanelState {
@@ -280,6 +282,11 @@ function buildDrawer(): void {
   header.appendChild(promptChipEl);
   renderPromptChip();
 
+  const reviewBtn = createIconButton('Review', '👁');
+  reviewBtn.title = 'Get a second opinion: have a different provider/model review the current session and post feedback.';
+  reviewBtn.addEventListener('click', () => { void launchReview(); });
+  header.appendChild(reviewBtn);
+
   const compactBtn = createIconButton('Compact', '⤓ Compact');
   compactBtn.title = 'Compact the conversation: summarize older turns and promote insights to session notes.';
   compactBtn.addEventListener('click', () => { void runCompact(); });
@@ -294,6 +301,11 @@ function buildDrawer(): void {
   clearBtn.title = 'Clear the chat history for the current session. The conversation is removed from your browser; saved versions and notes are untouched.';
   clearBtn.addEventListener('click', () => { void clearCurrentChat(); });
   header.appendChild(clearBtn);
+
+  const diagBtn = createIconButton('AI Call Log', '🩺');
+  diagBtn.title = 'AI Call Log — recent provider API calls: request shape, stop reason, token usage, full error messages. Open this when a turn ends with a confusing status.';
+  diagBtn.addEventListener('click', () => { showAiDiagnosticsModal(); });
+  header.appendChild(diagBtn);
 
   const settingsBtn = createIconButton('Settings', '⚙');
   settingsBtn.title = 'AI settings: provider, key, lifetime usage.';
@@ -600,19 +612,52 @@ function renderModelPicker(): void {
   modelPickerEl.replaceChildren();
   const settings = loadSettings();
 
-  if (settings.toggles.provider === 'anthropic') {
+  // Hosted providers (anthropic / openai / gemini) render a dropdown of
+  // curated models; a custom id stashed in settings is appended as
+  // "<id> (custom)" so it stays selectable. Local renders the picker chip.
+  const hostedConfig: Record<'anthropic' | 'openai' | 'gemini', { options: { id: string; label: string }[]; current: string; title: string; setModel: (id: string) => AiSettings }> = {
+    anthropic: {
+      options: ANTHROPIC_MODEL_OPTIONS,
+      current: settings.toggles.anthropicModel,
+      title: 'Anthropic model (hosted).',
+      setModel: (id) => setAnthropicModel(loadSettings(), id as AnthropicModelId),
+    },
+    openai: {
+      options: OPENAI_MODEL_OPTIONS,
+      current: settings.toggles.openaiModel,
+      title: 'OpenAI model (hosted). Custom ids: AI Settings → OpenAI.',
+      setModel: (id) => setOpenaiModel(loadSettings(), id),
+    },
+    gemini: {
+      options: GEMINI_MODEL_OPTIONS,
+      current: settings.toggles.geminiModel,
+      title: 'Google Gemini model (hosted). Custom ids: AI Settings → Gemini.',
+      setModel: (id) => setGeminiModel(loadSettings(), id),
+    },
+  };
+
+  if (settings.toggles.provider in hostedConfig) {
+    const cfg = hostedConfig[settings.toggles.provider as keyof typeof hostedConfig];
     const sel = document.createElement('select');
     sel.className = 'h-6 px-2 rounded text-[11px] bg-zinc-800 border border-zinc-700 text-zinc-200 focus:outline-none';
-    sel.title = 'Anthropic model (hosted).';
-    for (const opt of ANTHROPIC_MODEL_OPTIONS) {
+    sel.title = cfg.title;
+    let foundCurrent = false;
+    for (const opt of cfg.options) {
       const o = document.createElement('option');
       o.value = opt.id;
       o.textContent = opt.label;
       sel.appendChild(o);
+      if (opt.id === cfg.current) foundCurrent = true;
     }
-    sel.value = settings.toggles.anthropicModel;
+    if (!foundCurrent && cfg.current) {
+      const custom = document.createElement('option');
+      custom.value = cfg.current;
+      custom.textContent = `${cfg.current} (custom)`;
+      sel.appendChild(custom);
+    }
+    sel.value = cfg.current;
     sel.addEventListener('change', () => {
-      saveSettings(setAnthropicModel(loadSettings(), sel.value as AnthropicModelId));
+      saveSettings(cfg.setModel(sel.value));
       renderToggleStrip();
       renderCostMeter();
     });
@@ -810,7 +855,7 @@ function renderCostMeter(): void {
   // observed on the post-turn meter rather than predicted here — they're
   // too variable to estimate up front without lying to the user.
   const model = activeModel(settings.toggles);
-  const turnEst = model ? estimateTurnCostUsd(model, cachedPrefix, 500) : 0;
+  const turnEst = model ? estimateTurnCostUsd(settings.toggles.provider, model, cachedPrefix, 500) : 0;
 
   // Color the context bar by % of model context window. Local models cap
   // around 4-16K tokens so the bar fills much faster than on Anthropic —
@@ -902,7 +947,13 @@ function panelStatusUpdate(): void {
     panelStatusEl.appendChild(hint);
     return;
   }
-  void getKey('anthropic').then(key => {
+  // Hosted providers (anthropic / openai / gemini) all need a key. The
+  // banner is provider-aware: Anthropic keeps the literal "Connect
+  // Anthropic API" label (the stale-model smoke test anchors on it),
+  // OpenAI/Gemini show their own labels. The "or run a local model"
+  // fallback is offered in every case.
+  const activeProvider = settings.toggles.provider as Exclude<Provider, 'local'>;
+  void getKey(activeProvider).then(key => {
     if (!panelStatusEl) return;
     if (!key) {
       panelStatusEl.classList.remove('hidden', 'text-emerald-400');
@@ -911,9 +962,11 @@ function panelStatusUpdate(): void {
       panelStatusEl.appendChild(document.createTextNode('Not connected. '));
       const link = document.createElement('button');
       link.className = 'underline text-amber-200 hover:text-amber-100';
-      link.textContent = 'Connect Anthropic API';
+      link.textContent = activeProvider === 'anthropic'
+        ? 'Connect Anthropic API'
+        : `Connect ${providerLabel(activeProvider)}`;
       link.addEventListener('click', () => {
-        void showAiKeyModal({ onConnected: () => { panelStatusUpdate(); } });
+        void showAiKeyModal({ provider: activeProvider, onConnected: () => { panelStatusUpdate(); } });
       });
       panelStatusEl.appendChild(link);
       panelStatusEl.appendChild(document.createTextNode(' or '));
@@ -1079,6 +1132,8 @@ function renderMessage(msg: ChatMessage): HTMLElement {
       }
     } else if (b.type === 'image') {
       wrap.appendChild(renderImageBubble(b.source));
+    } else if (b.type === 'review') {
+      wrap.appendChild(renderReviewBubble(b.provider, b.model, b.text));
     }
   }
 
@@ -1237,6 +1292,46 @@ function renderImageBubble(source: ImageSource): HTMLElement {
     wrap.appendChild(label);
   }
   return wrap;
+}
+
+/** Distinct purple-bordered bubble so the user (and any agent reading the
+ *  panel later) sees this came from a SECOND model via the Review
+ *  feature, not the active one. */
+function renderReviewBubble(provider: Provider, model: string, text: string): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'max-w-[90%] rounded-lg border border-purple-700/60 bg-purple-900/15 overflow-hidden';
+  const header = document.createElement('div');
+  header.className = 'px-3 py-1 text-[10px] uppercase tracking-wider text-purple-300 bg-purple-900/30 border-b border-purple-800/40 flex items-center gap-1.5';
+  const icon = document.createElement('span');
+  icon.textContent = '👁';
+  const headerText = document.createElement('span');
+  headerText.textContent = `Review by ${providerLabel(provider)} · ${model}`;
+  header.appendChild(icon);
+  header.appendChild(headerText);
+  wrap.appendChild(header);
+  const body = document.createElement('div');
+  body.className = 'px-3 py-2 text-sm text-zinc-100 whitespace-pre-wrap leading-snug';
+  body.textContent = text;
+  wrap.appendChild(body);
+  return wrap;
+}
+
+async function launchReview(): Promise<void> {
+  if (state.inFlight) {
+    setTransientStatus('Wait for the current turn to finish before asking for a review.');
+    return;
+  }
+  const activeProvider = loadSettings().toggles.provider;
+  showAiReviewModal({
+    activeProvider,
+    sessionId: state.sessionId,
+    onReviewPosted: (msg) => {
+      state.history.push(msg);
+      renderTranscript();
+      renderCostMeter();
+      setTransientStatus('Review posted to the chat.');
+    },
+  });
 }
 
 function renderToolCallChip(name: string, input: Record<string, unknown>): HTMLElement {
@@ -1481,10 +1576,12 @@ async function sendMessage(): Promise<void> {
 
   const settings = loadSettings();
   let apiKey: string | undefined;
-  if (settings.toggles.provider === 'anthropic') {
-    const key = await getKey('anthropic');
+  if (settings.toggles.provider !== 'local') {
+    // Hosted provider (anthropic / openai / gemini): need a stored key.
+    const provider = settings.toggles.provider;
+    const key = await getKey(provider);
     if (!key) {
-      void showAiKeyModal({ onConnected: () => { panelStatusUpdate(); void sendMessage(); } });
+      void showAiKeyModal({ provider, onConnected: () => { panelStatusUpdate(); void sendMessage(); } });
       return;
     }
     apiKey = key.apiKey;
@@ -1994,8 +2091,8 @@ async function maybeAutoCompact(): Promise<void> {
   }
 
   let apiKey: string | undefined;
-  if (settings.toggles.provider === 'anthropic') {
-    const key = await getKey('anthropic');
+  if (settings.toggles.provider !== 'local') {
+    const key = await getKey(settings.toggles.provider);
     if (!key) return;
     apiKey = key.apiKey;
   } else if (!settings.toggles.localModel) {
@@ -2045,14 +2142,15 @@ async function runCompact(): Promise<void> {
   }
   const settings = loadSettings();
   let apiKey: string | undefined;
-  if (settings.toggles.provider === 'anthropic') {
-    const key = await getKey('anthropic');
+  if (settings.toggles.provider !== 'local') {
+    const provider = settings.toggles.provider;
+    const key = await getKey(provider);
     if (!key) {
-      void showAiKeyModal({ onConnected: () => panelStatusUpdate() });
+      void showAiKeyModal({ provider, onConnected: () => panelStatusUpdate() });
       return;
     }
     apiKey = key.apiKey;
-    setTransientStatus('Asking Haiku to summarize...');
+    setTransientStatus('Summarizing the conversation…');
   } else {
     if (!settings.toggles.localModel) {
       void showAiLocalModal({ onChange: () => panelStatusUpdate() });

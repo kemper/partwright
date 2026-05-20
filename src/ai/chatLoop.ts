@@ -3,19 +3,32 @@
 //
 // Dispatch by provider:
 //   anthropic → src/ai/anthropic.ts   (hosted Claude over HTTPS)
+//   openai    → src/ai/openai.ts      (hosted GPT over HTTPS)
+//   gemini    → src/ai/gemini.ts      (hosted Gemini over HTTPS)
 //   local     → src/ai/local.ts       (WebLLM, in-browser WebGPU)
-// Both providers return the same `StreamResult` shape; chatLoop is
+// All providers return the same `StreamResult` shape; chatLoop is
 // otherwise agnostic to which one is in play.
 
 import { generateId } from '../storage/db';
 import { streamTurn, buildApiMessages, type StreamCallbacks as AnthropicStreamCallbacks } from './anthropic';
 import { streamLocalTurn, resolveLocalModel, type StreamCallbacks as LocalStreamCallbacks } from './local';
-import { recordUsage, putMessages } from './db';
+import { streamTurn as streamTurnOpenai, type StreamCallbacks as OpenaiStreamCallbacks } from './openai';
+import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCallbacks } from './gemini';
+import { getKey, recordUsage, putMessages } from './db';
+import { recordEvent } from './diagnostics';
 import { buildToolList, executeTool } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
-import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type TurnOutcomeReason } from './types';
+import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
+
+/** Look up the stored API key for a hosted provider. Returns null when
+ *  no key is stored; chatLoop turns that into an "open AI Settings to
+ *  connect" error so the panel can guide the user. */
+async function getApiKey(provider: Provider): Promise<string | null> {
+  const record = await getKey(provider);
+  return record?.apiKey ?? null;
+}
 
 /** Yield to the browser between heavy synchronous work blocks so the
  *  page stays responsive. requestAnimationFrame lets the browser paint
@@ -169,7 +182,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     callbacks.onAssistantStart?.(assistantId);
 
     callbacks.onProgress?.({ phase: 'thinking', detail: 'Waiting for first token...' });
-    const streamCallbacks: AnthropicStreamCallbacks & LocalStreamCallbacks = {
+    const streamCallbacks: AnthropicStreamCallbacks & LocalStreamCallbacks & OpenaiStreamCallbacks & GeminiStreamCallbacks = {
       onText: delta => {
         // Beat on EVERY delta so the stall watchdog sees a healthy stream
         // and the elapsed-seconds counter doesn't keep climbing while text
@@ -186,6 +199,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     };
 
     const apiCallStart = Date.now();
+    const requestSummary = `${workingHistory.length} msg(s), ${tools.length} tool def(s), vision=${toggles.vision.views ? 'on' : 'off'}`;
     let result;
     try {
       if (toggles.provider === 'anthropic') {
@@ -197,6 +211,30 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           systemPrompt,
           systemSuffix: toggleSuffix(toggles),
           apiMessages,
+          tools,
+        }, streamCallbacks, signal);
+      } else if (toggles.provider === 'openai') {
+        // sendMessage passes the active provider's key as `apiKey`; fall
+        // back to a direct lookup for callers that don't (e.g. retries).
+        const openaiKey = apiKey ?? await getApiKey('openai');
+        if (!openaiKey) throw new Error('OpenAI API key is required. Open AI Settings → OpenAI to connect one.');
+        result = await streamTurnOpenai({
+          apiKey: openaiKey,
+          model: toggles.openaiModel,
+          systemPrompt,
+          systemSuffix: toggleSuffix(toggles),
+          history: workingHistory,
+          tools,
+        }, streamCallbacks, signal);
+      } else if (toggles.provider === 'gemini') {
+        const geminiKey = apiKey ?? await getApiKey('gemini');
+        if (!geminiKey) throw new Error('Google Gemini API key is required. Open AI Settings → Gemini to connect one.');
+        result = await streamTurnGemini({
+          apiKey: geminiKey,
+          model: toggles.geminiModel,
+          systemPrompt,
+          systemSuffix: toggleSuffix(toggles),
+          history: workingHistory,
           tools,
         }, streamCallbacks, signal);
       } else {
@@ -214,8 +252,20 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     } catch (err) {
       // Surface the error to the caller; runTurn returns normally and the
       // caller's awaited post-cleanup runs the history reload. The
-      // in-memory "Thinking…" placeholder gets wiped there.
-      callbacks.onError?.(err instanceof Error ? err : new Error(String(err)));
+      // in-memory "Thinking…" placeholder gets wiped there. The per-call
+      // diagnostics buffer records the full message (the panel's onError
+      // also routes it into the app-wide errorLog with source='ai').
+      const message = err instanceof Error ? err.message : String(err);
+      recordEvent({
+        provider: toggles.provider,
+        model: model ?? '(no model)',
+        kind: 'streamTurn',
+        durationMs: Date.now() - apiCallStart,
+        status: 'error',
+        errorMessage: message,
+        requestSummary,
+      });
+      callbacks.onError?.(err instanceof Error ? err : new Error(message));
       callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'error', iterations: iter + 1 });
       return workingHistory;
     }
@@ -223,7 +273,22 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     const durationMs = Date.now() - apiCallStart;
     turnApiTimeMs += durationMs;
 
-    const turnCost = turnCostUsd(model, result.usage);
+    recordEvent({
+      provider: toggles.provider,
+      model: model ?? '(no model)',
+      kind: 'streamTurn',
+      durationMs,
+      status: result.stopReason === 'aborted' ? 'aborted' : 'ok',
+      stopReason: result.stopReason,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.outputTokens,
+      cachedTokens: result.usage.cacheReadInputTokens,
+      toolCallCount: result.toolCalls.length,
+      textPreview: result.text.slice(0, 200),
+      requestSummary,
+    });
+
+    const turnCost = turnCostUsd(toggles.provider, model ?? '', result.usage);
     totalCostUsd += turnCost;
 
     const aborted = result.stopReason === 'aborted' || signal?.aborted === true;
@@ -246,8 +311,10 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     workingHistory = [...workingHistory, assistantMsg];
     callbacks.onAssistantPersisted?.(assistantMsg);
 
-    if (toggles.provider === 'anthropic') {
-      void recordUsage('anthropic', result.usage.inputTokens + result.usage.cacheReadInputTokens + result.usage.cacheCreationInputTokens, result.usage.outputTokens, turnCost);
+    // Bill the active provider's stored key record. Local turns are free
+    // at the API level so we skip them.
+    if (toggles.provider !== 'local') {
+      void recordUsage(toggles.provider, result.usage.inputTokens + result.usage.cacheReadInputTokens + result.usage.cacheCreationInputTokens, result.usage.outputTokens, turnCost);
     }
 
     // Local-provider truncation: max_tokens or unclosed tool-call. We

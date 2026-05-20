@@ -80,7 +80,11 @@ export interface StreamResult {
 
 export interface RequestSpec {
   apiKey: string;
-  model: ModelId;
+  /** Anthropic model id. Typed loose (ModelId | string) so review and
+   *  compaction can pass any provider's model id through the shared
+   *  call shape without a cast — runtime only ever sends a claude- id
+   *  here. */
+  model: ModelId | string;
   systemPrompt: string;
   /** Per-toggle suffix appended after the cached system prompt. Kept on a
    *  separate cache breakpoint so it doesn't poison the main cache. */
@@ -362,7 +366,7 @@ function imageBlockToApi(source: ImageSource): Anthropic.ImageBlockParam {
  *  cheap, on Haiku) where we just want the summary text. */
 export async function summarize(
   apiKey: string,
-  model: ModelId,
+  model: ModelId | string,
   system: string,
   user: string,
   maxTokens = 4096,

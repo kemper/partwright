@@ -1,30 +1,83 @@
-// First-run modal: collect the user's Anthropic API key, validate it,
-// persist it to IndexedDB. Closes on success; reopens on error with the
-// reason inline.
+// API-key entry modal for a hosted provider. Validates the key, persists
+// it to IndexedDB, and closes on success; reopens on error with the
+// reason inline. Parameterized by provider (Anthropic / OpenAI / Gemini)
+// via a PROVIDER_UI map — Anthropic keeps its exact original copy and
+// title so the smoke test stays valid.
 
 import { putKey, getKey } from '../ai/db';
 import { resetClient, validateKey } from '../ai/anthropic';
+import { validateKey as validateOpenaiKey, resetClient as resetOpenaiClient } from '../ai/openai';
+import { validateKey as validateGeminiKey, resetClient as resetGeminiClient } from '../ai/gemini';
+import { recordEvent } from '../ai/diagnostics';
+import { loadSettings, saveSettings, setProvider } from '../ai/settings';
 import { createModalShell } from './modalShell';
 import { showAiLocalModal } from './aiLocalModal';
+import type { Provider } from '../ai/types';
 
 export interface AiKeyModalCallbacks {
   onConnected: () => void;
+  /** Which hosted provider this modal connects. Defaults to 'anthropic'
+   *  so existing one-arg call sites keep working. */
+  provider?: Provider;
 }
 
+interface ProviderUi {
+  title: string;
+  intro: string;
+  consoleUrl: string;
+  consoleLabel: string;
+  placeholder: string;
+  validate: (key: string) => Promise<string | null>;
+  reset: () => void;
+}
+
+const PROVIDER_UI: Record<Exclude<Provider, 'local'>, ProviderUi> = {
+  anthropic: {
+    title: 'Connect Anthropic API',
+    intro: 'Partwright AI uses your Anthropic API key. The key is stored only in this browser — not on any Partwright server.',
+    consoleUrl: 'https://console.anthropic.com/settings/keys',
+    consoleLabel: 'Get a key at console.anthropic.com →',
+    placeholder: 'sk-ant-...',
+    validate: validateKey,
+    reset: resetClient,
+  },
+  openai: {
+    title: 'Connect OpenAI',
+    intro: 'Partwright AI uses your OpenAI API key. The key is stored only in this browser — not on any Partwright server.',
+    consoleUrl: 'https://platform.openai.com/api-keys',
+    consoleLabel: 'Get a key at platform.openai.com →',
+    placeholder: 'sk-proj-...',
+    validate: validateOpenaiKey,
+    reset: resetOpenaiClient,
+  },
+  gemini: {
+    title: 'Connect Google Gemini',
+    intro: 'Partwright AI uses your Google Gemini API key. The key is stored only in this browser — not on any Partwright server.',
+    consoleUrl: 'https://aistudio.google.com/app/apikey',
+    consoleLabel: 'Get a key at aistudio.google.com →',
+    placeholder: 'AIza...',
+    validate: validateGeminiKey,
+    reset: resetGeminiClient,
+  },
+};
+
 export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
-  const shell = createModalShell({ title: 'Connect Anthropic API' });
+  const providerId: Provider = cb.provider ?? 'anthropic';
+  if (providerId === 'local') return; // local uses no key
+  const ui = PROVIDER_UI[providerId];
+  const shell = createModalShell({ title: ui.title });
 
   const intro = document.createElement('p');
   intro.className = 'text-zinc-300 leading-snug';
-  intro.textContent = 'Partwright AI uses your Anthropic API key. The key is stored only in this browser — not on any Partwright server.';
+  intro.textContent = ui.intro;
   shell.body.appendChild(intro);
 
   const link = document.createElement('a');
-  link.href = 'https://console.anthropic.com/settings/keys';
+  link.href = ui.consoleUrl;
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
   link.className = 'text-blue-400 hover:text-blue-300 underline text-xs';
-  link.textContent = 'Get a key at console.anthropic.com →';
+  link.textContent = ui.consoleLabel;
   shell.body.appendChild(link);
 
   const altRow = document.createElement('div');
@@ -57,7 +110,7 @@ export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
 
   const input = document.createElement('input');
   input.type = 'password';
-  input.placeholder = 'sk-ant-...';
+  input.placeholder = ui.placeholder;
   input.className = 'w-full px-3 py-2 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-sm font-mono placeholder:text-zinc-600 focus:outline-none focus:border-blue-500';
   input.spellcheck = false;
   input.autocomplete = 'off';
@@ -97,7 +150,17 @@ export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
     status.textContent = 'Sending a 1-token test request to verify the key...';
     errorBox.classList.add('hidden');
 
-    const error = await validateKey(key);
+    const t0 = performance.now();
+    const error = await ui.validate(key);
+    recordEvent({
+      provider: providerId,
+      model: '(validate)',
+      kind: 'validateKey',
+      durationMs: Math.round(performance.now() - t0),
+      status: error ? 'error' : 'ok',
+      errorMessage: error ?? undefined,
+      requestSummary: '1-token ping',
+    });
     if (error) {
       showError(error);
       connectBtn.disabled = false;
@@ -106,9 +169,9 @@ export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
       return;
     }
 
-    const existing = await getKey('anthropic');
+    const existing = await getKey(providerId);
     await putKey({
-      provider: 'anthropic',
+      provider: providerId,
       apiKey: key,
       createdAt: existing?.createdAt ?? Date.now(),
       lastUsed: Date.now(),
@@ -116,7 +179,14 @@ export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
       totalOutputTokens: existing?.totalOutputTokens ?? 0,
       totalCostUsd: existing?.totalCostUsd ?? 0,
     });
-    resetClient();
+    ui.reset();
+    // Promote the just-connected provider to active so the key "just
+    // works" without an extra dropdown trip. Per-provider model
+    // selections are preserved by setProvider.
+    const cur = loadSettings();
+    if (cur.toggles.provider !== providerId) {
+      saveSettings(setProvider(cur, providerId));
+    }
     shell.close();
     cb.onConnected();
   }
