@@ -2,7 +2,7 @@ import type { MeshResult } from './types';
 import type { Engine, Language, ValidateResult } from './engines/types';
 import { DEFAULT_LANGUAGE, isLanguage } from './engines/types';
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
-import { openscadEngine, runScadAsync, validateScadAsync } from './engines/openscad';
+import { openscadEngine } from './engines/openscad';
 import { getActiveImports } from '../import/importedMesh';
 import { getDefaultCircularSegments } from './qualitySettings';
 

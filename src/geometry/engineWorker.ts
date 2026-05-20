@@ -47,7 +47,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments } = msg as {
+    const { callId, code, lang, imports, circularSegments } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
@@ -95,7 +95,8 @@ self.onmessage = async (event: MessageEvent) => {
         if (mesh.runIndex)      transfer.push(mesh.runIndex.buffer);
         if (mesh.runOriginalID) transfer.push(mesh.runOriginalID.buffer);
 
-        self.postMessage(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (self as any).postMessage(
           { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries },
           transfer,
         );
@@ -121,7 +122,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── validate ───────────────────────────────────────────────────────────
   if (msg.type === 'validate') {
-    const { callId, code, lang } = msg as {
+    const { callId, code, lang } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;

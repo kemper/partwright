@@ -38,7 +38,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
 
   // ── tool_call: execute on main thread where window.partwright lives ───
   if (msg.type === 'tool_call') {
-    const { callId, name, input } = msg as {
+    const { callId, name, input } = msg as unknown as {
       callId: string;
       name: string;
       input: Record<string, unknown>;
@@ -52,7 +52,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
   if (msg.type === 'callback') {
     const cb = currentCallbacks;
     if (!cb) return;
-    const { name, args } = msg as { name: string; args: unknown[] };
+    const { name, args } = msg as unknown as { name: string; args: unknown[] };
     switch (name) {
       case 'onUserPersisted':      cb.onUserPersisted?.(args[0] as ChatMessage); break;
       case 'onAssistantStart':     cb.onAssistantStart?.(args[0] as string); break;

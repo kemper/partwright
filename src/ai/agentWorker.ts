@@ -16,7 +16,7 @@
 //   { type: 'error',      message: string }
 
 import { runTurn, type RunTurnInput, type RunTurnCallbacks } from './chatLoop';
-import type { ChatBlock, ChatMessage } from './types';
+import type { ChatBlock } from './types';
 import type { ToolExecResult } from './tools';
 
 /** Serialisable subset of RunTurnInput sent from the main thread.

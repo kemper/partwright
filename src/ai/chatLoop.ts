@@ -36,9 +36,9 @@ function yieldToBrowser(): Promise<void> {
   }
   if (document.hidden) return Promise.resolve();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (typeof scheduler !== 'undefined' && typeof (scheduler as any).yield === 'function') {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (scheduler as any).yield() as Promise<void>;
+  const sched = (globalThis as any).scheduler;
+  if (typeof sched !== 'undefined' && typeof sched.yield === 'function') {
+    return sched.yield() as Promise<void>;
   }
   return new Promise<void>(resolve => {
     const { port1, port2 } = new MessageChannel();
