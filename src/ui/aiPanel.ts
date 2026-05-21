@@ -235,6 +235,25 @@ async function loadHistoryForCurrentSession(): Promise<void> {
   updateRewindButtons();
 }
 
+/** Re-home every chat message persisted under `from` into session `to`,
+ *  preserving order (seq is untouched; the store is keyed by message id, so a
+ *  re-`put` just moves the sessionId index entry). Used after the model spins
+ *  up a session mid-conversation: the lead-up chat lives in the global bucket
+ *  and would otherwise be orphaned there — looking "lost" when the session is
+ *  later reopened. Skips the move when `to` already has chat so two
+ *  conversations are never merged (e.g. the model opened a pre-existing
+ *  session). Returns true when messages were actually moved. */
+async function migrateChatBucket(from: string, to: string): Promise<boolean> {
+  if (from === to) return false;
+  const existing = await listMessages(to);
+  if (existing.length > 0) return false;
+  const messages = await listMessages(from);
+  if (messages.length === 0) return false;
+  for (const m of messages) m.sessionId = to;
+  await putMessages(messages);
+  return true;
+}
+
 // === DOM construction ===
 
 function buildDrawer(): void {
@@ -1574,6 +1593,10 @@ function formatTurnOutcome(o: TurnOutcome): string {
 async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatToggles, userBlocks: ChatBlock[]): Promise<void> {
   let attempt = 0;
   let lastTurnOutcome: TurnOutcome | null = null;
+  // Bucket the conversation lives in as this turn begins. If the model creates
+  // a session mid-turn the active bucket changes out from under us, so we
+  // remember the starting bucket and re-home the chat once the turn settles.
+  let turnStartBucket = state.sessionId;
   while (true) {
     attempt++;
     const controller = new AbortController();
@@ -1715,6 +1738,23 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
     state.inFlightController = null;
     setSendButtonMode('send');
     updateRewindButtons();
+
+    // Bug fix — re-home chat orphaned by a mid-turn session switch. When a
+    // conversation starts in the global bucket (no session open) and the model
+    // then creates a session — directly via createSession or indirectly via a
+    // runAndSave auto-create — every message of this turn was stamped with the
+    // starting bucket (chatLoop captures sessionId once at turn start). Without
+    // this, the lead-up turns stay under '__global__' and disappear from the
+    // session when it is reopened. Only fires on a global → fresh-session move.
+    if (turnStartBucket === GLOBAL_CHAT_BUCKET && state.sessionId !== turnStartBucket) {
+      const moved = await migrateChatBucket(turnStartBucket, state.sessionId);
+      if (moved) {
+        await loadHistoryForCurrentSession();
+        renderTranscript();
+        renderCostMeter();
+      }
+      turnStartBucket = state.sessionId;
+    }
 
     // Surface a sticky completion banner so the user knows the turn
     // actually ended and why — better than a silent hideProgress that
