@@ -1,5 +1,7 @@
 // Help page — explains what Partwright is and how to use it
 
+import { getShortcutDocs, IS_MAC, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './shortcutDefs';
+
 export interface HelpCallbacks {
   onBack: () => void;
   onStartTour: () => void;
@@ -231,14 +233,26 @@ export function createHelpPage(
     {
       id: 'shortcuts',
       heading: 'Keyboard shortcuts',
-      body:
-        '<ul class="list-disc list-inside mt-2 space-y-1 text-zinc-400">' +
-        '<li><strong class="text-zinc-300">Escape</strong> — Close the open dropdown, modal, paint or annotate panel, cross-section overlay, or exit the guided tour.</li>' +
-        '<li><strong class="text-zinc-300">Enter</strong> / <strong class="text-zinc-300">→</strong> — Next step during the guided tour.</li>' +
-        '<li><strong class="text-zinc-300">←</strong> — Previous step during the guided tour.</li>' +
-        '<li><strong class="text-zinc-300">Ctrl/Cmd + Enter</strong> — Save the current notes textarea.</li>' +
-        '<li><strong class="text-zinc-300">Enter</strong> in input modals (e.g. Connect AI, Import Preview) — Confirm.</li>' +
-        '</ul>',
+      body: (() => {
+        const kbd = (keys: string) => `<strong class="text-zinc-300">${keys}</strong>`;
+        const modEnter = IS_MAC ? `${MOD_LABEL} Enter` : `${MOD_LABEL} + Enter`;
+        const formatKeys = IS_MAC ? `${SHIFT_LABEL} ${ALT_LABEL} F` : `${SHIFT_LABEL} + ${ALT_LABEL} + F`;
+        const owned = getShortcutDocs()
+          .map(s => `<li>${kbd(s.keys)} — ${s.description}</li>`)
+          .join('');
+        return (
+          '<p class="text-zinc-400">Shortcuts adapt to your operating system (⌘ on macOS, Ctrl elsewhere).</p>' +
+          '<ul class="list-disc list-inside mt-2 space-y-1 text-zinc-400">' +
+          owned +
+          `<li>${kbd(formatKeys)} — Format the code in the editor.</li>` +
+          `<li>${kbd('Escape')} — Close the open dropdown, modal, paint or annotate panel, cross-section overlay, or exit the guided tour.</li>` +
+          `<li>${kbd('Enter')} / ${kbd('→')} — Next step during the guided tour.</li>` +
+          `<li>${kbd('←')} — Previous step during the guided tour.</li>` +
+          `<li>${kbd(modEnter)} — Save the current notes textarea.</li>` +
+          `<li>${kbd('Enter')} in input modals (e.g. Connect AI, Import Preview) — Confirm.</li>` +
+          '</ul>'
+        );
+      })(),
     },
   ];
 
