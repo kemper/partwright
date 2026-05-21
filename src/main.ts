@@ -1613,11 +1613,23 @@ async function main() {
     updateDocumentTitle({ page: 'editor' });
   }
 
-  // Clean up empty auto-created sessions when leaving the page
-  window.addEventListener('beforeunload', () => {
+  // Clean up empty auto-created sessions when leaving the page, and warn
+  // when there are painted color regions that haven't been saved yet.
+  window.addEventListener('beforeunload', (event) => {
     const state = getState();
     if (state.session && state.versionCount === 0) {
       deleteIfEmpty(state.session.id);
+    }
+    // Warn if in-memory color regions exist but the current persisted version
+    // doesn't have them — i.e. the user painted but hasn't hit Save yet.
+    if (hasColorRegions()) {
+      const persistedRegions = (state.currentVersion?.geometryData as Record<string, unknown> | null | undefined)?.colorRegions;
+      const alreadySaved = Array.isArray(persistedRegions) && (persistedRegions as unknown[]).length > 0;
+      if (!alreadySaved) {
+        event.preventDefault();
+        // returnValue is required for cross-browser compat (Chrome ignores just preventDefault)
+        event.returnValue = '';
+      }
     }
   });
 
