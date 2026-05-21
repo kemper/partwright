@@ -614,7 +614,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'copyColorsFromVersion',
-    description: 'Transfer the color regions from a prior version onto the CURRENT geometry in one call — instead of repainting region by region after a geometry change. Each region\'s geometry-relative descriptor (box / slab / byLabel / coplanar / connectedFromSeed) is re-resolved against the current mesh; regions that no longer resolve (a dropped label, or raw-triangle regions on changed topology) are skipped and listed in `dropped`. Replaces any colors currently on the model. In-memory like any paint op — call runAndSave or saveVersion afterward to persist. (forkVersion already carries colors automatically; reach for this after a runAndSave when you rebuilt geometry that matches an earlier painted version.) Returns {source, carried, dropped}.',
+    description: 'Transfer the color regions from a prior version onto the CURRENT geometry in one call — instead of repainting region by region after a geometry change. Each region\'s geometry-relative descriptor (box / slab / byLabel / coplanar / connectedFromSeed) is re-resolved against the current mesh; regions that no longer resolve (a dropped label, or raw-triangle regions on changed topology) are skipped and listed in `dropped`. Replaces any colors currently on the model. In-memory like any paint op — your next runAndSave serializes the current regions, so they persist with it. (forkVersion already carries colors automatically; reach for this after a runAndSave when you rebuilt geometry that matches an earlier painted version.) Returns {source, carried, dropped}.',
     input_schema: {
       type: 'object',
       properties: {
@@ -674,7 +674,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'modifyAndTest',
-    description: 'Apply string substitution(s) to the current editor code, run the result, and return stats — WITHOUT saving a version or changing the editor. Use to test a tweak before committing. Provide either a single `find`/`replace` pair or a `patches` array for multiple simultaneous substitutions. Returns {modifiedCode, stats, passed?, failures?}.',
+    description: 'Apply string substitution(s) to the current editor code, run the result, and return stats — WITHOUT saving a version or changing the editor. Use to test a tweak before committing. Provide either a single `find`/`replace` pair or a `patches` array for multiple simultaneous substitutions; each `find` must match exactly once or the call errors (no silent no-op). Returns {modifiedCode, codeDiff: {changed, added, removed, diff}, stats, passed?, failures?} — check codeDiff.changed to confirm the tweak actually altered the code.',
     input_schema: {
       type: 'object',
       properties: {

@@ -519,7 +519,7 @@ If your rotated geometry looks mirrored, negate the angle. This burned 10+ minut
 
 ### Painting locks the editor — `clearColors()` to iterate
 
-Once any region exists, the editor goes read-only and `runAndSave` is rejected. To change the geometry mid-session, call `partwright.clearColors()` first, *then* run new code. To preserve a colored version while iterating, call `forkVersion(...)` instead — it loads, transforms, validates, and saves a child without touching the parent, and re-applies the parent's colors to the new geometry (pass `carryColors: false` for an uncolored child).
+Once any region exists, the editor's Run button is disabled in the UI (re-running would change the triangle indices the colors were painted against). The programmatic `runAndSave` is *not* blocked, but re-running new geometry with colors still in memory leaves them resolved against the old triangles. So to change the geometry mid-session, call `partwright.clearColors()` first, *then* run new code — or use `forkVersion(...)`, which re-resolves the parent's colors onto the new geometry by descriptor (pass `carryColors: false` for an uncolored child).
 
 ### Verify before you commit
 
@@ -674,8 +674,8 @@ const r = await partwright.copyColorsFromVersion({ index: 7 }); // the painted v
 // r.dropped = [names] whose descriptor no longer matches — repaint those
 ```
 
-This is in-memory like any paint op — call `runAndSave` or `saveVersion` afterward to persist. (You
-don't need it after `forkVersion`, which already carries colors.)
+This is in-memory like any paint op — your next `runAndSave` serializes the current regions, so they
+persist with it. (You don't need this after `forkVersion`, which already carries colors.)
 
 ### Modify and test
 
@@ -686,10 +686,18 @@ const r = await partwright.modifyAndTest(
   { isManifold: true, maxComponents: 1 }
 );
 // r.modifiedCode = the transformed code string
+// r.codeDiff     = { changed, added, removed, diff } — confirm the tweak landed.
+//                  changed:false means your transform matched nothing (a no-op);
+//                  the stats below would then describe the UNCHANGED code.
 // r.stats        = geometry stats of the modified code
 // r.passed       = true/false (only if assertions given)
 // r.failures     = [...] (only if failed)
 ```
+
+> Prefer the AI tool's `find`/`replace` (or `patches`) form over a bare `code => code.replace(...)`
+> transform: a string `replace` whose needle is absent returns the code **unchanged with no error**,
+> so the tweak silently no-ops. The `find`/`replace` form is rejected when the needle doesn't match
+> exactly once. Either way, check `codeDiff.changed` before trusting the result.
 
 ### Multi-query current geometry
 

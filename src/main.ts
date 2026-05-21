@@ -2459,8 +2459,7 @@ async function main() {
 
       const parent = await peekVersion(parsed.value);
       if (!parent) {
-        const kind = typeof target === 'number' ? 'index' : 'id';
-        return { error: `No version found with ${kind} "${target}" in the active session. Use listVersions() to see valid ${kind}s.` };
+        return { error: `No version found with ${parsed.kind} "${parsed.value}" in the active session. Use listVersions() to see valid ${parsed.kind}s.` };
       }
 
       let newCode: string;
@@ -2506,6 +2505,14 @@ async function main() {
         clearRegions();
       }
 
+      // Carry the PARENT's annotations onto the fork. saveVersion snapshots
+      // the in-memory annotation store, which still holds the previously
+      // active version's strokes — without this the fork would silently
+      // inherit the wrong annotations (or drop them). Mirrors how
+      // loadVersion swaps annotations to the version it loads.
+      applyVersionAnnotations(parent);
+      const annotationsCarried = (parent.annotations?.length ?? 0) > 0;
+
       const thumbnail = await captureThumbnail();
       const version = await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes);
 
@@ -2523,6 +2530,7 @@ async function main() {
         diff,
         codeDiff: computeCodeDiff(parent.code, newCode),
         ...(parentColors.length > 0 ? { colors: colorReport } : {}),
+        ...(annotationsCarried ? { annotationsCarried: parent.annotations?.length ?? 0 } : {}),
         galleryUrl: getGalleryUrl(),
         ...(forkWarnings.length > 0 ? { warnings: forkWarnings } : {}),
       };
@@ -2561,8 +2569,8 @@ async function main() {
         carried: report.carried,
         dropped: report.dropped,
         note: report.dropped.length > 0
-          ? 'Some regions did not resolve on the current geometry and were skipped — repaint those, or check the labels/topology still match. Call runAndSave or saveVersion to persist the rest.'
-          : 'All regions transferred. Call runAndSave or saveVersion to persist.',
+          ? 'Some regions did not resolve on the current geometry and were skipped — repaint those, or check the labels/topology still match. The rest are in-memory; your next runAndSave will persist them.'
+          : 'All regions transferred. They are in-memory like any paint op; your next runAndSave will persist them.',
       };
     },
 
@@ -2924,20 +2932,26 @@ async function main() {
         return { error: `Patch function failed: ${e instanceof Error ? e.message : String(e)}`, stats: null };
       }
 
+      // Surface what the patch actually changed. A transform that matched
+      // nothing returns the code unchanged (codeDiff.changed === false) —
+      // the cheapest way to catch a no-op tweak before reading stats that
+      // look identical for the wrong reason.
+      const codeDiff = computeCodeDiff(currentCode, modifiedCode);
+
       const { geometryData, manifold } = await executeIsolated(modifiedCode);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       try { (manifold as any)?.delete?.(); } catch { /* ignore */ }
 
       if (geometryData.status === 'error') {
-        return { error: geometryData.error, stats: geometryData, ...(assertions ? { passed: false, failures: [geometryData.error as string] } : {}) };
+        return { error: geometryData.error, modifiedCode, codeDiff, stats: geometryData, ...(assertions ? { passed: false, failures: [geometryData.error as string] } : {}) };
       }
 
       if (assertions) {
         const failures = checkAssertions(geometryData, assertions);
-        return { stats: geometryData, passed: failures.length === 0, failures: failures.length > 0 ? failures : undefined };
+        return { modifiedCode, codeDiff, stats: geometryData, passed: failures.length === 0, failures: failures.length > 0 ? failures : undefined };
       }
 
-      return { stats: geometryData };
+      return { modifiedCode, codeDiff, stats: geometryData };
     },
 
     /** Query multiple properties of the current geometry in a single call. Avoids multiple round-trips. */
@@ -4745,7 +4759,7 @@ async function main() {
         'runIsolated':     { signature: 'await runIsolated(code) -- Test without side effects -> {geometryData, thumbnail}', docs: '/ai.md#testing-without-side-effects' },
         'runAndAssert':    { signature: 'await runAndAssert(code, assertions) -- Validate geometry -> {passed, failures?, stats}', docs: '/ai.md#assertions----structured-validation' },
         'runAndExplain':   { signature: 'await runAndExplain(code) -- Debug disconnected components -> {stats, components[], hints[]}', docs: '/ai.md#debugging-disconnected-components' },
-        'modifyAndTest':   { signature: 'await modifyAndTest(patchFn, assertions?) -- Modify + test without committing', docs: '/ai.md#modify-and-test' },
+        'modifyAndTest':   { signature: 'await modifyAndTest(patchFn, assertions?) -- Modify + test without committing -> {modifiedCode, codeDiff, stats, passed?}', docs: '/ai.md#modify-and-test' },
         'query':           { signature: 'query({sliceAt?, decompose?, boundingBox?}) -- Multi-query current geometry', docs: '/ai.md#multi-query-current-geometry' },
         // Sessions
         'createSession':   { signature: 'await createSession(name?) -- Create session -> {id, url, galleryUrl}', docs: '/ai.md#console-api--windowpartwright' },

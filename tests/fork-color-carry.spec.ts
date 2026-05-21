@@ -91,6 +91,73 @@ test.describe('forkVersion color carry-over + codeDiff', () => {
     expect(fork.codeDiff.changed).toBe(false);
     expect(fork.codeDiff.diff).toBeNull();
   });
+
+  test('forked colors persist to the saved version and survive a reload', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+
+    const result = await page.evaluate(async (code) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.createSession('fork-persist-reload');
+      const v1 = await pw.runAndSave(code, 'base');
+      pw.paintByLabel({ label: 'body', color: [0.8, 0.2, 0.2] });
+      const painted = await pw.saveVersion('painted');
+      const fork = await pw.forkVersion(
+        { index: painted.index },
+        (c: string) => c.replace('size = 20', 'size = 28'),
+        'bigger',
+      );
+      // Navigate away, then reload the fork from storage — proves the colors
+      // were written to the saved geometryData blob, not just left in memory.
+      await pw.loadVersion({ index: v1.version.index });
+      await pw.loadVersion({ index: fork.version.index });
+      return { regionsAfterReload: pw.listRegions() };
+    }, LABELLED_CUBE);
+
+    expect(result.regionsAfterReload).toHaveLength(1);
+    expect(result.regionsAfterReload[0].triangles).toBeGreaterThan(0);
+  });
+});
+
+test.describe('modifyAndTest return', () => {
+  test('returns modifiedCode and a codeDiff that flags a real change', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.createSession('modify-and-test-return');
+      await pw.runAndSave('const { Manifold } = api; const h = 10; return Manifold.cube([5, 5, h], true);', 'base');
+      return pw.modifyAndTest((c: string) => c.replace('h = 10', 'h = 20'));
+    });
+
+    expect(r.error).toBeUndefined();
+    expect(typeof r.modifiedCode).toBe('string');
+    expect(r.modifiedCode).toContain('h = 20');
+    expect(r.codeDiff.changed).toBe(true);
+    expect(r.codeDiff.added).toBeGreaterThan(0);
+    expect(r.stats).toBeTruthy();
+  });
+
+  test('codeDiff.changed is false when the transform matches nothing', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.createSession('modify-and-test-noop');
+      await pw.runAndSave('const { Manifold } = api; return Manifold.cube([5, 5, 10], true);', 'base');
+      // A console transformFn that matches nothing returns the code unchanged;
+      // codeDiff is what makes that visible (the stats would look "fine").
+      return pw.modifyAndTest((c: string) => c.replace('DOES_NOT_EXIST', 'x'));
+    });
+
+    expect(r.codeDiff.changed).toBe(false);
+    expect(typeof r.modifiedCode).toBe('string');
+  });
 });
 
 test.describe('copyColorsFromVersion', () => {
