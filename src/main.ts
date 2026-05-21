@@ -1015,7 +1015,8 @@ async function main() {
     }),
     onLoadVersion: async (code: string) => {
       setValue(code);
-      await runCodeSync(code);
+      const applied = await runCodeSync(code);
+      if (!applied) return;
       const loadedVersion = getState().currentVersion;
       if (loadedVersion) {
         rehydrateColorRegions(loadedVersion.geometryData);
@@ -1062,7 +1063,8 @@ async function main() {
   // Init gallery
   createGalleryView(galleryContainer, async (code: string) => {
     setValue(code);
-    await runCodeSync(code);
+    const applied = await runCodeSync(code);
+    if (!applied) return;
     // Rehydrate color regions and annotations from the loaded version
     const loadedVersion = getState().currentVersion;
     if (loadedVersion) {
@@ -1134,6 +1136,12 @@ async function main() {
   // Declared early so async callbacks (e.g. runCodeSync triggered during
   // initial syncEditorFromURL) don't hit a TDZ error before this point.
   let _running = false;
+  // Monotonically-increasing counter that identifies the most-recently-started
+  // runCodeSync call. When a Worker result arrives, it's only applied if its
+  // generation matches the current value — any lower value means a newer
+  // version-switch or run has already superseded it, and applying the stale
+  // result would overwrite the wrong mesh/manifold/colour state.
+  let _runGeneration = 0;
 
   async function ensureEditorReady() {
     if (!editorReady) await editorReadyPromise;
@@ -1155,7 +1163,10 @@ async function main() {
     }
     setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
     setValue(version.code);
-    await runCodeSync(version.code);
+    const applied = await runCodeSync(version.code);
+    // If a newer version-switch arrived while we were compiling, our result
+    // was discarded — don't rehydrate colours or annotations for the wrong version.
+    if (!applied) return;
     rehydrateColorRegions(version.geometryData);
     applyVersionAnnotations(version);
     const sessionImages = await getImagesFromSession();
@@ -5495,14 +5506,25 @@ async function main() {
     clearEditorErrorPanel(editorErrorPanel);
 
     requestAnimationFrame(async () => {
+      // An explicit runCodeSync (e.g. version-load, partwright.run) may have
+      // started synchronously before this RAF fired — if so, skip to avoid
+      // racing: the explicit call owns _runGeneration and will apply results.
+      if (_running) return;
       await runCodeSync(src);
     });
   }
 
-  async function runCodeSync(src: string) {
+  async function runCodeSync(src: string): Promise<boolean> {
+    const myGen = ++_runGeneration;
     _running = true;
     const t0 = performance.now();
     const result = await executeCodeAsync(src);
+
+    // A newer runCodeSync was dispatched while we were awaiting the Worker.
+    // Discard this result to prevent a stale version from overwriting the
+    // current mesh, manifold, or colour regions.
+    if (myGen !== _runGeneration) return false;
+
     const elapsed = Math.round(performance.now() - t0);
     _running = false;
 
@@ -5521,7 +5543,7 @@ async function main() {
         executionTimeMs: elapsed,
         codeHash: simpleHash(src),
       });
-      return;
+      return false;
     }
 
     if (result.mesh) {
@@ -5559,6 +5581,7 @@ async function main() {
       syncClipSliderBounds();
       setStatus(statusBar, 'ready', 'Ready');
     }
+    return true;
   }
 
   function initClipControls(container: HTMLElement) {
