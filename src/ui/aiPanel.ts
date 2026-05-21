@@ -1929,9 +1929,10 @@ function renderProgress(): void {
   }
 }
 
-/** Display a sticky completion / failure status for ~6s after a turn
- *  ends. Replaces the silent hideProgress() that left users wondering
- *  whether the model finished, errored, or just stopped speaking. */
+/** Display a completion / failure status after a turn ends. The status
+ *  remains visible until the next turn starts (showProgress overwrites
+ *  the 'final' phase), so the user always sees the outcome of the most
+ *  recent turn instead of a banner that vanishes on a timer. */
 function showProgressFinal(detail: string): void {
   if (!progressEl) return;
   progressState.phase = 'final';
@@ -1943,11 +1944,6 @@ function showProgressFinal(detail: string): void {
     clearInterval(progressTickerId);
     progressTickerId = null;
   }
-  window.setTimeout(() => {
-    if (progressState.phase === 'final' && progressState.detail === detail) {
-      hideProgress();
-    }
-  }, 6000);
 }
 
 function triggerStallRetry(): void {
