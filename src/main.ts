@@ -32,6 +32,8 @@ import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './ren
 import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, getAutoFormat, setAutoFormat } from './editor/codeEditor';
 import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState } from './ui/toolbar';
+import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
+import { showToast } from './ui/toast';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel } from './ui/aiPanel';
 import { getKey as getAiKey, mergeChatBucket } from './ai/db';
 import { loadSettings as loadAiSettings } from './ai/settings';
@@ -508,6 +510,28 @@ function enrichGeometryDataWithColors(geoData: Record<string, unknown> | null): 
     geoData.colorRegions = serializeRegions();
   }
   return geoData;
+}
+
+/** Snapshot the current editor code + geometry + paint regions + annotations
+ *  as a new version in the active session. Shared by the
+ *  window.partwright.saveVersion() API and the mod+S keyboard shortcut.
+ *  Returns `{ id, index, label }` on success, `{ error }` when no session is
+ *  active, or `{ skipped }` when nothing changed since the current version. */
+async function saveCurrentVersion(label?: string): Promise<
+  | { error: string }
+  | { id: string; index: number; label: string }
+  | { skipped: true; reason: string }
+> {
+  if (!getState().session) {
+    return { error: 'No active session. Call createSession() or openSession(id) first.' };
+  }
+  const thumbnail = await captureThumbnail();
+  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label);
+  if (version) return { id: version.id, index: version.index, label: version.label };
+  return {
+    skipped: true as const,
+    reason: 'No changes since the current version (code, annotations, and color regions all match). Add a new region, edit code, or pass a different label to force a save.',
+  };
 }
 
 // ===========================================================================
@@ -1054,6 +1078,20 @@ async function main() {
       e.preventDefault();
       formatCode();
     }
+  });
+
+  // Global undo / redo / save shortcuts (OS-aware, focus/tool-routed).
+  installKeyboardShortcuts({
+    onSave: async () => {
+      const result = await saveCurrentVersion();
+      if ('error' in result) {
+        showToast(result.error, { variant: 'warn' });
+      } else if ('skipped' in result) {
+        showToast('No changes to save', { variant: 'neutral' });
+      } else {
+        showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}`, { variant: 'success' });
+      }
+    },
   });
 
   // Init views panel
@@ -1618,12 +1656,7 @@ async function main() {
       agentUIWarningShown = true;
       const msg = 'Detected UI-driven input. This app expects programmatic control from AI agents. Use window.partwright.runAndSave() -- see /llms.txt';
       console.warn(msg);
-      // Show a non-blocking toast
-      const toast = document.createElement('div');
-      toast.textContent = msg;
-      toast.style.cssText = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#451a03;color:#fbbf24;padding:8px 16px;border-radius:6px;font-size:13px;z-index:9999;max-width:600px;text-align:center;pointer-events:none;';
-      document.body.appendChild(toast);
-      setTimeout(() => toast.remove(), 8000);
+      showToast(msg, { variant: 'warn', durationMs: 8000 });
     };
     // Listen on the editor and viewport containers
     editorUI.addEventListener('keydown', warnAgentUI, { once: true });
@@ -2316,16 +2349,7 @@ async function main() {
      *  the current version (code, annotations, and color regions all match). */
     async saveVersion(label?: string) {
       assertString(label, 'saveVersion(label)', { optional: true });
-      if (!getState().session) {
-        return { error: 'No active session. Call createSession() or openSession(id) first.' };
-      }
-      const thumbnail = await captureThumbnail();
-      const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label);
-      if (version) return { id: version.id, index: version.index, label: version.label };
-      return {
-        skipped: true,
-        reason: 'No changes since the current version (code, annotations, and color regions all match). Add a new region, edit code, or pass a different label to force a save.',
-      };
+      return saveCurrentVersion(label);
     },
 
     /** List all versions in the current session */

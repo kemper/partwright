@@ -44,6 +44,21 @@ Manifold.cube([10, 10, 10], true)
   .translate([0, 0, 5]);
 ```
 
+## Keyboard shortcuts
+
+Shortcuts adapt to your OS — use **⌘** on macOS and **Ctrl** elsewhere.
+
+| Action | macOS | Windows / Linux | What it does |
+|--------|-------|-----------------|--------------|
+| Undo | ⌘ Z | Ctrl + Z | Undo the last paint region or annotation stroke (whichever tool is active). In the code editor, its built-in undo applies. |
+| Redo | ⇧ ⌘ Z | Ctrl + Shift + Z, or Ctrl + Y | Redo the last undone paint region or annotation stroke. |
+| Save version | ⌘ S | Ctrl + S | Snapshot the current code, geometry, paint, and annotations as a new version. |
+| Format code | ⇧ ⌥ F | Shift + Alt + F | Reformat the editor contents. |
+| Save notes | ⌘ Enter | Ctrl + Enter | Save the Notes textarea (when focused). |
+| Close / cancel | Escape | Escape | Close the open dropdown, modal, paint/annotate panel, cross-section overlay, or exit the tour. |
+
+Undo/redo route to whatever you're working on: paint regions while painting, annotation strokes while annotating, and the code editor's own history while editing code. Save works from anywhere.
+
 ## A note on AI costs & risk
 
 Partwright is an experiment — a passion project exploring what happens when you put generative AI inside a browser-based 3D modeling tool. I've spent my own money building it; I'm not trying to make money from it, and I hope it brings others the same joy and curiosity it's brought me.
