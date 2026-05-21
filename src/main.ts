@@ -5565,8 +5565,9 @@ async function main() {
 
   function initClipControls(container: HTMLElement) {
     const toggleBtn = container.querySelector('#clip-toggle') as HTMLButtonElement;
-    const slider = container.querySelector('#clip-z-slider') as HTMLInputElement;
-    const zLabel = container.querySelector('#clip-z-label') as HTMLElement;
+    // Slider + label live in their own anchor under the gizmo, not in the toolbar.
+    const slider = document.getElementById('clip-z-slider') as HTMLInputElement;
+    const zLabel = document.getElementById('clip-z-label') as HTMLElement;
 
     toggleBtn.addEventListener('click', () => {
       const state = getClipState();

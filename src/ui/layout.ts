@@ -155,6 +155,11 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   const clipControls = createClipControls();
   viewportPane.appendChild(clipControls);
 
+  // Cross-section Z slider — anchored below the orientation gizmo, separate from
+  // the toolbar so showing it doesn't shift the buttons.
+  const clipSlider = createClipSlider();
+  viewportPane.appendChild(clipSlider);
+
   const viewsContainer = document.createElement('div');
   viewsContainer.id = 'views-container';
   viewsContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-2';
@@ -488,15 +493,31 @@ function createClipControls(): HTMLElement {
   toggleBtn.title = 'Toggle cross-section clipping plane';
   container.appendChild(toggleBtn);
 
-  // Slider + Z value (hidden until clip is active)
+  return container;
+}
+
+// Vertical Z slider for the cross-section plane. Kept out of the toolbar's flex
+// flow and anchored directly below the orientation gizmo (top-right) so toggling
+// clip never reflows the toolbar buttons. Hidden until clip is active.
+function createClipSlider(): HTMLElement {
+  // The orientation gizmo occupies a 128px square at the viewport's top-right
+  // corner (8px margin). Mirror that footprint here so the slider centers under
+  // it; pointer-events-none lets clicks fall through the empty anchor box to the
+  // model, while the slider group itself re-enables them.
+  const anchor = document.createElement('div');
+  anchor.id = 'clip-slider-anchor';
+  anchor.className = 'absolute right-2 top-36 z-10 w-32 flex justify-center pointer-events-none';
+
   const sliderGroup = document.createElement('div');
   sliderGroup.id = 'clip-slider-group';
-  sliderGroup.className = 'hidden flex items-center gap-2 px-2 py-1 rounded bg-zinc-800/80 backdrop-blur border border-zinc-600/50';
+  sliderGroup.className = 'hidden flex flex-col items-center gap-2 px-2 py-2 rounded bg-zinc-800/80 backdrop-blur border border-zinc-600/50 pointer-events-auto';
 
   const slider = document.createElement('input');
   slider.type = 'range';
   slider.id = 'clip-z-slider';
-  slider.className = 'w-28 accent-red-400';
+  // Vertical orientation: writing-mode flips the range to grow top-to-bottom;
+  // direction:rtl puts the max (highest Z) at the top, min at the bottom.
+  slider.className = 'h-56 accent-red-400 cursor-pointer [writing-mode:vertical-lr] [direction:rtl]';
   slider.min = '0';
   slider.max = '10';
   slider.step = '0.01';
@@ -505,13 +526,12 @@ function createClipControls(): HTMLElement {
 
   const zLabel = document.createElement('span');
   zLabel.id = 'clip-z-label';
-  zLabel.className = 'text-xs text-zinc-300 font-mono w-16 text-right';
+  zLabel.className = 'text-xs text-zinc-300 font-mono text-center';
   zLabel.textContent = 'Z: 5.00';
   sliderGroup.appendChild(zLabel);
 
-  container.appendChild(sliderGroup);
-
-  return container;
+  anchor.appendChild(sliderGroup);
+  return anchor;
 }
 
 function initSplitter(splitter: HTMLElement, editorPane: HTMLElement) {
