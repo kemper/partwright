@@ -33,7 +33,7 @@ import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEd
 import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState } from './ui/toolbar';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel } from './ui/aiPanel';
-import { getKey as getAiKey } from './ai/db';
+import { getKey as getAiKey, mergeChatBucket } from './ai/db';
 import { loadSettings as loadAiSettings } from './ai/settings';
 import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
@@ -1778,6 +1778,22 @@ async function main() {
         sizeBytes: built.blob.size,
         data: built.data,
       };
+    },
+
+    /** Maintenance: merge a chat transcript from one session into another to
+     *  reunite a conversation that got split across sessions. Re-sequences the
+     *  combined transcript chronologically. Refresh the target session to see
+     *  the result. Returns { moved, into } or { error }. */
+    async mergeChatHistory(fromSessionId: string, toSessionId: string) {
+      const check = guard(() => {
+        assertString(fromSessionId, 'mergeChatHistory(fromSessionId)', { allowEmpty: false });
+        assertString(toSessionId, 'mergeChatHistory(toSessionId)', { allowEmpty: false });
+        return true;
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const moved = await mergeChatBucket(fromSessionId, toSessionId);
+      if (moved === 0) return { error: 'No messages moved — check the source has chat and differs from the target.' };
+      return { moved, into: toSessionId };
     },
 
     /** Return the current editor source as text + metadata. */

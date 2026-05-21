@@ -4,7 +4,7 @@
 // ai/* modules; this file is mostly DOM wiring.
 
 import { runTurn, totalCost, totalTokensEstimate, estimateCachedPrefixTokens } from '../ai/chatLoop';
-import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat } from '../ai/db';
+import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { loadSettings, saveSettings, setAnthropicModel, setToggles, ANTHROPIC_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, type AiSettings } from '../ai/settings';
@@ -235,25 +235,6 @@ function hideDrawer(): void {
 async function loadHistoryForCurrentSession(): Promise<void> {
   state.history = await listMessages(state.sessionId);
   updateRewindButtons();
-}
-
-/** Re-home every chat message persisted under `from` into session `to`,
- *  preserving order (seq is untouched; the store is keyed by message id, so a
- *  re-`put` just moves the sessionId index entry). Used after the model spins
- *  up a session mid-conversation: the lead-up chat lives in the global bucket
- *  and would otherwise be orphaned there — looking "lost" when the session is
- *  later reopened. Skips the move when `to` already has chat so two
- *  conversations are never merged (e.g. the model opened a pre-existing
- *  session). Returns true when messages were actually moved. */
-async function migrateChatBucket(from: string, to: string): Promise<boolean> {
-  if (from === to) return false;
-  const existing = await listMessages(to);
-  if (existing.length > 0) return false;
-  const messages = await listMessages(from);
-  if (messages.length === 0) return false;
-  for (const m of messages) m.sessionId = to;
-  await putMessages(messages);
-  return true;
 }
 
 // === DOM construction ===
@@ -1758,16 +1739,17 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
     setSendButtonMode('send');
     updateRewindButtons();
 
-    // Bug fix — re-home chat orphaned by a mid-turn session switch. When a
-    // conversation starts in the global bucket (no session open) and the model
-    // then creates a session — directly via createSession or indirectly via a
-    // runAndSave auto-create — every message of this turn was stamped with the
-    // starting bucket (chatLoop captures sessionId once at turn start). Without
-    // this, the lead-up turns stay under '__global__' and disappear from the
-    // session when it is reopened. Only fires on a global → fresh-session move.
-    if (turnStartBucket === GLOBAL_CHAT_BUCKET && state.sessionId !== turnStartBucket) {
-      const moved = await migrateChatBucket(turnStartBucket, state.sessionId);
-      if (moved) {
+    // Bug fix — reunite a conversation split by a mid-turn session switch.
+    // chatLoop stamps every message of a turn with the session active when the
+    // turn began, so when the model creates or switches sessions mid-turn (via
+    // createSession, or a runAndSave auto-create), the lead-up turns stay under
+    // the old bucket — the global bucket OR an earlier real session — and
+    // vanish from the new session on reload. Fold them forward into the session
+    // the user landed on. Restricted to a fresh target (onlyIfTargetEmpty) so
+    // two distinct conversations are never auto-merged.
+    if (state.sessionId !== turnStartBucket) {
+      const moved = await mergeChatBucket(turnStartBucket, state.sessionId, { onlyIfTargetEmpty: true });
+      if (moved > 0) {
         await loadHistoryForCurrentSession();
         renderTranscript();
         renderCostMeter();

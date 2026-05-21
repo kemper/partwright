@@ -122,3 +122,32 @@ export async function clearChat(sessionId: string): Promise<void> {
   });
   await txComplete(txn);
 }
+
+/** Merge every chat message from bucket `from` into session `to`. The combined
+ *  transcript is re-sequenced chronologically (by createdAt, then prior seq) so
+ *  ordering is stable and seq values can't collide. Used to reunite a single
+ *  conversation that got split across buckets when the active session changed
+ *  mid-turn (chatLoop stamps each message with the session active at turn start,
+ *  so a mid-turn createSession strands the earlier turns under the old bucket).
+ *  Returns the number of messages moved out of `from`.
+ *
+ *  `onlyIfTargetEmpty` (used by the automatic post-turn reunite) restricts the
+ *  merge to a fresh session so a conversation is never auto-folded into one that
+ *  already has its own distinct chat; the manual recovery path leaves it off. */
+export async function mergeChatBucket(
+  from: string,
+  to: string,
+  opts: { onlyIfTargetEmpty?: boolean } = {},
+): Promise<number> {
+  if (from === to || to === GLOBAL_CHAT_BUCKET) return 0;
+  const fromMsgs = await listMessages(from);
+  if (fromMsgs.length === 0) return 0;
+  const toMsgs = await listMessages(to);
+  if (opts.onlyIfTargetEmpty && toMsgs.length > 0) return 0;
+  const combined = [...toMsgs, ...fromMsgs].sort(
+    (a, b) => (a.createdAt - b.createdAt) || (a.seq - b.seq),
+  );
+  combined.forEach((m, i) => { m.sessionId = to; m.seq = i; });
+  await putMessages(combined);
+  return fromMsgs.length;
+}

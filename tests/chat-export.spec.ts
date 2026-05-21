@@ -127,3 +127,69 @@ test.describe('Chat export', () => {
     expect(restored.some(m => m.id === 'seed-1')).toBe(false);
   });
 });
+
+// Reproduces the reported bug: one continuous conversation persisted across two
+// real sessions (the lead-up turns stranded under an earlier session when the
+// model created a new one mid-turn), and the recovery that reunites them.
+async function seedSplit(page: Page, fromId: string, toId: string): Promise<void> {
+  await page.evaluate(async ([A, B]) => {
+    const db: IDBDatabase = await new Promise((res, rej) => {
+      const r = indexedDB.open('partwright');
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    const t0 = 1_000_000;
+    const tx = db.transaction('aiChats', 'readwrite');
+    const os = tx.objectStore('aiChats');
+    // First half lives under session A (earlier in time, seq 0..1).
+    os.put({ id: 'a-0', sessionId: A, role: 'user', blocks: [{ type: 'text', text: 'first half one' }], createdAt: t0, seq: 0 });
+    os.put({ id: 'a-1', sessionId: A, role: 'assistant', blocks: [{ type: 'text', text: 'first half two' }], createdAt: t0 + 1000, seq: 1 });
+    // Second half under session B (later, seq 2..3) — the URL/landing session.
+    os.put({ id: 'b-0', sessionId: B, role: 'user', blocks: [{ type: 'text', text: 'second half one' }], createdAt: t0 + 10000, seq: 2 });
+    os.put({ id: 'b-1', sessionId: B, role: 'assistant', blocks: [{ type: 'text', text: 'second half two' }], createdAt: t0 + 11000, seq: 3 });
+    await new Promise<void>((res, rej) => { tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+    db.close();
+  }, [fromId, toId]);
+}
+
+test.describe('Chat history recovery', () => {
+  test('mergeChatHistory reunites a conversation split across two sessions', async ({ page }) => {
+    await page.goto('/editor?view=ai');
+    await page.waitForSelector('#ai-panel');
+    const a = await createSession(page, 'First half');
+    const b = await createSession(page, 'Second half');
+    await seedSplit(page, a, b);
+
+    const res = await page.evaluate(async ([from, to]) => {
+      const w = window as unknown as { partwright: { mergeChatHistory: (f: string, t: string) => Promise<{ moved?: number; error?: string }> } };
+      return w.partwright.mergeChatHistory(from, to);
+    }, [a, b]);
+    expect(res.error).toBeUndefined();
+    expect(res.moved).toBe(2);
+
+    const rows = await page.evaluate(async ([A, B]) => {
+      const db: IDBDatabase = await new Promise((res2, rej) => {
+        const r = indexedDB.open('partwright');
+        r.onsuccess = () => res2(r.result);
+        r.onerror = () => rej(r.error);
+      });
+      const getAll = (sid: string): Promise<{ id: string; sessionId: string; seq: number; createdAt: number }[]> =>
+        new Promise((res2, rej) => {
+          const r = db.transaction('aiChats', 'readonly').objectStore('aiChats').index('sessionId').getAll(IDBKeyRange.only(sid));
+          r.onsuccess = () => res2(r.result);
+          r.onerror = () => rej(r.error);
+        });
+      const out = { a: await getAll(A), b: await getAll(B) };
+      db.close();
+      return out;
+    }, [a, b]);
+
+    // Source emptied, everything reunited under the target, contiguous + ordered.
+    expect(rows.a.length).toBe(0);
+    expect(rows.b.length).toBe(4);
+    const ordered = rows.b.sort((x, y) => x.seq - y.seq);
+    expect(ordered.map(m => m.seq)).toEqual([0, 1, 2, 3]);
+    expect(ordered.map(m => m.id)).toEqual(['a-0', 'a-1', 'b-0', 'b-1']);
+    expect(ordered.every(m => m.sessionId === b)).toBe(true);
+  });
+});
