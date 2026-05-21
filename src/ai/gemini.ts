@@ -114,6 +114,9 @@ interface GeminiPart {
   inlineData?: { mimeType: string; data: string };
   functionCall?: { name: string; args: Record<string, unknown> };
   functionResponse?: { name: string; response: Record<string, unknown> };
+  /** Gemini 3+ thinking models attach this to functionCall (and some
+   *  text) parts. Must be echoed back verbatim on the next request. */
+  thoughtSignature?: string;
 }
 
 interface GeminiContent {
@@ -215,6 +218,9 @@ async function consumeGeminiStream(
             id,
             name: part.functionCall.name,
             input: part.functionCall.args ?? {},
+            // Preserve the thought signature so we can replay it on the
+            // next request — Gemini 3 rejects the turn otherwise.
+            ...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {}),
           });
         }
       }
@@ -269,7 +275,11 @@ function buildGeminiContents(history: ChatMessage[]): GeminiContent[] {
         if (b.type === 'text' && b.text.length > 0) parts.push({ text: b.text });
       }
       for (const tc of msg.toolCalls ?? []) {
-        parts.push({ functionCall: { name: tc.name, args: tc.input ?? {} } });
+        const fcPart: GeminiPart = { functionCall: { name: tc.name, args: tc.input ?? {} } };
+        // Echo the thought signature Gemini 3 handed us with this call;
+        // the API 400s if a functionCall part comes back without it.
+        if (tc.thoughtSignature) fcPart.thoughtSignature = tc.thoughtSignature;
+        parts.push(fcPart);
       }
       if (parts.length > 0) out.push({ role: 'model', parts });
     } else {

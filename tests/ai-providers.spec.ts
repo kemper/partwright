@@ -25,6 +25,42 @@ test.describe('Multi-provider AI', () => {
     expect(events).toEqual(['{"x":1}', '{"y":2}', '[DONE]']);
   });
 
+  test('Gemini replays thoughtSignature on functionCall parts', async ({ page }) => {
+    // Regression: Gemini 3 attaches an opaque thought_signature to each
+    // functionCall part and 400s if it isn't echoed back on the next
+    // request. Drive gemini.streamTurn with a history containing a prior
+    // tool call that carries a signature, stub fetch to capture the
+    // outgoing body, and assert the functionCall part replays the sig.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel');
+    const sentBody = await page.evaluate(async () => {
+      const gemini = await import('/src/ai/gemini.ts');
+      let captured = '';
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (_input: unknown, init: { body?: string }) => {
+        captured = String(init?.body ?? '');
+        const body = 'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}\r\n\r\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        const history = [
+          { id: 'a1', sessionId: 's', role: 'assistant', blocks: [], toolCalls: [{ id: 'gemini_call_0', name: 'getSessionContext', input: {}, thoughtSignature: 'SIG_ABC' }], createdAt: 0, seq: 0 },
+          { id: 'u1', sessionId: 's', role: 'user', blocks: [], toolResults: [{ toolUseId: 'gemini_call_0', content: '{"ok":true}' }], createdAt: 0, seq: 1 },
+        ];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await gemini.streamTurn({ apiKey: 'k', model: 'gemini-2.5-flash', systemPrompt: 'sys', systemSuffix: '', history: history as any, tools: [] });
+      } finally {
+        window.fetch = origFetch;
+      }
+      return captured;
+    });
+    const parsed = JSON.parse(sentBody);
+    const modelTurn = parsed.contents.find((c: { role: string }) => c.role === 'model');
+    const fcPart = modelTurn.parts.find((p: { functionCall?: unknown }) => p.functionCall);
+    expect(fcPart.thoughtSignature).toBe('SIG_ABC');
+  });
+
 
   test('settings modal has a tab per provider', async ({ page }) => {
     await page.goto('/editor');

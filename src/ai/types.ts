@@ -195,6 +195,12 @@ export interface PersistedToolCall {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  /** Gemini 3+ attaches an opaque `thoughtSignature` to each functionCall
+   *  part and REQUIRES it to be echoed back on the next request — omitting
+   *  it returns a 400 ("Function call is missing a thought_signature").
+   *  Captured on parse, replayed when rebuilding Gemini request contents.
+   *  Other providers ignore this field. */
+  thoughtSignature?: string;
 }
 
 export interface PersistedToolResult {
