@@ -101,8 +101,10 @@ import {
   clearTexts as clearTextsStore,
   clearAll as clearAllAnnotations,
   loadFromSerialized as loadAnnotations,
+  serializeAll as serializeAnnotations,
   removeLastAnnotation,
   removeAnnotationById,
+  onChange as onAnnotationStrokesChange,
   type SerializedAnnotation,
 } from './annotations/annotations';
 import {
@@ -153,6 +155,7 @@ import {
   type ExportedSession,
   type ExportOptions,
 } from './storage/sessionManager';
+import { saveDraft, loadDraft, draftHasUnsavedWork } from './storage/draft';
 import type { Version } from './storage/db';
 import {
   ValidationError,
@@ -1219,19 +1222,43 @@ async function main() {
     window.dispatchEvent(new Event('resize'));
   }
 
-  async function loadVersionIntoEditor(version: Version) {
+  async function loadVersionIntoEditor(version: Version, opts: { restoreDraft?: boolean } = {}) {
     const sessionLang = getState().session?.language ?? 'manifold-js';
     if (sessionLang !== getActiveLanguage()) {
       await switchLanguage(sessionLang);
     }
     setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
-    setValue(version.code);
-    const applied = await runCodeSync(version.code);
-    // If a newer version-switch arrived while we were compiling, our result
-    // was discarded — don't rehydrate colours or annotations for the wrong version.
-    if (!applied) return;
-    rehydrateColorRegions(version.geometryData);
-    applyVersionAnnotations(version);
+
+    // Crash recovery: if this session has a draft holding edits that were never
+    // committed to a version, resume from it instead of the saved code. Only on
+    // the session-open path (opts.restoreDraft) — explicit version navigation
+    // should always show the version the user picked.
+    const sid = getState().session?.id;
+    const draft = (opts.restoreDraft && sid) ? loadDraft(sid) : null;
+    const geo = version.geometryData as Record<string, unknown> | null;
+    const baseline = {
+      code: version.code,
+      colorRegions: (geo?.colorRegions ?? []) as SerializedColorRegion[],
+      annotations: (version.annotations ?? []) as SerializedAnnotation[],
+    };
+
+    if (draft && draftHasUnsavedWork(draft, baseline)) {
+      setValue(draft.code);
+      const applied = await runCodeSync(draft.code);
+      // If a newer version-switch arrived while we were compiling, our result
+      // was discarded — don't rehydrate colours or annotations for the wrong version.
+      if (!applied) return;
+      rehydrateColorRegions({ colorRegions: draft.colorRegions });
+      loadAnnotations(draft.annotations);
+      showToast('Restored unsaved changes from your last session', { variant: 'neutral', durationMs: 4000 });
+    } else {
+      setValue(version.code);
+      const applied = await runCodeSync(version.code);
+      if (!applied) return;
+      rehydrateColorRegions(version.geometryData);
+      applyVersionAnnotations(version);
+    }
+
     const sessionImages = await getImagesFromSession();
     if (sessionImages) {
       _setImages(sessionImages);
@@ -1258,7 +1285,7 @@ async function main() {
     if (getSessionIdFromURL() !== sid) return;
     const version = await openSession(sid);
     if (version) {
-      await loadVersionIntoEditor(version);
+      await loadVersionIntoEditor(version, { restoreDraft: true });
     } else {
       // openSession returned null — either the session doesn't exist
       // (e.g. stale tile from another device's data) or it has no saved
@@ -1411,7 +1438,7 @@ async function main() {
       if (needsSessionLoad || needsVersionLoad) {
         const version = await openSession(sessionId, versionIndex ?? undefined);
         if (version) {
-          await loadVersionIntoEditor(version);
+          await loadVersionIntoEditor(version, { restoreDraft: true });
           if (tab === 'gallery') refreshGallery();
           if (tab === 'versions') refreshVersions();
           return;
@@ -1498,8 +1525,52 @@ async function main() {
   // Init measure tool
   initMeasureTool(getCanvas(), getCamera(), getMeshGroup(), viewportPane);
 
+  // --- Crash-safe autosave (draft layer) ---
+  // saveVersion() mints a new version on every call, so it can't drive
+  // continuous autosave. Instead we mirror the live editor state (code + paint
+  // regions + annotations) into a per-session draft on a short debounce. The
+  // draft is reconciled against the saved version on resume (see
+  // loadVersionIntoEditor) and cleared once the work is committed (saveVersion).
+  let draftSaveTimer: number | null = null;
+  function snapshotDraft(): void {
+    const sid = getState().session?.id;
+    if (!sid) return;
+    saveDraft(sid, {
+      code: getValue(),
+      colorRegions: hasColorRegions() ? serializeRegions() : [],
+      annotations: serializeAnnotations(),
+    });
+  }
+  function scheduleDraftSave(): void {
+    if (!getState().session) return;
+    if (draftSaveTimer !== null) clearTimeout(draftSaveTimer);
+    draftSaveTimer = window.setTimeout(snapshotDraft, 500);
+  }
+
+  /** True when the live editor state diverges from the saved version (or, for an
+   *  unsaved new session, when the user has typed real code). Powers the
+   *  beforeunload guard. */
+  function hasUnsavedChanges(): boolean {
+    const state = getState();
+    if (!state.session) return false;
+    const cur = state.currentVersion;
+    if (!cur) {
+      const code = getValue().trim();
+      return code.length > 0 && getValue() !== defaultCode;
+    }
+    if (getValue() !== cur.code) return true;
+    const geo = cur.geometryData as Record<string, unknown> | null;
+    const baseRegions = (geo?.colorRegions ?? []) as SerializedColorRegion[];
+    const curRegions = hasColorRegions() ? serializeRegions() : [];
+    if (JSON.stringify(curRegions) !== JSON.stringify(baseRegions)) return true;
+    const baseAnnotations = (cur.annotations ?? []) as SerializedAnnotation[];
+    if (JSON.stringify(serializeAnnotations()) !== JSON.stringify(baseAnnotations)) return true;
+    return false;
+  }
+
   // Init editor — only auto-run if auto-run is enabled
   initEditor(editorContainer, defaultCode, (code: string) => {
+    scheduleDraftSave();
     if (isAutoRun()) runCode(code);
   });
 
@@ -1694,6 +1765,7 @@ async function main() {
   // Also listen for any region change (e.g. clear) to re-render
   onColorRegionsChange(() => {
     syncLockState();
+    scheduleDraftSave();
     if (!isPaintActive()) return; // only auto-refresh while paint mode is on
     if (currentMeshData) {
       const colored = applyTriColorsIfVisible(currentMeshData);
@@ -1708,6 +1780,11 @@ async function main() {
     const colored = applyTriColorsIfVisible(currentMeshData);
     updateMesh(colored, { skipAutoFrame: true });
   });
+
+  // Persist annotation edits into the working-copy draft so they survive a
+  // refresh before the next Mod+S. (Live annotation rendering is handled by the
+  // viewport overlay / renderViews path, not from here anymore.)
+  onAnnotationStrokesChange(() => scheduleDraftSave());
 
   editorReady = true;
   editorReadyResolve();
@@ -1777,23 +1854,26 @@ async function main() {
     updateDocumentTitle({ page: 'editor' });
   }
 
-  // Clean up empty auto-created sessions when leaving the page, and warn
-  // when there are painted color regions that haven't been saved yet.
-  window.addEventListener('beforeunload', (event) => {
+  // Clean up empty auto-created sessions when leaving the page, and warn before
+  // discarding uncommitted edits. The draft layer recovers code/paint/annotation
+  // state on the next visit, but the native prompt still gives the user a chance
+  // to stay and hit Mod+S — and covers the brand-new-session case where the
+  // empty-session cleanup below would otherwise drop the work.
+  window.addEventListener('beforeunload', (e) => {
     const state = getState();
-    if (state.session && state.versionCount === 0) {
+    const dirty = hasUnsavedChanges();
+    // Flush the latest working copy synchronously so a reload restores the most
+    // recent keystroke, not just the last debounced snapshot.
+    if (dirty) snapshotDraft();
+    // Only reap a truly-untouched auto-created session (no versions, nothing
+    // typed) — never one that still holds unsaved work.
+    if (state.session && state.versionCount === 0 && !dirty) {
       deleteIfEmpty(state.session.id);
     }
-    // Warn if in-memory color regions exist but the current persisted version
-    // doesn't have them — i.e. the user painted but hasn't hit Save yet.
-    if (hasColorRegions()) {
-      const persistedRegions = (state.currentVersion?.geometryData as Record<string, unknown> | null | undefined)?.colorRegions;
-      const alreadySaved = Array.isArray(persistedRegions) && (persistedRegions as unknown[]).length > 0;
-      if (!alreadySaved) {
-        event.preventDefault();
-        // returnValue is required for cross-browser compat (Chrome ignores just preventDefault)
-        event.returnValue = '';
-      }
+    if (dirty) {
+      e.preventDefault();
+      // returnValue is required for cross-browser compat (Chrome ignores just preventDefault)
+      e.returnValue = '';
     }
   });
 

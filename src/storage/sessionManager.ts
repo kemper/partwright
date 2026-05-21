@@ -30,6 +30,7 @@ import {
 import { listMessages as dbListMessages, putMessages as dbPutMessages } from '../ai/db';
 import { getSpendingSummary } from '../ai/settings';
 import type { ChatMessage } from '../ai/types';
+import { clearDraft, clearAllDrafts } from './draft';
 
 /** Legacy angle keys preserved only for typing the on-disk shapes we still
  *  read for backward compatibility. */
@@ -322,6 +323,7 @@ export async function listSessions(): Promise<Session[]> {
 
 export async function deleteSession(id: string): Promise<void> {
   await dbDeleteSession(id);
+  clearDraft(id);
   if (currentState.session?.id === id) {
     await closeSession();
   }
@@ -413,6 +415,10 @@ export async function saveVersion(
     annotationSnapshot,
     nextImports.length > 0 ? nextImports : undefined,
   );
+
+  // The working copy is now committed to a version — drop the draft so a later
+  // resume loads the saved state rather than offering to restore a stale draft.
+  clearDraft(currentState.session.id);
 
   currentState = {
     ...currentState,
@@ -729,6 +735,7 @@ export async function deleteIfEmpty(sessionId: string): Promise<boolean> {
   const notes = await dbListNotes(sessionId);
   if (notes.length > 0) return false;
   await dbDeleteSession(sessionId);
+  clearDraft(sessionId);
   if (currentState.session?.id === sessionId) {
     currentState = { session: null, currentVersion: null, versionCount: 0 };
     setActiveImports([]);
@@ -740,6 +747,7 @@ export async function deleteIfEmpty(sessionId: string): Promise<boolean> {
 
 export async function clearAllSessions(): Promise<void> {
   await clearAllData();
+  clearAllDrafts();
   currentState = { session: null, currentVersion: null, versionCount: 0 };
   loadAnnotations([]);
   setActiveImports([]);
