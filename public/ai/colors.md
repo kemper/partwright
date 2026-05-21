@@ -190,6 +190,13 @@ Calling `clearColors()` to fix a single mistake forces you to repaint
 every other region from scratch — multiple round-trips, multiple chances
 to introduce new mistakes. Don't do it.
 
+You also don't need to repaint when the **geometry** changes between
+versions: `forkVersion` re-applies the parent's color regions to the
+forked mesh automatically (each region's descriptor is re-resolved against
+the new geometry), and `copyColorsFromVersion({index})` transfers a painted
+version's colors onto the current mesh in one call. Regions whose descriptor
+no longer resolves are reported in `dropped` — repaint only those.
+
 **How face matching works.** `paintRegion` flood-fills outward from the seed triangle, including any neighbor whose normal is within `tolerance` of the seed's. Pick `point` slightly inside the model surface and pass the outward-pointing `normal` -- the seed resolver looks for the triangle whose plane the point lies on and whose normal aligns with yours.
 
 **Diagnostic on failure.** When `paintRegion` can't resolve a seed, the returned `error` string includes the position and normal of the *nearest* triangle, the angle off your requested normal, and a suggested tolerance value that would accept it. The same data is available structured under `{ error, nearest: { point, normal, distance, angleDeg, suggestedTolerance } }`. So a failed call tells you exactly what to change rather than leaving you guessing.
@@ -389,7 +396,7 @@ partwright.assertPaint({
 
 **Bucket tolerance.** `paintRegion`'s `tolerance` is a cosine threshold for the bend angle between adjacent faces (default `0.9995`, ≈ 1.8°). The flood-fill crosses an edge only when the bend at that edge is below the angle threshold — checked between the *parent* face and each *neighbor*, not against the seed. This means flood-fill follows curved surfaces: a 32-sided cylinder bends ~11° per face, so any tolerance ≥ cos(11°) ≈ `0.98` covers the whole cylinder. Set tolerance to `-1` (180°) to paint the entire connected mesh. The Paint UI exposes the same control as a slider labeled in degrees (0°–180°).
 
-**Editor lock.** When color regions exist, the editor is locked (the model can't be re-run, because new geometry would invalidate the saved triangle indices). To edit code, the user clicks "Unlock to edit" in the UI. Agents that need to iterate on the geometry should call `clearColors()` first, or fork a new uncolored version with `forkVersion`.
+**Editor lock.** When color regions exist, the editor is locked (the model can't be re-run, because new geometry would invalidate the saved triangle indices). To edit code, the user clicks "Unlock to edit" in the UI. Agents that need to iterate on the geometry should call `clearColors()` first, or fork with `forkVersion` — which by default carries the colors onto the new geometry (pass `carryColors: false` for an uncolored child).
 
 **Saving a colored version.** Calling `saveVersion(label)` after painting *will* persist the regions onto a new version — the dedupe check considers code, annotations, and color regions together. If nothing has changed, `saveVersion()` returns `{ skipped: true, reason: "..." }` instead of `null`, so a no-op is visible. If you want to be sure a save happened, check the return shape: `{ id, index, label }` on success, `{ skipped }` on no-op, `{ error }` if no session is open.
 
