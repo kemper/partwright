@@ -53,6 +53,11 @@ test.describe('Mesh detail slider', () => {
     await setDetail(page, 3);
     await expect(page.locator('#mesh-detail-readout')).toHaveText('3×');
     expect((await runCube(page)).triangleCount).toBe(108);
+
+    // The range goes well past single digits — refine(32) → 12·1024 triangles.
+    await setDetail(page, 32);
+    await expect(page.locator('#mesh-detail-readout')).toHaveText('32×');
+    expect((await runCube(page)).triangleCount).toBe(12288);
   });
 
   test('persists the chosen factor to quality settings', async ({ page }) => {

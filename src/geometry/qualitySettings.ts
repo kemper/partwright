@@ -20,7 +20,7 @@ export interface QualitySettings {
 }
 
 export const REFINE_MIN = 1;
-export const REFINE_MAX = 8;
+export const REFINE_MAX = 64;
 export const REFINE_DEFAULT = 2;
 
 export const QUALITY_SEGMENTS: Record<QualityLevel, number> = {
