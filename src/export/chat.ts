@@ -52,6 +52,9 @@ function renderMessage(msg: ChatMessage): string {
       if (text) parts.push(text);
     } else if (block.type === 'image') {
       parts.push(`_[image${block.source.label ? `: ${block.source.label}` : ''}]_`);
+    } else if (block.type === 'thinking') {
+      const thinkingText = block.text.trim();
+      if (thinkingText) parts.push(`<details>\n<summary>🧠 thinking</summary>\n\n${thinkingText}\n\n</details>`);
     } else {
       // Cross-provider review block: render the feedback with its
       // attribution so the transcript captures the second opinion.

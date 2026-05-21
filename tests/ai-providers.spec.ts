@@ -93,6 +93,87 @@ test.describe('Multi-provider AI', () => {
     expect(fcPart.thoughtSignature).toBe('SIG_ABC');
   });
 
+  test('Gemini routes thought parts to the thinking channel', async ({ page }) => {
+    // Gemini 3 thinking models emit reasoning as `thought:true` text parts.
+    // They must land in result.thinking (the collapsible box), NOT in the
+    // answer text — and we must request them via thinkingConfig so they
+    // come back flagged. Stub the SSE stream and assert the split.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel');
+    const out = await page.evaluate(async () => {
+      const gemini = await import('/src/ai/gemini.ts');
+      let captured = '';
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (_input: unknown, init: { body?: string }) => {
+        captured = String(init?.body ?? '');
+        const frames = [
+          'data: {"candidates":[{"content":{"parts":[{"text":"Reasoning: winding order must be CCW.","thought":true}]}}]}',
+          'data: {"candidates":[{"content":{"parts":[{"text":"Done — created the sphere."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":5}}',
+        ];
+        const body = frames.join('\r\n\r\n') + '\r\n\r\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      const thinkingDeltas: string[] = [];
+      const textDeltas: string[] = [];
+      try {
+        const result = await gemini.streamTurn(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          { apiKey: 'k', model: 'gemini-3.5-flash', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] },
+          { onThinking: d => thinkingDeltas.push(d), onText: d => textDeltas.push(d) },
+        );
+        return { thinking: result.thinking ?? '', text: result.text, captured, thinkingDeltas, textDeltas };
+      } finally {
+        window.fetch = origFetch;
+      }
+    });
+    expect(out.thinking).toContain('winding order');
+    expect(out.text).toBe('Done — created the sphere.');
+    expect(out.text).not.toContain('winding order');
+    expect(out.thinkingDeltas.join('')).toContain('winding order');
+    expect(out.textDeltas.join('')).toBe('Done — created the sphere.');
+    // The request must opt into thought summaries, else nothing to box.
+    const sent = JSON.parse(out.captured);
+    expect(sent.generationConfig.thinkingConfig.includeThoughts).toBe(true);
+  });
+
+  test('thinking block renders as a collapsible box, separate from the answer', async ({ page }) => {
+    // A persisted assistant turn with a thinking block should render the
+    // reasoning in a collapsed expand/contract box (hidden until clicked),
+    // with the answer in its own bubble.
+    await page.goto('/editor');
+    await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
+    await page.waitForSelector('#ai-panel');
+    // Bare /editor auto-restores a session (id in the URL, stable across
+    // reload), so the chat pins to that bucket — seed there, not global.
+    await page.evaluate(async () => {
+      const db = await import('/src/ai/db.ts');
+      const sm = await import('/src/storage/sessionManager.ts');
+      const sid = sm.getState().session?.id ?? db.GLOBAL_CHAT_BUCKET;
+      await db.putMessages([{
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        id: 'm-think-1', sessionId: sid, role: 'assistant',
+        blocks: [
+          { type: 'thinking', text: 'Reasoning: the winding order must be CCW.' },
+          { type: 'text', text: 'Done — created the sphere.' },
+        ],
+        createdAt: Date.now(), seq: 1,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any]);
+    });
+    await page.reload();
+    await page.waitForSelector('#ai-panel');
+    await page.locator('#btn-ai').dispatchEvent('click');
+    const box = page.locator('#ai-panel details').filter({ hasText: '🧠 Thinking' });
+    await expect(box).toBeVisible();
+    // The answer is in its own bubble, visible without expanding anything.
+    await expect(page.locator('#ai-panel').getByText('Done — created the sphere.')).toBeVisible();
+    // Reasoning is hidden (collapsed) until the box is expanded.
+    await expect(box.locator('pre')).toBeHidden();
+    await box.locator('summary').dispatchEvent('click');
+    await expect(box.locator('pre')).toBeVisible();
+    await expect(box.locator('pre')).toContainText('winding order must be CCW');
+  });
 
   test('settings modal has a tab per provider', async ({ page }) => {
     await page.goto('/editor');

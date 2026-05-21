@@ -81,6 +81,9 @@ export async function listModels(apiKey: string): Promise<{ id: string; label: s
 
 export interface StreamCallbacks {
   onText?: (delta: string) => void;
+  /** Thought-summary deltas (Gemini 3 thinking models). Routed to the
+   *  panel's collapsible thinking box rather than the answer bubble. */
+  onThinking?: (delta: string) => void;
   onToolStart?: (toolUseId: string, toolName: string) => void;
 }
 
@@ -89,6 +92,9 @@ export interface StreamResult {
   toolCalls: PersistedToolCall[];
   stopReason: string;
   usage: TurnUsage;
+  /** Concatenated thought-summary text for the turn, if the model emitted
+   *  any. Undefined/empty for non-thinking models. */
+  thinking?: string;
 }
 
 export interface GeminiRequestSpec {
@@ -114,6 +120,10 @@ interface GeminiPart {
   inlineData?: { mimeType: string; data: string };
   functionCall?: { name: string; args: Record<string, unknown> };
   functionResponse?: { name: string; response: Record<string, unknown> };
+  /** True on text parts that are thought summaries (only present when we
+   *  ask for them via thinkingConfig.includeThoughts). Lets us route the
+   *  reasoning to the thinking box instead of the answer bubble. */
+  thought?: boolean;
   /** Gemini 3+ thinking models attach this to functionCall (and some
    *  text) parts. Must be echoed back verbatim on the next request. */
   thoughtSignature?: string;
@@ -145,7 +155,17 @@ export async function streamTurn(
 
   const body: Record<string, unknown> = {
     contents: buildGeminiContents(spec.history),
-    generationConfig: { maxOutputTokens: max_tokens },
+    generationConfig: {
+      maxOutputTokens: max_tokens,
+      // Ask thinking models (Gemini 2.5 / 3.x) to return their reasoning as
+      // flagged `thought` parts. Without this the reasoning either stays
+      // internal or bleeds into the answer text as one undifferentiated
+      // wall — either way we can't box it. With it, thought parts arrive
+      // tagged `thought:true` and we split them into the thinking channel.
+      // All curated default models support this; pre-2.5 models would
+      // ignore/reject it, but the lineup is firmly 2.5+.
+      thinkingConfig: { includeThoughts: true },
+    },
     // systemInstruction takes `parts` only — adding `role` makes some
     // server-side validators silently drop the instruction.
     systemInstruction: { parts: [{ text: systemText }] },
@@ -184,6 +204,7 @@ async function consumeGeminiStream(
   signal?: AbortSignal,
 ): Promise<StreamResult> {
   let collectedText = '';
+  let collectedThinking = '';
   const toolCalls: PersistedToolCall[] = [];
   let stopReason = 'unknown';
   let usage: TurnUsage = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
@@ -219,8 +240,14 @@ async function consumeGeminiStream(
       const parts: GeminiPart[] = candidate.content?.parts ?? [];
       for (const part of parts) {
         if (typeof part.text === 'string' && part.text.length > 0) {
-          collectedText += part.text;
-          callbacks.onText?.(part.text);
+          if (part.thought === true) {
+            // Thought summary — goes to the thinking box, not the reply.
+            collectedThinking += part.text;
+            callbacks.onThinking?.(part.text);
+          } else {
+            collectedText += part.text;
+            callbacks.onText?.(part.text);
+          }
         } else if (part.functionCall) {
           const id = `gemini_call_${toolIndex++}`;
           callbacks.onToolStart?.(id, part.functionCall.name);
@@ -239,7 +266,7 @@ async function consumeGeminiStream(
       }
     }
   } catch (err) {
-    if (signal?.aborted) return { text: collectedText, toolCalls: [], stopReason: 'aborted', usage };
+    if (signal?.aborted) return { text: collectedText, toolCalls: [], stopReason: 'aborted', usage, thinking: collectedThinking };
     throw err;
   }
 
@@ -257,7 +284,7 @@ async function consumeGeminiStream(
     // 🩺 Diagnostics to see what came back.
     stopReason = 'end_turn';
   }
-  return { text: collectedText, toolCalls, stopReason, usage };
+  return { text: collectedText, toolCalls, stopReason, usage, thinking: collectedThinking };
 }
 
 function abortedResult(): StreamResult {

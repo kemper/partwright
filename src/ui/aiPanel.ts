@@ -170,6 +170,13 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   // Don't try to load history until a session is opened or we know we're
   // in the global bucket. main.ts will call setActiveSession when ready.
   await loadHistoryForCurrentSession();
+  // Paint the loaded history now. buildDrawer's first renderTranscript ran
+  // against empty state, and the setActiveSession call that follows in
+  // main.ts early-returns when we're already on the global bucket — so
+  // without this, pre-existing global chat history wouldn't show until the
+  // next interaction.
+  renderTranscript();
+  renderCostMeter();
   if (state.open) showDrawer();
   else hideDrawer();
 }
@@ -1132,6 +1139,8 @@ function renderMessage(msg: ChatMessage): HTMLElement {
       }
     } else if (b.type === 'image') {
       wrap.appendChild(renderImageBubble(b.source));
+    } else if (b.type === 'thinking') {
+      if (b.text.trim().length > 0) wrap.appendChild(renderThinkingBox(b.text));
     } else if (b.type === 'review') {
       wrap.appendChild(renderReviewBubble(b.provider, b.model, b.text));
     }
@@ -1346,6 +1355,58 @@ function renderToolCallChip(name: string, input: Record<string, unknown>): HTMLE
   pre.textContent = JSON.stringify(input, null, 2);
   chip.appendChild(pre);
   return chip;
+}
+
+/** Persisted reasoning, rendered as a collapsed expand/contract box (same
+ *  affordance as tool-call chips) so a verbose chain of thought doesn't
+ *  bury the actual reply. Indigo-tinted to read apart from tool chips. */
+function renderThinkingBox(text: string): HTMLElement {
+  const chip = document.createElement('details');
+  chip.className = 'max-w-[90%] text-[11px] rounded border border-indigo-800/50 bg-indigo-950/20 px-2 py-1';
+  const summary = document.createElement('summary');
+  summary.className = 'cursor-pointer text-indigo-300/90 select-none';
+  summary.textContent = '🧠 Thinking';
+  chip.appendChild(summary);
+  const pre = document.createElement('pre');
+  pre.className = 'mt-1 text-[10px] text-zinc-400 italic overflow-x-auto whitespace-pre-wrap leading-snug';
+  pre.textContent = text;
+  chip.appendChild(pre);
+  return chip;
+}
+
+/** Open box used while reasoning streams: a capped-height scrolling preview
+ *  so the user sees thought arrive live. `collapseLiveThinking` turns it
+ *  into the quiet collapsed form once the next step (answer/tool) begins. */
+function renderLiveThinkingBox(): HTMLElement {
+  const chip = document.createElement('details');
+  chip.open = true;
+  chip.dataset.liveThinking = '1';
+  chip.className = 'max-w-[90%] text-[11px] rounded border border-indigo-800/50 bg-indigo-950/20 px-2 py-1';
+  const summary = document.createElement('summary');
+  summary.className = 'cursor-pointer text-indigo-300/90 select-none flex items-center gap-1.5';
+  const dot = document.createElement('span');
+  dot.className = 'inline-block w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse';
+  const label = document.createElement('span');
+  label.textContent = '🧠 thinking…';
+  summary.appendChild(dot);
+  summary.appendChild(label);
+  chip.appendChild(summary);
+  const pre = document.createElement('pre');
+  pre.dataset.thinkingBody = '1';
+  pre.className = 'mt-1 max-h-32 overflow-y-auto text-[10px] text-zinc-400 italic whitespace-pre-wrap leading-snug';
+  chip.appendChild(pre);
+  return chip;
+}
+
+function collapseLiveThinking(el: HTMLElement): void {
+  if (!el.dataset.liveThinking) return;
+  delete el.dataset.liveThinking;
+  (el as HTMLDetailsElement).open = false;
+  const summary = el.querySelector('summary');
+  if (summary) {
+    summary.className = 'cursor-pointer text-indigo-300/90 select-none';
+    summary.textContent = '🧠 Thinking';
+  }
 }
 
 function renderToolResultBubble(result: PersistedToolResult): HTMLElement {
@@ -1721,6 +1782,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
 
     let activeAssistantId: string | null = null;
     let liveTextEl: HTMLElement | null = null;
+    let liveThinkingEl: HTMLElement | null = null;
     const blocksForThisAttempt = attempt === 1 ? userBlocks : [];
 
     await runTurn({
@@ -1767,6 +1829,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         // renderMessage tags the empty placeholder bubble with
         // `data-live-bubble` so we can find it reliably — `bg-zinc-800` is
         // shared by tool-call chips and other UI and isn't a stable target.
+        liveThinkingEl = null;
         if (transcriptEl) {
           liveTextEl = transcriptEl.querySelector(`[data-live-bubble="${id}"]`) as HTMLElement | null;
           if (liveTextEl) liveTextEl.textContent = '';
@@ -1778,12 +1841,38 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
           if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
         }
       },
-      onProgress: info => showProgress(info.phase, info.detail),
+      onAssistantThinking: delta => {
+        if (!liveThinkingEl) {
+          const wrapEl = (liveTextEl?.parentElement
+            ?? transcriptEl?.querySelector(`[data-message-id="${activeAssistantId}"]`)) as HTMLElement | null;
+          if (!wrapEl) return;
+          liveThinkingEl = renderLiveThinkingBox();
+          // Thinking sits above the answer bubble in the same message wrap.
+          if (liveTextEl && liveTextEl.parentElement === wrapEl) wrapEl.insertBefore(liveThinkingEl, liveTextEl);
+          else wrapEl.insertBefore(liveThinkingEl, wrapEl.firstChild);
+        }
+        const body = liveThinkingEl.querySelector('[data-thinking-body]') as HTMLElement | null;
+        if (body) {
+          body.textContent = (body.textContent ?? '') + delta;
+          body.scrollTop = body.scrollHeight;
+        }
+        if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      },
+      onProgress: info => {
+        // The next step has begun — fold the live thinking preview into its
+        // quiet collapsed form (the user's "hide it once the next task
+        // happens"). Persisted render at iteration end finalizes it.
+        if (liveThinkingEl && (info.phase === 'streaming' || info.phase === 'tool')) {
+          collapseLiveThinking(liveThinkingEl);
+        }
+        showProgress(info.phase, info.detail);
+      },
       onAssistantPersisted: msg => {
         const idx = state.history.findIndex(m => m.id === activeAssistantId);
         if (idx >= 0) state.history[idx] = msg;
         activeAssistantId = null;
         liveTextEl = null;
+        liveThinkingEl = null;
         renderTranscript();
         renderCostMeter();
       },
@@ -1812,6 +1901,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
           else state.history.push(errorMsg);
           activeAssistantId = null;
           liveTextEl = null;
+          liveThinkingEl = null;
           renderTranscript();
         }
         setTransientStatus(`Error: ${err.message}`);

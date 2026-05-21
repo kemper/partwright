@@ -61,6 +61,10 @@ export interface StreamResult {
   toolCalls: PersistedToolCall[];
   stopReason: string;
   usage: TurnUsage;
+  /** Reasoning text if surfaced. Unused for OpenAI (reasoning models hide
+   *  their chain of thought); present so chatLoop reads `result.thinking`
+   *  uniformly across providers. */
+  thinking?: string;
 }
 
 export interface OpenaiRequestSpec {

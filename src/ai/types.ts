@@ -179,6 +179,15 @@ export interface ChatMessage {
 export type ChatBlock =
   | { type: 'text'; text: string }
   | { type: 'image'; source: ImageSource }
+  /** The model's reasoning / thought summary for a turn (e.g. Gemini 3
+   *  thinking models, which emit `thought` parts). Rendered as a collapsed
+   *  expand/contract box in the panel — kept out of the main answer bubble
+   *  so verbose chains of thought don't bury the reply. Deliberately NOT
+   *  replayed as model text by any provider's request builder: it's a
+   *  display artifact, and re-feeding it wastes tokens (and on Gemini the
+   *  continuity is carried by `thoughtSignature` on tool calls, not by the
+   *  prose). */
+  | { type: 'thinking'; text: string }
   /** A review produced by an alternate provider via the Review feature.
    *  Rendered with a distinct bubble in the panel; serialized as plain
    *  prefixed text when sent to any provider on the next turn (none have

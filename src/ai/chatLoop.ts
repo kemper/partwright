@@ -79,6 +79,9 @@ export interface RunTurnCallbacks {
   onAssistantStart?: (id: string) => void;
   /** Streamed text deltas for the active assistant bubble. */
   onAssistantText?: (delta: string) => void;
+  /** Streamed reasoning deltas (thinking models). Drives the panel's live
+   *  thinking preview; the box collapses once answer text / a tool starts. */
+  onAssistantThinking?: (delta: string) => void;
   /** A tool call has begun streaming — render a "calling X..." chip. */
   onToolStart?: (toolUseId: string, toolName: string) => void;
   /** A tool has finished executing. Render the result bubble. */
@@ -192,6 +195,14 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         callbacks.onProgress?.({ phase: 'streaming' });
         callbacks.onAssistantText?.(delta);
       },
+      onThinking: delta => {
+        // Beat the stall watchdog on thought deltas too. A thinking model
+        // can stream pages of reasoning before its first answer token; if
+        // those deltas didn't count as progress the watchdog would abort a
+        // perfectly healthy turn (the "had to type resume" symptom).
+        callbacks.onProgress?.({ phase: 'thinking' });
+        callbacks.onAssistantThinking?.(delta);
+      },
       onToolStart: (id, name) => {
         callbacks.onProgress?.({ phase: 'tool', detail: name });
         callbacks.onToolStart?.(id, name);
@@ -293,11 +304,20 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
 
     const aborted = result.stopReason === 'aborted' || signal?.aborted === true;
 
+    // Thinking block (if any) renders above the answer, so it leads the
+    // block list. It's a display artifact — providers' request builders
+    // skip 'thinking' blocks, so it's never replayed as model text.
+    const assistantBlocks: ChatBlock[] = [];
+    if (result.thinking && result.thinking.trim().length > 0) {
+      assistantBlocks.push({ type: 'thinking', text: result.thinking });
+    }
+    if (result.text.length > 0) assistantBlocks.push({ type: 'text', text: result.text });
+
     const assistantMsg: ChatMessage = {
       id: assistantId,
       sessionId,
       role: 'assistant',
-      blocks: result.text.length > 0 ? [{ type: 'text', text: result.text }] : [],
+      blocks: assistantBlocks,
       toolCalls: result.toolCalls.length > 0 ? result.toolCalls : undefined,
       usage: result.usage,
       costUsd: turnCost,

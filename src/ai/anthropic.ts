@@ -74,6 +74,10 @@ export interface StreamResult {
   stopReason: string;
   /** Token usage attributed to this single API call. */
   usage: TurnUsage;
+  /** Reasoning text, if the provider surfaces it (Gemini). Anthropic
+   *  extended thinking isn't enabled here, so this stays undefined — the
+   *  field exists so chatLoop can read `result.thinking` across providers. */
+  thinking?: string;
   /** Raw assistant content blocks — needed verbatim on the next request. */
   rawAssistantBlocks: Anthropic.ContentBlock[];
 }
