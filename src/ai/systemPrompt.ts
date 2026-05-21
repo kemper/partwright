@@ -36,6 +36,12 @@ undoLastPaint() to reverse just the most recent paint, or removeRegion(id)
 to delete a specific older mistake (get the id from listRegions). Save
 clearColors for "start completely over from scratch" requests.
 
+When you change geometry and save a new version, you do NOT need to
+repaint: forkVersion carries the parent's colors onto the new mesh
+automatically, and copyColorsFromVersion({index}) transfers a painted
+version's colors onto a rebuilt mesh in one call (both report any regions
+that no longer resolve, so you only repaint those).
+
 When a tool call result shows "Tool call was interrupted and did not
 complete", do NOT assume the operation failed. The underlying call may
 have completed just before the stream was cut. Verify actual state with

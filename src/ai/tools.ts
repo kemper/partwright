@@ -17,6 +17,7 @@
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
 import { RENDER_VIEW_MODES } from '../renderer/multiview';
+import { applyLiteralPatch, applyPatches } from './patch';
 
 export interface ToolDefinition {
   name: string;
@@ -561,7 +562,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'forkVersion',
-    description: 'Fork a prior version: load version N, apply new code or patches, validate against optional assertions, and save as a new version — all atomically. Use this to branch off a known-good version without the fragile loadVersion → getCode → modify → runAndSave chain. Provide either `code` (full replacement) or `patches` (find/replace array applied to the parent\'s code — more concise when only a few values change). Returns {parent, version, geometry, diff, galleryUrl} on success, or {error} / {passed: false, failures} on failure.',
+    description: 'Fork a prior version: load version N, apply new code or patches, validate against optional assertions, and save as a new version — all atomically. Use this to branch off a known-good version without the fragile loadVersion → getCode → modify → runAndSave chain. Provide either `code` (full replacement) or `patches` (find/replace array applied to the parent\'s code — more concise when only a few values change). Each patch\'s `find` MUST occur exactly once in the parent code; a find that matches zero or multiple times is an ERROR (the fork is rejected, not silently saved unchanged), so read the parent code first and copy the exact text including whitespace. Color regions on the parent are re-applied to the forked geometry automatically (each region\'s descriptor is re-resolved against the new mesh) unless you pass `carryColors: false` — no need to repaint after a geometry tweak. Returns {parent, version, geometry, diff (geometry stats), codeDiff (what actually changed in the source — verify your patch landed here), colors: {carried, dropped}, galleryUrl} on success, or {error} / {passed: false, failures} on failure.',
     input_schema: {
       type: 'object',
       properties: {
@@ -569,16 +570,17 @@ const ALL_TOOLS: ToolDefinition[] = [
         code: { type: 'string', description: 'Full replacement code for the forked version. Provide this or patches, not both.' },
         patches: {
           type: 'array',
-          description: 'Find/replace substitutions applied in sequence to the parent version\'s code. More concise than providing the full program when only a few values change.',
+          description: 'Find/replace substitutions applied in sequence to the parent version\'s code. More concise than providing the full program when only a few values change. Each `find` must match exactly once or the call errors — include surrounding context to keep it unique.',
           items: {
             type: 'object',
             properties: {
-              find: { type: 'string', description: 'Exact string to find.' },
+              find: { type: 'string', description: 'Exact string to find. Must occur exactly once in the (running) code.' },
               replace: { type: 'string', description: 'Replacement string.' },
             },
             required: ['find', 'replace'],
           },
         },
+        carryColors: { type: 'boolean', description: 'Re-apply the parent version\'s color regions to the forked geometry. Default true. Pass false for an intentionally uncolored fork.' },
         label: { type: 'string', description: 'Short label for the new version.' },
         assertions: {
           type: 'object',
@@ -606,6 +608,17 @@ const ALL_TOOLS: ToolDefinition[] = [
             notes: { type: 'string' },
           },
         },
+      },
+      required: ['index'],
+    },
+  },
+  {
+    name: 'copyColorsFromVersion',
+    description: 'Transfer the color regions from a prior version onto the CURRENT geometry in one call — instead of repainting region by region after a geometry change. Each region\'s geometry-relative descriptor (box / slab / byLabel / coplanar / connectedFromSeed) is re-resolved against the current mesh; regions that no longer resolve (a dropped label, or raw-triangle regions on changed topology) are skipped and listed in `dropped`. Replaces any colors currently on the model. In-memory like any paint op — call runAndSave or saveVersion afterward to persist. (forkVersion already carries colors automatically; reach for this after a runAndSave when you rebuilt geometry that matches an earlier painted version.) Returns {source, carried, dropped}.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        index: { type: 'integer', description: '1-based version index to copy colors from (from listVersions).' },
       },
       required: ['index'],
     },
@@ -865,7 +878,7 @@ const ALWAYS_AVAILABLE = new Set([
 
 const RUN_GATED = new Set(['runCode']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -1222,10 +1235,12 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'forkVersion': {
       const forkPatches = input.patches as Array<{ find: string; replace: string }> | undefined;
       const forkTransform = forkPatches
-        ? (code: string) => forkPatches.reduce((c, p) => c.replace(p.find, p.replace), code)
+        ? (code: string) => applyPatches(forkPatches, code)
         : (_code: string) => input.code as string;
-      return api.forkVersion({ index: input.index }, forkTransform, input.label as string | undefined, input.assertions as Record<string, unknown> | undefined);
+      return api.forkVersion({ index: input.index }, forkTransform, input.label as string | undefined, input.assertions as Record<string, unknown> | undefined, input.carryColors as boolean | undefined);
     }
+    case 'copyColorsFromVersion':
+      return api.copyColorsFromVersion({ index: input.index });
     case 'runAndAssert':
       return api.runAndAssert(input.code, input.assertions);
     case 'query':
@@ -1233,9 +1248,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     case 'modifyAndTest': {
       const mtPatches = input.patches as Array<{ find: string; replace: string }> | undefined;
       return api.modifyAndTest((code: unknown) => {
-        let s = code as string;
-        if (mtPatches) return mtPatches.reduce((c, p) => c.replace(p.find, p.replace), s);
-        return s.replace(input.find as string, input.replace as string);
+        const s = code as string;
+        if (mtPatches) return applyPatches(mtPatches, s);
+        if (typeof input.find === 'string') return applyLiteralPatch(s, input.find, input.replace);
+        throw new Error('modifyAndTest requires either {find, replace} or {patches:[...]}.');
       }, input.assertions as Record<string, unknown> | undefined);
     }
     case 'probeRay':

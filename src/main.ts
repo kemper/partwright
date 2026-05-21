@@ -351,13 +351,17 @@ function applyVersionAnnotations(version: Version | null | undefined): void {
 }
 
 /** Rehydrate color regions from a version's geometryData.
- *  Rebuilds adjacency + BFS for coplanar descriptors against the current mesh. */
-function rehydrateColorRegions(geometryData: Record<string, unknown> | null): void {
+ *  Rebuilds adjacency + BFS for coplanar descriptors against the current mesh.
+ *  Returns the names of regions that resolved to ≥1 triangle (`carried`) vs.
+ *  those whose descriptor no longer matches the current geometry (`dropped`),
+ *  so callers transferring colors across versions can report what landed. */
+function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { carried: string[]; dropped: string[] } {
   clearRegions();
 
-  if (!geometryData || !currentMeshData) return;
+  const report: { carried: string[]; dropped: string[] } = { carried: [], dropped: [] };
+  if (!geometryData || !currentMeshData) return report;
   const regions = geometryData.colorRegions as SerializedColorRegion[] | undefined;
-  if (!regions || regions.length === 0) return;
+  if (!regions || regions.length === 0) return report;
 
   const mesh = currentMeshData;
   const adjacency = buildAdjacency(mesh);
@@ -425,6 +429,9 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): vo
 
     if (triangles.size > 0) {
       addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false);
+      report.carried.push(region.name);
+    } else {
+      report.dropped.push(region.name);
     }
   }
 
@@ -435,6 +442,63 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): vo
     const colored = applyTriColorsIfVisible(currentMeshData);
     updateMesh(colored, { skipAutoFrame: true });
   }
+
+  return report;
+}
+
+/** Pull a version's serialized color regions out of its geometryData blob
+ *  (where saveVersion persists them via enrichGeometryDataWithColors).
+ *  Returns [] when the version has no colors. */
+function versionColorRegions(v: Version | null | undefined): SerializedColorRegion[] {
+  const nested = (v?.geometryData as Record<string, unknown> | null | undefined)?.colorRegions;
+  return Array.isArray(nested) ? (nested as SerializedColorRegion[]) : [];
+}
+
+/** Compact line-level diff for surfacing what a fork/transform actually
+ *  changed in the source — the cheapest way for an agent to confirm a
+ *  patch landed (a no-op patch shows `changed: false`). LCS-based so
+ *  insertions/deletions align; output is capped to keep the token cost of
+ *  a large rewrite bounded. */
+function computeCodeDiff(before: string, after: string, maxLines = 60): { changed: boolean; added: number; removed: number; diff: string | null } {
+  if (before === after) return { changed: false, added: 0, removed: 0, diff: null };
+  const a = before.split('\n');
+  const b = after.split('\n');
+  const n = a.length, m = b.length;
+  // The LCS table below is O(n·m). CAD scripts are small, but guard against a
+  // pathologically large rewrite by falling back to a cheap multiset line
+  // count (still surfaces "something changed" without allocating a huge table).
+  if (n * m > 2_000_000) {
+    const minus = (from: string[], against: string[]): number => {
+      const counts = new Map<string, number>();
+      for (const l of against) counts.set(l, (counts.get(l) ?? 0) + 1);
+      let extra = 0;
+      for (const l of from) {
+        const c = counts.get(l) ?? 0;
+        if (c > 0) counts.set(l, c - 1); else extra++;
+      }
+      return extra;
+    };
+    return { changed: true, added: minus(b, a), removed: minus(a, b), diff: '(diff too large to render line-by-line)' };
+  }
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const lines: string[] = [];
+  let added = 0, removed = 0, i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { lines.push(`- ${a[i]}`); removed++; i++; }
+    else { lines.push(`+ ${b[j]}`); added++; j++; }
+  }
+  while (i < n) { lines.push(`- ${a[i]}`); removed++; i++; }
+  while (j < m) { lines.push(`+ ${b[j]}`); added++; j++; }
+  const diff = lines.length > maxLines
+    ? `${lines.slice(0, maxLines).join('\n')}\n… (${lines.length - maxLines} more changed lines)`
+    : lines.join('\n');
+  return { changed: true, added, removed, diff };
 }
 
 /** Include color regions in geometry data for saving. */
@@ -2376,6 +2440,7 @@ async function main() {
       transformFn: (code: string) => string,
       label?: string,
       assertions?: GeometryAssertions,
+      carryColors: boolean = true,
     ) {
       const parsed = parseVersionTarget(target, 'forkVersion');
       if ('error' in parsed) return parsed;
@@ -2422,13 +2487,27 @@ async function main() {
         }
       }
 
-      // Commit: update editor, run, save.
+      // Commit: update editor, run, (carry colors), save.
       const prevGeoData = getState().currentVersion?.geometryData as Record<string, unknown> | null;
+      const parentColors = carryColors ? versionColorRegions(parent) : [];
       setValue(newCode);
       await runCodeSync(newCode);
       const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
+
+      // Re-apply the parent's color regions to the forked geometry before
+      // snapshotting the thumbnail and saving, so a geometry tweak doesn't
+      // force the agent to repaint. Descriptors are re-resolved against the
+      // new mesh; non-matching regions drop out and are reported. When not
+      // carrying, clear any stale in-memory regions so the fork is clean.
+      let colorReport: { carried: string[]; dropped: string[] } = { carried: [], dropped: [] };
+      if (parentColors.length > 0) {
+        colorReport = rehydrateColorRegions({ colorRegions: parentColors });
+      } else {
+        clearRegions();
+      }
+
       const thumbnail = await captureThumbnail();
-      const version = await saveVersion(newCode, getGeometryDataObj(), thumbnail, label, assertions?.notes);
+      const version = await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes);
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
@@ -2442,8 +2521,48 @@ async function main() {
         geometry: newGeoData,
         version: version ? { id: version.id, index: version.index, label: version.label } : null,
         diff,
+        codeDiff: computeCodeDiff(parent.code, newCode),
+        ...(parentColors.length > 0 ? { colors: colorReport } : {}),
         galleryUrl: getGalleryUrl(),
         ...(forkWarnings.length > 0 ? { warnings: forkWarnings } : {}),
+      };
+    },
+
+    /** Transfer the color regions from a prior version onto the CURRENT
+     *  geometry by re-resolving each region's descriptor against the live
+     *  mesh — instead of repainting region by region after a rebuild. Any
+     *  colors currently on the model are replaced. Regions whose descriptor
+     *  no longer resolves (a dropped label, raw-triangle regions on changed
+     *  topology) are skipped and listed in `dropped`. In-memory like any
+     *  paint op: call runAndSave / saveVersion to persist. Returns
+     *  { source, carried, dropped } or { error }. */
+    async copyColorsFromVersion(target: { index?: number; id?: string }) {
+      const parsed = parseVersionTarget(target, 'copyColorsFromVersion');
+      if ('error' in parsed) return parsed;
+      if (!getState().session) {
+        return { error: 'No active session. Call openSession(id) or createSession() first.' };
+      }
+      if (!currentMeshData) {
+        return { error: 'No geometry loaded — run code first, then copy colors onto it.' };
+      }
+      const source = await peekVersion(parsed.value);
+      if (!source) {
+        return { error: `No version found with ${parsed.kind} "${parsed.value}" in the active session. Use listVersions() to see valid ${parsed.kind}s.` };
+      }
+      const regions = versionColorRegions(source);
+      if (regions.length === 0) {
+        return { error: `Version ${source.index} ("${source.label}") has no color regions to copy.` };
+      }
+      const report = rehydrateColorRegions({ colorRegions: regions });
+      scheduleColorRefresh();
+      syncLockState();
+      return {
+        source: { index: source.index, label: source.label },
+        carried: report.carried,
+        dropped: report.dropped,
+        note: report.dropped.length > 0
+          ? 'Some regions did not resolve on the current geometry and were skipped — repaint those, or check the labels/topology still match. Call runAndSave or saveVersion to persist the rest.'
+          : 'All regions transferred. Call runAndSave or saveVersion to persist.',
       };
     },
 
@@ -4352,7 +4471,7 @@ async function main() {
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'paintByLabel.color must be [r,g,b] in 0..1' };
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
       if (!currentLabelMap || currentLabelMap.size === 0) {
-        return { error: 'No labels registered in the current run. Wrap features with api.label(shape, "name") in your code, then runAndSave, then call paintByLabel.' };
+        return { error: 'No labels registered in the current run. Either wrap features with api.label(shape, "name") in your code, then runAndSave, then call paintByLabel — or, if you cannot edit the code, paint by coordinates instead: paintInBox / paintComponent (after listComponents) / paintConnected (after probePixel on a render).' };
       }
       const ids = currentLabelMap.get(opts.label);
       if (!ids || ids.size === 0) {
@@ -4418,7 +4537,7 @@ async function main() {
       if (items.length === 0) return { results: [], failed: [] };
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
       if (!currentLabelMap || currentLabelMap.size === 0) {
-        return { error: 'No labels registered in the current run. Wrap features with api.label(shape, "name") in your code, then runAndSave, then call paintByLabels.' };
+        return { error: 'No labels registered in the current run. Either wrap features with api.label(shape, "name") in your code, then runAndSave, then call paintByLabels — or, if you cannot edit the code, paint by coordinates instead: paintInBox / paintComponent (after listComponents) / paintConnected (after probePixel on a render).' };
       }
       const results: Array<Record<string, unknown>> = [];
       const failed: Array<{ label: string; error: string }> = [];
@@ -4634,7 +4753,8 @@ async function main() {
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
         'loadVersion':     { signature: 'await loadVersion({index} | {id}) -- Load version into editor -> {id, index, label, code, geometryData} or {error}', docs: '/ai.md#console-api--windowpartwright' },
-        'forkVersion':     { signature: 'await forkVersion({index} | {id}, transformFn, label?, assertions?) -- Load + modify + validate + save in one call', docs: '/ai.md#forking-a-prior-version' },
+        'forkVersion':     { signature: 'await forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) -- Load + modify + validate + save in one call; carries parent colors -> {..., codeDiff, colors}', docs: '/ai.md#forking-a-prior-version' },
+        'copyColorsFromVersion': { signature: 'await copyColorsFromVersion({index} | {id}) -- Re-apply a prior version\'s color regions onto the current mesh -> {source, carried, dropped}', docs: '/ai.md#forking-a-prior-version' },
         'openSession':     { signature: 'await openSession(id) -- Open existing session', docs: '/ai.md#resuming-a-session' },
         'listSessions':    { signature: 'await listSessions() -- List all sessions', docs: '/ai.md#console-api--windowpartwright' },
         'getSessionContext': { signature: 'await getSessionContext() -- Get full session context (for resuming)', docs: '/ai.md#resuming-a-session' },

@@ -229,7 +229,8 @@ await partwright.createSessionWithVersions(name, [{code, label},...]) // Batch c
 await partwright.saveVersion(label?)     // Save current state as version
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
 await partwright.loadVersion({index} | {id})  // Load version into editor -> {id, index, label, code, geometryData, labelsAvailable, labelCount} or {error}
-await partwright.forkVersion({index} | {id}, transformFn, label?, assertions?) // Load + modify + validate + save in one call
+await partwright.forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) // Load + modify + validate + save atomically; carries parent colors -> {..., codeDiff, colors}
+await partwright.copyColorsFromVersion({index} | {id}) // Re-apply a prior version's colors onto the current mesh -> {source, carried, dropped}
 partwright.getGalleryUrl()               // -> URL for gallery view (human review)
 partwright.getSessionUrl()               // -> URL for this session
 await partwright.listSessions()          // -> [{id, name, updated}]
@@ -518,7 +519,7 @@ If your rotated geometry looks mirrored, negate the angle. This burned 10+ minut
 
 ### Painting locks the editor — `clearColors()` to iterate
 
-Once any region exists, the editor goes read-only and `runAndSave` is rejected. To change the geometry mid-session, call `partwright.clearColors()` first, *then* run new code. To preserve a colored version while iterating, call `forkVersion(...)` instead — it loads, transforms, validates, and saves a fresh uncolored child without touching the colored one.
+Once any region exists, the editor goes read-only and `runAndSave` is rejected. To change the geometry mid-session, call `partwright.clearColors()` first, *then* run new code. To preserve a colored version while iterating, call `forkVersion(...)` instead — it loads, transforms, validates, and saves a child without touching the parent, and re-applies the parent's colors to the new geometry (pass `carryColors: false` for an uncolored child).
 
 ### Verify before you commit
 
@@ -625,7 +626,8 @@ const r = await partwright.forkVersion(
   { index: 11 },                       // or { id: "Kx3Pq9mA2wEr" } from listVersions()
   code => code.replace('towerH = 28', 'towerH = 35'),
   "v11a - taller towers",              // label for the new version
-  { isManifold: true, maxComponents: 1 } // optional assertions (validated before saving)
+  { isManifold: true, maxComponents: 1 }, // optional assertions (validated before saving)
+  true                                  // carryColors (default true) — re-apply parent colors
 );
 // On success:
 //   r.passed       = true (only when assertions provided)
@@ -633,6 +635,10 @@ const r = await partwright.forkVersion(
 //   r.geometry     = full geometry stats
 //   r.version      = { id, index, label } of the newly saved version
 //   r.diff         = stat diff vs. the previous current version
+//   r.codeDiff     = { changed, added, removed, diff } — what actually changed in the SOURCE.
+//                    Verify your transform landed here: changed:false means the code is
+//                    byte-identical to the parent (your edit was a no-op).
+//   r.colors       = { carried: [names], dropped: [names] } when the parent had colors
 //   r.galleryUrl   = gallery URL for human review
 // On failure:
 //   r.error        = "No version found with index ..." / "transformFn threw: ..." / etc.
@@ -643,6 +649,33 @@ const r = await partwright.forkVersion(
 `listVersions()[].id`). The two are never mixed, so there's no ambiguity about which field is being
 looked up. This is the recommended way to build parallel branches (v11a, v11b, ...) off a shared
 parent without a load/read/modify/save round-trip chain.
+
+**Color carry-over.** If the parent version has color regions, `forkVersion` re-applies them to the
+forked geometry automatically — each region's geometry-relative descriptor (box / slab / `byLabel` /
+coplanar / connected-from-seed) is re-resolved against the new mesh, so a dimension tweak does **not**
+force you to repaint. Regions whose descriptor no longer matches (a label the new code dropped, raw
+triangle ids on changed topology) are skipped and reported in `r.colors.dropped`. Pass `carryColors:
+false` for an intentionally uncolored fork.
+
+> When the AI tool form is used, pass `patches: [{find, replace}, ...]` instead of a `transformFn`.
+> Each `find` must occur **exactly once** in the parent code — a find that matches zero or multiple
+> times is rejected with an error rather than silently saving the parent unchanged, so copy the exact
+> text (whitespace included) from `getCode()`/`loadVersion()`.
+
+### Copying colors onto a rebuilt version
+
+When you rebuild geometry from scratch with `runAndSave` (rather than forking) but it matches an
+earlier *painted* version, transfer the colors in one call instead of repainting region by region:
+
+```js
+const r = await partwright.copyColorsFromVersion({ index: 7 }); // the painted version
+// r.source  = { index, label }
+// r.carried = [names] re-resolved onto the current mesh
+// r.dropped = [names] whose descriptor no longer matches — repaint those
+```
+
+This is in-memory like any paint op — call `runAndSave` or `saveVersion` afterward to persist. (You
+don't need it after `forkVersion`, which already carries colors.)
 
 ### Modify and test
 
