@@ -75,7 +75,7 @@ export interface LocalContextSettings {
 }
 
 const DEFAULT_OPENAI_MODEL: OpenaiModelId = 'gpt-5-mini';
-const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-2.5-flash';
+const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
 
 const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel'> & { anthropicModel: AnthropicModelId }> = {
   minimal: {
@@ -459,16 +459,21 @@ export const OPENAI_MODEL_OPTIONS: { id: string; label: string }[] = [
   { id: 'gpt-4o-mini', label: 'GPT-4o mini' },
 ];
 
-/** Curated Gemini starter menu — only the GA 2.5 family, which is
- *  verified to exist on the v1beta generateContent endpoint. Newer
- *  models (Gemini 3, "Nano Banana", dated previews) rev fast and their
- *  exact ids vary by key tier, so guessing them here just produces 404s.
- *  The Gemini tab's "Load models from your key" button fetches the real
- *  current lineup via listModels(); a custom-id input covers the rest. */
+/** Curated Gemini starter menu — the general-purpose chat+tools models
+ *  best suited to driving CAD design, picked from the live model list.
+ *  Deliberately excludes image-gen (Nano Banana), music (Lyria), TTS,
+ *  robotics, and Gemma families — they don't do tool-driven modeling.
+ *  The "-latest" aliases auto-update so they don't go stale; the pinned
+ *  previews give a fixed target. The Gemini tab's "Load models from your
+ *  key" button still surfaces the full lineup (incl. Nano Banana) for
+ *  anyone who wants to experiment, and the custom-id input covers the
+ *  rest. */
 export const GEMINI_MODEL_OPTIONS: { id: string; label: string }[] = [
-  { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-  { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite' },
+  { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview' },
+  { id: 'gemini-pro-latest', label: 'Gemini Pro (latest)' },
+  { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },
+  { id: 'gemini-flash-latest', label: 'Gemini Flash (latest)' },
+  { id: 'gemini-flash-lite-latest', label: 'Gemini Flash-Lite (latest)' },
 ];
 
 /** Human-readable name for a provider — for chat-bubble badges, modal

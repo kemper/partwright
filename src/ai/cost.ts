@@ -34,13 +34,25 @@ const OPENAI_PRICING: Record<string, ModelPricing> = {
   'gpt-4o-mini':   { input: 0.15, output:  0.60 },
 };
 
+// Approximate per-tier pricing. Preview/`-latest` ids don't publish
+// stable rates, so these are best-effort by tier (pro / flash / lite);
+// the cost meter is explicitly "estimated" and any id we don't list
+// falls back to FALLBACK_PRICING.
 const GEMINI_PRICING: Record<string, ModelPricing> = {
-  'gemini-3-pro':         { input: 2.00, output: 12.00 },
-  'gemini-3-flash':       { input: 0.40, output:  3.00 },
-  'gemini-3-pro-image':   { input: 2.00, output: 12.00 },
-  'gemini-2.5-pro':       { input: 1.25, output: 10.00 },
-  'gemini-2.5-flash':     { input: 0.30, output:  2.50 },
-  'gemini-2.5-flash-lite':{ input: 0.10, output:  0.40 },
+  // Pro tier
+  'gemini-3.1-pro-preview': { input: 2.00, output: 12.00 },
+  'gemini-3-pro-preview':   { input: 2.00, output: 12.00 },
+  'gemini-pro-latest':      { input: 2.00, output: 12.00 },
+  'gemini-2.5-pro':         { input: 1.25, output: 10.00 },
+  // Flash (balanced) tier
+  'gemini-3.5-flash':       { input: 0.40, output:  3.00 },
+  'gemini-3-flash-preview': { input: 0.40, output:  3.00 },
+  'gemini-flash-latest':    { input: 0.40, output:  3.00 },
+  'gemini-2.5-flash':       { input: 0.30, output:  2.50 },
+  // Flash-Lite (cheap/fast) tier
+  'gemini-flash-lite-latest':  { input: 0.10, output: 0.40 },
+  'gemini-3.1-flash-lite':     { input: 0.10, output: 0.40 },
+  'gemini-2.5-flash-lite':     { input: 0.10, output: 0.40 },
 };
 
 const CACHE_READ_MULTIPLIER = 0.1;

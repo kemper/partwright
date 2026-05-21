@@ -25,13 +25,15 @@ export type OpenaiModelId =
   | 'gpt-4o'
   | 'gpt-4o-mini';
 
-/** Curated Gemini model ids (the GA 2.5 family we ship as defaults).
- *  `geminiModel` on ChatToggles is a plain `string`, so newer ids picked
- *  via "Load models from your key" or the custom-id input fit too. */
+/** Curated Gemini model ids we ship as defaults. `geminiModel` on
+ *  ChatToggles is a plain `string`, so newer ids picked via "Load models
+ *  from your key" or the custom-id input fit too. */
 export type GeminiModelId =
-  | 'gemini-2.5-pro'
-  | 'gemini-2.5-flash'
-  | 'gemini-2.5-flash-lite';
+  | 'gemini-3.1-pro-preview'
+  | 'gemini-pro-latest'
+  | 'gemini-3.5-flash'
+  | 'gemini-flash-latest'
+  | 'gemini-flash-lite-latest';
 
 /** Either an Anthropic model name or a WebLLM model_id or a hosted-provider
  *  model id. The shape is the same at the type level (a string) so callers
