@@ -124,10 +124,23 @@ export function getAdjacency(): AdjacencyGraph | null {
 /** Rebuild adjacency graph for a new mesh. Call this whenever updateMesh fires. */
 export function updatePaintMesh(mesh: MeshData): void {
   currentMesh = mesh;
+  adjacency = null; // invalidate — mesh changed
   if (active) {
     adjacency = buildAdjacency(mesh);
     onSlabDragMeshChanged();
     onBoxDragMeshChanged();
+  } else {
+    // Pre-warm in the background so activate() finds it ready.
+    // Uses requestIdleCallback when available (Chrome/Firefox/Edge); falls back
+    // to setTimeout so Safari still benefits from the deferral.
+    const prewarm = () => {
+      if (currentMesh === mesh && adjacency === null) adjacency = buildAdjacency(mesh);
+    };
+    if (typeof requestIdleCallback !== 'undefined') {
+      requestIdleCallback(prewarm);
+    } else {
+      setTimeout(prewarm, 0);
+    }
   }
   clearHighlight();
 }
@@ -136,7 +149,9 @@ export function activate(): void {
   if (active) return;
   active = true;
 
-  if (currentMesh) {
+  if (currentMesh && !adjacency) {
+    // Fallback: pre-warm callback hasn't fired yet (e.g. user opened paint
+    // immediately after execution). Build synchronously now.
     adjacency = buildAdjacency(currentMesh);
   }
 
