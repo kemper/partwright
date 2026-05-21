@@ -77,7 +77,10 @@ export function executeCode(source: string, lang?: Language): MeshResult {
 
 let engineWorker: Worker | null = null;
 let workerReadyResolve: (() => void) | null = null;
-const workerReady: Promise<void> = new Promise(r => { workerReadyResolve = r; });
+// Mutable so it can be replaced when the Worker is restarted after a crash.
+// A crashed-and-restarted Worker must not inherit the already-resolved promise
+// from its predecessor — callers would skip the await and race the new init.
+let workerReady: Promise<void> = new Promise(r => { workerReadyResolve = r; });
 let callIdCounter = 0;
 
 const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void }>();
@@ -85,6 +88,9 @@ const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => voi
 
 function initEngineWorker(): void {
   if (engineWorker) return;
+  // Fresh ready-gate so the restarted Worker's 'ready' message resolves it,
+  // not the one that was already resolved by the previous instance.
+  workerReady = new Promise(r => { workerReadyResolve = r; });
   engineWorker = new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' });
   engineWorker.onmessage = handleEngineWorkerMessage;
   engineWorker.onerror = (ev) => {

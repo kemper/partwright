@@ -26,6 +26,17 @@ import type { Language } from './engines/types';
 
 let manifoldReady = false;
 
+// Catch unhandled promise rejections inside the Worker (e.g. WASM panics that
+// escape an inner try-catch) and forward them as 'error' messages so the main
+// thread's pendingExecutions promises are rejected rather than hanging forever.
+self.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
+  const message = event.reason instanceof Error
+    ? event.reason.message
+    : String(event.reason ?? 'Unknown Worker error');
+  self.postMessage({ type: 'error', callId: null, message });
+  event.preventDefault();
+});
+
 self.onmessage = async (event: MessageEvent) => {
   const msg = event.data as { type: string } & Record<string, unknown>;
 
@@ -56,6 +67,8 @@ self.onmessage = async (event: MessageEvent) => {
     };
     try {
       // Propagate main-thread quality setting so Worker uses same segment count.
+      // Reset in finally so a subsequent execution doesn't inherit a stale value
+      // if this execution's circularSegments message arrives out of order.
       setCircularSegmentsOverride(typeof circularSegments === 'number' ? circularSegments : null);
       // Populate the per-run import registry so api.imports works in user code.
       setActiveImports(imports ?? []);
@@ -116,6 +129,9 @@ self.onmessage = async (event: MessageEvent) => {
         callId,
         message: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      // Always reset so a subsequent execution doesn't inherit this run's value.
+      setCircularSegmentsOverride(null);
     }
     return;
   }

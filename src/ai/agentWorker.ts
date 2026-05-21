@@ -33,15 +33,28 @@ const workerQueuedBlocks: ChatBlock[] = [];
 let abortController: AbortController | null = null;
 let callIdCounter = 0;
 
+const TOOL_CALL_TIMEOUT_MS = 60_000;
+
 /** Proxy that the Worker uses instead of the real executeTool.
- *  Sends a tool_call message, then awaits the matching tool_result. */
+ *  Sends a tool_call message, then awaits the matching tool_result.
+ *  Times out after 60 s to prevent the Worker from hanging forever if the
+ *  main thread crashes or becomes unresponsive mid-turn. */
 async function executeToolViaMessage(
   name: string,
   input: Record<string, unknown>,
 ): Promise<ToolExecResult> {
   const callId = `tc-${++callIdCounter}`;
   self.postMessage({ type: 'tool_call', callId, name, input });
-  return new Promise<ToolExecResult>(resolve => pendingToolCalls.set(callId, resolve));
+  return new Promise<ToolExecResult>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingToolCalls.delete(callId);
+      reject(new Error(`Tool call "${name}" (${callId}) timed out after ${TOOL_CALL_TIMEOUT_MS / 1000}s`));
+    }, TOOL_CALL_TIMEOUT_MS);
+    pendingToolCalls.set(callId, (result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+  });
 }
 
 self.onmessage = async (event: MessageEvent) => {

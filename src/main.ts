@@ -1709,7 +1709,10 @@ async function main() {
       assertString(code, 'run(code)', { optional: true, allowEmpty: false });
       const src = code ?? getValue();
       if (code !== undefined) setValue(code);
-      await runCodeSync(src);
+      const applied = await runCodeSync(src);
+      if (!applied) {
+        return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
+      }
       return JSON.parse(geometryDataEl.textContent || '{}');
     },
 
@@ -2420,7 +2423,10 @@ async function main() {
       // Assertions are checked against the live result rather than a separate
       // isolation run. This halves execution time for assertion-guarded saves.
       setValue(code);
-      await runCodeSync(code);
+      const applied = await runCodeSync(code);
+      if (!applied) {
+        return { passed: false, failures: ['Run was superseded by a concurrent execution — retry'], geometry: null, version: null, diff: null, galleryUrl: getGalleryUrl() };
+      }
       const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
 
       if (assertions) {
@@ -2521,7 +2527,10 @@ async function main() {
       const prevGeoData = getState().currentVersion?.geometryData as Record<string, unknown> | null;
       const parentColors = carryColors ? versionColorRegions(parent) : [];
       setValue(newCode);
-      await runCodeSync(newCode);
+      const forkApplied = await runCodeSync(newCode);
+      if (!forkApplied) {
+        return { error: 'Run was superseded by a concurrent execution — retry' };
+      }
       const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
 
       // Re-apply the parent's color regions to the forked geometry before
@@ -3050,7 +3059,11 @@ async function main() {
 
       for (const v of versions) {
         setValue(v.code);
-        await runCodeSync(v.code);
+        const vApplied = await runCodeSync(v.code);
+        if (!vApplied) {
+          results.push({ version: null, geometry: null, error: 'Run superseded — version skipped' });
+          continue;
+        }
         const thumbnail = await captureThumbnail();
         const geoData = getGeometryDataObj();
         const version = await saveVersion(v.code, geoData, thumbnail, v.label);
@@ -5543,7 +5556,7 @@ async function main() {
         executionTimeMs: elapsed,
         codeHash: simpleHash(src),
       });
-      return false;
+      return true;
     }
 
     if (result.mesh) {

@@ -27,8 +27,12 @@ function getWorker(): Worker {
     const err = new Error(`Agent Worker crashed: ${ev.message}`);
     if (rejectCurrentTurn) {
       rejectCurrentTurn(err);
-      cleanup();
     }
+    cleanup();
+    // Terminate and null the dead Worker so getWorker() will create a fresh
+    // one on the next turn, rather than reusing a crashed instance.
+    worker?.terminate();
+    worker = null;
   };
   return worker;
 }
@@ -98,7 +102,9 @@ function cleanup() {
  *  Call this whenever state.queuedBlocks is modified while a turn is
  *  in flight. */
 export function pushQueuedBlocks(blocks: ChatBlock[]): void {
-  if (blocks.length > 0 && worker) {
+  // Only relay if a turn is actually in flight — if no turn is active, the
+  // Worker would buffer these blocks but never drain them, silently losing them.
+  if (blocks.length > 0 && worker && resolveCurrentTurn) {
     worker.postMessage({ type: 'queue_blocks', blocks });
   }
 }
