@@ -49,6 +49,26 @@ function argsToString(args: unknown[]): string {
     .join(' ');
 }
 
+// Best-effort origin trace for an intercepted console.error/warn. Prefers the
+// stack of a real Error argument; otherwise synthesizes a call-site stack so
+// the log can answer "where did this come from" even for plain-string warnings
+// (e.g. a third-party library's deprecation notice). Frames inside this module
+// (the console override + this helper) are stripped so the trace starts at the
+// real caller.
+function detailFromArgs(args: unknown[]): string | undefined {
+  for (const a of args) {
+    if (a instanceof Error && a.stack) return a.stack;
+  }
+  const raw = new Error().stack;
+  if (!raw) return undefined;
+  const cleaned = raw
+    .split('\n')
+    .filter((l) => l.trim() && l.trim() !== 'Error' && !l.includes('errorLog'))
+    .join('\n')
+    .trim();
+  return cleaned || undefined;
+}
+
 class ErrorLogStore {
   private _entries: LogEntry[] = [];
   private _subscribers = new Set<Subscriber>();
@@ -62,11 +82,12 @@ class ErrorLogStore {
   /** Wire up global error handlers and console interception. Call once at startup. */
   install(): void {
     window.addEventListener('error', (e) => {
+      const where = e.filename ? `at ${e.filename}:${e.lineno}:${e.colno}` : undefined;
       this.capture({
         level: 'error',
         source: 'uncaught',
         message: e.message || 'Uncaught error',
-        detail: e.error instanceof Error ? e.error.stack : undefined,
+        detail: e.error instanceof Error ? e.error.stack : where,
       });
     });
 
@@ -90,14 +111,24 @@ class ErrorLogStore {
     console.error = function (...args: unknown[]) {
       origError(...args);
       if (!self._inNotify) {
-        self.capture({ level: 'error', source: 'app', message: argsToString(args) });
+        self.capture({
+          level: 'error',
+          source: 'app',
+          message: argsToString(args),
+          detail: detailFromArgs(args),
+        });
       }
     };
 
     console.warn = function (...args: unknown[]) {
       origWarn(...args);
       if (!self._inNotify) {
-        self.capture({ level: 'warn', source: 'app', message: argsToString(args) });
+        self.capture({
+          level: 'warn',
+          source: 'app',
+          message: argsToString(args),
+          detail: detailFromArgs(args),
+        });
       }
     };
   }

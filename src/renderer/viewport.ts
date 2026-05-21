@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Clock } from 'three';
+import { Timer } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { MeshData } from '../geometry/types';
 import { createDefaultMaterial, createWireframeMaterial } from './materials';
@@ -196,10 +196,11 @@ export function initViewport(container: HTMLElement): {
   );
 
   // Animate
-  const clock = new Clock();
-  function animate() {
+  const timer = new Timer();
+  function animate(timestamp?: number) {
     animationId = requestAnimationFrame(animate);
-    const delta = clock.getDelta();
+    timer.update(timestamp);
+    const delta = timer.getDelta();
     updateGizmo(delta);
     syncOrbitState();
     controls.update();
