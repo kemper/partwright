@@ -1,80 +1,59 @@
 // Import-detail (mesh reduction) step:
 //  - A heavy manifold STL (> 20k triangles) triggers the "Import detail" modal.
-//  - Choosing a reduction simplifies the stored mesh (a subdivided cube's flat
-//    faces collapse back toward the minimal triangulation).
-//  - Choosing "Full detail" keeps every triangle — and confirms imports are
-//    exempt from the global mesh-detail refine factor (count is unchanged, not
-//    multiplied).
+//  - The "Max triangles" control reduces the stored mesh toward a target count
+//    (a sphere reduces smoothly, so intermediate counts are achievable).
+//  - "Full detail" (the default) keeps every triangle — and confirms imports
+//    are exempt from the global mesh-detail refine factor.
 
 import { test, expect } from 'playwright/test';
+import Module from 'manifold-3d';
 
-/** Binary STL of a cube (side 2·s) whose 6 faces are each subdivided into an
- *  n×n grid → 12·n² triangles, all coplanar per face so simplify can collapse
- *  them. n=42 → 21,168 triangles, just over the 20k import-detail threshold. */
-function buildSubdividedCubeSTLBase64(n = 42, s = 5): string {
-  // Each face: a constant axis + two in-plane axes whose cross product points
-  // outward, so every triangle is wound consistently (required for a manifold).
-  const faces: { axis: number; val: number; u: number; v: number }[] = [
-    { axis: 0, val: s, u: 1, v: 2 },
-    { axis: 0, val: -s, u: 2, v: 1 },
-    { axis: 1, val: s, u: 2, v: 0 },
-    { axis: 1, val: -s, u: 0, v: 2 },
-    { axis: 2, val: s, u: 0, v: 1 },
-    { axis: 2, val: -s, u: 1, v: 0 },
-  ];
-  const pt = (f: typeof faces[0], i: number, j: number): [number, number, number] => {
-    const p: [number, number, number] = [0, 0, 0];
-    p[f.axis] = f.val;
-    p[f.u] = -s + (i / n) * 2 * s;
-    p[f.v] = -s + (j / n) * 2 * s;
-    return p;
-  };
-  const tris: [number, number, number][][] = [];
-  for (const f of faces) {
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < n; j++) {
-        const a = pt(f, i, j);
-        const b = pt(f, i + 1, j);
-        const c = pt(f, i + 1, j + 1);
-        const d = pt(f, i, j + 1);
-        tris.push([a, b, c]);
-        tris.push([a, c, d]);
-      }
-    }
-  }
+// Build a watertight, correctly-oriented sphere STL straight from manifold-3d so
+// the import forms a clean manifold and reduces predictably.
+let stlBuf: Buffer;
+let originalTris = 0;
 
-  const buf = new ArrayBuffer(84 + tris.length * 50);
-  const view = new DataView(buf);
-  view.setUint32(80, tris.length, true);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function meshToBinarySTL(mesh: any): Buffer {
+  const { vertProperties, triVerts, numProp, numTri } = mesh;
+  const buf = new ArrayBuffer(84 + numTri * 50);
+  const dv = new DataView(buf);
+  dv.setUint32(80, numTri, true);
   let off = 84;
-  for (const tri of tris) {
+  for (let t = 0; t < numTri; t++) {
     off += 12; // normal left zero
-    for (const vert of tri) {
-      view.setFloat32(off, vert[0], true); off += 4;
-      view.setFloat32(off, vert[1], true); off += 4;
-      view.setFloat32(off, vert[2], true); off += 4;
+    for (let k = 0; k < 3; k++) {
+      const vi = triVerts[t * 3 + k];
+      dv.setFloat32(off, vertProperties[vi * numProp], true); off += 4;
+      dv.setFloat32(off, vertProperties[vi * numProp + 1], true); off += 4;
+      dv.setFloat32(off, vertProperties[vi * numProp + 2], true); off += 4;
     }
-    view.setUint16(off, 0, true); off += 2;
+    dv.setUint16(off, 0, true); off += 2;
   }
-  return Buffer.from(new Uint8Array(buf)).toString('base64');
+  return Buffer.from(new Uint8Array(buf));
 }
 
-const TRIS = 42 * 42 * 12; // 21,168
+test.beforeAll(async () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const m: any = await (Module as unknown as () => Promise<any>)();
+  m.setup();
+  const sph = m.Manifold.sphere(5, 256); // ~30k+ triangles, well over the 20k gate
+  const mesh = sph.getMesh();
+  originalTris = mesh.numTri;
+  stlBuf = meshToBinarySTL(mesh);
+  sph.delete();
+});
 
-async function importCube(page: import('playwright/test').Page): Promise<void> {
-  // Use the AI-agent URL: it skips the onboarding tour (whose backdrop would
-  // intercept modal clicks) and the simplify step needs the WASM engine ready,
-  // which `partwright.run` existing guarantees.
+async function importSphere(page: import('playwright/test').Page): Promise<void> {
   await page.goto('/editor?view=ai');
   await page.waitForFunction(
     () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
     { timeout: 20_000 },
   );
-  const fileInput = page.locator('#import-wrapper input[type="file"]');
-  await fileInput.setInputFiles({
-    name: 'dense-cube.stl',
+  await page.locator('#import-wrapper input[type="file"]').setInputFiles({
+    name: 'sphere.stl',
     mimeType: 'application/octet-stream',
-    buffer: Buffer.from(buildSubdividedCubeSTLBase64(), 'base64'),
+    buffer: stlBuf,
   });
   await expect(page.getByRole('heading', { name: 'Import detail' })).toBeVisible();
 }
@@ -91,29 +70,34 @@ async function geometry(page: import('playwright/test').Page) {
 }
 
 test.describe('Import detail reduction', () => {
-  test('a heavy STL offers reduction and the chosen reduction shrinks the mesh', async ({ page }) => {
-    await importCube(page);
+  test('reduces an STL toward a target triangle count', async ({ page }) => {
+    expect(originalTris).toBeGreaterThan(20_000); // sanity: the modal gate
+    await importSphere(page);
 
-    // The modal reports the original triangle count (Full-detail row).
-    await expect(page.getByText(`${TRIS.toLocaleString()} tris`)).toBeVisible();
+    // Default state shows the full count.
+    await expect(page.locator('#import-target-result')).toContainText('Full detail');
 
-    await page.locator('input[type=radio][value=strong]').check();
+    // Ask for a precise target and confirm the live preview reports a reduction.
+    await page.locator('#import-target-input').fill('6000');
+    await page.locator('#import-target-input').dispatchEvent('change');
+    await expect(page.locator('#import-target-result')).toContainText('of original');
+
     await page.getByRole('button', { name: 'Import', exact: true }).click();
 
     const geo = await geometry(page);
-    expect(geo.triangleCount).toBeLessThan(2000); // flat faces collapse toward 12
-    expect(geo.triangleCount).toBeGreaterThan(0);
-    expect(geo.volume).toBeGreaterThan(900); // shape preserved within tolerance
-    expect(geo.volume).toBeLessThan(1100);
+    expect(geo.triangleCount).toBeLessThan(originalTris / 2);
+    expect(geo.triangleCount).toBeGreaterThan(1500); // landed near the 6k target
+    expect(geo.volume).toBeGreaterThan(480); // sphere r=5 ⇒ ~523, preserved within tolerance
+    expect(geo.volume).toBeLessThan(560);
   });
 
   test('Full detail keeps every triangle (imports are exempt from global refine)', async ({ page }) => {
-    await importCube(page);
+    await importSphere(page);
 
-    // Default selection is Full detail — import without reducing.
+    // Default selection is full detail — import without reducing.
     await page.getByRole('button', { name: 'Import', exact: true }).click();
 
     const geo = await geometry(page);
-    expect(geo.triangleCount).toBe(TRIS); // not reduced, and not 4x'd by refine
+    expect(geo.triangleCount).toBe(originalTris);
   });
 });
