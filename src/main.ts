@@ -23,7 +23,7 @@ import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
-import { onQualitySettingsChange, loadQualitySettings, saveQualitySettings } from './geometry/qualitySettings';
+import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible } from './renderer/viewport';
 import { renderCompositeCanvas, renderElevationsToContainer, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
@@ -86,6 +86,7 @@ import { maybeStartTour, resetTour, startTour } from './ui/tour';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
+import { initMeshSettingsUI } from './ui/meshSettingsUI';
 import { updatePaintMesh, setOnRegionPainted, isActive as isPaintActive } from './color/paintMode';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu } from './annotations/annotateUI';
 import { isActive as isSelectActive, getSelectedId as getSelectedAnnotationId } from './annotations/selectMode';
@@ -989,7 +990,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, editorErrorPanel, viewportPane, viewsContainer, elevationsContainer, galleryContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, meshDetailSlider, meshDetailReadout, switchTab } = createLayout(editorUI);
+  const { editorContainer, editorErrorPanel, viewportPane, viewsContainer, elevationsContainer, galleryContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab } = createLayout(editorUI);
 
   // Format button and auto-format toggle
   const AUTO_FORMAT_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40';
@@ -1011,22 +1012,6 @@ async function main() {
       e.preventDefault();
       formatCode();
     }
-  });
-
-  // Mesh-detail (refinement) slider — global subdivision factor. Updating the
-  // readout is cheap and runs live while dragging; the (expensive) re-render is
-  // deferred to `change` (pointer release / keyboard step) via the settings
-  // listener below, so we don't re-tessellate on every intermediate value.
-  function syncDetailReadout(n: number): void {
-    meshDetailReadout.textContent = n > 1 ? `${n}×` : 'off';
-  }
-  meshDetailSlider.value = String(loadQualitySettings().refine);
-  syncDetailReadout(loadQualitySettings().refine);
-  meshDetailSlider.addEventListener('input', () => {
-    syncDetailReadout(Number(meshDetailSlider.value));
-  });
-  meshDetailSlider.addEventListener('change', () => {
-    saveQualitySettings({ ...loadQualitySettings(), refine: Number(meshDetailSlider.value) });
   });
 
   // Init views panel
@@ -1401,14 +1386,10 @@ async function main() {
     if (isAutoRun()) runCode(code);
   });
 
-  // When the user changes the modeling-quality preset or mesh-detail factor,
-  // re-render the current code so the new segment count / refinement takes
-  // effect immediately, and keep the Detail slider reflecting the stored value.
-  onQualitySettingsChange((s) => {
-    meshDetailSlider.value = String(s.refine);
-    syncDetailReadout(s.refine);
-    runCode();
-  });
+  // When the user changes the curve-quality preset or mesh-detail factor (via
+  // the viewport Mesh popover), re-render the current code so the new segment
+  // count / refinement takes effect immediately.
+  onQualitySettingsChange(() => { runCode(); });
 
   // Wire up clip controls
   initClipControls(clipControls);
@@ -1418,6 +1399,7 @@ async function main() {
   initDimensionsToggle(clipControls);
   initAnnotateUI(clipControls);
   initPaintUI(clipControls);
+  initMeshSettingsUI(clipControls);
   // Declared before initMeasureToggle is called so the assignment inside it
   // doesn't hit a let-TDZ error (the same `let` lower in this function is
   // hoisted to a binding, but only initialized when execution reaches it).

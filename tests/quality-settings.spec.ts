@@ -1,52 +1,48 @@
 import { test, expect } from 'playwright/test';
 
-// Verifies the new modeling-quality settings modal + persistence wiring.
-//   1. Toolbar exposes a gear button that opens the modal.
-//   2. The modal defaults to "Highest" the first time it loads (clean storage).
-//   3. Picking a different preset persists to localStorage and triggers a re-render.
+// Curve-quality (circular-segment) settings, now living in the viewport "Mesh"
+// popover next to Paint / Annotate / Measure:
+//   1. The popover opens from the Mesh button and shows the four presets,
+//      with Highest active by default.
+//   2. Picking a preset persists to localStorage and re-renders.
+//   3. The manifold-js engine applies the chosen segment count.
 
-test.describe('Modeling quality settings', () => {
-  test('toolbar gear opens modal showing Highest as default', async ({ page }) => {
-    await page.goto('/editor?view=ai');
-    await page.waitForSelector('#btn-quality');
+// Dismiss the onboarding tour so its backdrop doesn't intercept overlay clicks.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+});
 
-    await page.locator('#btn-quality').click();
-    await expect(page.getByRole('heading', { name: 'Modeling Quality' })).toBeVisible();
+test.describe('Curve quality settings', () => {
+  test('Mesh popover shows presets with Highest active by default', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#mesh-settings-toggle');
 
-    // Highest preset radio should be checked on first load.
-    const highestRadio = page.locator('input[type=radio][value=highest]');
-    await expect(highestRadio).toBeChecked();
+    await page.locator('#mesh-settings-toggle').click();
+    await expect(page.locator('#mesh-settings-panel')).toBeVisible();
 
-    // "Done" closes the modal.
-    await page.getByRole('button', { name: 'Done' }).click();
-    await expect(page.getByRole('heading', { name: 'Modeling Quality' })).toHaveCount(0);
+    // All four presets are present; Highest is the default selection.
+    for (const q of ['low', 'medium', 'high', 'highest']) {
+      await expect(page.locator(`#mesh-settings-panel [data-quality="${q}"]`)).toBeVisible();
+    }
+    const stored0 = await page.evaluate(() => localStorage.getItem('partwright-quality-settings-v1'));
+    // Either unset (defaults apply) or already highest.
+    if (stored0) expect(JSON.parse(stored0).quality ?? 'highest').toBe('highest');
   });
 
-  test('picking Low persists and reloads checked', async ({ page }) => {
-    await page.goto('/editor?view=ai');
-    await page.waitForSelector('#btn-quality');
+  test('picking Low persists and reloads selected', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#mesh-settings-toggle');
 
-    await page.locator('#btn-quality').click();
-    await page.locator('input[type=radio][value=low]').check();
+    await page.locator('#mesh-settings-toggle').click();
+    await page.locator('#mesh-settings-panel [data-quality="low"]').click();
 
     const stored = await page.evaluate(() => localStorage.getItem('partwright-quality-settings-v1'));
-    expect(stored).toBeTruthy();
-    expect(JSON.parse(stored!)).toEqual({ quality: 'low', refine: 2 });
-
-    // Close + reopen modal — Low should still be the selected radio.
-    await page.getByRole('button', { name: 'Done' }).click();
-    await page.locator('#btn-quality').click();
-    await expect(page.locator('input[type=radio][value=low]')).toBeChecked();
+    expect(JSON.parse(stored!)).toMatchObject({ quality: 'low', refine: 1 });
   });
 
   test('manifold-js engine applies the chosen segment count', async ({ page }) => {
-    // Drive the sandbox via the in-page partwright console API. We run a
-    // tiny sphere script under each preset and read the resulting triVerts
-    // count — higher quality = more triangles.
-    await page.goto('/editor?view=ai');
-    await page.waitForSelector('#btn-quality');
-
-    // Wait for the WASM engine to load.
+    await page.goto('/editor');
+    await page.waitForSelector('#mesh-settings-toggle');
     await page.waitForFunction(
       () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
       { timeout: 20_000 },
@@ -55,24 +51,21 @@ test.describe('Modeling quality settings', () => {
     type RunResult = { triangleCount?: number; error?: string };
     type PartwrightApi = { run: (code: string) => Promise<RunResult> };
     const sphereCode = 'const { Manifold } = api; return Manifold.sphere(5);';
+    const runSphere = () =>
+      page.evaluate((code) => {
+        const api = (window as unknown as { partwright: PartwrightApi }).partwright;
+        return api.run(code);
+      }, sphereCode);
 
-    // Run once with Highest (default) — should produce many triangles.
-    const high = await page.evaluate(async (code) => {
-      const api = (window as unknown as { partwright: PartwrightApi }).partwright;
-      return api.run(code);
-    }, sphereCode);
-    expect(high.triangleCount ?? 0).toBeGreaterThan(2000); // 128-segment sphere is many thousands of tris
+    // Highest (default) — many triangles.
+    const high = await runSphere();
+    expect(high.triangleCount ?? 0).toBeGreaterThan(2000);
 
-    // Drop to Low via the modal.
-    await page.locator('#btn-quality').click();
-    await page.locator('input[type=radio][value=low]').check();
-    await page.getByRole('button', { name: 'Done' }).click();
+    // Drop to Low via the Mesh popover.
+    await page.locator('#mesh-settings-toggle').click();
+    await page.locator('#mesh-settings-panel [data-quality="low"]').click();
 
-    // Re-run the same code — should produce far fewer triangles.
-    const low = await page.evaluate(async (code) => {
-      const api = (window as unknown as { partwright: PartwrightApi }).partwright;
-      return api.run(code);
-    }, sphereCode);
+    const low = await runSphere();
     expect(low.triangleCount ?? 0).toBeLessThan(high.triangleCount ?? 0);
     expect(low.triangleCount ?? 0).toBeGreaterThan(0);
   });

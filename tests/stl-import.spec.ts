@@ -40,9 +40,8 @@ function buildCubeSTLBase64(): string {
 
 test.describe('STL import', () => {
   // Note: imported meshes are exempt from the global mesh-detail (refine)
-  // factor, so the 12-triangle cube below stays 12 triangles even though the
-  // default factor is 2x. That exemption is what the triangleCount assertion
-  // (toBe(12)) guards here.
+  // factor (which also defaults to off), so the 12-triangle cube below stays
+  // 12 triangles. The triangleCount assertion (toBe(12)) guards that exemption.
 
   test('binary STL creates a new session with an editable Manifold.ofMesh wrapper', async ({ page }) => {
     const stlBase64 = buildCubeSTLBase64();

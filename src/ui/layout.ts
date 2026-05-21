@@ -1,5 +1,4 @@
 import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
-import { REFINE_MIN, REFINE_MAX } from '../geometry/qualitySettings';
 
 export type TabName = 'interactive' | 'ai' | 'elevations' | 'gallery' | 'images' | 'diff' | 'notes';
 
@@ -18,8 +17,6 @@ export interface LayoutElements {
   clipControls: HTMLElement;
   formatBtn: HTMLButtonElement;
   autoFormatToggle: HTMLButtonElement;
-  meshDetailSlider: HTMLInputElement;
-  meshDetailReadout: HTMLElement;
   switchTab: (tab: TabName, options?: SwitchTabOptions) => void;
 }
 
@@ -77,36 +74,6 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   editorHeader.appendChild(collapseEditorBtn);
 
   editorPane.appendChild(editorHeader);
-
-  // Mesh-detail (refinement) sub-row — a global subdivision factor applied to
-  // every render, sitting directly under the header (above the code). Distinct
-  // from the gear's curve "Quality": this densifies flat faces too. The value
-  // and readout are initialized and persisted in main.ts.
-  const detailBar = document.createElement('div');
-  detailBar.className = 'flex items-center gap-2 px-3 py-1 bg-zinc-800/60 border-b border-zinc-700';
-  detailBar.title = 'Mesh detail — subdivides every triangle edge into N pieces at render time (triangle count grows ~N²). 1 = off.';
-
-  const detailLabel = document.createElement('span');
-  detailLabel.className = 'shrink-0 text-xs text-zinc-500 leading-none';
-  detailLabel.textContent = 'Mesh detail';
-  detailBar.appendChild(detailLabel);
-
-  const meshDetailSlider = document.createElement('input');
-  meshDetailSlider.type = 'range';
-  meshDetailSlider.id = 'mesh-detail-slider';
-  meshDetailSlider.min = String(REFINE_MIN);
-  meshDetailSlider.max = String(REFINE_MAX);
-  meshDetailSlider.step = '1';
-  meshDetailSlider.className = 'flex-1 min-w-0 max-w-[220px] accent-blue-500 cursor-pointer';
-  meshDetailSlider.setAttribute('aria-label', 'Mesh detail (refinement factor)');
-  detailBar.appendChild(meshDetailSlider);
-
-  const meshDetailReadout = document.createElement('span');
-  meshDetailReadout.id = 'mesh-detail-readout';
-  meshDetailReadout.className = 'shrink-0 w-8 text-right text-xs text-zinc-400 font-mono leading-none tabular-nums';
-  detailBar.appendChild(meshDetailReadout);
-
-  editorPane.appendChild(detailBar);
 
   const editorErrorPanel = document.createElement('div');
   editorErrorPanel.id = 'editor-error-panel';
@@ -462,7 +429,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, editorContainer, editorErrorPanel, viewportPane, viewsContainer, elevationsContainer, galleryContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, meshDetailSlider, meshDetailReadout, switchTab };
+  return { editorPane, editorContainer, editorErrorPanel, viewportPane, viewsContainer, elevationsContainer, galleryContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab };
 }
 
 const TAB_ACTIVE_CLASS = 'shrink-0 whitespace-nowrap px-4 py-2 md:py-1.5 text-sm md:text-xs font-medium text-zinc-100 border-b-2 border-blue-500 bg-zinc-900';

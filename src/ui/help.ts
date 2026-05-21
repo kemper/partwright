@@ -166,8 +166,9 @@ export function createHelpPage(
       id: 'quality-theme',
       heading: 'Quality settings & theme',
       body:
-        '<strong class="text-zinc-300">Quality</strong> — The ⚙ icon in the toolbar opens the modeling-quality modal. Pick a preset (Highest / High / Medium / Low) that controls how many segments approximate a circle. <em>Highest</em> is the default and gives the smoothest output; drop down if you\'re iterating on heavy geometry and want faster renders.<br><br>' +
-        '<strong class="text-zinc-300">Mesh detail</strong> — The slider just above the code editor refines every rendered model, splitting each triangle edge into N pieces so flat faces get denser too (not just curves). It defaults to 2× for a little extra resolution; slide to 1 to turn it off, or higher for a very fine mesh (triangle count grows ~N², so high values can slow heavy models).<br><br>' +
+        '<strong class="text-zinc-300">Mesh settings</strong> — The <strong class="text-zinc-300">Mesh</strong> button in the viewport overlay (next to Paint / Annotate / Measure) opens a small panel with two controls.<br><br>' +
+        '<strong class="text-zinc-300">Curve quality</strong> picks how many segments approximate a circle (Highest / High / Medium / Low). <em>Highest</em> is the default and gives the smoothest curves; drop down if you\'re iterating on heavy geometry and want faster renders.<br><br>' +
+        '<strong class="text-zinc-300">Mesh detail</strong> refines the whole model, splitting each triangle edge into N pieces so flat faces get denser too (not just curves). It\'s <em>off by default</em> — raise it mainly when you want finer paint regions. Triangle count grows ~N², so high values can slow heavy models.<br><br>' +
         '<strong class="text-zinc-300">Theme</strong> — Toggle <strong class="text-zinc-300">Dark Mode</strong> in the toolbar to switch the entire UI, viewport background, and grid colors between dark and light. Your choice persists across sessions.',
     },
     {

@@ -14,14 +14,15 @@ export interface QualitySettings {
   /** Global mesh-refinement factor applied to every rendered manifold.
    *  1 = off (native triangle density); n > 1 splits every triangle edge
    *  into n pieces (so triangle count grows ~n²), densifying flat faces too
-   *  — not just curves, the way `quality` does. Driven by the editor's
-   *  "Detail" slider. */
+   *  — not just curves, the way `quality` does. Driven by the viewport's
+   *  Mesh settings popover. Defaults to off; it's an opt-in detail boost
+   *  (mainly useful for finer paint regions). */
   refine: number;
 }
 
 export const REFINE_MIN = 1;
 export const REFINE_MAX = 64;
-export const REFINE_DEFAULT = 2;
+export const REFINE_DEFAULT = 1;
 
 export const QUALITY_SEGMENTS: Record<QualityLevel, number> = {
   low: 16,
