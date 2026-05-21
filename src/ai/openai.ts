@@ -126,12 +126,20 @@ export async function streamTurn(
   };
   if (tools.length > 0) body.tools = tools;
 
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: authHeaders(spec.apiKey),
-    body: JSON.stringify(body),
-    signal,
-  });
+  let res: Response;
+  try {
+    res = await fetch(API_URL, {
+      method: 'POST',
+      headers: authHeaders(spec.apiKey),
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    // Abort (stall watchdog / user Stop) rejects the fetch — return a
+    // clean aborted result rather than throwing the raw DOMException.
+    if (signal?.aborted) return abortedResult();
+    throw err;
+  }
 
   if (!res.ok) {
     if (signal?.aborted) return abortedResult();

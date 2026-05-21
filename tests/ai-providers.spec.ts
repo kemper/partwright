@@ -25,6 +25,38 @@ test.describe('Multi-provider AI', () => {
     expect(events).toEqual(['{"x":1}', '{"y":2}', '[DONE]']);
   });
 
+  test('SSE reader handles CRLF split across network chunks', async ({ page }) => {
+    // The real-world bug: a `\r\n` straddles two chunks (one ends with
+    // `\r`, the next starts with `\n`). A per-chunk `\r\n`→`\n` replace
+    // misses that, dropping events — which manifested as truncated
+    // assistant text and spurious stalls. Feed deliberately awkward
+    // chunk splits and confirm every event still parses.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel');
+    const events = await page.evaluate(async () => {
+      const mod = await import('/src/ai/sse.ts');
+      // Full stream is three CRLF-separated events:
+      //   data: {"a":1}\r\n\r\ndata: {"b":2}\r\n\r\ndata: {"c":3}\r\n\r\n
+      // but the network chunk boundaries deliberately fall mid-CRLF (a
+      // chunk ends with '\r', the next starts with '\n'), the case a
+      // per-chunk `\r\n`→`\n` replace mishandles.
+      const chunks = [
+        'data: {"a":1}\r\n\r',
+        '\ndata: {"b":2}\r',
+        '\n\r\ndata: {"c":3}\r\n\r\n',
+      ];
+      const enc = new TextEncoder();
+      const stream = new ReadableStream({
+        start(c) { for (const ch of chunks) c.enqueue(enc.encode(ch)); c.close(); },
+      });
+      const res = new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+      const out: string[] = [];
+      for await (const e of mod.readSseStream(res)) out.push(e);
+      return out;
+    });
+    expect(events).toEqual(['{"a":1}', '{"b":2}', '{"c":3}']);
+  });
+
   test('Gemini replays thoughtSignature on functionCall parts', async ({ page }) => {
     // Regression: Gemini 3 attaches an opaque thought_signature to each
     // functionCall part and 400s if it isn't echoed back on the next

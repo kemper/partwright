@@ -152,12 +152,22 @@ export async function streamTurn(
   };
   if (tools.length > 0) body.tools = tools;
 
-  const res = await fetch(streamUrl(spec.model, spec.apiKey), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  });
+  let res: Response;
+  try {
+    res = await fetch(streamUrl(spec.model, spec.apiKey), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    // An abort (stall watchdog or user Stop) rejects the fetch with a
+    // DOMException ("signal is aborted without reason"). Treat it as a
+    // clean abort so the loop can auto-retry instead of surfacing the
+    // raw exception as an error bubble.
+    if (signal?.aborted) return abortedResult();
+    throw err;
+  }
 
   if (!res.ok) {
     if (signal?.aborted) return abortedResult();
