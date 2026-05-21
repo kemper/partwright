@@ -13,6 +13,10 @@ let _isOpen = false;
 let _currentFilter: ErrorLevel | 'all' = 'all';
 let _unseenCount = 0;
 
+// Entry IDs the user has expanded. Tracked at module scope so an open row's
+// state survives the full list rebuild that happens when a new entry arrives.
+const _expandedIds = new Set<string>();
+
 // Filter chip elements stored so syncFilterChips() can update them.
 let _filterBtns: Array<{ el: HTMLButtonElement; value: ErrorLevel | 'all' }> = [];
 
@@ -46,10 +50,15 @@ function formatTime(ts: number): string {
 
 function buildEntryEl(entry: LogEntry): HTMLElement {
   const row = document.createElement('div');
-  row.className = 'border-b border-zinc-800/60 hover:bg-zinc-800/30 transition-colors';
+  row.className = 'border-b border-zinc-800/60';
 
   const top = document.createElement('div');
-  top.className = 'flex items-center gap-1.5 px-3 py-1.5 min-w-0';
+  top.className =
+    'flex items-center gap-1.5 px-3 py-1.5 min-w-0 cursor-pointer select-none hover:bg-zinc-800/30 transition-colors';
+
+  const caret = document.createElement('span');
+  caret.className = 'text-[10px] text-zinc-600 shrink-0';
+  top.appendChild(caret);
 
   const time = document.createElement('span');
   time.className = 'text-[10px] text-zinc-600 font-mono shrink-0 tabular-nums';
@@ -77,30 +86,56 @@ function buildEntryEl(entry: LogEntry): HTMLElement {
 
   row.appendChild(top);
 
-  if (entry.detail) {
-    const expandBtn = document.createElement('span');
-    expandBtn.className = 'text-[10px] text-zinc-600 shrink-0 cursor-pointer select-none';
-    expandBtn.textContent = '▸';
-    top.appendChild(expandBtn);
-    top.classList.add('cursor-pointer', 'select-none');
+  // Expanded view: the full (untruncated) message, a precise timestamp with
+  // source/level, and the captured stack or origin trace when available.
+  const expanded = document.createElement('div');
+  expanded.className = 'px-3 pb-2 pt-0.5 space-y-1.5';
 
+  const fullMsg = document.createElement('div');
+  fullMsg.className =
+    'text-[11px] text-zinc-300 whitespace-pre-wrap break-words leading-relaxed';
+  fullMsg.textContent = entry.message;
+  expanded.appendChild(fullMsg);
+
+  const meta = document.createElement('div');
+  meta.className = 'text-[10px] text-zinc-500 font-mono break-words';
+  meta.textContent = `${new Date(entry.timestamp).toLocaleString()} · ${entry.level.toUpperCase()} · source: ${entry.source}`;
+  expanded.appendChild(meta);
+
+  if (entry.detail) {
     const detail = document.createElement('pre');
     detail.className =
-      'hidden px-3 pb-2 text-[10px] font-mono text-zinc-500 whitespace-pre-wrap max-h-28 overflow-auto leading-4';
+      'text-[10px] font-mono text-zinc-400 whitespace-pre-wrap break-words max-h-48 overflow-auto leading-4 bg-zinc-950/60 rounded p-2 border border-zinc-800';
     detail.textContent = entry.detail;
-    row.appendChild(detail);
-
-    top.addEventListener('click', () => {
-      const nowHidden = detail.classList.toggle('hidden');
-      expandBtn.textContent = nowHidden ? '▸' : '▾';
-    });
+    expanded.appendChild(detail);
+  } else {
+    const none = document.createElement('div');
+    none.className = 'text-[10px] text-zinc-600 italic';
+    none.textContent = 'No stack trace or origin captured for this entry.';
+    expanded.appendChild(none);
   }
+
+  row.appendChild(expanded);
+
+  const sync = (open: boolean) => {
+    expanded.classList.toggle('hidden', !open);
+    caret.textContent = open ? '▾' : '▸';
+  };
+  sync(_expandedIds.has(entry.id));
+
+  top.addEventListener('click', () => {
+    const open = !_expandedIds.has(entry.id);
+    if (open) _expandedIds.add(entry.id);
+    else _expandedIds.delete(entry.id);
+    sync(open);
+  });
 
   return row;
 }
 
 function renderEntries(all: readonly LogEntry[]): void {
   if (!_listEl) return;
+  if (all.length === 0) _expandedIds.clear();
   const filtered =
     _currentFilter === 'all' ? all : all.filter((e) => e.level === _currentFilter);
 
@@ -122,7 +157,7 @@ function buildPanel(): HTMLElement {
   panel.className = [
     'hidden fixed bottom-0 left-0 right-0',
     'md:left-auto md:right-4 md:bottom-4 md:w-[480px] md:rounded-xl',
-    'h-[300px] bg-zinc-900 border border-zinc-700 shadow-2xl flex flex-col z-40',
+    'h-[300px] bg-zinc-900 border border-zinc-700 shadow-2xl flex flex-col z-[45]',
   ].join(' ');
 
   // Header
