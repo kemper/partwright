@@ -139,7 +139,12 @@ export async function streamTurn(
   callbacks: StreamCallbacks = {},
   signal?: AbortSignal,
 ): Promise<StreamResult> {
-  const max_tokens = spec.maxTokens ?? 8192;
+  // For Gemini thinking models, maxOutputTokens is the COMBINED ceiling for
+  // reasoning + answer (we opt into thought parts below). At 8192 a heavy
+  // reasoning turn can spend the whole budget thinking and return an empty
+  // answer (finishReason MAX_TOKENS). Default to a generous ceiling so both
+  // fit — it's a cap, not a reservation, so normal turns cost the same.
+  const max_tokens = spec.maxTokens ?? 32768;
 
   const tools: GeminiToolDef[] = spec.tools.length > 0
     ? [{ functionDeclarations: spec.tools.map(t => ({
