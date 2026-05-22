@@ -8,6 +8,10 @@ export interface Session {
   images?: AttachedImage[] | null;
   /** Modeling language for this session. Missing = 'manifold-js'. */
   language?: 'manifold-js' | 'scad';
+  /** Per-session mesh-quality settings: curve segment preset + global refine
+   *  factor. Missing = use defaults. Kept structural (not the geometry module's
+   *  type) to preserve db-layer isolation. */
+  meshSettings?: { quality: string; refine: number };
 }
 
 export interface AttachedImage {
@@ -331,7 +335,7 @@ export function legacyImagesObjectToArray(obj: LegacyImagesObject): AttachedImag
   return result;
 }
 
-export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language'>>): Promise<void> {
+export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'meshSettings'>>): Promise<void> {
   const store = await tx('sessions', 'readwrite');
   const session = await reqToPromise(store.get(id)) as Session | null;
   if (!session) return;

@@ -130,6 +130,7 @@ import {
   deleteSession,
   renameSession,
   setSessionLanguage,
+  persistActiveMeshSettings,
   saveVersion,
   navigateVersion,
   loadVersion as loadVersionFromStore,
@@ -1490,8 +1491,9 @@ async function main() {
 
   // When the user changes the curve-quality preset or mesh-detail factor (via
   // the viewport Mesh popover), re-render the current code so the new segment
-  // count / refinement takes effect immediately.
-  onQualitySettingsChange(() => { runCode(); });
+  // count / refinement takes effect immediately, and persist it to the active
+  // session (settings are per-session, not global).
+  onQualitySettingsChange((s) => { runCode(); void persistActiveMeshSettings(s); });
 
   // Wire up clip controls
   initClipControls(clipControls);

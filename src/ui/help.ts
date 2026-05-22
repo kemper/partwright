@@ -171,6 +171,7 @@ export function createHelpPage(
         '<strong class="text-zinc-300">Mesh settings</strong> — The <strong class="text-zinc-300">Mesh</strong> button in the viewport overlay (next to Paint / Annotate / Measure) opens a small panel with two controls.<br><br>' +
         '<strong class="text-zinc-300">Curve quality</strong> picks how many segments approximate a circle (Ultra / Very High / High / Medium / Low). <em>Very High</em> (128 segments) is the default; <em>Ultra</em> (1024 segments) gives near-perfect curves for smooth final output, while lower presets render faster when you\'re iterating on heavy geometry. The preset only applies to curves that don\'t pass their own segment count, and the AI assistant honors it too.<br><br>' +
         '<strong class="text-zinc-300">Mesh detail</strong> refines the whole model, splitting each triangle edge into N pieces so flat faces get denser too (not just curves). It\'s <em>off by default</em> — raise it mainly when you want finer paint regions. Triangle count grows ~N², so high values can slow heavy models.<br><br>' +
+        'Both controls are <strong class="text-zinc-300">saved per session</strong>: they travel with the design (and its export) and reset to the defaults for a brand-new session.<br><br>' +
         '<strong class="text-zinc-300">Theme</strong> — Toggle <strong class="text-zinc-300">Dark Mode</strong> in the toolbar to switch the entire UI, viewport background, and grid colors between dark and light. Your choice persists across sessions.',
     },
     {

@@ -16,6 +16,7 @@ import {
   REFINE_MAX,
   type QualityLevel,
 } from '../geometry/qualitySettings';
+import { onStateChange } from '../storage/sessionManager';
 
 const inactiveBtnClass = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
 const activeBtnClass = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-blue-500/30 backdrop-blur text-blue-200 border border-blue-400/60 transition-colors';
@@ -54,6 +55,9 @@ export function initMeshSettingsUI(controlsContainer: HTMLElement): void {
   });
 
   onQualitySettingsChange(syncFromSettings);
+  // Opening/creating a session re-hydrates the settings silently (no quality
+  // change event), so refresh the widgets when the active session changes.
+  onStateChange(syncFromSettings);
   syncFromSettings();
 }
 

@@ -1,11 +1,14 @@
-// Per-browser modeling quality settings. Controls the default circular
-// segment count applied to every Manifold / OpenSCAD run. Scripts can
-// still override per-call (segment arg to sphere/cylinder/etc., or an
-// explicit setCircularSegments() / $fn assignment) — this is just the
-// starting default that primitives fall back to when no override is
-// given. Persisted to localStorage as one JSON blob.
-
-const STORAGE_KEY = 'partwright-quality-settings-v1';
+// Modeling quality settings (curve segment count + global mesh-detail factor).
+// Controls the default circular segment count applied to every Manifold /
+// OpenSCAD run. Scripts can still override per-call (segment arg to
+// sphere/cylinder/etc., or an explicit setCircularSegments() / $fn assignment)
+// — this is just the starting default that primitives fall back to when no
+// override is given.
+//
+// These are SESSION-scoped, not global: the value lives in memory here (what the
+// engine reads), and sessionManager persists it per session and re-hydrates it
+// on open. A brand-new session starts at the defaults. There is intentionally no
+// localStorage blob — settings do not bleed across sessions.
 
 export type QualityLevel = 'low' | 'medium' | 'high' | 'highest' | 'ultra';
 
@@ -45,35 +48,35 @@ const DEFAULT_SETTINGS: QualitySettings = {
   refine: REFINE_DEFAULT,
 };
 
-let cached: QualitySettings | null = null;
+// In-memory current settings — what the engine reads each run. Driven by the
+// active session (see hydrate/reset below), not by localStorage.
+let current: QualitySettings = { ...DEFAULT_SETTINGS };
 const listeners = new Set<(s: QualitySettings) => void>();
 
 export function loadQualitySettings(): QualitySettings {
-  if (cached) return cached;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<QualitySettings>;
-      cached = mergeWithDefaults(parsed);
-      return cached;
-    }
-  } catch {
-    // Fall through to defaults on parse / storage error.
-  }
-  cached = { ...DEFAULT_SETTINGS };
-  return cached;
+  return { ...current };
 }
 
+/** User-initiated change (the Mesh popover). Updates the live value and fires
+ *  listeners so the viewport re-renders and sessionManager persists it to the
+ *  active session. */
 export function saveQualitySettings(next: QualitySettings): void {
-  const merged = mergeWithDefaults(next);
-  cached = merged;
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
-  } catch {
-    // localStorage may be full or disabled (private browsing). Settings
-    // remain applied for this session; we don't surface the failure.
-  }
-  for (const fn of listeners) fn(merged);
+  current = mergeWithDefaults(next);
+  for (const fn of listeners) fn(current);
+}
+
+/** Restore settings from a session on open (or null → defaults). Silent: it
+ *  updates the value the engine reads but does NOT fire change-listeners, so it
+ *  neither re-renders nor re-persists — the session-load flow handles both. */
+export function hydrateQualitySettings(partial: { quality?: string; refine?: number } | null | undefined): void {
+  // mergeWithDefaults validates the quality string against QUALITY_SEGMENTS and
+  // clamps refine, so a loose stored shape (db structural type) is safe here.
+  current = partial ? mergeWithDefaults(partial as Partial<QualitySettings>) : { ...DEFAULT_SETTINGS };
+}
+
+/** Back to defaults for a brand-new or closed session (silent, like hydrate). */
+export function resetQualitySettings(): void {
+  current = { ...DEFAULT_SETTINGS };
 }
 
 export function onQualitySettingsChange(fn: (s: QualitySettings) => void): () => void {
@@ -83,12 +86,12 @@ export function onQualitySettingsChange(fn: (s: QualitySettings) => void): () =>
 
 /** Resolve the current segment count from the active quality preset. */
 export function getDefaultCircularSegments(): number {
-  return QUALITY_SEGMENTS[loadQualitySettings().quality];
+  return QUALITY_SEGMENTS[current.quality];
 }
 
 /** Current global mesh-refinement factor (>= 1; 1 means no refinement). */
 export function getRefineFactor(): number {
-  return loadQualitySettings().refine;
+  return current.refine;
 }
 
 function clampRefine(value: unknown): number {

@@ -37,6 +37,11 @@ import {
   type SerializedAnnotation,
 } from '../annotations/annotations';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
+import {
+  hydrateQualitySettings,
+  resetQualitySettings,
+  type QualitySettings,
+} from '../geometry/qualitySettings';
 
 /**
  * Current schema version for `.partwright.json` exports.
@@ -81,8 +86,12 @@ import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
  *           session round-trips with its chat. Only written when the caller
  *           opts in via {@link ExportOptions.includeChat}. On import each
  *           message is re-keyed to the new session; older readers ignore it.
+ *  - `1.7` — optional per-session `session.meshSettings` (curve quality preset
+ *           + global refine factor). Mesh settings are session-scoped, so they
+ *           travel with the session; missing means defaults. Older readers
+ *           ignore the field.
  */
-export const SCHEMA_VERSION = '1.6';
+export const SCHEMA_VERSION = '1.7';
 
 const CURRENT_MAJOR = 1;
 
@@ -93,7 +102,7 @@ export interface ExportedSession {
   mainifold?: string;
   /** Images may be the array form or the legacy object map ({front, right, ...}).
    * Both also exist under `referenceImages` for pre-rename exports. */
-  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' };
+  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad'; meshSettings?: { quality: string; refine: number } };
   versions: {
     index: number;
     code: string;
@@ -269,6 +278,8 @@ export async function createSession(name?: string, language?: 'manifold-js' | 's
   // bleeds in from the previously-active session.
   loadAnnotations([]);
   setActiveImports([]);
+  // Mesh settings are per-session and don't carry over; new sessions default.
+  resetQualitySettings();
   updateURL();
   notify();
   return session;
@@ -295,6 +306,10 @@ export async function openSession(id: string, versionIndex?: number): Promise<Ve
 
   currentState = { session, currentVersion: version, versionCount: count };
   setActiveImports((version?.importedMeshes ?? []) as ImportedMesh[]);
+  // Restore this session's mesh settings (or defaults) before the load-driven
+  // render so it renders at the right resolution. Silent — the session-load
+  // flow re-renders and the Mesh popover re-syncs via onStateChange.
+  hydrateQualitySettings(session.meshSettings);
   updateURL();
   notify();
   return version;
@@ -308,6 +323,7 @@ export async function closeSession(): Promise<void> {
   currentState = { session: null, currentVersion: null, versionCount: 0 };
   loadAnnotations([]);
   setActiveImports([]);
+  resetQualitySettings();
   updateURL();
   notify();
 }
@@ -337,6 +353,20 @@ export async function setSessionLanguage(id: string, language: 'manifold-js' | '
     currentState.session = { ...currentState.session, language, updated: Date.now() };
     notify();
   }
+}
+
+/** Write-through the active session's mesh settings (curve quality + refine
+ *  factor) when the user changes them in the Mesh popover. Silent on purpose: no
+ *  `notify()`, since a session-state notification would re-trigger the
+ *  load-and-render flow. If no session is active (e.g. landing page), the change
+ *  stays in-memory only and is discarded — matching "new sessions default".
+ *  Does not bump `updated`: a render preference shouldn't reorder recents. */
+export async function persistActiveMeshSettings(settings: QualitySettings): Promise<void> {
+  const session = currentState.session;
+  if (!session) return;
+  const meshSettings = { quality: settings.quality, refine: settings.refine };
+  session.meshSettings = meshSettings;
+  await dbUpdateSession(session.id, { meshSettings });
 }
 
 // === Version operations ===
@@ -651,6 +681,7 @@ export async function clearAllSessions(): Promise<void> {
   currentState = { session: null, currentVersion: null, versionCount: 0 };
   loadAnnotations([]);
   setActiveImports([]);
+  resetQualitySettings();
   updateURL();
   notify();
 }
@@ -751,7 +782,7 @@ export async function exportSession(
 
   return {
     partwright: SCHEMA_VERSION,
-    session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}) },
+    session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}), ...(session.meshSettings ? { meshSettings: session.meshSettings } : {}) },
     versions: versions.map((v, i) => {
       const colorRegions = opts.includeColorRegions ? extractColorRegions(v.geometryData) : undefined;
       const geometryData = opts.includeColorRegions ? v.geometryData : stripColorRegions(v.geometryData);
@@ -793,6 +824,12 @@ export async function importSession(
       ? rawImages
       : legacyImagesObjectToArray(rawImages);
     await dbUpdateSession(session.id, { images: imagesArr });
+  }
+
+  // Per-session mesh settings (schema 1.7). Stored as-is; sanitized on hydrate
+  // (mergeWithDefaults) when the session is opened.
+  if (data.session.meshSettings) {
+    await dbUpdateSession(session.id, { meshSettings: data.session.meshSettings });
   }
 
   // Determine the index of the latest exported version. Schema 1.2 stored
