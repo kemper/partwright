@@ -33,6 +33,7 @@ import {
   type SessionNote,
   type AttachedImage,
 } from './db';
+import { publishTabSync, onTabSync } from './tabSync';
 import { listMessages as dbListMessages, putMessages as dbPutMessages } from '../ai/db';
 import { getSpendingSummary } from '../ai/settings';
 import type { ChatMessage } from '../ai/types';
@@ -489,6 +490,7 @@ export async function listSessions(): Promise<Session[]> {
 
 export async function deleteSession(id: string): Promise<void> {
   await dbDeleteSession(id);
+  publishTabSync({ kind: 'session-deleted', sessionId: id });
   if (currentState.session?.id === id) {
     await closeSession();
   }
@@ -500,6 +502,7 @@ export async function renameSession(id: string, newName: string): Promise<void> 
     currentState.session = { ...currentState.session, name: newName, updated: Date.now() };
     notify();
   }
+  publishTabSync({ kind: 'session-meta', sessionId: id });
 }
 
 export async function setSessionLanguage(id: string, language: 'manifold-js' | 'scad'): Promise<void> {
@@ -507,6 +510,25 @@ export async function setSessionLanguage(id: string, language: 'manifold-js' | '
   if (currentState.session?.id === id) {
     currentState.session = { ...currentState.session, language, updated: Date.now() };
     notify();
+  }
+  publishTabSync({ kind: 'session-meta', sessionId: id });
+}
+
+// === Per-session AI preference ===
+
+/** Remember which AI provider + model is driving the current session so it can
+ *  be restored on reopen. No-op when nothing is open or the value is unchanged.
+ *  Not broadcast to peer tabs on purpose — restoring on reload is the goal, not
+ *  live-mirroring the active model across windows (which would fight the user). */
+export async function setSessionAiPreference(provider: string, model: string | null): Promise<void> {
+  if (!currentState.session || !model) return;
+  const cur = currentState.session.aiPreference;
+  if (cur && cur.provider === provider && cur.model === model) return;
+  const id = currentState.session.id;
+  const aiPreference = { provider, model };
+  await dbUpdateSession(id, { aiPreference });
+  if (currentState.session?.id === id) {
+    currentState.session = { ...currentState.session, aiPreference };
   }
 }
 
@@ -528,6 +550,12 @@ export function getCurrentPart(): Part | null {
  * with starter code (mirroring how a fresh session presents the default
  * example). Returns null if there is no active session.
  */
+/** Tell peer tabs the active session's part structure changed so they re-read
+ *  it (reuses the 'session-meta' channel, which triggers a session reload). */
+function broadcastPartChange(): void {
+  if (currentState.session) publishTabSync({ kind: 'session-meta', sessionId: currentState.session.id });
+}
+
 export async function createPart(name?: string): Promise<Part | null> {
   if (!currentState.session) return null;
   const order = currentState.parts.reduce((m, p) => Math.max(m, p.order), -1) + 1;
@@ -545,6 +573,7 @@ export async function createPart(name?: string): Promise<Part | null> {
   };
   loadAnnotations([]);
   setActiveImports([]);
+  broadcastPartChange();
   updateURL();
   notify();
   return part;
@@ -581,6 +610,7 @@ export async function changePart(partId: string, versionIndex?: number): Promise
   // here so the previous part's strokes don't bleed across the switch.
   loadAnnotations([]);
   setActiveImports((version?.importedMeshes ?? []) as ImportedMesh[]);
+  broadcastPartChange();
   updateURL();
   notify();
   return version;
@@ -597,6 +627,7 @@ export async function renamePart(partId: string, newName: string): Promise<void>
       parts,
       currentPart: currentState.currentPart?.id === partId ? parts[idx] : currentState.currentPart,
     };
+    broadcastPartChange();
     notify();
   }
 }
@@ -635,6 +666,7 @@ export async function deletePart(partId: string): Promise<DeletePartResult | nul
   }
 
   currentState = { ...currentState, parts: remaining };
+  broadcastPartChange();
   updateURL();
   notify();
   return { deleted: target, newCurrent: null };
@@ -666,6 +698,7 @@ export async function reorderParts(orderedIds: string[]): Promise<void> {
       ? next.find(p => p.id === currentState.currentPart!.id) ?? currentState.currentPart
       : null,
   };
+  broadcastPartChange();
   updateURL();
   notify();
 }
@@ -750,6 +783,7 @@ export async function saveVersion(
   setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
   updateURL();
   notify();
+  publishTabSync({ kind: 'session-versions', sessionId: version.sessionId });
   return version;
 }
 
@@ -908,7 +942,8 @@ export function getGalleryUrl(): string {
 
 export async function saveImages(images: AttachedImage[] | null): Promise<void> {
   if (!currentState.session) return;
-  await dbUpdateSession(currentState.session.id, {
+  const id = currentState.session.id;
+  await dbUpdateSession(id, {
     images,
     updated: Date.now(),
   });
@@ -918,6 +953,7 @@ export async function saveImages(images: AttachedImage[] | null): Promise<void> 
     session: { ...currentState.session, images },
   };
   notify();
+  publishTabSync({ kind: 'session-meta', sessionId: id });
 }
 
 export async function getImagesFromSession(): Promise<AttachedImage[] | null> {
@@ -931,8 +967,10 @@ export async function getImagesFromSession(): Promise<AttachedImage[] | null> {
 
 export async function addSessionNote(text: string): Promise<SessionNote | null> {
   if (!currentState.session) return null;
-  const note = await dbAddNote(currentState.session.id, text);
+  const id = currentState.session.id;
+  const note = await dbAddNote(id, text);
   notifyNotes();
+  publishTabSync({ kind: 'notes', sessionId: id });
   return note;
 }
 
@@ -944,11 +982,13 @@ export async function listSessionNotes(): Promise<SessionNote[]> {
 export async function deleteSessionNote(noteId: string): Promise<void> {
   await dbDeleteNote(noteId);
   notifyNotes();
+  if (currentState.session) publishTabSync({ kind: 'notes', sessionId: currentState.session.id });
 }
 
 export async function updateSessionNote(noteId: string, text: string): Promise<void> {
   await dbUpdateNote(noteId, text);
   notifyNotes();
+  if (currentState.session) publishTabSync({ kind: 'notes', sessionId: currentState.session.id });
 }
 
 // === Recent error tracking (for agentHints) ===
@@ -1089,6 +1129,98 @@ export async function clearAllSessions(): Promise<void> {
   setActiveImports([]);
   updateURL();
   notify();
+  publishTabSync({ kind: 'sessions-cleared' });
+}
+
+// === Cross-tab sync ===
+
+let isViewerTab: () => boolean = () => false;
+
+/** Register whether this tab is a read-only viewer of the open session. When it
+ *  returns true, cross-tab reloads follow the latest saved version (mirror the
+ *  leader) instead of pinning the version this tab happened to be on. */
+export function setViewerPredicate(fn: () => boolean): void {
+  isViewerTab = fn;
+}
+
+/** Public trigger to re-read the open session from IndexedDB — used when this
+ *  tab becomes a read-only viewer and should snap to the leader's latest state. */
+export async function refreshCurrentSession(): Promise<void> {
+  await reloadCurrentSessionFromDB();
+}
+
+/** Re-read the currently-open session from IndexedDB after a peer tab changed
+ *  it. Updates the persisted-version pointer and counts; the editor's working
+ *  buffer is owned separately and is intentionally left untouched. */
+async function reloadCurrentSessionFromDB(): Promise<void> {
+  if (!currentState.session) return;
+  const id = currentState.session.id;
+  const session = await getSession(id);
+  if (!session) {
+    // A peer tab deleted the session we had open.
+    currentState = { session: null, parts: [], currentPart: null, currentVersion: null, versionCount: 0 };
+    setActiveImports([]);
+    updateURL();
+    notify();
+    return;
+  }
+  // Re-read parts too — a peer tab may have added/removed/reordered them. A
+  // read-only viewer mirrors the leader, so it follows the session's persisted
+  // current part; a leader keeps whatever part it's already on.
+  const parts = await ensureParts(session);
+  const targetPart = isViewerTab()
+    ? (parts.find(p => p.id === session.currentPartId) ?? parts[0])
+    : (parts.find(p => p.id === currentState.currentPart?.id) ??
+       parts.find(p => p.id === session.currentPartId) ??
+       parts[0]);
+  const count = await getVersionCount(targetPart.id);
+  let version: Version | null;
+  if (isViewerTab()) {
+    // A read-only viewer mirrors the leader, so follow the latest saved version
+    // instead of pinning whatever version this tab happened to be on.
+    version = await getLatestVersion(targetPart.id);
+  } else {
+    const wantedIndex = currentState.currentVersion?.index;
+    version = typeof wantedIndex === 'number' ? await getVersionByIndex(targetPart.id, wantedIndex) : null;
+    if (!version) version = await getLatestVersion(targetPart.id);
+  }
+  currentState = { session, parts, currentPart: targetPart, currentVersion: version, versionCount: count };
+  setActiveImports((version?.importedMeshes ?? []) as ImportedMesh[]);
+  updateURL();
+  notify();
+}
+
+let tabSyncInitialized = false;
+
+/** Wire cross-tab session reloads. Call once at app start. When a peer tab
+ *  mutates the session we currently have open, re-read it from IndexedDB so our
+ *  in-memory state and the UI reflect the change instead of silently drifting.
+ *  Chat and AI-settings sync are handled by their own subscribers. */
+export function initSessionTabSync(): void {
+  if (tabSyncInitialized) return;
+  tabSyncInitialized = true;
+  onTabSync(msg => {
+    const cur = currentState.session?.id;
+    switch (msg.kind) {
+      case 'session-versions':
+      case 'session-meta':
+      case 'session-deleted':
+        if (cur && msg.sessionId === cur) void reloadCurrentSessionFromDB();
+        break;
+      case 'sessions-cleared':
+        currentState = { session: null, parts: [], currentPart: null, currentVersion: null, versionCount: 0 };
+        loadAnnotations([]);
+        setActiveImports([]);
+        updateURL();
+        notify();
+        break;
+      case 'notes':
+        if (cur && msg.sessionId === cur) notifyNotes();
+        break;
+      case 'chat':
+        break; // handled by the AI panel's own subscription
+    }
+  });
 }
 
 // === Export / Import ===
@@ -1370,6 +1502,7 @@ export async function importSession(
   setActiveImports((latest?.importedMeshes ?? []) as ImportedMesh[]);
   updateURL();
   notify();
+  publishTabSync({ kind: 'session-meta', sessionId: refreshedSession.id });
 
   // Note: annotations are NOT loaded here on purpose. The caller is expected to
   // route the imported session through `loadVersionIntoEditor` (or equivalent)

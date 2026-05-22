@@ -4,8 +4,8 @@
 // once at the bottom.
 
 import { deleteKey, getKey } from '../ai/db';
-import { resetClient } from '../ai/anthropic';
-import { resetClient as resetOpenaiClient } from '../ai/openai';
+import { resetClient, listModels as listAnthropicModels } from '../ai/anthropic';
+import { resetClient as resetOpenaiClient, listModels as listOpenaiModels } from '../ai/openai';
 import { resetClient as resetGeminiClient, listModels as listGeminiModels } from '../ai/gemini';
 import { formatUsd } from '../ai/cost';
 import { showAiKeyModal } from './aiKeyModal';
@@ -115,7 +115,7 @@ async function renderTabContent(
   cb: AiSettingsCallbacks,
   rerender: () => void,
 ): Promise<void> {
-  container.appendChild(buildEnableRow(viewedTab, cb, rerender));
+  container.appendChild(await buildEnableRow(viewedTab, cb, rerender));
 
   if (viewedTab === 'anthropic') {
     container.appendChild(buildAnthropicIntro());
@@ -147,12 +147,18 @@ async function renderTabContent(
 /** Row beneath the tab strip that surfaces whether the viewed provider is
  *  the active one — and, when it isn't, the "Enable" button that actually
  *  switches. Making this a deliberate click step fixes the prior bug where
- *  users couldn't tell that tab clicks already changed the provider. */
-function buildEnableRow(viewedTab: Provider, cb: AiSettingsCallbacks, rerender: () => void): HTMLElement {
+ *  users couldn't tell that tab clicks already changed the provider.
+ *
+ *  A hosted provider can't be enabled until its key is connected (you'd just
+ *  switch to a provider that 401s on the first turn), so the button stays
+ *  disabled until then. Local needs no key, so it's always enabled. */
+async function buildEnableRow(viewedTab: Provider, cb: AiSettingsCallbacks, rerender: () => void): Promise<HTMLElement> {
   const settings = loadSettings();
   const activeProvider = settings.toggles.provider;
   const isActive = activeProvider === viewedTab;
   const otherLabel = providerLabel(viewedTab);
+  const needsKey = viewedTab !== 'local';
+  const hasKey = needsKey ? !!(await getKey(viewedTab)) : true;
 
   const wrap = document.createElement('div');
   wrap.className = 'flex items-center justify-between gap-3 rounded border px-3 py-2 ' + (
@@ -171,22 +177,31 @@ function buildEnableRow(viewedTab: Provider, cb: AiSettingsCallbacks, rerender: 
   sub.className = 'text-[11px] text-zinc-400';
   sub.textContent = isActive
     ? 'Chat turns are sent to this provider.'
-    : `Viewing settings only — click Enable to send chat turns through ${otherLabel}.`;
+    : hasKey
+      ? `Viewing settings only — click Enable to send chat turns through ${otherLabel}.`
+      : `Connect your ${otherLabel} key below to enable it.`;
   left.appendChild(sub);
   wrap.appendChild(left);
 
   if (!isActive) {
     const btn = document.createElement('button');
-    btn.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white';
+    btn.className = hasKey
+      ? 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white'
+      : 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-zinc-700 text-zinc-500 cursor-not-allowed';
     btn.textContent = `Enable ${otherLabel}`;
-    btn.title = `Switch the active provider to ${otherLabel}. You can switch back any time.`;
-    btn.addEventListener('click', () => {
-      saveSettings(setProvider(loadSettings(), viewedTab));
-      cb.onChange();
-      // Re-render the modal in place so the Active pill lands on the
-      // right tab and the Enable row flips to its "active" state.
-      rerender();
-    });
+    btn.disabled = !hasKey;
+    btn.title = hasKey
+      ? `Switch the active provider to ${otherLabel}. You can switch back any time.`
+      : `Connect your ${otherLabel} key before enabling it.`;
+    if (hasKey) {
+      btn.addEventListener('click', () => {
+        saveSettings(setProvider(loadSettings(), viewedTab));
+        cb.onChange();
+        // Re-render the modal in place so the Active pill lands on the
+        // right tab and the Enable row flips to its "active" state.
+        rerender();
+      });
+    }
     wrap.appendChild(btn);
   }
   return wrap;
@@ -220,10 +235,61 @@ function buildLocalIntro(): HTMLElement {
   return wrap;
 }
 
+/** "Load models from your key" button shared by all three hosted providers.
+ *  Calls the provider's list endpoint and hands the live list to `onLoaded`
+ *  so the caller can swap its option buttons. Reports counts / errors inline
+ *  (no modal). Model ids rev fast and a hard-coded list goes stale, so this
+ *  is the reliable way to surface the account's current lineup with exact
+ *  ids (new GPT / o-series snapshots, Gemini 3 / Nano Banana, dated Claude
+ *  snapshots) that aren't in the curated starter lists yet. */
+function buildLoadModelsRow(
+  provider: Exclude<Provider, 'local'>,
+  onLoaded: (models: { id: string; label: string }[]) => void,
+): HTMLElement {
+  const listModels = provider === 'anthropic'
+    ? listAnthropicModels
+    : provider === 'openai'
+      ? listOpenaiModels
+      : listGeminiModels;
+  const row = document.createElement('div');
+  row.className = 'flex items-center gap-2';
+  const btn = document.createElement('button');
+  btn.className = 'px-2 py-1 rounded text-[11px] text-zinc-200 bg-zinc-700 hover:bg-zinc-600';
+  btn.textContent = 'Load models from your key';
+  const status = document.createElement('span');
+  status.className = 'text-[10px] text-zinc-500';
+  btn.addEventListener('click', async () => {
+    const key = await getKey(provider);
+    if (!key) { status.textContent = `Connect your ${providerLabel(provider)} key first.`; return; }
+    btn.disabled = true;
+    status.textContent = 'Loading…';
+    try {
+      const live = await listModels(key.apiKey);
+      if (live.length === 0) {
+        status.textContent = 'No chat models returned for this key.';
+      } else {
+        onLoaded(live);
+        status.textContent = `${live.length} model(s) loaded.`;
+      }
+    } catch (err) {
+      status.textContent = err instanceof Error ? err.message : String(err);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  row.appendChild(btn);
+  row.appendChild(status);
+  return row;
+}
+
 /** Default Anthropic model picker. The toggle-strip chip in the panel
  *  header drives the same setting; surfacing it here makes "change my
  *  default model" findable in the Settings dialog where users look. */
 function buildAnthropicModelSection(cb: AiSettingsCallbacks): HTMLElement {
+  // Starts from the curated tiers; "Load models from your key" can replace
+  // it with the account's real lineup (incl. dated snapshots).
+  let optionList: { id: string; label: string }[] = ANTHROPIC_MODEL_OPTIONS;
+
   const wrap = document.createElement('div');
   wrap.className = 'flex flex-col gap-2';
   const head = document.createElement('div');
@@ -233,7 +299,7 @@ function buildAnthropicModelSection(cb: AiSettingsCallbacks): HTMLElement {
 
   const desc = document.createElement('div');
   desc.className = 'text-[11px] text-zinc-400 leading-snug';
-  desc.innerHTML = 'Claude tier used for new turns. <strong>Haiku</strong> is fast and cheap; <strong>Sonnet</strong> is the balanced default; <strong>Opus</strong> is the smartest and most expensive. You can also switch on the fly from the dropdown in the chat header.';
+  desc.innerHTML = 'Claude tier used for new turns. <strong>Haiku</strong> is fast and cheap; <strong>Sonnet</strong> is the balanced default; <strong>Opus</strong> is the smartest and most expensive. Click <strong>Load models from your key</strong> to pull your account\'s full current lineup with exact ids. You can also switch on the fly from the dropdown in the chat header.';
   wrap.appendChild(desc);
 
   const seg = document.createElement('div');
@@ -241,9 +307,11 @@ function buildAnthropicModelSection(cb: AiSettingsCallbacks): HTMLElement {
   const renderButtons = () => {
     seg.replaceChildren();
     const current = loadSettings().toggles.anthropicModel;
-    for (const opt of ANTHROPIC_MODEL_OPTIONS) {
+    let matched = false;
+    for (const opt of optionList) {
       const b = document.createElement('button');
       const active = current === opt.id;
+      if (active) matched = true;
       b.className = active
         ? 'px-2 py-1 rounded text-[11px] bg-zinc-700 text-zinc-100 border border-zinc-600'
         : 'px-2 py-1 rounded text-[11px] text-zinc-300 border border-zinc-700 hover:bg-zinc-700/60';
@@ -255,9 +323,23 @@ function buildAnthropicModelSection(cb: AiSettingsCallbacks): HTMLElement {
       });
       seg.appendChild(b);
     }
+    // Surface a selected id that isn't in the current list (e.g. a loaded
+    // dated snapshot picked on a previous open) as a selected pill.
+    if (!matched && current) {
+      const b = document.createElement('button');
+      b.className = 'px-2 py-1 rounded text-[11px] bg-zinc-700 text-zinc-100 border border-zinc-600';
+      b.textContent = `${current} (custom)`;
+      seg.appendChild(b);
+    }
   };
   renderButtons();
   wrap.appendChild(seg);
+
+  wrap.appendChild(buildLoadModelsRow('anthropic', live => {
+    optionList = live;
+    renderButtons();
+  }));
+
   return wrap;
 }
 
@@ -314,7 +396,7 @@ function buildHostedModelSection(provider: HostedProvider, cb: AiSettingsCallbac
   desc.className = 'text-[11px] text-zinc-400 leading-snug';
   desc.innerHTML = provider === 'gemini'
     ? 'Model used for new turns. The starter list is the GA 2.5 family; click <strong>Load models from your key</strong> to pull your account\'s full current lineup (Gemini 3, Nano Banana, previews) with their exact ids. You can also switch on the fly from the chat header.'
-    : 'Model used for new turns. You can also switch on the fly from the dropdown in the chat header.';
+    : 'Model used for new turns. The starter list is curated; click <strong>Load models from your key</strong> to pull your account\'s full current lineup with exact ids. You can also switch on the fly from the dropdown in the chat header.';
   wrap.appendChild(desc);
 
   const seg = document.createElement('div');
@@ -349,42 +431,14 @@ function buildHostedModelSection(provider: HostedProvider, cb: AiSettingsCallbac
   renderButtons();
   wrap.appendChild(seg);
 
-  // Gemini-only: pull the key's actual available models. Model ids rev
-  // fast and a hard-coded list goes stale (guessed Gemini 3 ids 404'd),
-  // so this is the reliable way to surface current models like Gemini 3
-  // / Nano Banana with whatever id the account was granted.
-  if (provider === 'gemini') {
-    const loadRow = document.createElement('div');
-    loadRow.className = 'flex items-center gap-2';
-    const loadBtn = document.createElement('button');
-    loadBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-200 bg-zinc-700 hover:bg-zinc-600';
-    loadBtn.textContent = 'Load models from your key';
-    const loadStatus = document.createElement('span');
-    loadStatus.className = 'text-[10px] text-zinc-500';
-    loadBtn.addEventListener('click', async () => {
-      const key = await getKey('gemini');
-      if (!key) { loadStatus.textContent = 'Connect a Gemini key first.'; return; }
-      loadBtn.disabled = true;
-      loadStatus.textContent = 'Loading…';
-      try {
-        const live = await listGeminiModels(key.apiKey);
-        if (live.length === 0) {
-          loadStatus.textContent = 'No chat models returned for this key.';
-        } else {
-          optionList = live;
-          loadStatus.textContent = `${live.length} model(s) loaded.`;
-          renderButtons();
-        }
-      } catch (err) {
-        loadStatus.textContent = err instanceof Error ? err.message : String(err);
-      } finally {
-        loadBtn.disabled = false;
-      }
-    });
-    loadRow.appendChild(loadBtn);
-    loadRow.appendChild(loadStatus);
-    wrap.appendChild(loadRow);
-  }
+  // Pull the key's actual available models. Model ids rev fast and a
+  // hard-coded list goes stale (guessed Gemini 3 ids 404'd), so this is the
+  // reliable way to surface current models — Gemini 3 / Nano Banana, new
+  // GPT / o-series snapshots — with whatever id the account was granted.
+  wrap.appendChild(buildLoadModelsRow(provider, live => {
+    optionList = live;
+    renderButtons();
+  }));
 
   // Custom-id input.
   const customRow = document.createElement('div');
