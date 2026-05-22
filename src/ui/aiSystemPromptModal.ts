@@ -21,6 +21,7 @@ import { resolveLocalModel } from '../ai/local';
 import type { Provider } from '../ai/types';
 
 let modalEl: HTMLElement | null = null;
+let escHandler: ((e: KeyboardEvent) => void) | null = null;
 
 export interface SystemPromptModalCallbacks {
   onChange?: () => void;
@@ -294,11 +295,8 @@ export async function showSystemPromptModal(provider: Provider, cb: SystemPrompt
   document.body.appendChild(overlay);
   modalEl = overlay;
 
-  const escHandler = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      closeModal();
-      document.removeEventListener('keydown', escHandler);
-    }
+  escHandler = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') closeModal();
   };
   document.addEventListener('keydown', escHandler);
 }
@@ -315,6 +313,10 @@ function detectTierFromText(text: string, built: BuiltInPrompts): 'slim' | 'medi
 }
 
 function closeModal(): void {
+  if (escHandler) {
+    document.removeEventListener('keydown', escHandler);
+    escHandler = null;
+  }
   modalEl?.remove();
   modalEl = null;
 }
