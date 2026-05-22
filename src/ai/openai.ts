@@ -73,6 +73,35 @@ export async function validateKey(apiKey: string): Promise<string | null> {
   }
 }
 
+/** Fetch the chat-capable models this key can use. OpenAI's /v1/models
+ *  endpoint returns everything (embeddings, audio, image, moderation…), so
+ *  we filter to the gpt-/o-series chat families and drop the non-chat
+ *  variants. Mirrors the Gemini/Anthropic helpers so the settings modal can
+ *  offer "Load models from your key" for every hosted provider. Throws on a
+ *  non-OK response. */
+export async function listModels(apiKey: string): Promise<{ id: string; label: string }[]> {
+  const res = await fetch('https://api.openai.com/v1/models', {
+    method: 'GET',
+    headers: authHeaders(apiKey),
+  });
+  if (!res.ok) {
+    if (res.status === 401) throw new Error('Invalid API key.');
+    const body = await res.text().catch(() => '');
+    throw new Error(`OpenAI ${res.status}: ${body.slice(0, 200) || res.statusText}`);
+  }
+  const data = await res.json() as { data?: Array<{ id?: string }> };
+  const out: { id: string; label: string }[] = [];
+  for (const m of data.data ?? []) {
+    if (!m.id) continue;
+    if (!/^(gpt-|o1|o3|o4|chatgpt)/i.test(m.id)) continue;
+    // Drop non-chat variants that share the gpt- prefix.
+    if (/embedding|whisper|tts|audio|dall-e|image|moderation|realtime|transcribe/i.test(m.id)) continue;
+    out.push({ id: m.id, label: m.id });
+  }
+  out.sort((a, b) => b.id.localeCompare(a.id, undefined, { numeric: true }));
+  return out;
+}
+
 export interface StreamCallbacks {
   onText?: (delta: string) => void;
   onToolStart?: (toolUseId: string, toolName: string) => void;

@@ -396,8 +396,8 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
   const requestedProvider = tgls.provider ?? (legacyIsLocal ? 'local' : DEFAULT_SETTINGS.toggles.provider);
   // If we had to drop a saved local-model id (curated list pruned it), also
   // revert the provider. Otherwise the AI panel sticks on "No local model
-  // picked" instead of offering the dual "Connect Anthropic API or run a
-  // local model" prompt that fresh users get.
+  // picked" instead of offering the generic "Connect an AI agent" prompt
+  // that fresh users get.
   const localModelCleared = rawLocalModel !== null && validLocalModel === null;
   const provider = localModelCleared && requestedProvider === 'local'
     ? DEFAULT_SETTINGS.toggles.provider

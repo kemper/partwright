@@ -443,8 +443,8 @@ test.describe('Multi-provider AI', () => {
     expect(tabLabels.some(l => /^Gemini \(cloud\)/.test(l))).toBe(true);
     expect(tabLabels.some(l => /^Local \(WebGPU\)/.test(l))).toBe(true);
 
-    // Scope to the modal shell — "Connect Anthropic API" also appears in
-    // the panel's not-connected banner, which would trip strict mode.
+    // Scope to the modal shell so the assertions can't accidentally match
+    // any same-named control elsewhere on the page.
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Settings' });
     // Anthropic tab is shown by default (fresh user → active provider).
     await expect(modal.locator('button:has-text("Connect Anthropic API")')).toBeVisible();
@@ -454,6 +454,69 @@ test.describe('Multi-provider AI', () => {
     // Switch to the Gemini tab → its Connect button appears.
     await page.locator('button:has-text("Gemini (cloud)")').dispatchEvent('click');
     await expect(modal.locator('button:has-text("Connect Google Gemini")')).toBeVisible();
+  });
+
+  test('Enable is gated on a connected key, except local', async ({ page }) => {
+    await page.goto('/editor');
+    await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
+    await page.reload();
+    await page.waitForSelector('#ai-panel');
+    await page.locator('#btn-ai').dispatchEvent('click');
+    await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
+
+    // OpenAI tab with no key → Enable is disabled.
+    await page.locator('button:has-text("OpenAI (cloud)")').dispatchEvent('click');
+    await expect(page.locator('button:has-text("Enable OpenAI")')).toBeDisabled();
+
+    // Local needs no key → Enable is always available.
+    await page.locator('button:has-text("Local (WebGPU)")').dispatchEvent('click');
+    await expect(page.locator('button:has-text("Enable Local model")')).toBeEnabled();
+
+    // Plant an OpenAI key, return to the OpenAI tab → Enable flips on.
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve, reject) => {
+        const open = indexedDB.open('partwright');
+        open.onsuccess = () => {
+          const db = open.result;
+          const txn = db.transaction('aiKeys', 'readwrite');
+          txn.objectStore('aiKeys').put({
+            provider: 'openai',
+            apiKey: 'sk-test-planted-key-0000000000',
+            createdAt: Date.now(),
+            lastUsed: Date.now(),
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            totalCostUsd: 0,
+          });
+          txn.oncomplete = () => { db.close(); resolve(); };
+          txn.onerror = () => reject(txn.error);
+        };
+        open.onerror = () => reject(open.error);
+      });
+    });
+    await page.locator('button:has-text("OpenAI (cloud)")').dispatchEvent('click');
+    await expect(page.locator('button:has-text("Enable OpenAI")')).toBeEnabled();
+  });
+
+  test('every hosted provider can load models from the key', async ({ page }) => {
+    await page.goto('/editor');
+    await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
+    await page.reload();
+    await page.waitForSelector('#ai-panel');
+    await page.locator('#btn-ai').dispatchEvent('click');
+    await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
+    const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Settings' });
+
+    // Anthropic tab (default) exposes the loader.
+    await expect(modal.locator('button:has-text("Load models from your key")')).toBeVisible();
+    // OpenAI tab too (was Gemini-only before).
+    await page.locator('button:has-text("OpenAI (cloud)")').dispatchEvent('click');
+    await expect(modal.locator('button:has-text("Load models from your key")')).toBeVisible();
+    // And Gemini.
+    await page.locator('button:has-text("Gemini (cloud)")').dispatchEvent('click');
+    await expect(modal.locator('button:has-text("Load models from your key")')).toBeVisible();
   });
 
   test('panel header model picker switches per provider', async ({ page }) => {
@@ -536,6 +599,30 @@ test.describe('Multi-provider AI', () => {
     await page.locator('#btn-ai').dispatchEvent('click');
     // Header shows OpenAI's chosen model.
     await expect(page.locator('#ai-panel select').first()).toHaveValue('gpt-5-nano');
+    // Enabling a provider now requires its key to be connected, so plant a
+    // dummy Anthropic key directly in IndexedDB (the app's DB already exists
+    // by now). Without it, "Enable Anthropic Claude" stays disabled.
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve, reject) => {
+        const open = indexedDB.open('partwright');
+        open.onsuccess = () => {
+          const db = open.result;
+          const txn = db.transaction('aiKeys', 'readwrite');
+          txn.objectStore('aiKeys').put({
+            provider: 'anthropic',
+            apiKey: 'sk-ant-test-planted-key-0000000000',
+            createdAt: Date.now(),
+            lastUsed: Date.now(),
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            totalCostUsd: 0,
+          });
+          txn.oncomplete = () => { db.close(); resolve(); };
+          txn.onerror = () => reject(txn.error);
+        };
+        open.onerror = () => reject(open.error);
+      });
+    });
     // Flip the active provider to Anthropic via the tabbed settings modal:
     // view the Anthropic tab, then click its "Enable" button.
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');

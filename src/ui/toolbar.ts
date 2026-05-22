@@ -521,7 +521,7 @@ export function createToolbar(
   _aiBtn.id = 'btn-ai';
   _aiBtn.className = 'flex items-center gap-1.5 px-2 py-1 rounded text-xs text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100 transition-colors ml-1';
   _aiBtn.innerHTML = '<span>✦ Connect AI</span>';
-  _aiBtn.title = 'Connect an Anthropic API key to chat with the AI';
+  _aiBtn.title = 'Connect an API key or download a local model to chat with the AI.';
   _aiBtn.addEventListener('click', callbacks.onToggleAi);
   toolbar.appendChild(_aiBtn);
 

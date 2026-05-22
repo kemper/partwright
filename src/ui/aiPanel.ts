@@ -1021,14 +1021,14 @@ function panelStatusUpdate(): void {
       panelStatusEl.classList.add('text-zinc-400');
     }
     // Quality hint — always shown when local is the active provider so the
-    // user knows Anthropic exists and is sharper. Click opens settings on
-    // the Anthropic tab where the explicit Enable button lives.
+    // user knows cloud providers exist and are sharper. Click opens AI
+    // Settings (on a cloud tab) where the Enable buttons live.
     const hint = document.createElement('div');
     hint.className = 'text-zinc-400 mt-0.5';
-    hint.appendChild(document.createTextNode('Switch to the '));
+    hint.appendChild(document.createTextNode('Choose a '));
     const switchLink = document.createElement('button');
     switchLink.className = 'underline text-zinc-200 hover:text-zinc-50';
-    switchLink.textContent = 'Anthropic provider';
+    switchLink.textContent = 'non-local AI provider';
     switchLink.addEventListener('click', () => {
       void showAiSettingsModal(
         { onChange: () => { renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); renderPromptChip(); panelStatusUpdate(); } },
@@ -1040,11 +1040,10 @@ function panelStatusUpdate(): void {
     panelStatusEl.appendChild(hint);
     return;
   }
-  // Hosted providers (anthropic / openai / gemini) all need a key. The
-  // banner is provider-aware: Anthropic keeps the literal "Connect
-  // Anthropic API" label (the stale-model smoke test anchors on it),
-  // OpenAI/Gemini show their own labels. The "or run a local model"
-  // fallback is offered in every case.
+  // Hosted providers (anthropic / openai / gemini) all need a key. When the
+  // active provider has none, surface a single generic CTA that opens the
+  // full AI settings modal — every provider (incl. the no-key local option)
+  // lives there, so we no longer push one provider over the others.
   const activeProvider = settings.toggles.provider as Exclude<Provider, 'local'>;
   void getKey(activeProvider).then(key => {
     if (!panelStatusEl) return;
@@ -1055,21 +1054,11 @@ function panelStatusUpdate(): void {
       panelStatusEl.appendChild(document.createTextNode('Not connected. '));
       const link = document.createElement('button');
       link.className = 'underline text-amber-200 hover:text-amber-100';
-      link.textContent = activeProvider === 'anthropic'
-        ? 'Connect Anthropic API'
-        : `Connect ${providerLabel(activeProvider)}`;
+      link.textContent = 'Connect an AI agent';
       link.addEventListener('click', () => {
-        void showAiKeyModal({ provider: activeProvider, onConnected: () => { panelStatusUpdate(); } });
+        void showAiSettingsModal({ onChange: () => { renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); renderPromptChip(); panelStatusUpdate(); } });
       });
       panelStatusEl.appendChild(link);
-      panelStatusEl.appendChild(document.createTextNode(' or '));
-      const local = document.createElement('button');
-      local.className = 'underline text-amber-200 hover:text-amber-100';
-      local.textContent = 'run a local model';
-      local.addEventListener('click', () => {
-        void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); renderPromptChip(); } });
-      });
-      panelStatusEl.appendChild(local);
       panelStatusEl.appendChild(document.createTextNode('.'));
     } else {
       panelStatusEl.classList.add('hidden');
