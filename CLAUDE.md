@@ -21,12 +21,16 @@ Hosted on **Cloudflare Pages** with production custom domain `www.partwrightstud
 
 **All work should be merged to `staging` first.** Do not push directly to `main`. The workflow is:
 
-1. Create a feature branch off the latest `staging`, develop and test locally
+1. **Start from the latest `staging`.** Before writing any code, run `git fetch origin staging` and base your feature branch on `origin/staging`. Do this at the *start* of the task, not just before the final push.
 2. Before your final push or PR, sync with the latest staging: `git fetch origin staging`, then merge `origin/staging` into your branch (or rebase onto it if the branch hasn't been pushed yet), resolve any conflicts, and re-run `npm run build` + `npm run test:e2e`
 3. Merge to `staging` — auto-deploys for verification
 4. Once validated on staging, open a PR from `staging` → `main` for production release
 
 > **Always start from — and re-sync against — the latest `origin/staging`.** Branches cut from a stale staging produce noisy diffs and merge conflicts, and can quietly clobber recently merged work. Re-fetch and merge/rebase `origin/staging` right before your final push, and again before opening any PR.
+
+### Pull Requests — always open one when a task is complete
+
+When you finish an agent task, **create a pull request into `staging` as the final step.** This is a standing instruction that overrides any default "don't open a PR unless explicitly asked" behavior: treat task completion as the authorization to open the PR. Don't pause to ask whether to create one, and don't report a task as done without it. Skip the PR only when the user explicitly says not to, or for a pure throwaway experiment. Follow the [commit & PR conventions](#commit--pr-conventions) below for the title, prefix, and labels.
 
 - **Build command:** `npm run build`
 - **Output directory:** `dist/`
