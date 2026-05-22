@@ -2,11 +2,13 @@
 //
 // The blocky brush paints whole triangles, so a stroke's edge follows the
 // existing tessellation. The smooth brush instead subdivides the triangles the
-// brush boundary crosses, so the painted region's edge can follow the brush
-// outline closely. Subdivision is a crack-free "red-green" refinement: every
-// edge of a selected triangle is split at its midpoint, and any neighbour that
-// shares a split edge is split to match (so no T-junctions / cracks appear and
-// the mesh stays watertight). Midpoint vertices are shared per undirected edge.
+// brush boundary crosses (only those — never the deep interior or exterior), so
+// the painted region's edge can follow the brush outline closely. Subdivision
+// refines just those rim triangles 1→4 until they're below a target edge
+// length; coarse neighbours are left as-is, which leaves zero-width T-junctions
+// where the fine band meets the coarse interior. That keeps the result lean and
+// fast (the painted band is not strictly 2-manifold — fine for rendering colours
+// and most slicers; see the smooth-brush notes).
 //
 // Nothing here mutates the input mesh. The base (authored-code) mesh is always
 // kept pristine; the refined mesh is rebuilt from base + stroke descriptors so
@@ -65,6 +67,32 @@ function triVertex(mesh: MeshData, vi: number): [number, number, number] {
   return [mesh.vertProperties[vi * p], mesh.vertProperties[vi * p + 1], mesh.vertProperties[vi * p + 2]];
 }
 
+/** Axis-aligned bounds of a stroke's footprint (samples expanded by radius).
+ *  Used to cheaply reject the (usually vast majority of) triangles nowhere near
+ *  the stroke before the per-triangle footprint math — the difference between
+ *  O(whole mesh) and O(triangles under the brush) on an accumulated mesh. */
+function strokeAabb(stroke: BrushStroke): { min: [number, number, number]; max: [number, number, number] } {
+  const r = stroke.radius;
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (const s of stroke.samples) {
+    for (let k = 0; k < 3; k++) {
+      if (s[k] - r < min[k]) min[k] = s[k] - r;
+      if (s[k] + r > max[k]) max[k] = s[k] + r;
+    }
+  }
+  return { min, max };
+}
+
+/** True when triangle (a,b,c) is entirely outside the stroke's AABB. */
+function triOutsideAabb(a: number[], b: number[], c: number[], box: { min: [number, number, number]; max: [number, number, number] }): boolean {
+  for (let k = 0; k < 3; k++) {
+    if (a[k] < box.min[k] && b[k] < box.min[k] && c[k] < box.min[k]) return true;
+    if (a[k] > box.max[k] && b[k] > box.max[k] && c[k] > box.max[k]) return true;
+  }
+  return false;
+}
+
 /** Longest squared edge of a triangle's three vertices. */
 function maxEdgeLen2(a: number[], b: number[], c: number[]): number {
   const e = (p: number[], q: number[]): number => {
@@ -86,11 +114,15 @@ export function selectStrokeTriangles(mesh: MeshData, stroke: BrushStroke, maxEd
   const selected = new Set<number>();
   const r2 = stroke.radius * stroke.radius;
   const maxEdge2 = maxEdge * maxEdge;
+  const box = strokeAabb(stroke);
 
   for (let t = 0; t < numTri; t++) {
     const a = triVertex(mesh, triVerts[t * 3]);
     const b = triVertex(mesh, triVerts[t * 3 + 1]);
     const c = triVertex(mesh, triVerts[t * 3 + 2]);
+
+    // Cheap spatial reject: skip triangles nowhere near the stroke.
+    if (triOutsideAabb(a, b, c, box)) continue;
 
     // Already fine enough → leave it (keeps the refined band tight and bounded).
     if (maxEdgeLen2(a, b, c) <= maxEdge2) continue;
@@ -125,21 +157,33 @@ export function selectStrokeTriangles(mesh: MeshData, stroke: BrushStroke, maxEd
 export function strokeFootprintTriangles(mesh: MeshData, stroke: BrushStroke): Set<number> {
   const { triVerts, numTri, vertProperties, numProp } = mesh;
   const out = new Set<number>();
+  const box = strokeAabb(stroke);
   for (let t = 0; t < numTri; t++) {
     const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
-    const cx = (vertProperties[v0 * numProp] + vertProperties[v1 * numProp] + vertProperties[v2 * numProp]) / 3;
-    const cy = (vertProperties[v0 * numProp + 1] + vertProperties[v1 * numProp + 1] + vertProperties[v2 * numProp + 1]) / 3;
-    const cz = (vertProperties[v0 * numProp + 2] + vertProperties[v1 * numProp + 2] + vertProperties[v2 * numProp + 2]) / 3;
+    const ax = vertProperties[v0 * numProp], ay = vertProperties[v0 * numProp + 1], az = vertProperties[v0 * numProp + 2];
+    const bx = vertProperties[v1 * numProp], by = vertProperties[v1 * numProp + 1], bz = vertProperties[v1 * numProp + 2];
+    const cx2 = vertProperties[v2 * numProp], cy2 = vertProperties[v2 * numProp + 1], cz2 = vertProperties[v2 * numProp + 2];
+    if (triOutsideAabb([ax, ay, az], [bx, by, bz], [cx2, cy2, cz2], box)) continue;
+    const cx = (ax + bx + cx2) / 3, cy = (ay + by + cy2) / 3, cz = (az + bz + cz2) / 3;
     if (withinFootprint(cx, cy, cz, stroke)) out.add(t);
   }
   return out;
 }
 
-/** One crack-free red-green refinement pass over `selected` triangles.
+/** One refinement pass that splits ONLY the `selected` (rim) triangles 1→4,
+ *  leaving every other triangle untouched. Edge midpoints are shared between
+ *  adjacent selected triangles (watertight within the refined band), but where a
+ *  selected triangle meets an unselected one the shared edge is split on the
+ *  selected side only — a zero-width T-junction. That's deliberate: it keeps the
+ *  disc interior coarse (just the rim is fine), which is ~10x leaner than a
+ *  crack-free graded refinement. The seams are invisible when rendering colours
+ *  and fine for GLB / most slicers, though the painted band is not strictly
+ *  2-manifold (see the smooth-brush notes).
+ *
  *  Returns the new mesh plus `childToParent`: for each output triangle, the
  *  index of the input triangle it came from (so callers can carry per-triangle
  *  data — e.g. existing colour regions — across the split). */
-export function redGreenSubdivide(
+export function subdivideSelected(
   mesh: MeshData,
   selected: Set<number>,
 ): { mesh: MeshData; childToParent: Int32Array } {
@@ -151,14 +195,8 @@ export function redGreenSubdivide(
   // any realistic mesh.
   const key = (a: number, b: number): number => (a < b ? a * numVert + b : b * numVert + a);
 
-  // 1. Mark every edge of every selected triangle.
-  const marked = new Set<number>();
-  for (const t of selected) {
-    const a = triVerts[t * 3], b = triVerts[t * 3 + 1], c = triVerts[t * 3 + 2];
-    marked.add(key(a, b)); marked.add(key(b, c)); marked.add(key(c, a));
-  }
-
-  // 2. Allocate a shared midpoint vertex per marked edge (lazily).
+  // Shared midpoint vertex per split edge (lazily) — adjacent rim triangles
+  // reuse midpoints so the band itself stays watertight.
   const midIndex = new Map<number, number>();
   const newVertProps: number[] = [];
   let nextV = numVert;
@@ -174,7 +212,6 @@ export function redGreenSubdivide(
     return m;
   };
 
-  // 3. Emit children, splitting by how many edges are marked (0/1/2/3).
   const outTris: number[] = [];
   const childParent: number[] = [];
   const emit = (a: number, b: number, c: number, parent: number): void => {
@@ -184,39 +221,9 @@ export function redGreenSubdivide(
 
   for (let t = 0; t < numTri; t++) {
     const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
-    const e0 = marked.has(key(v0, v1));
-    const e1 = marked.has(key(v1, v2));
-    const e2 = marked.has(key(v2, v0));
-    const count = (e0 ? 1 : 0) + (e1 ? 1 : 0) + (e2 ? 1 : 0);
-
-    if (count === 0) { emit(v0, v1, v2, t); continue; }
-
-    if (count === 3) {
-      const m0 = midOf(v0, v1), m1 = midOf(v1, v2), m2 = midOf(v2, v0);
-      emit(v0, m0, m2, t); emit(m0, v1, m1, t); emit(m2, m1, v2, t); emit(m0, m1, m2, t);
-      continue;
-    }
-
-    if (count === 1) {
-      // Marked edge (a,b), opposite vertex c, midpoint m → (a,m,c),(m,b,c).
-      let a: number, b: number, c: number;
-      if (e0) { a = v0; b = v1; c = v2; }
-      else if (e1) { a = v1; b = v2; c = v0; }
-      else { a = v2; b = v0; c = v1; }
-      const m = midOf(a, b);
-      emit(a, m, c, t); emit(m, b, c, t);
-      continue;
-    }
-
-    // count === 2: rotate so the UNMARKED edge is (w2,w0); marked = (w0,w1),(w1,w2).
-    let w0: number, w1: number, w2: number;
-    if (!e2) { w0 = v0; w1 = v1; w2 = v2; }
-    else if (!e0) { w0 = v1; w1 = v2; w2 = v0; }
-    else { w0 = v2; w1 = v0; w2 = v1; }
-    const m0 = midOf(w0, w1), m1 = midOf(w1, w2);
-    emit(m0, w1, m1, t);   // corner at w1
-    emit(w0, m0, m1, t);   // quad w0-m0-m1-w2, fanned from w0
-    emit(w0, m1, w2, t);
+    if (!selected.has(t)) { emit(v0, v1, v2, t); continue; }
+    const m0 = midOf(v0, v1), m1 = midOf(v1, v2), m2 = midOf(v2, v0);
+    emit(v0, m0, m2, t); emit(m0, v1, m1, t); emit(m2, m1, v2, t); emit(m0, m1, m2, t);
   }
 
   const totalVert = numVert + newVertProps.length / P;
@@ -256,7 +263,7 @@ export function buildStrokeMesh(
     for (let pass = 0; pass < MAX_PASSES; pass++) {
       const selected = selectStrokeTriangles(mesh, stroke, target);
       if (selected.size === 0) break;
-      const { mesh: nm, childToParent } = redGreenSubdivide(mesh, selected);
+      const { mesh: nm, childToParent } = subdivideSelected(mesh, selected);
       mesh = nm;
       comp = composeMaps(comp, childToParent);
       if (nm.numTri > MAX_TRIANGLES) break;

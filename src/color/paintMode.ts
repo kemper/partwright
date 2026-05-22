@@ -28,20 +28,24 @@ let brushShape: BrushShape = 'circle';
  *  crosses so the painted region's outline is smooth/rounded instead of
  *  following the existing tessellation. */
 let brushSmooth = false;
-/** Smooth-edge quality preset (1..4 = Coarse/Medium/Fine/Very fine). Maps to a
+/** Smooth-edge quality preset (1..4 = Coarse/Medium/Fine/Ultra). Maps to a
  *  target triangle edge of `brushRadius / SMOOTH_QUALITY_DIVISOR[level]`, so the
  *  refinement adapts to brush size and base-mesh coarseness rather than running
  *  a fixed number of passes. Higher = smoother edge + more triangles. */
 let brushSmoothQuality = 3;
-/** Divisor of the brush radius per quality level (index 1..4). */
-const SMOOTH_QUALITY_DIVISOR: Record<number, number> = { 1: 4, 2: 8, 3: 16, 4: 32 };
+/** Divisor of the brush radius per quality level (index 1..4). The painted-edge
+ *  facet count scales with the divisor (≈2π·divisor), independent of radius, so
+ *  finer levels stay affordable. */
+const SMOOTH_QUALITY_DIVISOR: Record<number, number> = { 1: 16, 2: 32, 3: 64, 4: 128 };
 
 /** Target edge length (mesh units) for the active brush settings. */
 export function brushTargetEdge(): number {
   return brushRadius / (SMOOTH_QUALITY_DIVISOR[brushSmoothQuality] ?? 16);
 }
-/** Surface points sampled along the in-progress smooth stroke. */
+/** Surface points sampled along the in-progress smooth stroke, with the surface
+ *  normal at each (normals are used only to orient the live footprint preview). */
 let strokeSamples: [number, number, number][] = [];
+let strokeNormals: [number, number, number][] = [];
 let adjacency: AdjacencyGraph | null = null;
 let currentMesh: MeshData | null = null;
 
@@ -53,6 +57,11 @@ let hoveredTriangles: Set<number> | null = null;
 let brushRingMesh: THREE.LineLoop | null = null;
 let brushRingBuiltRadius = -1;
 let brushRingBuiltShape: BrushShape | '' = '';
+
+// Filled footprint preview (smooth brush only) — a translucent disc/square/
+// diamond in the paint color showing the rounded area that will actually be
+// painted, instead of the jagged set of existing triangles the brush covers.
+let brushFillMesh: THREE.Mesh | null = null;
 
 // Brush drag state
 let brushPainting = false;
@@ -269,9 +278,16 @@ function onMouseMove(event: MouseEvent): void {
   if (currentTool === 'brush' && brushPainting && brushSession) {
     const result = pickFace(event);
     if (result) {
-      recordStrokeSample(result.point);
-      addBrushFootprint(result.triangleIndex, result.point, brushSession);
-      showHighlight(brushSession);
+      recordStrokeSample(result.point, result.normal);
+      if (brushWillSubdivide()) {
+        // Smooth mode resolves triangles from the stroke samples on commit, so
+        // skip the per-move O(mesh) footprint scan — just grow the live fill.
+        clearHighlight();
+        showBrushFill(strokeStamps());
+      } else {
+        addBrushFootprint(result.triangleIndex, result.point, brushSession);
+        showHighlight(brushSession);
+      }
       // Ring must come after showHighlight (which calls clearHighlight internally).
       if (brushRadius > 0) showBrushRing(result.point, result.normal);
       else clearBrushRing();
@@ -285,6 +301,16 @@ function onMouseMove(event: MouseEvent): void {
   if (!result) {
     clearHighlight();
     clearBrushRing();
+    return;
+  }
+
+  // Smooth brush hover: preview the rounded footprint that will be painted
+  // (a filled disc/square/diamond), not the jagged set of covered triangles.
+  if (currentTool === 'brush' && brushWillSubdivide()) {
+    clearHighlight();
+    hoveredTriangles = null;
+    showBrushFill([{ point: result.point, normal: result.normal }]);
+    showBrushRing(result.point, result.normal);
     return;
   }
 
@@ -328,17 +354,33 @@ function onMouseDown(event: MouseEvent): void {
     brushPainting = true;
     brushSession = new Set<number>();
     strokeSamples = [];
-    recordStrokeSample(result.point);
-    addBrushFootprint(result.triangleIndex, result.point, brushSession);
-    showHighlight(brushSession);
+    strokeNormals = [];
+    recordStrokeSample(result.point, result.normal);
+    if (brushWillSubdivide()) {
+      // Smooth: commit resolves from stroke samples, so skip the footprint scan
+      // and show the smooth fill instead of the covered triangles.
+      clearHighlight();
+      showBrushFill(strokeStamps());
+    } else {
+      addBrushFootprint(result.triangleIndex, result.point, brushSession);
+      showHighlight(brushSession);
+    }
     event.preventDefault();
   }
+}
+
+/** Is there an in-progress stroke worth committing? Smooth strokes are tracked
+ *  by sample points; legacy strokes by the covered-triangle session. */
+function hasActiveStroke(): boolean {
+  if (!brushPainting) return false;
+  if (brushSmooth && brushRadius > 0) return strokeSamples.length > 0;
+  return !!brushSession && brushSession.size > 0;
 }
 
 /** Append a surface point to the in-progress smooth stroke, decimated so a
  *  slow drag doesn't accumulate thousands of near-duplicate samples. Spacing
  *  scales with the brush so the footprint stays continuous along the path. */
-function recordStrokeSample(p: [number, number, number]): void {
+function recordStrokeSample(p: [number, number, number], n: [number, number, number]): void {
   const minSpacing = Math.max(brushRadius * 0.4, 0.01);
   const last = strokeSamples[strokeSamples.length - 1];
   if (last) {
@@ -346,6 +388,12 @@ function recordStrokeSample(p: [number, number, number]): void {
     if (dx * dx + dy * dy + dz * dz < minSpacing * minSpacing) return;
   }
   strokeSamples.push([p[0], p[1], p[2]]);
+  strokeNormals.push([n[0], n[1], n[2]]);
+}
+
+/** Zip the recorded stroke samples with their normals for the fill preview. */
+function strokeStamps(): { point: [number, number, number]; normal: [number, number, number] }[] {
+  return strokeSamples.map((p, i) => ({ point: p, normal: strokeNormals[i] ?? [0, 0, 1] }));
 }
 
 /** Commit the active brush drag as a colour region. Smooth strokes (radius > 0
@@ -353,7 +401,7 @@ function recordStrokeSample(p: [number, number, number]): void {
  *  that subdivides under the stroke; otherwise the legacy whole-triangle set is
  *  stored directly. */
 function commitBrushStroke(): void {
-  if (!brushSession || brushSession.size === 0) return;
+  if (!hasActiveStroke()) return;
   const name = `Region ${getRegions().length + 1}`;
   const color = [...currentColor] as [number, number, number];
 
@@ -374,7 +422,7 @@ function commitBrushStroke(): void {
       },
       new Set<number>(),
     );
-  } else {
+  } else if (brushSession && brushSession.size > 0) {
     addRegion(name, color, 'paintbrush', { kind: 'triangles', ids: [...brushSession] }, brushSession);
     if (onRegionPainted) onRegionPainted();
   }
@@ -487,16 +535,18 @@ function onMouseUp(event: MouseEvent): void {
   }
 
   if (currentTool === 'brush') {
-    if (!brushPainting || !brushSession || brushSession.size === 0) {
+    if (!hasActiveStroke()) {
       brushPainting = false;
       brushSession = null;
       strokeSamples = [];
+      strokeNormals = [];
       return;
     }
     commitBrushStroke();
     brushPainting = false;
     brushSession = null;
     strokeSamples = [];
+    strokeNormals = [];
     clearHighlight();
     return;
   }
@@ -527,12 +577,13 @@ function onMouseUp(event: MouseEvent): void {
 }
 
 function onMouseLeave(): void {
-  if (currentTool === 'brush' && brushPainting && brushSession && brushSession.size > 0) {
+  if (currentTool === 'brush' && hasActiveStroke()) {
     commitBrushStroke();
   }
   brushPainting = false;
   brushSession = null;
   strokeSamples = [];
+  strokeNormals = [];
   clearHighlight();
   clearBrushRing();
 }
@@ -598,7 +649,78 @@ function clearHighlight(): void {
     (highlightMesh.material as THREE.Material).dispose();
     highlightMesh = null;
   }
+  // The filled footprint preview is the smooth-brush counterpart of the jagged
+  // highlight; clear it on the same paths (smooth handlers redraw it right
+  // after). This covers hover-off, deactivate, tool-switch, and commit.
+  clearBrushFill();
   hoveredTriangles = null;
+}
+
+/** Triangle-fan positions (local XY plane, flat array of xyz) filling the brush
+ *  footprint outline. Reuses the ring polygon so circle/square/diamond all
+ *  produce a matching filled shape. */
+function buildFanPositions(shape: BrushShape, r: number): number[] {
+  const ring = buildRingPoints(shape, r);
+  const out: number[] = [];
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    out.push(0, 0, 0, a.x, a.y, a.z, b.x, b.y, b.z);
+  }
+  return out;
+}
+
+/** Render a translucent filled footprint at each stamp, oriented to the surface
+ *  normal — the smooth brush's "what will be painted" preview. */
+function showBrushFill(stamps: { point: [number, number, number]; normal: [number, number, number] }[]): void {
+  clearBrushFill();
+  if (brushRadius <= 0 || stamps.length === 0) return;
+
+  const local = buildFanPositions(brushShape, brushRadius);
+  const positions = new Float32Array(local.length * stamps.length);
+  const q = new THREE.Quaternion();
+  const up = new THREE.Vector3(0, 0, 1);
+  const v = new THREE.Vector3();
+  const offset = new THREE.Vector3();
+  let w = 0;
+  for (const s of stamps) {
+    const n = new THREE.Vector3(s.normal[0], s.normal[1], s.normal[2]);
+    if (n.lengthSq() < 1e-9) n.set(0, 0, 1); else n.normalize();
+    q.setFromUnitVectors(up, n);
+    offset.copy(n).multiplyScalar(0.02); // lift off the surface to avoid z-fighting
+    for (let i = 0; i < local.length; i += 3) {
+      v.set(local[i], local[i + 1], local[i + 2]).applyQuaternion(q);
+      positions[w++] = v.x + s.point[0] + offset.x;
+      positions[w++] = v.y + s.point[1] + offset.y;
+      positions[w++] = v.z + s.point[2] + offset.z;
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  // depthTest off so the cursor preview always reads on top of the surface
+  // (matches the brush ring); it's a transient overlay, not real geometry.
+  const mat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(currentColor[0], currentColor[1], currentColor[2]),
+    transparent: true,
+    opacity: 0.45,
+    side: THREE.DoubleSide,
+    depthTest: false,
+    depthWrite: false,
+  });
+  brushFillMesh = new THREE.Mesh(geo, mat);
+  brushFillMesh.name = 'brush-fill';
+  brushFillMesh.renderOrder = 1000;
+  getMeshGroup().add(brushFillMesh);
+}
+
+function clearBrushFill(): void {
+  if (brushFillMesh) {
+    brushFillMesh.parent?.remove(brushFillMesh);
+    brushFillMesh.geometry.dispose();
+    (brushFillMesh.material as THREE.Material).dispose();
+    brushFillMesh = null;
+  }
 }
 
 function setsEqual(a: Set<number>, b: Set<number>): boolean {

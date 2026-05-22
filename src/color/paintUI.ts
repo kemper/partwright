@@ -510,10 +510,10 @@ function createBrushControls(): HTMLElement {
   fineRow.className = 'grid grid-cols-4 gap-1 mt-1';
   const fineButtons: Record<number, HTMLButtonElement> = {};
   for (const [level, lbl, tip] of [
-    [1, 'Coarse', 'Target edge ≈ brush radius / 4 — chunky, fewest extra triangles'],
-    [2, 'Medium', 'Target edge ≈ brush radius / 8'],
-    [3, 'Fine', 'Target edge ≈ brush radius / 16 — smooth (default)'],
-    [4, 'Ultra', 'Target edge ≈ brush radius / 32 — smoothest, most triangles'],
+    [1, 'Coarse', 'Target edge ≈ brush radius / 16 — chunky, fewest extra triangles'],
+    [2, 'Medium', 'Target edge ≈ brush radius / 32'],
+    [3, 'Fine', 'Target edge ≈ brush radius / 64 — smooth (default)'],
+    [4, 'Ultra', 'Target edge ≈ brush radius / 128 — smoothest, most triangles'],
   ] as const) {
     const btn = document.createElement('button');
     btn.textContent = lbl;

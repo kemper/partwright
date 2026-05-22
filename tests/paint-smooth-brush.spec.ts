@@ -46,12 +46,55 @@ test.describe('smooth paintbrush', () => {
     await expect(smoothBtn).toContainText('On');
     await expect(fineMed).toBeVisible();
 
+    // All four quality presets are present once smoothing is on.
+    for (const lbl of ['Coarse', 'Fine', 'Ultra']) {
+      await expect(page.locator(`#paint-picker-panel button:has-text("${lbl}")`)).toBeVisible();
+    }
+
     // The toggle is reflected in the partwright config.
     const cfg = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (window as any).partwright.getBrushSmooth();
     });
     expect(cfg.smooth).toBe(true);
+  });
+
+  test('a smooth-mode brush drag commits a stroke and subdivides', async ({ page }) => {
+    await openEditor(page);
+    // A wide flat slab fills the viewport so canvas-dispatched drag coordinates
+    // reliably hit the model (the onboarding backdrop can't eat events dispatched
+    // straight on the canvas). Exercises the live preview + commit path.
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run(`const { Manifold } = api; return Manifold.cube([40, 40, 3], true);`);
+      pw.setBrushSize(4);
+      pw.setBrushSmooth(true);
+      pw.setBrushSmoothQuality(3);
+    });
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
+
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const before = pw.getMesh().numTri;
+      const canvas = document.querySelector('canvas')!;
+      const r = canvas.getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      const fire = (t: string, x: number, y: number) =>
+        canvas.dispatchEvent(new MouseEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0 }));
+      fire('mousemove', cx, cy); // hover preview
+      fire('mousedown', cx, cy);
+      for (let dx = 6; dx <= 30; dx += 6) fire('mousemove', cx + dx, cy);
+      fire('mouseup', cx + 30, cy);
+      await new Promise(res => requestAnimationFrame(() => res(null)));
+      return { before, after: pw.getMesh().numTri, regions: pw.listRegions().length };
+    });
+
+    expect(out.regions).toBe(1);
+    expect(out.after).toBeGreaterThan(out.before); // the stroke subdivided the mesh
   });
 
   test('setBrushSmooth / setBrushSmoothQuality validate and round-trip', async ({ page }) => {
@@ -74,7 +117,7 @@ test.describe('smooth paintbrush', () => {
     expect(result.cfg).toMatchObject({ smooth: true, quality: 2 });
   });
 
-  test('paintStroke subdivides the mesh, paints, and stays watertight', async ({ page }) => {
+  test('paintStroke subdivides the rim and paints, keeping triangle count lean', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -84,32 +127,38 @@ test.describe('smooth paintbrush', () => {
       // triangles, so it exercises the closest-point selection fallback.
       const stroke = pw.paintStroke({ points: [[0, 0, 5]], radius: 2, maxEdge: 0.25, color: [0.9, 0.2, 0.2] });
       const after = pw.getMesh();
-      return {
-        stroke,
-        beforeTri: before.numTri,
-        afterTri: after.numTri,
-        afterWatertight: isWatertightInPage(Array.from(after.triangles)),
-        regions: pw.listRegions().length,
-      };
-      function isWatertightInPage(tris: number[]): boolean {
-        const counts = new Map<string, number>();
-        for (let i = 0; i < tris.length; i += 3) {
-          const v = [tris[i], tris[i + 1], tris[i + 2]];
-          for (const [a, b] of [[v[0], v[1]], [v[1], v[2]], [v[2], v[0]]]) {
-            const k = a < b ? `${a},${b}` : `${b},${a}`;
-            counts.set(k, (counts.get(k) ?? 0) + 1);
-          }
-        }
-        for (const c of counts.values()) if (c !== 2) return false;
-        return true;
-      }
+      return { stroke, beforeTri: before.numTri, afterTri: after.numTri, regions: pw.listRegions().length };
     });
 
     expect(out.stroke.error).toBeFalsy();
     expect(out.stroke.triangles).toBeGreaterThan(0);
     expect(out.afterTri).toBeGreaterThan(out.beforeTri); // subdivision happened
-    expect(out.afterWatertight).toBe(true);
+    // Rim-only (edges-only) refinement: r/maxEdge = 8, so a smooth dot is a few
+    // hundred triangles, not the thousands a graded interior would add.
+    expect(out.afterTri).toBeLessThan(1500);
     expect(out.regions).toBe(1);
+  });
+
+  test('many strokes stay fast and bounded (no O(strokes^2) replay)', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run(`const { Manifold } = api; return Manifold.cube([120, 120, 4], true);`);
+      let maxStrokeMs = 0;
+      for (let i = 0; i < 15; i++) {
+        const x = -50 + i * 7;
+        const t0 = performance.now();
+        pw.paintStroke({ points: [[x, 0, 2]], radius: 6, maxEdge: 6 / 32, color: [1, 0, 0] });
+        maxStrokeMs = Math.max(maxStrokeMs, performance.now() - t0);
+      }
+      return { maxStrokeMs, meshTri: pw.getMesh().numTri, regions: pw.listRegions().length };
+    });
+    expect(out.regions).toBe(15);
+    // Each stroke is local + incremental; even the last one is well under a
+    // second, and 15 strokes don't blow the mesh up into the millions.
+    expect(out.maxStrokeMs).toBeLessThan(1500);
+    expect(out.meshTri).toBeLessThan(200000);
   });
 
   test('a smaller target edge produces more triangles; clearing restores the base mesh', async ({ page }) => {

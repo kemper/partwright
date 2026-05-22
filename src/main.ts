@@ -201,6 +201,14 @@ let currentMeshData: MeshData | null = null;
  *  `rebuildPaintedGeometry`. Kept so the refinement can always be rebuilt from
  *  a clean base and so unlocking can restore the original tessellation. */
 let paintBaseMesh: MeshData | null = null;
+/** The ordered brushStroke descriptors the current refined mesh was built from.
+ *  Lets the regions-change reconcile detect a pure append (paint one more
+ *  stroke) and refine incrementally from the current mesh, instead of replaying
+ *  every stroke from the base (which is O(strokes²) and made painting lag). */
+let lastStrokeList: RegionDescriptor[] = [];
+/** Set while rehydration adds regions in bulk, so each addRegion doesn't kick
+ *  off a reconcile mid-rebuild. */
+let suspendReconcile = false;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let currentManifold: any = null;
 /** Per-run map from labels (assigned in user code via api.label(shape, name))
@@ -473,10 +481,6 @@ function resolveDescriptorTriangles(
 
 /** True when any in-memory region is a smooth brush stroke (which drives mesh
  *  subdivision). */
-function hasBrushStrokeRegions(): boolean {
-  return getRegions().some(r => r.descriptor.kind === 'brushStroke');
-}
-
 function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { carried: string[]; dropped: string[] } {
   clearRegions();
 
@@ -497,6 +501,9 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { 
   }
   const adjacency = buildAdjacency(mesh);
 
+  // Bulk-add the resolved regions without letting each addRegion trigger a
+  // reconcile (we've already built the mesh here).
+  suspendReconcile = true;
   for (const region of regions) {
     const triangles = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren);
     if (triangles.size > 0) {
@@ -506,6 +513,8 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { 
       report.dropped.push(region.name);
     }
   }
+  suspendReconcile = false;
+  lastStrokeList = getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
 
   syncLockState();
 
@@ -518,11 +527,15 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { 
   return report;
 }
 
-/** Rebuild the refined working mesh from the pristine base + current stroke
- *  regions, then re-resolve every region against it. Driven by the
- *  regions-change listener whenever a smooth stroke is involved (added, undone,
- *  cleared) or the mesh is currently refined. When no strokes remain this
- *  restores the base tessellation. */
+function paintedColorRefresh(): void {
+  if (!currentMeshData) return;
+  const colored = applyTriColorsIfVisible(currentMeshData);
+  updateMesh(colored, { skipAutoFrame: true });
+}
+
+/** Full rebuild: refine the pristine base by every current stroke and re-resolve
+ *  all regions. Used on undo/clear/non-stroke changes (when an incremental
+ *  append doesn't apply) — not on the hot path of painting more strokes. */
 function rebuildPaintedGeometry(): void {
   const base = paintBaseMesh;
   if (!base) return;
@@ -534,11 +547,75 @@ function rebuildPaintedGeometry(): void {
   for (const region of getRegions()) {
     setRegionTriangles(region.id, resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren));
   }
-  if (currentMeshData) {
-    const colored = applyTriColorsIfVisible(currentMeshData);
-    updateMesh(colored, { skipAutoFrame: true });
-  }
+  paintedColorRefresh();
   syncLockState();
+}
+
+/** Incrementally refine the CURRENT mesh by a single newly-added stroke, instead
+ *  of replaying every stroke from the base. Existing regions' triangles are
+ *  carried across the local subdivision via the parent→children map (O(painted
+ *  triangles)); only the new stroke is resolved by footprint. This is the hot
+ *  path while painting and keeps each stroke ~constant-time regardless of how
+ *  many strokes precede it. */
+function appendStrokeRefine(newRegionId: number, descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }>): void {
+  if (!currentMeshData) return;
+  const stroke: BrushStroke = { samples: descriptor.samples, radius: descriptor.radius, shape: descriptor.shape, maxEdge: descriptor.maxEdge > 0 ? descriptor.maxEdge : descriptor.radius / 16 };
+  const { mesh, childToParent } = buildStrokeMesh(currentMeshData, [stroke]);
+  const parentToChildren = childrenByParent(childToParent);
+  currentMeshData = mesh;
+  updatePaintMesh(mesh);
+  for (const region of getRegions()) {
+    if (region.id === newRegionId) {
+      setRegionTriangles(region.id, strokeFootprintTriangles(mesh, stroke));
+    } else {
+      // Carry the prior triangle set onto the locally-refined mesh.
+      setRegionTriangles(region.id, remapTriangleIds(region.triangles, parentToChildren));
+    }
+  }
+  paintedColorRefresh();
+  syncLockState();
+}
+
+function strokeDescriptors(): RegionDescriptor[] {
+  return getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
+}
+
+/** True when `a` starts with exactly the entries of `b` (by reference). */
+function prefixRefEqual(a: RegionDescriptor[], b: RegionDescriptor[]): boolean {
+  if (a.length < b.length) return false;
+  for (let i = 0; i < b.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** React to any region change. Picks the cheapest correct update: an incremental
+ *  stroke append when one stroke was just added, a full rebuild on undo/clear or
+ *  mixed changes, or the legacy lightweight color refresh when no subdivision is
+ *  involved. */
+function reconcilePaintedGeometry(): void {
+  if (suspendReconcile) return;
+  syncLockState();
+
+  const strokesNow = strokeDescriptors();
+  const refinedActive = currentMeshData !== paintBaseMesh || strokesNow.length > 0;
+  if (!refinedActive) {
+    lastStrokeList = [];
+    if (isPaintActive()) paintedColorRefresh();
+    return;
+  }
+
+  // Pure append: exactly one new stroke on the end, prior strokes unchanged.
+  if (strokesNow.length === lastStrokeList.length + 1 && prefixRefEqual(strokesNow, lastStrokeList)) {
+    const newDesc = strokesNow[strokesNow.length - 1] as Extract<RegionDescriptor, { kind: 'brushStroke' }>;
+    const newRegion = getRegions().find(r => r.descriptor === newDesc);
+    if (newRegion) {
+      appendStrokeRefine(newRegion.id, newDesc);
+      lastStrokeList = strokesNow;
+      return;
+    }
+  }
+
+  rebuildPaintedGeometry();
+  lastStrokeList = strokesNow;
 }
 
 /** Pull a version's serialized color regions out of its geometryData blob
@@ -1796,24 +1873,10 @@ async function main() {
     syncLockState();
   });
 
-  // Also listen for any region change (e.g. clear) to re-render
-  onColorRegionsChange(() => {
-    // Smooth brush strokes drive mesh subdivision: when a stroke is added,
-    // undone, or cleared — or the working mesh is still refined from a prior
-    // stroke — rebuild the refined mesh and re-resolve every region against it.
-    // This restores the base tessellation once the last stroke is gone. The
-    // common (no-stroke) path keeps the original lightweight refresh.
-    if (currentMeshData !== paintBaseMesh || hasBrushStrokeRegions()) {
-      rebuildPaintedGeometry();
-      return;
-    }
-    syncLockState();
-    if (!isPaintActive()) return; // only auto-refresh while paint mode is on
-    if (currentMeshData) {
-      const colored = applyTriColorsIfVisible(currentMeshData);
-      updateMesh(colored, { skipAutoFrame: true });
-    }
-  });
+  // Any region change reconciles the working mesh: incremental stroke append,
+  // full rebuild, or the lightweight no-subdivision refresh — see
+  // reconcilePaintedGeometry.
+  onColorRegionsChange(reconcilePaintedGeometry);
 
   // Toggling paint visibility re-renders the viewport so colors
   // disappear/reappear immediately. Exports remain colored regardless.
