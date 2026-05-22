@@ -87,6 +87,7 @@ import { checkContainment, type ContainmentWarning } from './geometry/containmen
 import { setUnits as _setUnits, getUnits as _getUnits, type UnitSystem } from './geometry/units';
 import { initMeasureTool, activate as activateMeasure, deactivate as deactivateMeasure, getState as getMeasureState } from './ui/measureTool';
 import { maybeStartTour, resetTour, startTour } from './ui/tour';
+import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
@@ -684,6 +685,9 @@ async function main() {
   const app = document.getElementById('app')!;
   geometryDataEl = createGeometryDataElement();
   installTitleGuard();
+
+  // Replace the slow native `title` tooltips with fast styled ones app-wide.
+  initTooltips();
 
   // Overlay container for landing/help pages (sits above the editor UI)
   const overlayContainer = document.createElement('div');
@@ -1317,6 +1321,19 @@ async function main() {
   // result would overwrite the wrong mesh/manifold/colour state.
   let _runGeneration = 0;
 
+  // Last error from an auto-run, held back from the editor UI until typing
+  // settles or focus leaves (see surfacePendingError). `src` guards against
+  // surfacing an error for code the user has since edited.
+  let pendingEditorError: { error: string; diagnostics: SourceDiagnostic[]; src: string } | null = null;
+
+  /** Render a deferred auto-run error into the editor, but only if the code it
+   *  came from still matches the editor — used by the idle/blur triggers. */
+  function surfacePendingError(): void {
+    if (!pendingEditorError || pendingEditorError.src !== getValue()) return;
+    setEditorDiagnostics(pendingEditorError.diagnostics);
+    renderEditorError(editorErrorPanel, pendingEditorError.error, pendingEditorError.diagnostics);
+  }
+
   async function ensureEditorReady() {
     if (!editorReady) await editorReadyPromise;
   }
@@ -1619,9 +1636,15 @@ async function main() {
   // Init measure tool
   initMeasureTool(getCanvas(), getCamera(), getMeshGroup(), viewportPane);
 
-  // Init editor — only auto-run if auto-run is enabled
+  // Init editor — only auto-run if auto-run is enabled. Auto-runs drive the
+  // live preview but defer error surfacing (no panel/markers/log mid-keystroke);
+  // the idle + blur hooks surface the held-back error gently once typing settles.
   initEditor(editorContainer, defaultCode, (code: string) => {
-    if (isAutoRun()) runCode(code);
+    if (isAutoRun()) runCode(code, { surfaceErrors: false });
+  }, 'manifold-js', {
+    onEdit: () => clearEditorErrorPanel(editorErrorPanel),
+    onIdle: () => surfacePendingError(),
+    onBlur: () => surfacePendingError(),
   });
 
   // When the user changes the modeling-quality preset, re-render the
@@ -5954,7 +5977,7 @@ async function main() {
     });
   }
 
-  function runCode(code?: string) {
+  function runCode(code?: string, opts: { surfaceErrors?: boolean } = {}) {
     const src = code ?? getValue();
     setStatus(statusBar, 'running', 'Running...');
     clearEditorDiagnostics();
@@ -5965,11 +5988,15 @@ async function main() {
       // started synchronously before this RAF fired — if so, skip to avoid
       // racing: the explicit call owns _runGeneration and will apply results.
       if (_running) return;
-      await runCodeSync(src);
+      await runCodeSync(src, opts);
     });
   }
 
-  async function runCodeSync(src: string): Promise<boolean> {
+  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean } = {}): Promise<boolean> {
+    // Manual runs (Run button, version load, partwright.run) surface errors
+    // immediately; auto-runs defer to the idle/blur triggers so the editor
+    // doesn't flicker an error on every keystroke.
+    const surfaceErrors = opts.surfaceErrors ?? true;
     const myGen = ++_runGeneration;
     _running = true;
     const t0 = performance.now();
@@ -5984,13 +6011,8 @@ async function main() {
     _running = false;
 
     if (result.error) {
-      recordError(result.error);
-      errorLog.capture({ level: 'error', source: 'engine', message: result.error });
       const diagnostics = result.diagnostics ?? [];
       setStatus(statusBar, 'error', summarizeDiagnostics(result.error, diagnostics));
-      setEditorDiagnostics(diagnostics);
-      renderEditorError(editorErrorPanel, result.error, diagnostics);
-      revealFirstDiagnostic();
       geometryDataEl.textContent = JSON.stringify({
         status: 'error',
         error: result.error,
@@ -5998,12 +6020,27 @@ async function main() {
         executionTimeMs: elapsed,
         codeHash: simpleHash(src),
       });
+      if (surfaceErrors) {
+        // Explicit run: record + show + log + jump to the first diagnostic now.
+        recordError(result.error);
+        errorLog.capture({ level: 'error', source: 'engine', message: result.error });
+        setEditorDiagnostics(diagnostics);
+        renderEditorError(editorErrorPanel, result.error, diagnostics);
+        revealFirstDiagnostic();
+        pendingEditorError = null;
+      } else {
+        // Auto-run: hold the error; the idle/blur trigger surfaces it quietly
+        // (no log, no caret jump, no error-history noise) if the code is still
+        // the same.
+        pendingEditorError = { error: result.error, diagnostics, src };
+      }
       return true;
     }
 
     if (result.mesh) {
       clearEditorDiagnostics();
       clearEditorErrorPanel(editorErrorPanel);
+      pendingEditorError = null;
       currentMeshData = result.mesh;
       // Release the previous Manifold's WASM-heap memory before overwriting.
       // Manifold objects live outside the JS heap and require manual .delete().

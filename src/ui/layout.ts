@@ -47,8 +47,9 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   partsRail.className = 'flex flex-col shrink-0 w-36 md:w-48 min-h-0 border-r border-zinc-700 bg-zinc-900/60 overflow-hidden';
 
   // The editor pane itself sits to the right of the rail and fills the rest.
+  // `relative` so the absolutely-positioned error-panel overlay anchors here.
   const editorPane = document.createElement('div');
-  editorPane.className = 'flex flex-col flex-1 min-w-0 min-h-0';
+  editorPane.className = 'relative flex flex-col flex-1 min-w-0 min-h-0';
 
   const editorHeader = document.createElement('div');
   editorHeader.className = 'flex items-center px-3 py-1.5 bg-zinc-800 border-b border-zinc-700 gap-2';
@@ -92,9 +93,12 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
 
   editorPane.appendChild(editorHeader);
 
+  // Overlay (absolutely positioned) so showing/hiding it never reflows the code
+  // or moves the caret. Anchored to the bottom of the editor pane; long errors
+  // scroll within it.
   const editorErrorPanel = document.createElement('div');
   editorErrorPanel.id = 'editor-error-panel';
-  editorErrorPanel.className = 'hidden border-b border-red-500/30 bg-red-950/40 px-3 py-2 text-xs text-red-100';
+  editorErrorPanel.className = 'hidden absolute bottom-0 left-0 right-0 z-10 max-h-[45%] overflow-auto border-t border-red-500/40 bg-red-950/90 backdrop-blur-sm px-3 py-2 text-xs text-red-100 shadow-lg';
   editorPane.appendChild(editorErrorPanel);
 
   const editorContainer = document.createElement('div');

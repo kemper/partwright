@@ -39,6 +39,27 @@ const STEPS: TourStep[] = [
     placement: 'left',
   },
   {
+    target: '#wireframe-toggle',
+    title: 'Mesh Edges',
+    description:
+      'Overlay the model’s mesh edges (wireframe) on the shaded surface to check topology and triangle density — useful before exporting or simplifying.',
+    placement: 'left',
+  },
+  {
+    target: '#paint-toggle',
+    title: 'Paint Colors',
+    description:
+      'Paint coplanar regions of the model in color for multi-color 3D prints (exported via 3MF or OBJ). Painting locks the version read-only until you unlock it; the AI can paint too when its Paint scope is on.',
+    placement: 'left',
+  },
+  {
+    target: '#simplify-toggle',
+    title: 'Simplify',
+    description:
+      'Reduce a dense model’s triangle count to a target budget — great for shrinking imported STLs or heavy booleans. Preview the reduction and save it as a new version.',
+    placement: 'left',
+  },
+  {
     target: '#session-bar',
     title: 'Sessions & Versions',
     description:
@@ -67,9 +88,30 @@ const STEPS: TourStep[] = [
     placement: 'bottom',
   },
   {
+    target: '#btn-catalog',
+    title: 'Catalog',
+    description:
+      'Browse a catalog of premade models. Open one as a starting point and tweak the code yourself — or hand it to the AI to remix.',
+    placement: 'bottom',
+  },
+  {
+    target: '#import-wrapper',
+    title: 'Import',
+    description:
+      'Import an .stl mesh, a .js / .scad source file, or a full .partwright.json session. Imported meshes render right away and can be edited or combined with new geometry.',
+    placement: 'bottom',
+  },
+  {
     target: '#export-wrapper',
     title: 'Export',
     description: 'Download your model as GLB, STL, OBJ, or 3MF for 3D printing or other tools.',
+    placement: 'bottom',
+  },
+  {
+    target: '#btn-ai',
+    title: 'AI Chat',
+    description:
+      'Chat with an AI to build and refine models for you. Use Anthropic, OpenAI, or Google Gemini with your own key — or run a model entirely in your browser with WebGPU, no key needed. Budget presets and the Thinking pill tune cost vs. quality, and the review button gets a second opinion from another provider.',
     placement: 'bottom',
   },
 ];

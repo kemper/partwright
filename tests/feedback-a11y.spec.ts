@@ -38,8 +38,7 @@ test.describe('feedback + a11y', () => {
     await page.waitForSelector('#btn-ai');
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
     await page.click('#btn-ai');
-    // Opens the AI Settings modalShell dialog (the connect flow was generalized
-    // away from a direct "Connect Anthropic API" button to this entry point).
+    // The panel CTA opens the AI Settings modal (a modalShell dialog).
     await page.locator('#ai-panel button:has-text("Connect an AI agent")').dispatchEvent('click');
 
     const dialog = page.locator('[role="dialog"]');
