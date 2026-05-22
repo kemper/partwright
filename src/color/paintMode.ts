@@ -6,7 +6,7 @@ import type { MeshData } from '../geometry/types';
 import { pickFace } from './facePicker';
 import { buildAdjacency, findCoplanarRegion, getTriangleNormal, type AdjacencyGraph } from './adjacency';
 import { addRegion, getRegions } from './regions';
-import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel } from '../renderer/viewport';
+import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, setWireframeVisible, isWireframeVisible } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
@@ -46,6 +46,10 @@ let mouseDownOffModel = false;
 
 // Teardown for the capture-phase pointer suppressor registered on activate.
 let removeSuppressor: (() => void) | null = null;
+
+// Wireframe edges are important for aiming paint, so paint mode forces them on
+// and restores whatever the user had when it deactivates.
+let wireframeBeforePaint = false;
 
 // Callbacks
 let onRegionPainted: (() => void) | null = null;
@@ -150,6 +154,9 @@ export function activate(): void {
   if (active) return;
   active = true;
 
+  wireframeBeforePaint = isWireframeVisible();
+  setWireframeVisible(true);
+
   if (currentMesh && !adjacency) {
     // Fallback: pre-warm callback hasn't fired yet (e.g. user opened paint
     // immediately after execution). Build synchronously now.
@@ -180,6 +187,8 @@ export function deactivate(): void {
   if (!active) return;
   active = false;
   adjacency = null;
+
+  setWireframeVisible(wireframeBeforePaint);
 
   if (removeSuppressor) { removeSuppressor(); removeSuppressor = null; }
 

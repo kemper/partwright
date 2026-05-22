@@ -25,7 +25,7 @@ import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPa
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible } from './renderer/viewport';
+import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
 import { renderCompositeCanvas, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
 import { generateId } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
@@ -1491,6 +1491,7 @@ async function main() {
   initClipControls(clipControls);
 
   // Wire up viewport overlay buttons
+  initWireframeToggle(clipControls);
   initGridToggle(clipControls);
   initDimensionsToggle(clipControls);
   initAnnotateUI(clipControls);
@@ -5733,6 +5734,27 @@ async function main() {
       if (closeMeasureIfActive()) closed = true;
       if (getClipState().enabled) { setClipping(false); syncClipUI(); closed = true; }
       if (closed) e.preventDefault();
+    });
+  }
+
+  function initWireframeToggle(container: HTMLElement) {
+    const wireBtn = container.querySelector('#wireframe-toggle') as HTMLButtonElement;
+    if (!wireBtn) return;
+
+    const inactiveClass = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+    const activeClass = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-blue-500/20 backdrop-blur text-blue-400 [@media(hover:hover)]:hover:bg-blue-500/30 transition-colors border border-blue-500/30';
+
+    // Drive the button visuals from the viewport's change events so it stays in
+    // sync whether the user clicked it or paint mode forced edges on/off.
+    const applyState = (visible: boolean) => {
+      wireBtn.className = visible ? activeClass : inactiveClass;
+      wireBtn.title = visible ? 'Hide mesh edges' : 'Show mesh edges';
+    };
+    applyState(isWireframeVisible());
+    onWireframeChange(applyState);
+
+    wireBtn.addEventListener('click', () => {
+      setWireframeVisible(!isWireframeVisible());
     });
   }
 

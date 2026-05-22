@@ -397,6 +397,14 @@ function createClipControls(): HTMLElement {
   container.id = 'clip-controls';
   container.className = 'absolute top-2 right-2 z-10 flex flex-wrap justify-end items-center gap-2 max-w-[calc(100%-1rem)]';
 
+  // Mesh edge (wireframe) toggle (off by default) — sits left of the grid toggle
+  const wireBtn = document.createElement('button');
+  wireBtn.id = 'wireframe-toggle';
+  wireBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  wireBtn.textContent = '△';
+  wireBtn.title = 'Show mesh edges';
+  container.appendChild(wireBtn);
+
   // Grid toggle (off by default)
   const gridBtn = document.createElement('button');
   gridBtn.id = 'grid-toggle';
