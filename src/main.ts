@@ -156,6 +156,7 @@ import {
   type ExportOptions,
 } from './storage/sessionManager';
 import { acquireSession as acquireSessionLock, initSessionLockTakeover } from './storage/sessionLock';
+import { initViewerMode, isReadOnlyViewer } from './ui/viewerMode';
 import type { Version } from './storage/db';
 import {
   ValidationError,
@@ -528,6 +529,9 @@ async function saveCurrentVersion(label?: string): Promise<
 > {
   if (!getState().session) {
     return { error: 'No active session. Call createSession() or openSession(id) first.' };
+  }
+  if (isReadOnlyViewer()) {
+    return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
   }
   const thumbnail = await captureThumbnail();
   const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label);
@@ -1734,6 +1738,10 @@ async function main() {
   // session in another window, and coordinate single-writer ownership.
   initSessionTabSync();
   initSessionLockTakeover();
+  // Reflect single-writer ownership across the whole editor surface: the
+  // non-owner tab becomes a read-only viewer (editor + paint + run + save
+  // disabled, with a "Take over" banner).
+  initViewerMode();
 
   // Update document title when session state changes (create, open, close, rename)
   onStateChange((state) => {
@@ -1744,6 +1752,12 @@ async function main() {
     // tabs on the same session don't both drive the chat / save versions.
     void acquireSessionLock(state.session?.id ?? null);
   });
+
+  // syncEditorFromURL() above opened the initial session BEFORE the listener
+  // was registered, so claim that session's write-lock explicitly now —
+  // otherwise a tab that loads straight into a session (?session=…) never
+  // engages the single-writer lock.
+  void acquireSessionLock(getState().session?.id ?? null);
 
   // Initialize the AI chat side drawer once the editor UI is mounted.
   // Wraps initAiPanel + setAiToolbarState; tolerated if it fails (e.g.
