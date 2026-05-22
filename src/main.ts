@@ -1021,24 +1021,10 @@ async function main() {
         alert('No active session to export. Save a version first.');
         return;
       }
-      // STL imports live on Version.importedMeshes (typed-array mesh bytes),
-      // which the .partwright.json export schema doesn't carry yet. Warn so
-      // the user knows the resulting file will reopen with empty `api.imports`
-      // and the wrapper code will fail until the STL is re-imported.
+      // Imported meshes (STL) ride along in the export from schema 1.7 (their
+      // buffers are base64-encoded in `versions[].importedMeshes`), so no
+      // re-import warning is needed.
       const versions = await listCurrentVersions();
-      const hasImports = versions.some(v => Array.isArray((v as { importedMeshes?: unknown[] }).importedMeshes) && ((v as { importedMeshes?: unknown[] }).importedMeshes!).length > 0);
-      if (hasImports) {
-        const proceed = await showInlineConfirm(
-          editorUI,
-          `This session uses imported meshes (STL).\n\nThe .partwright.json file will include the code but not the mesh data — anyone reopening it will need to re-import the STL for the version to render.\n\nExport an STL/GLB instead if you just need the geometry.`,
-          {
-            title: 'Imported meshes won\'t be included',
-            confirmLabel: 'Export anyway',
-            cancelLabel: 'Cancel',
-          }
-        );
-        if (!proceed) return;
-      }
       const opts = await showExportOptionsDialog(
         versions.map(v => ({ index: v.index, label: v.label })),
       );
@@ -1081,19 +1067,27 @@ async function main() {
   // Reset the editor to a blank starting point for a freshly created session.
   // Shared by the session bar's "+ New Session" button and the session modal's,
   // so both clear the previous session's code instead of leaving it behind.
-  function startNewSessionInEditor() {
-    const freshCode = '// New session\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
+  // Reset the editor to a starter snippet, dropping stale paint state. Color
+  // regions live in module state that the session/part layer doesn't own, so a
+  // fresh target must clear them here — otherwise the new (unpainted) session or
+  // part inherits the previous one's regions and is born with a locked editor.
+  function resetEditorToStarter(comment: string) {
+    clearRegions();
+    syncLockState();
+    const freshCode = `// ${comment}\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);`;
     setValue(freshCode);
     runCode(freshCode);
+  }
+
+  function startNewSessionInEditor() {
+    resetEditorToStarter('New session');
     _clearImages();
   }
 
   // Reset the editor for a freshly created part. Unlike a new session, parts
   // share the session's reference images, so those are left intact.
   function startNewPartInEditor() {
-    const freshCode = '// New part\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
-    setValue(freshCode);
-    runCode(freshCode);
+    resetEditorToStarter('New part');
   }
 
   // Load a part's active version into the editor, or reset to a blank part when
@@ -1486,12 +1480,20 @@ async function main() {
           if (tab === 'versions') refreshVersions();
           return;
         }
-        // openSession returned null — either the session ID in the URL
-        // doesn't exist in IndexedDB (e.g. a stale bookmark, or a URL
-        // shared from another browser/device), or the session exists
-        // but has no saved versions. Fall through to create a fresh
-        // session if needed and run defaults, so the viewport renders
-        // and the status doesn't stay stuck on "Loading WASM...".
+        // No version returned. If the session nonetheless opened (it exists but
+        // the active part has no saved versions yet), show that part's starter
+        // — loadPartIntoEditor also clears stale paint state — instead of the
+        // generic default example.
+        if (getState().session?.id === sessionId) {
+          await loadPartIntoEditor(getState().currentVersion);
+          if (tab === 'gallery') refreshGallery();
+          if (tab === 'versions') refreshVersions();
+          return;
+        }
+        // Otherwise the session ID in the URL doesn't exist in IndexedDB (a
+        // stale bookmark or a URL shared from another device). Fall through to
+        // create a fresh session and run defaults, so the viewport renders and
+        // the status doesn't stay stuck on "Loading WASM...".
       } else {
         return;
       }

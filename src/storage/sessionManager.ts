@@ -1153,10 +1153,16 @@ export async function exportSession(
   // Flatten all parts' versions into one list, tagging each with its part's
   // `order`. Grouped by part (then version index) so that pre-1.7 readers, which
   // ignore the `part` tag and import the flat list, still get a sensible order.
+  //
+  // The version-prune picker (`versionIndices`) is sourced from the CURRENT
+  // part's versions, and indices are per-part — so only apply it to the current
+  // part. Other parts are always exported in full; filtering them by a different
+  // part's index set would silently drop versions.
+  const currentPartId = currentState.currentPart?.id;
   const flat: { v: Version; partOrder: number }[] = [];
   for (const part of parts) {
     let versions = await dbListVersions(part.id);
-    if (options?.versionIndices) {
+    if (options?.versionIndices && part.id === currentPartId) {
       versions = versions.filter(v => options.versionIndices!.includes(v.index));
     }
     for (const v of versions) flat.push({ v, partOrder: part.order });

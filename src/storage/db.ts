@@ -121,7 +121,9 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('versions')) {
         const store = db.createObjectStore('versions', { keyPath: 'id' });
         store.createIndex('sessionId', 'sessionId', { unique: false });
-        store.createIndex('sessionId_index', ['sessionId', 'index'], { unique: true });
+        // Per-part version uniqueness (`partId_index`) is added in the v5 block
+        // below; no `sessionId_index` is needed (two parts in one session can
+        // each have a v1).
       }
       if (!db.objectStoreNames.contains('notes')) {
         const store = db.createObjectStore('notes', { keyPath: 'id' });
@@ -527,22 +529,11 @@ export async function createPart(sessionId: string, name: string, order: number)
   return part;
 }
 
-export async function getPart(id: string): Promise<Part | null> {
-  const store = await tx('parts', 'readonly');
-  return reqToPromise(store.get(id)) as Promise<Part | null>;
-}
-
 export async function listParts(sessionId: string): Promise<Part[]> {
   const store = await tx('parts', 'readonly');
   const index = store.index('sessionId');
   const parts = await reqToPromise(index.getAll(IDBKeyRange.only(sessionId))) as Part[];
   return parts.sort((a, b) => a.order - b.order);
-}
-
-export async function getPartCount(sessionId: string): Promise<number> {
-  const store = await tx('parts', 'readonly');
-  const index = store.index('sessionId');
-  return reqToPromise(index.count(IDBKeyRange.only(sessionId)));
 }
 
 export async function updatePart(id: string, updates: Partial<Pick<Part, 'name' | 'order' | 'updated'>>): Promise<void> {

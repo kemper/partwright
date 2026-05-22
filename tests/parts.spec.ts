@@ -15,6 +15,8 @@ interface PartsAPI {
   listParts: () => { id: string; name: string; order: number; isCurrent: boolean }[];
   listVersions: () => Promise<{ index: number; label: string }[]>;
   getSessionState: () => { currentPart: { id: string; name: string } | null; versionCount: number };
+  paintFaces: (o: { triangleIds: number[]; color: [number, number, number]; name?: string }) => unknown;
+  listRegions: () => unknown[];
 }
 
 async function waitForEngine(page: Page) {
@@ -134,5 +136,30 @@ test.describe('Multi-part sessions', () => {
     await expect
       .poll(() => page.evaluate(() => (window as unknown as { partwright: PartsAPI }).partwright.listParts().length))
       .toBe(3);
+  });
+
+  test('adding a part after painting clears stale regions and unlocks the editor', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    await page.evaluate(async ({ code }) => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      await pw.createSession('paint-part');
+      await pw.runAndSave(code, 'base');
+      pw.paintFaces({ triangleIds: [0, 1, 2], color: [1, 0, 0], name: 'A' });
+    }, { code: cube(10, 'BASE') });
+
+    // Painting locks the editor (banner shown) and registers one region.
+    await expect(page.locator('#editor-lock-overlay')).toBeVisible();
+
+    // Adding a part must NOT carry the previous part's regions, and must leave
+    // the new part's editor unlocked (regression: stale module-state colors).
+    const regionCount = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      await pw.createPart('Fresh');
+      return pw.listRegions().length;
+    });
+    expect(regionCount).toBe(0);
+    await expect(page.locator('#editor-lock-overlay')).toHaveCount(0);
   });
 });
