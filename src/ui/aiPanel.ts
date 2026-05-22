@@ -23,6 +23,8 @@ import { showAttachmentModal } from './aiAttachmentModal';
 import { putAttachment } from '../ai/attachments';
 import { exportChatMarkdown } from '../export/chat';
 import { getState, setSessionAiPreference } from '../storage/sessionManager';
+import { onTabSync, publishTabSync } from '../storage/tabSync';
+import { onOwnershipChange, requestTakeover } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
 import { activeModel, SPEND_CAP_USD, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { errorLog } from '../diagnostics/errorLog';
@@ -136,6 +138,10 @@ let toggleStripEl: HTMLElement | null = null;
 let costMeterEl: HTMLElement | null = null;
 let panelStatusEl: HTMLElement | null = null;
 let prefNoticeEl: HTMLElement | null = null;
+let ownerBannerEl: HTMLElement | null = null;
+/** False when another tab holds the single-writer lock for the current
+ *  session — this tab is then a read-only viewer. */
+let writeOwner = true;
 let progressEl: HTMLElement | null = null;
 let progressTickerId: number | null = null;
 let navigateToEditorFn: (() => Promise<void> | void) | null = null;
@@ -173,6 +179,12 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   // the tab you're actively using reflects its own session's model even if a
   // peer tab changed the shared settings while this tab was in the background.
   window.addEventListener('focus', () => { void applySessionAiPreference(); });
+  // Reflect single-writer ownership and live-update the transcript when a peer
+  // tab changes this session's chat.
+  onOwnershipChange(({ owned }) => applyOwnership(owned));
+  onTabSync((msg) => {
+    if (msg.kind === 'chat') void reloadChatFromPeer(msg.sessionId);
+  });
   // Don't try to load history until a session is opened or we know we're
   // in the global bucket. main.ts will call setActiveSession when ready.
   await loadHistoryForCurrentSession();
@@ -331,6 +343,53 @@ function hidePrefNotice(): void {
   prefNoticeEl.replaceChildren();
 }
 
+// === Single-writer ownership + cross-tab chat sync ===
+
+/** Announce that this session's chat transcript changed so viewer tabs reload. */
+function broadcastChatChanged(): void {
+  if (state.sessionId && state.sessionId !== GLOBAL_CHAT_BUCKET) {
+    publishTabSync({ kind: 'chat', sessionId: state.sessionId });
+  }
+}
+
+/** A peer tab changed this session's chat — reload so a read-along viewer stays
+ *  current. Skipped while a turn is in flight here (our in-memory history wins
+ *  during an active turn). */
+async function reloadChatFromPeer(sessionId: string): Promise<void> {
+  if (sessionId !== state.sessionId || state.inFlight) return;
+  await loadHistoryForCurrentSession();
+  renderTranscript();
+  renderCostMeter();
+}
+
+function applyOwnership(owned: boolean): void {
+  // No real session (global bucket) = no contention = always writable.
+  const noRealSession = !state.sessionId || state.sessionId === GLOBAL_CHAT_BUCKET;
+  writeOwner = noRealSession ? true : owned;
+  renderOwnerBanner();
+  if (sendBtnRef && !writeOwner) sendBtnRef.disabled = true;
+}
+
+function renderOwnerBanner(): void {
+  if (!ownerBannerEl) return;
+  if (writeOwner) {
+    ownerBannerEl.classList.add('hidden');
+    ownerBannerEl.replaceChildren();
+    return;
+  }
+  ownerBannerEl.replaceChildren();
+  const msg = document.createElement('span');
+  msg.className = 'flex-1';
+  msg.textContent = 'This session is open in another tab. You can read along here; sending is disabled.';
+  const takeover = document.createElement('button');
+  takeover.type = 'button';
+  takeover.className = 'shrink-0 px-2 h-6 rounded bg-blue-700/60 hover:bg-blue-600 text-blue-50';
+  takeover.textContent = 'Take over';
+  takeover.addEventListener('click', () => requestTakeover());
+  ownerBannerEl.append(msg, takeover);
+  ownerBannerEl.classList.remove('hidden');
+}
+
 // === DOM construction ===
 
 function buildDrawer(): void {
@@ -431,6 +490,13 @@ function buildDrawer(): void {
   prefNoticeEl = document.createElement('div');
   prefNoticeEl.className = 'px-3 py-1.5 text-[11px] border-b border-amber-800/60 bg-amber-900/20 text-amber-200 hidden flex items-start gap-2';
   root.appendChild(prefNoticeEl);
+
+  // Read-only banner — shown when another tab holds the write lock for this
+  // session. Chat input is disabled here; "Take over" asks the other tab to
+  // hand control to this one.
+  ownerBannerEl = document.createElement('div');
+  ownerBannerEl.className = 'px-3 py-1.5 text-[11px] border-b border-blue-800/60 bg-blue-900/20 text-blue-200 hidden flex items-center gap-2';
+  root.appendChild(ownerBannerEl);
 
   // Transcript
   transcriptEl = document.createElement('div');
@@ -1135,6 +1201,7 @@ async function clearCurrentChat(): Promise<void> {
     return;
   }
   state.history = [];
+  broadcastChatChanged();
   renderTranscript();
   renderCostMeter();
   setTransientStatus('Chat cleared.');
@@ -1728,6 +1795,12 @@ function updateRewindButtons(): void {
 
 async function sendMessage(): Promise<void> {
   if (state.inFlight) return;
+  // Another tab owns write access to this session — don't run a second chat
+  // loop against the same transcript. The banner offers "Take over".
+  if (!writeOwner) {
+    renderOwnerBanner();
+    return;
+  }
   if (!inputEl) return;
   const text = inputEl.value.trim();
   if (text.length === 0 && state.pendingImages.length === 0) return;
@@ -2094,6 +2167,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
       attempt = 0;
       continue;
     }
+    broadcastChatChanged();
     return;
   }
 }
@@ -2320,6 +2394,7 @@ async function maybeAutoCompact(): Promise<void> {
   };
   await deleteMessages(proposal.drop.map(m => m.id));
   await putMessages([summaryMsg]);
+  broadcastChatChanged();
   await loadHistoryForCurrentSession();
   renderTranscript();
   renderCostMeter();
@@ -2388,6 +2463,7 @@ async function runCompact(): Promise<void> {
     };
     await deleteMessages(proposal.drop.map(m => m.id));
     await putMessages([summaryMsg]);
+    broadcastChatChanged();
     await loadHistoryForCurrentSession();
     renderTranscript();
     renderCostMeter();

@@ -154,6 +154,7 @@ import {
   type ExportedSession,
   type ExportOptions,
 } from './storage/sessionManager';
+import { acquireSession as acquireSessionLock, initSessionLockTakeover } from './storage/sessionLock';
 import type { Version } from './storage/db';
 import {
   ValidationError,
@@ -1619,14 +1620,18 @@ async function main() {
   }
 
   // Keep this tab's session state in sync with peer tabs that mutate the same
-  // session in another window.
+  // session in another window, and coordinate single-writer ownership.
   initSessionTabSync();
+  initSessionLockTakeover();
 
   // Update document title when session state changes (create, open, close, rename)
   onStateChange((state) => {
     updateDocumentTitle({ page: 'editor', sessionName: state.session?.name ?? null });
     // Re-bind the AI panel to the current session so chat history follows.
     void setAiActiveSession(state.session?.id ?? null);
+    // Claim (or queue for) write-ownership of the now-active session so two
+    // tabs on the same session don't both drive the chat / save versions.
+    void acquireSessionLock(state.session?.id ?? null);
   });
 
   // Initialize the AI chat side drawer once the editor UI is mounted.

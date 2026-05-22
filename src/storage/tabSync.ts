@@ -23,7 +23,10 @@ export type TabSyncMessage =
   /** The AI chat transcript for this session changed. */
   | { kind: 'chat'; sessionId: string }
   /** Session notes changed. */
-  | { kind: 'notes'; sessionId: string };
+  | { kind: 'notes'; sessionId: string }
+  /** A viewer tab is asking the current write-owner of this session to hand
+   *  over the single-writer lock (see sessionLock.ts). */
+  | { kind: 'takeover'; sessionId: string };
 
 type Handler = (msg: TabSyncMessage) => void;
 
