@@ -56,7 +56,7 @@ const STEPS: TourStep[] = [
     target: '#simplify-toggle',
     title: 'Simplify',
     description:
-      'Reduce a dense model’s triangle count to a target budget — great for shrinking imported STLs or heavy booleans. Preview the reduction and save it as a new version.',
+      'Reduce a dense model’s triangle count to a target budget — great for shrinking imported STLs or heavy booleans. Set a target, click Apply to run it, then save the result as a new version.',
     placement: 'left',
   },
   {

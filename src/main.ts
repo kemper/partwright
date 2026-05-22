@@ -1908,27 +1908,39 @@ async function main() {
       };
     },
 
-    preview(targetTriangles) {
-      if (!simplifyBaselineMesh) return null;
+    async apply(targetTriangles, onProgress) {
+      const baseline = simplifyBaselineMesh;
+      if (!baseline) return null;
+      // Dragging the target back to (or above) full detail is just a restore —
+      // no search to run, so report it as instantly complete.
+      if (targetTriangles >= baseline.numTri) {
+        applyLiveGeometry(baseline);
+        await onProgress(1);
+        return { triangleCount: baseline.numTri };
+      }
       const mod = getModule();
       if (!mod) return null;
-      const bbox = bboxFromMesh(simplifyBaselineMesh);
+      const bbox = bboxFromMesh(baseline);
       const diag = bbox
         ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
         : 0;
       if (!(diag > 0)) return null;
 
-      const baseManifold = mod.Manifold.ofMesh(simplifyBaselineMesh);
+      const baseManifold = mod.Manifold.ofMesh(baseline);
       let result: SimplifyResult | null = null;
       try {
-        result = simplifyToTriangleBudget(baseManifold, targetTriangles, diag * 0.5);
+        result = await simplifyToTriangleBudget(baseManifold, targetTriangles, diag * 0.5, onProgress);
       } finally {
         if (baseManifold && typeof baseManifold.delete === 'function') {
           try { baseManifold.delete(); } catch { /* already deleted */ }
         }
       }
+      // The search yields to the event loop between iterations, so a code run can
+      // replace the geometry mid-flight. If the baseline moved, our result is
+      // stale — drop it rather than clobber the freshly-run mesh.
+      if (simplifyBaselineMesh !== baseline) return null;
       if (!result) {
-        applyLiveGeometry(simplifyBaselineMesh);
+        applyLiveGeometry(baseline);
         return null;
       }
       applyLiveGeometry(result.mesh);

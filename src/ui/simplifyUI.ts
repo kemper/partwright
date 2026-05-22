@@ -1,7 +1,9 @@
 // Simplify mode UI — a viewport-overlay button (next to Measure) that opens a
 // popup panel for reducing the model's triangle count. The user drags a slider
-// or types an exact "max triangles" value; the model re-simplifies live. An
-// optional "Save as version" bakes the reduced mesh into a new saved version.
+// or types an exact "max triangles" value, then clicks Apply to run the
+// reduction; a progress bar tracks the (potentially slow) search on heavy
+// models. An optional "Save as version" bakes the reduced mesh into a new saved
+// version.
 //
 // This module is intentionally a leaf: it never imports the other overlay tools
 // (paint / annotate / measure). Those modules call forceDeactivate() here when
@@ -17,6 +19,10 @@ export interface SimplifySaveResult {
   message: string;
 }
 
+/** Reports apply progress as a fraction in [0, 1]. Awaited by the handler so
+ *  the UI can repaint the progress bar between binary-search iterations. */
+export type SimplifyProgress = (fraction: number) => void | Promise<void>;
+
 export interface SimplifyHandlers {
   /** Snapshot the current model as the simplify baseline. Returns its triangle
    *  count (and the count currently on screen), or a reason when the model
@@ -24,9 +30,10 @@ export interface SimplifyHandlers {
    *  clicked the toolbar button) the implementation should also close the other
    *  overlay tools so panels don't stack. */
   open(userInitiated: boolean): { ok: true; info: SimplifyOpenInfo } | { ok: false; reason: string };
-  /** Simplify the baseline down to at most `targetTriangles` and show it live.
-   *  Returns the achieved triangle count, or null if nothing changed. */
-  preview(targetTriangles: number): { triangleCount: number } | null;
+  /** Simplify the baseline down to at most `targetTriangles` and show it live,
+   *  reporting progress via `onProgress`. Returns the achieved triangle count,
+   *  or null if nothing changed. */
+  apply(targetTriangles: number, onProgress: SimplifyProgress): Promise<{ triangleCount: number } | null>;
   /** Restore the un-simplified baseline mesh to the viewport. */
   reset(): void;
   /** Bake the mesh currently on screen into a new saved version. */
@@ -44,12 +51,21 @@ let originalEl: HTMLElement | null = null;
 let resultEl: HTMLElement | null = null;
 let statusEl: HTMLElement | null = null;
 let controlsEl: HTMLElement | null = null;
+let applyBtn: HTMLButtonElement | null = null;
 let resetBtn: HTMLButtonElement | null = null;
 let saveBtn: HTMLButtonElement | null = null;
+let progressEl: HTMLElement | null = null;
+let progressBarEl: HTMLElement | null = null;
+let progressLabelEl: HTMLElement | null = null;
 
 let handlers: SimplifyHandlers | null = null;
 let info: SimplifyOpenInfo | null = null;
-let previewTimer: number | null = null;
+// The target reflected in the live mesh (Apply is a no-op until it changes).
+let appliedTarget = 0;
+// The triangle count currently on screen (drives the Save button's enabled
+// state) — set every time the applied result changes.
+let appliedCount = 0;
+let applying = false;
 
 export function initSimplifyUI(controlsContainer: HTMLElement, h: SimplifyHandlers): void {
   handlers = h;
@@ -110,6 +126,8 @@ function openPanel(): void {
  *  baseline). */
 function refresh(userInitiated: boolean): void {
   if (!handlers) return;
+  // A refresh under a finished apply: clear any leftover progress chrome.
+  showProgress(false);
   const res = handlers.open(userInitiated);
   if (!res.ok) {
     info = null;
@@ -134,13 +152,14 @@ function refresh(userInitiated: boolean): void {
     numberInput.max = String(base);
     numberInput.value = String(info.currentTriangles);
   }
+  appliedTarget = info.currentTriangles;
   if (originalEl) originalEl.textContent = `Original: ${base.toLocaleString()} triangles`;
   if (statusEl) statusEl.textContent = '';
   showResult(info.currentTriangles);
+  updateApplyEnabled();
 }
 
 function closePanel(): void {
-  if (previewTimer !== null) { clearTimeout(previewTimer); previewTimer = null; }
   panel?.classList.add('hidden');
   if (simplifyBtn) simplifyBtn.className = BTN_INACTIVE;
 }
@@ -160,10 +179,11 @@ function showControls(): void {
 
 function showResult(count: number): void {
   if (!info || !resultEl) return;
+  appliedCount = count;
   const base = info.baseTriangles;
   const pct = base > 0 ? Math.round((1 - count / base) * 100) : 0;
   resultEl.textContent = `Result: ${count.toLocaleString()} triangles (−${pct}%)`;
-  if (saveBtn) saveBtn.disabled = count >= base;
+  updateSaveEnabled();
 }
 
 function clampTarget(raw: number): number {
@@ -174,25 +194,86 @@ function clampTarget(raw: number): number {
   return Math.max(min, Math.min(max, Math.round(raw)));
 }
 
-/** Apply a target triangle count to the live model. Debounced so dragging the
- *  slider doesn't run the (synchronous) binary search on every tick. */
-function scheduleApply(target: number): void {
-  if (previewTimer !== null) clearTimeout(previewTimer);
-  previewTimer = window.setTimeout(() => {
-    previewTimer = null;
-    applyTarget(target);
-  }, 120);
+/** The target the controls currently express (slider/number input). */
+function currentTarget(): number {
+  return clampTarget(Number(numberInput?.value ?? slider?.value ?? appliedTarget));
 }
 
-function applyTarget(target: number): void {
-  if (!handlers || !info) return;
-  if (target >= info.baseTriangles) {
-    handlers.reset();
-    showResult(info.baseTriangles);
-    return;
+function updateApplyEnabled(): void {
+  if (!applyBtn) return;
+  applyBtn.disabled = applying || !info || currentTarget() === appliedTarget;
+}
+
+function updateSaveEnabled(): void {
+  if (!saveBtn) return;
+  saveBtn.disabled = applying || !info || appliedCount >= info.baseTriangles;
+}
+
+/** Lock the controls while an apply runs; unlock re-derives each button's
+ *  enabled state from the applied result. */
+function setControlsDisabled(disabled: boolean): void {
+  if (slider) slider.disabled = disabled;
+  if (numberInput) numberInput.disabled = disabled;
+  if (resetBtn) resetBtn.disabled = disabled;
+  if (disabled) {
+    if (applyBtn) applyBtn.disabled = true;
+    if (saveBtn) saveBtn.disabled = true;
+  } else {
+    updateApplyEnabled();
+    updateSaveEnabled();
   }
-  const r = handlers.preview(target);
-  showResult(r ? r.triangleCount : info.baseTriangles);
+}
+
+function showProgress(show: boolean): void {
+  if (!progressEl) return;
+  progressEl.classList.toggle('hidden', !show);
+  if (show) setProgress(0);
+}
+
+function setProgress(fraction: number): void {
+  const pct = Math.max(0, Math.min(100, Math.round(fraction * 100)));
+  if (progressBarEl) progressBarEl.style.width = `${pct}%`;
+  if (progressLabelEl) progressLabelEl.textContent = `Simplifying… ${pct}%`;
+}
+
+/** Resolve after the browser has had a chance to paint. The progress bar is
+ *  updated just before this runs; a single rAF fires *before* paint, so the
+ *  nested rAF resolves only after that frame has actually been drawn — letting
+ *  the bar advance visibly between the blocking simplify iterations. */
+function yieldForPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
+async function runApply(): Promise<void> {
+  if (!handlers || !info || applying) return;
+  const target = currentTarget();
+  if (target === appliedTarget) return;
+
+  applying = true;
+  setControlsDisabled(true);
+  showProgress(true);
+  if (statusEl) statusEl.textContent = '';
+
+  try {
+    const r = await handlers.apply(target, (fraction) => {
+      setProgress(fraction);
+      return yieldForPaint();
+    });
+    appliedTarget = target;
+    showResult(r ? r.triangleCount : info.baseTriangles);
+  } catch (e) {
+    if (statusEl) statusEl.textContent = `Simplify failed: ${(e as Error).message}`;
+  } finally {
+    applying = false;
+    showProgress(false);
+    setControlsDisabled(false);
+  }
 }
 
 function buildPanel(): HTMLElement {
@@ -233,13 +314,13 @@ function buildPanel(): HTMLElement {
   slider.max = '100';
   slider.step = '1';
   slider.value = '100';
+  // Moving the slider only sets the target; Apply runs the reduction.
   slider.addEventListener('input', () => {
+    if (applying) return;
     const t = clampTarget(Number(slider!.value));
     if (numberInput) numberInput.value = String(t);
-    scheduleApply(t);
+    updateApplyEnabled();
   });
-  // Snap to the precise value the instant the drag ends.
-  slider.addEventListener('change', () => applyTarget(clampTarget(Number(slider!.value))));
   row.appendChild(slider);
 
   numberInput = document.createElement('input');
@@ -249,18 +330,47 @@ function buildPanel(): HTMLElement {
   numberInput.min = '4';
   numberInput.step = '1';
   numberInput.addEventListener('input', () => {
+    if (applying) return;
     const t = clampTarget(Number(numberInput!.value));
     if (slider) slider.value = String(t);
-    scheduleApply(t);
+    updateApplyEnabled();
   });
   numberInput.addEventListener('change', () => {
+    if (applying) return;
     const t = clampTarget(Number(numberInput!.value));
     numberInput!.value = String(t);
     if (slider) slider.value = String(t);
-    applyTarget(t);
+    updateApplyEnabled();
   });
   row.appendChild(numberInput);
   controlsEl.appendChild(row);
+
+  applyBtn = document.createElement('button');
+  applyBtn.id = 'simplify-apply';
+  applyBtn.className = 'w-full px-2 py-1.5 rounded text-xs font-medium bg-blue-500/30 text-blue-200 [@media(hover:hover)]:hover:bg-blue-500/40 transition-colors border border-blue-500/50 disabled:opacity-40 disabled:cursor-not-allowed mb-2';
+  applyBtn.textContent = 'Apply';
+  applyBtn.title = 'Reduce the mesh to the target triangle count';
+  applyBtn.disabled = true;
+  applyBtn.addEventListener('click', () => { void runApply(); });
+  controlsEl.appendChild(applyBtn);
+
+  // Progress bar shown only while an apply is in flight.
+  progressEl = document.createElement('div');
+  progressEl.id = 'simplify-progress';
+  progressEl.className = 'hidden mb-2';
+  const track = document.createElement('div');
+  track.className = 'h-1.5 rounded-full bg-zinc-700/70 overflow-hidden';
+  progressBarEl = document.createElement('div');
+  progressBarEl.id = 'simplify-progress-bar';
+  progressBarEl.className = 'h-full bg-blue-400';
+  progressBarEl.style.width = '0%';
+  track.appendChild(progressBarEl);
+  progressEl.appendChild(track);
+  progressLabelEl = document.createElement('div');
+  progressLabelEl.className = 'text-[10px] text-zinc-400 mt-1';
+  progressLabelEl.textContent = 'Simplifying…';
+  progressEl.appendChild(progressLabelEl);
+  controlsEl.appendChild(progressEl);
 
   resultEl = document.createElement('div');
   resultEl.id = 'simplify-result';
@@ -277,13 +387,14 @@ function buildPanel(): HTMLElement {
   resetBtn.textContent = 'Reset';
   resetBtn.title = 'Restore the full-detail mesh';
   resetBtn.addEventListener('click', () => {
-    if (!info) return;
-    if (previewTimer !== null) { clearTimeout(previewTimer); previewTimer = null; }
+    if (!info || applying) return;
     handlers?.reset();
+    appliedTarget = info.baseTriangles;
     if (slider) slider.value = String(info.baseTriangles);
     if (numberInput) numberInput.value = String(info.baseTriangles);
     showResult(info.baseTriangles);
     if (statusEl) statusEl.textContent = '';
+    updateApplyEnabled();
   });
   actions.appendChild(resetBtn);
 
@@ -294,7 +405,7 @@ function buildPanel(): HTMLElement {
   saveBtn.title = 'Bake the reduced mesh into a new saved version';
   saveBtn.disabled = true;
   saveBtn.addEventListener('click', async () => {
-    if (!handlers || !saveBtn) return;
+    if (!handlers || !saveBtn || applying) return;
     saveBtn.disabled = true;
     if (statusEl) statusEl.textContent = 'Saving…';
     const res = await handlers.save();

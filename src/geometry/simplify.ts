@@ -62,6 +62,12 @@ function release(m: SimplifiableManifold | null): void {
   }
 }
 
+/** Reports search progress as a fraction in [0, 1]. The simplify loop `await`s
+ *  it, so a caller can update a progress bar and yield for a repaint between the
+ *  (blocking) binary-search iterations — the search is otherwise main-thread
+ *  synchronous and would freeze the UI on a heavy mesh. */
+export type SimplifyProgress = (fraction: number) => void | Promise<void>;
+
 /** Find the gentlest simplification of `manifold` whose triangle count is at
  *  most `targetTriangles`, by binary-searching the tolerance passed to
  *  Manifold.simplify() (larger tolerance ⇒ fewer triangles).
@@ -69,15 +75,20 @@ function release(m: SimplifiableManifold | null): void {
  *  `maxTolerance` bounds the search — pass roughly half the bounding-box
  *  diagonal; beyond that the mesh collapses and there is nothing more to gain.
  *
+ *  `onProgress` (optional) is awaited after each search iteration and once more
+ *  after the final bake, letting the caller drive a progress bar and yield to
+ *  the browser between iterations.
+ *
  *  Returns null when no reduction is needed (target ≥ current triangle count)
  *  or possible, signalling the caller to keep the original mesh. The input
  *  manifold is borrowed, never deleted; every intermediate manifold allocated
  *  during the search is released here. */
-export function simplifyToTriangleBudget(
+export async function simplifyToTriangleBudget(
   manifold: SimplifiableManifold,
   targetTriangles: number,
   maxTolerance: number,
-): SimplifyResult | null {
+  onProgress?: SimplifyProgress,
+): Promise<SimplifyResult | null> {
   const baseTri = manifold.numTri();
   const target = Math.max(MIN_VALID_TRIANGLES, Math.floor(targetTriangles));
   if (!Number.isFinite(target) || target >= baseTri) return null;
@@ -93,9 +104,12 @@ export function simplifyToTriangleBudget(
   let fewestValidTol = -1;
   let fewestValidCount = Infinity;
 
+  // Each search iteration is one step; the final bake is the last one.
+  const totalSteps = SEARCH_ITERATIONS + 1;
+
   for (let i = 0; i < SEARCH_ITERATIONS; i++) {
     const mid = (lo + hi) / 2;
-    let n: number;
+    let n: number | null = null;
     try {
       const candidate = manifold.simplify(mid);
       n = candidate.numTri();
@@ -104,26 +118,32 @@ export function simplifyToTriangleBudget(
       // A tolerance aggressive enough to collapse the mesh can throw — treat it
       // as too aggressive and pull the search back toward more detail.
       hi = mid;
-      continue;
     }
 
-    if (n >= MIN_VALID_TRIANGLES && n < fewestValidCount) {
-      fewestValidCount = n;
-      fewestValidTol = mid;
+    if (n !== null) {
+      if (n >= MIN_VALID_TRIANGLES && n < fewestValidCount) {
+        fewestValidCount = n;
+        fewestValidTol = mid;
+      }
+
+      if (n < MIN_VALID_TRIANGLES) {
+        hi = mid; // too aggressive — back off toward more triangles
+      } else if (n <= target) {
+        bestTol = mid; // within budget — try to keep more detail
+        hi = mid;
+      } else {
+        lo = mid; // not reduced enough yet
+      }
     }
 
-    if (n < MIN_VALID_TRIANGLES) {
-      hi = mid; // too aggressive — back off toward more triangles
-    } else if (n <= target) {
-      bestTol = mid; // within budget — try to keep more detail
-      hi = mid;
-    } else {
-      lo = mid; // not reduced enough yet
-    }
+    if (onProgress) await onProgress((i + 1) / totalSteps);
   }
 
   const tolerance = bestTol >= 0 ? bestTol : fewestValidTol;
-  if (tolerance < 0) return null;
+  if (tolerance < 0) {
+    if (onProgress) await onProgress(1);
+    return null;
+  }
 
   const final = manifold.simplify(tolerance);
   const result: SimplifyResult = {
@@ -132,5 +152,6 @@ export function simplifyToTriangleBudget(
     tolerance,
   };
   release(final);
+  if (onProgress) await onProgress(1);
   return result;
 }
