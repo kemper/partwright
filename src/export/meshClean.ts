@@ -6,6 +6,22 @@ import { isPainted as checkPainted } from '../color/regions';
 /** Default model color used when faces have no paint. */
 export const DEFAULT_COLOR_HEX = '#4a9eff';
 
+/** Throws if any vertex coordinate is non-finite (NaN/Infinity). Export
+ *  serializers call this up front so a broken model fails loudly instead of
+ *  writing an invalid file — NaN otherwise becomes literal "NaN" tokens in
+ *  OBJ/3MF and garbage floats in STL/GLB. */
+export function assertFiniteMesh(meshData: MeshData): void {
+  const { vertProperties, numVert, numProp } = meshData;
+  for (let i = 0; i < numVert; i++) {
+    const x = vertProperties[i * numProp];
+    const y = vertProperties[i * numProp + 1];
+    const z = vertProperties[i * numProp + 2];
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      throw new Error(`Cannot export: vertex ${i} has a non-finite (NaN/Infinity) coordinate. Check the geometry before exporting.`);
+    }
+  }
+}
+
 /** Get the hex color string for a triangle (e.g. '#ff3333'), or DEFAULT_COLOR_HEX if unpainted. */
 export function triColorHex(triColors: Uint8Array, t: number): string {
   if (!checkPainted(triColors, t)) return DEFAULT_COLOR_HEX;

@@ -54,6 +54,7 @@ import { exportGLB, buildGLB } from './export/gltf';
 import { exportSTL, buildSTL } from './export/stl';
 import { exportOBJ, buildOBJ } from './export/obj';
 import { export3MF, build3MF } from './export/threemf';
+import { assertFiniteMesh } from './export/meshClean';
 import { exportSessionJSON, exportRawCode, buildSessionJSON, buildRawCode } from './export/session';
 import { blobToBase64, downloadBlob } from './export/download';
 import {
@@ -959,16 +960,27 @@ async function main() {
     onOpenCatalog: () => { void showCatalogPage(); },
     onRun: () => runCode(),
     onExportGLB: async () => {
-      try { await exportGLB(); } catch (e) { console.error('GLB export error:', e); }
+      try {
+        if (currentMeshData) assertFiniteMesh(currentMeshData);
+        await exportGLB();
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
+      }
     },
     onExportSTL: () => {
-      if (currentMeshData) exportSTL(currentMeshData);
+      if (!currentMeshData) return;
+      try { exportSTL(currentMeshData); }
+      catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
     },
     onExportOBJ: () => {
-      if (currentMeshData) exportOBJ(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData);
+      if (!currentMeshData) return;
+      try { exportOBJ(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData); }
+      catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
     },
     onExport3MF: () => {
-      if (currentMeshData) export3MF(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData);
+      if (!currentMeshData) return;
+      try { export3MF(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData); }
+      catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
     },
     onExportSessionJSON: async () => {
       if (!getState().session) {
@@ -1808,6 +1820,7 @@ async function main() {
     /** Export current model as GLB download. Optional filename override. */
     async exportGLB(filename?: string) {
       assertString(filename, 'exportGLB(filename)', { optional: true });
+      if (currentMeshData) assertFiniteMesh(currentMeshData);
       await exportGLB(filename);
     },
 
@@ -1838,6 +1851,7 @@ async function main() {
     /** Build a GLB and return its bytes as base64. Same blob as exportGLB(). */
     async exportGLBData(filename?: string) {
       assertString(filename, 'exportGLBData(filename)', { optional: true });
+      if (currentMeshData) assertFiniteMesh(currentMeshData);
       const built = await buildGLB(filename);
       registerExportFromBuilt(built, 'GLB');
       return {

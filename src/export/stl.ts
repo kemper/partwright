@@ -1,9 +1,11 @@
 import type { MeshData } from '../geometry/types';
 import { downloadBlob, getExportFilename, getExportTitle } from './download';
+import { assertFiniteMesh } from './meshClean';
 import type { BuiltExport } from './gltf';
 
 /** Build the binary STL blob for a mesh without triggering a download. */
 export function buildSTL(meshData: MeshData, customName?: string): BuiltExport {
+  assertFiniteMesh(meshData);
   const { vertProperties, triVerts, numTri, numProp } = meshData;
 
   // Binary STL format
