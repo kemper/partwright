@@ -30,7 +30,9 @@ Hosted on **Cloudflare Pages** with production custom domain `www.partwrightstud
 
 ### Pull Requests — always open one when a task is complete
 
-When you finish an agent task, **create a pull request into `staging` as the final step.** This is a standing instruction that overrides any default "don't open a PR unless explicitly asked" behavior: treat task completion as the authorization to open the PR. Don't pause to ask whether to create one, and don't report a task as done without it. Skip the PR only when the user explicitly says not to, or for a pure throwaway experiment. Follow the [commit & PR conventions](#commit--pr-conventions) below for the title, prefix, and labels.
+When you finish an agent task, **create a pull request into `staging` as the final step.** This is a standing instruction that overrides any default "don't open a PR unless explicitly asked" behavior: treat task completion as the authorization to open the PR. Don't pause to ask whether to create one, and don't report a task as done without it.
+
+Skip the PR only when the user explicitly scoped you away from it — a request to "just commit" or "push to the branch" is *not* a request for a PR — or for a pure throwaway experiment. If you genuinely can't tell whether the work is a complete, reviewable unit, ask. Follow the [commit & PR conventions](#commit--pr-conventions) below for the title, prefix, and labels, and [After Opening a PR](#after-opening-a-pr) for the review pass and CI follow-up once it's up.
 
 - **Build command:** `npm run build`
 - **Output directory:** `dist/`
@@ -310,6 +312,27 @@ Subject is imperative and lowercase after the prefix: `feat: add light/dark mode
 - `ignore-for-release` — suppress from release notes (use for `chore:`/`refactor:` housekeeping that shouldn't appear in user-facing notes)
 
 Anything unlabeled lands in "Other Changes." That's fine for occasional internal cleanup, but features and fixes should always be labeled.
+
+### After Opening a PR
+
+Opening the PR (see [the standing instruction](#pull-requests--always-open-one-when-a-task-is-complete) in Deployment) isn't the finish line. Once it's up, do two things — they can run in parallel:
+
+**1. Kick off an automated review pass.** Right after pushing the initial PR, launch a review subagent (the Agent tool) over your branch diff against `origin/staging` and the code it touches. Have it hunt specifically for problems your change may have introduced:
+
+- **Defects** — logic errors, unhandled cases, broken or orphaned call sites in the new code.
+- **Functionality dropped in a merge** — features or code paths silently lost while resolving conflicts or re-syncing with `origin/staging`. Diff against what was there before, not just your own edits.
+- **Backwards-incompatible changes** — anything that breaks existing persisted data or files. Watch session/schema changes most closely: old sessions saved in IndexedDB, and previously exported files (GLB/3MF and any versioned schema), must still import and load. A schema bump needs a migration or back-compat read path, not a hard break.
+- **Security issues** — injection (command/SQL), XSS or unsafe HTML insertion, leaked API keys/secrets, or weakened CSP/COEP/COOP headers.
+
+Surface the results on the PR (a review comment, or fold clear fixes straight into the branch). If the pass turns up something ambiguous or large, raise it with the user rather than silently reworking.
+
+**2. Follow CI and auto-fix what you can.** Watch the PR's checks — the `npm run build` / `npm run test:e2e` workflow and the Cloudflare Pages deployment — and **auto-fix build or deployment failures when you can** by pushing a fix straight to the PR branch:
+
+1. Reproduce the failure locally first (`npm run build`, `npm run test:e2e`) so you're fixing the real cause, not guessing from the log.
+2. Re-sync with the latest `origin/staging` if the branch has drifted (see the Deployment workflow), then commit and push the fix to the same PR branch.
+3. Re-check CI after the push, and keep iterating until the checks are green.
+
+Only push fixes you're confident in — failures clearly caused by your own changes. If a failure is ambiguous, unrelated to your changes, or would require a large refactor or a risky/destructive change to resolve, stop and ask the user instead of pushing speculative fixes.
 
 ## Common Errors
 
