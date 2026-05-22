@@ -74,6 +74,27 @@ export async function validateKey(apiKey: string): Promise<string | null> {
   }
 }
 
+/** Fetch the models this key can actually use, newest first. Mirrors the
+ *  Gemini/OpenAI list helpers so the settings modal can offer "Load models
+ *  from your key" for every hosted provider — handy for dated snapshots and
+ *  brand-new releases that aren't in the curated `ANTHROPIC_MODEL_OPTIONS`
+ *  list yet. Returns `{ id, label }` pairs; throws on a non-OK response. */
+export async function listModels(apiKey: string): Promise<{ id: string; label: string }[]> {
+  const client = getClient(apiKey);
+  try {
+    const page = await client.models.list({ limit: 1000 });
+    const out: { id: string; label: string }[] = [];
+    for (const m of page.data) {
+      out.push({ id: m.id, label: m.display_name ? `${m.display_name} (${m.id})` : m.id });
+    }
+    return out; // API already returns most-recently-released first.
+  } catch (err) {
+    if (err instanceof Anthropic.AuthenticationError) throw new Error('Invalid API key.');
+    if (err instanceof Anthropic.APIError) throw new Error(`${err.status ?? 'API'}: ${err.message}`);
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+}
+
 export interface StreamCallbacks {
   /** Called for each text delta as it arrives. Use to incrementally update
    *  the in-progress assistant bubble. */

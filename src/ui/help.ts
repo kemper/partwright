@@ -229,6 +229,18 @@ export function createHelpPage(
       })(),
     },
     {
+      id: 'command-palette',
+      heading: 'Command palette & cheat sheet',
+      body: (() => {
+        const kbd = (k: string) => `<strong class="text-zinc-300">${k}</strong>`;
+        const paletteKeys = IS_MAC ? `${MOD_LABEL} K` : `${MOD_LABEL} + K`;
+        return (
+          `Press ${kbd(paletteKeys)} anywhere to open the <strong class="text-zinc-300">command palette</strong> — a searchable list of every action: run, save, format, switch tabs, export (3MF / STL / OBJ / GLB), toggle the AI panel or diagnostic log, start or open a session, or jump to the catalog or this help page. Type to filter, ${kbd('↑')} / ${kbd('↓')} to choose, ${kbd('Enter')} to run, ${kbd('Esc')} to close.<br><br>` +
+          `Press ${kbd('?')} (when you\'re not typing in a field) to pop up the full keyboard-shortcuts cheat sheet from anywhere — the same list as below.`
+        );
+      })(),
+    },
+    {
       id: 'shortcuts',
       heading: 'Keyboard shortcuts',
       body: (() => {

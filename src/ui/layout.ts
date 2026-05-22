@@ -1,9 +1,10 @@
 import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
 
-export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes';
+export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data';
 
 export interface LayoutElements {
   editorPane: HTMLElement;
+  partsRail: HTMLElement;
   editorContainer: HTMLElement;
   editorErrorPanel: HTMLElement;
   viewportPane: HTMLElement;
@@ -12,11 +13,14 @@ export interface LayoutElements {
   imagesContainer: HTMLElement;
   diffContainer: HTMLElement;
   notesContainer: HTMLElement;
+  dataContainer: HTMLElement;
   statusBar: HTMLElement;
   clipControls: HTMLElement;
   formatBtn: HTMLButtonElement;
   autoFormatToggle: HTMLButtonElement;
   switchTab: (tab: TabName, options?: SwitchTabOptions) => void;
+  /** Collapse/expand the parts rail (wired to the rail's own collapse button). */
+  togglePartsRail: () => void;
 }
 
 export interface SwitchTabOptions {
@@ -28,18 +32,33 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   // Stack panes vertically on narrow viewports, side-by-side at md+.
   main.className = 'flex flex-col md:flex-row flex-1 min-h-0';
 
-  // === Left (or top on mobile): Editor pane ===
-  // Width is only applied via inline style at md+ (see syncEditorPaneWidth).
-  // On mobile the pane uses flex sizing so both panes share the vertical space.
+  // === Left (or top on mobile): Editor group = parts rail + editor pane ===
+  // The GROUP is the width-managed, resizable unit — the splitter and the
+  // collapse/expand logic act on it, and on mobile it stacks above the viewport
+  // as one block. Width is only applied via inline style at md+; on mobile the
+  // group uses flex sizing so it shares the vertical space with the viewport.
+  const editorGroup = document.createElement('div');
+  editorGroup.className = 'relative flex flex-row flex-1 md:flex-none min-h-0 border-b md:border-b-0 md:border-r border-zinc-700';
+
+  // Parts rail — IDE-style list of the session's parts (create / select /
+  // rename / delete / drag-reorder). Populated by createPartList() in main.ts.
+  const partsRail = document.createElement('div');
+  partsRail.id = 'parts-rail';
+  partsRail.className = 'flex flex-col shrink-0 w-36 md:w-48 min-h-0 border-r border-zinc-700 bg-zinc-900/60 overflow-hidden';
+
+  // The editor pane itself sits to the right of the rail and fills the rest.
+  // `relative` so the absolutely-positioned error-panel overlay anchors here.
   const editorPane = document.createElement('div');
-  editorPane.className = 'flex flex-col flex-1 md:flex-none min-h-0 border-b md:border-b-0 md:border-r border-zinc-700';
+  editorPane.className = 'relative flex flex-col flex-1 min-w-0 min-h-0';
 
   const editorHeader = document.createElement('div');
   editorHeader.className = 'flex items-center px-3 py-1.5 bg-zinc-800 border-b border-zinc-700 gap-2';
 
   const editorTitle = document.createElement('span');
   editorTitle.id = 'editor-title';
-  editorTitle.className = 'text-xs text-zinc-400 font-mono';
+  // truncate + min-w-0 so a long part name ellipsizes instead of pushing the
+  // status indicator and buttons out of the (now rail-narrowed) header.
+  editorTitle.className = 'text-xs text-zinc-400 font-mono truncate min-w-0';
   editorTitle.textContent = 'editor.js';
   editorHeader.appendChild(editorTitle);
 
@@ -62,7 +81,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
 
   const statusBar = document.createElement('span');
   statusBar.id = 'status-indicator';
-  statusBar.className = 'text-xs text-emerald-400 font-mono';
+  statusBar.className = 'text-xs text-emerald-400 font-mono shrink-0';
   statusBar.textContent = 'Ready';
   editorHeader.appendChild(statusBar);
 
@@ -74,9 +93,12 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
 
   editorPane.appendChild(editorHeader);
 
+  // Overlay (absolutely positioned) so showing/hiding it never reflows the code
+  // or moves the caret. Anchored to the bottom of the editor pane; long errors
+  // scroll within it.
   const editorErrorPanel = document.createElement('div');
   editorErrorPanel.id = 'editor-error-panel';
-  editorErrorPanel.className = 'hidden border-b border-red-500/30 bg-red-950/40 px-3 py-2 text-xs text-red-100';
+  editorErrorPanel.className = 'hidden absolute bottom-0 left-0 right-0 z-10 max-h-[45%] overflow-auto border-t border-red-500/40 bg-red-950/90 backdrop-blur-sm px-3 py-2 text-xs text-red-100 shadow-lg';
   editorPane.appendChild(editorErrorPanel);
 
   const editorContainer = document.createElement('div');
@@ -93,7 +115,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   const splitterStripe = document.createElement('div');
   splitterStripe.className = 'absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-zinc-700 group-hover:bg-blue-500 group-[.is-dragging]:bg-blue-500 transition-colors';
   splitter.appendChild(splitterStripe);
-  initSplitter(splitter, editorPane);
+  initSplitter(splitter, editorGroup);
 
   // === Right (or bottom on mobile): Tabbed viewport ===
   const rightPane = document.createElement('div');
@@ -115,6 +137,8 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   tabDiff.title = 'Compare code between two versions';
   const tabNotes = createTab('Notes', false);
   tabNotes.title = 'Session notes and design decisions log';
+  const tabData = createTab('Data', false);
+  tabData.title = 'Browse everything Partwright has stored in this browser';
 
   tabBar.appendChild(tabInteractive);
   tabBar.appendChild(tabGallery);
@@ -122,6 +146,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   tabBar.appendChild(tabImages);
   tabBar.appendChild(tabDiff);
   tabBar.appendChild(tabNotes);
+  tabBar.appendChild(tabData);
 
   // Tab content panels
   const viewportPane = document.createElement('div');
@@ -157,8 +182,12 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   notesContainer.id = 'notes-container';
   notesContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-4 flex flex-col';
 
-  const allTabs = [tabInteractive, tabGallery, tabVersions, tabImages, tabDiff, tabNotes];
-  const allPanes = [viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer];
+  const dataContainer = document.createElement('div');
+  dataContainer.id = 'data-container';
+  dataContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-4 flex flex-col';
+
+  const allTabs = [tabInteractive, tabGallery, tabVersions, tabImages, tabDiff, tabNotes, tabData];
+  const allPanes = [viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer];
 
   // Mobile-only pane toggle: lets the user swap between editor and viewport
   // when the layout is stacked. Hidden at md+ and on tabs that already hide
@@ -205,8 +234,8 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
 
   function collapseEditor(): void {
     editorCollapsed = true;
-    editorPane.style.width = '0';
-    editorPane.style.overflow = 'hidden';
+    editorGroup.style.width = '0';
+    editorGroup.style.overflow = 'hidden';
     expandEditorBtn.classList.remove('hidden');
     splitter.classList.add('hidden');
     window.dispatchEvent(new Event('resize'));
@@ -214,8 +243,8 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
 
   function expandEditor(): void {
     editorCollapsed = false;
-    editorPane.style.width = '35%';
-    editorPane.style.overflow = '';
+    editorGroup.style.width = '40%';
+    editorGroup.style.overflow = '';
     expandEditorBtn.classList.add('hidden');
     syncPaneVisibility();
     window.dispatchEvent(new Event('resize'));
@@ -226,6 +255,29 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   });
   expandEditorBtn.addEventListener('click', expandEditor);
 
+  // === Parts rail collapse ===
+  // Mirrors the editor collapse: hide the rail to reclaim width, leaving a small
+  // floating button at the group's left edge to bring it back.
+  let railCollapsed = false;
+  const railExpandBtn = document.createElement('button');
+  railExpandBtn.className = 'absolute left-0 top-0 z-20 px-1.5 py-1 bg-zinc-800 text-zinc-300 hover:text-zinc-100 hover:bg-zinc-700 rounded-br border-r border-b border-zinc-700 text-xs leading-none hidden';
+  railExpandBtn.textContent = '»'; // »
+  railExpandBtn.title = 'Show parts';
+  railExpandBtn.setAttribute('aria-label', 'Show parts');
+  editorGroup.appendChild(railExpandBtn);
+
+  function togglePartsRail(): void {
+    railCollapsed = !railCollapsed;
+    partsRail.classList.toggle('hidden', railCollapsed);
+    railExpandBtn.classList.toggle('hidden', !railCollapsed);
+    // The floating » chip sits at the group's top-left; when the rail is
+    // collapsed (but the editor open) pad the header so it doesn't overlap the
+    // title. Cleared when the rail returns.
+    editorHeader.style.paddingLeft = railCollapsed ? '1.75rem' : '';
+    window.dispatchEvent(new Event('resize'));
+  }
+  railExpandBtn.addEventListener('click', togglePartsRail);
+
   function syncPaneVisibility() {
     const tab = _currentTab;
     const tabHidesEditor = tab === 'diff';
@@ -233,26 +285,26 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
 
     if (isDesktop) {
       // Restore inline width if it was cleared on mobile, but not if collapsed.
-      if (!editorCollapsed && !editorPane.style.width) editorPane.style.width = '35%';
-      editorPane.classList.toggle('hidden', tabHidesEditor);
+      if (!editorCollapsed && !editorGroup.style.width) editorGroup.style.width = '40%';
+      editorGroup.classList.toggle('hidden', tabHidesEditor);
       splitter.classList.toggle('hidden', tabHidesEditor || editorCollapsed);
       expandEditorBtn.classList.toggle('hidden', tabHidesEditor || !editorCollapsed);
       rightPane.classList.remove('hidden');
       mobilePaneToggle.classList.add('hidden');
     } else {
       // Mobile: clear inline width so flex sizing controls the editor's height.
-      editorPane.style.width = '';
-      editorPane.style.overflow = '';
+      editorGroup.style.width = '';
+      editorGroup.style.overflow = '';
       splitter.classList.add('hidden');
       expandEditorBtn.classList.add('hidden');
       if (tabHidesEditor) {
-        editorPane.classList.add('hidden');
+        editorGroup.classList.add('hidden');
         rightPane.classList.remove('hidden');
         // No choice to make — hide the toggle on Diff.
         mobilePaneToggle.classList.add('hidden');
       } else {
         const pane = getMobilePane();
-        editorPane.classList.toggle('hidden', pane !== 'editor');
+        editorGroup.classList.toggle('hidden', pane !== 'editor');
         rightPane.classList.toggle('hidden', pane !== 'viewport');
         mobilePaneToggle.classList.remove('hidden');
         syncMobileToggleUI(pane);
@@ -263,7 +315,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   // Shared tab activation logic (DOM toggling, editor visibility, events)
   function applyTab(tab: TabName) {
     _currentTab = tab;
-    const idx = tab === 'interactive' ? 0 : tab === 'gallery' ? 1 : tab === 'versions' ? 2 : tab === 'images' ? 3 : tab === 'diff' ? 4 : 5;
+    const idx = tab === 'interactive' ? 0 : tab === 'gallery' ? 1 : tab === 'versions' ? 2 : tab === 'images' ? 3 : tab === 'diff' ? 4 : tab === 'notes' ? 5 : 6;
     for (let i = 0; i < allPanes.length; i++) {
       if (i === idx) {
         allPanes[i].classList.remove('hidden');
@@ -293,11 +345,13 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     params.delete('images');
     params.delete('diff');
     params.delete('notes');
+    params.delete('data');
     if (tab === 'gallery') params.set('gallery', '');
     else if (tab === 'versions') params.set('versions', '');
     else if (tab === 'images') params.set('images', '');
     else if (tab === 'diff') params.set('diff', '');
     else if (tab === 'notes') params.set('notes', '');
+    else if (tab === 'data') params.set('data', '');
     // interactive: no tab param.
     const newUrl = params.toString()
       ? `${basePath}?${params.toString().replace(/=(?=&|$)/g, '')}`
@@ -319,10 +373,13 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   tabImages.addEventListener('click', () => switchTab('images'));
   tabDiff.addEventListener('click', () => switchTab('diff'));
   tabNotes.addEventListener('click', () => switchTab('notes'));
+  tabData.addEventListener('click', () => switchTab('data'));
 
   // Restore tab from URL on initial load (without re-writing the URL)
   const initParams = new URLSearchParams(window.location.search);
-  if (initParams.has('notes')) {
+  if (initParams.has('data')) {
+    applyTab('data');
+  } else if (initParams.has('notes')) {
     applyTab('notes');
   } else if (initParams.has('diff')) {
     applyTab('diff');
@@ -341,8 +398,11 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   rightPane.appendChild(imagesContainer);
   rightPane.appendChild(diffContainer);
   rightPane.appendChild(notesContainer);
+  rightPane.appendChild(dataContainer);
 
-  main.appendChild(editorPane);
+  editorGroup.appendChild(partsRail);
+  editorGroup.appendChild(editorPane);
+  main.appendChild(editorGroup);
   main.appendChild(splitter);
   main.appendChild(rightPane);
 
@@ -374,7 +434,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab };
+  return { editorPane, partsRail, editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, togglePartsRail };
 }
 
 const TAB_ACTIVE_CLASS = 'shrink-0 whitespace-nowrap px-4 py-2 md:py-1.5 text-sm md:text-xs font-medium text-zinc-100 border-b-2 border-blue-500 bg-zinc-900';

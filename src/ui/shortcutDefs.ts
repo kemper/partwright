@@ -25,7 +25,7 @@ export const ALT_LABEL = IS_MAC ? '⌥' : 'Alt'; // ⌥ / Alt
 
 /** Join modifier/key tokens the way the host OS conventionally renders them
  *  (macOS stacks glyphs with no separator, others use " + "). */
-function combo(...tokens: string[]): string {
+export function combo(...tokens: string[]): string {
   return tokens.join(IS_MAC ? ' ' : ' + ');
 }
 
@@ -36,10 +36,19 @@ interface ShortcutDoc {
   description: string;
 }
 
-/** The shortcuts this feature owns (undo / redo / save), formatted for the
- *  current OS. The help page renders these; the handler implements them. */
+/** The shortcuts this feature owns, formatted for the current OS. The help
+ *  page and the in-app `?` cheat sheet render these; the handlers implement
+ *  them. */
 export function getShortcutDocs(): ShortcutDoc[] {
   return [
+    {
+      keys: combo(MOD_LABEL, 'K'),
+      description: 'Open the command palette — search and run any action by name.',
+    },
+    {
+      keys: '?',
+      description: 'Open this keyboard-shortcuts cheat sheet (when not typing in a field).',
+    },
     {
       keys: combo(MOD_LABEL, 'Z'),
       description:
@@ -55,6 +64,10 @@ export function getShortcutDocs(): ShortcutDoc[] {
       keys: combo(MOD_LABEL, 'S'),
       description:
         'Save the current code, geometry, paint regions, and annotations as a new version in the active session.',
+    },
+    {
+      keys: combo(SHIFT_LABEL, ALT_LABEL, 'F'),
+      description: 'Reformat the code in the editor.',
     },
   ];
 }
