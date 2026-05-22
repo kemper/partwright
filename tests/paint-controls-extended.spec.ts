@@ -175,6 +175,61 @@ test.describe('extended paint controls', () => {
     expect(result.bad.error).toBeTruthy();
   });
 
+  test('mesh-edge toggle sits left of the grid toggle and defaults off', async ({ page }) => {
+    await openEditor(page);
+    const wireBtn = page.locator('#wireframe-toggle');
+    await expect(wireBtn).toBeVisible();
+    await expect(page.locator('#grid-toggle')).toBeVisible();
+    // Default: edges hidden, so the button invites showing them.
+    await expect(wireBtn).toHaveAttribute('title', 'Show mesh edges');
+    // DOM order places the wireframe button before the grid button (i.e. to its left).
+    const wireIsBeforeGrid = await page.evaluate(() => {
+      const w = document.querySelector('#wireframe-toggle')!;
+      const g = document.querySelector('#grid-toggle')!;
+      return Boolean(w.compareDocumentPosition(g) & Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+    expect(wireIsBeforeGrid).toBe(true);
+  });
+
+  test('clicking the mesh-edge toggle flips it on and back off', async ({ page }) => {
+    await openEditor(page);
+    const wireBtn = page.locator('#wireframe-toggle');
+    await wireBtn.dispatchEvent('click');
+    await expect(wireBtn).toHaveAttribute('title', 'Hide mesh edges');
+    await wireBtn.dispatchEvent('click');
+    await expect(wireBtn).toHaveAttribute('title', 'Show mesh edges');
+  });
+
+  test('paint mode forces mesh edges on and restores the prior state on exit', async ({ page }) => {
+    await openEditor(page);
+    const wireBtn = page.locator('#wireframe-toggle');
+    await expect(wireBtn).toHaveAttribute('title', 'Show mesh edges');
+
+    // Entering paint mode turns edges on (they matter for aiming paint).
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await expect(wireBtn).toHaveAttribute('title', 'Hide mesh edges');
+
+    // Leaving paint mode restores the previous (off) state.
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await expect(wireBtn).toHaveAttribute('title', 'Show mesh edges');
+  });
+
+  test('edges left on before painting stay on after exiting paint', async ({ page }) => {
+    await openEditor(page);
+    const wireBtn = page.locator('#wireframe-toggle');
+    // User turns edges on manually first.
+    await wireBtn.dispatchEvent('click');
+    await expect(wireBtn).toHaveAttribute('title', 'Hide mesh edges');
+
+    // Paint then exit — edges should remain on, matching the pre-paint state.
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await expect(wireBtn).toHaveAttribute('title', 'Hide mesh edges');
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await expect(wireBtn).toHaveAttribute('title', 'Hide mesh edges');
+  });
+
   test('hideRegion / showRegion partwright API toggles visibility flag', async ({ page }) => {
     await openEditor(page);
     const result = await page.evaluate(() => {
