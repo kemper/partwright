@@ -21,9 +21,12 @@ Hosted on **Cloudflare Pages** with production custom domain `www.partwrightstud
 
 **All work should be merged to `staging` first.** Do not push directly to `main`. The workflow is:
 
-1. Create a feature branch, develop and test locally
-2. Merge to `staging` — auto-deploys for verification
-3. Once validated on staging, open a PR from `staging` → `main` for production release
+1. Create a feature branch off the latest `staging`, develop and test locally
+2. Before your final push or PR, sync with the latest staging: `git fetch origin staging`, then merge `origin/staging` into your branch (or rebase onto it if the branch hasn't been pushed yet), resolve any conflicts, and re-run `npm run build` + `npm run test:e2e`
+3. Merge to `staging` — auto-deploys for verification
+4. Once validated on staging, open a PR from `staging` → `main` for production release
+
+> **Always start from — and re-sync against — the latest `origin/staging`.** Branches cut from a stale staging produce noisy diffs and merge conflicts, and can quietly clobber recently merged work. Re-fetch and merge/rebase `origin/staging` right before your final push, and again before opening any PR.
 
 - **Build command:** `npm run build`
 - **Output directory:** `dist/`
@@ -279,6 +282,8 @@ The app targets both desktop and mobile. The `md:` breakpoint (768 px) separates
 - **Viewport-relative sizing**: Avoid hard-coded pixel widths for panel defaults that would exceed a phone screen. Test new panels/modals at 375 px wide.
 
 ### Commit & PR Conventions
+
+**Before opening (or updating) a PR, re-sync your branch with the latest `origin/staging`** — `git fetch origin staging`, then merge it in (or rebase onto it) — so the PR diff reflects only your changes and merges cleanly without re-introducing already-merged work. See the Deployment workflow above for the full sequence.
 
 PR titles, commit subjects, and PR labels feed the auto-generated release notes (`.github/release.yml`). Keep both consistent.
 
