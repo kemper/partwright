@@ -11,7 +11,7 @@ import {
   type Session,
   type ExportedSession,
 } from '../storage/sessionManager';
-import { getLatestVersion, getVersionCount } from '../storage/db';
+import { getSessionLatestVersion, getSessionVersionCount } from '../storage/db';
 
 let modalEl: HTMLElement | null = null;
 let onLoadVersion: ((code: string) => void | Promise<void>) | null = null;
@@ -150,8 +150,8 @@ export async function showSessionList(): Promise<void> {
 
 async function createSessionRow(session: Session): Promise<HTMLElement> {
   const [count, latestVersion] = await Promise.all([
-    getVersionCount(session.id),
-    getLatestVersion(session.id),
+    getSessionVersionCount(session.id),
+    getSessionLatestVersion(session.id),
   ]);
 
   const row = document.createElement('div');

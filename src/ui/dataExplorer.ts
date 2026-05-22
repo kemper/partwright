@@ -45,6 +45,7 @@ function recordLabel(store: StoreName, rec: Record<string, unknown>): string {
   switch (store) {
     case 'sessions': return String(rec.name ?? rec.id ?? '(unnamed)');
     case 'versions': return `v${rec.index ?? '?'} · ${String(rec.label ?? '')}`.trim();
+    case 'parts': return String(rec.name ?? rec.id ?? '(unnamed)');
     case 'notes': return truncate(String(rec.text ?? ''), 60);
     case 'aiKeys': return String(rec.provider ?? '');
     case 'aiChats': return `${String(rec.role ?? '?')} · ${truncate(blocksToText(rec.blocks), 50)}`;

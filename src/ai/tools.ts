@@ -752,6 +752,60 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'listParts',
+    description: 'List the parts in the active session: [{id, name, order, isCurrent}]. A session can hold multiple parts — independent objects, each with its own code and version history. The current part is what runCode / runAndSave / paint / export act on.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'getCurrentPart',
+    description: 'Return the active part {id, name, order}, or null when no session is open.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'createPart',
+    description: 'Create a new, empty part in the active session and switch to it. The editor resets to a starter snippet; call runAndSave to commit its first version. Use to model a second (third, …) object in the same session.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Optional part name (e.g. "Lid"). Auto-named "Part N" when omitted.' },
+      },
+    },
+  },
+  {
+    name: 'changePart',
+    description: "Switch the active part. Pass the part id from listParts(). Loads that part's latest version into the editor/viewport; all later code, paint, and version operations act on it.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Part id from listParts().' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'renamePart',
+    description: 'Rename a part. Pass its id (from listParts) and the new name.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Part id from listParts().' },
+        name: { type: 'string', description: 'New part name.' },
+      },
+      required: ['id', 'name'],
+    },
+  },
+  {
+    name: 'deletePart',
+    description: "Delete a part and all its versions. Refuses to delete a session's last remaining part. If the active part is deleted, an adjacent part becomes active.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Part id from listParts().' },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'assertPaint',
     description: 'Verify a painted region matches expected geometry. Returns {passed, failures?}. Use after painting to catch regressions when the mesh changes. `region` is the region id (integer) or name (string) from listRegions().',
     input_schema: {
@@ -865,6 +919,12 @@ const ALWAYS_AVAILABLE = new Set([
   'query',
   'modifyAndTest',
   'probeRay',
+  'listParts',
+  'getCurrentPart',
+  'createPart',
+  'changePart',
+  'renamePart',
+  'deletePart',
   'assertPaint',
   'sliceAtZVisual',
   'paintInCylinder',
@@ -1268,6 +1328,18 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     }
     case 'probeRay':
       return api.probeRay(input.origin, input.direction);
+    case 'listParts':
+      return api.listParts();
+    case 'getCurrentPart':
+      return api.getCurrentPart();
+    case 'createPart':
+      return api.createPart(input.name as string | undefined);
+    case 'changePart':
+      return api.changePart(input.id as string);
+    case 'renamePart':
+      return api.renamePart(input.id as string, input.name as string);
+    case 'deletePart':
+      return api.deletePart(input.id as string);
     case 'assertPaint':
       return api.assertPaint(input);
     case 'paintInCylinder':

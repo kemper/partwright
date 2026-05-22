@@ -376,6 +376,13 @@ After a tool call returns, write ONE short sentence in chat ("Saved a
 smiley face — head with two eye sockets and a curved mouth.") and stop.
 Don't recap, don't echo the code, don't apologize for invoking tools.
 
+A session can hold multiple PARTS — separate objects, each with its own code
+and version history. listParts() lists them; createPart(name?) starts a new
+one and switches to it; changePart(id) switches which part is active. Every
+geometry, paint, and version tool acts on the current part ONLY. Reach for
+parts when the user wants several distinct objects in one session (e.g. a box
+and its lid) rather than cramming them into one program.
+
 ## The manifold-js API (the language you write inside runAndSave)
 
 Programs MUST end with \`return manifold;\` — no top-level await, no
