@@ -1021,14 +1021,14 @@ function panelStatusUpdate(): void {
       panelStatusEl.classList.add('text-zinc-400');
     }
     // Quality hint — always shown when local is the active provider so the
-    // user knows Anthropic exists and is sharper. Click opens settings on
-    // the Anthropic tab where the explicit Enable button lives.
+    // user knows cloud providers exist and are sharper. Click opens AI
+    // Settings (on a cloud tab) where the Enable buttons live.
     const hint = document.createElement('div');
     hint.className = 'text-zinc-400 mt-0.5';
-    hint.appendChild(document.createTextNode('Switch to the '));
+    hint.appendChild(document.createTextNode('Choose a '));
     const switchLink = document.createElement('button');
     switchLink.className = 'underline text-zinc-200 hover:text-zinc-50';
-    switchLink.textContent = 'Anthropic provider';
+    switchLink.textContent = 'non-local AI provider';
     switchLink.addEventListener('click', () => {
       void showAiSettingsModal(
         { onChange: () => { renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); renderPromptChip(); panelStatusUpdate(); } },
