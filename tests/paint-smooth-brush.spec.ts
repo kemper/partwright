@@ -54,24 +54,24 @@ test.describe('smooth paintbrush', () => {
     expect(cfg.smooth).toBe(true);
   });
 
-  test('setBrushSmooth / setBrushSubdivision validate and round-trip', async ({ page }) => {
+  test('setBrushSmooth / setBrushSmoothQuality validate and round-trip', async ({ page }) => {
     await openEditor(page);
     const result = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       const badBool = pw.setBrushSmooth('yes');
       const okBool = pw.setBrushSmooth(true);
-      const badLvl = pw.setBrushSubdivision('lots');
-      const clampHi = pw.setBrushSubdivision(99);
-      const okLvl = pw.setBrushSubdivision(3);
+      const badLvl = pw.setBrushSmoothQuality('lots');
+      const clampHi = pw.setBrushSmoothQuality(99);
+      const okLvl = pw.setBrushSmoothQuality(2);
       return { badBool, okBool, badLvl, clampHi, okLvl, cfg: pw.getBrushSmooth() };
     });
     expect(result.badBool.error).toBeTruthy();
     expect(result.okBool.smooth).toBe(true);
     expect(result.badLvl.error).toBeTruthy();
-    expect(result.clampHi.subdivision).toBe(5); // clamped to max
-    expect(result.okLvl.subdivision).toBe(3);
-    expect(result.cfg).toMatchObject({ smooth: true, subdivision: 3 });
+    expect(result.clampHi.quality).toBe(4); // clamped to max
+    expect(result.okLvl.quality).toBe(2);
+    expect(result.cfg).toMatchObject({ smooth: true, quality: 2 });
   });
 
   test('paintStroke subdivides the mesh, paints, and stays watertight', async ({ page }) => {
@@ -82,7 +82,7 @@ test.describe('smooth paintbrush', () => {
       const before = pw.getMesh();
       // A dot in the middle of the top face (z=5) — smaller than the face's two
       // triangles, so it exercises the closest-point selection fallback.
-      const stroke = pw.paintStroke({ points: [[0, 0, 5]], radius: 2, subdivision: 2, color: [0.9, 0.2, 0.2] });
+      const stroke = pw.paintStroke({ points: [[0, 0, 5]], radius: 2, maxEdge: 0.25, color: [0.9, 0.2, 0.2] });
       const after = pw.getMesh();
       return {
         stroke,
@@ -112,19 +112,19 @@ test.describe('smooth paintbrush', () => {
     expect(out.regions).toBe(1);
   });
 
-  test('finer subdivision produces more triangles; clearing restores the base mesh', async ({ page }) => {
+  test('a smaller target edge produces more triangles; clearing restores the base mesh', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       const base = pw.getMesh().numTri;
 
-      pw.paintStroke({ points: [[0, 0, 5]], radius: 3, subdivision: 1, color: [1, 0, 0] });
+      pw.paintStroke({ points: [[0, 0, 5]], radius: 3, maxEdge: 1.0, color: [1, 0, 0] });
       const low = pw.getMesh().numTri;
       pw.clearColors();
       const clearedLow = pw.getMesh().numTri;
 
-      pw.paintStroke({ points: [[0, 0, 5]], radius: 3, subdivision: 3, color: [1, 0, 0] });
+      pw.paintStroke({ points: [[0, 0, 5]], radius: 3, maxEdge: 0.2, color: [1, 0, 0] });
       const high = pw.getMesh().numTri;
       pw.clearColors();
       const clearedHigh = pw.getMesh().numTri;
@@ -133,9 +133,27 @@ test.describe('smooth paintbrush', () => {
     });
 
     expect(out.low).toBeGreaterThan(out.base);
-    expect(out.high).toBeGreaterThan(out.low);     // more passes -> more triangles
+    expect(out.high).toBeGreaterThan(out.low);     // finer target -> more triangles
     expect(out.clearedLow).toBe(out.base);          // clearing returns to base tessellation
     expect(out.clearedHigh).toBe(out.base);
+  });
+
+  test('subdivision adapts to a very coarse flat face (the reported case)', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      // A large, very flat rectangle: the top face is just two huge triangles —
+      // a fixed pass count leaves a chunky circle here. The edge-length target
+      // must keep refining until the boundary triangles are actually small.
+      await pw.run(`const { Manifold } = api; return Manifold.cube([200, 120, 4], true);`);
+      const r = pw.paintStroke({ points: [[0, 0, 2]], radius: 20, maxEdge: 1, color: [1, 0, 0] });
+      return { error: r.error, painted: r.triangles, meshTri: r.meshTriangleCount };
+    });
+    expect(out.error).toBeFalsy();
+    // radius 20 / maxEdge 1 ⇒ a smooth circle needs many boundary triangles.
+    expect(out.painted).toBeGreaterThan(200);
+    expect(out.meshTri).toBeGreaterThan(500);
   });
 
   test('paintStroke rejects bad input', async ({ page }) => {
@@ -163,7 +181,7 @@ test.describe('smooth paintbrush', () => {
       const pw = (window as any).partwright;
       await pw.createSession('smooth-persist');
       await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 4], true);`);
-      pw.paintStroke({ points: [[0, 0, 2]], radius: 5, subdivision: 3, color: [0.2, 0.7, 1] });
+      pw.paintStroke({ points: [[0, 0, 2]], radius: 5, maxEdge: 0.4, color: [0.2, 0.7, 1] });
       const paintedTri = pw.getMesh().numTri;
       const paintedColored = pw.listRegions()[0].triangles;
 

@@ -28,9 +28,18 @@ let brushShape: BrushShape = 'circle';
  *  crosses so the painted region's outline is smooth/rounded instead of
  *  following the existing tessellation. */
 let brushSmooth = false;
-/** Subdivision iterations applied near a smooth stroke's edge (1..5). Higher =
- *  finer/rounder edge at the cost of more triangles. */
-let brushSubdivision = 2;
+/** Smooth-edge quality preset (1..4 = Coarse/Medium/Fine/Very fine). Maps to a
+ *  target triangle edge of `brushRadius / SMOOTH_QUALITY_DIVISOR[level]`, so the
+ *  refinement adapts to brush size and base-mesh coarseness rather than running
+ *  a fixed number of passes. Higher = smoother edge + more triangles. */
+let brushSmoothQuality = 3;
+/** Divisor of the brush radius per quality level (index 1..4). */
+const SMOOTH_QUALITY_DIVISOR: Record<number, number> = { 1: 4, 2: 8, 3: 16, 4: 32 };
+
+/** Target edge length (mesh units) for the active brush settings. */
+export function brushTargetEdge(): number {
+  return brushRadius / (SMOOTH_QUALITY_DIVISOR[brushSmoothQuality] ?? 16);
+}
 /** Surface points sampled along the in-progress smooth stroke. */
 let strokeSamples: [number, number, number][] = [];
 let adjacency: AdjacencyGraph | null = null;
@@ -128,12 +137,12 @@ export function isBrushSmooth(): boolean {
   return brushSmooth;
 }
 
-export function setBrushSubdivision(level: number): void {
-  brushSubdivision = Math.max(1, Math.min(5, Math.round(level)));
+export function setBrushSmoothQuality(level: number): void {
+  brushSmoothQuality = Math.max(1, Math.min(4, Math.round(level)));
 }
 
-export function getBrushSubdivision(): number {
-  return brushSubdivision;
+export function getBrushSmoothQuality(): number {
+  return brushSmoothQuality;
 }
 
 /** True when the active brush settings will subdivide the mesh on commit. */
@@ -361,7 +370,7 @@ function commitBrushStroke(): void {
         samples: strokeSamples.map(s => [s[0], s[1], s[2]] as [number, number, number]),
         radius: brushRadius,
         shape: brushShape,
-        level: brushSubdivision,
+        maxEdge: brushTargetEdge(),
       },
       new Set<number>(),
     );

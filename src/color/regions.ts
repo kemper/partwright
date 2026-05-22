@@ -22,10 +22,11 @@ export type RegionDescriptor =
   | { kind: 'triangles'; ids: number[] }
   | { kind: 'byLabel'; label: string }
   | { kind: 'connectedFromSeed'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; maxDeviationDeg: number }
-  // Smooth paintbrush stroke: surface samples + brush footprint, plus a
-  // subdivision level. Resolving it locally refines the mesh under the stroke
-  // so the painted edge follows the brush outline. See src/color/subdivide.ts.
-  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; level: number };
+  // Smooth paintbrush stroke: surface samples + brush footprint, plus a target
+  // edge length. Resolving it locally refines the mesh under the stroke until
+  // boundary triangles are below `maxEdge`, so the painted edge follows the
+  // brush outline regardless of base-mesh coarseness. See src/color/subdivide.ts.
+  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number };
 
 export interface SerializedColorRegion {
   id: number;

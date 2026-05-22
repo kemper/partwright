@@ -23,14 +23,17 @@ export interface BrushStroke {
   /** Brush radius in mesh units. */
   radius: number;
   shape: BrushShape;
-  /** Number of refinement iterations to apply near the stroke edge (>=1). */
-  level: number;
+  /** Target triangle edge length near the stroke boundary, in mesh units.
+   *  Triangles the brush edge crosses are refined until their edges fall below
+   *  this — so the painted outline is smooth regardless of how coarse the base
+   *  mesh is. Smaller = smoother + more triangles. */
+  maxEdge: number;
 }
 
-/** Hard ceilings so a huge brush on a dense mesh can't run away. Straddle-only
- *  selection already bounds growth to the boundary length (not the area), but a
- *  pathological mesh shouldn't be able to lock the tab. */
-const MAX_LEVEL = 5;
+/** Hard ceilings so a tiny target edge on a coarse mesh can't run away.
+ *  Straddle-only selection already bounds growth to the boundary length (not the
+ *  area), but a pathological case shouldn't be able to lock the tab. */
+const MAX_PASSES = 12;
 const MAX_TRIANGLES = 1_500_000;
 
 /** True when `p` is within the brush footprint of any of the stroke's samples,
@@ -62,20 +65,35 @@ function triVertex(mesh: MeshData, vi: number): [number, number, number] {
   return [mesh.vertProperties[vi * p], mesh.vertProperties[vi * p + 1], mesh.vertProperties[vi * p + 2]];
 }
 
-/** Triangles that the brush boundary crosses — i.e. partially (not fully)
- *  covered by the footprint. These are the ones worth subdividing: fully-inside
- *  triangles already paint solid, fully-outside ones never paint. Catches the
- *  brush-smaller-than-a-triangle case via a closest-point test so a small brush
- *  in the middle of a big face still tessellates. */
-export function selectStrokeTriangles(mesh: MeshData, stroke: BrushStroke): Set<number> {
+/** Longest squared edge of a triangle's three vertices. */
+function maxEdgeLen2(a: number[], b: number[], c: number[]): number {
+  const e = (p: number[], q: number[]): number => {
+    const dx = p[0] - q[0], dy = p[1] - q[1], dz = p[2] - q[2];
+    return dx * dx + dy * dy + dz * dz;
+  };
+  return Math.max(e(a, b), e(b, c), e(c, a));
+}
+
+/** Triangles that the brush boundary crosses (partially, not fully covered)
+ *  AND are still coarser than `maxEdge`. These are the ones worth subdividing:
+ *  fully-inside triangles already paint solid, fully-outside ones never paint,
+ *  and boundary triangles already finer than the target are left alone (that's
+ *  the stopping condition). Catches the brush-smaller-than-a-triangle case via a
+ *  closest-point test so a small brush in the middle of a big face still
+ *  tessellates. */
+export function selectStrokeTriangles(mesh: MeshData, stroke: BrushStroke, maxEdge: number): Set<number> {
   const { triVerts, numTri } = mesh;
   const selected = new Set<number>();
   const r2 = stroke.radius * stroke.radius;
+  const maxEdge2 = maxEdge * maxEdge;
 
   for (let t = 0; t < numTri; t++) {
     const a = triVertex(mesh, triVerts[t * 3]);
     const b = triVertex(mesh, triVerts[t * 3 + 1]);
     const c = triVertex(mesh, triVerts[t * 3 + 2]);
+
+    // Already fine enough → leave it (keeps the refined band tight and bounded).
+    if (maxEdgeLen2(a, b, c) <= maxEdge2) continue;
 
     let inside = 0;
     if (withinFootprint(a[0], a[1], a[2], stroke)) inside++;
@@ -221,9 +239,10 @@ export function redGreenSubdivide(
 
 /** Rebuild a refined mesh from a pristine base mesh and an ordered list of
  *  brush strokes. Each stroke refines the (possibly already-refined) mesh near
- *  its own footprint, `stroke.level` times. Returns the refined mesh and a
- *  `childToParent` map from each final triangle back to its base-mesh triangle
- *  index — used to carry non-stroke colour regions across the refinement. */
+ *  its own footprint until the boundary triangles fall below `stroke.maxEdge`.
+ *  Returns the refined mesh and a `childToParent` map from each final triangle
+ *  back to its base-mesh triangle index — used to carry non-stroke colour
+ *  regions across the refinement. */
 export function buildStrokeMesh(
   base: MeshData,
   strokes: BrushStroke[],
@@ -233,14 +252,14 @@ export function buildStrokeMesh(
   for (let i = 0; i < comp.length; i++) comp[i] = i;
 
   for (const stroke of strokes) {
-    const level = Math.max(1, Math.min(MAX_LEVEL, Math.floor(stroke.level)));
-    for (let pass = 0; pass < level; pass++) {
-      const selected = selectStrokeTriangles(mesh, stroke);
+    const target = stroke.maxEdge > 0 ? stroke.maxEdge : stroke.radius / 16;
+    for (let pass = 0; pass < MAX_PASSES; pass++) {
+      const selected = selectStrokeTriangles(mesh, stroke, target);
       if (selected.size === 0) break;
       const { mesh: nm, childToParent } = redGreenSubdivide(mesh, selected);
-      if (nm.numTri > MAX_TRIANGLES) { mesh = nm; comp = composeMaps(comp, childToParent); break; }
       mesh = nm;
       comp = composeMaps(comp, childToParent);
+      if (nm.numTri > MAX_TRIANGLES) break;
     }
   }
   return { mesh, childToParent: comp };

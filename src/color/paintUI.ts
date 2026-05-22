@@ -16,8 +16,8 @@ import {
   getBrushShape,
   setBrushSmooth,
   isBrushSmooth,
-  setBrushSubdivision,
-  getBrushSubdivision,
+  setBrushSmoothQuality,
+  getBrushSmoothQuality,
   setSlabAxis,
   getSlabAxis,
   previewTriangles,
@@ -507,20 +507,21 @@ function createBrushControls(): HTMLElement {
   smoothToggle.title = 'Subdivide the mesh under the brush so the painted edge is smooth/rounded instead of following triangle boundaries. Adds triangles near the stroke and requires a brush size above 0.';
 
   const fineRow = document.createElement('div');
-  fineRow.className = 'grid grid-cols-3 gap-1 mt-1';
+  fineRow.className = 'grid grid-cols-4 gap-1 mt-1';
   const fineButtons: Record<number, HTMLButtonElement> = {};
   for (const [level, lbl, tip] of [
-    [1, 'Low', 'One subdivision pass — coarsest edge, fewest extra triangles'],
-    [2, 'Medium', 'Two subdivision passes'],
-    [3, 'High', 'Three subdivision passes — smoothest edge, most extra triangles'],
+    [1, 'Coarse', 'Target edge ≈ brush radius / 4 — chunky, fewest extra triangles'],
+    [2, 'Medium', 'Target edge ≈ brush radius / 8'],
+    [3, 'Fine', 'Target edge ≈ brush radius / 16 — smooth (default)'],
+    [4, 'Ultra', 'Target edge ≈ brush radius / 32 — smoothest, most triangles'],
   ] as const) {
     const btn = document.createElement('button');
     btn.textContent = lbl;
     btn.title = tip;
-    btn.className = axisButtonClass(level === getBrushSubdivision());
+    btn.className = axisButtonClass(level === getBrushSmoothQuality());
     btn.addEventListener('click', () => {
-      setBrushSubdivision(level);
-      for (const [k, b] of Object.entries(fineButtons)) b.className = axisButtonClass(Number(k) === getBrushSubdivision());
+      setBrushSmoothQuality(level);
+      for (const [k, b] of Object.entries(fineButtons)) b.className = axisButtonClass(Number(k) === getBrushSmoothQuality());
     });
     fineRow.appendChild(btn);
     fineButtons[level] = btn;
@@ -528,7 +529,7 @@ function createBrushControls(): HTMLElement {
 
   const smoothHelp = document.createElement('div');
   smoothHelp.className = 'text-[10px] text-zinc-500 mt-1';
-  smoothHelp.textContent = 'Rounder edge → more triangles';
+  smoothHelp.textContent = 'Edge auto-scales to brush size · finer → more triangles';
 
   const syncSmoothToggle = (): void => {
     const on = isBrushSmooth();
