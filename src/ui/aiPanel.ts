@@ -247,6 +247,22 @@ async function loadHistoryForCurrentSession(): Promise<void> {
   updateRewindButtons();
 }
 
+/** Insert or replace a message in the in-memory transcript, keeping it
+ *  ordered by `seq`. Replaces in place when the id is already present
+ *  (re-persist of the same message), otherwise splices it into the right
+ *  slot. Used by the mid-turn callbacks that surface tool results and
+ *  drained queued messages before the turn fully completes. */
+function upsertHistoryMessage(msg: ChatMessage): void {
+  const idx = state.history.findIndex(m => m.id === msg.id);
+  if (idx >= 0) {
+    state.history[idx] = msg;
+    return;
+  }
+  const insertAt = state.history.findIndex(m => m.seq > msg.seq);
+  if (insertAt === -1) state.history.push(msg);
+  else state.history.splice(insertAt, 0, msg);
+}
+
 // === DOM construction ===
 
 function buildDrawer(): void {
@@ -1832,14 +1848,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         // insert it ourselves at the right seq position — otherwise
         // renderTranscript can't show the human's bubble until end-of-turn
         // reload, and the user thinks their message vanished.
-        const idx = state.history.findIndex(m => m.id === msg.id);
-        if (idx >= 0) {
-          state.history[idx] = msg;
-        } else {
-          const insertAt = state.history.findIndex(m => m.seq > msg.seq);
-          if (insertAt === -1) state.history.push(msg);
-          else state.history.splice(insertAt, 0, msg);
-        }
+        upsertHistoryMessage(msg);
         renderTranscript();
         setTransientStatus('Queued message delivered to the AI.');
       },
@@ -1904,6 +1913,16 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
       },
       onToolResult: (_id, _name, result) => {
         if (result.isError) setTransientStatus('A tool errored. The agent will retry or surface the issue.');
+      },
+      onToolResultsPersisted: msg => {
+        // Surface tool result bubbles — including renderView / renderViews
+        // snapshots — in the live transcript as the agent works. The
+        // tool_result user message is persisted by chatLoop but isn't pushed
+        // through onUserPersisted, so without this it would only appear after
+        // a session reload. renderToolResultBubble auto-expands image-bearing
+        // results, so the rendering shows without the user expanding anything.
+        upsertHistoryMessage(msg);
+        renderTranscript();
       },
       onError: err => {
         errorLog.capture({ level: 'error', source: 'ai', message: err.message, detail: err.stack });
