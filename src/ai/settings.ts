@@ -2,7 +2,7 @@
 // Persisted to localStorage as one JSON blob — sticky across sessions and
 // separate from the per-session chat transcripts in IndexedDB.
 
-import { MAX_ITERATIONS, MAX_SPEND, type AnthropicModelId, type ChatToggles, type ModelId, type Preset, type Provider } from './types';
+import { MAX_ITERATIONS, MAX_SPEND, type AnthropicModelId, type ChatToggles, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
 import type { LocalModelId } from './localModels';
 import { LOCAL_MODELS } from './localModels';
 
@@ -21,6 +21,8 @@ export interface AiSettings {
   systemPromptOverrides: {
     anthropic: string | null;
     local: string | null;
+    openai: string | null;
+    gemini: string | null;
   };
   /** User-added local models. Lets the user load any MLC-compiled model
    *  from Hugging Face (or anywhere) without us shipping it in the
@@ -72,7 +74,10 @@ export interface LocalContextSettings {
   stallTimeoutSec: number;
 }
 
-const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel'> & { anthropicModel: AnthropicModelId }> = {
+const DEFAULT_OPENAI_MODEL: OpenaiModelId = 'gpt-5-mini';
+const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
+
+const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel'> & { anthropicModel: AnthropicModelId }> = {
   minimal: {
     vision: { views: false },
     scope: { runCode: true, saveVersions: true, paintFaces: false },
@@ -106,6 +111,8 @@ const DEFAULT_TOGGLES: ChatToggles = {
   ...DEFAULT_TOGGLES_BY_PRESET.standard,
   provider: 'anthropic',
   localModel: null,
+  openaiModel: DEFAULT_OPENAI_MODEL,
+  geminiModel: DEFAULT_GEMINI_MODEL,
 };
 
 const DEFAULT_SETTINGS: AiSettings = {
@@ -113,7 +120,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   toggles: DEFAULT_TOGGLES,
   drawerOpen: false,
   autoCompactMode: 'off',
-  systemPromptOverrides: { anthropic: null, local: null },
+  systemPromptOverrides: { anthropic: null, local: null, openai: null, gemini: null },
   customLocalModels: [],
   localContext: { windowSizeOverride: null, sliding: false, stallTimeoutSec: 35 },
   aiPanelWidth: 420,
@@ -155,6 +162,8 @@ function cloneToggles(t: ChatToggles): ChatToggles {
     provider: t.provider,
     anthropicModel: t.anthropicModel,
     localModel: t.localModel,
+    openaiModel: t.openaiModel,
+    geminiModel: t.geminiModel,
   };
 }
 
@@ -186,11 +195,14 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       autoRetry: p.autoRetry,
       maxIterations: p.maxIterations,
       maxSpend: p.maxSpend,
-      // Presets target Anthropic, but if the user is currently on local,
-      // keep them on local — the preset only adjusts cost/scope/views.
+      // Presets target Anthropic, but if the user is currently on a
+      // different provider, keep them on it — the preset only adjusts
+      // cost/scope/views.
       provider: settings.toggles.provider,
       anthropicModel: p.anthropicModel,
       localModel: settings.toggles.localModel,
+      openaiModel: settings.toggles.openaiModel,
+      geminiModel: settings.toggles.geminiModel,
     },
   };
 }
@@ -226,6 +238,25 @@ export function setLocalModel(settings: AiSettings, modelId: string | null): AiS
   };
 }
 
+/** Set the OpenAI model. Used from the panel header dropdown and from the
+ *  settings-modal custom-id input. */
+export function setOpenaiModel(settings: AiSettings, model: string): AiSettings {
+  return {
+    ...settings,
+    preset: 'custom',
+    toggles: { ...settings.toggles, openaiModel: model },
+  };
+}
+
+/** Set the Gemini model. */
+export function setGeminiModel(settings: AiSettings, model: string): AiSettings {
+  return {
+    ...settings,
+    preset: 'custom',
+    toggles: { ...settings.toggles, geminiModel: model },
+  };
+}
+
 export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggles>): AiSettings {
   const next: ChatToggles = {
     vision: { ...settings.toggles.vision, ...(partial.vision ?? {}) },
@@ -236,6 +267,8 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     provider: partial.provider ?? settings.toggles.provider,
     anthropicModel: partial.anthropicModel ?? settings.toggles.anthropicModel,
     localModel: partial.localModel ?? settings.toggles.localModel,
+    openaiModel: partial.openaiModel ?? settings.toggles.openaiModel,
+    geminiModel: partial.geminiModel ?? settings.toggles.geminiModel,
   };
   return { ...settings, preset: 'custom', toggles: next };
 }
@@ -310,10 +343,14 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       provider,
       anthropicModel: tgls.anthropicModel ?? legacyAnthropic ?? DEFAULT_SETTINGS.toggles.anthropicModel,
       localModel: validLocalModel,
+      openaiModel: tgls.openaiModel ?? DEFAULT_SETTINGS.toggles.openaiModel,
+      geminiModel: tgls.geminiModel ?? DEFAULT_SETTINGS.toggles.geminiModel,
     },
     systemPromptOverrides: {
       anthropic: overrides.anthropic ?? null,
       local: overrides.local ?? null,
+      openai: overrides.openai ?? null,
+      gemini: overrides.gemini ?? null,
     },
     customLocalModels: Array.isArray(partial.customLocalModels) ? partial.customLocalModels : [],
     localContext: normalizeLocalContext(partial.localContext),
@@ -408,6 +445,47 @@ export const ANTHROPIC_MODEL_OPTIONS: { id: AnthropicModelId; label: string }[] 
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
   { id: 'claude-opus-4-7', label: 'Opus 4.7' },
 ];
+
+/** Curated OpenAI model menu shown in the panel header dropdown. The user
+ *  can also type a custom id in the settings modal (e.g. a dated
+ *  snapshot) and have it stick across provider switches. */
+export const OPENAI_MODEL_OPTIONS: { id: string; label: string }[] = [
+  { id: 'gpt-5', label: 'GPT-5' },
+  { id: 'gpt-5-mini', label: 'GPT-5 mini' },
+  { id: 'gpt-5-nano', label: 'GPT-5 nano' },
+  { id: 'o3', label: 'o3 (reasoning)' },
+  { id: 'gpt-4.1', label: 'GPT-4.1' },
+  { id: 'gpt-4o', label: 'GPT-4o' },
+  { id: 'gpt-4o-mini', label: 'GPT-4o mini' },
+];
+
+/** Curated Gemini starter menu — the general-purpose chat+tools models
+ *  best suited to driving CAD design, picked from the live model list.
+ *  Deliberately excludes image-gen (Nano Banana), music (Lyria), TTS,
+ *  robotics, and Gemma families — they don't do tool-driven modeling.
+ *  The "-latest" aliases auto-update so they don't go stale; the pinned
+ *  previews give a fixed target. The Gemini tab's "Load models from your
+ *  key" button still surfaces the full lineup (incl. Nano Banana) for
+ *  anyone who wants to experiment, and the custom-id input covers the
+ *  rest. */
+export const GEMINI_MODEL_OPTIONS: { id: string; label: string }[] = [
+  { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview' },
+  { id: 'gemini-pro-latest', label: 'Gemini Pro (latest)' },
+  { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },
+  { id: 'gemini-flash-latest', label: 'Gemini Flash (latest)' },
+  { id: 'gemini-flash-lite-latest', label: 'Gemini Flash-Lite (latest)' },
+];
+
+/** Human-readable name for a provider — for chat-bubble badges, modal
+ *  headings, and the diagnostics view. */
+export function providerLabel(provider: Provider): string {
+  switch (provider) {
+    case 'anthropic': return 'Anthropic Claude';
+    case 'openai': return 'OpenAI';
+    case 'gemini': return 'Google Gemini';
+    case 'local': return 'Local model';
+  }
+}
 
 export const PRESET_OPTIONS: { id: Preset; label: string; hint: string }[] = [
   { id: 'minimal', label: 'Minimal', hint: 'Haiku · code only · no images · no retries' },

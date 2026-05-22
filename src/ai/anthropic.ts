@@ -74,13 +74,21 @@ export interface StreamResult {
   stopReason: string;
   /** Token usage attributed to this single API call. */
   usage: TurnUsage;
+  /** Reasoning text, if the provider surfaces it (Gemini). Anthropic
+   *  extended thinking isn't enabled here, so this stays undefined — the
+   *  field exists so chatLoop can read `result.thinking` across providers. */
+  thinking?: string;
   /** Raw assistant content blocks — needed verbatim on the next request. */
   rawAssistantBlocks: Anthropic.ContentBlock[];
 }
 
 export interface RequestSpec {
   apiKey: string;
-  model: ModelId;
+  /** Anthropic model id. Typed loose (ModelId | string) so review and
+   *  compaction can pass any provider's model id through the shared
+   *  call shape without a cast — runtime only ever sends a claude- id
+   *  here. */
+  model: ModelId | string;
   systemPrompt: string;
   /** Per-toggle suffix appended after the cached system prompt. Kept on a
    *  separate cache breakpoint so it doesn't poison the main cache. */
@@ -362,7 +370,7 @@ function imageBlockToApi(source: ImageSource): Anthropic.ImageBlockParam {
  *  cheap, on Haiku) where we just want the summary text. */
 export async function summarize(
   apiKey: string,
-  model: ModelId,
+  model: ModelId | string,
   system: string,
   user: string,
   maxTokens = 4096,

@@ -441,6 +441,10 @@ export interface StreamResult {
    *  emitted an unclosed `<tool_call>` block (a crash, likely). chatLoop
    *  surfaces a "response was cut off" message and skips re-prompting. */
   truncated?: boolean;
+  /** Reasoning text if surfaced. Local `<think>` blocks are stripped and
+   *  hidden today, so this stays undefined; present so chatLoop reads
+   *  `result.thinking` uniformly across providers. */
+  thinking?: string;
 }
 
 export interface LocalRequestSpec {

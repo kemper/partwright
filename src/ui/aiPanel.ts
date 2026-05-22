@@ -8,12 +8,14 @@ import { runTurn, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, setAnthropicModel, setToggles, ANTHROPIC_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setToggles, providerLabel, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
 import { showAiSettingsModal } from './aiSettingsModal';
+import { showAiReviewModal } from './aiReviewModal';
+import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
 import { showAiLocalModal } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { showCompactConfirmModal } from './aiCompactModal';
@@ -22,7 +24,7 @@ import { putAttachment } from '../ai/attachments';
 import { exportChatMarkdown } from '../export/chat';
 import { getState } from '../storage/sessionManager';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
-import { activeModel, SPEND_CAP_USD, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type TurnOutcomeReason } from '../ai/types';
+import { activeModel, SPEND_CAP_USD, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { errorLog } from '../diagnostics/errorLog';
 
 interface PanelState {
@@ -169,6 +171,13 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   // Don't try to load history until a session is opened or we know we're
   // in the global bucket. main.ts will call setActiveSession when ready.
   await loadHistoryForCurrentSession();
+  // Paint the loaded history now. buildDrawer's first renderTranscript ran
+  // against empty state, and the setActiveSession call that follows in
+  // main.ts early-returns when we're already on the global bucket — so
+  // without this, pre-existing global chat history wouldn't show until the
+  // next interaction.
+  renderTranscript();
+  renderCostMeter();
   if (state.open) showDrawer();
   else hideDrawer();
 }
@@ -281,6 +290,11 @@ function buildDrawer(): void {
   header.appendChild(promptChipEl);
   renderPromptChip();
 
+  const reviewBtn = createIconButton('Review', '👁');
+  reviewBtn.title = 'Get a second opinion: have a different provider/model review the current session and post feedback.';
+  reviewBtn.addEventListener('click', () => { void launchReview(); });
+  header.appendChild(reviewBtn);
+
   const compactBtn = createIconButton('Compact', '⤓ Compact');
   compactBtn.title = 'Compact the conversation: summarize older turns and promote insights to session notes.';
   compactBtn.addEventListener('click', () => { void runCompact(); });
@@ -295,6 +309,11 @@ function buildDrawer(): void {
   clearBtn.title = 'Clear the chat history for the current session. The conversation is removed from your browser; saved versions and notes are untouched.';
   clearBtn.addEventListener('click', () => { void clearCurrentChat(); });
   header.appendChild(clearBtn);
+
+  const diagBtn = createIconButton('AI Call Log', '🩺');
+  diagBtn.title = 'AI Call Log — recent provider API calls: request shape, stop reason, token usage, full error messages. Open this when a turn ends with a confusing status.';
+  diagBtn.addEventListener('click', () => { showAiDiagnosticsModal(); });
+  header.appendChild(diagBtn);
 
   const settingsBtn = createIconButton('Settings', '⚙');
   settingsBtn.title = 'AI settings: provider, key, lifetime usage.';
@@ -601,19 +620,52 @@ function renderModelPicker(): void {
   modelPickerEl.replaceChildren();
   const settings = loadSettings();
 
-  if (settings.toggles.provider === 'anthropic') {
+  // Hosted providers (anthropic / openai / gemini) render a dropdown of
+  // curated models; a custom id stashed in settings is appended as
+  // "<id> (custom)" so it stays selectable. Local renders the picker chip.
+  const hostedConfig: Record<'anthropic' | 'openai' | 'gemini', { options: { id: string; label: string }[]; current: string; title: string; setModel: (id: string) => AiSettings }> = {
+    anthropic: {
+      options: ANTHROPIC_MODEL_OPTIONS,
+      current: settings.toggles.anthropicModel,
+      title: 'Anthropic model (hosted).',
+      setModel: (id) => setAnthropicModel(loadSettings(), id as AnthropicModelId),
+    },
+    openai: {
+      options: OPENAI_MODEL_OPTIONS,
+      current: settings.toggles.openaiModel,
+      title: 'OpenAI model (hosted). Custom ids: AI Settings → OpenAI.',
+      setModel: (id) => setOpenaiModel(loadSettings(), id),
+    },
+    gemini: {
+      options: GEMINI_MODEL_OPTIONS,
+      current: settings.toggles.geminiModel,
+      title: 'Google Gemini model (hosted). Custom ids: AI Settings → Gemini.',
+      setModel: (id) => setGeminiModel(loadSettings(), id),
+    },
+  };
+
+  if (settings.toggles.provider in hostedConfig) {
+    const cfg = hostedConfig[settings.toggles.provider as keyof typeof hostedConfig];
     const sel = document.createElement('select');
     sel.className = 'h-6 px-2 rounded text-[11px] bg-zinc-800 border border-zinc-700 text-zinc-200 focus:outline-none';
-    sel.title = 'Anthropic model (hosted).';
-    for (const opt of ANTHROPIC_MODEL_OPTIONS) {
+    sel.title = cfg.title;
+    let foundCurrent = false;
+    for (const opt of cfg.options) {
       const o = document.createElement('option');
       o.value = opt.id;
       o.textContent = opt.label;
       sel.appendChild(o);
+      if (opt.id === cfg.current) foundCurrent = true;
     }
-    sel.value = settings.toggles.anthropicModel;
+    if (!foundCurrent && cfg.current) {
+      const custom = document.createElement('option');
+      custom.value = cfg.current;
+      custom.textContent = `${cfg.current} (custom)`;
+      sel.appendChild(custom);
+    }
+    sel.value = cfg.current;
     sel.addEventListener('change', () => {
-      saveSettings(setAnthropicModel(loadSettings(), sel.value as AnthropicModelId));
+      saveSettings(cfg.setModel(sel.value));
       renderToggleStrip();
       renderCostMeter();
     });
@@ -811,7 +863,7 @@ function renderCostMeter(): void {
   // observed on the post-turn meter rather than predicted here — they're
   // too variable to estimate up front without lying to the user.
   const model = activeModel(settings.toggles);
-  const turnEst = model ? estimateTurnCostUsd(model, cachedPrefix, 500) : 0;
+  const turnEst = model ? estimateTurnCostUsd(settings.toggles.provider, model, cachedPrefix, 500) : 0;
 
   // Color the context bar by % of model context window. Local models cap
   // around 4-16K tokens so the bar fills much faster than on Anthropic —
@@ -903,7 +955,13 @@ function panelStatusUpdate(): void {
     panelStatusEl.appendChild(hint);
     return;
   }
-  void getKey('anthropic').then(key => {
+  // Hosted providers (anthropic / openai / gemini) all need a key. The
+  // banner is provider-aware: Anthropic keeps the literal "Connect
+  // Anthropic API" label (the stale-model smoke test anchors on it),
+  // OpenAI/Gemini show their own labels. The "or run a local model"
+  // fallback is offered in every case.
+  const activeProvider = settings.toggles.provider as Exclude<Provider, 'local'>;
+  void getKey(activeProvider).then(key => {
     if (!panelStatusEl) return;
     if (!key) {
       panelStatusEl.classList.remove('hidden', 'text-emerald-400');
@@ -912,9 +970,11 @@ function panelStatusUpdate(): void {
       panelStatusEl.appendChild(document.createTextNode('Not connected. '));
       const link = document.createElement('button');
       link.className = 'underline text-amber-200 hover:text-amber-100';
-      link.textContent = 'Connect Anthropic API';
+      link.textContent = activeProvider === 'anthropic'
+        ? 'Connect Anthropic API'
+        : `Connect ${providerLabel(activeProvider)}`;
       link.addEventListener('click', () => {
-        void showAiKeyModal({ onConnected: () => { panelStatusUpdate(); } });
+        void showAiKeyModal({ provider: activeProvider, onConnected: () => { panelStatusUpdate(); } });
       });
       panelStatusEl.appendChild(link);
       panelStatusEl.appendChild(document.createTextNode(' or '));
@@ -1080,6 +1140,10 @@ function renderMessage(msg: ChatMessage): HTMLElement {
       }
     } else if (b.type === 'image') {
       wrap.appendChild(renderImageBubble(b.source));
+    } else if (b.type === 'thinking') {
+      if (b.text.trim().length > 0) wrap.appendChild(renderThinkingBox(b.text));
+    } else if (b.type === 'review') {
+      wrap.appendChild(renderReviewBubble(b.provider, b.model, b.text));
     }
   }
 
@@ -1240,6 +1304,46 @@ function renderImageBubble(source: ImageSource): HTMLElement {
   return wrap;
 }
 
+/** Distinct purple-bordered bubble so the user (and any agent reading the
+ *  panel later) sees this came from a SECOND model via the Review
+ *  feature, not the active one. */
+function renderReviewBubble(provider: Provider, model: string, text: string): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'max-w-[90%] rounded-lg border border-purple-700/60 bg-purple-900/15 overflow-hidden';
+  const header = document.createElement('div');
+  header.className = 'px-3 py-1 text-[10px] uppercase tracking-wider text-purple-300 bg-purple-900/30 border-b border-purple-800/40 flex items-center gap-1.5';
+  const icon = document.createElement('span');
+  icon.textContent = '👁';
+  const headerText = document.createElement('span');
+  headerText.textContent = `Review by ${providerLabel(provider)} · ${model}`;
+  header.appendChild(icon);
+  header.appendChild(headerText);
+  wrap.appendChild(header);
+  const body = document.createElement('div');
+  body.className = 'px-3 py-2 text-sm text-zinc-100 whitespace-pre-wrap leading-snug';
+  body.textContent = text;
+  wrap.appendChild(body);
+  return wrap;
+}
+
+async function launchReview(): Promise<void> {
+  if (state.inFlight) {
+    setTransientStatus('Wait for the current turn to finish before asking for a review.');
+    return;
+  }
+  const activeProvider = loadSettings().toggles.provider;
+  showAiReviewModal({
+    activeProvider,
+    sessionId: state.sessionId,
+    onReviewPosted: (msg) => {
+      state.history.push(msg);
+      renderTranscript();
+      renderCostMeter();
+      setTransientStatus('Review posted to the chat.');
+    },
+  });
+}
+
 function renderToolCallChip(name: string, input: Record<string, unknown>): HTMLElement {
   const chip = document.createElement('details');
   chip.className = 'max-w-[90%] text-[11px] rounded border border-zinc-700 bg-zinc-800/40 px-2 py-1';
@@ -1252,6 +1356,58 @@ function renderToolCallChip(name: string, input: Record<string, unknown>): HTMLE
   pre.textContent = JSON.stringify(input, null, 2);
   chip.appendChild(pre);
   return chip;
+}
+
+/** Persisted reasoning, rendered as a collapsed expand/contract box (same
+ *  affordance as tool-call chips) so a verbose chain of thought doesn't
+ *  bury the actual reply. Indigo-tinted to read apart from tool chips. */
+function renderThinkingBox(text: string): HTMLElement {
+  const chip = document.createElement('details');
+  chip.className = 'max-w-[90%] text-[11px] rounded border border-indigo-800/50 bg-indigo-950/20 px-2 py-1';
+  const summary = document.createElement('summary');
+  summary.className = 'cursor-pointer text-indigo-300/90 select-none';
+  summary.textContent = '🧠 Thinking';
+  chip.appendChild(summary);
+  const pre = document.createElement('pre');
+  pre.className = 'mt-1 text-[10px] text-zinc-400 italic overflow-x-auto whitespace-pre-wrap leading-snug';
+  pre.textContent = text;
+  chip.appendChild(pre);
+  return chip;
+}
+
+/** Open box used while reasoning streams: a capped-height scrolling preview
+ *  so the user sees thought arrive live. `collapseLiveThinking` turns it
+ *  into the quiet collapsed form once the next step (answer/tool) begins. */
+function renderLiveThinkingBox(): HTMLElement {
+  const chip = document.createElement('details');
+  chip.open = true;
+  chip.dataset.liveThinking = '1';
+  chip.className = 'max-w-[90%] text-[11px] rounded border border-indigo-800/50 bg-indigo-950/20 px-2 py-1';
+  const summary = document.createElement('summary');
+  summary.className = 'cursor-pointer text-indigo-300/90 select-none flex items-center gap-1.5';
+  const dot = document.createElement('span');
+  dot.className = 'inline-block w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse';
+  const label = document.createElement('span');
+  label.textContent = '🧠 thinking…';
+  summary.appendChild(dot);
+  summary.appendChild(label);
+  chip.appendChild(summary);
+  const pre = document.createElement('pre');
+  pre.dataset.thinkingBody = '1';
+  pre.className = 'mt-1 max-h-32 overflow-y-auto text-[10px] text-zinc-400 italic whitespace-pre-wrap leading-snug';
+  chip.appendChild(pre);
+  return chip;
+}
+
+function collapseLiveThinking(el: HTMLElement): void {
+  if (!el.dataset.liveThinking) return;
+  delete el.dataset.liveThinking;
+  (el as HTMLDetailsElement).open = false;
+  const summary = el.querySelector('summary');
+  if (summary) {
+    summary.className = 'cursor-pointer text-indigo-300/90 select-none';
+    summary.textContent = '🧠 Thinking';
+  }
 }
 
 function renderToolResultBubble(result: PersistedToolResult): HTMLElement {
@@ -1485,10 +1641,12 @@ async function sendMessage(): Promise<void> {
 
   const settings = loadSettings();
   let apiKey: string | undefined;
-  if (settings.toggles.provider === 'anthropic') {
-    const key = await getKey('anthropic');
+  if (settings.toggles.provider !== 'local') {
+    // Hosted provider (anthropic / openai / gemini): need a stored key.
+    const provider = settings.toggles.provider;
+    const key = await getKey(provider);
     if (!key) {
-      void showAiKeyModal({ onConnected: () => { panelStatusUpdate(); void sendMessage(); } });
+      void showAiKeyModal({ provider, onConnected: () => { panelStatusUpdate(); void sendMessage(); } });
       return;
     }
     apiKey = key.apiKey;
@@ -1628,6 +1786,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
 
     let activeAssistantId: string | null = null;
     let liveTextEl: HTMLElement | null = null;
+    let liveThinkingEl: HTMLElement | null = null;
     const blocksForThisAttempt = attempt === 1 ? userBlocks : [];
 
     await runTurn({
@@ -1674,6 +1833,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         // renderMessage tags the empty placeholder bubble with
         // `data-live-bubble` so we can find it reliably — `bg-zinc-800` is
         // shared by tool-call chips and other UI and isn't a stable target.
+        liveThinkingEl = null;
         if (transcriptEl) {
           liveTextEl = transcriptEl.querySelector(`[data-live-bubble="${id}"]`) as HTMLElement | null;
           if (liveTextEl) liveTextEl.textContent = '';
@@ -1685,12 +1845,38 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
           if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
         }
       },
-      onProgress: info => showProgress(info.phase, info.detail),
+      onAssistantThinking: delta => {
+        if (!liveThinkingEl) {
+          const wrapEl = (liveTextEl?.parentElement
+            ?? transcriptEl?.querySelector(`[data-message-id="${activeAssistantId}"]`)) as HTMLElement | null;
+          if (!wrapEl) return;
+          liveThinkingEl = renderLiveThinkingBox();
+          // Thinking sits above the answer bubble in the same message wrap.
+          if (liveTextEl && liveTextEl.parentElement === wrapEl) wrapEl.insertBefore(liveThinkingEl, liveTextEl);
+          else wrapEl.insertBefore(liveThinkingEl, wrapEl.firstChild);
+        }
+        const body = liveThinkingEl.querySelector('[data-thinking-body]') as HTMLElement | null;
+        if (body) {
+          body.textContent = (body.textContent ?? '') + delta;
+          body.scrollTop = body.scrollHeight;
+        }
+        if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      },
+      onProgress: info => {
+        // The next step has begun — fold the live thinking preview into its
+        // quiet collapsed form (the user's "hide it once the next task
+        // happens"). Persisted render at iteration end finalizes it.
+        if (liveThinkingEl && (info.phase === 'streaming' || info.phase === 'tool')) {
+          collapseLiveThinking(liveThinkingEl);
+        }
+        showProgress(info.phase, info.detail);
+      },
       onAssistantPersisted: msg => {
         const idx = state.history.findIndex(m => m.id === activeAssistantId);
         if (idx >= 0) state.history[idx] = msg;
         activeAssistantId = null;
         liveTextEl = null;
+        liveThinkingEl = null;
         renderTranscript();
         renderCostMeter();
       },
@@ -1719,6 +1905,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
           else state.history.push(errorMsg);
           activeAssistantId = null;
           liveTextEl = null;
+          liveThinkingEl = null;
           renderTranscript();
         }
         setTransientStatus(`Error: ${err.message}`);
@@ -1998,8 +2185,8 @@ async function maybeAutoCompact(): Promise<void> {
   }
 
   let apiKey: string | undefined;
-  if (settings.toggles.provider === 'anthropic') {
-    const key = await getKey('anthropic');
+  if (settings.toggles.provider !== 'local') {
+    const key = await getKey(settings.toggles.provider);
     if (!key) return;
     apiKey = key.apiKey;
   } else if (!settings.toggles.localModel) {
@@ -2049,14 +2236,15 @@ async function runCompact(): Promise<void> {
   }
   const settings = loadSettings();
   let apiKey: string | undefined;
-  if (settings.toggles.provider === 'anthropic') {
-    const key = await getKey('anthropic');
+  if (settings.toggles.provider !== 'local') {
+    const provider = settings.toggles.provider;
+    const key = await getKey(provider);
     if (!key) {
-      void showAiKeyModal({ onConnected: () => panelStatusUpdate() });
+      void showAiKeyModal({ provider, onConnected: () => panelStatusUpdate() });
       return;
     }
     apiKey = key.apiKey;
-    setTransientStatus('Asking Haiku to summarize...');
+    setTransientStatus('Summarizing the conversation…');
   } else {
     if (!settings.toggles.localModel) {
       void showAiLocalModal({ onChange: () => panelStatusUpdate() });

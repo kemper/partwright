@@ -1642,8 +1642,15 @@ async function main() {
       setAiToolbarState('local');
       return;
     }
-    const key = await getAiKey('anthropic');
-    setAiToolbarState(key ? 'cloud' : 'disconnected');
+    // Any hosted-provider key counts as "connected" — the chat panel
+    // surfaces its own per-provider banner when the active dropdown is
+    // on a provider missing a key.
+    const [anthropicKey, openaiKey, geminiKey] = await Promise.all([
+      getAiKey('anthropic'),
+      getAiKey('openai'),
+      getAiKey('gemini'),
+    ]);
+    setAiToolbarState(anthropicKey || openaiKey || geminiKey ? 'cloud' : 'disconnected');
   }
 
   // Set initial editor title if we're on the editor page
