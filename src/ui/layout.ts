@@ -1,6 +1,6 @@
 import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
 
-export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes';
+export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data';
 
 export interface LayoutElements {
   editorPane: HTMLElement;
@@ -12,6 +12,7 @@ export interface LayoutElements {
   imagesContainer: HTMLElement;
   diffContainer: HTMLElement;
   notesContainer: HTMLElement;
+  dataContainer: HTMLElement;
   statusBar: HTMLElement;
   clipControls: HTMLElement;
   formatBtn: HTMLButtonElement;
@@ -115,6 +116,8 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   tabDiff.title = 'Compare code between two versions';
   const tabNotes = createTab('Notes', false);
   tabNotes.title = 'Session notes and design decisions log';
+  const tabData = createTab('Data', false);
+  tabData.title = 'Browse everything Partwright has stored in this browser';
 
   tabBar.appendChild(tabInteractive);
   tabBar.appendChild(tabGallery);
@@ -122,6 +125,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   tabBar.appendChild(tabImages);
   tabBar.appendChild(tabDiff);
   tabBar.appendChild(tabNotes);
+  tabBar.appendChild(tabData);
 
   // Tab content panels
   const viewportPane = document.createElement('div');
@@ -157,8 +161,12 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   notesContainer.id = 'notes-container';
   notesContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-4 flex flex-col';
 
-  const allTabs = [tabInteractive, tabGallery, tabVersions, tabImages, tabDiff, tabNotes];
-  const allPanes = [viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer];
+  const dataContainer = document.createElement('div');
+  dataContainer.id = 'data-container';
+  dataContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-4 flex flex-col';
+
+  const allTabs = [tabInteractive, tabGallery, tabVersions, tabImages, tabDiff, tabNotes, tabData];
+  const allPanes = [viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer];
 
   // Mobile-only pane toggle: lets the user swap between editor and viewport
   // when the layout is stacked. Hidden at md+ and on tabs that already hide
@@ -263,7 +271,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   // Shared tab activation logic (DOM toggling, editor visibility, events)
   function applyTab(tab: TabName) {
     _currentTab = tab;
-    const idx = tab === 'interactive' ? 0 : tab === 'gallery' ? 1 : tab === 'versions' ? 2 : tab === 'images' ? 3 : tab === 'diff' ? 4 : 5;
+    const idx = tab === 'interactive' ? 0 : tab === 'gallery' ? 1 : tab === 'versions' ? 2 : tab === 'images' ? 3 : tab === 'diff' ? 4 : tab === 'notes' ? 5 : 6;
     for (let i = 0; i < allPanes.length; i++) {
       if (i === idx) {
         allPanes[i].classList.remove('hidden');
@@ -293,11 +301,13 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     params.delete('images');
     params.delete('diff');
     params.delete('notes');
+    params.delete('data');
     if (tab === 'gallery') params.set('gallery', '');
     else if (tab === 'versions') params.set('versions', '');
     else if (tab === 'images') params.set('images', '');
     else if (tab === 'diff') params.set('diff', '');
     else if (tab === 'notes') params.set('notes', '');
+    else if (tab === 'data') params.set('data', '');
     // interactive: no tab param.
     const newUrl = params.toString()
       ? `${basePath}?${params.toString().replace(/=(?=&|$)/g, '')}`
@@ -319,10 +329,13 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   tabImages.addEventListener('click', () => switchTab('images'));
   tabDiff.addEventListener('click', () => switchTab('diff'));
   tabNotes.addEventListener('click', () => switchTab('notes'));
+  tabData.addEventListener('click', () => switchTab('data'));
 
   // Restore tab from URL on initial load (without re-writing the URL)
   const initParams = new URLSearchParams(window.location.search);
-  if (initParams.has('notes')) {
+  if (initParams.has('data')) {
+    applyTab('data');
+  } else if (initParams.has('notes')) {
     applyTab('notes');
   } else if (initParams.has('diff')) {
     applyTab('diff');
@@ -341,6 +354,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   rightPane.appendChild(imagesContainer);
   rightPane.appendChild(diffContainer);
   rightPane.appendChild(notesContainer);
+  rightPane.appendChild(dataContainer);
 
   main.appendChild(editorPane);
   main.appendChild(splitter);
@@ -374,7 +388,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab };
+  return { editorPane, editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab };
 }
 
 const TAB_ACTIVE_CLASS = 'shrink-0 whitespace-nowrap px-4 py-2 md:py-1.5 text-sm md:text-xs font-medium text-zinc-100 border-b-2 border-blue-500 bg-zinc-900';

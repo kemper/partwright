@@ -116,7 +116,8 @@ ${triangles.join('\n')}
   return { blob, filename: getExportFilename('3mf', customName), mimeType };
 }
 
-export function export3MF(meshData: MeshData, customName?: string): void {
+export function export3MF(meshData: MeshData, customName?: string): string {
   const built = build3MF(meshData, customName);
   downloadBlob(built.blob, built.filename, '3MF');
+  return built.filename;
 }

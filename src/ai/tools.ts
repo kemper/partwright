@@ -737,32 +737,6 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: 'createSession',
-    description: 'Create a new named session and make it active. Returns {id, url, galleryUrl}. Call before runAndSave when there is no active session, or when starting a new design.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'Session name (e.g. "Castle v2").' },
-      },
-    },
-  },
-  {
-    name: 'listSessions',
-    description: 'List all sessions saved in this browser. Returns [{id, name, updated}] newest first. Use to find a session to open, or to check what work exists.',
-    input_schema: { type: 'object', properties: {} },
-  },
-  {
-    name: 'openSession',
-    description: 'Open an existing session by id (from listSessions). Makes it the active session. Always call getSessionContext() after opening to read notes and version history.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        id: { type: 'string', description: 'Session id from listSessions().' },
-      },
-      required: ['id'],
-    },
-  },
-  {
     name: 'assertPaint',
     description: 'Verify a painted region matches expected geometry. Returns {passed, failures?}. Use after painting to catch regressions when the mesh changes. `region` is the region id (integer) or name (string) from listRegions().',
     input_schema: {
@@ -872,9 +846,6 @@ const ALWAYS_AVAILABLE = new Set([
   'query',
   'modifyAndTest',
   'probeRay',
-  'createSession',
-  'listSessions',
-  'openSession',
   'assertPaint',
   'sliceAtZVisual',
   'paintInCylinder',
@@ -1271,12 +1242,6 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     }
     case 'probeRay':
       return api.probeRay(input.origin, input.direction);
-    case 'createSession':
-      return api.createSession(input.name as string | undefined);
-    case 'listSessions':
-      return api.listSessions();
-    case 'openSession':
-      return api.openSession(input.id as string);
     case 'assertPaint':
       return api.assertPaint(input);
     case 'paintInCylinder':

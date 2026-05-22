@@ -32,6 +32,15 @@ export interface ModalShell {
 }
 
 let currentModal: HTMLElement | null = null;
+let modalSeq = 0;
+
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusableIn(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+    .filter(el => el.offsetParent !== null || el === document.activeElement);
+}
 
 export function createModalShell(opts: ModalShellOptions): ModalShell {
   // Only one shell modal at a time. Close any previous before showing
@@ -41,6 +50,9 @@ export function createModalShell(opts: ModalShellOptions): ModalShell {
     currentModal.dispatchEvent(new CustomEvent('shell:force-close'));
   }
 
+  // Remember what was focused so we can restore it when the modal closes.
+  const previouslyFocused = document.activeElement as HTMLElement | null;
+
   const maxW = `max-w-${opts.maxWidth ?? 'md'}`;
   const maxH = opts.scrollable ? 'max-h-[calc(100vh-2rem)]' : '';
   const overlayPad = opts.scrollable ? 'p-4' : '';
@@ -48,12 +60,18 @@ export function createModalShell(opts: ModalShellOptions): ModalShell {
   const overlay = document.createElement('div');
   overlay.className = `fixed inset-0 bg-black/60 flex items-center justify-center z-50 ${overlayPad}`;
 
+  const titleId = `modal-title-${++modalSeq}`;
   const modal = document.createElement('div');
   modal.className = `bg-zinc-800 rounded-xl shadow-2xl border border-zinc-700 w-full ${maxW} ${maxH} flex flex-col`.replace(/\s+/g, ' ').trim();
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', titleId);
+  modal.tabIndex = -1;
 
   const header = document.createElement('div');
   header.className = 'px-5 py-3 border-b border-zinc-700 flex items-center justify-between';
   const titleEl = document.createElement('h2');
+  titleEl.id = titleId;
   titleEl.className = 'text-sm font-semibold text-zinc-100';
   titleEl.textContent = opts.title;
   header.appendChild(titleEl);
@@ -81,12 +99,42 @@ export function createModalShell(opts: ModalShellOptions): ModalShell {
   document.addEventListener('keydown', escHandler);
   overlay.addEventListener('shell:force-close', () => close());
 
+  // Keep Tab focus inside the dialog so keyboard users can't tab into the
+  // (inert) page behind it. Wraps both directions, and pulls focus in if it's
+  // currently on the container or has escaped the modal.
+  modal.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key !== 'Tab') return;
+    const focusables = focusableIn(modal);
+    if (focusables.length === 0) { e.preventDefault(); return; }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement as HTMLElement | null;
+    const idx = active ? focusables.indexOf(active) : -1;
+    if (e.shiftKey && (active === first || idx === -1)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (active === last || idx === -1)) {
+      e.preventDefault();
+      first.focus();
+    }
+  });
+
+  // Move focus into the dialog on open — but only if the caller hasn't already
+  // focused something inside it (e.g. an input via setTimeout), so we don't
+  // steal focus from a more intentional target.
+  requestAnimationFrame(() => {
+    if (closed || modal.contains(document.activeElement)) return;
+    (focusableIn(modal)[0] ?? modal).focus();
+  });
+
   function close(): void {
     if (closed) return;
     closed = true;
     document.removeEventListener('keydown', escHandler);
     overlay.remove();
     if (currentModal === overlay) currentModal = null;
+    // Restore focus to whatever opened the modal, if it's still in the document.
+    if (previouslyFocused && previouslyFocused.isConnected) previouslyFocused.focus();
     opts.onClose?.();
   }
 

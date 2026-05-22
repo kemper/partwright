@@ -55,7 +55,8 @@ export async function buildGLB(customName?: string): Promise<BuiltExport> {
   }
 }
 
-export async function exportGLB(customName?: string): Promise<void> {
+export async function exportGLB(customName?: string): Promise<string> {
   const built = await buildGLB(customName);
   downloadBlob(built.blob, built.filename, 'GLB');
+  return built.filename;
 }
