@@ -192,6 +192,8 @@ Static site, no backend. Vanilla TypeScript + Vite.
 - `src/editor/codeEditor.ts` — CodeMirror editor
 - `src/ui/layout.ts` — Split-pane layout
 - `src/ui/toolbar.ts` — Top toolbar
+- `src/ui/commandPalette.ts` — Command palette (⌘K/Ctrl+K): action registry + searchable overlay
+- `src/ui/shortcutsOverlay.ts` — `?` keyboard cheat sheet (renders `shortcutDefs`)
 - `src/geometry/crossSection.ts` — Z-slice to SVG/polygons
 - `src/export/gltf.ts` — GLB export
 - `src/export/stl.ts` — STL export

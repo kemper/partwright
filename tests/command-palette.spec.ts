@@ -53,4 +53,18 @@ test.describe('command palette', () => {
     await page.keyboard.press('Escape');
     await expect(page.getByRole('heading', { name: 'Keyboard shortcuts' })).toHaveCount(0);
   });
+
+  test('shows a one-time hint toward the ? cheat sheet once the tour is done', async ({ page }) => {
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem('partwright-tour-completed', new Date().toISOString());
+        localStorage.removeItem('partwright-shortcuts-hint-seen');
+      } catch { /* ignore */ }
+    });
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    await expect(
+      page.locator('div[role="status"]').filter({ hasText: /keyboard shortcuts/i }),
+    ).toBeVisible({ timeout: 6000 });
+  });
 });

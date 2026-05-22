@@ -87,7 +87,7 @@ import { probeAtXY, probeRay, probePixel, measureDistance, type ProbeResult, typ
 import { checkContainment, type ContainmentWarning } from './geometry/containmentCheck';
 import { setUnits as _setUnits, getUnits as _getUnits, type UnitSystem } from './geometry/units';
 import { initMeasureTool, activate as activateMeasure, deactivate as deactivateMeasure, getState as getMeasureState } from './ui/measureTool';
-import { maybeStartTour, resetTour, startTour } from './ui/tour';
+import { maybeStartTour, resetTour, startTour, isTourCompleted } from './ui/tour';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
@@ -1148,6 +1148,7 @@ async function main() {
     { id: 'tab-images', title: 'Go to Reference images', hint: 'Tab', keywords: 'photos reference', run: () => switchTab('images') },
     { id: 'tab-diff', title: 'Go to Diff', hint: 'Tab', keywords: 'compare changes', run: () => switchTab('diff') },
     { id: 'tab-notes', title: 'Go to Notes', hint: 'Tab', keywords: 'session notes', run: () => switchTab('notes') },
+    { id: 'tab-data', title: 'Go to Data', hint: 'Tab', keywords: 'storage browser indexeddb inventory', run: () => switchTab('data') },
     { id: 'export-glb', title: 'Export GLB', hint: 'Export', keywords: 'download gltf 3d', run: () => { void actionExportGLB(); }, enabled: () => currentMeshData !== null },
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
@@ -1762,6 +1763,7 @@ async function main() {
   // Start guided tour on first visit (after editor fully renders)
   if (!showLanding && !showHelpPage && !showCatalog && !show404) {
     maybeStartTour();
+    maybeShowShortcutsHint();
   }
 
   // If not on landing/help/catalog/404, load session or default code now
@@ -6073,6 +6075,25 @@ async function main() {
     onUserOrbitLockChange(reflect);
     reflect(isUserOrbitLocked());
   }
+}
+
+const SHORTCUTS_HINT_KEY = 'partwright-shortcuts-hint-seen';
+
+/** One-time, non-intrusive nudge toward the `?` shortcuts cheat sheet. Only
+ *  shown to users who've already finished the first-run tour (so it never
+ *  competes with onboarding), and only once ever. */
+function maybeShowShortcutsHint(): void {
+  try {
+    if (localStorage.getItem(SHORTCUTS_HINT_KEY)) return;
+    if (!isTourCompleted()) return; // let first-timers finish the tour first
+    localStorage.setItem(SHORTCUTS_HINT_KEY, new Date().toISOString());
+  } catch {
+    return; // private-mode / storage disabled — skip the hint rather than throw
+  }
+  setTimeout(
+    () => showToast('Tip: press  ?  for keyboard shortcuts', { variant: 'neutral', durationMs: 6000 }),
+    1200,
+  );
 }
 
 function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'loading', text: string) {

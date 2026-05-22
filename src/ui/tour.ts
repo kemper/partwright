@@ -109,6 +109,11 @@ export function resetTour(): void {
   localStorage.removeItem(STORAGE_KEY);
 }
 
+/** Whether the first-run tour has been completed (or skipped). */
+export function isTourCompleted(): boolean {
+  return !!localStorage.getItem(STORAGE_KEY);
+}
+
 function createOverlay(): void {
   cleanup();
 
