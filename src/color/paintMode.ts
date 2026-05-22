@@ -42,10 +42,8 @@ const SMOOTH_QUALITY_DIVISOR: Record<number, number> = { 1: 16, 2: 32, 3: 64, 4:
 export function brushTargetEdge(): number {
   return brushRadius / (SMOOTH_QUALITY_DIVISOR[brushSmoothQuality] ?? 16);
 }
-/** Surface points sampled along the in-progress smooth stroke, with the surface
- *  normal at each (normals are used only to orient the live footprint preview). */
+/** Surface points sampled along the in-progress smooth stroke. */
 let strokeSamples: [number, number, number][] = [];
-let strokeNormals: [number, number, number][] = [];
 let adjacency: AdjacencyGraph | null = null;
 let currentMesh: MeshData | null = null;
 
@@ -61,7 +59,11 @@ let brushRingBuiltShape: BrushShape | '' = '';
 // Filled footprint preview (smooth brush only) — a translucent disc/square/
 // diamond in the paint color showing the rounded area that will actually be
 // painted, instead of the jagged set of existing triangles the brush covers.
+// The drag preview accumulates one fan per recorded sample into a single
+// growing buffer (appended in place, not rebuilt each mousemove).
 let brushFillMesh: THREE.Mesh | null = null;
+let fillPositions: Float32Array | null = null;
+let fillUsed = 0; // floats written into fillPositions
 
 // Brush drag state
 let brushPainting = false;
@@ -278,12 +280,13 @@ function onMouseMove(event: MouseEvent): void {
   if (currentTool === 'brush' && brushPainting && brushSession) {
     const result = pickFace(event);
     if (result) {
-      recordStrokeSample(result.point, result.normal);
+      const added = recordStrokeSample(result.point);
       if (brushWillSubdivide()) {
         // Smooth mode resolves triangles from the stroke samples on commit, so
-        // skip the per-move O(mesh) footprint scan — just grow the live fill.
-        clearHighlight();
-        showBrushFill(strokeStamps());
+        // skip the per-move O(mesh) footprint scan. Grow the live fill by one
+        // fan only when a new (decimated) sample was recorded — O(1) per move,
+        // not a full rebuild of the whole trail each mousemove.
+        if (added) appendBrushFillStamp(result.point, result.normal);
       } else {
         addBrushFootprint(result.triangleIndex, result.point, brushSession);
         showHighlight(brushSession);
@@ -306,10 +309,11 @@ function onMouseMove(event: MouseEvent): void {
 
   // Smooth brush hover: preview the rounded footprint that will be painted
   // (a filled disc/square/diamond), not the jagged set of covered triangles.
+  // Not dragging, so reset to a single disc that follows the cursor.
   if (currentTool === 'brush' && brushWillSubdivide()) {
     clearHighlight();
     hoveredTriangles = null;
-    showBrushFill([{ point: result.point, normal: result.normal }]);
+    appendBrushFillStamp(result.point, result.normal);
     showBrushRing(result.point, result.normal);
     return;
   }
@@ -354,13 +358,13 @@ function onMouseDown(event: MouseEvent): void {
     brushPainting = true;
     brushSession = new Set<number>();
     strokeSamples = [];
-    strokeNormals = [];
-    recordStrokeSample(result.point, result.normal);
+    recordStrokeSample(result.point);
     if (brushWillSubdivide()) {
       // Smooth: commit resolves from stroke samples, so skip the footprint scan
-      // and show the smooth fill instead of the covered triangles.
+      // and show the smooth fill instead of the covered triangles. clearHighlight
+      // drops any prior fill so this stroke starts fresh.
       clearHighlight();
-      showBrushFill(strokeStamps());
+      appendBrushFillStamp(result.point, result.normal);
     } else {
       addBrushFootprint(result.triangleIndex, result.point, brushSession);
       showHighlight(brushSession);
@@ -379,21 +383,18 @@ function hasActiveStroke(): boolean {
 
 /** Append a surface point to the in-progress smooth stroke, decimated so a
  *  slow drag doesn't accumulate thousands of near-duplicate samples. Spacing
- *  scales with the brush so the footprint stays continuous along the path. */
-function recordStrokeSample(p: [number, number, number], n: [number, number, number]): void {
+ *  scales with the brush so the footprint stays continuous along the path.
+ *  Returns true when a new sample was actually recorded (the caller appends one
+ *  fan to the live preview only then — not on every mousemove). */
+function recordStrokeSample(p: [number, number, number]): boolean {
   const minSpacing = Math.max(brushRadius * 0.4, 0.01);
   const last = strokeSamples[strokeSamples.length - 1];
   if (last) {
     const dx = p[0] - last[0], dy = p[1] - last[1], dz = p[2] - last[2];
-    if (dx * dx + dy * dy + dz * dz < minSpacing * minSpacing) return;
+    if (dx * dx + dy * dy + dz * dz < minSpacing * minSpacing) return false;
   }
   strokeSamples.push([p[0], p[1], p[2]]);
-  strokeNormals.push([n[0], n[1], n[2]]);
-}
-
-/** Zip the recorded stroke samples with their normals for the fill preview. */
-function strokeStamps(): { point: [number, number, number]; normal: [number, number, number] }[] {
-  return strokeSamples.map((p, i) => ({ point: p, normal: strokeNormals[i] ?? [0, 0, 1] }));
+  return true;
 }
 
 /** Commit the active brush drag as a colour region. Smooth strokes (radius > 0
@@ -539,14 +540,12 @@ function onMouseUp(event: MouseEvent): void {
       brushPainting = false;
       brushSession = null;
       strokeSamples = [];
-      strokeNormals = [];
       return;
     }
     commitBrushStroke();
     brushPainting = false;
     brushSession = null;
     strokeSamples = [];
-    strokeNormals = [];
     clearHighlight();
     return;
   }
@@ -583,7 +582,6 @@ function onMouseLeave(): void {
   brushPainting = false;
   brushSession = null;
   strokeSamples = [];
-  strokeNormals = [];
   clearHighlight();
   clearBrushRing();
 }
@@ -670,48 +668,65 @@ function buildFanPositions(shape: BrushShape, r: number): number[] {
   return out;
 }
 
-/** Render a translucent filled footprint at each stamp, oriented to the surface
- *  normal — the smooth brush's "what will be painted" preview. */
-function showBrushFill(stamps: { point: [number, number, number]; normal: [number, number, number] }[]): void {
-  clearBrushFill();
-  if (brushRadius <= 0 || stamps.length === 0) return;
-
+/** Append one translucent footprint fan (oriented to the surface normal) to the
+ *  live preview, growing the backing buffer in place. O(1) per call — the drag
+ *  handler calls this once per recorded sample instead of rebuilding the whole
+ *  trail every mousemove. clearBrushFill (via clearHighlight) resets it between
+ *  strokes / for a fresh hover disc. */
+function appendBrushFillStamp(point: [number, number, number], normal: [number, number, number]): void {
+  if (brushRadius <= 0) return;
   const local = buildFanPositions(brushShape, brushRadius);
-  const positions = new Float32Array(local.length * stamps.length);
-  const q = new THREE.Quaternion();
-  const up = new THREE.Vector3(0, 0, 1);
-  const v = new THREE.Vector3();
-  const offset = new THREE.Vector3();
-  let w = 0;
-  for (const s of stamps) {
-    const n = new THREE.Vector3(s.normal[0], s.normal[1], s.normal[2]);
-    if (n.lengthSq() < 1e-9) n.set(0, 0, 1); else n.normalize();
-    q.setFromUnitVectors(up, n);
-    offset.copy(n).multiplyScalar(0.02); // lift off the surface to avoid z-fighting
-    for (let i = 0; i < local.length; i += 3) {
-      v.set(local[i], local[i + 1], local[i + 2]).applyQuaternion(q);
-      positions[w++] = v.x + s.point[0] + offset.x;
-      positions[w++] = v.y + s.point[1] + offset.y;
-      positions[w++] = v.z + s.point[2] + offset.z;
-    }
+  const need = fillUsed + local.length;
+
+  let grew = false;
+  if (!fillPositions || need > fillPositions.length) {
+    const cap = Math.max(need, fillPositions ? fillPositions.length * 2 : local.length * 8);
+    const next = new Float32Array(cap);
+    if (fillPositions) next.set(fillPositions.subarray(0, fillUsed));
+    fillPositions = next;
+    grew = true;
   }
 
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  // depthTest off so the cursor preview always reads on top of the surface
-  // (matches the brush ring); it's a transient overlay, not real geometry.
-  const mat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(currentColor[0], currentColor[1], currentColor[2]),
-    transparent: true,
-    opacity: 0.45,
-    side: THREE.DoubleSide,
-    depthTest: false,
-    depthWrite: false,
-  });
-  brushFillMesh = new THREE.Mesh(geo, mat);
-  brushFillMesh.name = 'brush-fill';
-  brushFillMesh.renderOrder = 1000;
-  getMeshGroup().add(brushFillMesh);
+  const n = new THREE.Vector3(normal[0], normal[1], normal[2]);
+  if (n.lengthSq() < 1e-9) n.set(0, 0, 1); else n.normalize();
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+  const off = n.clone().multiplyScalar(0.02); // lift off the surface to avoid z-fighting
+  const v = new THREE.Vector3();
+  let w = fillUsed;
+  for (let i = 0; i < local.length; i += 3) {
+    v.set(local[i], local[i + 1], local[i + 2]).applyQuaternion(q);
+    fillPositions[w++] = v.x + point[0] + off.x;
+    fillPositions[w++] = v.y + point[1] + off.y;
+    fillPositions[w++] = v.z + point[2] + off.z;
+  }
+  fillUsed = w;
+
+  if (!brushFillMesh) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(fillPositions, 3));
+    // depthTest off so the cursor preview always reads on top of the surface
+    // (matches the brush ring); it's a transient overlay, not real geometry.
+    const mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(currentColor[0], currentColor[1], currentColor[2]),
+      transparent: true,
+      opacity: 0.45,
+      side: THREE.DoubleSide,
+      depthTest: false,
+      depthWrite: false,
+    });
+    brushFillMesh = new THREE.Mesh(geo, mat);
+    brushFillMesh.name = 'brush-fill';
+    brushFillMesh.renderOrder = 1000;
+    brushFillMesh.frustumCulled = false; // positions grow without recomputing bounds
+    getMeshGroup().add(brushFillMesh);
+  } else if (grew) {
+    // Backing array was reallocated — point the geometry at the new buffer.
+    brushFillMesh.geometry.setAttribute('position', new THREE.BufferAttribute(fillPositions, 3));
+  }
+
+  const geo = brushFillMesh.geometry as THREE.BufferGeometry;
+  geo.setDrawRange(0, fillUsed / 3);
+  (geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
 }
 
 function clearBrushFill(): void {
@@ -721,6 +736,8 @@ function clearBrushFill(): void {
     (brushFillMesh.material as THREE.Material).dispose();
     brushFillMesh = null;
   }
+  fillPositions = null;
+  fillUsed = 0;
 }
 
 function setsEqual(a: Set<number>, b: Set<number>): boolean {
