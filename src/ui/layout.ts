@@ -1,14 +1,12 @@
 import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
 
-export type TabName = 'interactive' | 'ai' | 'elevations' | 'gallery' | 'images' | 'diff' | 'notes';
+export type TabName = 'interactive' | 'gallery' | 'images' | 'diff' | 'notes';
 
 export interface LayoutElements {
   editorPane: HTMLElement;
   editorContainer: HTMLElement;
   editorErrorPanel: HTMLElement;
   viewportPane: HTMLElement;
-  viewsContainer: HTMLElement;
-  elevationsContainer: HTMLElement;
   galleryContainer: HTMLElement;
   imagesContainer: HTMLElement;
   diffContainer: HTMLElement;
@@ -106,10 +104,6 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
 
   const tabInteractive = createTab('Interactive', true);
   tabInteractive.title = 'Live 3D viewport \u2014 orbit, zoom, and inspect';
-  const tabAI = createTab('AI Views', false);
-  tabAI.title = '4 isometric views for AI agent analysis';
-  const tabElevations = createTab('Elevations', false);
-  tabElevations.title = 'Orthographic views with optional reference image overlay';
   const tabGallery = createTab('Gallery', false);
   tabGallery.title = 'Compare saved versions side-by-side';
   const tabImages = createTab('Images', false);
@@ -119,32 +113,11 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   const tabNotes = createTab('Notes', false);
   tabNotes.title = 'Session notes and design decisions log';
 
-  // Copy / Download buttons (shown only on AI Views tab).
-  // `sticky right-0` keeps them reachable when the tab bar scrolls horizontally on narrow viewports.
-  const viewActions = document.createElement('div');
-  viewActions.id = 'view-actions';
-  viewActions.className = 'flex items-center gap-2 ml-auto pl-3 pr-3 hidden shrink-0 sticky right-0 bg-zinc-800';
-
-  const btnCopyViews = document.createElement('button');
-  btnCopyViews.id = 'btn-copy-views';
-  btnCopyViews.className = 'text-xs text-zinc-500 hover:text-zinc-300 transition-colors';
-  btnCopyViews.textContent = 'Copy';
-  viewActions.appendChild(btnCopyViews);
-
-  const btnDownloadViews = document.createElement('button');
-  btnDownloadViews.id = 'btn-download-views';
-  btnDownloadViews.className = 'text-xs text-zinc-500 hover:text-zinc-300 transition-colors';
-  btnDownloadViews.textContent = 'Download PNG';
-  viewActions.appendChild(btnDownloadViews);
-
   tabBar.appendChild(tabInteractive);
-  tabBar.appendChild(tabAI);
-  tabBar.appendChild(tabElevations);
   tabBar.appendChild(tabGallery);
   tabBar.appendChild(tabImages);
   tabBar.appendChild(tabDiff);
   tabBar.appendChild(tabNotes);
-  tabBar.appendChild(viewActions);
 
   // Tab content panels
   const viewportPane = document.createElement('div');
@@ -159,14 +132,6 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   // the toolbar so showing it doesn't shift the buttons.
   const clipSlider = createClipSlider();
   viewportPane.appendChild(clipSlider);
-
-  const viewsContainer = document.createElement('div');
-  viewsContainer.id = 'views-container';
-  viewsContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-2';
-
-  const elevationsContainer = document.createElement('div');
-  elevationsContainer.id = 'elevations-container';
-  elevationsContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-2';
 
   const galleryContainer = document.createElement('div');
   galleryContainer.id = 'gallery-container';
@@ -184,12 +149,12 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   notesContainer.id = 'notes-container';
   notesContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-4 flex flex-col';
 
-  const allTabs = [tabInteractive, tabAI, tabElevations, tabGallery, tabImages, tabDiff, tabNotes];
-  const allPanes = [viewportPane, viewsContainer, elevationsContainer, galleryContainer, imagesContainer, diffContainer, notesContainer];
+  const allTabs = [tabInteractive, tabGallery, tabImages, tabDiff, tabNotes];
+  const allPanes = [viewportPane, galleryContainer, imagesContainer, diffContainer, notesContainer];
 
   // Mobile-only pane toggle: lets the user swap between editor and viewport
   // when the layout is stacked. Hidden at md+ and on tabs that already hide
-  // the editor (AI/Elevations/Diff).
+  // the editor (Diff).
   const mobilePaneToggle = document.createElement('div');
   mobilePaneToggle.id = 'mobile-pane-toggle';
   mobilePaneToggle.className = 'md:hidden flex items-stretch bg-zinc-800 border-b border-zinc-700 shrink-0';
@@ -255,7 +220,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
 
   function syncPaneVisibility() {
     const tab = _currentTab;
-    const tabHidesEditor = tab === 'ai' || tab === 'elevations' || tab === 'diff';
+    const tabHidesEditor = tab === 'diff';
     const isDesktop = mqDesktop.matches;
 
     if (isDesktop) {
@@ -275,7 +240,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
       if (tabHidesEditor) {
         editorPane.classList.add('hidden');
         rightPane.classList.remove('hidden');
-        // No choice to make — hide the toggle on AI/Elevations/Diff.
+        // No choice to make — hide the toggle on Diff.
         mobilePaneToggle.classList.add('hidden');
       } else {
         const pane = getMobilePane();
@@ -290,7 +255,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   // Shared tab activation logic (DOM toggling, editor visibility, events)
   function applyTab(tab: TabName) {
     _currentTab = tab;
-    const idx = tab === 'interactive' ? 0 : tab === 'ai' ? 1 : tab === 'elevations' ? 2 : tab === 'gallery' ? 3 : tab === 'images' ? 4 : tab === 'diff' ? 5 : 6;
+    const idx = tab === 'interactive' ? 0 : tab === 'gallery' ? 1 : tab === 'images' ? 2 : tab === 'diff' ? 3 : 4;
     for (let i = 0; i < allPanes.length; i++) {
       if (i === idx) {
         allPanes[i].classList.remove('hidden');
@@ -300,7 +265,6 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
         allTabs[i].className = TAB_INACTIVE_CLASS;
       }
     }
-    viewActions.classList.toggle('hidden', tab !== 'ai' && tab !== 'elevations');
     syncPaneVisibility();
     window.dispatchEvent(new CustomEvent('tab-switched', { detail: { tab } }));
     window.dispatchEvent(new Event('resize'));
@@ -312,19 +276,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
 
     const basePath = '/editor';
     const params = new URLSearchParams(window.location.search);
-    if (tab === 'ai') {
-      params.set('view', 'ai');
-      params.delete('gallery');
-      params.delete('images');
-      params.delete('diff');
-      params.delete('notes');
-    } else if (tab === 'elevations') {
-      params.set('view', 'elevations');
-      params.delete('gallery');
-      params.delete('images');
-      params.delete('diff');
-      params.delete('notes');
-    } else if (tab === 'gallery') {
+    if (tab === 'gallery') {
       params.set('gallery', '');
       params.delete('view');
       params.delete('images');
@@ -370,8 +322,6 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   }
 
   tabInteractive.addEventListener('click', () => switchTab('interactive'));
-  tabAI.addEventListener('click', () => switchTab('ai'));
-  tabElevations.addEventListener('click', () => switchTab('elevations'));
   tabGallery.addEventListener('click', () => switchTab('gallery'));
   tabImages.addEventListener('click', () => switchTab('images'));
   tabDiff.addEventListener('click', () => switchTab('diff'));
@@ -387,16 +337,10 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     applyTab('images');
   } else if (initParams.has('gallery')) {
     applyTab('gallery');
-  } else if (initParams.get('view') === 'elevations') {
-    applyTab('elevations');
-  } else if (initParams.get('view') === 'ai') {
-    applyTab('ai');
   }
 
   rightPane.appendChild(tabBar);
   rightPane.appendChild(viewportPane);
-  rightPane.appendChild(viewsContainer);
-  rightPane.appendChild(elevationsContainer);
   rightPane.appendChild(galleryContainer);
   rightPane.appendChild(imagesContainer);
   rightPane.appendChild(diffContainer);
@@ -434,7 +378,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, editorContainer, editorErrorPanel, viewportPane, viewsContainer, elevationsContainer, galleryContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab };
+  return { editorPane, editorContainer, editorErrorPanel, viewportPane, galleryContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab };
 }
 
 const TAB_ACTIVE_CLASS = 'shrink-0 whitespace-nowrap px-4 py-2 md:py-1.5 text-sm md:text-xs font-medium text-zinc-100 border-b-2 border-blue-500 bg-zinc-900';

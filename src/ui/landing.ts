@@ -168,7 +168,7 @@ function buildHowItWorks(): HTMLElement {
     {
       num: '02',
       title: 'Render live',
-      body: 'Geometry compiles in WebAssembly and renders in a Three.js viewport with multi-view, sections, and elevations.',
+      body: 'Geometry compiles in WebAssembly and renders in a Three.js viewport with cross-sections and on-demand multi-angle snapshots.',
     },
     {
       num: '03',
@@ -319,7 +319,7 @@ function buildCatalogTile(entry: FeaturedCatalogEntry, onOpen: () => void): HTML
 const AGENT_PROMPT_TEMPLATE = (origin: string) =>
   `Read the AI agent instructions at ${origin}/ai.md to understand how to use this tool.
 
-Then navigate to ${origin}/editor?view=ai and use the window.partwright console API to:
+Then navigate to ${origin}/editor and use the window.partwright console API to:
 
 1. Create a session called "Standard Lego Brick"
 2. Build a standard 2x4 Lego brick (approximately 31.8mm x 15.8mm x 11.4mm with studs on top and hollow underside with tubes)
@@ -361,7 +361,7 @@ function buildAgentSection(): HTMLElement {
   const bulletItems = [
     'window.partwright console API for sessions, runs, validation, exports',
     'Geometry stats published as JSON in #geometry-data for verification',
-    'AI-friendly URLs: /editor?view=ai opens with all elevations visible',
+    'Headless renderViews/renderView API for all-angle visual verification',
     'Session notes record [REQUIREMENT], [DECISION], [FEEDBACK] for resume',
   ];
   for (const text of bulletItems) {

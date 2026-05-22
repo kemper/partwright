@@ -8,7 +8,7 @@ npm run build        # Production build to dist/
 npm run test:e2e     # Run Playwright smoke tests (auto-starts dev server)
 ```
 
-Open `http://localhost:5173/editor?view=ai` to start with the 4 isometric views visible (instead of the interactive viewport). This is the recommended URL for AI agents — all views are visible on page load without clicking any tabs.
+Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
 
 Requires COEP/COOP headers (configured in vite.config.ts) for SharedArrayBuffer / WASM threads.
 
@@ -104,7 +104,7 @@ After any changes that touch routing, Vite config, index.html, or initialization
    - `manifold.wasm` loads without 403 (check Network tab) — if 403, check `server.fs.strict` in vite.config.ts
    - COEP/COOP headers are present on responses (check Response Headers)
 4. **Help page**: Click the `?` icon in the toolbar — should navigate to `/help` and show the help content. "Back" should return to the editor.
-5. **AI agent bypass**: `http://localhost:5173/editor?view=ai` should skip the landing page and go straight to the editor with AI Views tab selected.
+5. **AI agent bypass**: `http://localhost:5173/editor` should skip the landing page and go straight to the editor (Interactive tab). `window.partwright.renderViews({views:"box"})` returns a 6-face composite PNG data URL.
 6. **Session loading**: Click a session tile on the landing page — should load the session code in the editor, show the session name in the session bar, and update the URL to `/editor?session=<id>`.
 7. **Build**: `npm run build` should succeed with no TypeScript errors.
 8. **Paint mode**: Click the Paint button in the viewport overlay. A color picker panel should appear. Click a face on the model — it should paint the coplanar region in the selected color. The Paint button badge should show the region count.
@@ -179,11 +179,10 @@ Static site, no backend. Vanilla TypeScript + Vite.
 
 - `src/geometry/engine.ts` — manifold-3d WASM init + code execution
 - `src/renderer/viewport.ts` — Three.js interactive viewport
-- `src/renderer/multiview.ts` — 4 isometric view grid (always visible)
+- `src/renderer/multiview.ts` — Offscreen multi-angle render API (`renderViews`/`renderView`/`renderCompositeCanvas` for thumbnails)
 - `src/editor/codeEditor.ts` — CodeMirror editor
 - `src/ui/layout.ts` — Split-pane layout
 - `src/ui/toolbar.ts` — Top toolbar
-- `src/ui/panels.ts` — Views panel wiring
 - `src/geometry/crossSection.ts` — Z-slice to SVG/polygons
 - `src/export/gltf.ts` — GLB export
 - `src/export/stl.ts` — STL export
@@ -215,15 +214,13 @@ The app uses path-based routing for top-level pages and query parameters for vie
 - `/help` — Help/docs page
 
 **Query parameters** (on `/editor`):
-- `?view=ai` — AI Views tab
-- `?view=elevations` — Elevations tab
 - `?gallery` — Gallery tab
 - `?diff` — Diff tab (side-by-side code + stat comparison between two versions)
 - `?notes` — Notes tab
 - `?session=<id>` — Active session
 - `?session=<id>&v=3` — Specific version
 
-AI agent URLs like `/editor?view=ai` bypass the landing page entirely. Tab switching is handled in `src/ui/layout.ts` (`switchTab`). Session/version state is handled in `src/storage/sessionManager.ts` (`updateURL`). Page-level routing is in `src/main.ts`.
+Any `/editor` URL bypasses the landing page entirely. Tab switching is handled in `src/ui/layout.ts` (`switchTab`). Session/version state is handled in `src/storage/sessionManager.ts` (`updateURL`). Page-level routing is in `src/main.ts`.
 
 ### Browser History (Back Button) Preservation
 
@@ -265,7 +262,7 @@ Don't export functions unless they're imported elsewhere. When removing usage of
 
 ### Internal Links and Paths
 
-When referencing app routes in HTML/JS strings (links, prompts, instructions), use root-relative paths (`/ai.md`, `/editor?view=ai`), not paths with a subdirectory prefix. The app is served from the root, and hardcoded path prefixes break both development and deployment.
+When referencing app routes in HTML/JS strings (links, prompts, instructions), use root-relative paths (`/ai.md`, `/editor`), not paths with a subdirectory prefix. The app is served from the root, and hardcoded path prefixes break both development and deployment.
 
 ### Duplicated Logic
 

@@ -7,6 +7,13 @@ import { test, expect } from 'playwright/test';
 //   3. Every log row expands on click to reveal the full message, a precise
 //      timestamp/source/level line, and the captured stack/origin trace.
 
+test.beforeEach(async ({ page }) => {
+  // Suppress the first-run guided tour — its backdrop intercepts clicks.
+  await page.addInitScript(() => {
+    try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ }
+  });
+});
+
 test.describe('Diagnostic log', () => {
   test('no THREE.Clock deprecation warning on editor load', async ({ page }) => {
     const consoleMsgs: string[] = [];
@@ -14,7 +21,7 @@ test.describe('Diagnostic log', () => {
       if (msg.type() === 'warning' || msg.type() === 'error') consoleMsgs.push(msg.text());
     });
 
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.waitForSelector('#btn-ai', { timeout: 10_000 });
     // Let the viewport animation loop tick a few frames.
     await page.waitForTimeout(500);
@@ -24,8 +31,10 @@ test.describe('Diagnostic log', () => {
   });
 
   test('panel stacks above the AI drawer', async ({ page }) => {
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.waitForSelector('#btn-ai');
+    // Wait for full editor init so the click doesn't race the WASM/COI boot.
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
 
     await page.click('#btn-ai');
     await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
@@ -43,7 +52,7 @@ test.describe('Diagnostic log', () => {
   test('clicking a row expands it to show more detail', async ({ page }) => {
     const marker = 'diagnostic-expand-test-marker';
 
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.waitForSelector('#btn-diagnostics');
 
     // Seed an entry through the intercepted console.warn.

@@ -10,6 +10,14 @@ import { test, expect, type Page } from 'playwright/test';
 // clearing — but we do guard against IndexedDB races between tests by
 // landing on `/` first and giving the engine a beat to settle.
 
+test.beforeEach(async ({ page }) => {
+  // Suppress the first-run guided tour — its backdrop intercepts clicks.
+  // (Previously dodged via the now-removed ?view=ai entry URL.)
+  await page.addInitScript(() => {
+    try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ }
+  });
+});
+
 test.describe('Landing + editor', () => {
   test('landing page renders hero', async ({ page }) => {
     await page.goto('/');
@@ -19,7 +27,7 @@ test.describe('Landing + editor', () => {
 
   test('editor loads with AI button', async ({ page }) => {
     const errors = collectPageErrors(page);
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.waitForSelector('#btn-ai', { timeout: 10_000 });
     await expect(page.locator('#btn-ai')).toContainText(/Connect AI|AI/);
     expect(errors.filter(isAppRelevant)).toEqual([]);
@@ -28,8 +36,11 @@ test.describe('Landing + editor', () => {
 
 test.describe('AI chat panel', () => {
   test('toolbar button toggles the drawer', async ({ page }) => {
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.waitForSelector('#btn-ai');
+    // Wait for full editor init (console API ready) so the click doesn't race
+    // a COI service-worker reload / WASM boot on the default Interactive tab.
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
 
     // Drawer exists from boot but is translated off-screen until first open.
     await page.click('#btn-ai');
@@ -41,8 +52,11 @@ test.describe('AI chat panel', () => {
   test('drawer state persists across reload', async ({ page }) => {
     // Start clean (beforeEach cleared storage), open drawer, then reload —
     // the stored drawerOpen=true should bring it back open.
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.waitForSelector('#btn-ai');
+    // Wait for full editor init (console API ready) so the click doesn't race
+    // a COI service-worker reload / WASM boot on the default Interactive tab.
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
     await page.click('#btn-ai');
     await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
 
@@ -52,8 +66,11 @@ test.describe('AI chat panel', () => {
   });
 
   test('drawer survives switching tabs', async ({ page }) => {
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.waitForSelector('#btn-ai');
+    // Wait for full editor init (console API ready) so the click doesn't race
+    // a COI service-worker reload / WASM boot on the default Interactive tab.
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
     await page.click('#btn-ai');
     await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
 
@@ -65,7 +82,9 @@ test.describe('AI chat panel', () => {
   });
 
   test('panel widgets render', async ({ page }) => {
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
+    await page.waitForSelector('#btn-ai');
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
     await page.click('#btn-ai');
     const panel = page.locator('#ai-panel');
 
@@ -86,7 +105,11 @@ test.describe('AI chat panel', () => {
   });
 
   test('key modal opens and closes', async ({ page }) => {
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
+    await page.waitForSelector('#btn-ai');
+    // Let editor init (and session auto-restore) settle before clicking, so a
+    // late ?session= navigation doesn't tear down the modal mid-test.
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
     await page.click('#btn-ai');
     // dispatchEvent — same flex-child viewport quirk as the toggle pills.
     await page.locator('#ai-panel button:has-text("Connect Anthropic API")').dispatchEvent('click');
@@ -110,7 +133,7 @@ test.describe('AI chat panel', () => {
         toggles: { provider: 'local', localModel: 'Bogus-Removed-Model-MLC' },
       }));
     });
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.click('#btn-ai');
     const panel = page.locator('#ai-panel');
     await expect(panel.locator('button:has-text("Connect Anthropic API")')).toBeVisible();
@@ -118,7 +141,7 @@ test.describe('AI chat panel', () => {
   });
 
   test('toggle pills flip state on click', async ({ page }) => {
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.click('#btn-ai');
     const viewsPill = page.locator('#ai-panel button', { hasText: /📸 Auto-render/ });
     const before = await viewsPill.getAttribute('class');
@@ -136,7 +159,7 @@ test.describe('AI chat panel', () => {
   });
 
   test('ai.md is served at the root', async ({ page }) => {
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     const ok = await page.evaluate(async () => {
       const r = await fetch('/ai.md');
       return r.ok && (await r.text()).length > 100;

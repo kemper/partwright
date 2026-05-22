@@ -9,7 +9,7 @@ Built on [manifold-3d](https://github.com/elalish/manifold) (fast WASM boolean e
 - **Code-driven CAD** — Write JS that constructs 3D geometry using primitives, booleans, extrusions, and revolves. Hit Run, see the result.
 - **AI-friendly** — A `window.partwright` console API lets AI agents create, validate, and iterate on designs programmatically. Structured geometry data (volume, bounding box, cross-sections) is always available in the DOM for verification.
 - **Session & versioning** — Save multiple design variations, then open a gallery view to compare them side-by-side. Ideal for AI workflows that generate N variations for human review.
-- **Multi-view rendering** — Interactive 3D viewport plus a 4-panel isometric grid (alternating cube corners, every face visible in 2+ views).
+- **Multi-view rendering** — Interactive 3D viewport plus headless `renderViews`/`renderView` APIs that composite any set of angles on demand (including a `box` preset covering all six orthographic faces).
 - **Cross-sections** — Slice geometry at any Z height, inspect the 2D profile as SVG.
 - **Color regions** — Paint coplanar face regions with the in-app paint mode or the `paintRegion` console API; colors flow through GLB and 3MF exports for multi-material slicing.
 - **Export** — GLB, STL, OBJ, and 3MF download. GLB and 3MF carry per-region colors when present.
@@ -21,7 +21,7 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5173/](http://localhost:5173/) for the landing page, or [http://localhost:5173/editor?view=ai](http://localhost:5173/editor?view=ai) to start with all 4 isometric views visible (recommended for AI agents).
+Open [http://localhost:5173/](http://localhost:5173/) for the landing page, or [http://localhost:5173/editor](http://localhost:5173/editor) to go straight to the editor (recommended for AI agents, which drive the tool via the `window.partwright` console API).
 
 ## How it works
 
@@ -97,7 +97,7 @@ Best for: automated/headless workflows, CI pipelines, or when you don't want to 
 
 ### The workflow
 
-Whichever option you use, the AI agent navigates to `http://localhost:5173/editor?view=ai`, then uses the `window.partwright` console API to create sessions, write geometry code, validate results with assertions, save versions, and hand you a gallery URL for review.
+Whichever option you use, the AI agent navigates to `http://localhost:5173/editor`, then uses the `window.partwright` console API to create sessions, write geometry code, validate results with assertions, save versions, and hand you a gallery URL for review.
 
 See `CLAUDE.md` for the full API reference and recommended iteration patterns.
 
@@ -171,11 +171,10 @@ src/
   geometry/engine.ts      Manifold WASM init + sandboxed code execution
   geometry/crossSection.ts  Z-slice to SVG/polygon conversion
   renderer/viewport.ts    Three.js interactive viewport
-  renderer/multiview.ts   4-panel isometric view grid
+  renderer/multiview.ts   Offscreen multi-angle render API (renderViews/renderView)
   editor/codeEditor.ts    CodeMirror editor setup
   ui/layout.ts            Split-pane layout
   ui/toolbar.ts           Top toolbar with examples dropdown
-  ui/panels.ts            View tab wiring
   export/gltf.ts          GLB export (with vertex colors)
   export/stl.ts           STL export
   export/obj.ts           OBJ export

@@ -92,7 +92,7 @@ function createHeader(): HTMLElement {
 
   const desc = document.createElement('div');
   desc.className = 'text-xs text-zinc-500 leading-relaxed mt-0.5';
-  desc.textContent = 'Photos or renderings the model should match. Each image has a label — pick a preset like "Front" or type your own caption — that shows in the Gallery and orders the strip in the Elevations tab.';
+  desc.textContent = 'Photos or renderings the model should match. Each image has a label — pick a preset like "Front" or type your own caption — that shows in the Gallery and orders the image strip.';
   title.appendChild(desc);
 
   header.appendChild(title);
@@ -195,7 +195,7 @@ export function showAttachImageModal(
 
   const explanation = document.createElement('p');
   explanation.className = 'text-sm text-zinc-400 mb-4 leading-relaxed';
-  explanation.textContent = 'Add a photo or rendering you want your model to match. Each image is auto-labeled from its filename or URL — rename it from the tile after attaching. The label appears in the Gallery and orders the strip in the Elevations tab.';
+  explanation.textContent = 'Add a photo or rendering you want your model to match. Each image is auto-labeled from its filename or URL — rename it from the tile after attaching. The label appears in the Gallery and orders the image strip.';
 
   // File upload section
   const fileSection = document.createElement('div');

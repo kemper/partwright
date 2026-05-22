@@ -16,14 +16,14 @@ export interface AttachedImage {
   src: string;
   /** User-facing caption. Shown in the Gallery, lightbox, and tooltips.
    *  May match one of the preset labels (Front, Right, Back, Left, Top,
-   *  Perspective) — those drive ordering in the Elevations strip — or be
+   *  Perspective) — those drive ordering of the image strip — or be
    *  a free-form custom string. Empty string and undefined both mean
    *  "no caption". */
   label?: string;
 }
 
 /** Suggested labels offered as quick picks in the UI. Items whose label
- *  matches one of these (case-insensitive) sort earlier in the Elevations
+ *  matches one of these (case-insensitive) sort earlier in the image
  *  strip in the order they appear here. */
 export const PRESET_LABELS = ['Front', 'Right', 'Back', 'Left', 'Top', 'Perspective'] as const;
 

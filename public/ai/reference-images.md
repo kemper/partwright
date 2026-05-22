@@ -5,7 +5,7 @@
 Attach reference photos so the model can be compared against them. Each image has just two user-facing fields:
 
 - `src` — a `data:` URL or `http(s)` URL.
-- `label` (optional) — a free-form caption. Common values like `"Front"`, `"Right"`, `"Back"`, `"Left"`, `"Top"`, and `"Perspective"` are **presets**: the UI offers them as one-click pickers and the system uses them to order the strip in the Elevations tab. Any other string is also valid (`"south elevation, morning light"`, `"Inspiration: Frank Lloyd Wright"`). Empty / omitted means no caption.
+- `label` (optional) — a free-form caption. Common values like `"Front"`, `"Right"`, `"Back"`, `"Left"`, `"Top"`, and `"Perspective"` are **presets**: the UI offers them as one-click pickers and the system uses them to order the image strip. Any other string is also valid (`"south elevation, morning light"`, `"Inspiration: Frank Lloyd Wright"`). Empty / omitted means no caption.
 
 Multiple images may share a label — nothing is overwritten. The label is what appears in the Gallery thumbnail caption, in the lightbox, and in tooltips. Items whose label matches a preset (case-insensitive) sort first in preset order; the rest keep their insertion order at the end.
 
@@ -33,7 +33,7 @@ partwright.clearImages()
 partwright.getImages()  // -> [{id, src, label?}, ...]
 ```
 
-When images are attached, the Elevations tab shows them in a strip alongside the model views, enabling direct visual comparison.
+Attached images appear in the Images tab and the Gallery; render the model with `renderViews` to compare it against them at matching angles.
 
 ## Photo-to-model workflow
 
@@ -84,7 +84,7 @@ const r = await partwright.runAndAssert(code, {
 
 ### 4. Compare elevations after each structural change
 
-Switch to Elevations tab and compare model silhouette against the attached image at each angle. Focus on:
+Call `renderViews({ views: "box" })` (or `renderView` at matching angles) and compare the model silhouette against the attached image at each angle. Focus on:
 - Overall proportions and mass placement
 - Roof profile (side view reveals pitch and overhangs)
 - Feature alignment (windows, doors at correct heights)

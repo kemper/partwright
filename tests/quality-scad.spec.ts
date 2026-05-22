@@ -4,8 +4,15 @@ import { test, expect } from 'playwright/test';
 // We use the in-page console API to run a tiny sphere in SCAD under
 // each preset and compare the resulting triangle counts.
 
+test.beforeEach(async ({ page }) => {
+  // Suppress the first-run guided tour — its backdrop intercepts clicks.
+  await page.addInitScript(() => {
+    try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ }
+  });
+});
+
 test('SCAD engine applies the chosen $fn from quality preset', async ({ page }) => {
-  await page.goto('/editor?view=ai');
+  await page.goto('/editor');
   await page.waitForSelector('#btn-quality');
 
   type RunResult = { triangleCount?: number; error?: string };

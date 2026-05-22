@@ -5,9 +5,16 @@ import { test, expect } from 'playwright/test';
 //   2. The modal defaults to "Highest" the first time it loads (clean storage).
 //   3. Picking a different preset persists to localStorage and triggers a re-render.
 
+test.beforeEach(async ({ page }) => {
+  // Suppress the first-run guided tour — its backdrop intercepts clicks.
+  await page.addInitScript(() => {
+    try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ }
+  });
+});
+
 test.describe('Modeling quality settings', () => {
   test('toolbar gear opens modal showing Highest as default', async ({ page }) => {
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.waitForSelector('#btn-quality');
 
     await page.locator('#btn-quality').click();
@@ -23,7 +30,7 @@ test.describe('Modeling quality settings', () => {
   });
 
   test('picking Low persists and reloads checked', async ({ page }) => {
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.waitForSelector('#btn-quality');
 
     await page.locator('#btn-quality').click();
@@ -43,7 +50,7 @@ test.describe('Modeling quality settings', () => {
     // Drive the sandbox via the in-page partwright console API. We run a
     // tiny sphere script under each preset and read the resulting triVerts
     // count — higher quality = more triangles.
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.waitForSelector('#btn-quality');
 
     // Wait for the WASM engine to load.
@@ -78,7 +85,7 @@ test.describe('Modeling quality settings', () => {
   });
 
   test('Ultra preset persists and yields more triangles than the default', async ({ page }) => {
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.waitForSelector('#btn-quality');
     await page.waitForFunction(
       () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
@@ -112,7 +119,7 @@ test.describe('Modeling quality settings', () => {
   });
 
   test('Custom preset persists a user-entered segment count', async ({ page }) => {
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.waitForSelector('#btn-quality');
 
     await page.locator('#btn-quality').click();
@@ -137,7 +144,7 @@ test.describe('Modeling quality settings', () => {
   });
 
   test('Custom value clamps to the allowed range on blur', async ({ page }) => {
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.waitForSelector('#btn-quality');
 
     await page.locator('#btn-quality').click();
@@ -157,7 +164,7 @@ test.describe('Modeling quality settings', () => {
   });
 
   test('manifold-js engine applies a custom segment count', async ({ page }) => {
-    await page.goto('/editor?view=ai');
+    await page.goto('/editor');
     await page.waitForSelector('#btn-quality');
     await page.waitForFunction(
       () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,

@@ -28,7 +28,7 @@ Partwright is a browser-based parametric CAD tool with two modeling engines: **m
 2. **Pick your engine:** manifold-js (default) or OpenSCAD. See [Choosing an engine](#choosing-an-engine).
 3. **manifold-js code must end with `return manifoldObject;`** -- a bare trailing expression won't work. OpenSCAD code uses standard SCAD syntax (no `return`).
 4. **Use `runAndSave(code, label, {isManifold: true, maxComponents: 1})`** to validate and commit a version.
-5. **Verify visually after structural changes.** Stats alone can't catch warped roofs, twisted spires, or wrong proportions. Call `renderView({ortho: true})` from a few angles, or open the Elevations tab. See [Visual verification](#visual-verification).
+5. **Verify visually after structural changes.** Stats alone can't catch warped roofs, twisted spires, or wrong proportions. Call `renderViews()` to see several angles at once, and `renderViews({views: "box"})` for a guaranteed all-faces check before declaring done. See [Visual verification](#visual-verification).
 6. **Log decisions with `addSessionNote("[PREFIX] ...")`** -- prefixes: `[REQUIREMENT]`, `[DECISION]`, `[FEEDBACK]`, `[MEASUREMENT]`, `[ATTEMPT]`, `[TODO]`.
 7. **`await` every async method.** `createSession`, `runAndSave`, `runAndAssert`, `runIsolated`, `runAndExplain`, `loadVersion`, `forkVersion`, `getSessionContext`, every `*Data()` export, every notes/sessions call returns a Promise. Without `await` you'll inspect the Promise object instead of the result and silently work from stale or empty data.
 
@@ -101,7 +101,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 - **Forgetting `return`** -- code runs in `new Function()`, so a trailing expression is NOT automatically returned. You must write `return Manifold.cube(...)`.
 - **Hand-rolling curve math instead of using helpers** -- if you need a smooth surface or curve, check the verb table above. `Curves.loft` / BOSL2 `skin()` are far more reliable than a hand-written polygon-sampling loop.
 - **Skipping sessions** -- always create a session (`createSession`) and save versions (`runAndSave`) so the user can review your work in the gallery.
-- **Skipping visual verification** -- stats alone can't catch visual defects. After structural changes, screenshot the Elevations tab or use `renderView()`.
+- **Skipping visual verification** -- stats alone can't catch visual defects. After structural changes, call `renderViews()`; `renderViews({views: "box"})` is the only set that shows the back, left, and bottom faces.
 - **Flush boolean placement** -- shapes must overlap by at least 0.5 units to union correctly. Merely touching at a face produces disconnected components.
 - **Tapering to a near-point on printed geometry** -- `scaleTop=[0.01, 0.01]` or chamfers that collapse the top to sub-millimeter area look fine in `geometry-data` but FDM slicers silently drop sub-extrusion-width layers, so the cap disappears on the print. See [/ai/print-safety.md](/ai/print-safety.md).
 - **Not reading session context before modifying** -- when opening an existing session, always call `getSessionContext()` first and read the notes/version history before making changes. See [Resuming a session](#resuming-a-session).
@@ -140,7 +140,7 @@ When you see a validation error, fix the call -- don't pattern-match around it.
 
 ## How to use this tool
 
-1. Navigate with `?view=ai` to see 4 isometric views (e.g. `/editor?view=ai`)
+1. Open `/editor` (or any session URL) -- you drive the tool programmatically, not through the tabs
 2. Use `window.partwright` in the browser console to interact programmatically
 3. Call `partwright.help()` for a full method list, or `partwright.help('methodName')` for a specific method
 4. Use `partwright.getGeometryData()` to read current geometry stats programmatically
@@ -200,7 +200,7 @@ await partwright.runAndExplain(code)     // -> {stats, components[], hints[]} (d
 await partwright.modifyAndTest(patchFn, assertions?) // Modify current code + test in isolation
 partwright.query({sliceAt?, decompose?, boundingBox?}) // Multi-query current geometry in one call
 partwright.renderView({elevation?, azimuth?, ortho?, size?})  // Render ONE angle -> data URL
-await partwright.renderViews({views?: 'auto'|'tri'|'all', size?})  // multi-angle labeled composite -> data URL; 'auto' (default) picks angles by aspect ratio; prefer for verification
+await partwright.renderViews({views?: 'auto'|'tri'|'all'|'box', angles?, size?})  // multi-angle labeled composite -> data URL; 'auto' (default) picks angles by aspect ratio; 'box' = all 6 faces (the all-faces final check); pass `angles` for a custom set; prefer for verification
 partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}
 partwright.isRunning()                   // -> boolean (is code executing?)
 
@@ -562,7 +562,7 @@ The standard `exportGLB()` / `exportSTL()` / `exportOBJ()` / `export3MF()` metho
 
 ## Reference images & photo-to-model
 
-The user can attach reference photos via `partwright.setImages([...])`; they appear in the Elevations tab for side-by-side comparison with rendered views. There's also an analyze-and-build workflow that takes a single photo and bootstraps a model from it.
+The user can attach reference photos via `partwright.setImages([...])`; they appear in the Images tab and Gallery. There's also an analyze-and-build workflow that takes a single photo and bootstraps a model from it.
 
 **Call `readDoc({name: "reference-images"})`** when the user attaches a photo or asks you to model something from an image — covers `setImages` arguments, label conventions for elevation matching, and the five-step photo-to-model loop (major masses first, verify each elevation, iterate details).
 
@@ -786,7 +786,7 @@ Read the notes and version history before making changes. The notes tell you:
 ### Recommended iteration pattern
 
 1. Write initial code, assert+save in one call: `runAndSave(code, "v1 - base", {isManifold: true, maxComponents: 1})`
-2. **Visually verify** -- switch to Elevations tab (`?view=elevations`) and screenshot. Check Front/Side views.
+2. **Visually verify** -- call `renderViews()` (cheap) to catch obvious errors; before declaring done, do an all-faces pass with `renderViews({ views: "box" })`.
 3. Modify code, test with `modifyAndTest(patchFn)` or `runIsolated(code)` -- no side effects
 4. When satisfied, save: `runAndSave(modifiedCode, "v2 - improvements", assertions)` -- check the diff
 5. Use `query({sliceAt: [...], decompose: true})` for follow-up inspection without re-running
@@ -795,35 +795,52 @@ Read the notes and version history before making changes. The notes tell you:
 ## Visual verification
 
 **CRITICAL: Stats alone cannot catch visual defects.** A roof can be mangled, a spire twisted,
-or proportions wrong -- all while volume, componentCount, and genus look correct. After every
+or proportions wrong -- all while volume, componentCount, and genus look correct. You see the
+model only by rendering it (there is no live screenshot), so call the render tools after every
 structural change:
 
-1. **Check the Elevations tab** (`?view=elevations`) -- shows Front, Right, Back, Left, Top views.
-   Side elevations immediately reveal roof profiles, wall alignment, and symmetry issues that
-   isometric views can hide.
-2. **Use `renderView()` for specific angles:**
+1. **Iterate cheap with `renderViews()`** -- one composite PNG of several labeled angles. The
+   default `views: "auto"` picks angles from the bounding box; keep `size` small while iterating.
 ```js
-partwright.renderView({ elevation: 0, azimuth: 0, ortho: true })   // front elevation
-partwright.renderView({ elevation: 0, azimuth: 90, ortho: true })  // right side elevation
-partwright.renderView({ elevation: 90, ortho: true })               // top-down plan view
-partwright.renderView({ elevation: 30, azimuth: 315 })              // isometric (default)
+await partwright.renderViews()                       // auto angle set, cheap
+await partwright.renderViews({ views: "tri" })       // front + top + iso
 ```
-3. **Use `sliceAtZVisual(z)` for cross-section thumbnails:**
+2. **Do a guaranteed all-faces check before declaring done with `views: "box"`.** It renders all
+   six orthographic faces -- front, back, left, right, top, AND bottom. `auto`/`tri`/`all` never
+   show the back, left, or bottom, which is exactly where an unseen mistake hides. Bump `size` for
+   a sharper final read:
+```js
+await partwright.renderViews({ views: "box", size: 640 })   // final all-faces inspection
+```
+3. **Target specific angles** -- pass an explicit `angles` list to `renderViews`, or use
+   `renderView()` for a single angle:
+```js
+await partwright.renderViews({ angles: [               // any custom set in one composite
+  { elevation: 0, azimuth: 180, ortho: true, label: "back" },
+  { elevation: -90, ortho: true, label: "underside" },
+] })
+partwright.renderView({ elevation: 0, azimuth: 0, ortho: true })   // front elevation
+partwright.renderView({ elevation: 90, ortho: true })             // top-down plan view
+partwright.renderView({ elevation: 30, azimuth: 315 })            // isometric (default)
+```
+4. **Use `sliceAtZVisual(z)` for cross-section thumbnails:**
 ```js
 const s = partwright.sliceAtZVisual(10);  // returns {svg, area, contours}
 // svg = visual rendering of the cross-section profile at z=10
 ```
-4. **Feature-specific checks:**
+5. **Feature-specific checks:**
    - Added a roof? Check side elevation -- should be a clean triangle/gable profile.
    - Cut a door/window? Check front elevation -- opening should be visible.
    - Added a tower? Check top-down -- should be circular, properly positioned.
    - Made something hollow? Slice at mid-height -- should show wall ring, not solid fill.
+   - Anything asymmetric front-to-back or left-to-right? Use `views: "box"` -- the back and left
+     faces are invisible to every other preset.
 
-### View tabs
+### Render tiers
 
-- `?view=ai` -- 4 isometric views (alternating cube corners)
-- `?view=elevations` -- Front, Right, Back, Left, Top orthographic + 1 isometric (6 views)
-- Use Elevations for shape verification, AI Views for overall appearance.
+- **While iterating:** `renderViews()` (auto) or `renderView()` at the default size -- cheap.
+- **Final check:** `renderViews({ views: "box", size: 512-768 })` -- every face, high resolution.
+  More angles x larger size = more input tokens, so spend it on the final pass, not every turn.
 
 ## Annotations
 

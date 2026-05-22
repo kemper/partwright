@@ -4,7 +4,7 @@
 
 ## Entrypoint
 
-Navigate to `/editor?view=ai` -- this bypasses the landing page and shows 4 isometric views so you can see your geometry from every angle without clicking any tabs.
+Navigate to `/editor` -- you drive the tool programmatically via `window.partwright`, and see your geometry by calling the render tools (below), so there is no tab to click.
 
 ## Quickstart
 
@@ -30,7 +30,7 @@ partwright.renderView({ elevation: 0,  azimuth: 90, ortho: true })  // right
 partwright.renderView({ elevation: 90,              ortho: true })  // top
 ```
 
-Or switch to the Elevations tab (`?view=elevations`) for a 6-view grid.
+Or call `await partwright.renderViews({ views: "box" })` for a single composite of all six faces (front, back, left, right, top, bottom) -- the all-faces check.
 
 ## Resuming a session
 

@@ -85,14 +85,11 @@ export function createHelpPage(
         'The right pane is divided into tabs. Each one offers a different view of the current version:' +
         '<ul class="list-disc list-inside mt-2 space-y-1.5 text-zinc-400">' +
         '<li><strong class="text-zinc-300">Interactive</strong> — Live 3D viewport. Drag to orbit, scroll to zoom, right-drag to pan.</li>' +
-        '<li><strong class="text-zinc-300">AI Views</strong> — Four isometric snapshots (Upper Front-Right, Upper Back-Left, Under Front-Left, Under Back-Right) on one canvas, designed for AI agents to visually verify geometry. Buttons to copy the composite or download as PNG.</li>' +
-        '<li><strong class="text-zinc-300">Elevations</strong> — Orthographic Front, Right, and Top projections with optional reference-image overlay from the Images tab.</li>' +
         '<li><strong class="text-zinc-300">Gallery</strong> — Grid of saved versions. Click any thumbnail to load that version into the editor.</li>' +
-        '<li><strong class="text-zinc-300">Images</strong> — Attach reference photos or renderings (file upload or paste URL). Each image gets a label (Front / Right / Back / Left / Top / Perspective) used by the Elevations overlay.</li>' +
+        '<li><strong class="text-zinc-300">Images</strong> — Attach reference photos or renderings (file upload or paste URL). Each image gets a label (Front / Right / Back / Left / Top / Perspective) for ordering and reference.</li>' +
         '<li><strong class="text-zinc-300">Diff</strong> — Side-by-side comparison between any two versions: code on the left and right, plus a stats delta bar (volume, dimensions, manifold status).</li>' +
         '<li><strong class="text-zinc-300">Notes</strong> — Per-session free-text log. Use it to capture requirements, decisions, and feedback as the design evolves.</li>' +
-        '</ul><br>' +
-        'A direct URL like <code class="text-emerald-400 bg-zinc-800 px-1 rounded">/editor?view=ai</code> opens straight into the AI Views tab, skipping the landing page.',
+        '</ul>',
     },
     {
       id: 'viewport-tools',
@@ -221,7 +218,7 @@ export function createHelpPage(
         return 'Copy and paste this prompt into Claude Code, ChatGPT, or any AI agent with browser access to verify everything works end-to-end:' +
           '<pre class="bg-zinc-800 rounded-lg p-4 text-xs leading-relaxed overflow-x-auto mt-3 mb-3 whitespace-pre-wrap"><code class="text-zinc-300">' +
           `Read the AI agent instructions at ${origin}/ai.md to understand how to use this tool.\n\n` +
-          `Then navigate to ${origin}/editor?view=ai and use the window.partwright console API to:\n\n` +
+          `Then navigate to ${origin}/editor and use the window.partwright console API to:\n\n` +
           '1. Create a session called "Standard Lego Brick"\n' +
           '2. Build a standard 2x4 Lego brick (approximately 31.8mm x 15.8mm x 11.4mm with studs on top and hollow underside with tubes)\n' +
           '3. Save each major step as a version (e.g. v1 - base block, v2 - add studs, v3 - hollow underside with tubes)\n' +

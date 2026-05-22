@@ -26,7 +26,7 @@ import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEng
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible } from './renderer/viewport';
-import { renderCompositeCanvas, renderElevationsToContainer, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
+import { renderCompositeCanvas, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
 import { generateId } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, getAutoFormat, setAutoFormat } from './editor/codeEditor';
@@ -43,7 +43,6 @@ import { showExportOptionsDialog } from './ui/exportOptionsDialog';
 import { createCatalogPage, type CatalogManifestEntry } from './ui/catalog';
 import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
-import { initViewsPanel, updateMultiView } from './ui/panels';
 import { createSessionBar } from './ui/sessionBar';
 import { createGalleryView, refreshGallery } from './ui/gallery';
 import { createImagesView, refreshImages } from './ui/imagesView';
@@ -101,13 +100,11 @@ import {
   loadFromSerialized as loadAnnotations,
   removeLastAnnotation,
   removeAnnotationById,
-  onChange as onAnnotationStrokesChange,
   type SerializedAnnotation,
 } from './annotations/annotations';
 import {
   setAnnotationsVisible as setAnnotationsVisibleOverlay,
   isAnnotationsVisible as isAnnotationsVisibleOverlay,
-  onVisibilityChange as onAnnotationVisibilityChange,
 } from './annotations/annotationOverlay';
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
@@ -596,8 +593,6 @@ function getTabFromURL(): TabName {
   if (params.has('diff')) return 'diff';
   if (params.has('images')) return 'images';
   if (params.has('gallery')) return 'gallery';
-  if (params.get('view') === 'elevations') return 'elevations';
-  if (params.get('view') === 'ai') return 'ai';
   return 'interactive';
 }
 
@@ -1069,7 +1064,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, editorErrorPanel, viewportPane, viewsContainer, elevationsContainer, galleryContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab } = createLayout(editorUI);
+  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab } = createLayout(editorUI);
 
   // Format button and auto-format toggle
   const AUTO_FORMAT_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40';
@@ -1109,9 +1104,6 @@ async function main() {
     },
   });
 
-  // Init views panel
-  initViewsPanel(viewsContainer);
-
   // Init gallery
   createGalleryView(galleryContainer, async (code: string) => {
     setValue(code);
@@ -1131,12 +1123,6 @@ async function main() {
     onChange: async (next) => {
       _setImages(next);
       await persistImages(next);
-      if (currentMeshData) {
-        renderElevationsToContainer(
-          document.getElementById('elevations-container')!,
-          currentMeshData,
-        );
-      }
     },
   });
 
@@ -1535,8 +1521,6 @@ async function main() {
 
         // 2. Re-render without colors, then save an uncolored sibling
         updateMesh(currentMeshData, { skipAutoFrame: true });
-        updateMultiView(currentMeshData);
-        renderElevationsToContainer(elevationsContainer, currentMeshData);
 
         const cleanGeoData = getGeometryDataObj() ?? {};
         delete cleanGeoData.colorRegions;
@@ -1546,8 +1530,6 @@ async function main() {
         // No session — just re-render without colors
         if (currentMeshData) {
           updateMesh(currentMeshData, { skipAutoFrame: true });
-          updateMultiView(currentMeshData);
-          renderElevationsToContainer(elevationsContainer, currentMeshData);
         }
       }
     },
@@ -1555,8 +1537,6 @@ async function main() {
     () => {
       if (currentMeshData) {
         updateMesh(currentMeshData, { skipAutoFrame: true });
-        updateMultiView(currentMeshData);
-        renderElevationsToContainer(elevationsContainer, currentMeshData);
       }
     },
   );
@@ -1566,8 +1546,6 @@ async function main() {
     if (currentMeshData) {
       const colored = applyTriColorsIfVisible(currentMeshData);
       updateMesh(colored, { skipAutoFrame: true });
-      updateMultiView(colored);
-      renderElevationsToContainer(elevationsContainer, colored);
     }
     syncLockState();
   });
@@ -1582,27 +1560,13 @@ async function main() {
     }
   });
 
-  // Toggling paint visibility re-renders the viewport, multiview, and elevations
-  // so colors disappear/reappear immediately. Exports remain colored regardless.
+  // Toggling paint visibility re-renders the viewport so colors
+  // disappear/reappear immediately. Exports remain colored regardless.
   onPaintVisibilityChange(() => {
     if (!currentMeshData) return;
     const colored = applyTriColorsIfVisible(currentMeshData);
     updateMesh(colored, { skipAutoFrame: true });
-    updateMultiView(colored);
-    renderElevationsToContainer(elevationsContainer, colored);
   });
-
-  // When annotations change (stroke added/removed/cleared) or are toggled,
-  // refresh the offscreen-rendered panes (multiview + elevations) so they
-  // stay in sync with the live viewport.
-  const refreshAnnotationDependentPanes = () => {
-    if (!currentMeshData) return;
-    const meshForPanes = isPaintActive() ? applyTriColorsIfVisible(currentMeshData) : currentMeshData;
-    updateMultiView(meshForPanes);
-    renderElevationsToContainer(elevationsContainer, meshForPanes);
-  };
-  onAnnotationStrokesChange(refreshAnnotationDependentPanes);
-  onAnnotationVisibilityChange(refreshAnnotationDependentPanes);
 
   editorReady = true;
   editorReadyResolve();
@@ -1691,21 +1655,6 @@ async function main() {
       }
     }
   });
-
-  // Warn AI agents that try to drive the UI when ?view=ai is set
-  if (new URLSearchParams(window.location.search).get('view') === 'ai') {
-    let agentUIWarningShown = false;
-    const warnAgentUI = () => {
-      if (agentUIWarningShown) return;
-      agentUIWarningShown = true;
-      const msg = 'Detected UI-driven input. This app expects programmatic control from AI agents. Use window.partwright.runAndSave() -- see /llms.txt';
-      console.warn(msg);
-      showToast(msg, { variant: 'warn', durationMs: 8000 });
-    };
-    // Listen on the editor and viewport containers
-    editorUI.addEventListener('keydown', warnAgentUI, { once: true });
-    editorUI.addEventListener('click', warnAgentUI, { once: true });
-  }
 
   // === Language switching helper ===
   async function switchLanguage(lang: Language) {
@@ -2190,23 +2139,45 @@ async function main() {
      *  flat models get [Top, Iso]; tall models get [Front, Right, Iso];
      *  everything else gets [Front, Top, Iso]. `views: 'tri'` forces the
      *  front/top/iso composite regardless of shape; `views: 'all'` is the
-     *  classic 4-view iso grid (front/right/top/iso). */
-    async renderViews(options?: { views?: RenderViewMode; size?: number }): Promise<string | null> {
+     *  classic 4-view iso grid (front/right/top/iso); `views: 'box'` is the
+     *  6 orthographic axis faces (front/back/left/right/top/bottom) — the
+     *  guaranteed all-faces check, since back/left/bottom are otherwise
+     *  never shown. For total control, pass `angles` (an explicit list of
+     *  {elevation, azimuth, ortho?, label?}) which overrides `views`.
+     *  Bump `size` for a higher-resolution final inspection. */
+    async renderViews(options?: { views?: RenderViewMode; angles?: Array<{ elevation: number; azimuth: number; ortho?: boolean; label?: string }>; size?: number }): Promise<string | null> {
       if (options !== undefined) {
         const o = assertObject(options, 'renderViews(options)')!;
-        assertNoUnknownKeys(o, ['views', 'size'], 'renderViews(options)');
+        assertNoUnknownKeys(o, ['views', 'angles', 'size'], 'renderViews(options)');
         if (o.views !== undefined) assertEnum(o.views, RENDER_VIEW_MODES, 'renderViews(options).views');
+        if (o.angles !== undefined) {
+          const arr = assertArray(o.angles, 'renderViews(options).angles') as unknown[];
+          for (let i = 0; i < arr.length; i++) {
+            const a = assertObject(arr[i], `renderViews(options).angles[${i}]`)!;
+            assertNoUnknownKeys(a, ['elevation', 'azimuth', 'ortho', 'label'], `renderViews(options).angles[${i}]`);
+            assertNumber(a.elevation, `renderViews(options).angles[${i}].elevation`, { min: -90, max: 90 });
+            assertNumber(a.azimuth, `renderViews(options).angles[${i}].azimuth`);
+            assertBoolean(a.ortho, `renderViews(options).angles[${i}].ortho`, { optional: true });
+            assertString(a.label, `renderViews(options).angles[${i}].label`, { optional: true, allowEmpty: true });
+          }
+        }
         assertNumber(o.size, 'renderViews(options).size', { optional: true, min: 1, integer: true });
       }
       if (!currentMeshData) return null;
       const which = options?.views ?? 'auto';
       const tileSize = options?.size ?? 320;
       const colored = applyTriColorsIfVisible(currentMeshData);
-      const angles = chooseRenderAngles(which);
+      const explicit = options?.angles;
+      const angles = explicit && explicit.length > 0
+        ? explicit.map((a) => ({
+            label: a.label ?? `elev ${a.elevation}° az ${a.azimuth}°`,
+            opts: { elevation: a.elevation, azimuth: a.azimuth, ortho: a.ortho ?? false },
+          }))
+        : chooseRenderAngles(which);
 
       const labelHeight = 24;
       const cellHeight = tileSize + labelHeight;
-      const cols = angles.length === 1 ? 1 : 2;
+      const cols = angles.length <= 1 ? 1 : angles.length <= 4 ? 2 : 3;
       const rows = Math.ceil(angles.length / cols);
       const composite = document.createElement('canvas');
       composite.width = tileSize * cols;
@@ -2242,10 +2213,10 @@ async function main() {
 
     // === Images API ===
 
-    /** Attach images for side-by-side comparison in the Images, Elevations, and Gallery
+    /** Attach images for side-by-side comparison in the Images and Gallery
      *  tabs. Each item is `{src, label?}`. `src` is a data URL or http(s) URL.
      *  `label` is an optional caption — common values like "Front", "Right", "Back",
-     *  "Left", "Top", "Perspective" are presets that drive ordering in the Elevations
+     *  "Left", "Top", "Perspective" are presets that drive ordering in the image
      *  strip; any other string is also valid. Multiple items may share a label.
      *  Replaces all currently attached images. If a session is active, also persists
      *  to IndexedDB. Returns the canonical list with assigned ids. */
@@ -2268,12 +2239,6 @@ async function main() {
       }
       _setImages(items);
       persistImages(items);
-      if (currentMeshData) {
-        renderElevationsToContainer(
-          document.getElementById('elevations-container')!,
-          currentMeshData,
-        );
-      }
       return items;
     },
 
@@ -2289,12 +2254,6 @@ async function main() {
       const next = [..._getImages(), item];
       _setImages(next);
       persistImages(next);
-      if (currentMeshData) {
-        renderElevationsToContainer(
-          document.getElementById('elevations-container')!,
-          currentMeshData,
-        );
-      }
       return item;
     },
 
@@ -2306,12 +2265,6 @@ async function main() {
       if (next.length === current.length) return false;
       _setImages(next);
       persistImages(next);
-      if (currentMeshData) {
-        renderElevationsToContainer(
-          document.getElementById('elevations-container')!,
-          currentMeshData,
-        );
-      }
       return true;
     },
 
@@ -2319,12 +2272,6 @@ async function main() {
     clearImages(): void {
       _clearImages();
       persistImages(null);
-      if (currentMeshData) {
-        renderElevationsToContainer(
-          document.getElementById('elevations-container')!,
-          currentMeshData,
-        );
-      }
     },
 
     /** Get the currently attached images as an array of `{id, angle, src}`. */
@@ -2341,7 +2288,7 @@ async function main() {
       await addSessionNote(
         '[WORKFLOW] Drive this app via window.partwright (see /ai.md). ' +
         'Use runAndSave(code, label, assertions) for iterations; ' +
-        'after structural changes verify visually via renderView({ortho:true}) or the Elevations tab; ' +
+        'after structural changes verify visually via renderViews (use views:"box" for an all-faces final check); ' +
         'addSessionNote with [REQUIREMENT]/[DECISION]/[MEASUREMENT]/[FEEDBACK]/[ATTEMPT]/[TODO] prefixes; ' +
         'getSessionContext() when resuming.',
       );
@@ -2372,12 +2319,6 @@ async function main() {
       const sessionImages = await getImagesFromSession();
       if (sessionImages) {
         _setImages(sessionImages);
-        if (currentMeshData) {
-          renderElevationsToContainer(
-            document.getElementById('elevations-container')!,
-            currentMeshData,
-          );
-        }
       } else {
         _clearImages();
       }
@@ -2805,12 +2746,6 @@ async function main() {
       const sessionImages = await getImagesFromSession();
       if (sessionImages) {
         _setImages(sessionImages);
-        if (currentMeshData) {
-          renderElevationsToContainer(
-            document.getElementById('elevations-container')!,
-            currentMeshData,
-          );
-        }
       }
       return { id: session.id, name: session.name, ...(warning ? { warning } : {}) };
     },
@@ -3341,8 +3276,6 @@ async function main() {
       );
       const colored = applyTriColorsIfVisible(mesh);
       updateMesh(colored, { skipAutoFrame: true });
-      updateMultiView(colored);
-      renderElevationsToContainer(elevationsContainer, colored);
       syncLockState();
       const stats = regionTriangleStats(triangles, mesh);
       return { id: region.id, name: region.name, triangles: triangles.size, bbox: stats.bbox, centroid: stats.centroid, seedTriangle: nearest.triIndex };
@@ -3362,8 +3295,8 @@ async function main() {
     },
 
     /** Programmatic tab switching */
-    setView(tab: 'interactive' | 'ai' | 'elevations' | 'gallery' | 'images' | 'diff' | 'notes'): void {
-      assertEnum(tab, ['interactive', 'ai', 'elevations', 'gallery', 'images', 'diff', 'notes'] as const, 'setView(tab)');
+    setView(tab: 'interactive' | 'gallery' | 'images' | 'diff' | 'notes'): void {
+      assertEnum(tab, ['interactive', 'gallery', 'images', 'diff', 'notes'] as const, 'setView(tab)');
       switchTab(tab);
     },
 
@@ -3505,8 +3438,6 @@ async function main() {
       // Re-render with colors
       const colored = applyTriColorsIfVisible(currentMeshData);
       updateMesh(colored, { skipAutoFrame: true });
-      updateMultiView(colored);
-      renderElevationsToContainer(elevationsContainer, colored);
       syncLockState();
 
       return { id: region.id, name: region.name, triangles: triangles.size };
@@ -3560,7 +3491,6 @@ async function main() {
 
       const colored = applyTriColorsIfVisible(currentMeshData);
       updateMesh(colored, { skipAutoFrame: true });
-      updateMultiView(colored);
       syncLockState();
 
       return {
@@ -3605,8 +3535,6 @@ async function main() {
 
       const colored = applyTriColorsIfVisible(currentMeshData);
       updateMesh(colored, { skipAutoFrame: true });
-      updateMultiView(colored);
-      renderElevationsToContainer(elevationsContainer, colored);
       syncLockState();
 
       return { id: region.id, name: region.name, triangles: triangles.size };
@@ -4915,8 +4843,8 @@ async function main() {
         'setAutoRun':           { signature: 'setAutoRun(enabled) -- Enable/disable auto-render on edit', docs: '/ai.md#viewport-controls' },
         'isAutoRunEnabled':     { signature: 'isAutoRunEnabled() -- Whether auto-run is active', docs: '/ai.md#viewport-controls' },
         // View
-        'setView':         { signature: 'setView(tab) -- Switch tab: "interactive", "ai", "elevations", "gallery", "diff"', docs: '/ai.md#view-tabs' },
-        'getViewState':    { signature: 'getViewState() -- Current tab and camera state', docs: '/ai.md#view-tabs' },
+        'setView':         { signature: 'setView(tab) -- Switch tab: "interactive", "gallery", "images", "diff", "notes"', docs: '/ai.md#how-to-use-this-tool' },
+        'getViewState':    { signature: 'getViewState() -- Current tab and camera state', docs: '/ai.md#how-to-use-this-tool' },
         // Export
         'exportGLB':       { signature: 'await exportGLB() -- Download GLB file', docs: '/ai.md#console-api--windowpartwright' },
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
@@ -5088,6 +5016,13 @@ async function main() {
     const ISO   = view(STANDARD_VIEWS.iso);
     if (which === 'tri') return [FRONT, TOP, ISO];
     if (which === 'all') return [FRONT, RIGHT, TOP, ISO];
+    if (which === 'box') return [
+      FRONT, RIGHT,
+      { label: 'Back', opts: { elevation: 0, azimuth: 180, ortho: true } },
+      { label: 'Left', opts: { elevation: 0, azimuth: 270, ortho: true } },
+      TOP,
+      { label: 'Bottom', opts: { elevation: -90, azimuth: 0, ortho: true } },
+    ];
     // 'auto': inspect the current manifold's bounding box.
     let bb: { min: [number, number, number]; max: [number, number, number] } | null = null;
     if (currentManifold) {
@@ -5597,8 +5532,6 @@ async function main() {
       if (!currentMeshData) return;
       const colored = applyTriColorsIfVisible(currentMeshData);
       updateMesh(colored, { skipAutoFrame: true });
-      updateMultiView(colored);
-      renderElevationsToContainer(elevationsContainer, colored);
     });
   }
 
@@ -5676,8 +5609,6 @@ async function main() {
       // Apply any existing color regions to the mesh
       const displayMesh = hasColorRegions() ? applyTriColorsIfVisible(result.mesh) : result.mesh;
       updateMesh(displayMesh);
-      updateMultiView(displayMesh);
-      renderElevationsToContainer(elevationsContainer, displayMesh);
       updatePaintMesh(result.mesh); // always pass uncolored mesh for adjacency
 
       updateGeometryData(elapsed, src);

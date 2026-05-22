@@ -9,8 +9,8 @@ overlay). Two kinds of annotations:
   rendered as a screen-facing label (so they stay readable from any angle).
 
 Both kinds are **not part of the model** -- they're a visual feedback layer that
-survives orbiting and appears in **every** rendered output: the live viewport, `renderView()`
-output, the AI Views tab, and the Elevations tab.
+survives orbiting and appears in **every** rendered output: the live viewport and the
+`renderView()` / `renderViews()` images.
 
 **Lifecycle**: annotations are scoped to the current version. `runAndSave` /
 `saveVersion` snapshots the current annotations into the new version, and
