@@ -557,6 +557,11 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'listRegions',
+    description: 'List every committed color region on the current mesh, in paint order. Each entry: {id, name, color, source, triangles (count), order, visible, bbox, centroid}. Returns [] when nothing is painted. This is the inventory you read to get a region id/name for removeRegion, paintExplain, and assertPaint — sibling of listComponents (mesh pieces) and listLabels (api.label features).',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'removeRegion',
     description: 'Remove ONE color region by id (from listRegions). Use to delete a specific mistake when it is not the most recent paint operation — undoLastPaint is faster for the most recent.',
     input_schema: {
@@ -848,6 +853,10 @@ const ALWAYS_AVAILABLE = new Set([
   'findFaces',
   'listComponents',
   'listLabels',
+  // listRegions is a pure read, not a paint mutation, so it stays always-on
+  // even when paintFaces is disabled — its consumers paintExplain/assertPaint
+  // are always-available and need a region id to target.
+  'listRegions',
   'probePixel',
   'paintPreview',
   'paintExplain',
@@ -1229,6 +1238,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.undoLastPaint();
     case 'redoLastPaint':
       return api.redoLastPaint();
+    case 'listRegions':
+      return api.listRegions();
     case 'removeRegion':
       return api.removeRegion(input.id as number);
     case 'clearColors':
