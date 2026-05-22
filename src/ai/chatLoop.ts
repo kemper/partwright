@@ -17,14 +17,35 @@ import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
 import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type TurnOutcomeReason } from './types';
 
-/** Yield to the browser between heavy synchronous work blocks so the
- *  page stays responsive. requestAnimationFrame lets the browser paint
- *  pending frames and process input events; without it, a chain of
- *  paint tools can lock the main thread long enough for Chrome to show
- *  "page unresponsive". Used between tool executions and between agent
- *  loop iterations. */
+/** Yield to the browser between heavy synchronous work blocks.
+ *
+ *  Worker context: document doesn't exist; use a minimal setTimeout so
+ *  the Worker's own task queue can process incoming abort/queue messages
+ *  between tool calls without blocking.
+ *
+ *  Main thread, hidden tab: nothing to paint and Chrome suppresses "page
+ *  unresponsive" for hidden tabs — skip the yield entirely so the loop
+ *  runs at full speed (the original rAF stall fix).
+ *
+ *  Main thread, visible: prefer scheduler.yield() (Chrome 129+) then
+ *  fall back to MessageChannel — both are unthrottled unlike rAF. */
 function yieldToBrowser(): Promise<void> {
-  return new Promise(resolve => requestAnimationFrame(() => resolve()));
+  if (typeof document === 'undefined') {
+    // Worker: yield so the event loop can process abort/queue messages.
+    return new Promise(r => setTimeout(r, 0));
+  }
+  if (document.hidden) return Promise.resolve();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sched = (globalThis as any).scheduler;
+  if (typeof sched !== 'undefined' && typeof sched.yield === 'function') {
+    return sched.yield() as Promise<void>;
+  }
+  return new Promise<void>(resolve => {
+    const { port1, port2 } = new MessageChannel();
+    port1.onmessage = () => { port1.close(); resolve(); };
+    port2.postMessage(undefined);
+    port2.close();
+  });
 }
 
 /** Log tool execution time. Anything over this threshold is flagged in
@@ -54,6 +75,11 @@ export interface RunTurnInput {
    *  iteration. This is how mid-run "queued" messages from the human get
    *  delivered at the next natural pause without aborting the agent. */
   onDrainQueuedBlocks?: () => ChatBlock[];
+  /** Override for tool execution. Defaults to the real `executeTool` from
+   *  tools.ts. The Agent Worker substitutes a postMessage-based proxy so
+   *  tool dispatch round-trips back to the main thread where
+   *  window.partwright lives, while the loop itself stays in the Worker. */
+  executeToolFn?: (name: string, input: Record<string, unknown>) => Promise<import('./tools').ToolExecResult>;
 }
 
 export interface RunTurnCallbacks {
@@ -325,6 +351,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         toolResultMsg.toolResults![i] = eachResult;
         void putMessages([toolResultMsg]);
       },
+      input.executeToolFn,
     );
     totalToolCalls += result.toolCalls.length;
 
@@ -367,6 +394,7 @@ async function executeAllWithRetry(
   callbacks: RunTurnCallbacks,
   signal?: AbortSignal,
   onEachResult?: (result: PersistedToolResult, index: number) => void,
+  executeToolFn?: RunTurnInput['executeToolFn'],
 ): Promise<PersistedToolResult[]> {
   const results: PersistedToolResult[] = [];
   for (let i = 0; i < toolCalls.length; i++) {
@@ -386,10 +414,10 @@ async function executeAllWithRetry(
       continue;
     }
     let attempt = 0;
-    let result = await timedExecuteTool(tc.name, tc.input);
+    let result = await timedExecuteTool(tc.name, tc.input, executeToolFn);
     while (result.isError && attempt < toggles.autoRetry && !signal?.aborted) {
       attempt++;
-      result = await timedExecuteTool(tc.name, tc.input);
+      result = await timedExecuteTool(tc.name, tc.input, executeToolFn);
     }
     const persisted: PersistedToolResult = {
       toolUseId: tc.id,
@@ -409,9 +437,13 @@ async function executeAllWithRetry(
   return results;
 }
 
-async function timedExecuteTool(name: string, input: Record<string, unknown>) {
+async function timedExecuteTool(
+  name: string,
+  input: Record<string, unknown>,
+  fn: RunTurnInput['executeToolFn'] = executeTool,
+) {
   const t0 = performance.now();
-  const result = await executeTool(name, input);
+  const result = await (fn ?? executeTool)(name, input);
   const elapsed = performance.now() - t0;
   if (elapsed > SLOW_TOOL_MS) {
     // Visible only in dev tools — meant for diagnosing the

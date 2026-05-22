@@ -38,6 +38,11 @@ const listeners = new Set<(s: QualitySettings) => void>();
 
 export function loadQualitySettings(): QualitySettings {
   if (cached) return cached;
+  // localStorage is unavailable in Worker context; use defaults.
+  if (typeof localStorage === 'undefined') {
+    cached = { ...DEFAULT_SETTINGS };
+    return cached;
+  }
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
@@ -68,8 +73,18 @@ export function onQualitySettingsChange(fn: (s: QualitySettings) => void): () =>
   return () => { listeners.delete(fn); };
 }
 
+/** Override applied by the geometry Worker so it uses the main-thread
+ *  quality setting (which reads from localStorage) rather than the
+ *  Worker's default. Null means "read from localStorage as normal". */
+let circularSegmentsOverride: number | null = null;
+
+export function setCircularSegmentsOverride(n: number | null): void {
+  circularSegmentsOverride = n;
+}
+
 /** Resolve the current segment count from the active quality preset. */
 export function getDefaultCircularSegments(): number {
+  if (circularSegmentsOverride !== null) return circularSegmentsOverride;
   return QUALITY_SEGMENTS[loadQualitySettings().quality];
 }
 

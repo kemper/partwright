@@ -1039,7 +1039,8 @@ async function main() {
     }),
     onLoadVersion: async (code: string) => {
       setValue(code);
-      await runCodeSync(code);
+      const applied = await runCodeSync(code);
+      if (!applied) return;
       const loadedVersion = getState().currentVersion;
       if (loadedVersion) {
         rehydrateColorRegions(loadedVersion.geometryData);
@@ -1100,7 +1101,8 @@ async function main() {
   // Init gallery
   createGalleryView(galleryContainer, async (code: string) => {
     setValue(code);
-    await runCodeSync(code);
+    const applied = await runCodeSync(code);
+    if (!applied) return;
     // Rehydrate color regions and annotations from the loaded version
     const loadedVersion = getState().currentVersion;
     if (loadedVersion) {
@@ -1172,6 +1174,12 @@ async function main() {
   // Declared early so async callbacks (e.g. runCodeSync triggered during
   // initial syncEditorFromURL) don't hit a TDZ error before this point.
   let _running = false;
+  // Monotonically-increasing counter that identifies the most-recently-started
+  // runCodeSync call. When a Worker result arrives, it's only applied if its
+  // generation matches the current value — any lower value means a newer
+  // version-switch or run has already superseded it, and applying the stale
+  // result would overwrite the wrong mesh/manifold/colour state.
+  let _runGeneration = 0;
 
   async function ensureEditorReady() {
     if (!editorReady) await editorReadyPromise;
@@ -1193,7 +1201,10 @@ async function main() {
     }
     setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
     setValue(version.code);
-    await runCodeSync(version.code);
+    const applied = await runCodeSync(version.code);
+    // If a newer version-switch arrived while we were compiling, our result
+    // was discarded — don't rehydrate colours or annotations for the wrong version.
+    if (!applied) return;
     rehydrateColorRegions(version.geometryData);
     applyVersionAnnotations(version);
     const sessionImages = await getImagesFromSession();
@@ -1640,11 +1651,23 @@ async function main() {
     updateDocumentTitle({ page: 'editor' });
   }
 
-  // Clean up empty auto-created sessions when leaving the page
-  window.addEventListener('beforeunload', () => {
+  // Clean up empty auto-created sessions when leaving the page, and warn
+  // when there are painted color regions that haven't been saved yet.
+  window.addEventListener('beforeunload', (event) => {
     const state = getState();
     if (state.session && state.versionCount === 0) {
       deleteIfEmpty(state.session.id);
+    }
+    // Warn if in-memory color regions exist but the current persisted version
+    // doesn't have them — i.e. the user painted but hasn't hit Save yet.
+    if (hasColorRegions()) {
+      const persistedRegions = (state.currentVersion?.geometryData as Record<string, unknown> | null | undefined)?.colorRegions;
+      const alreadySaved = Array.isArray(persistedRegions) && (persistedRegions as unknown[]).length > 0;
+      if (!alreadySaved) {
+        event.preventDefault();
+        // returnValue is required for cross-browser compat (Chrome ignores just preventDefault)
+        event.returnValue = '';
+      }
     }
   });
 
@@ -1713,11 +1736,14 @@ async function main() {
       };
     }
 
-    const stats = computeGeometryStats(result.manifold, result.mesh!, elapsed, code);
+    // Reconstruct the Manifold if the Worker path returned manifold=null.
+    const mod = getModule();
+    const manifold = result.manifold ?? (mod && result.mesh ? mod.Manifold.ofMesh(result.mesh) : null);
+    const stats = computeGeometryStats(manifold, result.mesh!, elapsed, code);
     return {
       geometryData: stats,
       meshData: result.mesh,
-      manifold: result.manifold,
+      manifold,
     };
   }
 
@@ -1728,7 +1754,10 @@ async function main() {
       assertString(code, 'run(code)', { optional: true, allowEmpty: false });
       const src = code ?? getValue();
       if (code !== undefined) setValue(code);
-      await runCodeSync(src);
+      const applied = await runCodeSync(src);
+      if (!applied) {
+        return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
+      }
       return JSON.parse(geometryDataEl.textContent || '{}');
     },
 
@@ -2430,7 +2459,10 @@ async function main() {
       // Assertions are checked against the live result rather than a separate
       // isolation run. This halves execution time for assertion-guarded saves.
       setValue(code);
-      await runCodeSync(code);
+      const applied = await runCodeSync(code);
+      if (!applied) {
+        return { passed: false, failures: ['Run was superseded by a concurrent execution — retry'], geometry: null, version: null, diff: null, galleryUrl: getGalleryUrl() };
+      }
       const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
 
       if (assertions) {
@@ -2530,7 +2562,10 @@ async function main() {
       const prevGeoData = getState().currentVersion?.geometryData as Record<string, unknown> | null;
       const parentColors = carryColors ? versionColorRegions(parent) : [];
       setValue(newCode);
-      await runCodeSync(newCode);
+      const forkApplied = await runCodeSync(newCode);
+      if (!forkApplied) {
+        return { error: 'Run was superseded by a concurrent execution — retry' };
+      }
       const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
 
       // Re-apply the parent's color regions to the forked geometry before
@@ -3074,7 +3109,11 @@ async function main() {
 
       for (const v of versions) {
         setValue(v.code);
-        await runCodeSync(v.code);
+        const vApplied = await runCodeSync(v.code);
+        if (!vApplied) {
+          results.push({ version: null, geometry: null, error: 'Run superseded — version skipped' });
+          continue;
+        }
         const thumbnail = await captureThumbnail();
         const geoData = getGeometryDataObj();
         const version = await saveVersion(v.code, geoData, thumbnail, v.label);
@@ -5530,14 +5569,25 @@ async function main() {
     clearEditorErrorPanel(editorErrorPanel);
 
     requestAnimationFrame(async () => {
+      // An explicit runCodeSync (e.g. version-load, partwright.run) may have
+      // started synchronously before this RAF fired — if so, skip to avoid
+      // racing: the explicit call owns _runGeneration and will apply results.
+      if (_running) return;
       await runCodeSync(src);
     });
   }
 
-  async function runCodeSync(src: string) {
+  async function runCodeSync(src: string): Promise<boolean> {
+    const myGen = ++_runGeneration;
     _running = true;
     const t0 = performance.now();
     const result = await executeCodeAsync(src);
+
+    // A newer runCodeSync was dispatched while we were awaiting the Worker.
+    // Discard this result to prevent a stale version from overwriting the
+    // current mesh, manifold, or colour regions.
+    if (myGen !== _runGeneration) return false;
+
     const elapsed = Math.round(performance.now() - t0);
     _running = false;
 
@@ -5556,7 +5606,7 @@ async function main() {
         executionTimeMs: elapsed,
         codeHash: simpleHash(src),
       });
-      return;
+      return true;
     }
 
     if (result.mesh) {
@@ -5565,10 +5615,19 @@ async function main() {
       currentMeshData = result.mesh;
       // Release the previous Manifold's WASM-heap memory before overwriting.
       // Manifold objects live outside the JS heap and require manual .delete().
-      if (currentManifold && currentManifold !== result.manifold && typeof currentManifold.delete === 'function') {
+      if (currentManifold && typeof currentManifold.delete === 'function') {
         try { currentManifold.delete(); } catch { /* already deleted */ }
       }
-      currentManifold = result.manifold;
+      // The geometry Worker returns manifold=null (live WASM objects can't
+      // cross thread boundaries). Reconstruct a queryable Manifold from the
+      // transferred mesh data so sliceAtZ, getBoundingBox, decompose, etc.
+      // keep working without changes on the main thread.
+      if (result.manifold) {
+        currentManifold = result.manifold;
+      } else {
+        const mod = getModule();
+        currentManifold = (mod && result.mesh) ? mod.Manifold.ofMesh(result.mesh) : null;
+      }
       // Capture the labelled-construction map for this run. byLabel
       // region descriptors look up their triangles here; rehydrating a
       // saved version re-runs the code first, which rebuilds the map.
@@ -5585,6 +5644,7 @@ async function main() {
       syncClipSliderBounds();
       setStatus(statusBar, 'ready', 'Ready');
     }
+    return true;
   }
 
   function initClipControls(container: HTMLElement) {

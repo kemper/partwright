@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "deploy": "npm audit --audit-level=high && tsc && vite build",
+    "deploy": "npm audit --audit-level=moderate && tsc && vite build",
     "preview": "vite preview",
     "test:e2e": "playwright test"
   },
