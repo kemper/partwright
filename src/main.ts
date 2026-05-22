@@ -33,10 +33,12 @@ import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorL
 import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
+import { registerCommands } from './ui/commandPalette';
+import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel } from './ui/aiPanel';
 import { getKey as getAiKey, mergeChatBucket } from './ai/db';
-import { loadSettings as loadAiSettings, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
+import { loadSettings as loadAiSettings, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
 import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
@@ -44,11 +46,13 @@ import { createCatalogPage, type CatalogManifestEntry } from './ui/catalog';
 import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { createSessionBar } from './ui/sessionBar';
+import { createPartList } from './ui/partList';
 import { createGalleryView, refreshGallery } from './ui/gallery';
 import { createVersionsView, refreshVersions } from './ui/versions';
 import { createImagesView, refreshImages } from './ui/imagesView';
 import { createDiffView, refreshDiff } from './ui/diffView';
 import { createNotesView, refreshNotes } from './ui/notes';
+import { initDataExplorer, refreshDataExplorer } from './ui/dataExplorer';
 import { initSessionList, showSessionList } from './ui/sessionList';
 import { exportGLB, buildGLB } from './export/gltf';
 import { exportSTL, buildSTL } from './export/stl';
@@ -84,10 +88,13 @@ import { probeAtXY, probeRay, probePixel, measureDistance, type ProbeResult, typ
 import { checkContainment, type ContainmentWarning } from './geometry/containmentCheck';
 import { setUnits as _setUnits, getUnits as _getUnits, type UnitSystem } from './geometry/units';
 import { initMeasureTool, activate as activateMeasure, deactivate as deactivateMeasure, getState as getMeasureState } from './ui/measureTool';
-import { maybeStartTour, resetTour, startTour } from './ui/tour';
+import { maybeStartTour, resetTour, startTour, isTourCompleted } from './ui/tour';
+import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
+import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, type SimplifyHandlers } from './ui/simplifyUI';
+import { simplifyToTriangleBudget, type SimplifyResult } from './geometry/simplify';
 import { updatePaintMesh, setOnRegionPainted, isActive as isPaintActive } from './color/paintMode';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu } from './annotations/annotateUI';
 import { isActive as isSelectActive, getSelectedId as getSelectedAnnotationId } from './annotations/selectMode';
@@ -121,6 +128,7 @@ import { computeFaceGroups } from './color/faceGroups';
 import {
   getSessionIdFromURL,
   getVersionFromURL,
+  getPartIdFromURL,
   openSession,
   createSession,
   closeSession,
@@ -133,6 +141,13 @@ import {
   loadVersion as loadVersionFromStore,
   peekVersion,
   listCurrentVersions,
+  listCurrentParts,
+  getCurrentPart,
+  createPart,
+  changePart,
+  renamePart,
+  deletePart,
+  reorderParts,
   getState,
   getSessionUrl,
   getGalleryUrl,
@@ -149,10 +164,15 @@ import {
   getSessionContext,
   recordError,
   onStateChange,
+  initSessionTabSync,
+  setViewerPredicate,
+  refreshCurrentSession,
   type ExportedSession,
   type ExportOptions,
 } from './storage/sessionManager';
-import type { Version } from './storage/db';
+import { acquireSession as acquireSessionLock, initSessionLeader, onOwnershipChange } from './storage/sessionLock';
+import { initViewerMode, isReadOnlyViewer } from './ui/viewerMode';
+import type { Version, Part } from './storage/db';
 import {
   ValidationError,
   guard,
@@ -525,6 +545,9 @@ async function saveCurrentVersion(label?: string): Promise<
   if (!getState().session) {
     return { error: 'No active session. Call createSession() or openSession(id) first.' };
   }
+  if (isReadOnlyViewer()) {
+    return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
+  }
   const thumbnail = await captureThumbnail();
   const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label);
   if (version) return { id: version.id, index: version.index, label: version.label };
@@ -567,13 +590,43 @@ function parseVersionTarget(
   return { kind: 'id', value: id };
 }
 
+/** Resolve a part-target arg — a part id string, or { id } / { name } — to a
+ *  Part in the active session. Returns { error } (with guidance) on a miss. */
+function resolvePartTarget(target: unknown, caller: string): Part | { error: string } {
+  if (!getState().session) {
+    return { error: `${caller}: no active session. Call createSession() or openSession(id) first.` };
+  }
+  const parts = listCurrentParts();
+  let id: string | undefined;
+  let name: string | undefined;
+  if (typeof target === 'string') {
+    id = target;
+  } else if (target && typeof target === 'object') {
+    ({ id, name } = target as { id?: string; name?: string });
+  } else {
+    return { error: `${caller}(target): pass a part id string, or { id } / { name } from listParts().` };
+  }
+  let part: Part | undefined;
+  if (id !== undefined) {
+    if (typeof id !== 'string' || id.length === 0) return { error: `${caller}: id must be a non-empty string.` };
+    part = parts.find(p => p.id === id);
+  } else if (name !== undefined) {
+    if (typeof name !== 'string' || name.length === 0) return { error: `${caller}: name must be a non-empty string.` };
+    part = parts.find(p => p.name === name);
+  } else {
+    return { error: `${caller}(target): pass { id } or { name } from listParts().` };
+  }
+  if (!part) return { error: `${caller}: no matching part. Use listParts() to see available parts.` };
+  return part;
+}
+
 // Determine which page to show based on URL path and query params
 function shouldShowLanding(): boolean {
   const path = window.location.pathname;
   const params = new URLSearchParams(window.location.search);
   // Landing if at root path AND no query params that indicate a specific view
   const isRootPath = path === '/' || path === '';
-  return isRootPath && !params.has('view') && !params.has('session') && !params.has('gallery') && !params.has('versions') && !params.has('images') && !params.has('diff') && !params.has('notes');
+  return isRootPath && !params.has('view') && !params.has('session') && !params.has('gallery') && !params.has('versions') && !params.has('images') && !params.has('diff') && !params.has('notes') && !params.has('data');
 }
 
 function shouldShowHelp(): boolean {
@@ -591,6 +644,7 @@ function shouldShow404(): boolean {
 
 function getTabFromURL(): TabName {
   const params = new URLSearchParams(window.location.search);
+  if (params.has('data')) return 'data';
   if (params.has('notes')) return 'notes';
   if (params.has('diff')) return 'diff';
   if (params.has('images')) return 'images';
@@ -634,6 +688,9 @@ async function main() {
   const app = document.getElementById('app')!;
   geometryDataEl = createGeometryDataElement();
   installTitleGuard();
+
+  // Replace the slow native `title` tooltips with fast styled ones app-wide.
+  initTooltips();
 
   // Overlay container for landing/help pages (sits above the editor UI)
   const overlayContainer = document.createElement('div');
@@ -949,6 +1006,33 @@ async function main() {
     await handleImportFile(first);
   });
 
+  // Mesh export actions, shared by the toolbar and the command palette so the
+  // guards + success/error toasts stay in one place.
+  const actionExportGLB = async () => {
+    try {
+      if (currentMeshData) assertFiniteMesh(currentMeshData);
+      const filename = await exportGLB();
+      showToast(`Exported ${filename}`, { variant: 'success' });
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
+    }
+  };
+  const actionExportSTL = () => {
+    if (!currentMeshData) return;
+    try { showToast(`Exported ${exportSTL(currentMeshData)}`, { variant: 'success' }); }
+    catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
+  };
+  const actionExportOBJ = () => {
+    if (!currentMeshData) return;
+    try { showToast(`Exported ${exportOBJ(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
+    catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
+  };
+  const actionExport3MF = () => {
+    if (!currentMeshData) return;
+    try { showToast(`Exported ${export3MF(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
+    catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
+  };
+
   // Create toolbar
   createToolbar(editorUI, {
     onGoHome: () => {
@@ -958,52 +1042,19 @@ async function main() {
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleInsert: () => { toggleInsertPalette(); },
     onRun: () => runCode(),
-    onExportGLB: async () => {
-      try {
-        if (currentMeshData) assertFiniteMesh(currentMeshData);
-        await exportGLB();
-      } catch (e) {
-        showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
-      }
-    },
-    onExportSTL: () => {
-      if (!currentMeshData) return;
-      try { exportSTL(currentMeshData); }
-      catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
-    },
-    onExportOBJ: () => {
-      if (!currentMeshData) return;
-      try { exportOBJ(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData); }
-      catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
-    },
-    onExport3MF: () => {
-      if (!currentMeshData) return;
-      try { export3MF(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData); }
-      catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
-    },
+    onExportGLB: actionExportGLB,
+    onExportSTL: actionExportSTL,
+    onExportOBJ: actionExportOBJ,
+    onExport3MF: actionExport3MF,
     onExportSessionJSON: async () => {
       if (!getState().session) {
         alert('No active session to export. Save a version first.');
         return;
       }
-      // STL imports live on Version.importedMeshes (typed-array mesh bytes),
-      // which the .partwright.json export schema doesn't carry yet. Warn so
-      // the user knows the resulting file will reopen with empty `api.imports`
-      // and the wrapper code will fail until the STL is re-imported.
+      // Imported meshes (STL) ride along in the export from schema 1.7 (their
+      // buffers are base64-encoded in `versions[].importedMeshes`), so no
+      // re-import warning is needed.
       const versions = await listCurrentVersions();
-      const hasImports = versions.some(v => Array.isArray((v as { importedMeshes?: unknown[] }).importedMeshes) && ((v as { importedMeshes?: unknown[] }).importedMeshes!).length > 0);
-      if (hasImports) {
-        const proceed = await showInlineConfirm(
-          editorUI,
-          `This session uses imported meshes (STL).\n\nThe .partwright.json file will include the code but not the mesh data — anyone reopening it will need to re-import the STL for the version to render.\n\nExport an STL/GLB instead if you just need the geometry.`,
-          {
-            title: 'Imported meshes won\'t be included',
-            confirmLabel: 'Export anyway',
-            cancelLabel: 'Cancel',
-          }
-        );
-        if (!proceed) return;
-      }
       const opts = await showExportOptionsDialog(
         versions.map(v => ({ index: v.index, label: v.label })),
       );
@@ -1046,11 +1097,37 @@ async function main() {
   // Reset the editor to a blank starting point for a freshly created session.
   // Shared by the session bar's "+ New Session" button and the session modal's,
   // so both clear the previous session's code instead of leaving it behind.
-  function startNewSessionInEditor() {
-    const freshCode = '// New session\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
+  // Reset the editor to a starter snippet, dropping stale paint state. Color
+  // regions live in module state that the session/part layer doesn't own, so a
+  // fresh target must clear them here — otherwise the new (unpainted) session or
+  // part inherits the previous one's regions and is born with a locked editor.
+  function resetEditorToStarter(comment: string) {
+    clearRegions();
+    syncLockState();
+    const freshCode = `// ${comment}\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);`;
     setValue(freshCode);
     runCode(freshCode);
+  }
+
+  function startNewSessionInEditor() {
+    resetEditorToStarter('New session');
     _clearImages();
+  }
+
+  // Reset the editor for a freshly created part. Unlike a new session, parts
+  // share the session's reference images, so those are left intact.
+  function startNewPartInEditor() {
+    resetEditorToStarter('New part');
+  }
+
+  // Load a part's active version into the editor, or reset to a blank part when
+  // the part has no saved versions yet.
+  async function loadPartIntoEditor(version: Version | null) {
+    if (version) {
+      await loadVersionIntoEditor(version);
+    } else {
+      startNewPartInEditor();
+    }
   }
 
   // Create session bar
@@ -1075,7 +1152,52 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab } = createLayout(editorUI);
+  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail } = createLayout(editorUI);
+
+  // Parts rail — IDE-style list of the session's parts.
+  createPartList(partsRail, {
+    onSelectPart: async (partId: string) => {
+      const version = await changePart(partId);
+      await loadPartIntoEditor(version);
+    },
+    onCreatePart: async () => {
+      // Structural part edits are leader-only — a read-only viewer must not
+      // write to the shared session (mirrors the run/save guard).
+      if (isReadOnlyViewer()) return;
+      await createPart();
+      startNewPartInEditor();
+    },
+    onRenamePart: async (partId: string, name: string) => {
+      if (isReadOnlyViewer()) return;
+      await renamePart(partId, name);
+    },
+    onDeletePart: async (partId: string) => {
+      if (isReadOnlyViewer()) return;
+      const wasCurrent = getState().currentPart?.id === partId;
+      const result = await deletePart(partId);
+      if (result && wasCurrent) {
+        await loadPartIntoEditor(getState().currentVersion);
+      }
+    },
+    onReorderParts: async (orderedIds: string[]) => {
+      if (isReadOnlyViewer()) return;
+      await reorderParts(orderedIds);
+    },
+    onToggleCollapse: () => togglePartsRail(),
+  });
+
+  // Keep the editor title showing the active part's name (falls back to the
+  // generic filename when no part/session is open). The element is looked up on
+  // each call rather than captured, since the editor root may not be mounted in
+  // the document when this wiring first runs.
+  function syncEditorTitle(state: ReturnType<typeof getState>): void {
+    const editorTitleEl = document.getElementById('editor-title');
+    if (!editorTitleEl) return;
+    const part = state.currentPart;
+    editorTitleEl.textContent = part ? part.name : (getActiveLanguage() === 'scad' ? 'editor.scad' : 'editor.js');
+  }
+  syncEditorTitle(getState());
+  onStateChange(syncEditorTitle);
 
   // Format button and auto-format toggle
   const AUTO_FORMAT_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40';
@@ -1102,18 +1224,42 @@ async function main() {
   });
 
   // Global undo / redo / save shortcuts (OS-aware, focus/tool-routed).
-  installKeyboardShortcuts({
-    onSave: async () => {
-      const result = await saveCurrentVersion();
-      if ('error' in result) {
-        showToast(result.error, { variant: 'warn' });
-      } else if ('skipped' in result) {
-        showToast('No changes to save', { variant: 'neutral' });
-      } else {
-        showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}`, { variant: 'success' });
-      }
-    },
-  });
+  const saveVersionWithToast = async () => {
+    const result = await saveCurrentVersion();
+    if ('error' in result) {
+      showToast(result.error, { variant: 'warn' });
+    } else if ('skipped' in result) {
+      showToast('No changes to save', { variant: 'neutral' });
+    } else {
+      showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}`, { variant: 'success' });
+    }
+  };
+  installKeyboardShortcuts({ onSave: saveVersionWithToast });
+
+  // Register command-palette actions (⌘K). Reuses the same handlers the
+  // toolbar/session bar/layout already wire up so behavior can't drift.
+  registerCommands([
+    { id: 'run', title: 'Run code', hint: 'Editor', keywords: 'execute render', run: () => runCode() },
+    { id: 'save', title: 'Save version', hint: 'Session', shortcut: combo(MOD_LABEL, 'S'), keywords: 'commit snapshot', run: () => { void saveVersionWithToast(); } },
+    { id: 'format', title: 'Format code', hint: 'Editor', shortcut: combo(SHIFT_LABEL, ALT_LABEL, 'F'), keywords: 'prettify beautify indent', run: () => formatCode() },
+    { id: 'new-session', title: 'New session', hint: 'Session', keywords: 'create blank', run: () => startNewSessionInEditor() },
+    { id: 'open-sessions', title: 'Open session…', hint: 'Session', keywords: 'switch list recent', run: () => showSessionList() },
+    { id: 'tab-interactive', title: 'Go to 3D view', hint: 'Tab', keywords: 'interactive viewport model', run: () => switchTab('interactive') },
+    { id: 'tab-gallery', title: 'Go to Gallery', hint: 'Tab', keywords: 'thumbnails versions', run: () => switchTab('gallery') },
+    { id: 'tab-versions', title: 'Go to Versions', hint: 'Tab', keywords: 'history rename delete', run: () => switchTab('versions') },
+    { id: 'tab-images', title: 'Go to Reference images', hint: 'Tab', keywords: 'photos reference', run: () => switchTab('images') },
+    { id: 'tab-diff', title: 'Go to Diff', hint: 'Tab', keywords: 'compare changes', run: () => switchTab('diff') },
+    { id: 'tab-notes', title: 'Go to Notes', hint: 'Tab', keywords: 'session notes', run: () => switchTab('notes') },
+    { id: 'tab-data', title: 'Go to Data', hint: 'Tab', keywords: 'storage browser indexeddb inventory', run: () => switchTab('data') },
+    { id: 'export-glb', title: 'Export GLB', hint: 'Export', keywords: 'download gltf 3d', run: () => { void actionExportGLB(); }, enabled: () => currentMeshData !== null },
+    { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
+    { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
+    { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
+    { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
+    { id: 'toggle-diagnostics', title: 'Toggle diagnostic log', hint: 'View', keywords: 'errors warnings console', run: () => toggleDiagnosticsPanel() },
+    { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
+    { id: 'open-help', title: 'Open help', hint: 'Navigate', keywords: 'docs documentation guide', run: () => showHelp() },
+  ]);
 
   // Init gallery
   createGalleryView(galleryContainer, async (code: string) => {
@@ -1147,6 +1293,9 @@ async function main() {
   // Init notes panel
   createNotesView(notesContainer);
 
+  // Init data explorer (browse everything stored in this browser)
+  initDataExplorer(dataContainer);
+
   // Init versions panel (manage saved versions: rename / delete, with undo/redo)
   createVersionsView(versionsContainer, {
     onOpenVersion: async (version) => {
@@ -1166,6 +1315,7 @@ async function main() {
     if (e.detail.tab === 'images') refreshImages();
     if (e.detail.tab === 'diff') refreshDiff();
     if (e.detail.tab === 'notes') refreshNotes();
+    if (e.detail.tab === 'data') refreshDataExplorer();
   }) as EventListener);
 
   // Init session list
@@ -1205,6 +1355,19 @@ async function main() {
   // version-switch or run has already superseded it, and applying the stale
   // result would overwrite the wrong mesh/manifold/colour state.
   let _runGeneration = 0;
+
+  // Last error from an auto-run, held back from the editor UI until typing
+  // settles or focus leaves (see surfacePendingError). `src` guards against
+  // surfacing an error for code the user has since edited.
+  let pendingEditorError: { error: string; diagnostics: SourceDiagnostic[]; src: string } | null = null;
+
+  /** Render a deferred auto-run error into the editor, but only if the code it
+   *  came from still matches the editor — used by the idle/blur triggers. */
+  function surfacePendingError(): void {
+    if (!pendingEditorError || pendingEditorError.src !== getValue()) return;
+    setEditorDiagnostics(pendingEditorError.diagnostics);
+    renderEditorError(editorErrorPanel, pendingEditorError.error, pendingEditorError.diagnostics);
+  }
 
   async function ensureEditorReady() {
     if (!editorReady) await editorReadyPromise;
@@ -1405,23 +1568,33 @@ async function main() {
     const sessionId = getSessionIdFromURL();
     if (sessionId) {
       const versionIndex = getVersionFromURL();
+      const partId = getPartIdFromURL();
       const state = getState();
       const needsSessionLoad = state.session?.id !== sessionId;
+      const needsPartLoad = partId !== null && state.currentPart?.id !== partId;
       const needsVersionLoad = versionIndex !== null && state.currentVersion?.index !== versionIndex;
-      if (needsSessionLoad || needsVersionLoad) {
-        const version = await openSession(sessionId, versionIndex ?? undefined);
+      if (needsSessionLoad || needsPartLoad || needsVersionLoad) {
+        const version = await openSession(sessionId, versionIndex ?? undefined, partId ?? undefined);
         if (version) {
           await loadVersionIntoEditor(version);
           if (tab === 'gallery') refreshGallery();
           if (tab === 'versions') refreshVersions();
           return;
         }
-        // openSession returned null — either the session ID in the URL
-        // doesn't exist in IndexedDB (e.g. a stale bookmark, or a URL
-        // shared from another browser/device), or the session exists
-        // but has no saved versions. Fall through to create a fresh
-        // session if needed and run defaults, so the viewport renders
-        // and the status doesn't stay stuck on "Loading WASM...".
+        // No version returned. If the session nonetheless opened (it exists but
+        // the active part has no saved versions yet), show that part's starter
+        // — loadPartIntoEditor also clears stale paint state — instead of the
+        // generic default example.
+        if (getState().session?.id === sessionId) {
+          await loadPartIntoEditor(getState().currentVersion);
+          if (tab === 'gallery') refreshGallery();
+          if (tab === 'versions') refreshVersions();
+          return;
+        }
+        // Otherwise the session ID in the URL doesn't exist in IndexedDB (a
+        // stale bookmark or a URL shared from another device). Fall through to
+        // create a fresh session and run defaults, so the viewport renders and
+        // the status doesn't stay stuck on "Loading WASM...".
       } else {
         return;
       }
@@ -1498,9 +1671,15 @@ async function main() {
   // Init measure tool
   initMeasureTool(getCanvas(), getCamera(), getMeshGroup(), viewportPane);
 
-  // Init editor — only auto-run if auto-run is enabled
+  // Init editor — only auto-run if auto-run is enabled. Auto-runs drive the
+  // live preview but defer error surfacing (no panel/markers/log mid-keystroke);
+  // the idle + blur hooks surface the held-back error gently once typing settles.
   initEditor(editorContainer, defaultCode, (code: string) => {
-    if (isAutoRun()) runCode(code);
+    if (isAutoRun()) runCode(code, { surfaceErrors: false });
+  }, 'manifold-js', {
+    onEdit: () => clearEditorErrorPanel(editorErrorPanel),
+    onIdle: () => surfacePendingError(),
+    onBlur: () => surfacePendingError(),
   });
 
   // When the user changes the modeling-quality preset, re-render the
@@ -1509,6 +1688,123 @@ async function main() {
 
   // Wire up clip controls
   initClipControls(clipControls);
+
+  // Declared up here (before the simplify bridge and initMeasureToggle that
+  // reference it) so neither the closure capture below nor the assignment inside
+  // initMeasureToggle hits a let-TDZ error.
+  let closeMeasureIfActive: () => boolean = () => false;
+
+  // === Simplify (mesh decimation) bridge ===
+  // The simplify panel reduces the live model's triangle count. Because that
+  // changes mesh topology — not something derivable from the parametric code —
+  // it operates on the rendered result: the baseline is the full-detail mesh
+  // captured when the panel opens, previews swap the live mesh in place (so
+  // exports use it), and "Save as version" bakes the reduced mesh into a new
+  // imported-style version. The baseline persists across panel open/close and
+  // is cleared whenever a code run replaces the geometry.
+  let simplifyBaselineMesh: MeshData | null = null;
+
+  // Replace the live geometry with `mesh`: rebuild the queryable Manifold and
+  // refresh the viewport, paint-adjacency map, stats, and clip bounds. Mirrors
+  // the tail of runCodeSync so exports / slicing / measurements stay correct.
+  function applyLiveGeometry(mesh: MeshData): void {
+    currentMeshData = mesh;
+    if (currentManifold && typeof currentManifold.delete === 'function') {
+      try { currentManifold.delete(); } catch { /* already deleted */ }
+    }
+    const mod = getModule();
+    currentManifold = mod && mesh ? mod.Manifold.ofMesh(mesh) : null;
+    updateMesh(mesh);
+    updatePaintMesh(mesh);
+    updateGeometryData();
+    syncClipSliderBounds();
+  }
+
+  const simplifyHandlers: SimplifyHandlers = {
+    open(userInitiated) {
+      if (userInitiated) {
+        // Don't let two overlay panels share the top-right slot.
+        if (isPaintOpen()) closePaintMenu();
+        if (isAnnotateOpen()) closeAnnotateMenu();
+        closeMeasureIfActive();
+      }
+      if (!currentMeshData) {
+        return { ok: false, reason: 'Run some code first — there’s no model to simplify.' };
+      }
+      if (!currentManifold) {
+        return { ok: false, reason: 'Simplify needs a solid (manifold) model. Render-only imports can’t be reduced.' };
+      }
+      if (hasColorRegions()) {
+        return { ok: false, reason: 'Clear paint regions before simplifying — reducing triangles would invalidate them.' };
+      }
+      if (!simplifyBaselineMesh) simplifyBaselineMesh = currentMeshData;
+      return {
+        ok: true,
+        info: {
+          baseTriangles: simplifyBaselineMesh.numTri,
+          currentTriangles: currentMeshData.numTri,
+        },
+      };
+    },
+
+    preview(targetTriangles) {
+      if (!simplifyBaselineMesh) return null;
+      const mod = getModule();
+      if (!mod) return null;
+      const bbox = bboxFromMesh(simplifyBaselineMesh);
+      const diag = bbox
+        ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
+        : 0;
+      if (!(diag > 0)) return null;
+
+      const baseManifold = mod.Manifold.ofMesh(simplifyBaselineMesh);
+      let result: SimplifyResult | null = null;
+      try {
+        result = simplifyToTriangleBudget(baseManifold, targetTriangles, diag * 0.5);
+      } finally {
+        if (baseManifold && typeof baseManifold.delete === 'function') {
+          try { baseManifold.delete(); } catch { /* already deleted */ }
+        }
+      }
+      if (!result) {
+        applyLiveGeometry(simplifyBaselineMesh);
+        return null;
+      }
+      applyLiveGeometry(result.mesh);
+      return { triangleCount: result.triangleCount };
+    },
+
+    reset() {
+      if (simplifyBaselineMesh) applyLiveGeometry(simplifyBaselineMesh);
+    },
+
+    async save() {
+      const baseline = simplifyBaselineMesh;
+      if (!getState().session) {
+        return { ok: false, message: 'Open a session before saving.' };
+      }
+      if (!currentMeshData || !baseline || currentMeshData.numTri >= baseline.numTri) {
+        return { ok: false, message: 'Reduce the model first, then save.' };
+      }
+      try {
+        const reduced = currentMeshData;
+        const baked = toImportedMesh(`simplified-${reduced.numTri}tri`, reduced);
+        const code = generateImportCode([baked], { manifold: true });
+        setActiveImports([baked]);
+        setValue(code);
+        await runCodeSync(code);
+        const thumbnail = await captureThumbnail();
+        const geometryData = getGeometryDataObj();
+        await saveVersion(code, geometryData, thumbnail, 'simplified', undefined, {
+          force: true,
+          importedMeshes: [baked],
+        });
+        return { ok: true, message: `Saved as a new version (${reduced.numTri.toLocaleString()} triangles).` };
+      } catch (e) {
+        return { ok: false, message: `Save failed: ${(e as Error).message}` };
+      }
+    },
+  };
 
   // Wire up viewport overlay buttons
   initWireframeToggle(clipControls);
@@ -1527,12 +1823,12 @@ async function main() {
     getMeshData: () => currentMeshData,
     getCamera: () => getCamera(),
     getCanvas: () => getCanvas(),
-    onOpen: () => { if (isPaintOpen()) closePaintMenu(); },
+    onOpen: () => {
+      if (isPaintOpen()) closePaintMenu();
+      if (isSimplifyOpen()) closeSimplifyMenu();
+    },
   });
-  // Declared before initMeasureToggle is called so the assignment inside it
-  // doesn't hit a let-TDZ error (the same `let` lower in this function is
-  // hoisted to a binding, but only initialized when execution reaches it).
-  let closeMeasureIfActive: () => boolean = () => false;
+  initSimplifyUI(clipControls, simplifyHandlers);
   initMeasureToggle(clipControls);
   initOrbitLockToggle(clipControls);
   initEscapeMenuClose();
@@ -1614,6 +1910,7 @@ async function main() {
   // Start guided tour on first visit (after editor fully renders)
   if (!showLanding && !showHelpPage && !showCatalog && !show404) {
     maybeStartTour();
+    maybeShowShortcutsHint();
   }
 
   // If not on landing/help/catalog/404, load session or default code now
@@ -1621,12 +1918,54 @@ async function main() {
     await syncEditorFromURL();
   }
 
+  // Keep this tab's session state in sync with peer tabs that mutate the same
+  // session in another window, and coordinate single-writer leadership.
+  initSessionTabSync();
+  initSessionLeader();
+  // Reflect single-writer ownership across the whole editor surface: the
+  // non-owner tab becomes a read-only viewer (editor + paint + run + save
+  // disabled, with a "Take over" banner).
+  initViewerMode();
+
   // Update document title when session state changes (create, open, close, rename)
   onStateChange((state) => {
     updateDocumentTitle({ page: 'editor', sessionName: state.session?.name ?? null });
     // Re-bind the AI panel to the current session so chat history follows.
     void setAiActiveSession(state.session?.id ?? null);
+    // Claim (or queue for) write-ownership of the now-active session so two
+    // tabs on the same session don't both drive the chat / save versions.
+    void acquireSessionLock(state.session?.id ?? null);
+    // A read-only viewer mirrors the leader's current (latest) version into its
+    // editor + viewport so it reads along instead of freezing on an old one.
+    if (isReadOnlyViewer() && state.currentVersion && getValue() !== state.currentVersion.code) {
+      void loadVersionIntoEditor(state.currentVersion);
+    }
   });
+
+  // Tell the session manager this tab's viewer status so cross-tab reloads
+  // follow the latest version when we're a viewer; and when we *become* a
+  // viewer (a peer took control), snap to the leader's latest state.
+  setViewerPredicate(() => isReadOnlyViewer());
+  onOwnershipChange(({ sessionId, owned }) => {
+    if (sessionId && !owned) void refreshCurrentSession();
+  });
+
+  // syncEditorFromURL() above opened the initial session BEFORE the listener
+  // was registered, so claim that session's leadership explicitly now —
+  // otherwise a tab that loads straight into a session (?session=…) never
+  // engages the single-writer lock. ?takeover=1 (from a "Take control" reload)
+  // claims leadership outright, bumping the other tab to read-only; strip it so
+  // it doesn't stick on refresh.
+  {
+    const tparams = new URLSearchParams(window.location.search);
+    const steal = tparams.get('takeover') === '1';
+    void acquireSessionLock(getState().session?.id ?? null, { steal });
+    if (steal) {
+      tparams.delete('takeover');
+      const qs = tparams.toString();
+      window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
+    }
+  }
 
   // Initialize the AI chat side drawer once the editor UI is mounted.
   // Wraps initAiPanel + setAiToolbarState; tolerated if it fails (e.g.
@@ -1645,9 +1984,15 @@ async function main() {
       // Watch for key/provider changes via a poll-on-focus trigger — cheap,
       // and matches the chip's update cadence in the AI settings modal.
       window.addEventListener('focus', () => { void refreshAiToolbarChip(); });
-      // Also watch localStorage for cross-tab provider switches.
+      // Also watch localStorage for cross-tab provider switches. Drop our
+      // cached settings blob first so refreshAiToolbarChip (and any
+      // onSettingsChange subscriber, e.g. the AI panel) reads the peer tab's
+      // change instead of our stale copy.
       window.addEventListener('storage', e => {
-        if (e.key === 'partwright-ai-settings-v1') void refreshAiToolbarChip();
+        if (e.key === 'partwright-ai-settings-v1') {
+          reloadSettingsFromStorage();
+          void refreshAiToolbarChip();
+        }
       });
     } catch (err) {
       console.warn('AI panel init failed:', err);
@@ -1701,9 +2046,9 @@ async function main() {
     setActiveLanguage(lang);
     setEditorLanguage(lang);
     setToolbarLanguage(lang);
-    // Update editor filename indicator
-    const titleEl = document.getElementById('editor-title');
-    if (titleEl) titleEl.textContent = lang === 'scad' ? 'editor.scad' : 'editor.js';
+    // Update the editor title (shows the active part name, or the filename
+    // fallback when no part is open).
+    syncEditorTitle(getState());
     setStatus(statusBar, 'running', lang === 'scad' ? 'Loading OpenSCAD...' : 'Switching...');
     try {
       await ensureEngineReady(lang);
@@ -2401,6 +2746,78 @@ async function main() {
       await deleteSession(id);
     },
 
+    // === Part API ===
+    // A session holds one or more parts; each part has its own code + version
+    // history. The "current part" determines what every other method (run,
+    // save, paint, export, …) acts on.
+
+    /** List the parts in the active session, each flagged with `isCurrent`. */
+    listParts() {
+      const current = getCurrentPart();
+      return listCurrentParts().map(p => ({ id: p.id, name: p.name, order: p.order, isCurrent: p.id === current?.id }));
+    },
+
+    /** The active part, or null when no session is open. */
+    getCurrentPart() {
+      const p = getCurrentPart();
+      return p ? { id: p.id, name: p.name, order: p.order } : null;
+    },
+
+    /** Create a new, empty part and switch to it. Resets the editor to a starter
+     *  snippet; call runAndSave/saveVersion to commit its first version. */
+    async createPart(name?: string) {
+      const check = guard(() => assertString(name, 'createPart(name)', { optional: true }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!getState().session) {
+        return { error: 'No active session. Call createSession() or openSession(id) first.' };
+      }
+      const part = await createPart(name);
+      if (!part) return { error: 'Could not create part (no active session).' };
+      startNewPartInEditor();
+      return { id: part.id, name: part.name, order: part.order };
+    },
+
+    /** Switch the active part. Pass a part id string, or { id } / { name } from
+     *  listParts(). Loads that part's latest version into the editor. */
+    async changePart(target: string | { id?: string; name?: string }) {
+      const part = resolvePartTarget(target, 'changePart');
+      if ('error' in part) return part;
+      const version = await changePart(part.id);
+      await loadPartIntoEditor(version);
+      return {
+        id: part.id,
+        name: part.name,
+        currentVersion: version ? { id: version.id, index: version.index, label: version.label } : null,
+      };
+    },
+
+    /** Rename a part. Pass a part id string, or { id } / { name }. */
+    async renamePart(target: string | { id?: string; name?: string }, newName: string) {
+      const check = guard(() => assertString(newName, 'renamePart(newName)', { allowEmpty: false }));
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const part = resolvePartTarget(target, 'renamePart');
+      if ('error' in part) return part;
+      await renamePart(part.id, newName);
+      return { id: part.id, name: newName };
+    },
+
+    /** Delete a part and its versions. Refuses to delete a session's last part.
+     *  Deleting the active part activates and loads an adjacent one. */
+    async deletePart(target: string | { id?: string; name?: string }) {
+      const part = resolvePartTarget(target, 'deletePart');
+      if ('error' in part) return part;
+      const wasCurrent = getCurrentPart()?.id === part.id;
+      const result = await deletePart(part.id);
+      if (!result) return { error: 'Cannot delete the last part of a session.' };
+      if (wasCurrent) {
+        await loadPartIntoEditor(getState().currentVersion);
+      }
+      return {
+        deleted: { id: result.deleted.id, name: result.deleted.name },
+        newCurrent: result.newCurrent ? { id: result.newCurrent.id, name: result.newCurrent.name } : null,
+      };
+    },
+
     /** Save current state as a new version in the active session.
      *  Returns `{ id, index, label }` on success, `{ error }` if no session is
      *  active, or `{ skipped: true, reason }` when nothing has changed since
@@ -2693,6 +3110,8 @@ async function main() {
       const state = getState();
       return {
         session: state.session ? { id: state.session.id, name: state.session.name } : null,
+        currentPart: state.currentPart ? { id: state.currentPart.id, name: state.currentPart.name } : null,
+        parts: state.parts.map(p => ({ id: p.id, name: p.name, order: p.order, isCurrent: p.id === state.currentPart?.id })),
         currentVersion: state.currentVersion ? { index: state.currentVersion.index, label: state.currentVersion.label } : null,
         versionCount: state.versionCount,
       };
@@ -3360,8 +3779,8 @@ async function main() {
     },
 
     /** Programmatic tab switching */
-    setView(tab: 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes'): void {
-      assertEnum(tab, ['interactive', 'gallery', 'versions', 'images', 'diff', 'notes'] as const, 'setView(tab)');
+    setView(tab: 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data'): void {
+      assertEnum(tab, ['interactive', 'gallery', 'versions', 'images', 'diff', 'notes', 'data'] as const, 'setView(tab)');
       switchTab(tab);
     },
 
@@ -4884,6 +5303,13 @@ async function main() {
         'openSession':     { signature: 'await openSession(id) -- Open existing session', docs: '/ai.md#resuming-a-session' },
         'listSessions':    { signature: 'await listSessions() -- List all sessions', docs: '/ai.md#console-api--windowpartwright' },
         'getSessionContext': { signature: 'await getSessionContext() -- Get full session context (for resuming)', docs: '/ai.md#resuming-a-session' },
+        // Parts (multiple objects per session)
+        'listParts':       { signature: 'listParts() -- List parts in the session -> [{id, name, order, isCurrent}]', docs: '/ai.md#console-api--windowpartwright' },
+        'getCurrentPart':  { signature: 'getCurrentPart() -- Active part -> {id, name, order} or null', docs: '/ai.md#console-api--windowpartwright' },
+        'createPart':      { signature: 'await createPart(name?) -- New empty part + switch to it -> {id, name, order}', docs: '/ai.md#console-api--windowpartwright' },
+        'changePart':      { signature: 'await changePart(id) -- Switch active part (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },
+        'renamePart':      { signature: 'await renamePart(id, name) -- Rename a part', docs: '/ai.md#console-api--windowpartwright' },
+        'deletePart':      { signature: 'await deletePart(id) -- Delete a part and its versions', docs: '/ai.md#console-api--windowpartwright' },
         'getGalleryUrl':   { signature: 'getGalleryUrl() -- URL for gallery view (human review)', docs: '/ai.md#console-api--windowpartwright' },
         // Notes
         'addSessionNote':  { signature: 'await addSessionNote(text) -- Add note with [PREFIX] tag', docs: '/ai.md#session-notes----tracking-design-context' },
@@ -5603,7 +6029,7 @@ async function main() {
     });
   }
 
-  function runCode(code?: string) {
+  function runCode(code?: string, opts: { surfaceErrors?: boolean } = {}) {
     const src = code ?? getValue();
     setStatus(statusBar, 'running', 'Running...');
     clearEditorDiagnostics();
@@ -5614,11 +6040,15 @@ async function main() {
       // started synchronously before this RAF fired — if so, skip to avoid
       // racing: the explicit call owns _runGeneration and will apply results.
       if (_running) return;
-      await runCodeSync(src);
+      await runCodeSync(src, opts);
     });
   }
 
-  async function runCodeSync(src: string): Promise<boolean> {
+  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean } = {}): Promise<boolean> {
+    // Manual runs (Run button, version load, partwright.run) surface errors
+    // immediately; auto-runs defer to the idle/blur triggers so the editor
+    // doesn't flicker an error on every keystroke.
+    const surfaceErrors = opts.surfaceErrors ?? true;
     const myGen = ++_runGeneration;
     _running = true;
     const t0 = performance.now();
@@ -5633,13 +6063,8 @@ async function main() {
     _running = false;
 
     if (result.error) {
-      recordError(result.error);
-      errorLog.capture({ level: 'error', source: 'engine', message: result.error });
       const diagnostics = result.diagnostics ?? [];
       setStatus(statusBar, 'error', summarizeDiagnostics(result.error, diagnostics));
-      setEditorDiagnostics(diagnostics);
-      renderEditorError(editorErrorPanel, result.error, diagnostics);
-      revealFirstDiagnostic();
       geometryDataEl.textContent = JSON.stringify({
         status: 'error',
         error: result.error,
@@ -5647,12 +6072,27 @@ async function main() {
         executionTimeMs: elapsed,
         codeHash: simpleHash(src),
       });
+      if (surfaceErrors) {
+        // Explicit run: record + show + log + jump to the first diagnostic now.
+        recordError(result.error);
+        errorLog.capture({ level: 'error', source: 'engine', message: result.error });
+        setEditorDiagnostics(diagnostics);
+        renderEditorError(editorErrorPanel, result.error, diagnostics);
+        revealFirstDiagnostic();
+        pendingEditorError = null;
+      } else {
+        // Auto-run: hold the error; the idle/blur trigger surfaces it quietly
+        // (no log, no caret jump, no error-history noise) if the code is still
+        // the same.
+        pendingEditorError = { error: result.error, diagnostics, src };
+      }
       return true;
     }
 
     if (result.mesh) {
       clearEditorDiagnostics();
       clearEditorErrorPanel(editorErrorPanel);
+      pendingEditorError = null;
       currentMeshData = result.mesh;
       // Release the previous Manifold's WASM-heap memory before overwriting.
       // Manifold objects live outside the JS heap and require manual .delete().
@@ -5681,6 +6121,10 @@ async function main() {
 
       updateGeometryData(elapsed, src);
       syncClipSliderBounds();
+      // A fresh run replaces the geometry, so any simplify baseline is stale.
+      // Drop it and let an open panel re-snapshot the new mesh.
+      simplifyBaselineMesh = null;
+      refreshSimplifyIfOpen();
       setStatus(statusBar, 'ready', 'Ready');
     }
     return true;
@@ -5771,6 +6215,7 @@ async function main() {
       if (getMeasureState().active) {
         close();
       } else {
+        closeSimplifyMenu();
         activateMeasure();
         setMeasureLock(true);
         measureBtn.className = activeClass;
@@ -5792,6 +6237,7 @@ async function main() {
       let closed = false;
       if (isAnnotateOpen()) { closeAnnotateMenu(); closed = true; }
       if (isPaintOpen()) { closePaintMenu(); closed = true; }
+      if (isSimplifyOpen()) { closeSimplifyMenu(); closed = true; }
       if (closeMeasureIfActive()) closed = true;
       if (getClipState().enabled) { setClipping(false); syncClipUI(); closed = true; }
       if (closed) e.preventDefault();
@@ -5873,7 +6319,29 @@ async function main() {
   }
 }
 
+const SHORTCUTS_HINT_KEY = 'partwright-shortcuts-hint-seen';
+
+/** One-time, non-intrusive nudge toward the `?` shortcuts cheat sheet. Only
+ *  shown to users who've already finished the first-run tour (so it never
+ *  competes with onboarding), and only once ever. */
+function maybeShowShortcutsHint(): void {
+  try {
+    if (localStorage.getItem(SHORTCUTS_HINT_KEY)) return;
+    if (!isTourCompleted()) return; // let first-timers finish the tour first
+    localStorage.setItem(SHORTCUTS_HINT_KEY, new Date().toISOString());
+  } catch {
+    return; // private-mode / storage disabled — skip the hint rather than throw
+  }
+  setTimeout(
+    () => showToast('Tip: press  ?  for keyboard shortcuts', { variant: 'neutral', durationMs: 6000 }),
+    1200,
+  );
+}
+
 function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'loading', text: string) {
+  // Announce status changes (Ready / Running / Error) to assistive tech.
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-live', 'polite');
   el.textContent = text;
   el.title = text;
   el.className = 'text-xs font-mono max-w-[60%] truncate text-right ';

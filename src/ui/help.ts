@@ -104,6 +104,7 @@ export function createHelpPage(
         '<li><strong class="text-zinc-300">Cross-section</strong> — Toggle a horizontal clipping plane. A Z slider appears; everything above the plane is hidden and the cut face renders in red.</li>' +
         '<li><strong class="text-zinc-300">Annotate</strong> — Draw freehand strokes or drop pinned text labels on the model. Annotations are saved per version and survive export to <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.partwright.json</code>.</li>' +
         '<li><strong class="text-zinc-300">Paint</strong> — Color regions of the model for multi-material printing (full details below).</li>' +
+        '<li><strong class="text-zinc-300">Simplify</strong> — Reduce the model\'s triangle count. Drag the slider or type a max-triangle target; the model re-simplifies live and exports use the reduced mesh. "Save as version" bakes the lighter mesh into a new saved version, while "Reset" restores full detail.</li>' +
         '</ul>',
     },
     {
@@ -225,6 +226,18 @@ export function createHelpPage(
           '4. Use assertions to verify each version is a valid manifold with maxComponents: 1\n' +
           '5. Give me the gallery URL when done so I can review the versions</code></pre>' +
           'The agent should read <code class="text-emerald-400 bg-zinc-800 px-1 rounded">ai.md</code>, create a named session, iterate through versions, and hand back a gallery link for review.';
+      })(),
+    },
+    {
+      id: 'command-palette',
+      heading: 'Command palette & cheat sheet',
+      body: (() => {
+        const kbd = (k: string) => `<strong class="text-zinc-300">${k}</strong>`;
+        const paletteKeys = IS_MAC ? `${MOD_LABEL} K` : `${MOD_LABEL} + K`;
+        return (
+          `Press ${kbd(paletteKeys)} anywhere to open the <strong class="text-zinc-300">command palette</strong> — a searchable list of every action: run, save, format, switch tabs, export (3MF / STL / OBJ / GLB), toggle the AI panel or diagnostic log, start or open a session, or jump to the catalog or this help page. Type to filter, ${kbd('↑')} / ${kbd('↓')} to choose, ${kbd('Enter')} to run, ${kbd('Esc')} to close.<br><br>` +
+          `Press ${kbd('?')} (when you\'re not typing in a field) to pop up the full keyboard-shortcuts cheat sheet from anywhere — the same list as below.`
+        );
       })(),
     },
     {

@@ -41,6 +41,7 @@ import { forceDeactivate as forceDeactivateAnnotate } from '../annotations/annot
 import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
 import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, setShapeType, getShapeType, getShapeVisible, setShapeVisible, onShapeVisibilityChange, type BoxMode, type ShapeType } from './boxDrag';
+import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 
 const PRESET_COLORS: [number, number, number][] = [
   // Warm
@@ -126,6 +127,7 @@ function togglePaintMode(): void {
     forceDeactivateAnnotate();
     forceDeactivateAnnotateText();
     forceDeactivateAnnotateSelect();
+    closeSimplifyMenu();
     activate();
     updateButtonState(true);
     pickerPanel?.classList.remove('hidden');

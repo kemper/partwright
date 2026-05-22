@@ -29,6 +29,7 @@ import {
   isUserOrbitLocked,
 } from '../renderer/viewport';
 import { forceDeactivate as forceDeactivatePaint } from '../color/paintUI';
+import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { forceDeactivate as forceDeactivateText } from './textMode';
 import { forceDeactivate as forceDeactivateSelect } from './selectMode';
 
@@ -85,6 +86,7 @@ function notifyActiveChange(): void {
 export function activate(): void {
   if (active) return;
   forceDeactivatePaint();
+  closeSimplifyMenu();
   forceDeactivateSelect();
   // Detach text mode's handlers but keep the session plane alive — pen and
   // text share the plane within one Annotate activation.

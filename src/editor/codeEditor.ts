@@ -6,6 +6,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import { basicSetup } from 'codemirror';
 import { lintGutter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
 import { js as jsBeautify } from 'js-beautify';
+import { manifoldApiCompletion } from './apiCompletions';
 import type { SourceDiagnostic } from '../geometry/types';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
 
@@ -13,7 +14,11 @@ export type EditorLanguage = 'manifold-js' | 'scad';
 
 let editorView: EditorView | null = null;
 let debounceTimer: number | null = null;
+let idleTimer: number | null = null;
 let activeDiagnostics: Diagnostic[] = [];
+
+/** How long typing must be idle before deferred error UI is surfaced. */
+const ERROR_IDLE_MS = 800;
 let currentLanguage: EditorLanguage = 'manifold-js';
 let autoFormatEnabled: boolean = localStorage.getItem('editor-auto-format') !== 'false';
 const languageCompartment = new Compartment();
@@ -119,16 +124,31 @@ function hasEditorLocation(input: SourceDiagnostic): boolean {
   return input.from !== undefined || input.line !== undefined;
 }
 
+/** Optional lifecycle hooks for decoupling error surfacing from the live
+ *  preview run. `onChange` (debounced) still drives the preview; these let the
+ *  caller hide errors instantly while typing and re-surface them once typing
+ *  settles or focus leaves. */
+export interface EditorHooks {
+  /** Fires synchronously on every edit — hide transient error UI here. */
+  onEdit?: () => void;
+  /** Fires after typing has been idle for ~0.8s. */
+  onIdle?: (code: string) => void;
+  /** Fires when the editor loses focus. */
+  onBlur?: () => void;
+}
+
 export function initEditor(
   container: HTMLElement,
   initialCode: string,
   onChange: (code: string) => void,
   initialLanguage: EditorLanguage = 'manifold-js',
+  hooks: EditorHooks = {},
 ): EditorView {
   const state = EditorState.create({
     doc: initialCode,
     extensions: [
       basicSetup,
+      manifoldApiCompletion,
       languageCompartment.of(languageExt(initialLanguage)),
       lintGutter(),
       readOnlyCompartment.of(EditorState.readOnly.of(false)),
@@ -138,11 +158,19 @@ export function initEditor(
           if (activeDiagnostics.length > 0) {
             window.queueMicrotask(() => clearEditorDiagnostics());
           }
+          hooks.onEdit?.();
           if (debounceTimer !== null) clearTimeout(debounceTimer);
           debounceTimer = window.setTimeout(() => {
             onChange(getValue());
           }, 300);
+          if (idleTimer !== null) clearTimeout(idleTimer);
+          idleTimer = window.setTimeout(() => {
+            hooks.onIdle?.(getValue());
+          }, ERROR_IDLE_MS);
         }
+      }),
+      EditorView.domEventHandlers({
+        blur: () => { hooks.onBlur?.(); return false; },
       }),
       EditorView.theme({
         '&': { height: '100%', fontSize: '13px' },

@@ -372,6 +372,16 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'saveVersion',
+    description: 'Snapshot the CURRENT editor code, geometry, color regions, and annotations as a new gallery version WITHOUT re-running the code. Use this to persist a painted/annotated state — unlike runAndSave it does NOT re-execute the code, so it won\'t re-resolve color regions against regenerated triangles (re-running new geometry with colors in memory misaligns them). For committing a code change, prefer runAndSave (runs + validates + saves in one call). Returns {id, index, label} on success, {skipped, reason} when nothing changed since the current version, or {error} if no session is active.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        label: { type: 'string', description: 'Short label for the gallery version. Defaults to v<index>.' },
+      },
+    },
+  },
+  {
     name: 'addSessionNote',
     description: 'Append a durable note to the session log. Notes survive compaction and are visible to future agents. Prefix with one of [REQUIREMENT], [DECISION], [FEEDBACK], [MEASUREMENT], [ATTEMPT], [TODO].',
     input_schema: {
@@ -544,6 +554,11 @@ const ALL_TOOLS: ToolDefinition[] = [
   {
     name: 'redoLastPaint',
     description: 'Reapply the most recently undone paint operation. Use after an over-eager undoLastPaint.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'listRegions',
+    description: 'List every committed color region on the current mesh, in paint order. Each entry: {id, name, color, source, triangles (count), order, visible, bbox, centroid}. Returns [] when nothing is painted. This is the inventory you read to get a region id/name for removeRegion, paintExplain, and assertPaint — sibling of listComponents (mesh pieces) and listLabels (api.label features).',
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -737,27 +752,55 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
-    name: 'createSession',
-    description: 'Create a new named session and make it active. Returns {id, url, galleryUrl}. Call before runAndSave when there is no active session, or when starting a new design.',
+    name: 'listParts',
+    description: 'List the parts in the active session: [{id, name, order, isCurrent}]. A session can hold multiple parts — independent objects, each with its own code and version history. The current part is what runCode / runAndSave / paint / export act on.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'getCurrentPart',
+    description: 'Return the active part {id, name, order}, or null when no session is open.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'createPart',
+    description: 'Create a new, empty part in the active session and switch to it. The editor resets to a starter snippet; call runAndSave to commit its first version. Use to model a second (third, …) object in the same session.',
     input_schema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Session name (e.g. "Castle v2").' },
+        name: { type: 'string', description: 'Optional part name (e.g. "Lid"). Auto-named "Part N" when omitted.' },
       },
     },
   },
   {
-    name: 'listSessions',
-    description: 'List all sessions saved in this browser. Returns [{id, name, updated}] newest first. Use to find a session to open, or to check what work exists.',
-    input_schema: { type: 'object', properties: {} },
-  },
-  {
-    name: 'openSession',
-    description: 'Open an existing session by id (from listSessions). Makes it the active session. Always call getSessionContext() after opening to read notes and version history.',
+    name: 'changePart',
+    description: "Switch the active part. Pass the part id from listParts(). Loads that part's latest version into the editor/viewport; all later code, paint, and version operations act on it.",
     input_schema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'Session id from listSessions().' },
+        id: { type: 'string', description: 'Part id from listParts().' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'renamePart',
+    description: 'Rename a part. Pass its id (from listParts) and the new name.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Part id from listParts().' },
+        name: { type: 'string', description: 'New part name.' },
+      },
+      required: ['id', 'name'],
+    },
+  },
+  {
+    name: 'deletePart',
+    description: "Delete a part and all its versions. Refuses to delete a session's last remaining part. If the active part is deleted, an adjacent part becomes active.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Part id from listParts().' },
       },
       required: ['id'],
     },
@@ -864,6 +907,10 @@ const ALWAYS_AVAILABLE = new Set([
   'findFaces',
   'listComponents',
   'listLabels',
+  // listRegions is a pure read, not a paint mutation, so it stays always-on
+  // even when paintFaces is disabled — its consumers paintExplain/assertPaint
+  // are always-available and need a region id to target.
+  'listRegions',
   'probePixel',
   'paintPreview',
   'paintExplain',
@@ -872,16 +919,19 @@ const ALWAYS_AVAILABLE = new Set([
   'query',
   'modifyAndTest',
   'probeRay',
-  'createSession',
-  'listSessions',
-  'openSession',
+  'listParts',
+  'getCurrentPart',
+  'createPart',
+  'changePart',
+  'renamePart',
+  'deletePart',
   'assertPaint',
   'sliceAtZVisual',
   'paintInCylinder',
 ]);
 
 const RUN_GATED = new Set(['runCode']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -898,9 +948,12 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
     if (ALWAYS_AVAILABLE.has(t.name)) return true;
     if (RUN_GATED.has(t.name)) return toggles.scope.runCode;
     if (SAVE_GATED.has(t.name)) {
-      // loadVersion is non-mutating but gating it under saveVersions keeps
-      // the model from rewinding state when the user has paused commits.
-      return t.name === 'loadVersion' ? toggles.scope.saveVersions : (toggles.scope.runCode && toggles.scope.saveVersions);
+      // loadVersion (rewind) and saveVersion (snapshot) don't execute code,
+      // so they only need the saveVersions scope. Gating loadVersion here also
+      // keeps the model from rewinding state when the user has paused commits.
+      // runAndSave runs first, so it additionally needs the runCode scope.
+      const nonRunning = t.name === 'loadVersion' || t.name === 'saveVersion';
+      return nonRunning ? toggles.scope.saveVersions : (toggles.scope.runCode && toggles.scope.saveVersions);
     }
     if (PAINT_GATED.has(t.name)) return toggles.scope.paintFaces;
     if (NOTES_GATED.has(t.name)) return toggles.scope.sessionNotes;
@@ -1154,6 +1207,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.listVersions();
     case 'loadVersion':
       return api.loadVersion({ index: input.index as number });
+    case 'saveVersion':
+      return api.saveVersion(input.label as string | undefined);
     case 'addSessionNote':
       return api.addSessionNote(input.text as string);
     case 'listSessionNotes':
@@ -1243,6 +1298,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.undoLastPaint();
     case 'redoLastPaint':
       return api.redoLastPaint();
+    case 'listRegions':
+      return api.listRegions();
     case 'removeRegion':
       return api.removeRegion(input.id as number);
     case 'clearColors':
@@ -1271,12 +1328,18 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
     }
     case 'probeRay':
       return api.probeRay(input.origin, input.direction);
-    case 'createSession':
-      return api.createSession(input.name as string | undefined);
-    case 'listSessions':
-      return api.listSessions();
-    case 'openSession':
-      return api.openSession(input.id as string);
+    case 'listParts':
+      return api.listParts();
+    case 'getCurrentPart':
+      return api.getCurrentPart();
+    case 'createPart':
+      return api.createPart(input.name as string | undefined);
+    case 'changePart':
+      return api.changePart(input.id as string);
+    case 'renamePart':
+      return api.renamePart(input.id as string, input.name as string);
+    case 'deletePart':
+      return api.deletePart(input.id as string);
     case 'assertPaint':
       return api.assertPaint(input);
     case 'paintInCylinder':

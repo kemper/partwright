@@ -33,6 +33,7 @@ import {
   isUserOrbitLocked,
 } from '../renderer/viewport';
 import { forceDeactivate as forceDeactivatePaint } from '../color/paintUI';
+import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { forceDeactivate as forceDeactivatePen } from './annotateMode';
 import { forceDeactivate as forceDeactivateText } from './textMode';
 
@@ -90,6 +91,7 @@ function notifySelectionChange(): void {
 export function activate(): void {
   if (active) return;
   forceDeactivatePaint();
+  closeSimplifyMenu();
   forceDeactivatePen({ keepSession: false });
   forceDeactivateText({ keepSession: false });
   // Select doesn't have a session plane — each annotation has its own.

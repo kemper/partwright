@@ -22,6 +22,7 @@ import {
   isUserOrbitLocked,
 } from '../renderer/viewport';
 import { forceDeactivate as forceDeactivatePaint } from '../color/paintUI';
+import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { forceDeactivate as forceDeactivatePen } from './annotateMode';
 import { forceDeactivate as forceDeactivateSelect } from './selectMode';
 
@@ -73,6 +74,7 @@ function notifyActiveChange(): void {
 export function activate(): void {
   if (active) return;
   forceDeactivatePaint();
+  closeSimplifyMenu();
   forceDeactivateSelect();
 
   // Reuse existing session if there is one (pen→text switch); otherwise start.

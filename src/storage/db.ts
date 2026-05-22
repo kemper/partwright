@@ -8,6 +8,30 @@ export interface Session {
   images?: AttachedImage[] | null;
   /** Modeling language for this session. Missing = 'manifold-js'. */
   language?: 'manifold-js' | 'scad';
+  /** Id of the part that is active when the session is (re)opened. Missing =
+   *  fall back to the first part by `order`. Set on every part switch so the
+   *  editor restores to the part the user last worked on. */
+  currentPartId?: string;
+  /** Last-used AI provider + model for this session, restored when the session
+   *  is reopened so each session remembers which assistant was driving it.
+   *  Plain strings to keep the storage layer decoupled from the AI types. */
+  aiPreference?: { provider: string; model: string };
+}
+
+/** A modeling target within a session. A session holds one or more parts; each
+ *  part owns its own independent version history, code, color regions,
+ *  annotations, and imported meshes. The "current part" pointer (held in
+ *  {@link Session.currentPartId} and in the session-manager runtime state) sits
+ *  above the "current version" pointer, so the editor always shows one part at a
+ *  time. */
+export interface Part {
+  id: string;
+  sessionId: string;
+  name: string;
+  /** Display order within the session's part list (ascending). */
+  order: number;
+  created: number;
+  updated: number;
 }
 
 export interface AttachedImage {
@@ -45,6 +69,12 @@ const LEGACY_ANGLES: readonly LegacyImageAngle[] = ['front', 'right', 'back', 'l
 export interface Version {
   id: string;
   sessionId: string;
+  /** Owning part. Versions are indexed per-part, so each part has its own
+   *  v1, v2, … sequence. Denormalized `sessionId` is retained for
+   *  session-scoped queries (recent-session grids) and cascade deletes.
+   *  Legacy versions written before multi-part support are stamped with their
+   *  session's default part id by {@link migratePartsData}. */
+  partId: string;
   index: number;
   code: string;
   geometryData: Record<string, unknown> | null;
@@ -72,7 +102,8 @@ export interface SessionNote {
 const DB_NAME = 'partwright';
 const LEGACY_DB_NAME = 'mainifold';
 const LEGACY_MIGRATION_KEY = 'partwright-migrated-mainifold-db';
-const DB_VERSION = 4;
+const PARTS_MIGRATION_KEY = 'partwright-migrated-parts';
+const DB_VERSION = 5;
 
 /** Opens the partwright IndexedDB. Exposed so the AI subsystem can attach
  *  its own stores (`aiKeys`, `aiChats`) without duplicating the connection. */
@@ -94,7 +125,9 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('versions')) {
         const store = db.createObjectStore('versions', { keyPath: 'id' });
         store.createIndex('sessionId', 'sessionId', { unique: false });
-        store.createIndex('sessionId_index', ['sessionId', 'index'], { unique: true });
+        // Per-part version uniqueness (`partId_index`) is added in the v5 block
+        // below; no `sessionId_index` is needed (two parts in one session can
+        // each have a v1).
       }
       if (!db.objectStoreNames.contains('notes')) {
         const store = db.createObjectStore('notes', { keyPath: 'id' });
@@ -117,14 +150,56 @@ function openDB(): Promise<IDBDatabase> {
         const store = db.createObjectStore('aiAttachments', { keyPath: 'id' });
         store.createIndex('lastUsedAt', 'lastUsedAt', { unique: false });
       }
+      // v5: multi-part support. Each session holds one or more parts; each part
+      // owns its own version history. Version uniqueness moves from
+      // [sessionId, index] to [partId, index] because two parts in the same
+      // session can both have a v1. The data backfill (one default part per
+      // existing session + stamping versions with partId) runs after open in
+      // migratePartsData(); here we only adjust structure.
+      if (!db.objectStoreNames.contains('parts')) {
+        const store = db.createObjectStore('parts', { keyPath: 'id' });
+        store.createIndex('sessionId', 'sessionId', { unique: false });
+      }
+      if (db.objectStoreNames.contains('versions')) {
+        const versionStore = req.transaction!.objectStore('versions');
+        if (!versionStore.indexNames.contains('partId')) {
+          versionStore.createIndex('partId', 'partId', { unique: false });
+        }
+        if (!versionStore.indexNames.contains('partId_index')) {
+          // Versions still missing `partId` (pre-backfill) are simply excluded
+          // from this index, so the unique constraint can't fire on them.
+          versionStore.createIndex('partId_index', ['partId', 'index'], { unique: true });
+        }
+        if (versionStore.indexNames.contains('sessionId_index')) {
+          versionStore.deleteIndex('sessionId_index');
+        }
+      }
     };
     req.onsuccess = () => {
       const db = req.result;
+      // If another tab opens the DB at a higher version, close our connection
+      // so its upgrade isn't blocked indefinitely. We drop the cached promise
+      // so the next DB access in this tab transparently reopens at the new
+      // version.
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
       migrateLegacyData(db)
         .catch(err => console.warn('Partwright: legacy session migration skipped:', err))
+        .then(() => migratePartsData(db))
+        .catch(err => console.warn('Partwright: parts migration skipped:', err))
         .finally(() => resolve(db));
     };
     req.onerror = () => reject(req.error);
+    // Another tab is holding an older connection open and blocking our upgrade.
+    // Surface it; it clears once that tab's onversionchange handler closes its
+    // connection (or the user closes the tab).
+    req.onblocked = () => {
+      console.warn(
+        'Partwright: database upgrade is blocked by another open tab. Close other Partwright tabs to continue.',
+      );
+    };
   });
   return dbPromise;
 }
@@ -170,6 +245,22 @@ function markLegacyMigrationRun(): void {
     localStorage.setItem(LEGACY_MIGRATION_KEY, 'true');
   } catch {
     // Ignore storage failures; migration is only a convenience for local sessions.
+  }
+}
+
+function hasPartsMigrationRun(): boolean {
+  try {
+    return localStorage.getItem(PARTS_MIGRATION_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function markPartsMigrationRun(): void {
+  try {
+    localStorage.setItem(PARTS_MIGRATION_KEY, 'true');
+  } catch {
+    // Ignore storage failures; the per-session backfill below is idempotent.
   }
 }
 
@@ -252,6 +343,71 @@ async function migrateLegacyData(targetDb: IDBDatabase): Promise<void> {
   }
 }
 
+/**
+ * Backfill multi-part structure onto pre-v5 data: give every session that has
+ * no parts a single default part and stamp that session's versions with the new
+ * part's id. Idempotent — sessions that already have a part are skipped — so a
+ * run interrupted partway is safely completed on the next open.
+ *
+ * Reads happen up front in their own (auto-committing) read-only transactions;
+ * the writes are batched into one read-write transaction containing only `put`s
+ * (no awaits between them) so the transaction can't auto-commit mid-migration.
+ */
+async function migratePartsData(targetDb: IDBDatabase): Promise<void> {
+  if (hasPartsMigrationRun()) return;
+  if (!targetDb.objectStoreNames.contains('parts')) return;
+
+  const sessions = await getAllFromStore<Session>(targetDb, 'sessions');
+  if (sessions.length === 0) {
+    markPartsMigrationRun();
+    return;
+  }
+
+  const parts = await getAllFromStore<Part>(targetDb, 'parts');
+  const sessionsWithParts = new Set(parts.map(p => p.sessionId));
+  const versions = await getAllFromStore<Version>(targetDb, 'versions');
+
+  const newParts: Part[] = [];
+  const versionUpdates: Version[] = [];
+  const sessionUpdates: Session[] = [];
+
+  for (const session of sessions) {
+    if (sessionsWithParts.has(session.id)) continue;
+    const partId = generateId();
+    newParts.push({
+      id: partId,
+      sessionId: session.id,
+      name: 'Part 1',
+      order: 0,
+      created: session.created,
+      updated: session.updated,
+    });
+    for (const v of versions) {
+      if (v.sessionId === session.id && !v.partId) {
+        v.partId = partId;
+        versionUpdates.push(v);
+      }
+    }
+    if (!session.currentPartId) {
+      session.currentPartId = partId;
+      sessionUpdates.push(session);
+    }
+  }
+
+  if (newParts.length === 0 && versionUpdates.length === 0 && sessionUpdates.length === 0) {
+    markPartsMigrationRun();
+    return;
+  }
+
+  const txn = targetDb.transaction(['sessions', 'versions', 'parts'], 'readwrite');
+  for (const p of newParts) txn.objectStore('parts').put(p);
+  for (const v of versionUpdates) txn.objectStore('versions').put(v);
+  for (const s of sessionUpdates) txn.objectStore('sessions').put(s);
+  await txComplete(txn);
+  console.info(`Partwright: migrated ${newParts.length} session(s) to multi-part storage.`);
+  markPartsMigrationRun();
+}
+
 // === Sessions ===
 
 export async function createSession(name?: string, language?: 'manifold-js' | 'scad'): Promise<Session> {
@@ -331,7 +487,7 @@ export function legacyImagesObjectToArray(obj: LegacyImagesObject): AttachedImag
   return result;
 }
 
-export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language'>>): Promise<void> {
+export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'currentPartId' | 'aiPreference'>>): Promise<void> {
   const store = await tx('sessions', 'readwrite');
   // Read-modify-write inside one transaction: queue the put from the get's
   // callback (awaiting between them risks auto-commit), then await oncomplete.
@@ -349,11 +505,75 @@ export async function updateSession(id: string, updates: Partial<Pick<Session, '
 
 export async function deleteSession(id: string): Promise<void> {
   const db = await openDB();
-  const txn = db.transaction(['sessions', 'versions', 'notes'], 'readwrite');
+  const txn = db.transaction(['sessions', 'versions', 'notes', 'parts'], 'readwrite');
   txn.objectStore('sessions').delete(id);
-  // Delete all versions for this session
-  const versionStore = txn.objectStore('versions');
-  const vIdx = versionStore.index('sessionId');
+  // Delete all versions, notes, and parts belonging to this session.
+  const deleteByIndex = (storeName: string) => {
+    const idx = txn.objectStore(storeName).index('sessionId');
+    const req = idx.openCursor(IDBKeyRange.only(id));
+    return new Promise<void>((resolve, reject) => {
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (cursor) {
+          cursor.delete();
+          cursor.continue();
+        } else {
+          resolve();
+        }
+      };
+      req.onerror = () => reject(req.error);
+    });
+  };
+  await Promise.all([
+    deleteByIndex('versions'),
+    deleteByIndex('notes'),
+    deleteByIndex('parts'),
+  ]);
+  // Wait for the entire transaction to commit
+  await txComplete(txn);
+}
+
+// === Parts ===
+
+export async function createPart(sessionId: string, name: string, order: number): Promise<Part> {
+  const part: Part = {
+    id: generateId(),
+    sessionId,
+    name,
+    order,
+    created: Date.now(),
+    updated: Date.now(),
+  };
+  const store = await tx('parts', 'readwrite');
+  await reqToPromise(store.put(part));
+  return part;
+}
+
+export async function listParts(sessionId: string): Promise<Part[]> {
+  const store = await tx('parts', 'readonly');
+  const index = store.index('sessionId');
+  const parts = await reqToPromise(index.getAll(IDBKeyRange.only(sessionId))) as Part[];
+  return parts.sort((a, b) => a.order - b.order);
+}
+
+export async function updatePart(id: string, updates: Partial<Pick<Part, 'name' | 'order' | 'updated'>>): Promise<void> {
+  const store = await tx('parts', 'readwrite');
+  const getReq = store.get(id);
+  getReq.onsuccess = () => {
+    const part = getReq.result as Part | null;
+    if (!part) return;
+    Object.assign(part, updates);
+    store.put(part);
+  };
+  await txComplete(store.transaction);
+}
+
+export async function deletePart(id: string): Promise<void> {
+  const db = await openDB();
+  const txn = db.transaction(['parts', 'versions'], 'readwrite');
+  txn.objectStore('parts').delete(id);
+  // Cascade-delete the part's versions.
+  const vIdx = txn.objectStore('versions').index('partId');
   const vReq = vIdx.openCursor(IDBKeyRange.only(id));
   await new Promise<void>((resolve, reject) => {
     vReq.onsuccess = () => {
@@ -367,32 +587,13 @@ export async function deleteSession(id: string): Promise<void> {
     };
     vReq.onerror = () => reject(vReq.error);
   });
-  // Delete all notes for this session
-  const noteStore = txn.objectStore('notes');
-  const nIdx = noteStore.index('sessionId');
-  const nReq = nIdx.openCursor(IDBKeyRange.only(id));
-  await new Promise<void>((resolve, reject) => {
-    nReq.onsuccess = () => {
-      const cursor = nReq.result;
-      if (cursor) {
-        cursor.delete();
-        cursor.continue();
-      } else {
-        resolve();
-      }
-    };
-    nReq.onerror = () => reject(nReq.error);
-  });
-  // Wait for the entire transaction to commit
-  await new Promise<void>((resolve, reject) => {
-    txn.oncomplete = () => resolve();
-    txn.onerror = () => reject(txn.error);
-  });
+  await txComplete(txn);
 }
 
 // === Versions ===
 
 export async function saveVersion(
+  partId: string,
   sessionId: string,
   code: string,
   geometryData: Record<string, unknown> | null,
@@ -406,49 +607,76 @@ export async function saveVersion(
   /** External meshes imported into this version (opaque to the db layer). */
   importedMeshes?: unknown[],
 ): Promise<Version> {
-  const versions = await listVersions(sessionId);
-  const nextIndex = versions.length > 0 ? Math.max(...versions.map(v => v.index)) + 1 : 1;
+  // Compute the next index and write the version inside ONE readwrite
+  // transaction. IndexedDB serializes overlapping readwrite transactions on
+  // the same store (even across tabs), so two tabs saving to the same part
+  // concurrently can't both mint the same index and trip the unique
+  // `partId_index` constraint. A reverse key-cursor on the compound index reads
+  // just the highest [partId, index] key — no heavy geometry/thumbnail blobs.
+  // (Note: IDBIndex.getAllKeys returns *primary* keys, not index keys, so a
+  // cursor is required to read the index value.) Indices are per-part, so we
+  // scan the partId compound index, not sessionId.
+  const db = await openDB();
+  const txn = db.transaction('versions', 'readwrite');
+  const store = txn.objectStore('versions');
+  const version = await new Promise<Version>((resolve, reject) => {
+    const cursorReq = store.index('partId_index').openKeyCursor(
+      IDBKeyRange.bound([partId], [partId, []]),
+      'prev',
+    );
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result;
+      const maxIndex = cursor ? (cursor.key as [string, number])[1] : 0;
+      const nextIndex = maxIndex + 1;
+      const v: Version = {
+        id: generateId(),
+        sessionId,
+        partId,
+        index: nextIndex,
+        code,
+        geometryData,
+        thumbnail,
+        label: label || `v${nextIndex}`,
+        timestamp: timestamp ?? Date.now(),
+        ...(notes ? { notes } : {}),
+        ...(annotations && annotations.length > 0 ? { annotations } : {}),
+        ...(importedMeshes && importedMeshes.length > 0 ? { importedMeshes } : {}),
+      };
+      const putReq = store.put(v);
+      putReq.onsuccess = () => resolve(v);
+      putReq.onerror = () => reject(putReq.error);
+    };
+    cursorReq.onerror = () => reject(cursorReq.error);
+  });
+  await txComplete(txn);
 
-  const version: Version = {
-    id: generateId(),
-    sessionId,
-    index: nextIndex,
-    code,
-    geometryData,
-    thumbnail,
-    label: label || `v${nextIndex}`,
-    timestamp: timestamp ?? Date.now(),
-    ...(notes ? { notes } : {}),
-    ...(annotations && annotations.length > 0 ? { annotations } : {}),
-    ...(importedMeshes && importedMeshes.length > 0 ? { importedMeshes } : {}),
-  };
-
-  const store = await tx('versions', 'readwrite');
-  await reqToPromise(store.put(version));
-
-  // Bump session.updated unless the caller is restoring an earlier timestamp
-  // (an import that wants to preserve original session.updated will restore it after).
-  await updateSession(sessionId, { updated: timestamp ?? Date.now() });
+  // Bump part.updated and session.updated unless the caller is restoring an
+  // earlier timestamp (an import that wants to preserve original timestamps
+  // will restore them after).
+  const stamp = timestamp ?? Date.now();
+  await updatePart(partId, { updated: stamp });
+  await updateSession(sessionId, { updated: stamp });
 
   return version;
 }
 
-export async function listVersions(sessionId: string): Promise<Version[]> {
+/** List a part's versions (its own v1, v2, … sequence), sorted by index. */
+export async function listVersions(partId: string): Promise<Version[]> {
   const store = await tx('versions', 'readonly');
-  const index = store.index('sessionId');
-  const versions = await reqToPromise(index.getAll(IDBKeyRange.only(sessionId))) as Version[];
+  const index = store.index('partId');
+  const versions = await reqToPromise(index.getAll(IDBKeyRange.only(partId))) as Version[];
   return versions.sort((a, b) => a.index - b.index);
 }
 
-export async function getLatestVersion(sessionId: string): Promise<Version | null> {
-  const versions = await listVersions(sessionId);
+export async function getLatestVersion(partId: string): Promise<Version | null> {
+  const versions = await listVersions(partId);
   return versions.length > 0 ? versions[versions.length - 1] : null;
 }
 
-export async function getVersionByIndex(sessionId: string, index: number): Promise<Version | null> {
+export async function getVersionByIndex(partId: string, index: number): Promise<Version | null> {
   const store = await tx('versions', 'readonly');
-  const idx = store.index('sessionId_index');
-  return reqToPromise(idx.get([sessionId, index])) as Promise<Version | null>;
+  const idx = store.index('partId_index');
+  return reqToPromise(idx.get([partId, index])) as Promise<Version | null>;
 }
 
 export async function getVersionById(id: string): Promise<Version | null> {
@@ -456,10 +684,30 @@ export async function getVersionById(id: string): Promise<Version | null> {
   return reqToPromise(store.get(id)) as Promise<Version | null>;
 }
 
-export async function getVersionCount(sessionId: string): Promise<number> {
+export async function getVersionCount(partId: string): Promise<number> {
+  const store = await tx('versions', 'readonly');
+  const index = store.index('partId');
+  return reqToPromise(index.count(IDBKeyRange.only(partId)));
+}
+
+// === Session-scoped version helpers (aggregate across all parts) ===
+// Used by the recent-session grids (landing, session list) and empty-session
+// cleanup, which think in terms of whole sessions rather than individual parts.
+
+export async function getSessionVersionCount(sessionId: string): Promise<number> {
   const store = await tx('versions', 'readonly');
   const index = store.index('sessionId');
   return reqToPromise(index.count(IDBKeyRange.only(sessionId)));
+}
+
+/** The most recently saved version across all of a session's parts — a
+ *  representative record for thumbnails/labels in session grids. */
+export async function getSessionLatestVersion(sessionId: string): Promise<Version | null> {
+  const store = await tx('versions', 'readonly');
+  const index = store.index('sessionId');
+  const versions = await reqToPromise(index.getAll(IDBKeyRange.only(sessionId))) as Version[];
+  if (versions.length === 0) return null;
+  return versions.reduce((latest, v) => (v.timestamp > latest.timestamp ? v : latest));
 }
 
 export async function deleteVersion(id: string): Promise<void> {
@@ -539,12 +787,10 @@ export async function updateNote(id: string, text: string): Promise<void> {
 
 export async function clearAllData(): Promise<void> {
   const db = await openDB();
-  const txn = db.transaction(['sessions', 'versions', 'notes'], 'readwrite');
+  const txn = db.transaction(['sessions', 'versions', 'notes', 'parts'], 'readwrite');
   txn.objectStore('sessions').clear();
   txn.objectStore('versions').clear();
   txn.objectStore('notes').clear();
-  await new Promise<void>((resolve, reject) => {
-    txn.oncomplete = () => resolve();
-    txn.onerror = () => reject(txn.error);
-  });
+  txn.objectStore('parts').clear();
+  await txComplete(txn);
 }

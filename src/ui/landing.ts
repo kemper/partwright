@@ -9,8 +9,9 @@
 //   7. Footer
 
 import { listSessions, type Session } from '../storage/sessionManager';
-import { getLatestVersion, getVersionCount } from '../storage/db';
+import { getSessionLatestVersion, getSessionVersionCount } from '../storage/db';
 import { partwrightMarkSvg } from './brand';
+import { showUninstallModal } from './uninstallModal';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
 import type { ExportedSession } from '../storage/sessionManager';
 
@@ -465,8 +466,8 @@ async function buildRecentSessions(callbacks: LandingCallbacks): Promise<HTMLEle
   const tileData = await Promise.all(
     sessions.slice(0, 12).map(async (session) => {
       const [latestVersion, versionCount] = await Promise.all([
-        getLatestVersion(session.id),
-        getVersionCount(session.id),
+        getSessionLatestVersion(session.id),
+        getSessionVersionCount(session.id),
       ]);
       return { session, latestVersion, versionCount };
     }),
@@ -558,6 +559,16 @@ function buildFooter(): HTMLElement {
   const copyright = document.createElement('div');
   copyright.textContent = `© ${new Date().getFullYear()} Partwright. Open source.`;
   footer.appendChild(copyright);
+
+  // Low-emphasis "start fresh" escape hatch — discoverable but well out of the
+  // primary click path. Opens a modal to delete chosen categories of local
+  // data (recovery valve for corruption / schema changes).
+  const reset = document.createElement('button');
+  reset.type = 'button';
+  reset.className = 'mt-2 text-zinc-700 hover:text-red-400 transition-colors';
+  reset.textContent = 'Uninstall / start fresh';
+  reset.addEventListener('click', () => { void showUninstallModal(); });
+  footer.appendChild(reset);
 
   return footer;
 }
