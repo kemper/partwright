@@ -307,6 +307,16 @@ Subject is imperative and lowercase after the prefix: `feat: add light/dark mode
 
 Anything unlabeled lands in "Other Changes." That's fine for occasional internal cleanup, but features and fixes should always be labeled.
 
+### Following Up on PRs You Open
+
+When you (an AI agent) open a PR, follow it through CI rather than walking away. Watch the PR's checks — the `npm run build` / `npm run test:e2e` workflow and the Cloudflare Pages deployment — and **auto-fix build or deployment failures when you can** by pushing a fix straight to the PR branch:
+
+1. Reproduce the failure locally first (`npm run build`, `npm run test:e2e`) so you're fixing the real cause, not guessing from the log.
+2. Re-sync with the latest `origin/staging` if the branch has drifted (see the Deployment workflow), then commit and push the fix to the same PR branch.
+3. Re-check CI after the push, and keep iterating until the checks are green.
+
+Only push fixes you're confident in — failures clearly caused by your own changes. If a failure is ambiguous, unrelated to your changes, or would require a large refactor or a risky/destructive change to resolve, stop and ask the user instead of pushing speculative fixes.
+
 ## Common Errors
 
 | Error | Cause |
