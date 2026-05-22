@@ -76,7 +76,7 @@ export function createHelpPage(
       id: 'quick-example',
       heading: 'Quick example',
       body:
-        '<pre class="bg-zinc-800 rounded-lg p-4 text-xs leading-relaxed overflow-x-auto mt-2"><code class="text-zinc-300">const { Manifold } = api;\n\n// Create a box and subtract a cylinder\nconst box = Manifold.cube([20, 20, 10], true);\nconst hole = Manifold.cylinder(12, 4, 4, 32);\n\nreturn box.subtract(hole);</code></pre>',
+        '<pre class="bg-zinc-800 rounded-lg p-4 text-xs leading-relaxed overflow-x-auto mt-2"><code class="text-zinc-300">const { Manifold } = api;\n\n// Create a box and subtract a cylinder\nconst box = Manifold.cube([20, 20, 10], true);\nconst hole = Manifold.cylinder(12, 4, 4);\n\nreturn box.subtract(hole);</code></pre>',
     },
     {
       id: 'tabs',
@@ -168,7 +168,7 @@ export function createHelpPage(
       id: 'quality-theme',
       heading: 'Quality settings & theme',
       body:
-        '<strong class="text-zinc-300">Quality</strong> — The ⚙ icon in the toolbar opens the modeling-quality modal. Pick a preset (Highest / High / Medium / Low) that controls how many segments approximate a circle. <em>Highest</em> is the default and gives the smoothest output; drop down if you\'re iterating on heavy geometry and want faster renders.<br><br>' +
+        '<strong class="text-zinc-300">Quality</strong> — The ⚙ icon in the toolbar opens the modeling-quality modal. Pick a preset (Ultra / Very High / High / Medium / Low) that controls how many segments approximate a circle. <em>Very High</em> (128 segments) is the default; <em>Ultra</em> (1024 segments) gives near-perfect curves for smooth final output, while lower presets render faster when you\'re iterating on heavy geometry. The preset only applies to curves that don\'t pass their own segment count, so it sticks across sessions and the AI assistant honors it too.<br><br>' +
         '<strong class="text-zinc-300">Theme</strong> — Toggle <strong class="text-zinc-300">Dark Mode</strong> in the toolbar to switch the entire UI, viewport background, and grid colors between dark and light. Your choice persists across sessions.',
     },
     {

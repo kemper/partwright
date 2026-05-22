@@ -335,10 +335,14 @@ revolve(cs, n?, degrees?)
   -> around Y axis, then remaps so result is Z-up.
     Profile X=radial distance, Y=height -> after revolve, Y becomes Z automatically.
     Only positive-X side used. degrees defaults to 360.
-Segments guide: 6-8 low-poly, 32-48 smooth, 64+ high quality
+Segments: OMIT the segment argument so curves inherit the user's quality
+  preset (recommended). Pass an explicit 6-8 only for an intentional
+  low-poly look; only override upward when one specific feature needs more
+  resolution than the preset. Never hard-code a low count (e.g. 32) just to
+  "make it smooth" — that shadows the preset and looks chunky to the user.
 ```
 
-**Default segment count:** Partwright seeds `setCircularSegments()` from the user's Modeling Quality preset (gear icon in the toolbar) before each run. The default preset is **Highest** (128 segments), so curves render smooth out of the box without any explicit configuration. Users can drop to Low/Medium/High in the settings modal if they prefer faster renders. Your code can still call `setCircularSegments(n)` or pass an explicit segments argument to a primitive to override on a per-script or per-call basis.
+**Default segment count:** Partwright seeds `setCircularSegments()` (and `$fn` for OpenSCAD) from the user's Modeling Quality preset (gear icon in the toolbar) before each run. Presets are Low (16) / Medium (32) / High (64) / Very High (128, the default) / Ultra (1024). So curves render smooth out of the box without any explicit configuration — and a user who wants ultra-smooth output picks **Ultra** once and it persists. **An explicit segments argument always overrides this preset for that primitive**, so leave it off unless you specifically want a different resolution than the user chose. The current preset is reported in the per-turn "Session toggle state" suffix; honor it. You can still call `setCircularSegments(n)` or pass an explicit count to override on a per-script or per-call basis when a design genuinely needs it.
 
 ### All constructors
 

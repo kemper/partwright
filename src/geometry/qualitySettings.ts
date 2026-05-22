@@ -7,7 +7,7 @@
 
 const STORAGE_KEY = 'partwright-quality-settings-v1';
 
-export type QualityLevel = 'low' | 'medium' | 'high' | 'highest';
+export type QualityLevel = 'low' | 'medium' | 'high' | 'highest' | 'ultra';
 
 export interface QualitySettings {
   quality: QualityLevel;
@@ -18,13 +18,15 @@ export const QUALITY_SEGMENTS: Record<QualityLevel, number> = {
   medium: 32,
   high: 64,
   highest: 128,
+  ultra: 1024,
 };
 
 export const QUALITY_OPTIONS: { id: QualityLevel; label: string; hint: string }[] = [
   { id: 'low', label: 'Low', hint: '16 segments — chunky facets, fastest' },
   { id: 'medium', label: 'Medium', hint: '32 segments — visibly smooth' },
   { id: 'high', label: 'High', hint: '64 segments — smooth curves' },
-  { id: 'highest', label: 'Highest', hint: '128 segments — ultra smooth, slower' },
+  { id: 'highest', label: 'Very High', hint: '128 segments — very smooth' },
+  { id: 'ultra', label: 'Ultra', hint: '1024 segments — near-perfect curves, slowest on complex models' },
 ];
 
 const DEFAULT_SETTINGS: QualitySettings = {

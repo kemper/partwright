@@ -76,4 +76,38 @@ test.describe('Modeling quality settings', () => {
     expect(low.triangleCount ?? 0).toBeLessThan(high.triangleCount ?? 0);
     expect(low.triangleCount ?? 0).toBeGreaterThan(0);
   });
+
+  test('Ultra preset persists and yields more triangles than the default', async ({ page }) => {
+    await page.goto('/editor?view=ai');
+    await page.waitForSelector('#btn-quality');
+    await page.waitForFunction(
+      () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
+      { timeout: 20_000 },
+    );
+
+    type RunResult = { triangleCount?: number; error?: string };
+    type PartwrightApi = { run: (code: string) => Promise<RunResult> };
+    // A cylinder stays cheap at 1024 segments (~4k tris); a sphere would be
+    // ~2M and too heavy for a smoke test. Either way the count must climb.
+    const cylinderCode = 'const { Manifold } = api; return Manifold.cylinder(5, 3, 3);';
+
+    // Baseline at the default (Highest = 128 segments).
+    const high = await page.evaluate(async (code) => {
+      const api = (window as unknown as { partwright: PartwrightApi }).partwright;
+      return api.run(code);
+    }, cylinderCode);
+
+    // Switch to Ultra (1024 segments) and confirm it persists.
+    await page.locator('#btn-quality').click();
+    await page.locator('input[type=radio][value=ultra]').check();
+    const stored = await page.evaluate(() => localStorage.getItem('partwright-quality-settings-v1'));
+    expect(JSON.parse(stored!)).toEqual({ quality: 'ultra' });
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    const ultra = await page.evaluate(async (code) => {
+      const api = (window as unknown as { partwright: PartwrightApi }).partwright;
+      return api.run(code);
+    }, cylinderCode);
+    expect(ultra.triangleCount ?? 0).toBeGreaterThan(high.triangleCount ?? 0);
+  });
 });

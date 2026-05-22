@@ -6,6 +6,7 @@
 
 import { MAX_ITERATIONS, MAX_SPEND, activeModel, type ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
+import { loadQualitySettings, getDefaultCircularSegments, QUALITY_OPTIONS } from '../geometry/qualitySettings';
 
 let aiMdCache: string | null = null;
 let aiMdPromise: Promise<string> | null = null;
@@ -260,6 +261,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
     `Auto-retry on tool error: ${toggles.autoRetry}`,
     `Iteration cap (tool round-trips this turn): ${capLabel}. Pace your tool calls accordingly — if the cap is low, batch related work and prefer one-shot tools like paintComponent or paintInBox over verify-then-paint loops.`,
     `Spend cap (total USD this session): ${spendLabel}. Prior turns in this session count toward the same budget, so the cap can fire mid-turn even on a cheap iteration. Vision tool calls (renderView, paintPreview withImage) are the most expensive — skip them when stats alone are enough.`,
+    qualityLine(),
   ];
   if (restrictions.length > 0) {
     lines.push('');
@@ -276,6 +278,17 @@ function currentLanguage(): Language {
   } catch {
     return 'manifold-js';
   }
+}
+
+/** Per-turn line telling the model the user's current curve-resolution
+ *  preference. The engine already seeds setCircularSegments()/$fn from this
+ *  preset before each run, so the model must NOT hard-code a lower count —
+ *  an explicit segments argument shadows the preset and silently overrides
+ *  the user's choice. */
+function qualityLine(): string {
+  const segs = getDefaultCircularSegments();
+  const label = QUALITY_OPTIONS.find(o => o.id === loadQualitySettings().quality)?.label ?? 'Very High';
+  return `Modeling quality: the user picked "${label}" (~${segs} segments per full circle), already applied before every run. OMIT the segments argument on cylinder/sphere/circle/revolve/extrude so curves inherit this preset — do NOT pass a smaller explicit count (e.g. 32) just to "make it smooth", as that shadows the user's choice and looks chunky to them. Pass an explicit count only for a deliberately faceted/low-poly look or a user-tunable parameter, or a HIGHER count when one specific feature needs extra resolution.`;
 }
 
 export function buildSystemPrompt(aiMd: string): string {
@@ -344,10 +357,11 @@ exports. The runtime gives you \`api.Manifold\` and \`api.CrossSection\`.
 \`\`\`js
 const { Manifold, CrossSection } = api;
 
-// Primitives (centred at origin by default; second arg true centres)
+// Primitives (cube's 2nd arg true centres). Omit segment counts so curves
+// inherit the user's Modeling Quality preset (see the per-turn note below).
 Manifold.cube([w, d, h], true);
-Manifold.sphere(r, segments);
-Manifold.cylinder(h, rBottom, rTop, segments, true);
+Manifold.sphere(r);
+Manifold.cylinder(h, rBottom, rTop);
 
 // Transforms (return a new Manifold; originals are immutable)
 shape.translate([x, y, z]);
@@ -407,10 +421,11 @@ Every program you pass to \`setCode\` / \`runAndSave\` must end with
 \`\`\`js
 const { Manifold, CrossSection } = api;
 
-// Primitives — second arg of cube/cylinder centres the shape at the origin.
+// Primitives — cube's second arg centres the shape at the origin. Omit
+// segment counts so curves follow the user's Modeling Quality preset.
 Manifold.cube([width, depth, height], true);
-Manifold.sphere(radius, segments);
-Manifold.cylinder(height, rBottom, rTop, segments, true);
+Manifold.sphere(radius);
+Manifold.cylinder(height, rBottom, rTop);
 
 // Transforms — return new Manifolds; the original is immutable.
 shape.translate([x, y, z]);
@@ -473,11 +488,11 @@ face — head with two eye sockets and a curved mouth." Done.
 Program to pass as \`code\`:
 
 const { Manifold } = api;
-const head  = Manifold.sphere(20, 64);
-const eye   = Manifold.sphere(3, 32);
+const head  = Manifold.sphere(20);
+const eye   = Manifold.sphere(3);
 const eyeL  = eye.translate([-7, -18, 5]);
 const eyeR  = eye.translate([ 7, -18, 5]);
-const mouth = Manifold.cylinder(4, 8, 8, 32)
+const mouth = Manifold.cylinder(4, 8, 8)
   .rotate([90, 0, 0])
   .translate([0, -18, -5]);
 return Manifold.difference([head, eyeL, eyeR, mouth]);

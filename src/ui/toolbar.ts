@@ -544,8 +544,8 @@ export function createToolbar(
   toolbar.appendChild(themeBtn);
 
   // Modeling-quality settings — gear icon opens a modal where users
-  // pick the default curve resolution. Defaults to "Highest" so the
-  // out-of-the-box rendering is smooth.
+  // pick the default curve resolution. Defaults to "Very High" so the
+  // out-of-the-box rendering is smooth; "Ultra" goes up to 1024 segments.
   const qualityBtn = document.createElement('button');
   qualityBtn.id = 'btn-quality';
   qualityBtn.className = 'flex items-center justify-center w-10 h-10 md:w-6 md:h-6 rounded-full text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700 transition-colors text-sm md:text-xs ml-2';
