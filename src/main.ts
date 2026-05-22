@@ -49,6 +49,7 @@ import { createGalleryView, refreshGallery } from './ui/gallery';
 import { createImagesView, refreshImages } from './ui/imagesView';
 import { createDiffView, refreshDiff } from './ui/diffView';
 import { createNotesView, refreshNotes } from './ui/notes';
+import { initDataExplorer, refreshDataExplorer } from './ui/dataExplorer';
 import { initSessionList, showSessionList } from './ui/sessionList';
 import { exportGLB, buildGLB } from './export/gltf';
 import { exportSTL, buildSTL } from './export/stl';
@@ -576,7 +577,7 @@ function shouldShowLanding(): boolean {
   const params = new URLSearchParams(window.location.search);
   // Landing if at root path AND no query params that indicate a specific view
   const isRootPath = path === '/' || path === '';
-  return isRootPath && !params.has('view') && !params.has('session') && !params.has('gallery') && !params.has('images') && !params.has('diff') && !params.has('notes');
+  return isRootPath && !params.has('view') && !params.has('session') && !params.has('gallery') && !params.has('images') && !params.has('diff') && !params.has('notes') && !params.has('data');
 }
 
 function shouldShowHelp(): boolean {
@@ -594,6 +595,7 @@ function shouldShow404(): boolean {
 
 function getTabFromURL(): TabName {
   const params = new URLSearchParams(window.location.search);
+  if (params.has('data')) return 'data';
   if (params.has('notes')) return 'notes';
   if (params.has('diff')) return 'diff';
   if (params.has('images')) return 'images';
@@ -1071,7 +1073,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, editorErrorPanel, viewportPane, viewsContainer, elevationsContainer, galleryContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab } = createLayout(editorUI);
+  const { editorContainer, editorErrorPanel, viewportPane, viewsContainer, elevationsContainer, galleryContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab } = createLayout(editorUI);
 
   // Format button and auto-format toggle
   const AUTO_FORMAT_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40';
@@ -1152,12 +1154,16 @@ async function main() {
   // Init notes panel
   createNotesView(notesContainer);
 
+  // Init data explorer (browse everything stored in this browser)
+  initDataExplorer(dataContainer);
+
   // Refresh tabs when they're selected
   window.addEventListener('tab-switched', ((e: CustomEvent) => {
     if (e.detail.tab === 'gallery') refreshGallery();
     if (e.detail.tab === 'images') refreshImages();
     if (e.detail.tab === 'diff') refreshDiff();
     if (e.detail.tab === 'notes') refreshNotes();
+    if (e.detail.tab === 'data') refreshDataExplorer();
   }) as EventListener);
 
   // Init session list
@@ -3361,8 +3367,8 @@ async function main() {
     },
 
     /** Programmatic tab switching */
-    setView(tab: 'interactive' | 'ai' | 'elevations' | 'gallery' | 'images' | 'diff' | 'notes'): void {
-      assertEnum(tab, ['interactive', 'ai', 'elevations', 'gallery', 'images', 'diff', 'notes'] as const, 'setView(tab)');
+    setView(tab: 'interactive' | 'ai' | 'elevations' | 'gallery' | 'images' | 'diff' | 'notes' | 'data'): void {
+      assertEnum(tab, ['interactive', 'ai', 'elevations', 'gallery', 'images', 'diff', 'notes', 'data'] as const, 'setView(tab)');
       switchTab(tab);
     },
 
