@@ -307,6 +307,12 @@ Subject is imperative and lowercase after the prefix: `feat: add light/dark mode
 
 Anything unlabeled lands in "Other Changes." That's fine for occasional internal cleanup, but features and fixes should always be labeled.
 
+### Open a PR When Your Task Is Done
+
+**By default, finish a task by opening a PR — you don't need to be asked.** Once you've completed a unit of work on a feature branch, the normal final step is to commit, push, and open a PR targeting `staging` (per the Deployment workflow). Follow the conventions above: re-sync with `origin/staging` first, give the PR a Conventional Commits title, and apply at least one release-note label.
+
+**Exception:** if the user tells you not to open a PR — or asks you only to commit/push, or to hold off — then don't. "Just commit" or "push to the branch" is not a request for a PR. If you're unsure whether the work is a complete, reviewable unit, ask before opening one.
+
 ### Following Up on PRs You Open
 
 When you (an AI agent) open a PR, follow it through CI rather than walking away. Watch the PR's checks — the `npm run build` / `npm run test:e2e` workflow and the Cloudflare Pages deployment — and **auto-fix build or deployment failures when you can** by pushing a fix straight to the PR branch:
