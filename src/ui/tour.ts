@@ -86,7 +86,7 @@ export function maybeStartTour(): void {
   if (localStorage.getItem(STORAGE_KEY)) return;
 
   const params = new URLSearchParams(window.location.search);
-  if (params.has('view') || params.has('session') || params.has('gallery') || params.has('images') || params.has('notes')) return;
+  if (params.has('view') || params.has('session') || params.has('gallery') || params.has('versions') || params.has('images') || params.has('notes')) return;
 
   setTimeout(() => startTour(), 800);
 }

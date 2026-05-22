@@ -1,6 +1,6 @@
 import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
 
-export type TabName = 'interactive' | 'gallery' | 'images' | 'diff' | 'notes' | 'data';
+export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data';
 
 export interface LayoutElements {
   editorPane: HTMLElement;
@@ -8,6 +8,7 @@ export interface LayoutElements {
   editorErrorPanel: HTMLElement;
   viewportPane: HTMLElement;
   galleryContainer: HTMLElement;
+  versionsContainer: HTMLElement;
   imagesContainer: HTMLElement;
   diffContainer: HTMLElement;
   notesContainer: HTMLElement;
@@ -107,6 +108,8 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   tabInteractive.title = 'Live 3D viewport \u2014 orbit, zoom, and inspect';
   const tabGallery = createTab('Gallery', false);
   tabGallery.title = 'Compare saved versions side-by-side';
+  const tabVersions = createTab('Versions', false);
+  tabVersions.title = 'Manage saved versions — rename and delete';
   const tabImages = createTab('Images', false);
   tabImages.title = 'Reference images attached to this session';
   const tabDiff = createTab('Diff', false);
@@ -118,6 +121,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
 
   tabBar.appendChild(tabInteractive);
   tabBar.appendChild(tabGallery);
+  tabBar.appendChild(tabVersions);
   tabBar.appendChild(tabImages);
   tabBar.appendChild(tabDiff);
   tabBar.appendChild(tabNotes);
@@ -141,6 +145,10 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   galleryContainer.id = 'gallery-container';
   galleryContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-4';
 
+  const versionsContainer = document.createElement('div');
+  versionsContainer.id = 'versions-container';
+  versionsContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-4';
+
   const imagesContainer = document.createElement('div');
   imagesContainer.id = 'images-container';
   imagesContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-4 flex flex-col';
@@ -157,8 +165,8 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   dataContainer.id = 'data-container';
   dataContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-4 flex flex-col';
 
-  const allTabs = [tabInteractive, tabGallery, tabImages, tabDiff, tabNotes, tabData];
-  const allPanes = [viewportPane, galleryContainer, imagesContainer, diffContainer, notesContainer, dataContainer];
+  const allTabs = [tabInteractive, tabGallery, tabVersions, tabImages, tabDiff, tabNotes, tabData];
+  const allPanes = [viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer];
 
   // Mobile-only pane toggle: lets the user swap between editor and viewport
   // when the layout is stacked. Hidden at md+ and on tabs that already hide
@@ -263,7 +271,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   // Shared tab activation logic (DOM toggling, editor visibility, events)
   function applyTab(tab: TabName) {
     _currentTab = tab;
-    const idx = tab === 'interactive' ? 0 : tab === 'gallery' ? 1 : tab === 'images' ? 2 : tab === 'diff' ? 3 : tab === 'notes' ? 4 : 5;
+    const idx = tab === 'interactive' ? 0 : tab === 'gallery' ? 1 : tab === 'versions' ? 2 : tab === 'images' ? 3 : tab === 'diff' ? 4 : tab === 'notes' ? 5 : 6;
     for (let i = 0; i < allPanes.length; i++) {
       if (i === idx) {
         allPanes[i].classList.remove('hidden');
@@ -284,20 +292,23 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
 
     const basePath = '/editor';
     const params = new URLSearchParams(window.location.search);
-    // Clear every tab-owned param, then set the one for the active tab.
-    // ('interactive' leaves them all cleared.) `view` is deleted defensively
-    // to clear any stale value from older URLs.
+    // Clear every tab-owned param, then set the one this tab owns. Unrelated
+    // params (e.g. `session`, `v`) are preserved. `view` is a legacy param
+    // (the old AI/Elevations tabs) — keep clearing it so stale URLs reset.
     params.delete('view');
     params.delete('gallery');
+    params.delete('versions');
     params.delete('images');
     params.delete('diff');
     params.delete('notes');
     params.delete('data');
     if (tab === 'gallery') params.set('gallery', '');
+    else if (tab === 'versions') params.set('versions', '');
     else if (tab === 'images') params.set('images', '');
     else if (tab === 'diff') params.set('diff', '');
     else if (tab === 'notes') params.set('notes', '');
     else if (tab === 'data') params.set('data', '');
+    // interactive: no tab param.
     const newUrl = params.toString()
       ? `${basePath}?${params.toString().replace(/=(?=&|$)/g, '')}`
       : basePath;
@@ -314,6 +325,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
 
   tabInteractive.addEventListener('click', () => switchTab('interactive'));
   tabGallery.addEventListener('click', () => switchTab('gallery'));
+  tabVersions.addEventListener('click', () => switchTab('versions'));
   tabImages.addEventListener('click', () => switchTab('images'));
   tabDiff.addEventListener('click', () => switchTab('diff'));
   tabNotes.addEventListener('click', () => switchTab('notes'));
@@ -329,6 +341,8 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     applyTab('diff');
   } else if (initParams.has('images')) {
     applyTab('images');
+  } else if (initParams.has('versions')) {
+    applyTab('versions');
   } else if (initParams.has('gallery')) {
     applyTab('gallery');
   }
@@ -336,6 +350,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   rightPane.appendChild(tabBar);
   rightPane.appendChild(viewportPane);
   rightPane.appendChild(galleryContainer);
+  rightPane.appendChild(versionsContainer);
   rightPane.appendChild(imagesContainer);
   rightPane.appendChild(diffContainer);
   rightPane.appendChild(notesContainer);
@@ -373,7 +388,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, editorContainer, editorErrorPanel, viewportPane, galleryContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab };
+  return { editorPane, editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab };
 }
 
 const TAB_ACTIVE_CLASS = 'shrink-0 whitespace-nowrap px-4 py-2 md:py-1.5 text-sm md:text-xs font-medium text-zinc-100 border-b-2 border-blue-500 bg-zinc-900';
@@ -391,6 +406,14 @@ function createClipControls(): HTMLElement {
   const container = document.createElement('div');
   container.id = 'clip-controls';
   container.className = 'absolute top-2 right-2 z-10 flex flex-wrap justify-end items-center gap-2 max-w-[calc(100%-1rem)]';
+
+  // Mesh edge (wireframe) toggle (off by default) — sits left of the grid toggle
+  const wireBtn = document.createElement('button');
+  wireBtn.id = 'wireframe-toggle';
+  wireBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  wireBtn.textContent = '△';
+  wireBtn.title = 'Show mesh edges';
+  container.appendChild(wireBtn);
 
   // Grid toggle (off by default)
   const gridBtn = document.createElement('button');

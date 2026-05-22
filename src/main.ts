@@ -25,7 +25,7 @@ import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPa
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible } from './renderer/viewport';
+import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
 import { renderCompositeCanvas, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
 import { generateId } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
@@ -36,7 +36,7 @@ import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { showToast } from './ui/toast';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel } from './ui/aiPanel';
 import { getKey as getAiKey, mergeChatBucket } from './ai/db';
-import { loadSettings as loadAiSettings, reloadSettingsFromStorage } from './ai/settings';
+import { loadSettings as loadAiSettings, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
 import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
@@ -45,6 +45,7 @@ import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { createSessionBar } from './ui/sessionBar';
 import { createGalleryView, refreshGallery } from './ui/gallery';
+import { createVersionsView, refreshVersions } from './ui/versions';
 import { createImagesView, refreshImages } from './ui/imagesView';
 import { createDiffView, refreshDiff } from './ui/diffView';
 import { createNotesView, refreshNotes } from './ui/notes';
@@ -574,7 +575,7 @@ function shouldShowLanding(): boolean {
   const params = new URLSearchParams(window.location.search);
   // Landing if at root path AND no query params that indicate a specific view
   const isRootPath = path === '/' || path === '';
-  return isRootPath && !params.has('view') && !params.has('session') && !params.has('gallery') && !params.has('images') && !params.has('diff') && !params.has('notes') && !params.has('data');
+  return isRootPath && !params.has('view') && !params.has('session') && !params.has('gallery') && !params.has('versions') && !params.has('images') && !params.has('diff') && !params.has('notes') && !params.has('data');
 }
 
 function shouldShowHelp(): boolean {
@@ -596,6 +597,7 @@ function getTabFromURL(): TabName {
   if (params.has('notes')) return 'notes';
   if (params.has('diff')) return 'diff';
   if (params.has('images')) return 'images';
+  if (params.has('versions')) return 'versions';
   if (params.has('gallery')) return 'gallery';
   return 'interactive';
 }
@@ -1004,7 +1006,9 @@ async function main() {
         );
         if (!proceed) return;
       }
-      const opts = await showExportOptionsDialog();
+      const opts = await showExportOptionsDialog(
+        versions.map(v => ({ index: v.index, label: v.label })),
+      );
       if (!opts) return;
       const ok = await exportSessionJSON(undefined, opts);
       if (!ok) alert('No active session to export. Save a version first.');
@@ -1041,6 +1045,16 @@ async function main() {
   // Init diagnostic panel — attaches to document.body, registers badge subscriber.
   initDiagnosticsPanel();
 
+  // Reset the editor to a blank starting point for a freshly created session.
+  // Shared by the session bar's "+ New Session" button and the session modal's,
+  // so both clear the previous session's code instead of leaving it behind.
+  function startNewSessionInEditor() {
+    const freshCode = '// New session\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
+    setValue(freshCode);
+    runCode(freshCode);
+    _clearImages();
+  }
+
   // Create session bar
   createSessionBar(editorUI, {
     onSaveVersion: async () => ({
@@ -1059,16 +1073,11 @@ async function main() {
       applyVersionAnnotations(loadedVersion);
     },
     onOpenSessionList: () => showSessionList(),
-    onNewSession: () => {
-      const freshCode = '// New session\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
-      setValue(freshCode);
-      runCode(freshCode);
-      _clearImages();
-    },
+    onNewSession: startNewSessionInEditor,
   });
 
   // Create layout
-  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab } = createLayout(editorUI);
+  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab } = createLayout(editorUI);
 
   // Format button and auto-format toggle
   const AUTO_FORMAT_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40';
@@ -1143,9 +1152,22 @@ async function main() {
   // Init data explorer (browse everything stored in this browser)
   initDataExplorer(dataContainer);
 
+  // Init versions panel (manage saved versions: rename / delete, with undo/redo)
+  createVersionsView(versionsContainer, {
+    onOpenVersion: async (version) => {
+      await loadVersionFromStore(version.index);
+      await loadVersionIntoEditor(version);
+      switchTab('interactive');
+    },
+    onSyncEditor: async (version) => {
+      await loadVersionIntoEditor(version);
+    },
+  });
+
   // Refresh tabs when they're selected
   window.addEventListener('tab-switched', ((e: CustomEvent) => {
     if (e.detail.tab === 'gallery') refreshGallery();
+    if (e.detail.tab === 'versions') refreshVersions();
     if (e.detail.tab === 'images') refreshImages();
     if (e.detail.tab === 'diff') refreshDiff();
     if (e.detail.tab === 'notes') refreshNotes();
@@ -1167,6 +1189,7 @@ async function main() {
       await runCodeSync(code);
       return captureThumbnail();
     },
+    startNewSessionInEditor,
   );
 
   // Assemble DOM early so landing/help pages can render before WASM loads
@@ -1396,6 +1419,7 @@ async function main() {
         if (version) {
           await loadVersionIntoEditor(version);
           if (tab === 'gallery') refreshGallery();
+          if (tab === 'versions') refreshVersions();
           return;
         }
         // openSession returned null — either the session ID in the URL
@@ -1493,6 +1517,7 @@ async function main() {
   initClipControls(clipControls);
 
   // Wire up viewport overlay buttons
+  initWireframeToggle(clipControls);
   initGridToggle(clipControls);
   initDimensionsToggle(clipControls);
   initAnnotateUI(clipControls);
@@ -2120,6 +2145,25 @@ async function main() {
       return getTheme();
     },
 
+    // === Spending mode (AI budget) ===
+
+    /** Read the AI spending budget — the preset plus the knobs it controls
+     *  (thinking, image verification, painting, session notes, iteration and
+     *  spend caps). Agents should respect it. `renderResolution` sets the
+     *  default renderView/renderViews size (an explicit size still wins). */
+    getSpendingMode() {
+      return getSpendingSummary();
+    },
+
+    /** Set the AI spending budget preset: "cheap" | "balanced" | "expensive".
+     *  Sets thinking, vision, paint, notes, and the iteration/spend caps at once
+     *  (these are the in-app AI presets minimal/standard/full). */
+    setSpendingMode(mode: 'cheap' | 'balanced' | 'expensive') {
+      assertEnum(mode, ['cheap', 'balanced', 'expensive'] as const, 'setSpendingMode(mode)');
+      applyAiSpendingMode(mode);
+      return getSpendingSummary();
+    },
+
     // === Auto-run API ===
 
     /** Enable or disable auto-run (re-render on edit). */
@@ -2149,7 +2193,10 @@ async function main() {
         assertNumber(o.size, 'renderView(options).size', { optional: true, min: 1, integer: true });
       }
       if (!currentMeshData) return null;
-      return renderSingleView(applyTriColorsIfVisible(currentMeshData), options ?? {});
+      // Default image size follows the spending-mode resolution budget when the
+      // caller omits size; an explicit size still wins (e.g. a final hi-res check).
+      const size = options?.size ?? getRenderBudget().defaultPx;
+      return renderSingleView(applyTriColorsIfVisible(currentMeshData), { ...(options ?? {}), size });
     },
 
     /** Render multiple angles of the current model laid out in a single
@@ -2186,8 +2233,11 @@ async function main() {
         assertNumber(o.size, 'renderViews(options).size', { optional: true, min: 1, integer: true });
       }
       if (!currentMeshData) return null;
-      const which = options?.views ?? 'auto';
-      const tileSize = options?.size ?? 320;
+      // Angle set and tile size default to the spending-mode budget when the
+      // caller doesn't specify them; an explicit size still wins.
+      const budget = getRenderBudget();
+      const which = options?.views ?? budget.angles;
+      const tileSize = options?.size ?? budget.defaultPx;
       const colored = applyTriColorsIfVisible(currentMeshData);
       const explicit = options?.angles;
       const angles = explicit && explicit.length > 0
@@ -3317,8 +3367,8 @@ async function main() {
     },
 
     /** Programmatic tab switching */
-    setView(tab: 'interactive' | 'gallery' | 'images' | 'diff' | 'notes' | 'data'): void {
-      assertEnum(tab, ['interactive', 'gallery', 'images', 'diff', 'notes', 'data'] as const, 'setView(tab)');
+    setView(tab: 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data'): void {
+      assertEnum(tab, ['interactive', 'gallery', 'versions', 'images', 'diff', 'notes', 'data'] as const, 'setView(tab)');
       switchTab(tab);
     },
 
@@ -4848,8 +4898,11 @@ async function main() {
         // Inspection
         'sliceAtZ':        { signature: 'sliceAtZ(z) -- Cross-section at height -> {polygons, svg, area}', docs: '/ai.md#console-api--windowpartwright' },
         'getBoundingBox':  { signature: 'getBoundingBox() -- -> {min, max}', docs: '/ai.md#console-api--windowpartwright' },
-        'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?}) -- Render from any angle -> data URL', docs: '/ai.md#visual-verification' },
+        'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?}) -- Render from any angle -> data URL (default/cap size follows spending mode)', docs: '/ai.md#visual-verification' },
         'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
+        // Spending mode (AI budget)
+        'getSpendingMode': { signature: 'getSpendingMode() -- Read the AI budget (preset + thinking/vision/paint/notes/caps); respect it', docs: '/ai.md#spending-mode' },
+        'setSpendingMode': { signature: 'setSpendingMode("cheap"|"balanced"|"expensive") -- Set the AI budget preset', docs: '/ai.md#spending-mode' },
         'analyzeProfile':  { signature: 'analyzeProfile(sampleCount?) -- Z-profile feature summary', docs: '/ai.md#console-api--windowpartwright' },
         'measureAt':       { signature: 'measureAt([x,y]) -- Ray-cast probe at XY -> {hits, thickness, topZ, bottomZ}', docs: '/ai.md#console-api--windowpartwright' },
         'probePixel':      { signature: 'probePixel({pixel: [x,y], view}) -- Translate a pixel in a rendered view back to a surface hit: {point, normal, distance, triangleId, nextStep}. The view spec must match the renderView call. On a background pixel returns {hit:false, modelPixelBounds, reason, hint} telling you where the model projects so you can re-aim.', docs: '/ai.md#console-api--windowpartwright' },
@@ -5749,6 +5802,27 @@ async function main() {
       if (closeMeasureIfActive()) closed = true;
       if (getClipState().enabled) { setClipping(false); syncClipUI(); closed = true; }
       if (closed) e.preventDefault();
+    });
+  }
+
+  function initWireframeToggle(container: HTMLElement) {
+    const wireBtn = container.querySelector('#wireframe-toggle') as HTMLButtonElement;
+    if (!wireBtn) return;
+
+    const inactiveClass = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+    const activeClass = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-blue-500/20 backdrop-blur text-blue-400 [@media(hover:hover)]:hover:bg-blue-500/30 transition-colors border border-blue-500/30';
+
+    // Drive the button visuals from the viewport's change events so it stays in
+    // sync whether the user clicked it or paint mode forced edges on/off.
+    const applyState = (visible: boolean) => {
+      wireBtn.className = visible ? activeClass : inactiveClass;
+      wireBtn.title = visible ? 'Hide mesh edges' : 'Show mesh edges';
+    };
+    applyState(isWireframeVisible());
+    onWireframeChange(applyState);
+
+    wireBtn.addEventListener('click', () => {
+      setWireframeVisible(!isWireframeVisible());
     });
   }
 

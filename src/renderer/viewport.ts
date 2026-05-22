@@ -48,6 +48,12 @@ const ndcForHit = new THREE.Vector2();
 // Grid plane
 let grid: THREE.GridHelper;
 
+// Mesh edge (wireframe) overlay visibility. Hidden by default so the model
+// reads cleanly; paint mode forces it on (see paintMode.ts) and the viewport
+// toggle button lets the user override either way.
+let wireframeVisible = false;
+let wireframeChangeListener: ((visible: boolean) => void) | null = null;
+
 // Clipping plane state
 const clipPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0); // clips above Z
 let clippingEnabled = false;
@@ -239,6 +245,8 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
 
   const solidMesh = new THREE.Mesh(geometry, solidMat);
   const wireMesh = new THREE.Mesh(geometry, wireMat);
+  wireMesh.name = 'wireframe';
+  wireMesh.visible = wireframeVisible;
 
   meshGroup.add(solidMesh);
   meshGroup.add(wireMesh);
@@ -557,6 +565,27 @@ export function setGridVisible(visible: boolean): void {
 
 export function isGridVisible(): boolean {
   return grid.visible;
+}
+
+// === Wireframe (mesh edge) visibility API ===
+
+export function setWireframeVisible(visible: boolean): void {
+  if (wireframeVisible === visible) return;
+  wireframeVisible = visible;
+  meshGroup.children.forEach(child => {
+    if (child.name === 'wireframe') child.visible = visible;
+  });
+  wireframeChangeListener?.(visible);
+}
+
+export function isWireframeVisible(): boolean {
+  return wireframeVisible;
+}
+
+/** Subscribe to wireframe visibility changes so UI (the toggle button) stays
+ *  in sync whether the change came from the button or from paint mode. */
+export function onWireframeChange(cb: (visible: boolean) => void): void {
+  wireframeChangeListener = cb;
 }
 
 export function dispose(): void {

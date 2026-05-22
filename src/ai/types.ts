@@ -52,6 +52,14 @@ export interface ChatToggles {
   vision: {
     /** Send a snapshot of the 4 iso views with each turn. */
     views: boolean;
+    /** Resolution preset for the agent's verification renders (renderView /
+     *  renderViews). Sets the default image size and caps any size the model
+     *  asks for, so a turn can't blow the budget on huge images. */
+    resolution: 'low' | 'medium' | 'high';
+    /** Default angle set for renderViews when the model omits one. 'auto'
+     *  picks 2-3 by shape, 'tri' = 3 (front/top/iso), 'all' = 4. More angles
+     *  cost more image tokens. */
+    angles: 'auto' | 'tri' | 'all';
   };
   scope: {
     /** Allow the model to call run/runAndSave (+ runIsolated). */
@@ -60,6 +68,9 @@ export interface ChatToggles {
     saveVersions: boolean;
     /** Allow the model to call paint helpers. */
     paintFaces: boolean;
+    /** Allow the model to call addSessionNote. OFF saves a tool round-trip
+     *  per note — the chat transcript already records the reasoning. */
+    sessionNotes: boolean;
   };
   /** Number of times the loop will silently feed an error back to the model
    *  before surfacing it. 0/1/3. */
@@ -131,6 +142,21 @@ export const ITERATION_CAP: Record<ChatToggles['maxIterations'], number> =
   Object.fromEntries(Object.entries(MAX_ITERATIONS).map(([k, v]) => [k, v.value])) as Record<ChatToggles['maxIterations'], number>;
 export const SPEND_CAP_USD: Record<ChatToggles['maxSpend'], number> =
   Object.fromEntries(Object.entries(MAX_SPEND).map(([k, v]) => [k, v.value])) as Record<ChatToggles['maxSpend'], number>;
+
+/** Source of truth for the verification-render resolution dropdown. `value`
+ *  is the square pixel size used for the agent's renderView/renderViews output
+ *  — both the default when the model omits a size and the cap applied to any
+ *  size it requests. Same pattern as MAX_ITERATIONS / MAX_SPEND. */
+export const RENDER_RESOLUTION: Record<ChatToggles['vision']['resolution'], { value: number; label: string; promptLabel: string; hint: string }> = {
+  low:    { value: 256, label: 'Low (256)',  promptLabel: '256px', hint: 'Smallest verification images. Cheapest vision spend; fine detail can be hard to read.' },
+  medium: { value: 384, label: 'Med (384)',  promptLabel: '384px', hint: 'Default. Balances clarity against image-token cost.' },
+  high:   { value: 512, label: 'High (512)', promptLabel: '512px', hint: 'Sharpest verification images. Best for fine detail; costs the most image tokens.' },
+};
+
+/** Pixel-size lookup derived from RENDER_RESOLUTION so the numbers can't drift
+ *  from the dropdown labels. */
+export const RENDER_RESOLUTION_PX: Record<ChatToggles['vision']['resolution'], number> =
+  Object.fromEntries(Object.entries(RENDER_RESOLUTION).map(([k, v]) => [k, v.value])) as Record<ChatToggles['vision']['resolution'], number>;
 
 /** Source of truth for the thinking-level dropdown. The pill, the
  *  per-provider request builders, and the per-turn suffix all read from

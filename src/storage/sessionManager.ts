@@ -11,6 +11,9 @@ import {
   getVersionByIndex,
   getVersionById,
   getVersionCount,
+  deleteVersion as dbDeleteVersion,
+  putVersion as dbPutVersion,
+  renameVersion as dbRenameVersion,
   clearAllData,
   updateSession as dbUpdateSession,
   addNote as dbAddNote,
@@ -26,6 +29,7 @@ import {
 } from './db';
 import { publishTabSync, onTabSync } from './tabSync';
 import { listMessages as dbListMessages, putMessages as dbPutMessages } from '../ai/db';
+import { getSpendingSummary } from '../ai/settings';
 import type { ChatMessage } from '../ai/types';
 
 /** Legacy angle keys preserved only for typing the on-disk shapes we still
@@ -447,17 +451,20 @@ export async function saveVersion(
 export async function navigateVersion(direction: 'prev' | 'next'): Promise<Version | null> {
   if (!currentState.session || !currentState.currentVersion) return null;
 
-  const targetIndex = currentState.currentVersion.index + (direction === 'prev' ? -1 : 1);
-  if (targetIndex < 1 || targetIndex > currentState.versionCount) return null;
+  // Step to the adjacent *existing* version. Walking the sorted list by
+  // position (rather than index ± 1) keeps navigation correct after deletions
+  // leave gaps in the index sequence.
+  const versions = await dbListVersions(currentState.session.id);
+  const pos = versions.findIndex(v => v.id === currentState.currentVersion!.id);
+  if (pos === -1) return null;
+  const target = versions[pos + (direction === 'prev' ? -1 : 1)];
+  if (!target) return null;
 
-  const version = await getVersionByIndex(currentState.session.id, targetIndex);
-  if (!version) return null;
-
-  currentState = { ...currentState, currentVersion: version };
-  setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
+  currentState = { ...currentState, currentVersion: target };
+  setActiveImports((target.importedMeshes ?? []) as ImportedMesh[]);
   updateURL();
   notify();
-  return version;
+  return target;
 }
 
 /** Look up a version by index (number) or id (string) without mutating current state. */
@@ -494,6 +501,88 @@ export async function loadVersion(target: number | string): Promise<Version | nu
 export async function listCurrentVersions(): Promise<Version[]> {
   if (!currentState.session) return [];
   return dbListVersions(currentState.session.id);
+}
+
+export interface DeleteVersionResult {
+  /** The full record that was removed (sufficient to restore it on undo). */
+  deleted: Version;
+  /** Whether the deleted version was the active one. */
+  wasCurrent: boolean;
+  /** The version that became active after deletion (only set when wasCurrent). */
+  newCurrent: Version | null;
+}
+
+/**
+ * Permanently delete a version from the active session. Refuses to remove the
+ * last remaining version (a session always keeps at least one). When the active
+ * version is deleted, the nearest remaining version — preferring the previous
+ * index — becomes active. Returns null if the delete was refused or the id was
+ * not found. Indices of surviving versions are left untouched (gaps are fine).
+ */
+export async function deleteVersion(versionId: string): Promise<DeleteVersionResult | null> {
+  if (!currentState.session) return null;
+  const versions = await dbListVersions(currentState.session.id);
+  const target = versions.find(v => v.id === versionId);
+  if (!target) return null;
+  if (versions.length <= 1) return null; // keep at least one version
+
+  await dbDeleteVersion(versionId);
+
+  const remaining = versions.filter(v => v.id !== versionId);
+  const wasCurrent = currentState.currentVersion?.id === versionId;
+  let newCurrent: Version | null = null;
+  if (wasCurrent) {
+    const lower = remaining.filter(v => v.index < target.index);
+    newCurrent = lower.length > 0 ? lower[lower.length - 1] : remaining[remaining.length - 1];
+  }
+
+  currentState = {
+    ...currentState,
+    currentVersion: wasCurrent ? newCurrent : currentState.currentVersion,
+    versionCount: remaining.length,
+  };
+  if (wasCurrent && newCurrent) {
+    setActiveImports((newCurrent.importedMeshes ?? []) as ImportedMesh[]);
+  }
+  updateURL();
+  notify();
+  return { deleted: target, wasCurrent, newCurrent };
+}
+
+/**
+ * Re-insert a previously deleted version (undo), restoring its original id,
+ * index, and timestamp. Optionally makes it active again. No-op if it doesn't
+ * belong to the active session.
+ */
+export async function restoreVersion(version: Version, makeCurrent: boolean): Promise<void> {
+  if (!currentState.session || version.sessionId !== currentState.session.id) return;
+  await dbPutVersion(version);
+  const versions = await dbListVersions(currentState.session.id);
+  currentState = {
+    ...currentState,
+    currentVersion: makeCurrent ? version : currentState.currentVersion,
+    versionCount: versions.length,
+  };
+  if (makeCurrent) {
+    setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
+  }
+  updateURL();
+  notify();
+}
+
+/** Rename a version's display label. The index is immutable. Returns the
+ *  updated record, or null if it isn't part of the active session. */
+export async function renameVersion(versionId: string, label: string): Promise<Version | null> {
+  if (!currentState.session) return null;
+  const target = await getVersionById(versionId);
+  if (!target || target.sessionId !== currentState.session.id) return null;
+  await dbRenameVersion(versionId, label);
+  const updated = { ...target, label };
+  if (currentState.currentVersion?.id === versionId) {
+    currentState = { ...currentState, currentVersion: updated };
+  }
+  notify();
+  return updated;
 }
 
 // === URL helpers for sharing ===
@@ -605,6 +694,8 @@ export interface SessionContext {
     language: 'manifold-js' | 'scad';
     supportedLanguages: string[];
     recentErrors: { error: string; timestamp: number }[];
+    /** The AI spending budget the user has set. Agents should respect it. */
+    spending: ReturnType<typeof getSpendingSummary>;
   };
 }
 
@@ -653,6 +744,7 @@ export async function getSessionContext(): Promise<SessionContext | null> {
       language: session.language ?? 'manifold-js',
       supportedLanguages: ['manifold-js', 'scad'],
       recentErrors: getRecentErrors(),
+      spending: getSpendingSummary(),
     },
   };
 }
@@ -765,9 +857,13 @@ export interface ExportOptions {
   includeNotes?: boolean;
   includeColorRegions?: boolean;
   includeChat?: boolean;
+  /** Restrict the export to versions whose `index` is in this list. Undefined
+   *  (the default) exports every version. Lets the caller prune history into the
+   *  exported file without deleting anything from storage. */
+  versionIndices?: number[];
 }
 
-const DEFAULT_EXPORT_OPTIONS: Required<ExportOptions> = {
+const DEFAULT_EXPORT_OPTIONS: Required<Omit<ExportOptions, 'versionIndices'>> = {
   includeThumbnails: false,
   includeAnnotations: true,
   includeNotes: true,
@@ -826,9 +922,12 @@ export async function exportSession(
   const session = await getSession(id);
   if (!session) return null;
 
-  const opts: Required<ExportOptions> = { ...DEFAULT_EXPORT_OPTIONS, ...options };
+  const opts: Required<Omit<ExportOptions, 'versionIndices'>> = { ...DEFAULT_EXPORT_OPTIONS, ...options };
 
-  const versions = await dbListVersions(id);
+  const allVersions = await dbListVersions(id);
+  const versions = options?.versionIndices
+    ? allVersions.filter(v => options.versionIndices!.includes(v.index))
+    : allVersions;
   const notes = opts.includeNotes ? await dbListNotes(id) : [];
   const chat = opts.includeChat ? await dbListMessages(id) : [];
 

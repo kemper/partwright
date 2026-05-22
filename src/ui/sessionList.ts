@@ -11,18 +11,21 @@ import {
   type Session,
   type ExportedSession,
 } from '../storage/sessionManager';
-import { getVersionCount } from '../storage/db';
+import { getLatestVersion, getVersionCount } from '../storage/db';
 
 let modalEl: HTMLElement | null = null;
 let onLoadVersion: ((code: string) => void | Promise<void>) | null = null;
 let regenerateThumbnailFn: ((code: string) => Promise<Blob | null>) | null = null;
+let onNewSessionFn: (() => void) | null = null;
 
 export function initSessionList(
   loadCode: (code: string) => void | Promise<void>,
   regenerateThumbnail?: (code: string) => Promise<Blob | null>,
+  onNewSession?: () => void,
 ): void {
   onLoadVersion = loadCode;
   regenerateThumbnailFn = regenerateThumbnail ?? null;
+  onNewSessionFn = onNewSession ?? null;
 }
 
 export async function showSessionList(): Promise<void> {
@@ -99,6 +102,7 @@ export async function showSessionList(): Promise<void> {
     const name = prompt('Session name:');
     if (name === null) return;
     await createSession(name || undefined);
+    onNewSessionFn?.();
     closeModal();
   });
   headerActions.appendChild(newBtn);
@@ -145,7 +149,10 @@ export async function showSessionList(): Promise<void> {
 }
 
 async function createSessionRow(session: Session): Promise<HTMLElement> {
-  const count = await getVersionCount(session.id);
+  const [count, latestVersion] = await Promise.all([
+    getVersionCount(session.id),
+    getLatestVersion(session.id),
+  ]);
 
   const row = document.createElement('div');
   row.className = 'flex items-center gap-3 px-5 py-3 hover:bg-zinc-700/50 cursor-pointer border-b border-zinc-700/50 transition-colors';
@@ -157,6 +164,25 @@ async function createSessionRow(session: Session): Promise<HTMLElement> {
     }
     closeModal();
   });
+
+  // Thumbnail preview (same render as the landing-page session tiles)
+  const thumb = document.createElement('div');
+  thumb.className = 'w-12 h-12 rounded bg-zinc-900 border border-zinc-700/50 flex items-center justify-center overflow-hidden shrink-0';
+  if (latestVersion?.thumbnail) {
+    const img = document.createElement('img');
+    img.className = 'w-full h-full object-contain';
+    img.src = URL.createObjectURL(latestVersion.thumbnail);
+    img.loading = 'lazy';
+    img.alt = session.name;
+    img.addEventListener('load', () => URL.revokeObjectURL(img.src));
+    thumb.appendChild(img);
+  } else {
+    const placeholder = document.createElement('span');
+    placeholder.className = 'text-lg text-zinc-700';
+    placeholder.textContent = '⬡';
+    thumb.appendChild(placeholder);
+  }
+  row.appendChild(thumb);
 
   // Info
   const info = document.createElement('div');
