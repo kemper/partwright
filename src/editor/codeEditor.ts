@@ -6,6 +6,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import { basicSetup } from 'codemirror';
 import { lintGutter, setDiagnostics, type Diagnostic } from '@codemirror/lint';
 import { js as jsBeautify } from 'js-beautify';
+import { manifoldApiCompletion } from './apiCompletions';
 import type { SourceDiagnostic } from '../geometry/types';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
 
@@ -129,6 +130,7 @@ export function initEditor(
     doc: initialCode,
     extensions: [
       basicSetup,
+      manifoldApiCompletion,
       languageCompartment.of(languageExt(initialLanguage)),
       lintGutter(),
       readOnlyCompartment.of(EditorState.readOnly.of(false)),
