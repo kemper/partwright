@@ -343,6 +343,24 @@ export async function setSessionLanguage(id: string, language: 'manifold-js' | '
   publishTabSync({ kind: 'session-meta', sessionId: id });
 }
 
+// === Per-session AI preference ===
+
+/** Remember which AI provider + model is driving the current session so it can
+ *  be restored on reopen. No-op when nothing is open or the value is unchanged.
+ *  Not broadcast to peer tabs on purpose — restoring on reload is the goal, not
+ *  live-mirroring the active model across windows (which would fight the user). */
+export async function setSessionAiPreference(provider: string, model: string | null): Promise<void> {
+  if (!currentState.session || !model) return;
+  const cur = currentState.session.aiPreference;
+  if (cur && cur.provider === provider && cur.model === model) return;
+  const id = currentState.session.id;
+  const aiPreference = { provider, model };
+  await dbUpdateSession(id, { aiPreference });
+  if (currentState.session?.id === id) {
+    currentState.session = { ...currentState.session, aiPreference };
+  }
+}
+
 // === Version operations ===
 
 /** Stable structural comparison for annotation snapshots. Both are arrays of

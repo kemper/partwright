@@ -8,6 +8,10 @@ export interface Session {
   images?: AttachedImage[] | null;
   /** Modeling language for this session. Missing = 'manifold-js'. */
   language?: 'manifold-js' | 'scad';
+  /** Last-used AI provider + model for this session, restored when the session
+   *  is reopened so each session remembers which assistant was driving it.
+   *  Plain strings to keep the storage layer decoupled from the AI types. */
+  aiPreference?: { provider: string; model: string };
 }
 
 export interface AttachedImage {
@@ -347,7 +351,7 @@ export function legacyImagesObjectToArray(obj: LegacyImagesObject): AttachedImag
   return result;
 }
 
-export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language'>>): Promise<void> {
+export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'aiPreference'>>): Promise<void> {
   const store = await tx('sessions', 'readwrite');
   // Read-modify-write inside one transaction: queue the put from the get's
   // callback (awaiting between them risks auto-commit), then await oncomplete.

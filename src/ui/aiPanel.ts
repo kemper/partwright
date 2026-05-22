@@ -8,7 +8,7 @@ import { runTurn, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setToggles, providerLabel, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setProvider, setLocalModel, setToggles, providerLabel, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { generateId } from '../storage/db';
@@ -22,7 +22,7 @@ import { showCompactConfirmModal } from './aiCompactModal';
 import { showAttachmentModal } from './aiAttachmentModal';
 import { putAttachment } from '../ai/attachments';
 import { exportChatMarkdown } from '../export/chat';
-import { getState } from '../storage/sessionManager';
+import { getState, setSessionAiPreference } from '../storage/sessionManager';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
 import { activeModel, SPEND_CAP_USD, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { errorLog } from '../diagnostics/errorLog';
@@ -135,6 +135,7 @@ let pendingImagesEl: HTMLElement | null = null;
 let toggleStripEl: HTMLElement | null = null;
 let costMeterEl: HTMLElement | null = null;
 let panelStatusEl: HTMLElement | null = null;
+let prefNoticeEl: HTMLElement | null = null;
 let progressEl: HTMLElement | null = null;
 let progressTickerId: number | null = null;
 let navigateToEditorFn: (() => Promise<void> | void) | null = null;
@@ -168,6 +169,10 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   state.open = settings.drawerOpen;
 
   buildDrawer();
+  // Re-assert this session's remembered model when the tab regains focus, so
+  // the tab you're actively using reflects its own session's model even if a
+  // peer tab changed the shared settings while this tab was in the background.
+  window.addEventListener('focus', () => { void applySessionAiPreference(); });
   // Don't try to load history until a session is opened or we know we're
   // in the global bucket. main.ts will call setActiveSession when ready.
   await loadHistoryForCurrentSession();
@@ -207,6 +212,7 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
   state.queuedBlocks = [];
   renderQueuedBadge();
   await loadHistoryForCurrentSession();
+  await applySessionAiPreference();
   renderTranscript();
   renderCostMeter();
 }
@@ -245,6 +251,84 @@ function hideDrawer(): void {
 async function loadHistoryForCurrentSession(): Promise<void> {
   state.history = await listMessages(state.sessionId);
   updateRewindButtons();
+}
+
+// === Per-session AI preference ===
+
+/** Is this session's remembered provider/model usable right now? Cloud
+ *  providers need a stored key; local needs the model id to still resolve. */
+async function isProviderModelUsable(provider: Provider, model: string): Promise<boolean> {
+  if (provider === 'local') {
+    try { resolveLocalModel(model); return true; } catch { return false; }
+  }
+  return !!(await getKey(provider));
+}
+
+/** Record the active provider + model as the current session's preference so
+ *  reopening the session restores it. Cheap and idempotent. */
+function recordSessionAiPreference(): void {
+  const s = loadSettings();
+  const model = activeModel(s.toggles);
+  if (typeof model === 'string' && model.length > 0) {
+    void setSessionAiPreference(s.toggles.provider, model);
+  }
+}
+
+/** On session open, restore the session's remembered provider/model into the
+ *  active settings. If that model isn't available right now we keep the user's
+ *  current model and show a non-blocking notice — without erasing the stored
+ *  preference, so it snaps back once the model is available again. */
+async function applySessionAiPreference(): Promise<void> {
+  hidePrefNotice();
+  const pref = getState().session?.aiPreference;
+  if (!pref) return;
+  const known: Provider[] = ['anthropic', 'openai', 'gemini', 'local'];
+  const provider = pref.provider as Provider;
+  if (!known.includes(provider)) return;
+  if (!(await isProviderModelUsable(provider, pref.model))) {
+    showPrefNotice(provider, pref.model);
+    return;
+  }
+  const cur = loadSettings();
+  // Already active — don't re-write settings. This makes the focus re-assert
+  // cheap and stops two tabs on different sessions from ping-ponging the global
+  // model through the cross-tab settings `storage` event.
+  if (cur.toggles.provider === provider && activeModel(cur.toggles) === pref.model) return;
+  let next = setProvider(cur, provider);
+  switch (provider) {
+    case 'anthropic': next = setAnthropicModel(next, pref.model as AnthropicModelId); break;
+    case 'openai': next = setOpenaiModel(next, pref.model); break;
+    case 'gemini': next = setGeminiModel(next, pref.model); break;
+    case 'local': next = setLocalModel(next, pref.model); break;
+  }
+  saveSettings(next);
+  renderModelPicker();
+  renderToggleStrip();
+  renderCostMeter();
+  renderPromptChip();
+  panelStatusUpdate();
+}
+
+function showPrefNotice(provider: Provider, model: string): void {
+  if (!prefNoticeEl) return;
+  prefNoticeEl.replaceChildren();
+  const msg = document.createElement('span');
+  msg.className = 'flex-1';
+  msg.textContent = `This session last used ${providerLabel(provider)} (${model}), which isn't available right now — using your current model. It'll be restored when that one is available again.`;
+  const dismiss = document.createElement('button');
+  dismiss.type = 'button';
+  dismiss.className = 'shrink-0 text-amber-300 hover:text-amber-100';
+  dismiss.textContent = '✕';
+  dismiss.title = 'Dismiss';
+  dismiss.addEventListener('click', hidePrefNotice);
+  prefNoticeEl.append(msg, dismiss);
+  prefNoticeEl.classList.remove('hidden');
+}
+
+function hidePrefNotice(): void {
+  if (!prefNoticeEl) return;
+  prefNoticeEl.classList.add('hidden');
+  prefNoticeEl.replaceChildren();
 }
 
 // === DOM construction ===
@@ -318,7 +402,7 @@ function buildDrawer(): void {
   const settingsBtn = createIconButton('Settings', '⚙');
   settingsBtn.title = 'AI settings: provider, key, lifetime usage.';
   settingsBtn.addEventListener('click', () => {
-    void showAiSettingsModal({ onChange: () => { renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); renderPromptChip(); panelStatusUpdate(); } });
+    void showAiSettingsModal({ onChange: () => { recordSessionAiPreference(); renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); renderPromptChip(); panelStatusUpdate(); } });
   });
   header.appendChild(settingsBtn);
 
@@ -339,6 +423,14 @@ function buildDrawer(): void {
   panelStatusEl = document.createElement('div');
   panelStatusEl.className = 'px-3 py-1.5 text-[11px] border-b border-zinc-800 hidden';
   root.appendChild(panelStatusEl);
+
+  // Per-session AI-preference notice — shown when this session's remembered
+  // model/provider isn't currently available (key removed, local model not
+  // installed, id retired). Non-blocking and dismissible; the stored
+  // preference is kept so it's restored when the model is available again.
+  prefNoticeEl = document.createElement('div');
+  prefNoticeEl.className = 'px-3 py-1.5 text-[11px] border-b border-amber-800/60 bg-amber-900/20 text-amber-200 hidden flex items-start gap-2';
+  root.appendChild(prefNoticeEl);
 
   // Transcript
   transcriptEl = document.createElement('div');
@@ -666,6 +758,7 @@ function renderModelPicker(): void {
     sel.value = cfg.current;
     sel.addEventListener('change', () => {
       saveSettings(cfg.setModel(sel.value));
+      recordSessionAiPreference();
       renderToggleStrip();
       renderCostMeter();
     });
@@ -690,7 +783,7 @@ function renderModelPicker(): void {
     chip.title = 'No local model is selected. Click to pick one.';
   }
   chip.addEventListener('click', () => {
-    void showAiLocalModal({ onChange: () => { renderModelPicker(); renderToggleStrip(); renderCostMeter(); panelStatusUpdate(); } });
+    void showAiLocalModal({ onChange: () => { recordSessionAiPreference(); renderModelPicker(); renderToggleStrip(); renderCostMeter(); panelStatusUpdate(); } });
   });
   modelPickerEl.appendChild(chip);
 }
@@ -1776,6 +1869,9 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
   // a session mid-turn the active bucket changes out from under us, so we
   // remember the starting bucket and re-home the chat once the turn settles.
   let turnStartBucket = state.sessionId;
+  // Remember which model is driving this session so reopening it restores the
+  // same provider/model.
+  recordSessionAiPreference();
   while (true) {
     attempt++;
     const controller = new AbortController();
