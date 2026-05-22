@@ -407,7 +407,7 @@ test.describe('Multi-provider AI', () => {
     expect(out.chatHigh.reasoning_effort).toBeUndefined();
   });
 
-  test('Thinking pill is in the toggle strip, defaults Off, and persists', async ({ page }) => {
+  test('Thinking pill is in the toggle strip, defaults High, and persists', async ({ page }) => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
@@ -415,12 +415,13 @@ test.describe('Multi-provider AI', () => {
     await page.locator('#btn-ai').dispatchEvent('click');
     const thinkSel = page.locator('#ai-panel select[title^="Thinking:"]');
     await expect(thinkSel).toBeVisible();
-    await expect(thinkSel).toHaveValue('off');
-    await thinkSel.selectOption('high');
+    // Thinking now ships on by default (the standard preset uses 'high').
+    await expect(thinkSel).toHaveValue('high');
+    await thinkSel.selectOption('off');
     const stored = await page.evaluate(() =>
       JSON.parse(localStorage.getItem('partwright-ai-settings-v1') || '{}').toggles?.thinking,
     );
-    expect(stored).toBe('high');
+    expect(stored).toBe('off');
   });
 
   test('settings modal has a tab per provider', async ({ page }) => {

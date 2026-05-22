@@ -84,9 +84,9 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     autoRetry: 0,
     maxIterations: 'low',
     maxSpend: 'cheap',
-    // Thinking stays off across every preset so applying a preset never
-    // silently turns on (and starts billing for) extended reasoning — it's
-    // an opt-in the user picks deliberately with the Thinking pill.
+    // The cheap preset leaves extended reasoning off to minimize spend.
+    // Standard (the default) and Full enable it — thinking ships on by
+    // default now; users can still dial it back with the Thinking pill.
     thinking: 'off',
     anthropicModel: 'claude-haiku-4-5',
   },
@@ -99,7 +99,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     autoRetry: 1,
     maxIterations: 'medium',
     maxSpend: 'medium',
-    thinking: 'off',
+    thinking: 'high',
     anthropicModel: 'claude-sonnet-4-6',
   },
   full: {
@@ -108,7 +108,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     autoRetry: 3,
     maxIterations: 'high',
     maxSpend: 'high',
-    thinking: 'off',
+    thinking: 'high',
     anthropicModel: 'claude-opus-4-7',
   },
 };
