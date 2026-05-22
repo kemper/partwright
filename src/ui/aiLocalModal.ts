@@ -26,6 +26,7 @@ import { getModelCeiling } from '../ai/modelMetadata';
 import { loadSettings, saveSettings, setLocalModel, setProvider, addCustomLocalModel, removeCustomLocalModel, BuiltInModelIdCollision, type CustomLocalModel } from '../ai/settings';
 
 let modalEl: HTMLElement | null = null;
+let escHandler: ((e: KeyboardEvent) => void) | null = null;
 let cachedSet: Set<string> = new Set();
 /** WebGPU probe status. Starts as `checking` so we don't render an
  *  optimistic green pill that flashes to red a tick later on browsers
@@ -89,11 +90,8 @@ export async function showAiLocalModal(cb: AiLocalModalCallbacks): Promise<void>
   // Re-render reactively when state changes (cache scan, download progress).
   await rerender(body, cb);
 
-  const escHandler = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      closeModal();
-      document.removeEventListener('keydown', escHandler);
-    }
+  escHandler = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') closeModal();
   };
   document.addEventListener('keydown', escHandler);
 }
@@ -862,6 +860,10 @@ function escapeHtml(s: string): string {
 }
 
 function closeModal(): void {
+  if (escHandler) {
+    document.removeEventListener('keydown', escHandler);
+    escHandler = null;
+  }
   modalEl?.remove();
   modalEl = null;
 }
