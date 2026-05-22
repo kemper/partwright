@@ -246,6 +246,18 @@ await partwright.listSessions()          // -> [{id, name, updated}]
 await partwright.openSession(id)         // Open existing session
 await partwright.clearAllSessions()      // Delete all sessions & versions
 
+// Parts -- multiple independent objects within one session. Each part has its
+// own code + version history; the CURRENT part is what every other method
+// (run, save, paint, export, listVersions, ...) acts on. Versions are scoped
+// per part. Use parts for several distinct objects in one session (e.g. a box
+// and its lid); save them as separate STLs/parts, or model each in isolation.
+partwright.listParts()                   // -> [{id, name, order, isCurrent}]
+partwright.getCurrentPart()              // -> {id, name, order} or null
+await partwright.createPart(name?)       // New empty part + switch to it -> {id, name, order}
+await partwright.changePart(id)          // Switch active part (loads its latest version)
+await partwright.renamePart(id, name)    // Rename a part
+await partwright.deletePart(id)          // Delete a part + its versions (refuses the last one)
+
 // Color regions -- tag face regions with a color. Full API in /ai/colors.md.
 // Quick reference (~30 methods total):
 partwright.probePixel({pixel, view})                                      // pixel-in-render -> {point, normal, distance, triangleId}

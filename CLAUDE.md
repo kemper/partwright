@@ -192,6 +192,8 @@ Static site, no backend. Vanilla TypeScript + Vite.
 - `src/editor/codeEditor.ts` — CodeMirror editor
 - `src/ui/layout.ts` — Split-pane layout
 - `src/ui/toolbar.ts` — Top toolbar
+- `src/ui/commandPalette.ts` — Command palette (⌘K/Ctrl+K): action registry + searchable overlay
+- `src/ui/shortcutsOverlay.ts` — `?` keyboard cheat sheet (renders `shortcutDefs`)
 - `src/geometry/crossSection.ts` — Z-slice to SVG/polygons
 - `src/export/gltf.ts` — GLB export
 - `src/export/stl.ts` — STL export
@@ -315,7 +317,7 @@ Anything unlabeled lands in "Other Changes." That's fine for occasional internal
 
 ### After Opening a PR
 
-Opening the PR (see [the standing instruction](#pull-requests--always-open-one-when-a-task-is-complete) in Deployment) isn't the finish line. Once it's up, do two things — they can run in parallel:
+Opening the PR (see [the standing instruction](#pull-requests--always-open-one-when-a-task-is-complete) in Deployment) isn't the finish line. Once it's up, do the following (the first two can run in parallel):
 
 **1. Kick off an automated review pass.** Right after pushing the initial PR, launch a review subagent (the Agent tool) over your branch diff against `origin/staging` and the code it touches. Have it hunt specifically for problems your change may have introduced:
 
@@ -333,6 +335,8 @@ Surface the results on the PR (a review comment, or fold clear fixes straight in
 3. Re-check CI after the push, and keep iterating until the checks are green.
 
 Only push fixes you're confident in — failures clearly caused by your own changes. If a failure is ambiguous, unrelated to your changes, or would require a large refactor or a risky/destructive change to resolve, stop and ask the user instead of pushing speculative fixes.
+
+**3. Keep the PR description in sync with the branch.** Any time you push new work to an open PR — review fixes, CI fixes, or follow-up commits that go beyond the PR's original scope — re-check the PR description and update it to cover the *totality* of the work now on the branch, not just what existed when the PR was first opened. Fold the new changes into the Summary, refresh the Test plan, and bring the title, prefix, and labels back in line with the [commit & PR conventions](#commit--pr-conventions) if the scope has grown. The description and the branch diff should never tell different stories — don't let the description silently drift behind the work.
 
 ## Common Errors
 

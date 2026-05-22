@@ -4,13 +4,14 @@
 
 import { openPartwrightDB } from './db';
 
-export type StoreName = 'sessions' | 'versions' | 'notes' | 'aiKeys' | 'aiChats' | 'aiAttachments';
+export type StoreName = 'sessions' | 'versions' | 'parts' | 'notes' | 'aiKeys' | 'aiChats' | 'aiAttachments';
 
-export const ALL_STORES: StoreName[] = ['sessions', 'versions', 'notes', 'aiKeys', 'aiChats', 'aiAttachments'];
+export const ALL_STORES: StoreName[] = ['sessions', 'versions', 'parts', 'notes', 'aiKeys', 'aiChats', 'aiAttachments'];
 
 export const STORE_LABELS: Record<StoreName, string> = {
   sessions: 'Sessions',
   versions: 'Versions',
+  parts: 'Parts',
   notes: 'Session notes',
   aiKeys: 'AI API keys',
   aiChats: 'AI chat messages',
@@ -84,7 +85,7 @@ export function listLocalStorageEntries(): LocalStorageEntry[] {
 // === Selective wipe ===
 
 export interface WipeSelection {
-  /** Sessions, versions, and notes (the core modeling data + legacy DB). */
+  /** Sessions, parts, versions, and notes (the core modeling data + legacy DB). */
   modelingData: boolean;
   /** AI chat transcripts. */
   chats: boolean;
@@ -170,7 +171,7 @@ async function clearModelCaches(): Promise<void> {
  *  in-memory state is rebuilt from the now-empty stores. */
 export async function wipeData(sel: WipeSelection): Promise<void> {
   const stores: StoreName[] = [];
-  if (sel.modelingData) stores.push('sessions', 'versions', 'notes');
+  if (sel.modelingData) stores.push('sessions', 'versions', 'parts', 'notes');
   if (sel.chats) stores.push('aiChats');
   if (sel.apiKeys) stores.push('aiKeys');
   if (sel.attachments) stores.push('aiAttachments');
