@@ -14,6 +14,8 @@
 // the on-screen Undo/Redo buttons — so the keyboard path needs no extra wiring.
 
 import { IS_MAC } from './shortcutDefs';
+import { openCommandPalette, isCommandPaletteOpen } from './commandPalette';
+import { openShortcutsOverlay } from './shortcutsOverlay';
 import {
   removeLastRegion,
   redoLastRegion,
@@ -77,7 +79,27 @@ function routeRedo(): boolean {
 
 export function installKeyboardShortcuts(handlers: ShortcutHandlers): void {
   document.addEventListener('keydown', (e) => {
+    // While the palette is open it owns the keyboard (its own Escape/arrows/
+    // Enter handler runs); don't let app shortcuts fire underneath it.
+    if (isCommandPaletteOpen()) return;
+
     const mod = IS_MAC ? e.metaKey : e.ctrlKey;
+
+    // Command palette — ⌘K / Ctrl+K, global regardless of focus.
+    if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      openCommandPalette();
+      return;
+    }
+
+    // Shortcuts cheat sheet — `?`, but only outside text fields / the editor
+    // so typing a literal "?" still works.
+    if (!mod && !e.altKey && e.key === '?' && !isEditableTarget(e.target)) {
+      e.preventDefault();
+      openShortcutsOverlay();
+      return;
+    }
+
     if (!mod || e.altKey) return; // ignore AltGr (Ctrl+Alt) and unrelated combos
     const key = e.key.toLowerCase();
 
