@@ -8,7 +8,7 @@ import { runTurn, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setToggles, providerLabel, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setToggles, providerLabel, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { generateId } from '../storage/db';
@@ -836,6 +836,28 @@ function renderToggleStrip(): void {
     saveSettings(setToggles(loadSettings(), { maxSpend: spendCap.value as ChatToggles['maxSpend'] }));
   });
   toggleStripEl.appendChild(spendCap);
+
+  // Thinking level — how much the model reasons before answering. Maps
+  // per-provider to Anthropic extended-thinking budget_tokens, Gemini
+  // thinkingBudget (+ surfaced thought parts), and OpenAI reasoning_effort.
+  // Off (the default) sends no thinking request, so it's the cheapest and
+  // reproduces the pre-feature behavior. No effect on local models.
+  const thinkSel = document.createElement('select');
+  thinkSel.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
+  thinkSel.title = 'Thinking: how much the model reasons before it answers. Maps to Anthropic extended-thinking budget, Gemini thinkingBudget, and OpenAI reasoning_effort. Off = no extended reasoning (cheapest, fastest). Higher levels help on hard spatial/assembly problems but cost more output tokens. No effect on local models (their reasoning is handled by the model itself).';
+  for (const opt of THINKING_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = opt.id;
+    o.textContent = `🧠 ${opt.label}`;
+    o.title = opt.hint;
+    thinkSel.appendChild(o);
+  }
+  thinkSel.value = toggles.thinking;
+  thinkSel.addEventListener('change', () => {
+    saveSettings(setToggles(loadSettings(), { thinking: thinkSel.value as ChatToggles['thinking'] }));
+    renderCostMeter();
+  });
+  toggleStripEl.appendChild(thinkSel);
 }
 
 function togglePill(label: string, on: boolean, tooltip: string, onClick: () => void): HTMLButtonElement {

@@ -5,7 +5,9 @@
 
 import type {
   ChatMessage,
+  ChatToggles,
   PersistedToolCall,
+  ThinkingBlockData,
   TurnUsage,
 } from './types';
 import type { ToolDefinition } from './tools';
@@ -95,6 +97,10 @@ export interface StreamResult {
   /** Concatenated thought-summary text for the turn, if the model emitted
    *  any. Undefined/empty for non-thinking models. */
   thinking?: string;
+  /** Anthropic-only thinking-block replay payload — always undefined here
+   *  (Gemini's turn-to-turn continuity rides on `thoughtSignature` on the
+   *  tool call). Declared for a uniform `StreamResult` across providers. */
+  thinkingBlocks?: ThinkingBlockData[];
 }
 
 export interface GeminiRequestSpec {
@@ -105,6 +111,32 @@ export interface GeminiRequestSpec {
   history: ChatMessage[];
   tools: ToolDefinition[];
   maxTokens?: number;
+  /** Extended-thinking level. 'off' (default) hides reasoning and lets the
+   *  model pick its own budget; Low/Med/High surface thoughts with a growing
+   *  `thinkingBudget`. */
+  thinking?: ChatToggles['thinking'];
+}
+
+/** Gemini `thinkingBudget` values for each on-level. 'off' is handled
+ *  separately (it doesn't set a budget at all). */
+const GEMINI_THINKING_BUDGET: Record<Exclude<ChatToggles['thinking'], 'off'>, number> = {
+  low: 2048,
+  medium: 8192,
+  high: 24576,
+};
+
+/** Build the Gemini `thinkingConfig` for a thinking level.
+ *
+ *  'off' only flips `includeThoughts` to false — it deliberately does NOT
+ *  force `thinkingBudget: 0`. Some models (Gemini 3 / 2.5 Pro) reject a zero
+ *  budget, and since 'off' is the global default, a hard 400 there would look
+ *  like Gemini itself is broken. So 'off' means "don't surface reasoning";
+ *  the model still uses its own default budget. Low/Med/High surface thoughts
+ *  and request an increasing budget (best-effort: a model that doesn't honor
+ *  `thinkingBudget` will clamp it, and the user sees any hard error). */
+function geminiThinkingConfig(level: ChatToggles['thinking']): Record<string, unknown> {
+  if (level === 'off') return { includeThoughts: false };
+  return { includeThoughts: true, thinkingBudget: GEMINI_THINKING_BUDGET[level] };
 }
 
 interface GeminiToolDef {
@@ -162,14 +194,12 @@ export async function streamTurn(
     contents: buildGeminiContents(spec.history),
     generationConfig: {
       maxOutputTokens: max_tokens,
-      // Ask thinking models (Gemini 2.5 / 3.x) to return their reasoning as
-      // flagged `thought` parts. Without this the reasoning either stays
-      // internal or bleeds into the answer text as one undifferentiated
-      // wall — either way we can't box it. With it, thought parts arrive
-      // tagged `thought:true` and we split them into the thinking channel.
-      // All curated default models support this; pre-2.5 models would
-      // ignore/reject it, but the lineup is firmly 2.5+.
-      thinkingConfig: { includeThoughts: true },
+      // Thinking level drives whether we ask the model (Gemini 2.5 / 3.x) to
+      // return its reasoning as flagged `thought` parts and how big a budget
+      // to request. When surfaced, thought parts arrive tagged `thought:true`
+      // and we split them into the thinking channel (the box) rather than the
+      // answer bubble. 'off' (the default) keeps reasoning internal/hidden.
+      thinkingConfig: geminiThinkingConfig(spec.thinking ?? 'off'),
     },
     // systemInstruction takes `parts` only — adding `role` makes some
     // server-side validators silently drop the instruction.

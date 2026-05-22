@@ -96,8 +96,9 @@ test.describe('Multi-provider AI', () => {
   test('Gemini routes thought parts to the thinking channel', async ({ page }) => {
     // Gemini 3 thinking models emit reasoning as `thought:true` text parts.
     // They must land in result.thinking (the collapsible box), NOT in the
-    // answer text — and we must request them via thinkingConfig so they
-    // come back flagged. Stub the SSE stream and assert the split.
+    // answer text — and when thinking is enabled we must request them via
+    // thinkingConfig so they come back flagged. Stub the SSE stream and
+    // assert the split. (Thinking is opt-in now, so drive a non-off level.)
     await page.goto('/editor');
     await page.waitForSelector('#ai-panel');
     const out = await page.evaluate(async () => {
@@ -119,7 +120,7 @@ test.describe('Multi-provider AI', () => {
       try {
         const result = await gemini.streamTurn(
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          { apiKey: 'k', model: 'gemini-3.5-flash', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] },
+          { apiKey: 'k', model: 'gemini-3.5-flash', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [], thinking: 'medium' },
           { onThinking: d => thinkingDeltas.push(d), onText: d => textDeltas.push(d) },
         );
         return { thinking: result.thinking ?? '', text: result.text, captured, thinkingDeltas, textDeltas };
@@ -249,6 +250,177 @@ test.describe('Multi-provider AI', () => {
     const userIdx = msgs.findIndex(m => m.role === 'user' && typeof m.content === 'string' && m.content.includes('add a handle'));
     expect(assistantIdx).toBeLessThan(toolIdx);
     expect(toolIdx).toBeLessThan(userIdx);
+  });
+
+  test('Anthropic sends the thinking param with budget when enabled, omits it when off', async ({ page }) => {
+    // Off must reproduce the pre-feature request exactly (no `thinking`
+    // field); a non-off level enables extended thinking with budget_tokens
+    // and floats max_tokens above the budget (the API requires >).
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel');
+    const out = await page.evaluate(async () => {
+      const a = await import('/src/ai/anthropic.ts');
+      const bodies: Record<string, { thinking?: unknown; max_tokens?: number }> = {};
+      const origFetch = window.fetch;
+      // A minimal but complete Anthropic SSE stream so finalMessage()
+      // resolves cleanly. The body is captured before any parsing, so the
+      // assertion holds regardless.
+      const SSE = [
+        'event: message_start',
+        'data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-haiku-4-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}}',
+        '',
+        'event: content_block_start',
+        'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+        '',
+        'event: content_block_delta',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}',
+        '',
+        'event: content_block_stop',
+        'data: {"type":"content_block_stop","index":0}',
+        '',
+        'event: message_delta',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}',
+        '',
+        'event: message_stop',
+        'data: {"type":"message_stop"}',
+        '',
+        '',
+      ].join('\n');
+      async function run(level: string, key: string) {
+        a.resetClient();
+        // @ts-expect-error test stub
+        window.fetch = async (_input: unknown, init: { body?: string }) => {
+          bodies[key] = JSON.parse(String(init?.body ?? '{}'));
+          return new Response(new Blob([SSE]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+        };
+        try {
+          await a.streamTurn({
+            apiKey: 'k', model: 'claude-haiku-4-5', systemPrompt: 'sys', systemSuffix: '',
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            apiMessages: [{ role: 'user', content: 'hi' }] as any, tools: [], thinking: level as any,
+          });
+        } catch { /* body already captured; parsing differences are irrelevant here */ }
+      }
+      try { await run('off', 'off'); await run('medium', 'medium'); } finally { window.fetch = origFetch; }
+      return bodies;
+    });
+    expect(out.off.thinking).toBeUndefined();
+    expect(out.medium.thinking).toEqual({ type: 'enabled', budget_tokens: 8192 });
+    expect(out.medium.max_tokens as number).toBeGreaterThan(8192);
+  });
+
+  test('Anthropic replays signed thinking blocks before tool_use during tool use', async ({ page }) => {
+    // The riskiest invariant: when thinking is on, an assistant turn that
+    // contains a tool_use must lead with its signed thinking block, or the
+    // next request 400s. buildApiMessages is a pure function, so assert the
+    // ordering directly. With replay off, no thinking block leaks in.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel');
+    const out = await page.evaluate(async () => {
+      const a = await import('/src/ai/anthropic.ts');
+      const history = [
+        {
+          id: 'a1', sessionId: 's', role: 'assistant',
+          blocks: [{ type: 'text', text: 'let me check' }],
+          toolCalls: [{ id: 'tu_1', name: 'getGeometryData', input: {} }],
+          thinkingBlocks: [{ type: 'thinking', thinking: 'I should inspect the mesh first.', signature: 'SIG_1' }],
+          createdAt: 0, seq: 0,
+        },
+        { id: 'u1', sessionId: 's', role: 'user', blocks: [], toolResults: [{ toolUseId: 'tu_1', content: '{"ok":true}' }], createdAt: 0, seq: 1 },
+      ];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const withReplay = a.buildApiMessages(history as any, { replayThinking: true });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const without = a.buildApiMessages(history as any, { replayThinking: false });
+      return { withReplay, without };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const asst = out.withReplay.find((m: any) => m.role === 'assistant');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const types = asst.content.map((b: any) => b.type);
+    expect(asst.content[0].type).toBe('thinking');
+    expect(asst.content[0].signature).toBe('SIG_1');
+    expect(asst.content[0].thinking).toContain('inspect the mesh');
+    expect(types.indexOf('thinking')).toBeLessThan(types.indexOf('tool_use'));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const asst2 = out.without.find((m: any) => m.role === 'assistant');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(asst2.content.some((b: any) => b.type === 'thinking')).toBe(false);
+  });
+
+  test('Gemini maps the thinking level to thinkingConfig', async ({ page }) => {
+    // off → reasoning hidden, no forced budget (so Pro models don't 400 on
+    // budget 0). A non-off level surfaces thoughts with a positive budget.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel');
+    const out = await page.evaluate(async () => {
+      const gemini = await import('/src/ai/gemini.ts');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bodies: Record<string, any> = {};
+      const origFetch = window.fetch;
+      async function run(level: string, key: string) {
+        // @ts-expect-error test stub
+        window.fetch = async (_input: unknown, init: { body?: string }) => {
+          bodies[key] = JSON.parse(String(init?.body ?? '{}'));
+          const body = 'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}\r\n\r\n';
+          return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+        };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await gemini.streamTurn({ apiKey: 'k', model: 'gemini-3.5-flash', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [], thinking: level as any });
+      }
+      try { await run('off', 'off'); await run('high', 'high'); } finally { window.fetch = origFetch; }
+      return bodies;
+    });
+    expect(out.off.generationConfig.thinkingConfig.includeThoughts).toBe(false);
+    expect(out.off.generationConfig.thinkingConfig.thinkingBudget).toBeUndefined();
+    expect(out.high.generationConfig.thinkingConfig.includeThoughts).toBe(true);
+    expect(out.high.generationConfig.thinkingConfig.thinkingBudget).toBeGreaterThan(0);
+  });
+
+  test('OpenAI sends reasoning_effort only for reasoning models + non-off levels', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel');
+    const out = await page.evaluate(async () => {
+      const openai = await import('/src/ai/openai.ts');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bodies: Record<string, any> = {};
+      const origFetch = window.fetch;
+      async function run(model: string, level: string, key: string) {
+        // @ts-expect-error test stub
+        window.fetch = async (_input: unknown, init: { body?: string }) => {
+          bodies[key] = JSON.parse(String(init?.body ?? '{}'));
+          const body = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+          return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+        };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await openai.streamTurn({ apiKey: 'k', model, systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [], thinking: level as any });
+      }
+      try {
+        await run('gpt-5-mini', 'high', 'reasoningHigh');
+        await run('gpt-5-mini', 'off', 'reasoningOff');
+        await run('gpt-4o', 'high', 'chatHigh');
+      } finally { window.fetch = origFetch; }
+      return bodies;
+    });
+    expect(out.reasoningHigh.reasoning_effort).toBe('high');
+    expect(out.reasoningOff.reasoning_effort).toBeUndefined();
+    expect(out.chatHigh.reasoning_effort).toBeUndefined();
+  });
+
+  test('Thinking pill is in the toggle strip, defaults Off, and persists', async ({ page }) => {
+    await page.goto('/editor');
+    await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
+    await page.reload();
+    await page.waitForSelector('#ai-panel');
+    await page.locator('#btn-ai').dispatchEvent('click');
+    const thinkSel = page.locator('#ai-panel select[title^="Thinking:"]');
+    await expect(thinkSel).toBeVisible();
+    await expect(thinkSel).toHaveValue('off');
+    await thinkSel.selectOption('high');
+    const stored = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem('partwright-ai-settings-v1') || '{}').toggles?.thinking,
+    );
+    expect(stored).toBe('high');
   });
 
   test('settings modal has a tab per provider', async ({ page }) => {

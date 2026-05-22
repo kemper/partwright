@@ -2,7 +2,7 @@
 // Persisted to localStorage as one JSON blob — sticky across sessions and
 // separate from the per-session chat transcripts in IndexedDB.
 
-import { MAX_ITERATIONS, MAX_SPEND, type AnthropicModelId, type ChatToggles, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
+import { MAX_ITERATIONS, MAX_SPEND, THINKING_LEVELS, type AnthropicModelId, type ChatToggles, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
 import type { LocalModelId } from './localModels';
 import { LOCAL_MODELS } from './localModels';
 
@@ -84,6 +84,10 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     autoRetry: 0,
     maxIterations: 'low',
     maxSpend: 'cheap',
+    // Thinking stays off across every preset so applying a preset never
+    // silently turns on (and starts billing for) extended reasoning — it's
+    // an opt-in the user picks deliberately with the Thinking pill.
+    thinking: 'off',
     anthropicModel: 'claude-haiku-4-5',
   },
   standard: {
@@ -95,6 +99,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     autoRetry: 1,
     maxIterations: 'medium',
     maxSpend: 'medium',
+    thinking: 'off',
     anthropicModel: 'claude-sonnet-4-6',
   },
   full: {
@@ -103,6 +108,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     autoRetry: 3,
     maxIterations: 'high',
     maxSpend: 'high',
+    thinking: 'off',
     anthropicModel: 'claude-opus-4-7',
   },
 };
@@ -159,6 +165,7 @@ function cloneToggles(t: ChatToggles): ChatToggles {
     autoRetry: t.autoRetry,
     maxIterations: t.maxIterations,
     maxSpend: t.maxSpend,
+    thinking: t.thinking,
     provider: t.provider,
     anthropicModel: t.anthropicModel,
     localModel: t.localModel,
@@ -195,6 +202,7 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       autoRetry: p.autoRetry,
       maxIterations: p.maxIterations,
       maxSpend: p.maxSpend,
+      thinking: p.thinking,
       // Presets target Anthropic, but if the user is currently on a
       // different provider, keep them on it — the preset only adjusts
       // cost/scope/views.
@@ -264,6 +272,7 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     autoRetry: partial.autoRetry ?? settings.toggles.autoRetry,
     maxIterations: partial.maxIterations ?? settings.toggles.maxIterations,
     maxSpend: partial.maxSpend ?? settings.toggles.maxSpend,
+    thinking: partial.thinking ?? settings.toggles.thinking,
     provider: partial.provider ?? settings.toggles.provider,
     anthropicModel: partial.anthropicModel ?? settings.toggles.anthropicModel,
     localModel: partial.localModel ?? settings.toggles.localModel,
@@ -340,6 +349,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       autoRetry: tgls.autoRetry ?? DEFAULT_SETTINGS.toggles.autoRetry,
       maxIterations: tgls.maxIterations ?? DEFAULT_SETTINGS.toggles.maxIterations,
       maxSpend: tgls.maxSpend ?? DEFAULT_SETTINGS.toggles.maxSpend,
+      thinking: tgls.thinking ?? DEFAULT_SETTINGS.toggles.thinking,
       provider,
       anthropicModel: tgls.anthropicModel ?? legacyAnthropic ?? DEFAULT_SETTINGS.toggles.anthropicModel,
       localModel: validLocalModel,
@@ -438,6 +448,10 @@ export const MAX_ITERATIONS_OPTIONS: { id: ChatToggles['maxIterations']; label: 
 
 export const MAX_SPEND_OPTIONS: { id: ChatToggles['maxSpend']; label: string; hint: string }[] =
   (Object.entries(MAX_SPEND) as [ChatToggles['maxSpend'], (typeof MAX_SPEND)[keyof typeof MAX_SPEND]][])
+    .map(([id, v]) => ({ id, label: v.label, hint: v.hint }));
+
+export const THINKING_OPTIONS: { id: ChatToggles['thinking']; label: string; hint: string }[] =
+  (Object.entries(THINKING_LEVELS) as [ChatToggles['thinking'], (typeof THINKING_LEVELS)[keyof typeof THINKING_LEVELS]][])
     .map(([id, v]) => ({ id, label: v.label, hint: v.hint }));
 
 export const ANTHROPIC_MODEL_OPTIONS: { id: AnthropicModelId; label: string }[] = [

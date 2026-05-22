@@ -9,14 +9,36 @@
 import type {
   ChatBlock,
   ChatMessage,
+  ChatToggles,
   ImageSource,
   PersistedToolCall,
+  ThinkingBlockData,
   TurnUsage,
 } from './types';
 import type { ToolDefinition } from './tools';
 import { readSseStream } from './sse';
 
 const API_URL = 'https://api.openai.com/v1/chat/completions';
+
+/** OpenAI reasoning models (gpt-5 family + the o-series) accept the
+ *  `reasoning_effort` param; the 4o/4.1 chat models reject it with a 400
+ *  `unsupported_parameter`. Sniff the id so we only send it where it's
+ *  valid. */
+function isReasoningModel(model: string): boolean {
+  return /^(gpt-5|o1|o3|o4)/i.test(model);
+}
+
+/** Map the shared thinking level to OpenAI `reasoning_effort`. 'off' returns
+ *  null so the param is omitted entirely — leaving the provider default in
+ *  place, i.e. byte-identical to the pre-feature request. 'low'/'medium'/
+ *  'high' map straight through (all three are valid effort values on every
+ *  reasoning model). Non-reasoning models always return null. Note: OpenAI
+ *  hides reasoning-model chain-of-thought, so this controls cost/quality but
+ *  never surfaces a thinking box. */
+function reasoningEffort(model: string, level: ChatToggles['thinking']): string | null {
+  if (level === 'off' || !isReasoningModel(model)) return null;
+  return level;
+}
 
 function authHeaders(apiKey: string): HeadersInit {
   return {
@@ -65,6 +87,10 @@ export interface StreamResult {
    *  their chain of thought); present so chatLoop reads `result.thinking`
    *  uniformly across providers. */
   thinking?: string;
+  /** Anthropic-only thinking-block replay payload — always undefined here.
+   *  Declared so chatLoop can read `result.thinkingBlocks` across the
+   *  provider union without a cast. */
+  thinkingBlocks?: ThinkingBlockData[];
 }
 
 export interface OpenaiRequestSpec {
@@ -76,6 +102,9 @@ export interface OpenaiRequestSpec {
   history: ChatMessage[];
   tools: ToolDefinition[];
   maxTokens?: number;
+  /** Extended-thinking level → `reasoning_effort` (reasoning models only).
+   *  'off' (default) omits the param. */
+  thinking?: ChatToggles['thinking'];
 }
 
 interface OpenAIToolDef {
@@ -133,6 +162,11 @@ export async function streamTurn(
     stream_options: { include_usage: true },
   };
   if (tools.length > 0) body.tools = tools;
+  // reasoning_effort only for reasoning models + non-'off' levels; otherwise
+  // omitted so the request matches the pre-feature shape (and 4o/4.1 don't
+  // 400 on an unsupported param).
+  const effort = reasoningEffort(spec.model, spec.thinking ?? 'off');
+  if (effort) body.reasoning_effort = effort;
 
   let res: Response;
   try {
