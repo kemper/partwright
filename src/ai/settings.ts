@@ -190,6 +190,19 @@ export function onSettingsChange(fn: (settings: AiSettings) => void): () => void
   return () => listeners.delete(fn);
 }
 
+/** Drop the in-memory cache and re-read settings from localStorage, then
+ *  notify listeners. Used when another tab writes settings (the `storage`
+ *  event fires only in *other* tabs): our `cached` blob would otherwise shadow
+ *  the peer tab's change forever, and the next `saveSettings` here would write
+ *  the stale blob back and silently revert their edit. Returns the freshly
+ *  loaded settings. */
+export function reloadSettingsFromStorage(): AiSettings {
+  cached = null;
+  const next = loadSettings();
+  for (const fn of listeners) fn(next);
+  return next;
+}
+
 export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
   if (preset === 'custom') return { ...settings, preset };
   const p = DEFAULT_TOGGLES_BY_PRESET[preset];
@@ -396,8 +409,8 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
   const requestedProvider = tgls.provider ?? (legacyIsLocal ? 'local' : DEFAULT_SETTINGS.toggles.provider);
   // If we had to drop a saved local-model id (curated list pruned it), also
   // revert the provider. Otherwise the AI panel sticks on "No local model
-  // picked" instead of offering the dual "Connect Anthropic API or run a
-  // local model" prompt that fresh users get.
+  // picked" instead of offering the generic "Connect an AI agent" prompt
+  // that fresh users get.
   const localModelCleared = rawLocalModel !== null && validLocalModel === null;
   const provider = localModelCleared && requestedProvider === 'local'
     ? DEFAULT_SETTINGS.toggles.provider

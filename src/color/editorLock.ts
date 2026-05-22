@@ -1,7 +1,7 @@
 // Editor lock — locks the code editor when the current version has color regions.
 // Provides lock overlay banner and unlock modal with preserve/destructive paths.
 
-import { setReadOnly } from '../editor/codeEditor';
+import { setReadOnlyReason } from '../editor/editorAccess';
 import { hasRegions, clearRegions, serialize as serializeRegions, type SerializedColorRegion } from './regions';
 
 let locked = false;
@@ -38,7 +38,7 @@ export function syncLockState(): void {
   if (shouldLock === locked) return;
 
   locked = shouldLock;
-  setReadOnly(locked);
+  setReadOnlyReason('colorLock', locked);
 
   if (locked) {
     showLockOverlay();

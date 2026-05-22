@@ -5,7 +5,6 @@ import {
   onStateChange,
   onNotesChange,
   createSession,
-  closeSession,
   saveVersion,
   navigateVersion,
   listCurrentVersions,
@@ -203,9 +202,13 @@ function render(state: SessionState) {
   const listBtn = btn('Sessions…', () => callbacks.onOpenSessionList());
   barEl.appendChild(listBtn);
 
-  // Close session
-  const closeBtn = btn('✕', () => closeSession());
-  closeBtn.title = 'Close session';
+  // "Close" starts a fresh blank session rather than dropping to a
+  // session-less editor — a session always exists while the editor is open.
+  const closeBtn = btn('✕', async () => {
+    await createSession();
+    callbacks.onNewSession();
+  });
+  closeBtn.title = 'Close & start a new session';
   barEl.appendChild(closeBtn);
 }
 

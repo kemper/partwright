@@ -83,7 +83,8 @@ export function buildSTL(meshData: MeshData, customName?: string): BuiltExport {
   return { blob, filename: getExportFilename('stl', customName), mimeType };
 }
 
-export function exportSTL(meshData: MeshData, customName?: string): void {
+export function exportSTL(meshData: MeshData, customName?: string): string {
   const built = buildSTL(meshData, customName);
   downloadBlob(built.blob, built.filename, 'STL');
+  return built.filename;
 }

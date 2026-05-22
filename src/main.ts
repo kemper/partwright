@@ -36,7 +36,7 @@ import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { showToast } from './ui/toast';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel } from './ui/aiPanel';
 import { getKey as getAiKey, mergeChatBucket } from './ai/db';
-import { loadSettings as loadAiSettings, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
+import { loadSettings as loadAiSettings, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
 import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
@@ -49,6 +49,7 @@ import { createVersionsView, refreshVersions } from './ui/versions';
 import { createImagesView, refreshImages } from './ui/imagesView';
 import { createDiffView, refreshDiff } from './ui/diffView';
 import { createNotesView, refreshNotes } from './ui/notes';
+import { initDataExplorer, refreshDataExplorer } from './ui/dataExplorer';
 import { initSessionList, showSessionList } from './ui/sessionList';
 import { exportGLB, buildGLB } from './export/gltf';
 import { exportSTL, buildSTL } from './export/stl';
@@ -150,9 +151,14 @@ import {
   getSessionContext,
   recordError,
   onStateChange,
+  initSessionTabSync,
+  setViewerPredicate,
+  refreshCurrentSession,
   type ExportedSession,
   type ExportOptions,
 } from './storage/sessionManager';
+import { acquireSession as acquireSessionLock, initSessionLeader, onOwnershipChange } from './storage/sessionLock';
+import { initViewerMode, isReadOnlyViewer } from './ui/viewerMode';
 import type { Version } from './storage/db';
 import {
   ValidationError,
@@ -526,6 +532,9 @@ async function saveCurrentVersion(label?: string): Promise<
   if (!getState().session) {
     return { error: 'No active session. Call createSession() or openSession(id) first.' };
   }
+  if (isReadOnlyViewer()) {
+    return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
+  }
   const thumbnail = await captureThumbnail();
   const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label);
   if (version) return { id: version.id, index: version.index, label: version.label };
@@ -574,7 +583,7 @@ function shouldShowLanding(): boolean {
   const params = new URLSearchParams(window.location.search);
   // Landing if at root path AND no query params that indicate a specific view
   const isRootPath = path === '/' || path === '';
-  return isRootPath && !params.has('view') && !params.has('session') && !params.has('gallery') && !params.has('versions') && !params.has('images') && !params.has('diff') && !params.has('notes');
+  return isRootPath && !params.has('view') && !params.has('session') && !params.has('gallery') && !params.has('versions') && !params.has('images') && !params.has('diff') && !params.has('notes') && !params.has('data');
 }
 
 function shouldShowHelp(): boolean {
@@ -592,6 +601,7 @@ function shouldShow404(): boolean {
 
 function getTabFromURL(): TabName {
   const params = new URLSearchParams(window.location.search);
+  if (params.has('data')) return 'data';
   if (params.has('notes')) return 'notes';
   if (params.has('diff')) return 'diff';
   if (params.has('images')) return 'images';
@@ -961,24 +971,25 @@ async function main() {
     onExportGLB: async () => {
       try {
         if (currentMeshData) assertFiniteMesh(currentMeshData);
-        await exportGLB();
+        const filename = await exportGLB();
+        showToast(`Exported ${filename}`, { variant: 'success' });
       } catch (e) {
         showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
       }
     },
     onExportSTL: () => {
       if (!currentMeshData) return;
-      try { exportSTL(currentMeshData); }
+      try { showToast(`Exported ${exportSTL(currentMeshData)}`, { variant: 'success' }); }
       catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
     },
     onExportOBJ: () => {
       if (!currentMeshData) return;
-      try { exportOBJ(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData); }
+      try { showToast(`Exported ${exportOBJ(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
       catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
     },
     onExport3MF: () => {
       if (!currentMeshData) return;
-      try { export3MF(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData); }
+      try { showToast(`Exported ${export3MF(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
       catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
     },
     onExportSessionJSON: async () => {
@@ -1075,7 +1086,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab } = createLayout(editorUI);
+  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab } = createLayout(editorUI);
 
   // Format button and auto-format toggle
   const AUTO_FORMAT_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40';
@@ -1147,6 +1158,9 @@ async function main() {
   // Init notes panel
   createNotesView(notesContainer);
 
+  // Init data explorer (browse everything stored in this browser)
+  initDataExplorer(dataContainer);
+
   // Init versions panel (manage saved versions: rename / delete, with undo/redo)
   createVersionsView(versionsContainer, {
     onOpenVersion: async (version) => {
@@ -1166,6 +1180,7 @@ async function main() {
     if (e.detail.tab === 'images') refreshImages();
     if (e.detail.tab === 'diff') refreshDiff();
     if (e.detail.tab === 'notes') refreshNotes();
+    if (e.detail.tab === 'data') refreshDataExplorer();
   }) as EventListener);
 
   // Init session list
@@ -1741,12 +1756,54 @@ async function main() {
     await syncEditorFromURL();
   }
 
+  // Keep this tab's session state in sync with peer tabs that mutate the same
+  // session in another window, and coordinate single-writer leadership.
+  initSessionTabSync();
+  initSessionLeader();
+  // Reflect single-writer ownership across the whole editor surface: the
+  // non-owner tab becomes a read-only viewer (editor + paint + run + save
+  // disabled, with a "Take over" banner).
+  initViewerMode();
+
   // Update document title when session state changes (create, open, close, rename)
   onStateChange((state) => {
     updateDocumentTitle({ page: 'editor', sessionName: state.session?.name ?? null });
     // Re-bind the AI panel to the current session so chat history follows.
     void setAiActiveSession(state.session?.id ?? null);
+    // Claim (or queue for) write-ownership of the now-active session so two
+    // tabs on the same session don't both drive the chat / save versions.
+    void acquireSessionLock(state.session?.id ?? null);
+    // A read-only viewer mirrors the leader's current (latest) version into its
+    // editor + viewport so it reads along instead of freezing on an old one.
+    if (isReadOnlyViewer() && state.currentVersion && getValue() !== state.currentVersion.code) {
+      void loadVersionIntoEditor(state.currentVersion);
+    }
   });
+
+  // Tell the session manager this tab's viewer status so cross-tab reloads
+  // follow the latest version when we're a viewer; and when we *become* a
+  // viewer (a peer took control), snap to the leader's latest state.
+  setViewerPredicate(() => isReadOnlyViewer());
+  onOwnershipChange(({ sessionId, owned }) => {
+    if (sessionId && !owned) void refreshCurrentSession();
+  });
+
+  // syncEditorFromURL() above opened the initial session BEFORE the listener
+  // was registered, so claim that session's leadership explicitly now —
+  // otherwise a tab that loads straight into a session (?session=…) never
+  // engages the single-writer lock. ?takeover=1 (from a "Take control" reload)
+  // claims leadership outright, bumping the other tab to read-only; strip it so
+  // it doesn't stick on refresh.
+  {
+    const tparams = new URLSearchParams(window.location.search);
+    const steal = tparams.get('takeover') === '1';
+    void acquireSessionLock(getState().session?.id ?? null, { steal });
+    if (steal) {
+      tparams.delete('takeover');
+      const qs = tparams.toString();
+      window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
+    }
+  }
 
   // Initialize the AI chat side drawer once the editor UI is mounted.
   // Wraps initAiPanel + setAiToolbarState; tolerated if it fails (e.g.
@@ -1765,9 +1822,15 @@ async function main() {
       // Watch for key/provider changes via a poll-on-focus trigger — cheap,
       // and matches the chip's update cadence in the AI settings modal.
       window.addEventListener('focus', () => { void refreshAiToolbarChip(); });
-      // Also watch localStorage for cross-tab provider switches.
+      // Also watch localStorage for cross-tab provider switches. Drop our
+      // cached settings blob first so refreshAiToolbarChip (and any
+      // onSettingsChange subscriber, e.g. the AI panel) reads the peer tab's
+      // change instead of our stale copy.
       window.addEventListener('storage', e => {
-        if (e.key === 'partwright-ai-settings-v1') void refreshAiToolbarChip();
+        if (e.key === 'partwright-ai-settings-v1') {
+          reloadSettingsFromStorage();
+          void refreshAiToolbarChip();
+        }
       });
     } catch (err) {
       console.warn('AI panel init failed:', err);
@@ -3480,8 +3543,8 @@ async function main() {
     },
 
     /** Programmatic tab switching */
-    setView(tab: 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes'): void {
-      assertEnum(tab, ['interactive', 'gallery', 'versions', 'images', 'diff', 'notes'] as const, 'setView(tab)');
+    setView(tab: 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data'): void {
+      assertEnum(tab, ['interactive', 'gallery', 'versions', 'images', 'diff', 'notes', 'data'] as const, 'setView(tab)');
       switchTab(tab);
     },
 
@@ -6014,6 +6077,9 @@ async function main() {
 }
 
 function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'loading', text: string) {
+  // Announce status changes (Ready / Running / Error) to assistive tech.
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-live', 'polite');
   el.textContent = text;
   el.title = text;
   el.className = 'text-xs font-mono max-w-[60%] truncate text-right ';
