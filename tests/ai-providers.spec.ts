@@ -725,3 +725,37 @@ test.describe('Multi-provider AI', () => {
     await expect(page.locator('a[href*="platform.openai.com"]')).toBeVisible();
   });
 });
+
+test.describe('Capability suffix', () => {
+  // Regression: when the user flipped the Paint toggle ON mid-conversation,
+  // the per-turn system suffix merely dropped its "you cannot paint"
+  // restriction line — it never positively asserted that paint was now
+  // available. The model kept claiming paint was off on the first request
+  // after enabling, only believing the user once told a second time. The
+  // suffix now declares each capability ON/OFF explicitly so a freshly
+  // enabled tool is unambiguous on the very next turn.
+  test('positively declares paint ON/OFF based on the toggle', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel');
+    const { offSuffix, onSuffix } = await page.evaluate(async () => {
+      const sp = await import('/src/ai/systemPrompt.ts');
+      const settings = await import('/src/ai/settings.ts');
+      const base = settings.loadSettings();
+      const off = settings.setToggles(base, { scope: { paintFaces: false } }).toggles;
+      const on = settings.setToggles(base, { scope: { paintFaces: true } }).toggles;
+      return { offSuffix: sp.toggleSuffix(off), onSuffix: sp.toggleSuffix(on) };
+    });
+
+    // OFF: explicit OFF in the capability list + a behavioural reminder.
+    expect(offSuffix).toContain('Paint / color regions: OFF');
+    expect(offSuffix).toContain('Paint is OFF');
+
+    // ON: explicit ON, and no lingering "off" signal for paint that the
+    // model could anchor on.
+    expect(onSuffix).toContain('Paint / color regions: ON');
+    expect(onSuffix).not.toContain('Paint / color regions: OFF');
+    expect(onSuffix).not.toContain('Paint is OFF');
+    // The override directive that tells the model the list beats earlier turns.
+    expect(onSuffix).toContain('OVERRIDES anything said earlier');
+  });
+});

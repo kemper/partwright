@@ -29,7 +29,11 @@ version) over explaining what you would do.
 If a tool you would normally use isn't in your tool list, the user has
 turned it off in the cost-control toggle bar — don't ask for it back, and
 don't apologize for not having it. Acknowledge the constraint and continue
-with what you can do.
+with what you can do. These toggles can change between turns: the
+"Capabilities this turn" list in the per-turn suffix below is the live
+source of truth. If it shows a capability as ON — paint included — that
+tool is available right now; use it even if it was off earlier in this
+conversation, and never tell the user it's disabled.
 
 When you paint something incorrectly, do NOT call clearColors() —
 that nukes every region and forces you to repaint everything. Call
@@ -232,20 +236,23 @@ export function loadAiMd(): Promise<string> {
  *  Sticking the active language in the suffix flips the prompt-vs-suffix
  *  signal ratio so the more-recent + more-specific instruction wins. */
 export function toggleSuffix(toggles: ChatToggles): string {
-  const restrictions: string[] = [];
+  // Behavioural guidance for each capability that's currently OFF — tells the
+  // model what to do instead of reaching for the disabled tool.
+  const offGuidance: string[] = [];
   if (!toggles.scope.runCode) {
-    restrictions.push('You CANNOT run code. Suggest code in chat for the user to run themselves.');
+    offGuidance.push('Run code is OFF — suggest code in chat for the user to run themselves; do not call runCode / runAndSave.');
   }
   if (!toggles.scope.saveVersions) {
-    restrictions.push('You CANNOT save new versions. Run-and-test is allowed but not commit.');
+    offGuidance.push('Save versions is OFF — run-and-test is allowed, but do not commit new versions.');
   }
   if (!toggles.scope.paintFaces) {
-    restrictions.push('You CANNOT paint faces / set color regions.');
+    offGuidance.push('Paint is OFF — do not call paint tools or set color regions.');
   }
   if (!toggles.vision.views) {
-    restrictions.push('You CANNOT call renderView. The user disabled auto-render to save cost — reason from code, geometry stats, and any images the user explicitly attaches (Show AI). Do not ask for screenshots.');
+    offGuidance.push('Auto-render is OFF — the user disabled it to save cost. Reason from code, geometry stats, and any images the user explicitly attaches (Show AI); do not ask for screenshots.');
   }
 
+  const onOff = (on: boolean): string => (on ? 'ON' : 'OFF');
   const lang = currentLanguage();
   const capLabel = MAX_ITERATIONS[toggles.maxIterations].promptLabel;
   const spendLabel = MAX_SPEND[toggles.maxSpend].promptLabel;
@@ -264,11 +271,24 @@ export function toggleSuffix(toggles: ChatToggles): string {
     `Iteration cap (tool round-trips this turn): ${capLabel}. Pace your tool calls accordingly — if the cap is low, batch related work and prefer one-shot tools like paintComponent or paintInBox over verify-then-paint loops.`,
     `Spend cap (total USD this session): ${spendLabel}. Prior turns in this session count toward the same budget, so the cap can fire mid-turn even on a cheap iteration. Vision tool calls (renderView, paintPreview withImage) are the most expensive — skip them when stats alone are enough.`,
     qualityLine(),
+    '',
+    // Positive, explicit capability list. The user can flip these toggles
+    // mid-conversation; this suffix is regenerated every turn, so it is the
+    // live source of truth. Declaring each one ON/OFF — rather than only
+    // listing what's forbidden — stops the model from claiming a freshly
+    // enabled tool (paint especially) is still off just because nothing
+    // positively told it the state had changed.
+    'Capabilities this turn — the live, current state, which OVERRIDES anything said earlier in this conversation. If one shows ON that was OFF before, the user just enabled it: use it, and do not tell the user it is disabled.',
+    `- Run code: ${onOff(toggles.scope.runCode)}`,
+    `- Save versions: ${onOff(toggles.scope.saveVersions)}`,
+    `- Paint / color regions: ${onOff(toggles.scope.paintFaces)}`,
+    `- Session notes: ${onOff(toggles.scope.sessionNotes)}`,
+    `- Auto-render (renderView / renderViews): ${onOff(toggles.vision.views)}`,
   ];
-  if (restrictions.length > 0) {
+  if (offGuidance.length > 0) {
     lines.push('');
-    lines.push('User has restricted you this session:');
-    for (const r of restrictions) lines.push(`- ${r}`);
+    lines.push('Reminders for the capabilities that are OFF:');
+    for (const g of offGuidance) lines.push(`- ${g}`);
   }
   return lines.join('\n');
 }
