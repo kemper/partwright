@@ -456,6 +456,35 @@ export async function getVersionCount(sessionId: string): Promise<number> {
   return reqToPromise(index.count(IDBKeyRange.only(sessionId)));
 }
 
+export async function deleteVersion(id: string): Promise<void> {
+  const db = await openDB();
+  const txn = db.transaction('versions', 'readwrite');
+  txn.objectStore('versions').delete(id);
+  await txComplete(txn);
+}
+
+/** Insert a version record verbatim, preserving its id, index, and timestamp.
+ *  Used to restore a version that was deleted in the same session (undo). */
+export async function putVersion(version: Version): Promise<void> {
+  const db = await openDB();
+  const txn = db.transaction('versions', 'readwrite');
+  txn.objectStore('versions').put(version);
+  await txComplete(txn);
+}
+
+/** Rename a version (changes its display label only; index is immutable). */
+export async function renameVersion(id: string, label: string): Promise<void> {
+  const db = await openDB();
+  const txn = db.transaction('versions', 'readwrite');
+  const store = txn.objectStore('versions');
+  const version = await reqToPromise(store.get(id)) as Version | null;
+  if (version) {
+    version.label = label;
+    store.put(version);
+  }
+  await txComplete(txn);
+}
+
 // === Notes ===
 
 export async function addNote(sessionId: string, text: string): Promise<SessionNote> {

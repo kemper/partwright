@@ -8,6 +8,7 @@ import {
   closeSession,
   saveVersion,
   navigateVersion,
+  listCurrentVersions,
   renameSession,
   type SessionState,
 } from '../storage/sessionManager';
@@ -23,6 +24,10 @@ export interface SessionBarCallbacks {
 
 let barEl: HTMLElement | null = null;
 let callbacks: SessionBarCallbacks;
+// Sorted indices of the active session's versions. Cached so the (synchronous)
+// render can decide prev/next availability correctly even when deletions have
+// left gaps in the index sequence. Refreshed whenever session state changes.
+let versionIndices: number[] = [];
 
 export function createSessionBar(container: HTMLElement, cb: SessionBarCallbacks): HTMLElement {
   callbacks = cb;
@@ -33,10 +38,14 @@ export function createSessionBar(container: HTMLElement, cb: SessionBarCallbacks
 
   barEl = bar;
   render(getState());
-  onStateChange(render);
+  // Version set can change on any state transition (save, delete, switch
+  // session), so refresh the cached indices before each state-driven render.
+  void syncAndRender();
+  onStateChange(() => { void syncAndRender(); });
 
   // Re-render when paint regions, annotations, or notes change so the Save
   // button reflects current dirty state and is clickable after these edits.
+  // These don't change the version set, so the cached indices stay valid.
   const refresh = () => render(getState());
   onColorRegionsChange(refresh);
   onAnnotationStrokesChange(refresh);
@@ -44,6 +53,14 @@ export function createSessionBar(container: HTMLElement, cb: SessionBarCallbacks
 
   container.appendChild(bar);
   return bar;
+}
+
+/** Refresh the cached version indices, then render. Used for state-driven
+ *  renders where the version set may have changed. */
+async function syncAndRender(): Promise<void> {
+  const state = getState();
+  versionIndices = state.session ? (await listCurrentVersions()).map(v => v.index) : [];
+  render(state);
 }
 
 function render(state: SessionState) {
@@ -106,7 +123,9 @@ function render(state: SessionState) {
 
   // Version nav
   if (state.currentVersion && state.versionCount > 0) {
-    const atFirst = state.currentVersion.index <= 1;
+    // Position within the (gap-tolerant) index list, not raw index math.
+    const pos = versionIndices.indexOf(state.currentVersion.index);
+    const atFirst = pos <= 0;
     const prevBtn = btn('◀', async () => {
       const v = await navigateVersion('prev');
       if (v) callbacks.onLoadVersion(v.code);
@@ -128,7 +147,7 @@ function render(state: SessionState) {
     versionLabel.title = state.currentVersion.label || `Version ${state.currentVersion.index}`;
     barEl.appendChild(versionLabel);
 
-    const atLast = state.currentVersion.index >= state.versionCount;
+    const atLast = pos === -1 || pos >= versionIndices.length - 1;
     const nextBtn = btn('▶', async () => {
       const v = await navigateVersion('next');
       if (v) callbacks.onLoadVersion(v.code);

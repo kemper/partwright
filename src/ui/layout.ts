@@ -1,6 +1,6 @@
 import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
 
-export type TabName = 'interactive' | 'ai' | 'elevations' | 'gallery' | 'images' | 'diff' | 'notes';
+export type TabName = 'interactive' | 'ai' | 'elevations' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes';
 
 export interface LayoutElements {
   editorPane: HTMLElement;
@@ -10,6 +10,7 @@ export interface LayoutElements {
   viewsContainer: HTMLElement;
   elevationsContainer: HTMLElement;
   galleryContainer: HTMLElement;
+  versionsContainer: HTMLElement;
   imagesContainer: HTMLElement;
   diffContainer: HTMLElement;
   notesContainer: HTMLElement;
@@ -112,6 +113,8 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   tabElevations.title = 'Orthographic views with optional reference image overlay';
   const tabGallery = createTab('Gallery', false);
   tabGallery.title = 'Compare saved versions side-by-side';
+  const tabVersions = createTab('Versions', false);
+  tabVersions.title = 'Manage saved versions — rename and delete';
   const tabImages = createTab('Images', false);
   tabImages.title = 'Reference images attached to this session';
   const tabDiff = createTab('Diff', false);
@@ -141,6 +144,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   tabBar.appendChild(tabAI);
   tabBar.appendChild(tabElevations);
   tabBar.appendChild(tabGallery);
+  tabBar.appendChild(tabVersions);
   tabBar.appendChild(tabImages);
   tabBar.appendChild(tabDiff);
   tabBar.appendChild(tabNotes);
@@ -172,6 +176,10 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   galleryContainer.id = 'gallery-container';
   galleryContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-4';
 
+  const versionsContainer = document.createElement('div');
+  versionsContainer.id = 'versions-container';
+  versionsContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-4';
+
   const imagesContainer = document.createElement('div');
   imagesContainer.id = 'images-container';
   imagesContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-4 flex flex-col';
@@ -184,8 +192,8 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   notesContainer.id = 'notes-container';
   notesContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-4 flex flex-col';
 
-  const allTabs = [tabInteractive, tabAI, tabElevations, tabGallery, tabImages, tabDiff, tabNotes];
-  const allPanes = [viewportPane, viewsContainer, elevationsContainer, galleryContainer, imagesContainer, diffContainer, notesContainer];
+  const allTabs = [tabInteractive, tabAI, tabElevations, tabGallery, tabVersions, tabImages, tabDiff, tabNotes];
+  const allPanes = [viewportPane, viewsContainer, elevationsContainer, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer];
 
   // Mobile-only pane toggle: lets the user swap between editor and viewport
   // when the layout is stacked. Hidden at md+ and on tabs that already hide
@@ -290,7 +298,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   // Shared tab activation logic (DOM toggling, editor visibility, events)
   function applyTab(tab: TabName) {
     _currentTab = tab;
-    const idx = tab === 'interactive' ? 0 : tab === 'ai' ? 1 : tab === 'elevations' ? 2 : tab === 'gallery' ? 3 : tab === 'images' ? 4 : tab === 'diff' ? 5 : 6;
+    const idx = tab === 'interactive' ? 0 : tab === 'ai' ? 1 : tab === 'elevations' ? 2 : tab === 'gallery' ? 3 : tab === 'versions' ? 4 : tab === 'images' ? 5 : tab === 'diff' ? 6 : 7;
     for (let i = 0; i < allPanes.length; i++) {
       if (i === idx) {
         allPanes[i].classList.remove('hidden');
@@ -312,49 +320,22 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
 
     const basePath = '/editor';
     const params = new URLSearchParams(window.location.search);
-    if (tab === 'ai') {
-      params.set('view', 'ai');
-      params.delete('gallery');
-      params.delete('images');
-      params.delete('diff');
-      params.delete('notes');
-    } else if (tab === 'elevations') {
-      params.set('view', 'elevations');
-      params.delete('gallery');
-      params.delete('images');
-      params.delete('diff');
-      params.delete('notes');
-    } else if (tab === 'gallery') {
-      params.set('gallery', '');
-      params.delete('view');
-      params.delete('images');
-      params.delete('diff');
-      params.delete('notes');
-    } else if (tab === 'images') {
-      params.set('images', '');
-      params.delete('view');
-      params.delete('gallery');
-      params.delete('diff');
-      params.delete('notes');
-    } else if (tab === 'diff') {
-      params.set('diff', '');
-      params.delete('view');
-      params.delete('gallery');
-      params.delete('images');
-      params.delete('notes');
-    } else if (tab === 'notes') {
-      params.set('notes', '');
-      params.delete('view');
-      params.delete('gallery');
-      params.delete('images');
-      params.delete('diff');
-    } else {
-      params.delete('view');
-      params.delete('gallery');
-      params.delete('images');
-      params.delete('diff');
-      params.delete('notes');
-    }
+    // Clear every tab-owned param, then set the one this tab owns. Unrelated
+    // params (e.g. `session`, `v`) are preserved.
+    params.delete('view');
+    params.delete('gallery');
+    params.delete('versions');
+    params.delete('images');
+    params.delete('diff');
+    params.delete('notes');
+    if (tab === 'ai') params.set('view', 'ai');
+    else if (tab === 'elevations') params.set('view', 'elevations');
+    else if (tab === 'gallery') params.set('gallery', '');
+    else if (tab === 'versions') params.set('versions', '');
+    else if (tab === 'images') params.set('images', '');
+    else if (tab === 'diff') params.set('diff', '');
+    else if (tab === 'notes') params.set('notes', '');
+    // interactive: no tab param.
     const newUrl = params.toString()
       ? `${basePath}?${params.toString().replace(/=(?=&|$)/g, '')}`
       : basePath;
@@ -373,6 +354,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   tabAI.addEventListener('click', () => switchTab('ai'));
   tabElevations.addEventListener('click', () => switchTab('elevations'));
   tabGallery.addEventListener('click', () => switchTab('gallery'));
+  tabVersions.addEventListener('click', () => switchTab('versions'));
   tabImages.addEventListener('click', () => switchTab('images'));
   tabDiff.addEventListener('click', () => switchTab('diff'));
   tabNotes.addEventListener('click', () => switchTab('notes'));
@@ -385,6 +367,8 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     applyTab('diff');
   } else if (initParams.has('images')) {
     applyTab('images');
+  } else if (initParams.has('versions')) {
+    applyTab('versions');
   } else if (initParams.has('gallery')) {
     applyTab('gallery');
   } else if (initParams.get('view') === 'elevations') {
@@ -398,6 +382,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   rightPane.appendChild(viewsContainer);
   rightPane.appendChild(elevationsContainer);
   rightPane.appendChild(galleryContainer);
+  rightPane.appendChild(versionsContainer);
   rightPane.appendChild(imagesContainer);
   rightPane.appendChild(diffContainer);
   rightPane.appendChild(notesContainer);
@@ -434,7 +419,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, editorContainer, editorErrorPanel, viewportPane, viewsContainer, elevationsContainer, galleryContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab };
+  return { editorPane, editorContainer, editorErrorPanel, viewportPane, viewsContainer, elevationsContainer, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab };
 }
 
 const TAB_ACTIVE_CLASS = 'shrink-0 whitespace-nowrap px-4 py-2 md:py-1.5 text-sm md:text-xs font-medium text-zinc-100 border-b-2 border-blue-500 bg-zinc-900';

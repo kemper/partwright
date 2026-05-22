@@ -46,6 +46,7 @@ import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { initViewsPanel, updateMultiView } from './ui/panels';
 import { createSessionBar } from './ui/sessionBar';
 import { createGalleryView, refreshGallery } from './ui/gallery';
+import { createVersionsView, refreshVersions } from './ui/versions';
 import { createImagesView, refreshImages } from './ui/imagesView';
 import { createDiffView, refreshDiff } from './ui/diffView';
 import { createNotesView, refreshNotes } from './ui/notes';
@@ -573,7 +574,7 @@ function shouldShowLanding(): boolean {
   const params = new URLSearchParams(window.location.search);
   // Landing if at root path AND no query params that indicate a specific view
   const isRootPath = path === '/' || path === '';
-  return isRootPath && !params.has('view') && !params.has('session') && !params.has('gallery') && !params.has('images') && !params.has('diff') && !params.has('notes');
+  return isRootPath && !params.has('view') && !params.has('session') && !params.has('gallery') && !params.has('versions') && !params.has('images') && !params.has('diff') && !params.has('notes');
 }
 
 function shouldShowHelp(): boolean {
@@ -594,6 +595,7 @@ function getTabFromURL(): TabName {
   if (params.has('notes')) return 'notes';
   if (params.has('diff')) return 'diff';
   if (params.has('images')) return 'images';
+  if (params.has('versions')) return 'versions';
   if (params.has('gallery')) return 'gallery';
   if (params.get('view') === 'elevations') return 'elevations';
   if (params.get('view') === 'ai') return 'ai';
@@ -993,7 +995,10 @@ async function main() {
         );
         if (!proceed) return;
       }
-      const opts = await showExportOptionsDialog();
+      const exportVersions = await listCurrentVersions();
+      const opts = await showExportOptionsDialog(
+        exportVersions.map(v => ({ index: v.index, label: v.label })),
+      );
       if (!opts) return;
       const ok = await exportSessionJSON(undefined, opts);
       if (!ok) alert('No active session to export. Save a version first.');
@@ -1057,7 +1062,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, editorErrorPanel, viewportPane, viewsContainer, elevationsContainer, galleryContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab } = createLayout(editorUI);
+  const { editorContainer, editorErrorPanel, viewportPane, viewsContainer, elevationsContainer, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab } = createLayout(editorUI);
 
   // Format button and auto-format toggle
   const AUTO_FORMAT_ON_CLASS = 'shrink-0 px-2 py-0.5 rounded text-xs leading-none border text-emerald-400 border-emerald-700 bg-emerald-950/40 hover:bg-emerald-900/40';
@@ -1136,9 +1141,22 @@ async function main() {
   // Init notes panel
   createNotesView(notesContainer);
 
+  // Init versions panel (manage saved versions: rename / delete, with undo/redo)
+  createVersionsView(versionsContainer, {
+    onOpenVersion: async (version) => {
+      await loadVersionFromStore(version.index);
+      await loadVersionIntoEditor(version);
+      switchTab('interactive');
+    },
+    onSyncEditor: async (version) => {
+      await loadVersionIntoEditor(version);
+    },
+  });
+
   // Refresh tabs when they're selected
   window.addEventListener('tab-switched', ((e: CustomEvent) => {
     if (e.detail.tab === 'gallery') refreshGallery();
+    if (e.detail.tab === 'versions') refreshVersions();
     if (e.detail.tab === 'images') refreshImages();
     if (e.detail.tab === 'diff') refreshDiff();
     if (e.detail.tab === 'notes') refreshNotes();
@@ -1388,6 +1406,7 @@ async function main() {
         if (version) {
           await loadVersionIntoEditor(version);
           if (tab === 'gallery') refreshGallery();
+          if (tab === 'versions') refreshVersions();
           return;
         }
         // openSession returned null — either the session ID in the URL
@@ -3329,8 +3348,8 @@ async function main() {
     },
 
     /** Programmatic tab switching */
-    setView(tab: 'interactive' | 'ai' | 'elevations' | 'gallery' | 'diff' | 'notes'): void {
-      assertEnum(tab, ['interactive', 'ai', 'elevations', 'gallery', 'diff', 'notes'] as const, 'setView(tab)');
+    setView(tab: 'interactive' | 'ai' | 'elevations' | 'gallery' | 'versions' | 'diff' | 'notes'): void {
+      assertEnum(tab, ['interactive', 'ai', 'elevations', 'gallery', 'versions', 'diff', 'notes'] as const, 'setView(tab)');
       switchTab(tab);
     },
 
