@@ -80,7 +80,7 @@ function registerExportFromBuilt(built: BuiltExport, source: string): void {
 }
 import type { MeshData, SourceDiagnostic } from './geometry/types';
 import { analyzeZProfile, type ZProfile } from './geometry/profileAnalysis';
-import { probeAtXY, probeRay, probePixel, measureDistance, type ProbeResult, type GeneralRayResult, type PixelHit } from './geometry/rayCast';
+import { probeAtXY, probeRay, probePixel, measureDistance, type ProbeResult, type GeneralRayResult, type PixelHit, type PixelMiss } from './geometry/rayCast';
 import { checkContainment, type ContainmentWarning } from './geometry/containmentCheck';
 import { setUnits as _setUnits, getUnits as _getUnits, type UnitSystem } from './geometry/units';
 import { initMeasureTool, activate as activateMeasure, deactivate as deactivateMeasure, getState as getMeasureState } from './ui/measureTool';
@@ -3220,12 +3220,14 @@ async function main() {
      *    pixel: [180, 220],
      *    view:  { elevation: 0, azimuth: 0, ortho: true, size: 320 },
      *  });
-     *  if (hit) partwright.paintNear({ point: hit.point, radius: 4, color: [...] });
+     *  // On a miss, `hit.hint` reports the model's pixel bounds so you can
+     *  // re-aim; on a hit, `hit.point`/`hit.normal` carry the surface seed.
+     *  if ('point' in hit) partwright.paintNear({ point: hit.point, radius: 4, color: [...] });
      *  ``` */
     probePixel(opts: {
       pixel: [number, number];
       view: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number };
-    }): PixelHit | { error: string } | null {
+    }): (PixelHit & { nextStep: string }) | (PixelMiss & { reason: string; hint: string }) | { error: string } | null {
       if (!opts || typeof opts !== 'object') return { error: 'probePixel requires { pixel, view }' };
       if (!Array.isArray(opts.pixel) || opts.pixel.length !== 2) return { error: 'probePixel.pixel must be [x, y]' };
       for (const c of opts.pixel) {
@@ -3245,7 +3247,22 @@ async function main() {
         return { error: `probePixel.pixel [${px}, ${py}] is outside the ${size}×${size} viewport. Pixel (0,0) is top-left, (${size - 1},${size - 1}) is bottom-right.` };
       }
       const camera = buildViewCamera(currentMeshData, opts.view);
-      return probePixel(currentMeshData, camera, [px, py], size);
+      const result = probePixel(currentMeshData, camera, [px, py], size);
+      if ('hit' in result) {
+        // Miss: instead of a bare null, tell the caller where the model
+        // actually projects so they can re-aim. Pixel estimation off a
+        // render carries ±10-20px error, so misses are an expected, common
+        // case — make them self-correcting rather than a dead end.
+        const b = result.modelPixelBounds;
+        const hint = b
+          ? `In this ${size}×${size} view the model occupies pixels x[${b.minX}..${b.maxX}], y[${b.minY}..${b.maxY}] (top-left is [0,0]). Re-aim inside that box and probe again.`
+          : 'The model does not project into this view (off-screen or degenerate). Render this exact view first to see where it sits, or try a different elevation/azimuth.';
+        return { ...result, reason: `Pixel [${px}, ${py}] missed the mesh (background).`, hint };
+      }
+      return {
+        ...result,
+        nextStep: 'To paint here, pass this point+normal to paintConnected({seed:{point,normal},color}) (follows the surface by normal) or paintNear({point,radius,normalCone:{axis:normal,angleDeg:35},color}) (bounded blob).',
+      };
     },
 
     /** Paint a connected patch starting from a seed point on the
@@ -4885,7 +4902,7 @@ async function main() {
         'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
         'analyzeProfile':  { signature: 'analyzeProfile(sampleCount?) -- Z-profile feature summary', docs: '/ai.md#console-api--windowpartwright' },
         'measureAt':       { signature: 'measureAt([x,y]) -- Ray-cast probe at XY -> {hits, thickness, topZ, bottomZ}', docs: '/ai.md#console-api--windowpartwright' },
-        'probePixel':      { signature: 'probePixel({pixel: [x,y], view}) -- Translate a pixel in a rendered view back to a surface hit: {point, normal, distance, triangleId}. The view spec must match the renderView call. null when the pixel is background.', docs: '/ai.md#console-api--windowpartwright' },
+        'probePixel':      { signature: 'probePixel({pixel: [x,y], view}) -- Translate a pixel in a rendered view back to a surface hit: {point, normal, distance, triangleId, nextStep}. The view spec must match the renderView call. On a background pixel returns {hit:false, modelPixelBounds, reason, hint} telling you where the model projects so you can re-aim.', docs: '/ai.md#console-api--windowpartwright' },
         // Viewport controls
         'setGridVisible':       { signature: 'setGridVisible(on?) -- Show/hide grid plane (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'isGridVisible':        { signature: 'isGridVisible() -- Whether grid plane is visible', docs: '/ai.md#viewport-controls' },

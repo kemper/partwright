@@ -168,8 +168,10 @@ head), use the paint-by-vision loop:
 3. probePixel({pixel, view}) — translates the pixel back to an exact
    world-space surface point + normal + triangleId. The view object
    MUST match the renderView call's view (same elevation/azimuth/
-   ortho/size). Returns null if you picked a background pixel; try a
-   different pixel on the silhouette.
+   ortho/size). If you picked a background pixel it does NOT fail — it
+   returns {hit:false, modelPixelBounds, hint} telling you where the
+   model projects in this view, so re-aim inside those bounds and probe
+   again instead of giving up.
 4. paintConnected({seed: {point, normal}, maxDeviationDeg: 30, color})
    — flood-fills from the seed, gated by deviation from the SEED
    normal (not adjacent-face). Stays on the feature instead of bleeding
