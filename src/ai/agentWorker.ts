@@ -101,6 +101,7 @@ self.onmessage = async (event: MessageEvent) => {
       onToolResult:         (id, n, r) => post('onToolResult', id, n, r),
       onAssistantPersisted: (m) => post('onAssistantPersisted', m),
       onUserMessageUpdated: (m) => post('onUserMessageUpdated', m),
+      onToolResultsPersisted: (m) => post('onToolResultsPersisted', m),
       onProgress:           (i) => post('onProgress', i),
       onTurnComplete:       (i) => post('onTurnComplete', i),
       onAborted:            () => post('onAborted'),

@@ -119,6 +119,13 @@ export interface RunTurnCallbacks {
    *  re-render the transcript so the user sees their queued message land
    *  immediately, without waiting for the turn to fully complete. */
   onUserMessageUpdated?: (msg: ChatMessage) => void;
+  /** The tool_result user turn for a completed tool batch has been
+   *  persisted, carrying any images the tools returned (renderView /
+   *  renderViews snapshots, slice profiles, paint previews). The panel
+   *  drops the result bubbles into the live transcript here so the user
+   *  sees what the agent saw as it works — without this, tool results
+   *  (and their renderings) only surface after a session reload. */
+  onToolResultsPersisted?: (msg: ChatMessage) => void;
   /** A "thinking" beat — fires when a turn begins, when each tool starts,
    *  and on a wall-clock interval while waiting for the first text delta.
    *  Use to keep an indicator alive so the user knows we haven't frozen. */
@@ -455,6 +462,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     toolResultMsg.toolResults = toolResults;
     await putMessages([toolResultMsg]);
     workingHistory = [...workingHistory, toolResultMsg];
+    callbacks.onToolResultsPersisted?.(toolResultMsg);
 
     // Drain anything the human queued while we were thinking, streaming,
     // or running tools. Merging into the same user turn that carries the

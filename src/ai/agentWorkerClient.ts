@@ -76,6 +76,7 @@ async function handleMessage(event: MessageEvent): Promise<void> {
       case 'onToolResult':         cb.onToolResult?.(args[0] as string, args[1] as string, args[2] as PersistedToolResult); break;
       case 'onAssistantPersisted': cb.onAssistantPersisted?.(args[0] as ChatMessage); break;
       case 'onUserMessageUpdated': cb.onUserMessageUpdated?.(args[0] as ChatMessage); break;
+      case 'onToolResultsPersisted': cb.onToolResultsPersisted?.(args[0] as ChatMessage); break;
       case 'onProgress':           cb.onProgress?.(args[0] as Parameters<NonNullable<RunTurnCallbacks['onProgress']>>[0]); break;
       case 'onTurnComplete':       cb.onTurnComplete?.(args[0] as Parameters<NonNullable<RunTurnCallbacks['onTurnComplete']>>[0]); break;
       case 'onAborted':            cb.onAborted?.(); break;
