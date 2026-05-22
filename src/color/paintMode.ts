@@ -9,10 +9,11 @@ import { addRegion, getRegions } from './regions';
 import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, setWireframeVisible, isWireframeVisible } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
+import type { BrushShape } from './subdivide';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
 export type PaintTool = 'bucket' | 'brush' | 'slab' | 'box';
-export type BrushShape = 'circle' | 'square' | 'diamond';
+export type { BrushShape };
 
 let active = false;
 let currentColor: [number, number, number] = [1, 0.2, 0.2]; // default red
@@ -23,6 +24,15 @@ let bucketTolerance = 0.9995;
  *  point. */
 let brushRadius = 0;
 let brushShape: BrushShape = 'circle';
+/** When on (and radius > 0), a brush stroke subdivides the triangles its edge
+ *  crosses so the painted region's outline is smooth/rounded instead of
+ *  following the existing tessellation. */
+let brushSmooth = false;
+/** Subdivision iterations applied near a smooth stroke's edge (1..5). Higher =
+ *  finer/rounder edge at the cost of more triangles. */
+let brushSubdivision = 2;
+/** Surface points sampled along the in-progress smooth stroke. */
+let strokeSamples: [number, number, number][] = [];
 let adjacency: AdjacencyGraph | null = null;
 let currentMesh: MeshData | null = null;
 
@@ -108,6 +118,27 @@ export function setBrushShape(s: BrushShape): void {
 
 export function getBrushShape(): BrushShape {
   return brushShape;
+}
+
+export function setBrushSmooth(on: boolean): void {
+  brushSmooth = on;
+}
+
+export function isBrushSmooth(): boolean {
+  return brushSmooth;
+}
+
+export function setBrushSubdivision(level: number): void {
+  brushSubdivision = Math.max(1, Math.min(5, Math.round(level)));
+}
+
+export function getBrushSubdivision(): number {
+  return brushSubdivision;
+}
+
+/** True when the active brush settings will subdivide the mesh on commit. */
+export function brushWillSubdivide(): boolean {
+  return brushSmooth && brushRadius > 0;
 }
 
 export function setOnRegionPainted(fn: () => void): void {
@@ -229,6 +260,7 @@ function onMouseMove(event: MouseEvent): void {
   if (currentTool === 'brush' && brushPainting && brushSession) {
     const result = pickFace(event);
     if (result) {
+      recordStrokeSample(result.point);
       addBrushFootprint(result.triangleIndex, result.point, brushSession);
       showHighlight(brushSession);
       // Ring must come after showHighlight (which calls clearHighlight internally).
@@ -286,9 +318,56 @@ function onMouseDown(event: MouseEvent): void {
   if (currentTool === 'brush') {
     brushPainting = true;
     brushSession = new Set<number>();
+    strokeSamples = [];
+    recordStrokeSample(result.point);
     addBrushFootprint(result.triangleIndex, result.point, brushSession);
     showHighlight(brushSession);
     event.preventDefault();
+  }
+}
+
+/** Append a surface point to the in-progress smooth stroke, decimated so a
+ *  slow drag doesn't accumulate thousands of near-duplicate samples. Spacing
+ *  scales with the brush so the footprint stays continuous along the path. */
+function recordStrokeSample(p: [number, number, number]): void {
+  const minSpacing = Math.max(brushRadius * 0.4, 0.01);
+  const last = strokeSamples[strokeSamples.length - 1];
+  if (last) {
+    const dx = p[0] - last[0], dy = p[1] - last[1], dz = p[2] - last[2];
+    if (dx * dx + dy * dy + dz * dz < minSpacing * minSpacing) return;
+  }
+  strokeSamples.push([p[0], p[1], p[2]]);
+}
+
+/** Commit the active brush drag as a colour region. Smooth strokes (radius > 0
+ *  with smooth on) store a `brushStroke` descriptor and trigger a mesh rebuild
+ *  that subdivides under the stroke; otherwise the legacy whole-triangle set is
+ *  stored directly. */
+function commitBrushStroke(): void {
+  if (!brushSession || brushSession.size === 0) return;
+  const name = `Region ${getRegions().length + 1}`;
+  const color = [...currentColor] as [number, number, number];
+
+  if (brushSmooth && brushRadius > 0 && strokeSamples.length > 0) {
+    // Triangles are left empty here: adding a brushStroke region fires the
+    // regions-change listener, which rebuilds the refined working mesh and
+    // resolves every region (including this one) against it.
+    addRegion(
+      name,
+      color,
+      'paintbrush',
+      {
+        kind: 'brushStroke',
+        samples: strokeSamples.map(s => [s[0], s[1], s[2]] as [number, number, number]),
+        radius: brushRadius,
+        shape: brushShape,
+        level: brushSubdivision,
+      },
+      new Set<number>(),
+    );
+  } else {
+    addRegion(name, color, 'paintbrush', { kind: 'triangles', ids: [...brushSession] }, brushSession);
+    if (onRegionPainted) onRegionPainted();
   }
 }
 
@@ -402,21 +481,14 @@ function onMouseUp(event: MouseEvent): void {
     if (!brushPainting || !brushSession || brushSession.size === 0) {
       brushPainting = false;
       brushSession = null;
+      strokeSamples = [];
       return;
     }
-    const triangles = brushSession;
-    const existingCount = getRegions().length;
-    addRegion(
-      `Region ${existingCount + 1}`,
-      [...currentColor] as [number, number, number],
-      'paintbrush',
-      { kind: 'triangles', ids: [...triangles] },
-      triangles,
-    );
+    commitBrushStroke();
     brushPainting = false;
     brushSession = null;
+    strokeSamples = [];
     clearHighlight();
-    if (onRegionPainted) onRegionPainted();
     return;
   }
 
@@ -447,19 +519,11 @@ function onMouseUp(event: MouseEvent): void {
 
 function onMouseLeave(): void {
   if (currentTool === 'brush' && brushPainting && brushSession && brushSession.size > 0) {
-    const triangles = brushSession;
-    const existingCount = getRegions().length;
-    addRegion(
-      `Region ${existingCount + 1}`,
-      [...currentColor] as [number, number, number],
-      'paintbrush',
-      { kind: 'triangles', ids: [...triangles] },
-      triangles,
-    );
-    if (onRegionPainted) onRegionPainted();
+    commitBrushStroke();
   }
   brushPainting = false;
   brushSession = null;
+  strokeSamples = [];
   clearHighlight();
   clearBrushRing();
 }

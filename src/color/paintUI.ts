@@ -14,6 +14,10 @@ import {
   getBrushRadius,
   setBrushShape,
   getBrushShape,
+  setBrushSmooth,
+  isBrushSmooth,
+  setBrushSubdivision,
+  getBrushSubdivision,
   setSlabAxis,
   getSlabAxis,
   previewTriangles,
@@ -492,6 +496,56 @@ function createBrushControls(): HTMLElement {
     brushShapeButtons[s] = btn;
   }
   wrap.appendChild(shapeRow);
+
+  // Smooth edges — subdivide the mesh under the brush so the painted region's
+  // outline is rounded instead of following the existing tessellation.
+  const smoothLabel = document.createElement('div');
+  smoothLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+  smoothLabel.textContent = 'Edge smoothing';
+
+  const smoothToggle = document.createElement('button');
+  smoothToggle.title = 'Subdivide the mesh under the brush so the painted edge is smooth/rounded instead of following triangle boundaries. Adds triangles near the stroke and requires a brush size above 0.';
+
+  const fineRow = document.createElement('div');
+  fineRow.className = 'grid grid-cols-3 gap-1 mt-1';
+  const fineButtons: Record<number, HTMLButtonElement> = {};
+  for (const [level, lbl, tip] of [
+    [1, 'Low', 'One subdivision pass — coarsest edge, fewest extra triangles'],
+    [2, 'Medium', 'Two subdivision passes'],
+    [3, 'High', 'Three subdivision passes — smoothest edge, most extra triangles'],
+  ] as const) {
+    const btn = document.createElement('button');
+    btn.textContent = lbl;
+    btn.title = tip;
+    btn.className = axisButtonClass(level === getBrushSubdivision());
+    btn.addEventListener('click', () => {
+      setBrushSubdivision(level);
+      for (const [k, b] of Object.entries(fineButtons)) b.className = axisButtonClass(Number(k) === getBrushSubdivision());
+    });
+    fineRow.appendChild(btn);
+    fineButtons[level] = btn;
+  }
+
+  const smoothHelp = document.createElement('div');
+  smoothHelp.className = 'text-[10px] text-zinc-500 mt-1';
+  smoothHelp.textContent = 'Rounder edge → more triangles';
+
+  const syncSmoothToggle = (): void => {
+    const on = isBrushSmooth();
+    smoothToggle.className = on
+      ? 'w-full px-2 py-1 rounded text-[10px] bg-blue-500/30 text-blue-200 border border-blue-500/50 transition-colors text-center'
+      : 'w-full px-2 py-1 rounded text-[10px] bg-zinc-700/40 text-zinc-300 hover:bg-zinc-600/60 border border-transparent transition-colors text-center';
+    smoothToggle.textContent = on ? '◉ Smooth edges: On' : '○ Smooth edges: Off';
+    fineRow.classList.toggle('hidden', !on);
+    smoothHelp.classList.toggle('hidden', !on);
+  };
+  smoothToggle.addEventListener('click', () => { setBrushSmooth(!isBrushSmooth()); syncSmoothToggle(); });
+
+  wrap.appendChild(smoothLabel);
+  wrap.appendChild(smoothToggle);
+  wrap.appendChild(fineRow);
+  wrap.appendChild(smoothHelp);
+  syncSmoothToggle();
 
   return wrap;
 }

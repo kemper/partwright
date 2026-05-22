@@ -249,6 +249,7 @@ partwright.paintConnected({seed, maxDeviationDeg?, color, name?})         // BFS
 partwright.paintRegion({point, normal, color, name?, tolerance?})         // bucket: coplanar flood-fill (edge-bounded)
 partwright.paintNearestRegion({point, color, searchRadius?, name?})       // snap-to-nearest variant
 partwright.paintNear({point, radius, normalCone?, color, name?})          // sphere selector
+partwright.paintStroke({points, radius, subdivision?, shape?, color, name?}) // SMOOTH brush: subdivides mesh for a rounded painted edge (see note below)
 partwright.paintInBox({box, normalCone?, color, name?})                   // AABB selector
 partwright.paintInOrientedBox({box: {center, size, quaternion?}, color})  // rotated box selector (same as UI Box tool)
 partwright.paintFaces({triangleIds, color, name?})                        // explicit triangle ids
@@ -269,6 +270,7 @@ partwright.removeRegion(id) / setRegionVisibility(id, visible)            // per
 partwright.hideRegion(id) / showRegion(id) / clearColors()
 partwright.getBucketTolerance() / setBucketTolerance(t)                   // UI bucket tool config
 partwright.getBrushSize() / setBrushSize(r)                               // UI brush tool config
+partwright.getBrushSmooth() / setBrushSmooth(on) / setBrushSubdivision(n) // UI smooth-brush config (1..5)
 
 // Notes -- track design context, decisions, and measurements
 await partwright.addSessionNote(text)    // -> {id, text, timestamp}
@@ -477,6 +479,23 @@ Color regions tag a coplanar set of triangles with an RGB color. Regions are per
 The paint helpers are exposed both as tool calls (`paintRegion`, `paintFaces`, `paintNear`, `paintInBox`, `paintSlab`, `paintNearestRegion`, `paintComponent`, `paintByLabel`, `paintByLabels`, `paintConnected`, `paintPreview`, `paintExplain`, `findFaces`, `probePixel`, `probeRay`, `getMeshSummary`, `listComponents`, `listLabels`, `undoLastPaint`, `redoLastPaint`, `removeRegion`, `clearColors`) and on `window.partwright`.
 
 Before painting anything substantial, **call `readDoc({name: "colors"})`** for the picker decision tree (which `paint*` for which intent), the labelled-construction workflow, vision-driven painting with `probePixel`/`paintConnected`, undo/redo, and export behavior.
+
+### `paintStroke` — smooth, rounded painted edges (use sparingly)
+
+All the other selectors paint whole existing triangles, so a painted edge follows the tessellation (stair-stepped on coarse meshes). `paintStroke` instead **subdivides the mesh under the stroke** so the painted region's outline is rounded — the smooth-brush equivalent of dragging a paintbrush. It is the only paint tool that changes the triangle count, so it costs more (a mesh rebuild) than the region selectors.
+
+Reach for it **only when a visibly rounded painted edge matters** (a curved stripe, a soft-edged patch). For ordinary fills, `paintNear` / `paintInBox` / `paintConnected` / `paintRegion` are cheaper and sufficient.
+
+Drive it by vision, not by guessing coordinates: render a view, pick pixels along the desired path, `probePixel` each to get world-space surface points, then pass them as `points`:
+
+```js
+// Render → probe a few pixels along the stroke → paint a smooth stroke through them.
+const a = await partwright.probePixel({ pixel: [120, 90],  view: { elevation: 30, azimuth: 45 } });
+const b = await partwright.probePixel({ pixel: [160, 110], view: { elevation: 30, azimuth: 45 } });
+partwright.paintStroke({ points: [a.point, b.point], radius: 3, subdivision: 2, color: [0.9, 0.2, 0.2] });
+```
+
+`subdivision` is 1–5 (default 2): higher = rounder edge + more triangles. A single point stamps a rounded dot.
 
 ## Common gotchas
 
