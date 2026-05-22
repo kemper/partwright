@@ -63,4 +63,55 @@ test.describe('Session modal', () => {
       MARKER,
     );
   });
+
+  test('session rows render a thumbnail preview', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForApi(page);
+
+    const withThumb = await page.evaluate(
+      async () => (await (window as unknown as { partwright: PW }).partwright.createSession('Thumb Session')).id,
+    );
+    await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.createSession('Empty Session'));
+
+    // Seed a saved version carrying a real 1×1 PNG thumbnail for the first
+    // session, straight into IndexedDB so the assertion doesn't depend on WebGL.
+    await page.evaluate(async (sessionId) => {
+      // Build the Blob from base64 directly — the app's CSP blocks fetch('data:').
+      const b64 =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const blob = new Blob([bytes], { type: 'image/png' });
+      const db: IDBDatabase = await new Promise((res, rej) => {
+        const r = indexedDB.open('partwright');
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+      });
+      const tx = db.transaction('versions', 'readwrite');
+      tx.objectStore('versions').put({
+        id: 'seed-thumb-v1',
+        sessionId,
+        index: 1,
+        code: 'return Manifold.cube([1,1,1]);',
+        geometryData: null,
+        thumbnail: blob,
+        label: 'v1',
+        timestamp: Date.now(),
+      });
+      await new Promise<void>((res, rej) => {
+        tx.oncomplete = () => res();
+        tx.onerror = () => rej(tx.error);
+      });
+      db.close();
+    }, withThumb);
+
+    await page.locator('#session-bar button', { hasText: 'Sessions' }).click();
+    await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
+
+    // The seeded session shows its thumbnail as an <img>; the version-less one
+    // falls back to the placeholder glyph.
+    await expect(page.locator('img[alt="Thumb Session"]')).toBeVisible();
+    await expect(page.getByText('⬡').first()).toBeVisible();
+  });
 });
