@@ -23,13 +23,17 @@ let cb: PartListCallbacks;
 // True while a row is being dragged; suppresses re-render so the drag isn't
 // yanked out from under the pointer by a state-change event.
 let dragging = false;
+// Set when a state change arrives mid-drag (suppressed); flushed on drag end so
+// the rail never shows stale parts after an async update lands during a drag.
+let pendingRender = false;
 
 export function createPartList(container: HTMLElement, callbacks: PartListCallbacks): void {
   railEl = container;
   cb = callbacks;
   render(getState());
   onStateChange((state) => {
-    if (!dragging) render(state);
+    if (dragging) { pendingRender = true; return; }
+    render(state);
   });
 }
 
@@ -81,18 +85,22 @@ function render(state: SessionState): void {
 function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLElement): HTMLElement {
   const row = document.createElement('div');
   row.dataset.partId = part.id;
+  row.setAttribute('role', 'button');
+  if (isCurrent) row.setAttribute('aria-current', 'true');
   row.className = [
-    'group flex items-center gap-1 px-1.5 py-2 mx-1 rounded cursor-pointer select-none',
+    'group flex items-center gap-1 px-1.5 py-2.5 mx-1 rounded cursor-pointer select-none',
     isCurrent
       ? 'bg-blue-500/15 text-zinc-100 border-l-2 border-blue-500'
       : 'text-zinc-400 [@media(hover:hover)]:hover:bg-zinc-700/40 border-l-2 border-transparent',
   ].join(' ');
 
   // Drag handle (pointer-based reorder — works for mouse, touch, and pen).
+  // Always visible (not hover-gated) so it's discoverable on touch.
   const grip = document.createElement('span');
-  grip.className = 'shrink-0 text-zinc-600 [@media(hover:hover)]:group-hover:text-zinc-400 text-xs leading-none cursor-grab touch-none px-0.5';
+  grip.className = 'shrink-0 text-zinc-500 [@media(hover:hover)]:group-hover:text-zinc-300 text-sm leading-none cursor-grab touch-none px-1 py-1';
   grip.textContent = '⠿'; // ⠿ drag grip
   grip.title = 'Drag to reorder';
+  grip.setAttribute('aria-label', 'Drag to reorder');
   attachDragHandlers(grip, row, list);
   row.appendChild(grip);
 
@@ -116,7 +124,9 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
   // Delete (only when more than one part remains).
   if (partCount > 1) {
     const del = iconBtn('✕', 'Delete this part'); // ✕
-    del.className += ' opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus:opacity-100';
+    // Visible by default so it's reachable on touch (no hover); only fade-until-
+    // hover on hover-capable devices.
+    del.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus:opacity-100';
     del.addEventListener('click', (e) => {
       e.stopPropagation();
       if (confirm(`Delete part "${part.name}" and all of its versions? This cannot be undone.`)) {
@@ -168,16 +178,28 @@ function attachDragHandlers(grip: HTMLElement, row: HTMLElement, list: HTMLEleme
     row.classList.remove('opacity-40');
     indicator?.remove();
     indicator = null;
+    // Apply any state change that arrived (and was suppressed) mid-drag.
+    if (pendingRender) {
+      pendingRender = false;
+      render(getState());
+    }
   };
 
   grip.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
     e.preventDefault();
     e.stopPropagation();
+    // Commit drag state only once capture succeeds — otherwise a thrown
+    // setPointerCapture (e.g. detached node) would wedge `dragging` true and
+    // freeze all future rail re-renders.
+    try {
+      grip.setPointerCapture(e.pointerId);
+    } catch {
+      return;
+    }
     activePointer = e.pointerId;
     dragging = true;
     row.classList.add('opacity-40');
-    grip.setPointerCapture(e.pointerId);
     indicator = document.createElement('div');
     indicator.className = 'h-0.5 mx-2 my-0.5 bg-blue-500 rounded pointer-events-none';
   });
@@ -234,8 +256,11 @@ function rowAfterY(list: HTMLElement, dragged: HTMLElement, y: number): HTMLElem
 
 function iconBtn(glyph: string, title: string): HTMLButtonElement {
   const b = document.createElement('button');
-  b.className = 'shrink-0 w-5 h-5 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700 text-xs leading-none transition-colors';
+  // 28px hit target — a pragmatic balance between the dense rail and touch use;
+  // the full-width row remains the primary (large) select target.
+  b.className = 'shrink-0 w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 text-sm leading-none transition-colors';
   b.textContent = glyph;
   b.title = title;
+  b.setAttribute('aria-label', title);
   return b;
 }

@@ -43,7 +43,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   // rename / delete / drag-reorder). Populated by createPartList() in main.ts.
   const partsRail = document.createElement('div');
   partsRail.id = 'parts-rail';
-  partsRail.className = 'flex flex-col shrink-0 w-32 md:w-48 min-h-0 border-r border-zinc-700 bg-zinc-900/60 overflow-hidden';
+  partsRail.className = 'flex flex-col shrink-0 w-36 md:w-48 min-h-0 border-r border-zinc-700 bg-zinc-900/60 overflow-hidden';
 
   // The editor pane itself sits to the right of the rail and fills the rest.
   const editorPane = document.createElement('div');
@@ -251,12 +251,17 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   railExpandBtn.className = 'absolute left-0 top-0 z-20 px-1.5 py-1 bg-zinc-800 text-zinc-300 hover:text-zinc-100 hover:bg-zinc-700 rounded-br border-r border-b border-zinc-700 text-xs leading-none hidden';
   railExpandBtn.textContent = '»'; // »
   railExpandBtn.title = 'Show parts';
+  railExpandBtn.setAttribute('aria-label', 'Show parts');
   editorGroup.appendChild(railExpandBtn);
 
   function togglePartsRail(): void {
     railCollapsed = !railCollapsed;
     partsRail.classList.toggle('hidden', railCollapsed);
     railExpandBtn.classList.toggle('hidden', !railCollapsed);
+    // The floating » chip sits at the group's top-left; when the rail is
+    // collapsed (but the editor open) pad the header so it doesn't overlap the
+    // title. Cleared when the rail returns.
+    editorHeader.style.paddingLeft = railCollapsed ? '1.75rem' : '';
     window.dispatchEvent(new Event('resize'));
   }
   railExpandBtn.addEventListener('click', togglePartsRail);
