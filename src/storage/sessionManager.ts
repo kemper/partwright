@@ -25,6 +25,7 @@ import {
   type AttachedImage,
 } from './db';
 import { listMessages as dbListMessages, putMessages as dbPutMessages } from '../ai/db';
+import { getSpendingSummary } from '../ai/settings';
 import type { ChatMessage } from '../ai/types';
 
 /** Legacy angle keys preserved only for typing the on-disk shapes we still
@@ -576,6 +577,8 @@ export interface SessionContext {
     language: 'manifold-js' | 'scad';
     supportedLanguages: string[];
     recentErrors: { error: string; timestamp: number }[];
+    /** The AI spending budget the user has set. Agents should respect it. */
+    spending: ReturnType<typeof getSpendingSummary>;
   };
 }
 
@@ -624,6 +627,7 @@ export async function getSessionContext(): Promise<SessionContext | null> {
       language: session.language ?? 'manifold-js',
       supportedLanguages: ['manifold-js', 'scad'],
       recentErrors: getRecentErrors(),
+      spending: getSpendingSummary(),
     },
   };
 }

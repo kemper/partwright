@@ -2,7 +2,7 @@
 // Persisted to localStorage as one JSON blob — sticky across sessions and
 // separate from the per-session chat transcripts in IndexedDB.
 
-import { MAX_ITERATIONS, MAX_SPEND, THINKING_LEVELS, type AnthropicModelId, type ChatToggles, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
+import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPEND_CAP_USD, THINKING_LEVELS, type AnthropicModelId, type ChatToggles, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
 import type { LocalModelId } from './localModels';
 import { LOCAL_MODELS } from './localModels';
 
@@ -79,8 +79,8 @@ const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
 
 const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel'> & { anthropicModel: AnthropicModelId }> = {
   minimal: {
-    vision: { views: false },
-    scope: { runCode: true, saveVersions: true, paintFaces: false },
+    vision: { views: false, resolution: 'low', angles: 'auto' },
+    scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: false },
     autoRetry: 0,
     maxIterations: 'low',
     maxSpend: 'cheap',
@@ -91,11 +91,11 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     anthropicModel: 'claude-haiku-4-5',
   },
   standard: {
-    vision: { views: true },
+    vision: { views: true, resolution: 'medium', angles: 'auto' },
     // Paint off by default — color regions lock the editor and are easy
     // for the model to mis-target. Users who want AI-driven painting
     // can flip the Paint pill on, or pick the Full preset.
-    scope: { runCode: true, saveVersions: true, paintFaces: false },
+    scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: true },
     autoRetry: 1,
     maxIterations: 'medium',
     maxSpend: 'medium',
@@ -103,8 +103,8 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     anthropicModel: 'claude-sonnet-4-6',
   },
   full: {
-    vision: { views: true },
-    scope: { runCode: true, saveVersions: true, paintFaces: true },
+    vision: { views: true, resolution: 'high', angles: 'all' },
+    scope: { runCode: true, saveVersions: true, paintFaces: true, sessionNotes: true },
     autoRetry: 3,
     maxIterations: 'high',
     maxSpend: 'high',
@@ -212,6 +212,69 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       openaiModel: settings.toggles.openaiModel,
       geminiModel: settings.toggles.geminiModel,
     },
+  };
+}
+
+/** Default render size + default angle set for the agent's verification
+ *  renders, derived from the current vision toggles. Read by
+ *  window.partwright's renderView/renderViews so the budget governs the
+ *  default image size in one place. Explicit caller sizes are still honored —
+ *  the hard budget guard is the USD spend cap. */
+export function getRenderBudget(): { defaultPx: number; angles: ChatToggles['vision']['angles'] } {
+  const v = loadSettings().toggles.vision;
+  return { defaultPx: RENDER_RESOLUTION_PX[v.resolution], angles: v.angles };
+}
+
+/** User-facing budget vocabulary. Maps onto the internal presets:
+ *  cheap=minimal, balanced=standard, expensive=full. 'custom' = hand-tuned. */
+export type SpendingMode = 'cheap' | 'balanced' | 'expensive' | 'custom';
+
+const SPENDING_TO_PRESET: Record<Exclude<SpendingMode, 'custom'>, Exclude<Preset, 'custom'>> = {
+  cheap: 'minimal',
+  balanced: 'standard',
+  expensive: 'full',
+};
+
+const PRESET_TO_SPENDING: Record<Preset, SpendingMode> = {
+  minimal: 'cheap',
+  standard: 'balanced',
+  full: 'expensive',
+  custom: 'custom',
+};
+
+/** Apply a spending preset (cheap/balanced/expensive) — sets thinking,
+ *  vision, paint, notes, iteration and spend caps in one shot. */
+export function setSpendingMode(mode: Exclude<SpendingMode, 'custom'>): void {
+  saveSettings(applyPreset(loadSettings(), SPENDING_TO_PRESET[mode]));
+}
+
+/** Flat, agent-readable summary of the budget knobs. Shared by the
+ *  window.partwright.getSpendingMode() console API and getSessionContext(). */
+export function getSpendingSummary(): {
+  mode: SpendingMode;
+  thinking: ChatToggles['thinking'];
+  verifyWithImages: boolean;
+  renderResolution: ChatToggles['vision']['resolution'];
+  renderResolutionPx: number;
+  verificationAngles: ChatToggles['vision']['angles'];
+  painting: boolean;
+  sessionNotes: boolean;
+  maxIterations: ChatToggles['maxIterations'];
+  maxSpendUsd: number;
+} {
+  const s = loadSettings();
+  const t = s.toggles;
+  return {
+    mode: PRESET_TO_SPENDING[s.preset],
+    thinking: t.thinking,
+    verifyWithImages: t.vision.views,
+    renderResolution: t.vision.resolution,
+    renderResolutionPx: RENDER_RESOLUTION_PX[t.vision.resolution],
+    verificationAngles: t.vision.angles,
+    painting: t.scope.paintFaces,
+    sessionNotes: t.scope.sessionNotes,
+    maxIterations: t.maxIterations,
+    maxSpendUsd: SPEND_CAP_USD[t.maxSpend],
   };
 }
 
@@ -453,6 +516,16 @@ export const MAX_SPEND_OPTIONS: { id: ChatToggles['maxSpend']; label: string; hi
 export const THINKING_OPTIONS: { id: ChatToggles['thinking']; label: string; hint: string }[] =
   (Object.entries(THINKING_LEVELS) as [ChatToggles['thinking'], (typeof THINKING_LEVELS)[keyof typeof THINKING_LEVELS]][])
     .map(([id, v]) => ({ id, label: v.label, hint: v.hint }));
+
+export const RENDER_RESOLUTION_OPTIONS: { id: ChatToggles['vision']['resolution']; label: string; hint: string }[] =
+  (Object.entries(RENDER_RESOLUTION) as [ChatToggles['vision']['resolution'], (typeof RENDER_RESOLUTION)[keyof typeof RENDER_RESOLUTION]][])
+    .map(([id, v]) => ({ id, label: v.label, hint: v.hint }));
+
+export const VERIFY_ANGLE_OPTIONS: { id: ChatToggles['vision']['angles']; label: string; hint: string }[] = [
+  { id: 'auto', label: 'Auto', hint: 'Pick 2-3 angles by model shape. Cheapest sensible default.' },
+  { id: 'tri', label: '3 views', hint: 'Always front + top + iso (3 images per check).' },
+  { id: 'all', label: '4 views', hint: 'Front + right + top + iso (4 images per check). Most thorough, most tokens.' },
+];
 
 export const ANTHROPIC_MODEL_OPTIONS: { id: AnthropicModelId; label: string }[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
