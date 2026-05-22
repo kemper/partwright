@@ -8,6 +8,10 @@ export interface Session {
   images?: AttachedImage[] | null;
   /** Modeling language for this session. Missing = 'manifold-js'. */
   language?: 'manifold-js' | 'scad';
+  /** Last-used AI provider + model for this session, restored when the session
+   *  is reopened so each session remembers which assistant was driving it.
+   *  Plain strings to keep the storage layer decoupled from the AI types. */
+  aiPreference?: { provider: string; model: string };
 }
 
 export interface AttachedImage {
@@ -120,11 +124,27 @@ function openDB(): Promise<IDBDatabase> {
     };
     req.onsuccess = () => {
       const db = req.result;
+      // If another tab opens the DB at a higher version, close our connection
+      // so its upgrade isn't blocked indefinitely. We drop the cached promise
+      // so the next DB access in this tab transparently reopens at the new
+      // version.
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
       migrateLegacyData(db)
         .catch(err => console.warn('Partwright: legacy session migration skipped:', err))
         .finally(() => resolve(db));
     };
     req.onerror = () => reject(req.error);
+    // Another tab is holding an older connection open and blocking our upgrade.
+    // Surface it; it clears once that tab's onversionchange handler closes its
+    // connection (or the user closes the tab).
+    req.onblocked = () => {
+      console.warn(
+        'Partwright: database upgrade is blocked by another open tab. Close other Partwright tabs to continue.',
+      );
+    };
   });
   return dbPromise;
 }
@@ -331,7 +351,7 @@ export function legacyImagesObjectToArray(obj: LegacyImagesObject): AttachedImag
   return result;
 }
 
-export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language'>>): Promise<void> {
+export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'aiPreference'>>): Promise<void> {
   const store = await tx('sessions', 'readwrite');
   // Read-modify-write inside one transaction: queue the put from the get's
   // callback (awaiting between them risks auto-commit), then await oncomplete.
@@ -406,25 +426,46 @@ export async function saveVersion(
   /** External meshes imported into this version (opaque to the db layer). */
   importedMeshes?: unknown[],
 ): Promise<Version> {
-  const versions = await listVersions(sessionId);
-  const nextIndex = versions.length > 0 ? Math.max(...versions.map(v => v.index)) + 1 : 1;
-
-  const version: Version = {
-    id: generateId(),
-    sessionId,
-    index: nextIndex,
-    code,
-    geometryData,
-    thumbnail,
-    label: label || `v${nextIndex}`,
-    timestamp: timestamp ?? Date.now(),
-    ...(notes ? { notes } : {}),
-    ...(annotations && annotations.length > 0 ? { annotations } : {}),
-    ...(importedMeshes && importedMeshes.length > 0 ? { importedMeshes } : {}),
-  };
-
-  const store = await tx('versions', 'readwrite');
-  await reqToPromise(store.put(version));
+  // Compute the next index and write the version inside ONE readwrite
+  // transaction. IndexedDB serializes overlapping readwrite transactions on
+  // the same store (even across tabs), so two tabs saving to the same session
+  // concurrently can't both mint the same index and trip the unique
+  // `sessionId_index` constraint. A reverse key-cursor on the compound index
+  // reads just the highest [sessionId, index] key — no heavy geometry/thumbnail
+  // blobs. (Note: IDBIndex.getAllKeys returns *primary* keys, not index keys,
+  // so a cursor is required to read the index value.)
+  const db = await openDB();
+  const txn = db.transaction('versions', 'readwrite');
+  const store = txn.objectStore('versions');
+  const version = await new Promise<Version>((resolve, reject) => {
+    const cursorReq = store.index('sessionId_index').openKeyCursor(
+      IDBKeyRange.bound([sessionId], [sessionId, []]),
+      'prev',
+    );
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result;
+      const maxIndex = cursor ? (cursor.key as [string, number])[1] : 0;
+      const nextIndex = maxIndex + 1;
+      const v: Version = {
+        id: generateId(),
+        sessionId,
+        index: nextIndex,
+        code,
+        geometryData,
+        thumbnail,
+        label: label || `v${nextIndex}`,
+        timestamp: timestamp ?? Date.now(),
+        ...(notes ? { notes } : {}),
+        ...(annotations && annotations.length > 0 ? { annotations } : {}),
+        ...(importedMeshes && importedMeshes.length > 0 ? { importedMeshes } : {}),
+      };
+      const putReq = store.put(v);
+      putReq.onsuccess = () => resolve(v);
+      putReq.onerror = () => reject(putReq.error);
+    };
+    cursorReq.onerror = () => reject(cursorReq.error);
+  });
+  await txComplete(txn);
 
   // Bump session.updated unless the caller is restoring an earlier timestamp
   // (an import that wants to preserve original session.updated will restore it after).

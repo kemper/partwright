@@ -190,6 +190,19 @@ export function onSettingsChange(fn: (settings: AiSettings) => void): () => void
   return () => listeners.delete(fn);
 }
 
+/** Drop the in-memory cache and re-read settings from localStorage, then
+ *  notify listeners. Used when another tab writes settings (the `storage`
+ *  event fires only in *other* tabs): our `cached` blob would otherwise shadow
+ *  the peer tab's change forever, and the next `saveSettings` here would write
+ *  the stale blob back and silently revert their edit. Returns the freshly
+ *  loaded settings. */
+export function reloadSettingsFromStorage(): AiSettings {
+  cached = null;
+  const next = loadSettings();
+  for (const fn of listeners) fn(next);
+  return next;
+}
+
 export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
   if (preset === 'custom') return { ...settings, preset };
   const p = DEFAULT_TOGGLES_BY_PRESET[preset];
