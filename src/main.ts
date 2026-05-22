@@ -36,7 +36,7 @@ import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { showToast } from './ui/toast';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel } from './ui/aiPanel';
 import { getKey as getAiKey, mergeChatBucket } from './ai/db';
-import { loadSettings as loadAiSettings } from './ai/settings';
+import { loadSettings as loadAiSettings, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
 import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
@@ -2105,6 +2105,25 @@ async function main() {
       return getTheme();
     },
 
+    // === Spending mode (AI budget) ===
+
+    /** Read the AI spending budget — the preset plus the knobs it controls
+     *  (thinking, image verification, painting, session notes, iteration and
+     *  spend caps). Agents should respect it. `renderResolution` sets the
+     *  default renderView/renderViews size (an explicit size still wins). */
+    getSpendingMode() {
+      return getSpendingSummary();
+    },
+
+    /** Set the AI spending budget preset: "cheap" | "balanced" | "expensive".
+     *  Sets thinking, vision, paint, notes, and the iteration/spend caps at once
+     *  (these are the in-app AI presets minimal/standard/full). */
+    setSpendingMode(mode: 'cheap' | 'balanced' | 'expensive') {
+      assertEnum(mode, ['cheap', 'balanced', 'expensive'] as const, 'setSpendingMode(mode)');
+      applyAiSpendingMode(mode);
+      return getSpendingSummary();
+    },
+
     // === Auto-run API ===
 
     /** Enable or disable auto-run (re-render on edit). */
@@ -2134,7 +2153,10 @@ async function main() {
         assertNumber(o.size, 'renderView(options).size', { optional: true, min: 1, integer: true });
       }
       if (!currentMeshData) return null;
-      return renderSingleView(applyTriColorsIfVisible(currentMeshData), options ?? {});
+      // Default image size follows the spending-mode resolution budget when the
+      // caller omits size; an explicit size still wins (e.g. a final hi-res check).
+      const size = options?.size ?? getRenderBudget().defaultPx;
+      return renderSingleView(applyTriColorsIfVisible(currentMeshData), { ...(options ?? {}), size });
     },
 
     /** Render multiple angles of the current model laid out in a single
@@ -2171,8 +2193,11 @@ async function main() {
         assertNumber(o.size, 'renderViews(options).size', { optional: true, min: 1, integer: true });
       }
       if (!currentMeshData) return null;
-      const which = options?.views ?? 'auto';
-      const tileSize = options?.size ?? 320;
+      // Angle set and tile size default to the spending-mode budget when the
+      // caller doesn't specify them; an explicit size still wins.
+      const budget = getRenderBudget();
+      const which = options?.views ?? budget.angles;
+      const tileSize = options?.size ?? budget.defaultPx;
       const colored = applyTriColorsIfVisible(currentMeshData);
       const explicit = options?.angles;
       const angles = explicit && explicit.length > 0
@@ -4833,8 +4858,11 @@ async function main() {
         // Inspection
         'sliceAtZ':        { signature: 'sliceAtZ(z) -- Cross-section at height -> {polygons, svg, area}', docs: '/ai.md#console-api--windowpartwright' },
         'getBoundingBox':  { signature: 'getBoundingBox() -- -> {min, max}', docs: '/ai.md#console-api--windowpartwright' },
-        'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?}) -- Render from any angle -> data URL', docs: '/ai.md#visual-verification' },
+        'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?}) -- Render from any angle -> data URL (default/cap size follows spending mode)', docs: '/ai.md#visual-verification' },
         'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
+        // Spending mode (AI budget)
+        'getSpendingMode': { signature: 'getSpendingMode() -- Read the AI budget (preset + thinking/vision/paint/notes/caps); respect it', docs: '/ai.md#spending-mode' },
+        'setSpendingMode': { signature: 'setSpendingMode("cheap"|"balanced"|"expensive") -- Set the AI budget preset', docs: '/ai.md#spending-mode' },
         'analyzeProfile':  { signature: 'analyzeProfile(sampleCount?) -- Z-profile feature summary', docs: '/ai.md#console-api--windowpartwright' },
         'measureAt':       { signature: 'measureAt([x,y]) -- Ray-cast probe at XY -> {hits, thickness, topZ, bottomZ}', docs: '/ai.md#console-api--windowpartwright' },
         'probePixel':      { signature: 'probePixel({pixel: [x,y], view}) -- Translate a pixel in a rendered view back to a surface hit: {point, normal, distance, triangleId, nextStep}. The view spec must match the renderView call. On a background pixel returns {hit:false, modelPixelBounds, reason, hint} telling you where the model projects so you can re-aim.', docs: '/ai.md#console-api--windowpartwright' },

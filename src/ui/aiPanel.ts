@@ -8,7 +8,7 @@ import { runTurn, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setToggles, providerLabel, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setToggles, providerLabel, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { generateId } from '../storage/db';
@@ -771,6 +771,44 @@ function renderToggleStrip(): void {
       renderCostMeter();
     },
   ));
+
+  // Verification image resolution — pixel size of the screenshots the model
+  // renders to check its work. Lower = cheaper vision spend; caps any size the
+  // model requests via renderView/renderViews.
+  const resSel = document.createElement('select');
+  resSel.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
+  resSel.title = 'Verification image resolution: pixel size of the screenshots the AI renders to check its work. Lower = cheaper vision spend; higher = sharper but more image tokens. Caps any size the model requests.';
+  for (const opt of RENDER_RESOLUTION_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = opt.id;
+    o.textContent = `📐 ${opt.label}`;
+    o.title = opt.hint;
+    resSel.appendChild(o);
+  }
+  resSel.value = toggles.vision.resolution;
+  resSel.addEventListener('change', () => {
+    saveSettings(setToggles(loadSettings(), { vision: { resolution: resSel.value as ChatToggles['vision']['resolution'] } }));
+    renderCostMeter();
+  });
+  toggleStripEl.appendChild(resSel);
+
+  // Verification angles — how many camera angles renderViews captures per check.
+  const anglesSel = document.createElement('select');
+  anglesSel.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
+  anglesSel.title = 'Verification angles: how many camera angles the AI captures per renderViews check. Fewer = cheaper; more = better coverage but more image tokens.';
+  for (const opt of VERIFY_ANGLE_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = opt.id;
+    o.textContent = `🎥 ${opt.label}`;
+    o.title = opt.hint;
+    anglesSel.appendChild(o);
+  }
+  anglesSel.value = toggles.vision.angles;
+  anglesSel.addEventListener('change', () => {
+    saveSettings(setToggles(loadSettings(), { vision: { angles: anglesSel.value as ChatToggles['vision']['angles'] } }));
+  });
+  toggleStripEl.appendChild(anglesSel);
+
   toggleStripEl.appendChild(togglePill(
     '▶ Run',
     toggles.scope.runCode,
@@ -795,6 +833,15 @@ function renderToggleStrip(): void {
     'Paint: allow the AI to set color regions (paintInBox, paintSlab, paintNear, etc.). OFF by default — painting locks the editor and is the easiest place for the AI to over-select.',
     () => {
       saveSettings(setToggles(loadSettings(), { scope: { paintFaces: !toggles.scope.paintFaces } }));
+      renderToggleStrip();
+    },
+  ));
+  toggleStripEl.appendChild(togglePill(
+    '📝 Notes',
+    toggles.scope.sessionNotes,
+    'Session notes: allow the AI to call addSessionNote to log design decisions. OFF saves a tool round-trip per note — the chat transcript already records the reasoning.',
+    () => {
+      saveSettings(setToggles(loadSettings(), { scope: { sessionNotes: !toggles.scope.sessionNotes } }));
       renderToggleStrip();
     },
   ));

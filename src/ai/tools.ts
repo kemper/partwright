@@ -17,6 +17,7 @@
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
 import { RENDER_VIEW_MODES } from '../renderer/multiview';
+import { getRenderBudget } from './settings';
 import { applyLiteralPatch, applyPatches } from './patch';
 
 export interface ToolDefinition {
@@ -855,7 +856,9 @@ const ALWAYS_AVAILABLE = new Set([
   'listVersions',
   // loadVersion is intentionally NOT here — it's listed in SAVE_GATED so
   // the model can't rewind state when the user has paused commits.
-  'addSessionNote',
+  // addSessionNote is intentionally NOT here — it's NOTES_GATED so the budget
+  // can stop the model from spending a tool round-trip on notes the chat
+  // transcript already records.
   'listSessionNotes',
   'readDoc',
   'findFaces',
@@ -886,6 +889,9 @@ const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInB
  *  code + stats alone. runIsolated is here because its primary value is
  *  the thumbnail; without vision it degrades to just the stats. */
 const VIEWS_GATED = new Set(['renderView', 'renderViews', 'runIsolated']);
+/** Gated by the Session-notes scope toggle. When off, the budget keeps the
+ *  model from spending a tool round-trip writing notes the chat already holds. */
+const NOTES_GATED = new Set(['addSessionNote']);
 
 export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
   return ALL_TOOLS.filter(t => {
@@ -897,6 +903,7 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
       return t.name === 'loadVersion' ? toggles.scope.saveVersions : (toggles.scope.runCode && toggles.scope.saveVersions);
     }
     if (PAINT_GATED.has(t.name)) return toggles.scope.paintFaces;
+    if (NOTES_GATED.has(t.name)) return toggles.scope.sessionNotes;
     if (VIEWS_GATED.has(t.name)) return toggles.vision.views;
     return false;
   });
@@ -1018,16 +1025,20 @@ function executeRenderView(api: PartwrightAPI, input: Record<string, unknown>): 
   const elevation = (input.elevation as number | undefined) ?? 30;
   const azimuth = (input.azimuth as number | undefined) ?? 0;
   const ortho = (input.ortho as boolean | undefined) ?? false;
-  const size = (input.size as number | undefined) ?? 320;
+  // Mirror the budget-driven default size applied in window.partwright.renderView
+  // so the label reports the size actually rendered.
+  const size = (input.size as number | undefined) ?? getRenderBudget().defaultPx;
   const label = `view: elev=${elevation}°, az=${azimuth}°${ortho ? ', ortho' : ''}, ${size}px`;
   return wrapImageResult(result, 'renderView', label);
 }
 
 async function executeRenderViews(api: PartwrightAPI, input: Record<string, unknown>): Promise<ToolExecResult> {
   const result = await api.renderViews(input) as string | { error: string } | null | undefined;
+  // Mirror the budget-driven defaults applied in window.partwright.renderViews.
+  const budget = getRenderBudget();
   const angles = input.angles as unknown[] | undefined;
-  const views = (input.views as string | undefined) ?? 'auto';
-  const size = (input.size as number | undefined) ?? 320;
+  const views = (input.views as string | undefined) ?? budget.angles;
+  const size = (input.size as number | undefined) ?? budget.defaultPx;
   const label = angles && angles.length > 0
     ? `views: ${angles.length} custom angles (${size}px per cell)`
     : `views: ${views} composite (${size}px per cell)`;

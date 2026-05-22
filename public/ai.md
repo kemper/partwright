@@ -21,6 +21,7 @@ Partwright is a browser-based parametric CAD tool with two modeling engines: **m
 - [Iteration workflow](#iteration-workflow)
 - [Stat-based verification](#stat-based-verification)
 - [Visual verification](#visual-verification)
+- [Spending mode](#spending-mode)
 
 ## Before you start
 
@@ -204,6 +205,10 @@ await partwright.renderViews({views?: 'auto'|'tri'|'all'|'box', angles?, size?})
 partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}
 partwright.isRunning()                   // -> boolean (is code executing?)
 
+// Spending mode (AI budget) -- respect what the user set; see #spending-mode
+partwright.getSpendingMode()             // -> {mode, thinking, renderResolution, renderResolutionPx, verificationAngles, painting, sessionNotes, ...}
+partwright.setSpendingMode('balanced')   // 'cheap' | 'balanced' | 'expensive' (sets thinking, vision, paint, notes, caps at once)
+
 // Images -- attach photos to compare model against (see /ai/reference-images.md)
 partwright.setImages([{src, label?}, ...])  // replace all; src is data URL or http(s) URL; label is an optional caption
 partwright.addImage({src, label?})          // append one; returns {id, src, label?}
@@ -273,6 +278,7 @@ await partwright.deleteSessionNote(noteId)       // Remove a note
 
 // Session context -- get everything in one call (for resuming sessions)
 await partwright.getSessionContext()     // -> {session, versions[], notes[], currentVersion, versionCount, agentHints}
+// agentHints includes `spending` -- the user's budget (see #spending-mode)
 ```
 
 ## Geometry data
@@ -772,7 +778,7 @@ const ctx = await partwright.getSessionContext();
 // ctx.notes      -- [{id, text, timestamp}]  (all session notes)
 // ctx.currentVersion -- {index, label}
 // ctx.versionCount
-// ctx.agentHints -- {apiDocsUrl, recommendedEntrypoint, codeMustReturnManifold, recentErrors}
+// ctx.agentHints -- {apiDocsUrl, recommendedEntrypoint, codeMustReturnManifold, recentErrors, spending}
 //   recentErrors: last 5 validation errors from this page session (helps avoid repeating mistakes)
 ```
 
@@ -841,6 +847,54 @@ const s = partwright.sliceAtZVisual(10);  // returns {svg, area, contours}
 - **While iterating:** `renderViews()` (auto) or `renderView()` at the default size -- cheap.
 - **Final check:** `renderViews({ views: "box", size: 512-768 })` -- every face, high resolution.
   More angles x larger size = more input tokens, so spend it on the final pass, not every turn.
+
+## Spending mode
+
+The user sets a **budget** that controls how much compute/tokens the AI agent
+should spend. **Read it at the start of a session and respect it:**
+
+```js
+partwright.getSpendingMode()
+// -> { mode: "balanced", thinking: "off", verifyWithImages: true,
+//      renderResolution: "medium", renderResolutionPx: 384,
+//      verificationAngles: "auto", painting: false, sessionNotes: true,
+//      maxIterations: "medium", maxSpendUsd: 2 }
+```
+
+`mode` is `"cheap"`, `"balanced"`, `"expensive"`, or `"custom"` (the user
+hand-tuned the toggles). It maps to the in-app AI presets Minimal / Standard /
+Full. It's also included in `getSessionContext().agentHints.spending`.
+
+`setSpendingMode("cheap"|"balanced"|"expensive")` applies a preset — it sets
+thinking, image verification, painting, session notes, and the iteration/spend
+caps in one shot. The user can also adjust each knob individually in the AI
+panel's toggle strip.
+
+**Enforced by the app — you don't have to do anything, but know the limits:**
+
+- **`renderResolution`** sets the **default** pixel `size` for `renderView()` /
+  `renderViews()` (low=256, medium=384, high=512) when you don't pass one. Keep
+  routine checks at the default; pass a larger `size` only for a deliberate
+  final high-res inspection. (The hard budget guard is the USD spend cap.)
+- **`painting`** — when `false`, the paint tools are removed from your tool list
+  and the paint console API returns an error. Don't try to paint; tell the user
+  to raise the budget if they want color.
+- **`sessionNotes`** — when `false`, `addSessionNote` is removed from your tool
+  list. The chat transcript already records your reasoning, so this just saves a
+  round-trip; don't work around it.
+
+**Advisory — adjust your own behavior to match:**
+
+- **`thinking`** (`off`/`low`/`medium`/`high`) — when `off`, keep reasoning
+  minimal and act directly.
+- **`verifyWithImages`** — when `false`, reason from stats/code alone; render
+  images sparingly only when the user explicitly needs a visual check.
+- **`verificationAngles`** (`auto`/`tri`/`all`) — the default angle set for
+  `renderViews()`; lower means fewer image tokens per check.
+- **`maxIterations`** / **`maxSpendUsd`** — hard caps; the turn stops when either
+  trips. Pace your tool calls so you finish useful work before the cap.
+
+Honor the budget unless the user overrides it for a specific request.
 
 ## Annotations
 
