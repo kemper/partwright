@@ -430,18 +430,22 @@ export async function saveVersion(
   // transaction. IndexedDB serializes overlapping readwrite transactions on
   // the same store (even across tabs), so two tabs saving to the same session
   // concurrently can't both mint the same index and trip the unique
-  // `sessionId_index` constraint. getAllKeys reads only the compound keys
-  // (`[sessionId, index]`), never the heavy geometry/thumbnail blobs.
+  // `sessionId_index` constraint. A reverse key-cursor on the compound index
+  // reads just the highest [sessionId, index] key — no heavy geometry/thumbnail
+  // blobs. (Note: IDBIndex.getAllKeys returns *primary* keys, not index keys,
+  // so a cursor is required to read the index value.)
   const db = await openDB();
   const txn = db.transaction('versions', 'readwrite');
   const store = txn.objectStore('versions');
   const version = await new Promise<Version>((resolve, reject) => {
-    const keysReq = store.index('sessionId_index').getAllKeys(
+    const cursorReq = store.index('sessionId_index').openKeyCursor(
       IDBKeyRange.bound([sessionId], [sessionId, []]),
+      'prev',
     );
-    keysReq.onsuccess = () => {
-      const keys = keysReq.result as [string, number][];
-      const nextIndex = keys.length > 0 ? Math.max(...keys.map(k => k[1])) + 1 : 1;
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result;
+      const maxIndex = cursor ? (cursor.key as [string, number])[1] : 0;
+      const nextIndex = maxIndex + 1;
       const v: Version = {
         id: generateId(),
         sessionId,
@@ -459,7 +463,7 @@ export async function saveVersion(
       putReq.onsuccess = () => resolve(v);
       putReq.onerror = () => reject(putReq.error);
     };
-    keysReq.onerror = () => reject(keysReq.error);
+    cursorReq.onerror = () => reject(cursorReq.error);
   });
   await txComplete(txn);
 
