@@ -1,37 +1,84 @@
-// Single-active-writer coordination per session, built on the Web Locks API.
+// Single-active-writer ("leader") election per session, via a localStorage
+// token + the cross-tab `storage` event.
 //
-// When the same session is open in two tabs, only one should be the active
-// writer (driving the AI chat and saving versions); the other becomes a
-// read-only viewer that live-updates via tabSync. This avoids two chat loops
-// corrupting one transcript and two editors clobbering each other.
+// Why not the Web Locks API: locks grant in FIFO order and can't be stolen, so
+// an explicit "take control" can't deterministically win, and a reload drops a
+// tab's queued request. A localStorage token is last-writer-wins — taking
+// control is just writing your id — and the `storage` event notifies the old
+// leader instantly so it can step down. A short heartbeat + staleness check
+// recovers leadership when a leader tab is closed or silently killed (mobile).
 //
-// Ownership transfers cooperatively. A viewer keeps a *waiting* lock request
-// queued; when the owner releases (it closed, navigated away, or honored a
-// takeover request) the waiter is granted the lock and is promoted to owner.
-// "Take over" is a tabSync message asking the current owner to release.
-//
-// Where the Web Locks API is unavailable, every tab is treated as the owner so
-// single-writer behavior degrades to today's last-write-wins (still safe for
-// the common "two independent sessions" case).
-
-import { onTabSync, publishTabSync } from './tabSync';
+// The public surface (onOwnershipChange / acquireSession) is unchanged, so the
+// UI keeps consuming "am I the writer?" the same way.
 
 export interface OwnershipState {
   sessionId: string | null;
   owned: boolean;
 }
 
+const HEARTBEAT_MS = 3000;
+/** A leader is considered dead if its token hasn't been refreshed in this long
+ *  (more than two missed heartbeats). */
+const STALE_MS = 8000;
+
+const tabId =
+  (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+    ? crypto.randomUUID()
+    : `tab-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+
 let currentSessionId: string | null = null;
 let owned = false;
-let release: (() => void) | null = null;
-/** Bumped on every acquireSession so stale lock callbacks (from a session we've
- *  since switched away from) can detect they've been superseded and bail. */
-let generation = 0;
+let lastEmitted: OwnershipState | null = null;
+let initialized = false;
 
 const listeners = new Set<(s: OwnershipState) => void>();
 
+interface LeaderToken {
+  tabId: string;
+  ts: number;
+}
+
+function key(sessionId: string): string {
+  return `pw-leader:${sessionId}`;
+}
+
+function readToken(sessionId: string): LeaderToken | null {
+  try {
+    const raw = localStorage.getItem(key(sessionId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LeaderToken;
+    if (typeof parsed.tabId === 'string' && typeof parsed.ts === 'number') return parsed;
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function writeToken(sessionId: string): void {
+  try {
+    localStorage.setItem(key(sessionId), JSON.stringify({ tabId, ts: Date.now() } satisfies LeaderToken));
+  } catch {
+    // localStorage unavailable (private mode) — degrade to sole leader.
+  }
+}
+
+function clearOwnToken(sessionId: string): void {
+  const tok = readToken(sessionId);
+  if (tok && tok.tabId === tabId) {
+    try { localStorage.removeItem(key(sessionId)); } catch { /* ignore */ }
+  }
+}
+
+function isStale(tok: LeaderToken | null): boolean {
+  return !tok || Date.now() - tok.ts > STALE_MS;
+}
+
 function emit(): void {
   const snapshot: OwnershipState = { sessionId: currentSessionId, owned };
+  if (lastEmitted && lastEmitted.sessionId === snapshot.sessionId && lastEmitted.owned === snapshot.owned) {
+    return; // no change — don't spam subscribers
+  }
+  lastEmitted = snapshot;
   for (const fn of listeners) {
     try { fn(snapshot); } catch (err) { console.warn('sessionLock listener failed', err); }
   }
@@ -43,101 +90,80 @@ export function onOwnershipChange(fn: (s: OwnershipState) => void): () => void {
   return () => { listeners.delete(fn); };
 }
 
-export function isWriteOwner(): boolean {
-  return owned;
+function becomeLeader(): void {
+  if (!currentSessionId) return;
+  owned = true;
+  writeToken(currentSessionId);
+  emit();
 }
 
-function locksSupported(): boolean {
-  return typeof navigator !== 'undefined' && !!navigator.locks;
+function becomeViewer(): void {
+  owned = false;
+  emit();
 }
 
-function lockName(id: string): string {
-  return `partwright-session-write:${id}`;
+/** Heartbeat + staleness tick. Always running once initialized: a leader
+ *  refreshes its token; a viewer promotes itself if the leader's token has gone
+ *  stale (leader tab closed/killed without clearing it). */
+function tick(): void {
+  if (!currentSessionId) return;
+  if (owned) {
+    writeToken(currentSessionId);
+  } else if (isStale(readToken(currentSessionId))) {
+    becomeLeader();
+  }
 }
 
-function releaseCurrent(): void {
-  if (release) {
-    release();
-    release = null;
+/** Attach the cross-tab listeners + heartbeat. Call once at app start. */
+export function initSessionLeader(): void {
+  if (initialized || typeof window === 'undefined') return;
+  initialized = true;
+
+  window.addEventListener('storage', (e) => {
+    if (!currentSessionId || e.key !== key(currentSessionId)) return;
+    const tok = readToken(currentSessionId);
+    if (owned) {
+      // Someone wrote a different id (took control) → step down.
+      if (tok && tok.tabId !== tabId) becomeViewer();
+    } else {
+      // Leader cleared its token (closed) or it's stale → promote ourselves.
+      if (isStale(tok)) becomeLeader();
+    }
+  });
+
+  // Best-effort: release leadership on close so a peer claims instantly. The
+  // staleness check covers the case where this doesn't fire (mobile kill).
+  window.addEventListener('pagehide', () => {
+    if (owned && currentSessionId) clearOwnToken(currentSessionId);
+  });
+
+  setInterval(tick, HEARTBEAT_MS);
+}
+
+/** Begin coordinating leadership for `sessionId` (or release when null).
+ *  `steal:true` claims leadership unconditionally — used by the "take control"
+ *  reload so the new tab deterministically wins. */
+export async function acquireSession(sessionId: string | null, opts: { steal?: boolean } = {}): Promise<void> {
+  // Drop leadership of any prior session.
+  if (owned && currentSessionId && currentSessionId !== sessionId) {
+    clearOwnToken(currentSessionId);
   }
   owned = false;
-}
-
-/** Begin coordinating write-ownership for `sessionId` (or release everything
- *  when null). Resolves once initial ownership is known. If another tab owns
- *  it, a waiting request is left queued so we're promoted when they release. */
-export async function acquireSession(sessionId: string | null): Promise<void> {
-  releaseCurrent();
   currentSessionId = sessionId;
-  owned = false;
 
   if (!sessionId) {
     emit();
     return;
   }
-  if (!locksSupported()) {
-    // No Web Locks — assume sole ownership.
-    owned = true;
-    emit();
+  if (typeof localStorage === 'undefined') {
+    becomeLeader();
     return;
   }
 
-  const gen = ++generation;
-
-  const gotIt = await new Promise<boolean>((resolve) => {
-    navigator.locks
-      .request(lockName(sessionId), { ifAvailable: true }, (lock) => {
-        if (gen !== generation) return; // superseded mid-request
-        if (!lock) {
-          resolve(false);
-          return;
-        }
-        owned = true;
-        resolve(true);
-        // Hold the lock until releaseCurrent() resolves this promise.
-        return new Promise<void>((rel) => { release = rel; });
-      })
-      .catch(() => resolve(false));
-  });
-
-  if (gen !== generation) return; // switched sessions while acquiring
-  emit();
-  if (gotIt) return;
-
-  // We're a viewer. Queue a *waiting* request; it resolves into ownership when
-  // the current owner releases (close / navigate / honored takeover).
-  navigator.locks
-    .request(lockName(sessionId), () => {
-      if (gen !== generation) return; // switched away while waiting
-      owned = true;
-      emit();
-      return new Promise<void>((rel) => { release = rel; });
-    })
-    .catch(() => {});
-}
-
-/** Ask the current owner of the open session to hand the lock over. The owner
- *  releases; our queued waiting request is then granted. */
-export function requestTakeover(): void {
-  if (currentSessionId && !owned) {
-    publishTabSync({ kind: 'takeover', sessionId: currentSessionId });
+  const tok = readToken(sessionId);
+  if (opts.steal || isStale(tok) || (tok && tok.tabId === tabId)) {
+    becomeLeader();
+  } else {
+    becomeViewer();
   }
-}
-
-let takeoverWired = false;
-
-/** Wire the owner side of takeover handling. Call once at app start. */
-export function initSessionLockTakeover(): void {
-  if (takeoverWired) return;
-  takeoverWired = true;
-  onTabSync((msg) => {
-    if (msg.kind !== 'takeover') return;
-    if (msg.sessionId !== currentSessionId || !owned) return;
-    // Honor the request: release so the asker's queued request wins, then
-    // re-queue ourselves as a viewer-waiter so we can reclaim it later.
-    const id = currentSessionId;
-    releaseCurrent();
-    emit();
-    void acquireSession(id);
-  });
 }

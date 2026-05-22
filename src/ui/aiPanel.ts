@@ -24,7 +24,7 @@ import { putAttachment } from '../ai/attachments';
 import { exportChatMarkdown } from '../export/chat';
 import { getState, setSessionAiPreference } from '../storage/sessionManager';
 import { onTabSync, publishTabSync } from '../storage/tabSync';
-import { onOwnershipChange, requestTakeover } from '../storage/sessionLock';
+import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
 import { activeModel, SPEND_CAP_USD, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { errorLog } from '../diagnostics/errorLog';
@@ -138,7 +138,6 @@ let toggleStripEl: HTMLElement | null = null;
 let costMeterEl: HTMLElement | null = null;
 let panelStatusEl: HTMLElement | null = null;
 let prefNoticeEl: HTMLElement | null = null;
-let ownerBannerEl: HTMLElement | null = null;
 /** False when another tab holds the single-writer lock for the current
  *  session — this tab is then a read-only viewer. */
 let writeOwner = true;
@@ -366,28 +365,20 @@ function applyOwnership(owned: boolean): void {
   // No real session (global bucket) = no contention = always writable.
   const noRealSession = !state.sessionId || state.sessionId === GLOBAL_CHAT_BUCKET;
   writeOwner = noRealSession ? true : owned;
-  renderOwnerBanner();
-  if (sendBtnRef && !writeOwner) sendBtnRef.disabled = true;
+  // The whole-screen viewer overlay (viewerMode.ts) is the single "locked" UI
+  // now; the send-disable + sendMessage guard stay as a backstop.
+  if (sendBtnRef) sendBtnRef.disabled = !writeOwner;
+  // Becoming a viewer mid-turn (another tab took control): stop our run.
+  if (!writeOwner) stopActiveTurn();
 }
 
-function renderOwnerBanner(): void {
-  if (!ownerBannerEl) return;
-  if (writeOwner) {
-    ownerBannerEl.classList.add('hidden');
-    ownerBannerEl.replaceChildren();
-    return;
-  }
-  ownerBannerEl.replaceChildren();
-  const msg = document.createElement('span');
-  msg.className = 'flex-1';
-  msg.textContent = 'This session is open in another tab. You can read along here; sending is disabled.';
-  const takeover = document.createElement('button');
-  takeover.type = 'button';
-  takeover.className = 'shrink-0 px-2 h-6 rounded bg-blue-700/60 hover:bg-blue-600 text-blue-50';
-  takeover.textContent = 'Take over';
-  takeover.addEventListener('click', () => requestTakeover());
-  ownerBannerEl.append(msg, takeover);
-  ownerBannerEl.classList.remove('hidden');
+/** Abort any in-flight AI turn. Exported so a tab can halt its own run when it
+ *  loses write-ownership (another tab took control). */
+export function stopActiveTurn(): void {
+  // Anthropic stops via AbortSignal through the SDK; local (WebLLM) ignores the
+  // signal, so interruptLocal() is what halts it mid-token.
+  state.inFlightController?.abort();
+  void interruptLocal();
 }
 
 /** Insert or replace a message in the in-memory transcript, keeping it
@@ -506,13 +497,6 @@ function buildDrawer(): void {
   prefNoticeEl = document.createElement('div');
   prefNoticeEl.className = 'px-3 py-1.5 text-[11px] border-b border-amber-800/60 bg-amber-900/20 text-amber-200 hidden flex items-start gap-2';
   root.appendChild(prefNoticeEl);
-
-  // Read-only banner — shown when another tab holds the write lock for this
-  // session. Chat input is disabled here; "Take over" asks the other tab to
-  // hand control to this one.
-  ownerBannerEl = document.createElement('div');
-  ownerBannerEl.className = 'px-3 py-1.5 text-[11px] border-b border-blue-800/60 bg-blue-900/20 text-blue-200 hidden flex items-center gap-2';
-  root.appendChild(ownerBannerEl);
 
   // Transcript
   transcriptEl = document.createElement('div');
@@ -653,11 +637,7 @@ function buildDrawer(): void {
   stopBtn.textContent = '⊘ Stop';
   stopBtn.title = 'Stop the model. Partial output is kept so you can redirect. Any queued message stays queued.';
   stopBtn.addEventListener('click', () => {
-    // Anthropic stops via AbortSignal propagated through the SDK. Local
-    // (WebLLM) doesn't accept the signal, so interruptLocal() is the only
-    // way to halt mid-token rather than at the next iteration boundary.
-    state.inFlightController?.abort();
-    void interruptLocal();
+    stopActiveTurn();
   });
   stopBtnRef = stopBtn;
   inputBtnRow.appendChild(stopBtn);
@@ -1880,12 +1860,9 @@ function updateRewindButtons(): void {
 
 async function sendMessage(): Promise<void> {
   if (state.inFlight) return;
-  // Another tab owns write access to this session — don't run a second chat
-  // loop against the same transcript. The banner offers "Take over".
-  if (!writeOwner) {
-    renderOwnerBanner();
-    return;
-  }
+  // Another tab is the leader for this session — don't run a second chat loop
+  // against the same transcript. The viewer overlay offers "Take control".
+  if (!writeOwner) return;
   if (!inputEl) return;
   const text = inputEl.value.trim();
   if (text.length === 0 && state.pendingImages.length === 0) return;

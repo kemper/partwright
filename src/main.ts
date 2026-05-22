@@ -155,7 +155,7 @@ import {
   type ExportedSession,
   type ExportOptions,
 } from './storage/sessionManager';
-import { acquireSession as acquireSessionLock, initSessionLockTakeover } from './storage/sessionLock';
+import { acquireSession as acquireSessionLock, initSessionLeader } from './storage/sessionLock';
 import { initViewerMode, isReadOnlyViewer } from './ui/viewerMode';
 import type { Version } from './storage/db';
 import {
@@ -1735,9 +1735,9 @@ async function main() {
   }
 
   // Keep this tab's session state in sync with peer tabs that mutate the same
-  // session in another window, and coordinate single-writer ownership.
+  // session in another window, and coordinate single-writer leadership.
   initSessionTabSync();
-  initSessionLockTakeover();
+  initSessionLeader();
   // Reflect single-writer ownership across the whole editor surface: the
   // non-owner tab becomes a read-only viewer (editor + paint + run + save
   // disabled, with a "Take over" banner).
@@ -1754,10 +1754,21 @@ async function main() {
   });
 
   // syncEditorFromURL() above opened the initial session BEFORE the listener
-  // was registered, so claim that session's write-lock explicitly now —
+  // was registered, so claim that session's leadership explicitly now —
   // otherwise a tab that loads straight into a session (?session=…) never
-  // engages the single-writer lock.
-  void acquireSessionLock(getState().session?.id ?? null);
+  // engages the single-writer lock. ?takeover=1 (from a "Take control" reload)
+  // claims leadership outright, bumping the other tab to read-only; strip it so
+  // it doesn't stick on refresh.
+  {
+    const tparams = new URLSearchParams(window.location.search);
+    const steal = tparams.get('takeover') === '1';
+    void acquireSessionLock(getState().session?.id ?? null, { steal });
+    if (steal) {
+      tparams.delete('takeover');
+      const qs = tparams.toString();
+      window.history.replaceState(null, '', window.location.pathname + (qs ? `?${qs}` : ''));
+    }
+  }
 
   // Initialize the AI chat side drawer once the editor UI is mounted.
   // Wraps initAiPanel + setAiToolbarState; tolerated if it fails (e.g.

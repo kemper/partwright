@@ -1,10 +1,11 @@
 import { test, expect } from 'playwright/test';
 
-// Two pages in the same BrowserContext share the origin's IndexedDB and Web
-// Locks, so we can exercise the single-writer lock: opening the same session in
-// a second tab should make it a read-only viewer.
-test.describe('Multi-tab single-writer lock', () => {
-  test('second tab on the same session is read-only with take-over', async ({ context }) => {
+// Two pages in the same BrowserContext share the origin's localStorage and its
+// `storage` events, so we can exercise the leader election: opening the same
+// session in a second tab makes it a read-only viewer, and "Take control"
+// reloads it as the leader while the first tab drops to read-only.
+test.describe('Multi-tab single-writer leader', () => {
+  test('second tab is read-only; Take control flips leadership', async ({ context }) => {
     const page1 = await context.newPage();
     await page1.goto('/editor');
     await page1.waitForSelector('text=Ready', { timeout: 15000 });
@@ -12,32 +13,28 @@ test.describe('Multi-tab single-writer lock', () => {
     const sessionId = await page1.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
-      const s = await pw.createSession('lock-test');
+      const s = await pw.createSession('leader-test');
       await pw.runAndSave('const { Manifold } = api; return Manifold.cube([10, 10, 10], true);', 'base');
       return s.id as string;
     });
 
-    // page1 owns the write lock — no viewer banner.
-    await expect(page1.locator('#session-viewer-banner')).toHaveCount(0);
+    // page1 is the leader — no overlay.
+    await expect(page1.locator('#session-viewer-overlay')).toHaveCount(0);
 
-    // Open the same session in a second tab.
+    // Open the same session in a second tab → it's the read-only viewer.
     const page2 = await context.newPage();
     await page2.goto(`/editor?session=${sessionId}`);
     await page2.waitForSelector('text=Ready', { timeout: 15000 });
+    await expect(page2.locator('#session-viewer-overlay')).toBeVisible({ timeout: 10000 });
+    await expect(page1.locator('#session-viewer-overlay')).toHaveCount(0);
 
-    // page2 is the read-only viewer: banner shown, save + paint disabled.
-    await expect(page2.locator('#session-viewer-banner')).toBeVisible({ timeout: 10000 });
-    await expect(page2.locator('#btn-save-version')).toBeDisabled();
-    await expect(page2.locator('#paint-toggle')).toBeDisabled();
-    // page1 remains the owner.
-    await expect(page1.locator('#session-viewer-banner')).toHaveCount(0);
-
-    // Take over from page2 → ownership flips.
-    await page2.locator('#session-viewer-banner button:has-text("Take over")').click();
-    await expect(page1.locator('#session-viewer-banner')).toBeVisible({ timeout: 10000 });
-    await expect(page2.locator('#session-viewer-banner')).toHaveCount(0, { timeout: 10000 });
-    // The new owner (page2) can save again.
-    await expect(page2.locator('#btn-save-version')).toBeEnabled();
+    // Take control from page2 → it reloads as leader, page1 drops to read-only.
+    await page2.locator('#session-viewer-overlay button:has-text("Take control")').click();
+    await page2.waitForSelector('text=Ready', { timeout: 15000 });
+    await expect(page2.locator('#session-viewer-overlay')).toHaveCount(0, { timeout: 10000 });
+    await expect(page2).toHaveURL(/\/editor\?session=/);
+    await expect(page2.url()).not.toContain('takeover');
+    await expect(page1.locator('#session-viewer-overlay')).toBeVisible({ timeout: 10000 });
 
     await page1.close();
     await page2.close();
