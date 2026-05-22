@@ -7,13 +7,31 @@ import Anthropic from '@anthropic-ai/sdk';
 import type {
   ChatBlock,
   ChatMessage,
+  ChatToggles,
   ImageSource,
   ModelId,
   PersistedToolCall,
   PersistedToolResult,
+  ThinkingBlockData,
   TurnUsage,
 } from './types';
 import type { ToolDefinition } from './tools';
+
+/** Map the shared thinking level to Anthropic `budget_tokens`. 0 means
+ *  thinking is disabled and no `thinking` param is sent — byte-identical to
+ *  the pre-feature request. Budgets must be ≥1024 and strictly less than
+ *  `max_tokens`; streamTurn raises max_tokens to guarantee the latter. */
+const THINKING_BUDGET: Record<ChatToggles['thinking'], number> = {
+  off: 0,
+  low: 2048,
+  medium: 8192,
+  high: 16384,
+};
+
+/** Output-token headroom reserved for the actual answer + tool calls on top
+ *  of the thinking budget. The API requires max_tokens > budget_tokens; we
+ *  give the response room to breathe rather than sitting right at the edge. */
+const ANSWER_HEADROOM_TOKENS = 8192;
 
 let cachedClient: Anthropic | null = null;
 let cachedKey: string | null = null;
@@ -60,6 +78,9 @@ export interface StreamCallbacks {
   /** Called for each text delta as it arrives. Use to incrementally update
    *  the in-progress assistant bubble. */
   onText?: (delta: string) => void;
+  /** Called for each extended-thinking delta (only when thinking is enabled).
+   *  Routed to the panel's live thinking box, mirroring the Gemini path. */
+  onThinking?: (delta: string) => void;
   /** Called once the model has decided to call a tool — input may still be
    *  streaming, so don't act on this yet. */
   onToolStart?: (toolUseId: string, toolName: string) => void;
@@ -74,10 +95,14 @@ export interface StreamResult {
   stopReason: string;
   /** Token usage attributed to this single API call. */
   usage: TurnUsage;
-  /** Reasoning text, if the provider surfaces it (Gemini). Anthropic
-   *  extended thinking isn't enabled here, so this stays undefined — the
-   *  field exists so chatLoop can read `result.thinking` across providers. */
+  /** Concatenated extended-thinking text for the turn, when the user enabled
+   *  thinking (Thinking pill ≠ Off). Undefined otherwise. Display-only; the
+   *  replay payload lives in `thinkingBlocks`. */
   thinking?: string;
+  /** Extended-thinking blocks captured verbatim (with signatures, plus any
+   *  redacted blocks) so the tool-use loop can echo them back on the next
+   *  request — required by the API when thinking is combined with tools. */
+  thinkingBlocks?: ThinkingBlockData[];
   /** Raw assistant content blocks — needed verbatim on the next request. */
   rawAssistantBlocks: Anthropic.ContentBlock[];
 }
@@ -99,8 +124,12 @@ export interface RequestSpec {
   tools: ToolDefinition[];
   /** Hard ceiling on output tokens for this turn. We default to 8K — large
    *  enough for verbose reasoning + a tool call, small enough to not hit
-   *  HTTP timeouts on browsers. */
+   *  HTTP timeouts on browsers. When thinking is enabled this is raised
+   *  automatically so it stays above the thinking budget. */
   maxTokens?: number;
+  /** Extended-thinking level. 'off' (default) sends no `thinking` param.
+   *  Low/Med/High enable it with an increasing token budget. */
+  thinking?: ChatToggles['thinking'];
 }
 
 export async function streamTurn(
@@ -109,7 +138,13 @@ export async function streamTurn(
   signal?: AbortSignal,
 ): Promise<StreamResult> {
   const client = getClient(spec.apiKey);
-  const max_tokens = spec.maxTokens ?? 8192;
+  const budget = THINKING_BUDGET[spec.thinking ?? 'off'];
+  // The API requires max_tokens > budget_tokens, so when thinking is on we
+  // float the ceiling above the budget. When it's off, the original 8K
+  // default is untouched.
+  const max_tokens = budget > 0
+    ? Math.max(spec.maxTokens ?? 8192, budget + ANSWER_HEADROOM_TOKENS)
+    : spec.maxTokens ?? 8192;
 
   // System is sent as an array of blocks so we can attach cache_control to
   // the large stable prefix (the full ai.md body) while leaving the small
@@ -134,13 +169,19 @@ export async function streamTurn(
     ...(i === arr.length - 1 ? { cache_control: { type: 'ephemeral' } } : {}),
   }));
 
-  const stream = client.messages.stream({
+  const params: Anthropic.MessageStreamParams = {
     model: spec.model,
     max_tokens,
     system,
     tools,
     messages: spec.apiMessages,
-  });
+  };
+  // Only attach the thinking config when enabled — omitting it entirely keeps
+  // the request (and the prompt cache) identical to the pre-feature path.
+  if (budget > 0) {
+    params.thinking = { type: 'enabled', budget_tokens: budget };
+  }
+  const stream = client.messages.stream(params);
 
   // Mirror text deltas into a local buffer so we still have the partial
   // response if the stream is aborted before finalMessage() resolves.
@@ -150,15 +191,18 @@ export async function streamTurn(
     callbacks.onText?.(delta);
   });
 
-  // Track tool_use blocks as they start so the UI can render a "calling X..."
-  // bubble even before the input is fully streamed.
-  if (callbacks.onToolStart) {
-    stream.on('streamEvent', event => {
-      if (event.type === 'content_block_start' && event.content_block.type === 'tool_use') {
-        callbacks.onToolStart!(event.content_block.id, event.content_block.name);
-      }
-    });
-  }
+  // Watch raw stream events for two things: thinking deltas (which don't fire
+  // the 'text' event) and tool_use block starts (so the UI can render a
+  // "calling X..." chip before the input finishes streaming).
+  let collectedThinking = '';
+  stream.on('streamEvent', event => {
+    if (event.type === 'content_block_delta' && event.delta.type === 'thinking_delta') {
+      collectedThinking += event.delta.thinking;
+      callbacks.onThinking?.(event.delta.thinking);
+    } else if (event.type === 'content_block_start' && event.content_block.type === 'tool_use') {
+      callbacks.onToolStart?.(event.content_block.id, event.content_block.name);
+    }
+  });
 
   // Tear down the stream when the caller aborts. The SDK exposes both
   // stream.abort() and the underlying AbortController via stream.controller;
@@ -187,6 +231,12 @@ export async function streamTurn(
         toolCalls: [],
         stopReason: 'aborted',
         usage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+        // Surface partial reasoning for display, but no replay payload: an
+        // aborted turn dropped its tool calls, so there's no tool_use that
+        // would require a signed thinking block on the next request. (A
+        // mid-stream signature may also be incomplete.)
+        thinking: collectedThinking || undefined,
+        thinkingBlocks: [],
         rawAssistantBlocks: partialBlocks,
       };
     }
@@ -198,10 +248,19 @@ export async function streamTurn(
 
 function collectResult(message: Anthropic.Message): StreamResult {
   let text = '';
+  let thinking = '';
   const toolCalls: PersistedToolCall[] = [];
+  const thinkingBlocks: ThinkingBlockData[] = [];
   for (const block of message.content) {
     if (block.type === 'text') {
       text += block.text;
+    } else if (block.type === 'thinking') {
+      thinking += block.thinking;
+      thinkingBlocks.push({ type: 'thinking', thinking: block.thinking, signature: block.signature });
+    } else if (block.type === 'redacted_thinking') {
+      // No readable text — opaque encrypted reasoning. Still must be echoed
+      // back during tool use, so capture it for replay (but not for display).
+      thinkingBlocks.push({ type: 'redacted_thinking', data: block.data });
     } else if (block.type === 'tool_use') {
       toolCalls.push({
         id: block.id,
@@ -222,6 +281,8 @@ function collectResult(message: Anthropic.Message): StreamResult {
     toolCalls,
     stopReason: message.stop_reason ?? 'unknown',
     usage,
+    thinking: thinking.length > 0 ? thinking : undefined,
+    thinkingBlocks: thinkingBlocks.length > 0 ? thinkingBlocks : undefined,
     rawAssistantBlocks: message.content,
   };
 }
@@ -231,14 +292,23 @@ function collectResult(message: Anthropic.Message): StreamResult {
  *  an assistant turn that called tools becomes a single message containing
  *  text + tool_use blocks; the user reply containing tool_result blocks
  *  follows immediately. */
-export function buildApiMessages(history: ChatMessage[]): Anthropic.MessageParam[] {
+export function buildApiMessages(
+  history: ChatMessage[],
+  opts: { replayThinking?: boolean } = {},
+): Anthropic.MessageParam[] {
   const out: Anthropic.MessageParam[] = [];
   for (const msg of history) {
     if (msg.role === 'user') {
       const content = userBlocksToApi(msg.blocks, msg.toolResults ?? []);
       if (content.length > 0) out.push({ role: 'user', content });
     } else {
-      const content = assistantBlocksToApi(msg.blocks, msg.toolCalls ?? []);
+      // Replay captured thinking blocks only when thinking is enabled for
+      // THIS request. Sending them with thinking disabled would be a
+      // param/content mismatch; conversely, historical turns generated
+      // without thinking simply have none to replay (the API tolerates
+      // missing thinking on earlier turns).
+      const thinkingBlocks = opts.replayThinking ? msg.thinkingBlocks : undefined;
+      const content = assistantBlocksToApi(msg.blocks, msg.toolCalls ?? [], thinkingBlocks);
       if (content.length > 0) out.push({ role: 'assistant', content });
     }
   }
@@ -348,8 +418,25 @@ function userBlocksToApi(blocks: ChatBlock[], toolResults: PersistedToolResult[]
   return out;
 }
 
-function assistantBlocksToApi(blocks: ChatBlock[], toolCalls: PersistedToolCall[]): Anthropic.ContentBlockParam[] {
+function assistantBlocksToApi(
+  blocks: ChatBlock[],
+  toolCalls: PersistedToolCall[],
+  thinkingBlocks?: ThinkingBlockData[],
+): Anthropic.ContentBlockParam[] {
   const out: Anthropic.ContentBlockParam[] = [];
+  // Thinking blocks MUST lead the assistant message — before any text or
+  // tool_use — and keep their original signatures. With thinking enabled the
+  // API rejects an assistant turn whose tool_use isn't preceded by its
+  // signed thinking block ("Expected `thinking`... but found `tool_use`").
+  if (thinkingBlocks) {
+    for (const tb of thinkingBlocks) {
+      if (tb.type === 'thinking') {
+        out.push({ type: 'thinking', thinking: tb.thinking, signature: tb.signature });
+      } else {
+        out.push({ type: 'redacted_thinking', data: tb.data });
+      }
+    }
+  }
   for (const b of blocks) {
     if (b.type === 'text' && b.text.length > 0) out.push({ type: 'text', text: b.text });
   }

@@ -19,6 +19,7 @@ import type {
   ChatMessage,
   ImageSource,
   PersistedToolCall,
+  ThinkingBlockData,
   TurnUsage,
 } from './types';
 import type { ToolDefinition } from './tools';
@@ -445,6 +446,9 @@ export interface StreamResult {
    *  hidden today, so this stays undefined; present so chatLoop reads
    *  `result.thinking` uniformly across providers. */
   thinking?: string;
+  /** Anthropic-only thinking-block replay payload — always undefined here.
+   *  Declared for a uniform `StreamResult` across the provider union. */
+  thinkingBlocks?: ThinkingBlockData[];
 }
 
 export interface LocalRequestSpec {

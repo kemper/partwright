@@ -78,6 +78,13 @@ export interface ChatToggles {
    *  Local turns are billed at $0, so the cap only matters when the
    *  active provider is Anthropic. */
   maxSpend: 'cheap' | 'low' | 'medium' | 'medHigh' | 'high' | 'veryHigh' | 'infinity';
+  /** Extended-thinking / reasoning level for the active hosted provider.
+   *  Maps per-provider to Anthropic `budget_tokens`, Gemini `thinkingBudget`
+   *  (+ `includeThoughts`), and OpenAI `reasoning_effort`. 'off' sends no
+   *  thinking request at all, so it reproduces the pre-feature behavior
+   *  byte-for-byte — the control is opt-in. No effect on the local provider
+   *  (WebLLM models do their own thing and we strip `<think>` blocks). */
+  thinking: 'off' | 'low' | 'medium' | 'high';
   /** Which backend the chat is talking to right now. */
   provider: Provider;
   /** Anthropic model for cloud chats. Always present so the user can switch
@@ -125,6 +132,19 @@ export const ITERATION_CAP: Record<ChatToggles['maxIterations'], number> =
 export const SPEND_CAP_USD: Record<ChatToggles['maxSpend'], number> =
   Object.fromEntries(Object.entries(MAX_SPEND).map(([k, v]) => [k, v.value])) as Record<ChatToggles['maxSpend'], number>;
 
+/** Source of truth for the thinking-level dropdown. The pill, the
+ *  per-provider request builders, and the per-turn suffix all read from
+ *  this single record. The concrete token budgets / effort levels each
+ *  level maps to are provider-specific and live next to each provider's
+ *  wire format (see `thinkingBudget()` in anthropic.ts / gemini.ts and
+ *  `reasoningEffort()` in openai.ts). */
+export const THINKING_LEVELS: Record<ChatToggles['thinking'], { label: string; promptLabel: string; hint: string }> = {
+  off:    { label: 'Off',  promptLabel: 'off',    hint: 'No extended reasoning. Lowest cost + latency. Reproduces the pre-feature behavior exactly.' },
+  low:    { label: 'Low',  promptLabel: 'low',    hint: 'A short think before acting. Good for routine edits where a little planning helps.' },
+  medium: { label: 'Med',  promptLabel: 'medium', hint: 'Balanced reasoning for multi-step geometry, assemblies, and tricky paint selectors.' },
+  high:   { label: 'High', promptLabel: 'high',   hint: 'Deep reasoning for the hardest spatial problems. Costs the most output tokens.' },
+};
+
 /** Outcome category the agent loop reports back to the UI. Single
  *  source of truth — chatLoop produces these, aiPanel renders them. */
 export type TurnOutcomeReason =
@@ -149,6 +169,16 @@ export interface ChatMessage {
   blocks: ChatBlock[];
   /** Tool calls emitted by the model on this turn (assistant only). */
   toolCalls?: PersistedToolCall[];
+  /** Anthropic extended-thinking blocks captured verbatim (with their
+   *  signatures) so the agent's tool-use loop can replay them on the next
+   *  request. The Anthropic API requires this when thinking is combined with
+   *  tools: an assistant turn that contains a `tool_use` block must be
+   *  preceded by its `thinking` block, signature intact, or the next request
+   *  400s. Only the Anthropic request builder reads this; other providers
+   *  ignore it (Gemini's continuity rides on `thoughtSignature` on the tool
+   *  call; OpenAI hides its reasoning entirely). Display is driven separately
+   *  by the `'thinking'` ChatBlock. */
+  thinkingBlocks?: ThinkingBlockData[];
   /** Tool results posted back to the model on this turn (user only —
    *  the next turn's user message carries the previous turn's results). */
   toolResults?: PersistedToolResult[];
@@ -179,20 +209,30 @@ export interface ChatMessage {
 export type ChatBlock =
   | { type: 'text'; text: string }
   | { type: 'image'; source: ImageSource }
-  /** The model's reasoning / thought summary for a turn (e.g. Gemini 3
-   *  thinking models, which emit `thought` parts). Rendered as a collapsed
-   *  expand/contract box in the panel — kept out of the main answer bubble
-   *  so verbose chains of thought don't bury the reply. Deliberately NOT
-   *  replayed as model text by any provider's request builder: it's a
-   *  display artifact, and re-feeding it wastes tokens (and on Gemini the
-   *  continuity is carried by `thoughtSignature` on tool calls, not by the
-   *  prose). */
+  /** The model's reasoning / thought summary for a turn (Gemini 3 thinking
+   *  models' `thought` parts, or Anthropic extended-thinking text when the
+   *  Thinking pill is on). Rendered as a collapsed expand/contract box in the
+   *  panel — kept out of the main answer bubble so verbose chains of thought
+   *  don't bury the reply. This block is display-only and is NEVER replayed
+   *  as model text by any request builder: re-feeding the prose wastes tokens.
+   *  Cross-turn continuity, where a provider needs it, rides on a separate
+   *  signed payload — `thoughtSignature` on the tool call for Gemini, and the
+   *  `ChatMessage.thinkingBlocks` array for Anthropic. */
   | { type: 'thinking'; text: string }
   /** A review produced by an alternate provider via the Review feature.
    *  Rendered with a distinct bubble in the panel; serialized as plain
    *  prefixed text when sent to any provider on the next turn (none have
    *  a native concept for "feedback from another model"). */
   | { type: 'review'; provider: Provider; model: string; text: string };
+
+/** Anthropic extended-thinking blocks captured verbatim for replay during
+ *  tool use. Mirrors the SDK's `ThinkingBlock` / `RedactedThinkingBlock`
+ *  shapes (kept as a local type so this module stays SDK-agnostic).
+ *  `redacted_thinking` blocks have no readable text — they're opaque
+ *  encrypted reasoning the API still requires echoed back. */
+export type ThinkingBlockData =
+  | { type: 'thinking'; thinking: string; signature: string }
+  | { type: 'redacted_thinking'; data: string };
 
 export interface ImageSource {
   /** base64-encoded PNG/JPEG bytes (no data: prefix). */
