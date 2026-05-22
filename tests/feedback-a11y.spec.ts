@@ -38,7 +38,7 @@ test.describe('feedback + a11y', () => {
     await page.waitForSelector('#btn-ai');
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
     await page.click('#btn-ai');
-    await page.locator('#ai-panel button:has-text("Connect Anthropic API")').dispatchEvent('click');
+    await page.locator('#ai-panel button:has-text("Connect an AI agent")').dispatchEvent('click');
 
     const dialog = page.locator('[role="dialog"]');
     await expect(dialog).toBeVisible();
