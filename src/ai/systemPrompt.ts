@@ -287,7 +287,10 @@ function currentLanguage(): Language {
  *  the user's choice. */
 function qualityLine(): string {
   const segs = getDefaultCircularSegments();
-  const label = QUALITY_OPTIONS.find(o => o.id === loadQualitySettings().quality)?.label ?? 'Very High';
+  const quality = loadQualitySettings().quality;
+  const label = quality === 'custom'
+    ? 'Custom'
+    : QUALITY_OPTIONS.find(o => o.id === quality)?.label ?? 'Very High';
   return `Modeling quality: the user picked "${label}" (~${segs} segments per full circle), already applied before every run. OMIT the segments argument on cylinder/sphere/circle/revolve/extrude so curves inherit this preset — do NOT pass a smaller explicit count (e.g. 32) just to "make it smooth", as that shadows the user's choice and looks chunky to them. Pass an explicit count only for a deliberately faceted/low-poly look or a user-tunable parameter, or a HIGHER count when one specific feature needs extra resolution.`;
 }
 
