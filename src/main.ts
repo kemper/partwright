@@ -971,24 +971,25 @@ async function main() {
     onExportGLB: async () => {
       try {
         if (currentMeshData) assertFiniteMesh(currentMeshData);
-        await exportGLB();
+        const filename = await exportGLB();
+        showToast(`Exported ${filename}`, { variant: 'success' });
       } catch (e) {
         showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
       }
     },
     onExportSTL: () => {
       if (!currentMeshData) return;
-      try { exportSTL(currentMeshData); }
+      try { showToast(`Exported ${exportSTL(currentMeshData)}`, { variant: 'success' }); }
       catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
     },
     onExportOBJ: () => {
       if (!currentMeshData) return;
-      try { exportOBJ(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData); }
+      try { showToast(`Exported ${exportOBJ(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
       catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
     },
     onExport3MF: () => {
       if (!currentMeshData) return;
-      try { export3MF(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData); }
+      try { showToast(`Exported ${export3MF(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
       catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
     },
     onExportSessionJSON: async () => {
@@ -6043,6 +6044,9 @@ async function main() {
 }
 
 function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'loading', text: string) {
+  // Announce status changes (Ready / Running / Error) to assistive tech.
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-live', 'polite');
   el.textContent = text;
   el.title = text;
   el.className = 'text-xs font-mono max-w-[60%] truncate text-right ';

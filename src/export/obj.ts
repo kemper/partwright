@@ -93,9 +93,10 @@ export function buildOBJ(meshData: MeshData, customName?: string): BuiltExport {
   return { blob, filename: getExportFilename('obj', customName), mimeType };
 }
 
-export function exportOBJ(meshData: MeshData, customName?: string): void {
+export function exportOBJ(meshData: MeshData, customName?: string): string {
   const built = buildOBJ(meshData, customName);
   downloadBlob(built.blob, built.filename, 'OBJ');
+  return built.filename;
 }
 
 function matName(hex: string): string {
