@@ -283,12 +283,15 @@ const hit = partwright.probePixel({
   pixel: [180, 220],
   view: { elevation: 0, azimuth: 0, ortho: true, size: 320 },
 });
-// hit = { point: [x, y, z], normal: [nx, ny, nz], distance, triangleId } or null
+// On a hit:  { point: [x,y,z], normal: [nx,ny,nz], distance, triangleId, nextStep }
+// On a miss: { hit: false, modelPixelBounds: {minX,minY,maxX,maxY}, reason, hint }
+//   — the miss tells you where the model projects, so re-aim inside those
+//   bounds and probe again rather than treating it as a failure.
 
 // 3. Flood from the seed, gated by 30° deviation from the seed normal.
 //    paintConnected stays on the feature where paintRegion (bimodal
 //    on smooth meshes) cannot.
-if (hit) {
+if ('point' in hit) {
   partwright.paintConnected({
     seed: { point: hit.point, normal: hit.normal },
     maxDeviationDeg: 30,

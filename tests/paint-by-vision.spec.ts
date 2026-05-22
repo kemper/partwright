@@ -32,20 +32,62 @@ test.describe('paint by vision', () => {
     expect(probe.triangleId).toBeGreaterThanOrEqual(0);
   });
 
-  test('probePixel returns null for a background pixel', async ({ page }) => {
+  test('probePixel returns a re-aim diagnostic (not bare null) for a background pixel', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForSelector('text=Ready', { timeout: 15000 });
 
-    // Small sphere at origin rendered in a large viewport — corners
-    // should miss the mesh and return null.
+    // Small sphere at origin rendered in a large viewport — the [5,5]
+    // corner misses the mesh. The miss must now report where the model
+    // actually projects so the caller can re-aim instead of giving up.
+    // Use an ortho view so the projected AABB bounds are deterministic
+    // (perspective near-corners overshoot the frame; ortho does not).
     const probe = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       await pw.run('return api.Manifold.sphere(2, 32);');
-      const view = { elevation: 30, azimuth: 0, ortho: false, size: 200 };
+      const view = { elevation: 90, azimuth: 0, ortho: true, size: 200 };
       return pw.probePixel({ pixel: [5, 5], view });
     });
-    expect(probe).toBeNull();
+
+    expect(probe).not.toBeNull();
+    expect(probe.hit).toBe(false);
+    expect(probe.point).toBeUndefined();
+    expect(typeof probe.hint).toBe('string');
+    expect(probe.hint).toContain('pixels');
+    const b = probe.modelPixelBounds;
+    expect(b).toBeTruthy();
+    expect(b.maxX).toBeGreaterThan(b.minX);
+    expect(b.maxY).toBeGreaterThan(b.minY);
+    // The sphere sits centered in the 200px frame, well clear of the
+    // [5,5] corner we probed — the reported bounds prove that.
+    expect(b.minX).toBeGreaterThan(5);
+    expect(b.minY).toBeGreaterThan(5);
+  });
+
+  test('probePixel hits the center of a model NOT centered on the origin', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+
+    // The session that motivated this work painted an imported model whose
+    // bbox was far from the origin. buildViewCamera frames the model's own
+    // bbox, so the center pixel must still land on the surface — confirming
+    // the "probePixel is broken on off-origin models" theory was a red
+    // herring (the real cause was missed aim with no recovery signal).
+    const probe = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run('return api.Manifold.cube([20, 20, 20], true).translate([40, 29, 40]);');
+      const view = { elevation: 90, azimuth: 0, ortho: true, size: 200 };
+      return pw.probePixel({ pixel: [100, 100], view });
+    });
+
+    expect(probe.error).toBeUndefined();
+    expect(probe.hit).toBeUndefined(); // a hit, not a miss
+    expect(probe.point).toBeDefined();
+    // Top face of the off-origin cube is at z = 40 + 10 = 50.
+    expect(probe.point[2]).toBeCloseTo(50, 1);
+    expect(probe.normal[2]).toBeGreaterThan(0.95);
+    expect(typeof probe.nextStep).toBe('string');
   });
 
   test('paintConnected floods from a seed gated by deviation from the seed normal', async ({ page }) => {
