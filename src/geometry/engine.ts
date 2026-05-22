@@ -86,6 +86,25 @@ let callIdCounter = 0;
 const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void }>();
 const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => void; reject: (e: Error) => void }>();
 
+const EXECUTE_TIMEOUT_MS = 60_000;
+
+function rejectAllPending(err: Error): void {
+  for (const p of pendingExecutions.values()) p.reject(err);
+  for (const p of pendingValidations.values()) p.reject(err);
+  pendingExecutions.clear();
+  pendingValidations.clear();
+}
+
+/** Terminate an unresponsive Worker and reject everything in flight so the next
+ *  call boots a fresh instance instead of queueing behind a hang. */
+function restartEngineWorker(reason: string): void {
+  rejectAllPending(new Error(reason));
+  engineWorker?.terminate();
+  engineWorker = null;
+  // eslint-disable-next-line no-console
+  console.error('[EngineWorker]', reason);
+}
+
 function initEngineWorker(): void {
   if (engineWorker) return;
   // Fresh ready-gate so the restarted Worker's 'ready' message resolves it,
@@ -95,14 +114,19 @@ function initEngineWorker(): void {
   engineWorker.onmessage = handleEngineWorkerMessage;
   engineWorker.onerror = (ev) => {
     // Reject all pending calls if the Worker crashes.
-    const err = new Error(`Geometry Worker crashed: ${ev.message}`);
-    for (const p of pendingExecutions.values()) p.reject(err);
-    for (const p of pendingValidations.values()) p.reject(err);
-    pendingExecutions.clear();
-    pendingValidations.clear();
+    rejectAllPending(new Error(`Geometry Worker crashed: ${ev.message}`));
     engineWorker = null;
     // eslint-disable-next-line no-console
     console.error('[EngineWorker] crashed — next call will restart it', ev.message);
+  };
+  engineWorker.onmessageerror = (ev) => {
+    // A Worker→Main message that fails structured-clone on receipt is dropped
+    // silently otherwise, leaving every pending promise unsettled (UI hangs).
+    rejectAllPending(new Error('Geometry Worker sent an undeserializable message'));
+    engineWorker?.terminate();
+    engineWorker = null;
+    // eslint-disable-next-line no-console
+    console.error('[EngineWorker] messageerror', ev);
   };
   engineWorker.postMessage({ type: 'init' });
 }
@@ -184,7 +208,17 @@ export async function executeCodeAsync(source: string, lang?: Language): Promise
   }));
 
   return new Promise<MeshResult>((resolve, reject) => {
-    pendingExecutions.set(callId, { resolve, reject });
+    // A hung WASM evaluation never posts a result back. Without a timeout the
+    // promise (and the UI's "Running…" state) would wait forever.
+    const timer = setTimeout(() => {
+      if (pendingExecutions.has(callId)) {
+        restartEngineWorker(`Geometry evaluation timed out after ${EXECUTE_TIMEOUT_MS / 1000}s (the model may be too complex)`);
+      }
+    }, EXECUTE_TIMEOUT_MS);
+    pendingExecutions.set(callId, {
+      resolve: (r) => { clearTimeout(timer); resolve(r); },
+      reject:  (e) => { clearTimeout(timer); reject(e); },
+    });
     engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments() });
   });
 }
