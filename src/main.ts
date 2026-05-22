@@ -1042,6 +1042,16 @@ async function main() {
   // Init diagnostic panel — attaches to document.body, registers badge subscriber.
   initDiagnosticsPanel();
 
+  // Reset the editor to a blank starting point for a freshly created session.
+  // Shared by the session bar's "+ New Session" button and the session modal's,
+  // so both clear the previous session's code instead of leaving it behind.
+  function startNewSessionInEditor() {
+    const freshCode = '// New session\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
+    setValue(freshCode);
+    runCode(freshCode);
+    _clearImages();
+  }
+
   // Create session bar
   createSessionBar(editorUI, {
     onSaveVersion: async () => ({
@@ -1060,12 +1070,7 @@ async function main() {
       applyVersionAnnotations(loadedVersion);
     },
     onOpenSessionList: () => showSessionList(),
-    onNewSession: () => {
-      const freshCode = '// New session\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
-      setValue(freshCode);
-      runCode(freshCode);
-      _clearImages();
-    },
+    onNewSession: startNewSessionInEditor,
   });
 
   // Create layout
@@ -1173,6 +1178,7 @@ async function main() {
       await runCodeSync(code);
       return captureThumbnail();
     },
+    startNewSessionInEditor,
   );
 
   // Assemble DOM early so landing/help pages can render before WASM loads

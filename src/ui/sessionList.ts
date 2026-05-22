@@ -16,13 +16,16 @@ import { getVersionCount } from '../storage/db';
 let modalEl: HTMLElement | null = null;
 let onLoadVersion: ((code: string) => void | Promise<void>) | null = null;
 let regenerateThumbnailFn: ((code: string) => Promise<Blob | null>) | null = null;
+let onNewSessionFn: (() => void) | null = null;
 
 export function initSessionList(
   loadCode: (code: string) => void | Promise<void>,
   regenerateThumbnail?: (code: string) => Promise<Blob | null>,
+  onNewSession?: () => void,
 ): void {
   onLoadVersion = loadCode;
   regenerateThumbnailFn = regenerateThumbnail ?? null;
+  onNewSessionFn = onNewSession ?? null;
 }
 
 export async function showSessionList(): Promise<void> {
@@ -99,6 +102,7 @@ export async function showSessionList(): Promise<void> {
     const name = prompt('Session name:');
     if (name === null) return;
     await createSession(name || undefined);
+    onNewSessionFn?.();
     closeModal();
   });
   headerActions.appendChild(newBtn);
