@@ -33,6 +33,8 @@ import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEd
 import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
+import { registerCommands } from './ui/commandPalette';
+import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel } from './ui/aiPanel';
 import { getKey as getAiKey, mergeChatBucket } from './ai/db';
@@ -950,6 +952,32 @@ async function main() {
     await handleImportFile(first);
   });
 
+  // Mesh export actions, shared by the toolbar and the command palette so the
+  // guards + error toasts stay in one place.
+  const actionExportGLB = async () => {
+    try {
+      if (currentMeshData) assertFiniteMesh(currentMeshData);
+      await exportGLB();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
+    }
+  };
+  const actionExportSTL = () => {
+    if (!currentMeshData) return;
+    try { exportSTL(currentMeshData); }
+    catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
+  };
+  const actionExportOBJ = () => {
+    if (!currentMeshData) return;
+    try { exportOBJ(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData); }
+    catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
+  };
+  const actionExport3MF = () => {
+    if (!currentMeshData) return;
+    try { export3MF(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData); }
+    catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
+  };
+
   // Create toolbar
   createToolbar(editorUI, {
     onGoHome: () => {
@@ -958,29 +986,10 @@ async function main() {
     },
     onOpenCatalog: () => { void showCatalogPage(); },
     onRun: () => runCode(),
-    onExportGLB: async () => {
-      try {
-        if (currentMeshData) assertFiniteMesh(currentMeshData);
-        await exportGLB();
-      } catch (e) {
-        showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
-      }
-    },
-    onExportSTL: () => {
-      if (!currentMeshData) return;
-      try { exportSTL(currentMeshData); }
-      catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
-    },
-    onExportOBJ: () => {
-      if (!currentMeshData) return;
-      try { exportOBJ(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData); }
-      catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
-    },
-    onExport3MF: () => {
-      if (!currentMeshData) return;
-      try { export3MF(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData); }
-      catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
-    },
+    onExportGLB: actionExportGLB,
+    onExportSTL: actionExportSTL,
+    onExportOBJ: actionExportOBJ,
+    onExport3MF: actionExport3MF,
     onExportSessionJSON: async () => {
       if (!getState().session) {
         alert('No active session to export. Save a version first.');
@@ -1102,18 +1111,41 @@ async function main() {
   });
 
   // Global undo / redo / save shortcuts (OS-aware, focus/tool-routed).
-  installKeyboardShortcuts({
-    onSave: async () => {
-      const result = await saveCurrentVersion();
-      if ('error' in result) {
-        showToast(result.error, { variant: 'warn' });
-      } else if ('skipped' in result) {
-        showToast('No changes to save', { variant: 'neutral' });
-      } else {
-        showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}`, { variant: 'success' });
-      }
-    },
-  });
+  const saveVersionWithToast = async () => {
+    const result = await saveCurrentVersion();
+    if ('error' in result) {
+      showToast(result.error, { variant: 'warn' });
+    } else if ('skipped' in result) {
+      showToast('No changes to save', { variant: 'neutral' });
+    } else {
+      showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}`, { variant: 'success' });
+    }
+  };
+  installKeyboardShortcuts({ onSave: saveVersionWithToast });
+
+  // Register command-palette actions (⌘K). Reuses the same handlers the
+  // toolbar/session bar/layout already wire up so behavior can't drift.
+  registerCommands([
+    { id: 'run', title: 'Run code', hint: 'Editor', keywords: 'execute render', run: () => runCode() },
+    { id: 'save', title: 'Save version', hint: 'Session', shortcut: combo(MOD_LABEL, 'S'), keywords: 'commit snapshot', run: () => { void saveVersionWithToast(); } },
+    { id: 'format', title: 'Format code', hint: 'Editor', shortcut: combo(SHIFT_LABEL, ALT_LABEL, 'F'), keywords: 'prettify beautify indent', run: () => formatCode() },
+    { id: 'new-session', title: 'New session', hint: 'Session', keywords: 'create blank', run: () => startNewSessionInEditor() },
+    { id: 'open-sessions', title: 'Open session…', hint: 'Session', keywords: 'switch list recent', run: () => showSessionList() },
+    { id: 'tab-interactive', title: 'Go to 3D view', hint: 'Tab', keywords: 'interactive viewport model', run: () => switchTab('interactive') },
+    { id: 'tab-gallery', title: 'Go to Gallery', hint: 'Tab', keywords: 'thumbnails versions', run: () => switchTab('gallery') },
+    { id: 'tab-versions', title: 'Go to Versions', hint: 'Tab', keywords: 'history rename delete', run: () => switchTab('versions') },
+    { id: 'tab-images', title: 'Go to Reference images', hint: 'Tab', keywords: 'photos reference', run: () => switchTab('images') },
+    { id: 'tab-diff', title: 'Go to Diff', hint: 'Tab', keywords: 'compare changes', run: () => switchTab('diff') },
+    { id: 'tab-notes', title: 'Go to Notes', hint: 'Tab', keywords: 'session notes', run: () => switchTab('notes') },
+    { id: 'export-glb', title: 'Export GLB', hint: 'Export', keywords: 'download gltf 3d', run: () => { void actionExportGLB(); }, enabled: () => currentMeshData !== null },
+    { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
+    { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
+    { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
+    { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
+    { id: 'toggle-diagnostics', title: 'Toggle diagnostic log', hint: 'View', keywords: 'errors warnings console', run: () => toggleDiagnosticsPanel() },
+    { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
+    { id: 'open-help', title: 'Open help', hint: 'Navigate', keywords: 'docs documentation guide', run: () => showHelp() },
+  ]);
 
   // Init gallery
   createGalleryView(galleryContainer, async (code: string) => {
