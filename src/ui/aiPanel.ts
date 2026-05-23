@@ -406,7 +406,13 @@ function upsertHistoryMessage(msg: ChatMessage): void {
 function buildDrawer(): void {
   const root = document.createElement('div');
   root.id = 'ai-panel';
-  root.className = 'fixed top-0 right-0 h-screen bg-zinc-900 border-l border-zinc-700 shadow-2xl z-40 flex flex-col transition-transform duration-200 translate-x-full';
+  // h-dvh (dynamic viewport height) rather than h-screen/100vh: on mobile
+  // browsers 100vh measures the viewport with the URL bar hidden, so a
+  // fixed-position panel pushes its bottom (input + Send button) behind the
+  // browser chrome where scrolling can't reach it. dvh tracks the actually
+  // visible height. max-w-[100vw] caps the inline px width so the drawer can't
+  // overflow a phone narrower than panelWidth (it has no effect on desktop).
+  root.className = 'fixed top-0 right-0 h-dvh max-w-[100vw] bg-zinc-900 border-l border-zinc-700 shadow-2xl z-40 flex flex-col transition-transform duration-200 translate-x-full';
   root.style.width = `${panelWidth}px`;
   drawerEl = root;
 
