@@ -59,10 +59,12 @@ export interface RefineRegion {
    *  its footprint so its stochastic speckle reads as fine dots; brush / slab /
    *  shape leave this off (rim-only) because their interior paints solid. */
   fill?: boolean;
-  /** Optional triangle budget: stop refining this region once the mesh reaches
-   *  it. Only `fill` regions set it — interior refinement is area-quadratic in
-   *  1/maxEdge, so without a budget a fine airbrush could explode the mesh. Rim
-   *  refinement is boundary-bounded and needs none. */
+  /** Optional triangle budget for a `fill` region. Soft cap, checked after each
+   *  pass: the pass that crosses it still completes, so the final mesh can
+   *  overshoot up to ~4x (also bounded by MAX_PASSES). Only `fill` regions set it
+   *  — interior refinement is area-quadratic in 1/maxEdge, so without it a fine
+   *  airbrush could explode the mesh; rim refinement is boundary-bounded and
+   *  needs none. */
   maxTriangles?: number;
 }
 
@@ -439,15 +441,6 @@ export function buildRefinedMesh(
     }
   }
   return { mesh, childToParent: comp };
-}
-
-/** Convenience wrapper: refine a base mesh under an ordered list of brush
- *  strokes (each mapped to its footprint refine region). */
-export function buildStrokeMesh(
-  base: MeshData,
-  strokes: BrushStroke[],
-): { mesh: MeshData; childToParent: Int32Array } {
-  return buildRefinedMesh(base, strokes.map(brushRefineRegion));
 }
 
 function composeMaps(parentToBase: Int32Array, childToParent: Int32Array): Int32Array {
