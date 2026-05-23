@@ -91,6 +91,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `curves` | Before writing manifold-js code with `Curves.loft/sweep/bezier/arc/naca4/polyline/fillet/...` (smooth curves, organic shapes, airfoils, lofted surfaces). |
 | `bosl2` | Before writing SCAD code that needs edge rounding (`cuboid(rounding=)`), threads (`screw`), gears (`spur_gear`), path-following (`path_sweep`), or attachables. |
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
+| `printing` | The design-for-print toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over), `scaleModel` / `splitForPrinting`, printer settings, and the `Gridfinity` generator. Read before declaring a model print-ready or when fitting/splitting to a build volume. |
 | `colors` | Before any paint operation — the picker decision tree, labelled construction, vision-driven painting, export behavior. |
 | `reference-images` | When the user attaches a photo or asks you to model from one — `setImages` shape, label conventions, the five-step photo-to-model loop. |
 | `file-io` | Before exporting or importing programmatically — `*Data()` byte-returning methods, Recent Exports inbox, session payload shape. |
@@ -340,6 +341,7 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 **Sandbox environment:** The `api` object provides:
 - `Manifold` and `CrossSection` -- the raw manifold-3d bindings
 - `Curves` -- helpers for smooth/organic shapes (loft, sweep, bezier, arc, naca4, polyline with fillet, arbitrary-axis revolve, fillet/chamfer, pattern arrays). See **[/ai/curves.md](/ai/curves.md)**.
+- `Gridfinity` -- spec-compliant Gridfinity `bin({cols,rows,heightUnits,...})` and `baseplate({cols,rows})` generators (42 mm grid). See **[/ai/printing.md](/ai/printing.md)**.
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
 Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.

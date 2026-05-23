@@ -1,6 +1,7 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
 import { createCurvesNamespace } from '../curves';
+import { createGridfinityNamespace } from '../generators/gridfinity';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
 
@@ -35,6 +36,8 @@ function renderMesh(meshData: any) {
 let manifoldModule: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let curvesNamespace: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let gridfinityNamespace: any = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getManifoldModule(): any {
@@ -50,6 +53,7 @@ export const manifoldJsEngine: Engine = {
     manifoldModule = await Module.default();
     manifoldModule.setup();
     curvesNamespace = createCurvesNamespace(manifoldModule);
+    gridfinityNamespace = createGridfinityNamespace(manifoldModule);
   },
 
   isReady() {
@@ -139,6 +143,7 @@ export const manifoldJsEngine: Engine = {
       Manifold,
       CrossSection,
       Curves: curvesNamespace,
+      Gridfinity: gridfinityNamespace,
       setMinCircularAngle,
       setMinCircularEdgeLength,
       setCircularSegments,

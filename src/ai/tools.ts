@@ -399,13 +399,13 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'readDoc',
-    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, colors, print-safety, reference-images, file-io, annotations.',
+    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, colors, print-safety, reference-images, file-io, annotations, printing.',
     input_schema: {
       type: 'object',
       properties: {
         name: {
           type: 'string',
-          enum: ['curves', 'bosl2', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations'],
+          enum: ['curves', 'bosl2', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations', 'printing'],
           description: 'Subdoc name without the .md extension.',
         },
       },
@@ -885,6 +885,83 @@ const ALL_TOOLS: ToolDefinition[] = [
       required: ['rMin', 'rMax', 'zMin', 'zMax', 'color'],
     },
   },
+  {
+    name: 'checkPrintability',
+    description: 'Analyze the current model for 3D-printing problems and return a structured report: bed fit, overhangs that need support, thin walls (a sampled estimate), small features, tip-over stability (centre of mass vs base footprint), and watertightness. Every check carries a level — pass / warn / fail (fail = won\'t print as-is). Reads the build volume + nozzle from printer settings unless you override them. Call this before telling the user a model is print-ready, and again after geometry changes; then fix any fails — thicken walls, re-orient to remove overhangs, scaleModel to fit, or splitForPrinting when it is simply too big for the bed.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        bed: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Optional build-volume override [x, y, z] in mm.' },
+        nozzleWidth: { type: 'number', description: 'Optional nozzle-width override (mm). Drives the thin-wall / small-feature checks.' },
+        overhangAngleDeg: { type: 'number', description: 'Optional overhang threshold — downward surfaces shallower than this many degrees from horizontal are flagged. Default 45 (the classic 45° rule).' },
+      },
+    },
+  },
+  {
+    name: 'getPrinterSettings',
+    description: 'Read the target printer settings: build volume bed [x, y, z] (mm), nozzleWidth, overhangAngleDeg, clearance. These drive checkPrintability, scaleModel({fit}), and splitForPrinting.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'setPrinterSettings',
+    description: 'Update the target printer settings. Pass any subset of {bed:[x,y,z], nozzleWidth, overhangAngleDeg, clearance}. Use when the user names their printer or bed size (e.g. "I have an Ender 3" → bed [220, 220, 250]; "Bambu" → [256, 256, 256]).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        bed: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Build volume [x, y, z] in mm.' },
+        nozzleWidth: { type: 'number', description: 'Nozzle diameter (mm), e.g. 0.4.' },
+        overhangAngleDeg: { type: 'number', description: 'Overhang threshold in degrees from horizontal (default 45).' },
+        clearance: { type: 'number', description: 'Assembly clearance (mm) used for split connector holes.' },
+      },
+    },
+  },
+  {
+    name: 'scaleModel',
+    description: 'Scale the current model and save it as a new version. Provide EXACTLY ONE of: `factor` (uniform multiplier), `scale` [sx,sy,sz] (per-axis), `to` {axis,length} (make that axis an exact size), or `fit` {margin?,mode?} (largest uniform factor that fits the build volume — mode "shrink" only downscales an oversized model, "fit" also upscales to fill). IMPORTANT: this is a GEOMETRIC scale of the rendered mesh — it bakes to a mesh version (like an import) and scales every feature, so holes/clearances scale too. For a parametric model you authored, prefer editing the dimension constants in the code instead, so it stays editable and functional features keep their size. Returns {scale, dimensions, saved}.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        factor: { type: 'number', description: 'Uniform scale multiplier (> 0).' },
+        scale: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Per-axis factors [sx, sy, sz].' },
+        to: {
+          type: 'object',
+          description: 'Scale uniformly so the chosen axis becomes `length`.',
+          properties: { axis: { type: 'string', enum: ['x', 'y', 'z', 'max', 'min'] }, length: { type: 'number' } },
+          required: ['axis', 'length'],
+        },
+        fit: {
+          type: 'object',
+          description: 'Scale uniformly to fit the build volume.',
+          properties: { margin: { type: 'number', description: 'Fraction of the bed kept clear (0–0.5).' }, mode: { type: 'string', enum: ['shrink', 'fit'] } },
+        },
+        save: { type: 'boolean', description: 'Save the result as a new version (default true). Pass false to only preview it live.' },
+      },
+    },
+  },
+  {
+    name: 'splitForPrinting',
+    description: 'Split a model too big for the build volume into bed-sized chunks, drilling matching dowel-pin holes across each cut so the printed pieces register and glue together. The chunks are arranged in a row and saved as a new version. By default it only cuts X/Y (keeping flat bottoms for bed adhesion); enable Z via `axes`. Use after checkPrintability reports the model exceeds the bed AND the user wants it at full size rather than scaled down. Returns {partCount, grid, holeCount, notes, saved}.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        bed: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Optional build-volume override [x, y, z] in mm.' },
+        margin: { type: 'number', description: 'Fraction of the bed kept as margin (0–0.5).' },
+        gap: { type: 'number', description: 'Spacing between the laid-out chunks (mm). Default 4.' },
+        axes: { type: 'array', items: { type: 'string', enum: ['x', 'y', 'z'] }, description: 'Axes allowed to be cut. Default ["x", "y"].' },
+        connector: {
+          type: 'object',
+          description: 'Alignment connector across cuts. type "pin" (default) drills dowel holes; "none" leaves plain cut faces.',
+          properties: {
+            type: { type: 'string', enum: ['none', 'pin'] },
+            diameter: { type: 'number', description: 'Dowel diameter (mm). Default 5.' },
+            depth: { type: 'number', description: 'Hole depth into each side (mm). Default 8.' },
+            count: { type: 'integer', description: 'Max holes per cut plane. Default 2.' },
+          },
+        },
+        save: { type: 'boolean', description: 'Save the result as a new version (default true).' },
+      },
+    },
+  },
 ];
 
 const ALWAYS_AVAILABLE = new Set([
@@ -928,10 +1005,13 @@ const ALWAYS_AVAILABLE = new Set([
   'assertPaint',
   'sliceAtZVisual',
   'paintInCylinder',
+  'checkPrintability',
+  'getPrinterSettings',
+  'setPrinterSettings',
 ]);
 
 const RUN_GATED = new Set(['runCode']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'scaleModel', 'splitForPrinting']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -952,7 +1032,10 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
       // so they only need the saveVersions scope. Gating loadVersion here also
       // keeps the model from rewinding state when the user has paused commits.
       // runAndSave runs first, so it additionally needs the runCode scope.
-      const nonRunning = t.name === 'loadVersion' || t.name === 'saveVersion';
+      // scaleModel / splitForPrinting transform the rendered mesh and bake a
+      // version; they don't execute user code, so (like loadVersion/saveVersion)
+      // they only need the saveVersions scope, not runCode.
+      const nonRunning = t.name === 'loadVersion' || t.name === 'saveVersion' || t.name === 'scaleModel' || t.name === 'splitForPrinting';
       return nonRunning ? toggles.scope.saveVersions : (toggles.scope.runCode && toggles.scope.saveVersions);
     }
     if (PAINT_GATED.has(t.name)) return toggles.scope.paintFaces;
@@ -1043,7 +1126,7 @@ function detectLanguageMismatch(code: string): string | null {
  *  `tools.ts` to import the engine module statically. The function lives
  *  in `src/geometry/engine.ts` and is already loaded by the app shell at
  *  startup, so a require-style lookup via `window.partwright` is safe. */
-const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations']);
+const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations', 'printing']);
 
 /** Fetch a topic subdoc by short name. Same fetch path for Anthropic and
  *  local providers — both run inside the user's browser tab, so this is
@@ -1344,6 +1427,16 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.assertPaint(input);
     case 'paintInCylinder':
       return api.paintInCylinder(input);
+    case 'checkPrintability':
+      return api.checkPrintability(input);
+    case 'getPrinterSettings':
+      return api.getPrinterSettings();
+    case 'setPrinterSettings':
+      return api.setPrinterSettings(input);
+    case 'scaleModel':
+      return api.scaleModel(input);
+    case 'splitForPrinting':
+      return api.splitForPrinting(input);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
