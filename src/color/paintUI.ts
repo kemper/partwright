@@ -20,6 +20,10 @@ import {
   getBrushSmoothDivisor,
   SMOOTH_DIVISOR_MIN,
   SMOOTH_DIVISOR_MAX,
+  setShapeSmooth,
+  isShapeSmooth,
+  setShapeSmoothResolution,
+  getShapeSmoothResolution,
   setSlabAxis,
   getSlabAxis,
   previewTriangles,
@@ -85,6 +89,9 @@ let bucketControls: HTMLElement | null = null;
 let brushControls: HTMLElement | null = null;
 let slabControls: HTMLElement | null = null;
 let boxControls: HTMLElement | null = null;
+// Shape-smoothing controls appear in both the slab and box panels but share one
+// state; re-sync each instance's display on tool switch so neither goes stale.
+const shapeSmoothSyncs: (() => void)[] = [];
 
 /** Initialize the paint UI inside the clip-controls overlay area. */
 export function initPaintUI(controlsContainer: HTMLElement): void {
@@ -332,6 +339,7 @@ function syncToolPanels(): void {
   if (brushControls) brushControls.classList.toggle('hidden', tool !== 'brush');
   if (slabControls) slabControls.classList.toggle('hidden', tool !== 'slab');
   if (boxControls) boxControls.classList.toggle('hidden', tool !== 'box');
+  for (const sync of shapeSmoothSyncs) sync();
 }
 
 function createBucketControls(): HTMLElement {
@@ -626,6 +634,8 @@ function createSlabControls(): HTMLElement {
   hint.innerHTML = 'Hover the model to preview the slab plane.<br>Click and drag to extend the slab along the chosen axis. Release to paint.';
   wrap.appendChild(hint);
 
+  wrap.appendChild(createShapeSmoothControls());
+
   return wrap;
 }
 
@@ -634,6 +644,88 @@ function axisButtonClass(active: boolean): string {
     return 'px-2 py-1 rounded text-[11px] bg-blue-500/30 text-blue-200 border border-blue-500/50 transition-colors';
   }
   return 'px-2 py-1 rounded text-[11px] bg-zinc-700/40 text-zinc-300 hover:bg-zinc-600/60 border border-transparent transition-colors';
+}
+
+/** Edge-smoothing toggle + detail slider shared by the slab and shape tools.
+ *  Mirrors the brush's smoothing controls, but the detail is a resolution: the
+ *  target boundary edge length is the model's bbox diagonal ÷ this value. The
+ *  state is shared across both tools (see `setShapeSmooth` in paintMode). */
+function createShapeSmoothControls(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'mt-2 pt-2 border-t border-zinc-700';
+
+  const label = document.createElement('div');
+  label.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium';
+  label.textContent = 'Edge smoothing';
+
+  const toggle = document.createElement('button');
+  toggle.title = 'Subdivide the mesh near the painted region boundary so its edge is smooth instead of following triangle boundaries. Adds triangles near the edge.';
+
+  const fineRow = document.createElement('div');
+  fineRow.className = 'flex items-center gap-2 mt-1';
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = String(SMOOTH_DIVISOR_MIN);
+  slider.max = String(SMOOTH_DIVISOR_MAX);
+  slider.step = '1';
+  slider.value = String(getShapeSmoothResolution());
+  slider.className = 'flex-1 accent-blue-500 min-w-0';
+  slider.title = 'Smooth-edge detail: model bbox diagonal ÷ this = target triangle edge. Higher = smoother edge, more triangles.';
+
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = String(SMOOTH_DIVISOR_MIN);
+  input.max = String(SMOOTH_DIVISOR_MAX);
+  input.step = '1';
+  input.value = String(getShapeSmoothResolution());
+  input.className = 'w-16 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  input.title = `Detail (model size ÷ this = target edge). ${SMOOTH_DIVISOR_MIN}–${SMOOTH_DIVISOR_MAX}.`;
+
+  slider.addEventListener('input', () => {
+    setShapeSmoothResolution(parseInt(slider.value, 10));
+    input.value = String(getShapeSmoothResolution());
+    for (const sync of shapeSmoothSyncs) sync();
+  });
+  const apply = (): void => {
+    const raw = parseInt(input.value, 10);
+    if (!Number.isFinite(raw)) { input.value = String(getShapeSmoothResolution()); return; }
+    setShapeSmoothResolution(raw);
+    slider.value = String(getShapeSmoothResolution());
+    input.value = String(getShapeSmoothResolution());
+    for (const sync of shapeSmoothSyncs) sync();
+  };
+  input.addEventListener('change', apply);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { apply(); input.blur(); } });
+
+  fineRow.appendChild(slider);
+  fineRow.appendChild(input);
+
+  const help = document.createElement('div');
+  help.className = 'text-[10px] text-zinc-500 mt-1';
+  help.textContent = 'Smooth-edge detail · higher → smoother, more triangles';
+
+  const sync = (): void => {
+    const on = isShapeSmooth();
+    toggle.className = on
+      ? 'w-full px-2 py-1 rounded text-[10px] bg-blue-500/30 text-blue-200 border border-blue-500/50 transition-colors text-center'
+      : 'w-full px-2 py-1 rounded text-[10px] bg-zinc-700/40 text-zinc-300 hover:bg-zinc-600/60 border border-transparent transition-colors text-center';
+    toggle.textContent = on ? '◉ Smooth edges: On' : '○ Smooth edges: Off';
+    fineRow.classList.toggle('hidden', !on);
+    help.classList.toggle('hidden', !on);
+    slider.value = String(getShapeSmoothResolution());
+    input.value = String(getShapeSmoothResolution());
+  };
+  toggle.addEventListener('click', () => { setShapeSmooth(!isShapeSmooth()); for (const s of shapeSmoothSyncs) s(); });
+
+  wrap.appendChild(label);
+  wrap.appendChild(toggle);
+  wrap.appendChild(fineRow);
+  wrap.appendChild(help);
+  shapeSmoothSyncs.push(sync);
+  sync();
+
+  return wrap;
 }
 
 function createBoxControls(): HTMLElement {
@@ -754,6 +846,7 @@ function createBoxControls(): HTMLElement {
   help.textContent = 'Drag the gizmo handles in the viewport, or edit values above. The shape fades after painting and brightens when you interact with it again.';
   actionRow.appendChild(help);
 
+  wrap.appendChild(createShapeSmoothControls());
   wrap.appendChild(actionRow);
 
   // Keep the numeric inputs in sync when the gizmo moves.

@@ -119,11 +119,11 @@ import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontS
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
-import { buildStrokeMesh, strokeFootprintTriangles, childrenByParent, type BrushStroke, type BrushShape } from './color/subdivide';
+import { buildStrokeMesh, buildRefinedMesh, brushRefineRegion, strokeFootprintTriangles, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
-import { findSlabTriangles } from './color/slabPaint';
-import { findBoxTriangles, findShapeTriangles } from './color/boxPaint';
+import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
+import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
 import { computeFaceGroups } from './color/faceGroups';
 import {
   getSessionIdFromURL,
@@ -391,24 +391,48 @@ function applyVersionAnnotations(version: Version | null | undefined): void {
  *  Returns the names of regions that resolved to ≥1 triangle (`carried`) vs.
  *  those whose descriptor no longer matches the current geometry (`dropped`),
  *  so callers transferring colors across versions can report what landed. */
-/** Pull the ordered `brushStroke` descriptors out of a descriptor list. */
-function collectStrokeDescriptors(descriptors: RegionDescriptor[]): BrushStroke[] {
-  const strokes: BrushStroke[] = [];
-  for (const d of descriptors) {
-    if (d.kind === 'brushStroke') strokes.push(descriptorToStroke(d));
-  }
-  return strokes;
+/** True when a descriptor drives mesh subdivision: any brush stroke, or a slab /
+ *  oriented shape with smoothing enabled (`smooth` + a positive `maxEdge`).
+ *  Descriptors saved before smoothing existed omit those fields and refine
+ *  nothing, preserving their original blocky edges. */
+function descriptorRefines(d: RegionDescriptor): boolean {
+  if (d.kind === 'brushStroke') return true;
+  if (d.kind === 'slab' || d.kind === 'box') return !!d.smooth && (d.maxEdge ?? 0) > 0;
+  return false;
 }
 
-/** Refine a base mesh under the given strokes. Returns the mesh unchanged with
- *  `parentToChildren: null` when there are no strokes (the common case — no
+/** Build the ordered refine regions (brush footprints, slab/shape boundaries)
+ *  from a descriptor list. Drives the local subdivision so painted edges follow
+ *  the analytic boundary rather than the coarse base tessellation. */
+function collectRefineRegions(descriptors: RegionDescriptor[]): RefineRegion[] {
+  const regions: RefineRegion[] = [];
+  for (const d of descriptors) {
+    if (d.kind === 'brushStroke') {
+      regions.push(brushRefineRegion(descriptorToStroke(d)));
+    } else if (d.kind === 'slab' && descriptorRefines(d)) {
+      regions.push(slabRefineRegion(d.normal, d.offset, d.thickness, d.maxEdge!));
+    } else if (d.kind === 'box' && descriptorRefines(d)) {
+      regions.push(shapeRefineRegion(d.shape ?? 'box', { center: d.center, size: d.size, quaternion: d.quaternion }, d.maxEdge!));
+    }
+  }
+  return regions;
+}
+
+/** True when any current region drives subdivision (see `descriptorRefines`). */
+function hasRefineDescriptors(): boolean {
+  return getRegions().some(r => descriptorRefines(r.descriptor));
+}
+
+/** Refine a base mesh under the given descriptors. Returns the mesh unchanged
+ *  with `parentToChildren: null` when nothing refines (the common case — no
  *  subdivision, identity mapping). */
-function refineMeshForStrokes(
+function refineMeshForRegions(
   base: MeshData,
-  strokes: BrushStroke[],
+  descriptors: RegionDescriptor[],
 ): { mesh: MeshData; parentToChildren: Map<number, number[]> | null } {
-  if (strokes.length === 0) return { mesh: base, parentToChildren: null };
-  const { mesh, childToParent } = buildStrokeMesh(base, strokes);
+  const regions = collectRefineRegions(descriptors);
+  if (regions.length === 0) return { mesh: base, parentToChildren: null };
+  const { mesh, childToParent } = buildRefinedMesh(base, regions);
   return { mesh, parentToChildren: childrenByParent(childToParent) };
 }
 
@@ -527,13 +551,12 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { 
   const regions = geometryData.colorRegions as SerializedColorRegion[] | undefined;
   if (!regions || regions.length === 0) return report;
 
-  // Refine the pristine base mesh under any smooth strokes before resolving.
-  // Without strokes this is a no-op and currentMeshData is left untouched
-  // (identical to the pre-subdivision behavior).
+  // Refine the pristine base mesh under any smooth strokes/slabs/shapes before
+  // resolving. Without refine regions this is a no-op and currentMeshData is
+  // left untouched (identical to the pre-subdivision behavior).
   const base = paintBaseMesh ?? currentMeshData;
-  const strokes = collectStrokeDescriptors(regions.map(r => r.descriptor));
-  const { mesh, parentToChildren } = refineMeshForStrokes(base, strokes);
-  if (strokes.length > 0) {
+  const { mesh, parentToChildren } = refineMeshForRegions(base, regions.map(r => r.descriptor));
+  if (parentToChildren) {
     currentMeshData = mesh;
     updatePaintMesh(mesh);
   }
@@ -577,8 +600,7 @@ function paintedColorRefresh(): void {
 function rebuildPaintedGeometry(): void {
   const base = paintBaseMesh;
   if (!base) return;
-  const strokes = collectStrokeDescriptors(getRegions().map(r => r.descriptor));
-  const { mesh, parentToChildren } = refineMeshForStrokes(base, strokes);
+  const { mesh, parentToChildren } = refineMeshForRegions(base, getRegions().map(r => r.descriptor));
   currentMeshData = mesh;
   updatePaintMesh(mesh);
   const adjacency = buildAdjacency(mesh);
@@ -653,7 +675,7 @@ function reconcilePaintedGeometry(): void {
   syncLockState();
 
   const strokesNow = strokeDescriptors();
-  const refinedActive = currentMeshData !== paintBaseMesh || strokesNow.length > 0;
+  const refinedActive = currentMeshData !== paintBaseMesh || hasRefineDescriptors();
   if (!refinedActive) {
     lastStrokeList = [];
     if (isPaintActive()) paintedColorRefresh();
@@ -4225,7 +4247,7 @@ async function main() {
     /** Paint a slab — all faces whose centroid falls inside a planar slab.
      *  `axis` is shorthand for axis-aligned slabs ('x'/'y'/'z'). For oblique
      *  slabs, pass `normal` directly (does not need to be normalized). */
-    paintSlab(opts: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number; color: [number, number, number]; name?: string; coverageMode?: CoverageMode; maxTriangleArea?: number }) {
+    paintSlab(opts: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number; color: [number, number, number]; name?: string; coverageMode?: CoverageMode; maxTriangleArea?: number; smooth?: boolean; resolution?: number; maxEdge?: number }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintSlab requires {axis|normal, offset, thickness, color}' };
       const { axis, normal: rawNormal, offset, thickness, color, name, coverageMode, maxTriangleArea } = opts;
@@ -4250,6 +4272,8 @@ async function main() {
       if (coverageErr) return { error: coverageErr };
       const areaErr = validateMaxTriangleArea(maxTriangleArea);
       if (areaErr) return { error: areaErr };
+      const smoothErr = validateSmoothParams(opts);
+      if (smoothErr) return { error: smoothErr };
 
       let triangles = findSlabTriangles(currentMeshData, normal, offset, thickness, coverageMode);
       if (maxTriangleArea !== undefined && triangles.size > 0) {
@@ -4258,17 +4282,21 @@ async function main() {
       if (triangles.size === 0) return { error: 'No triangles found inside the slab' };
 
       const regionName = name ?? `Region ${getRegions().length + 1}`;
+      const { smooth, maxEdge } = resolveShapeSmoothFields(opts);
+      // Adding the region fires the change listener, which (when smoothing is on)
+      // rebuilds the refined mesh and re-resolves this region against it — so by
+      // the time addRegion returns, region.triangles holds the smoothed count.
       const region = addRegion(
         regionName,
         color as [number, number, number],
         'slab',
-        { kind: 'slab', normal, offset, thickness },
+        { kind: 'slab', normal, offset, thickness, smooth, maxEdge },
         triangles,
       );
       scheduleColorRefresh();
       syncLockState();
 
-      return { id: region.id, name: region.name, triangles: triangles.size };
+      return { id: region.id, name: region.name, triangles: region.triangles.size, smooth, maxEdge };
     },
 
     /** List all color regions on the current geometry. Each entry includes
@@ -4451,6 +4479,14 @@ async function main() {
       };
       color: [number, number, number];
       name?: string;
+      /** Smooth the box's painted edge by subdividing the mesh near its faces.
+       *  On by default — pass `false` to keep the blocky base tessellation. */
+      smooth?: boolean;
+      /** Smoothing detail: target boundary edge length = model bbox diagonal /
+       *  resolution (2..1024, default 256). Ignored when `maxEdge` is set. */
+      resolution?: number;
+      /** Absolute target boundary edge length (mesh units); overrides `resolution`. */
+      maxEdge?: number;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintInOrientedBox requires { box, color }' };
@@ -4461,15 +4497,33 @@ async function main() {
       const q: [number, number, number, number] = quaternion ?? [0, 0, 0, 1];
       if (!Array.isArray(q) || q.length !== 4 || !q.every(Number.isFinite)) return { error: 'paintInOrientedBox.box.quaternion must be [x, y, z, w] of finite numbers (defaults to identity if omitted)' };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r, g, b] with values 0..1' };
+      const smoothErr = validateSmoothParams(opts);
+      if (smoothErr) return { error: smoothErr };
 
-      const triangles = findBoxTriangles(currentMeshData, {
-        center: [center[0], center[1], center[2]],
-        size: [size[0], size[1], size[2]],
+      const box = {
+        center: [center[0], center[1], center[2]] as [number, number, number],
+        size: [size[0], size[1], size[2]] as [number, number, number],
         quaternion: q,
-      });
+      };
+      const triangles = findBoxTriangles(currentMeshData, box);
       if (triangles.size === 0) return { error: 'paintInOrientedBox: no triangles inside the box. Try a larger size, recheck the center, or use paintPreview to see what the box covers.' };
 
-      return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
+      // Persist a re-resolvable box descriptor (not baked triangle ids) so the
+      // edge can be smoothed: adding it rebuilds the refined mesh and re-resolves
+      // this region against it before addRegion returns.
+      const { smooth, maxEdge } = resolveShapeSmoothFields(opts);
+      const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
+      const region = addRegion(
+        regionName,
+        opts.color as [number, number, number],
+        'slab',
+        { kind: 'box', center: box.center, size: box.size, quaternion: box.quaternion, smooth, maxEdge },
+        triangles,
+      );
+      scheduleColorRefresh();
+      syncLockState();
+      const stats = regionTriangleStats(region.triangles, currentMeshData);
+      return { id: region.id, name: region.name, triangles: region.triangles.size, bbox: stats.bbox, centroid: stats.centroid, smooth, maxEdge };
     },
 
     /** Paint every triangle whose centroid lies within `radius` of `point`.
@@ -6013,6 +6067,29 @@ async function main() {
       return 'maxTriangleArea must be a positive finite number';
     }
     return null;
+  }
+
+  /** Validate the optional edge-smoothing params shared by slab/shape paint
+   *  methods (`smooth`, `resolution`, `maxEdge`). */
+  function validateSmoothParams(opts: { smooth?: unknown; resolution?: unknown; maxEdge?: unknown }): string | null {
+    if (opts.smooth !== undefined && typeof opts.smooth !== 'boolean') return 'smooth must be a boolean';
+    if (opts.resolution !== undefined && (typeof opts.resolution !== 'number' || !Number.isFinite(opts.resolution) || opts.resolution < SMOOTH_DIVISOR_MIN || opts.resolution > SMOOTH_DIVISOR_MAX)) {
+      return `resolution must be a number from ${SMOOTH_DIVISOR_MIN} to ${SMOOTH_DIVISOR_MAX}`;
+    }
+    if (opts.maxEdge !== undefined && (typeof opts.maxEdge !== 'number' || !Number.isFinite(opts.maxEdge) || opts.maxEdge <= 0)) return 'maxEdge must be a positive finite number';
+    return null;
+  }
+
+  /** Resolve smoothing fields for a slab/shape descriptor from API opts.
+   *  `smooth` defaults to true; an explicit positive `maxEdge` (absolute edge
+   *  length) wins over `resolution` (model bbox diagonal / resolution, default
+   *  256). With smoothing off, the fields refine nothing. */
+  function resolveShapeSmoothFields(opts: { smooth?: boolean; resolution?: number; maxEdge?: number }): { smooth: boolean; maxEdge: number } {
+    if (opts.smooth === false) return { smooth: false, maxEdge: 0 };
+    if (typeof opts.maxEdge === 'number' && opts.maxEdge > 0) return { smooth: true, maxEdge: opts.maxEdge };
+    const resolution = typeof opts.resolution === 'number' && opts.resolution > 0 ? opts.resolution : 256;
+    const maxEdge = currentMeshData ? smoothEdgeForResolution(currentMeshData, resolution) : 0;
+    return { smooth: maxEdge > 0, maxEdge };
   }
 
   function validateNormalCone(cone: { axis: [number, number, number]; angleDeg: number } | undefined): string | null {

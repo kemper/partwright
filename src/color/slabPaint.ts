@@ -7,6 +7,7 @@
 
 import type { MeshData } from '../geometry/types';
 import { getTriangleCentroid } from './adjacency';
+import type { RefineRegion, TriClass } from './subdivide';
 
 export interface AxisAlignedNormal {
   axis: 'x' | 'y' | 'z';
@@ -112,4 +113,42 @@ function normalize(v: [number, number, number]): [number, number, number] {
   const len = Math.hypot(v[0], v[1], v[2]);
   if (len === 0) return [0, 0, 1];
   return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+/** Absolute target edge length for smoothing a slab/shape boundary on `mesh` at
+ *  the given resolution: the model's bounding-box diagonal divided by resolution
+ *  (a scale-relative target, so one resolution gives similar smoothness on
+ *  models of any size). Returns 0 for a non-positive resolution. */
+export function smoothEdgeForResolution(mesh: MeshData, resolution: number): number {
+  if (!(resolution > 0)) return 0;
+  const b = meshBounds(mesh);
+  const diag = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]);
+  return diag / resolution;
+}
+
+/** Build a refine region for a slab so its two boundary planes can be smoothed.
+ *  A triangle straddles when its vertices' projections onto the normal span the
+ *  slab's `[offset, offset+thickness]` range without lying entirely inside it.
+ *  Because the projection is affine over a planar triangle, the per-vertex
+ *  min/max test is exact — it never misses a thin slab crossing a coarse face. */
+export function slabRefineRegion(
+  normal: [number, number, number],
+  offset: number,
+  thickness: number,
+  maxEdge: number,
+): RefineRegion {
+  const [nx, ny, nz] = normalize(normal);
+  const lo = offset;
+  const hi = offset + thickness;
+  const classify = (a: number[], b: number[], c: number[]): TriClass => {
+    const dA = a[0] * nx + a[1] * ny + a[2] * nz;
+    const dB = b[0] * nx + b[1] * ny + b[2] * nz;
+    const dC = c[0] * nx + c[1] * ny + c[2] * nz;
+    const minD = Math.min(dA, dB, dC);
+    const maxD = Math.max(dA, dB, dC);
+    if (maxD < lo || minD > hi) return 'outside';
+    if (minD >= lo && maxD <= hi) return 'inside';
+    return 'straddle';
+  };
+  return { aabb: null, maxEdge, classify };
 }
