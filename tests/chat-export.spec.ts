@@ -87,6 +87,14 @@ test.describe('Chat export', () => {
     await page.goto('/editor');
     await page.waitForSelector('#ai-panel');
     const id = await createSession(page, 'Roundtrip');
+    // A session must carry at least one version to be importable — importSession
+    // rejects version-less files. Save a baseline version into the new (active)
+    // session before seeding the chat, mirroring a real, worked-on session.
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: { runAndSave(code: string, label?: string): Promise<unknown> } }).partwright;
+      await pw.runAndSave('const { Manifold } = api; return Manifold.cube([10, 10, 10], true);', 'v1');
+    });
     await seedChat(page, id);
 
     // Exported payload carries the chat with volatile fields stripped.
