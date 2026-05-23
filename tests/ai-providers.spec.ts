@@ -1,9 +1,21 @@
-import { test, expect } from 'playwright/test';
+import { test, expect, type Page } from 'playwright/test';
 
 // Regression coverage for the multi-provider extension to the in-app
 // chat. The base in-browser AI surface (Anthropic + Local) has its own
 // smoke tests; these focus on the hosted-provider additions (OpenAI,
 // Gemini), the Review modal, and the Diagnostics view.
+
+// Disconnected sessions auto-open the AI Settings modal when the toolbar AI
+// button is clicked (the "Connect AI" flow). Tests that then open a *different*
+// modal (Settings via the cog, Review, AI Call Log) must dismiss that
+// auto-opened modal first, otherwise it races the modal they open next —
+// createModalShell allows only one modal at a time and force-closes the other.
+async function openPanelDismissingAutoSettings(page: Page): Promise<void> {
+  await page.locator('#btn-ai').dispatchEvent('click');
+  await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeHidden();
+}
 
 test.describe('Multi-provider AI', () => {
   test('SSE reader handles CRLF event framing (Gemini)', async ({ page }) => {
@@ -480,7 +492,7 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
     await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openPanelDismissingAutoSettings(page);
     // Open AI Settings via the cog icon (its title starts with "AI settings").
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
@@ -513,7 +525,7 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
     await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openPanelDismissingAutoSettings(page);
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
 
@@ -556,7 +568,7 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
     await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openPanelDismissingAutoSettings(page);
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Settings' });
@@ -648,6 +660,10 @@ test.describe('Multi-provider AI', () => {
     });
     await page.reload();
     await page.waitForSelector('#ai-panel');
+    // This session seeds drawerOpen:true, so the panel is already open on load
+    // (the load path uses showDrawer directly — no auto-settings modal). The
+    // toolbar click here therefore just toggles the already-open drawer; no
+    // modal to dismiss, so the shared helper doesn't apply.
     await page.locator('#btn-ai').dispatchEvent('click');
     // Header shows OpenAI's chosen model.
     await expect(page.locator('#ai-panel select').first()).toHaveValue('gpt-5-nano');
@@ -693,7 +709,7 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
     await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openPanelDismissingAutoSettings(page);
     await page.locator('#ai-panel button[title^="Get a second opinion"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'Get a second opinion' })).toBeVisible();
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'Get a second opinion' });
@@ -706,7 +722,7 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
     await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openPanelDismissingAutoSettings(page);
     await page.locator('#ai-panel button[title^="AI Call Log"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Call Log' })).toBeVisible();
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Call Log' });
@@ -748,7 +764,7 @@ test.describe('Multi-provider AI', () => {
         requestSummary: '3 msg(s), 30 tool def(s)',
       });
     });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openPanelDismissingAutoSettings(page);
     await page.locator('#ai-panel button[title^="AI Call Log"]').dispatchEvent('click');
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Call Log' });
     await expect(modal).toBeVisible();
@@ -766,7 +782,7 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
     await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openPanelDismissingAutoSettings(page);
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
     // Tabbed modal — the OpenAI tab shows its key form inline (no second
