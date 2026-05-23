@@ -6413,10 +6413,23 @@ async function main() {
       // saved version re-runs the code first, which rebuilds the map.
       currentLabelMap = result.labelMap ?? null;
 
-      // Apply any existing color regions to the mesh
-      const displayMesh = hasColorRegions() ? applyTriColorsIfVisible(result.mesh) : result.mesh;
-      updateMesh(displayMesh);
-      updatePaintMesh(result.mesh); // always pass uncolored mesh for adjacency
+      // Apply any existing color regions to the mesh. Smooth-brush regions
+      // (`brushStroke`) subdivide the mesh: their triangle indices point into
+      // the REFINED tessellation, not this freshly-run coarse base. Re-running
+      // the code (e.g. the debounced auto-run that fires ~300ms after a saved
+      // version loads) resets currentMeshData to the coarse base, so naively
+      // coloring `result.mesh` would stamp those refined-mesh indices onto
+      // coarse triangles — the "shattered shards" load bug. Rebuild the refined
+      // geometry and re-resolve every region against it, exactly as the
+      // visibility-toggle path does via reconcilePaintedGeometry.
+      if (hasColorRegions() && strokeDescriptors().length > 0) {
+        rebuildPaintedGeometry();
+        lastStrokeList = strokeDescriptors();
+      } else {
+        const displayMesh = hasColorRegions() ? applyTriColorsIfVisible(result.mesh) : result.mesh;
+        updateMesh(displayMesh);
+        updatePaintMesh(result.mesh); // always pass uncolored mesh for adjacency
+      }
 
       updateGeometryData(elapsed, src);
       syncClipSliderBounds();
