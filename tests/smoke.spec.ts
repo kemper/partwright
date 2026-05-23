@@ -104,24 +104,24 @@ test.describe('AI chat panel', () => {
     await expect(panel.locator('button', { hasText: /^Send$/ })).toBeVisible();
   });
 
-  test('key modal opens and closes', async ({ page }) => {
+  test('inline key entry shows in settings and dismisses cleanly', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForSelector('#btn-ai');
     // Let editor init (and session auto-restore) settle before clicking, so a
     // late ?session= navigation doesn't tear down the modal mid-test.
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
     await page.click('#btn-ai');
-    // The panel CTA now opens the generic AI Settings modal; the per-provider
-    // key modal is one click deeper (Anthropic tab → Connect Anthropic API).
+    // The panel CTA opens the AI Settings modal. The per-provider key form is
+    // now inline in the tab (no separate pop-up): the Anthropic tab is shown
+    // by default and exposes the password field + Connect button right away.
     // dispatchEvent — same flex-child viewport quirk as the toggle pills.
     await page.locator('#ai-panel button:has-text("Connect an AI agent")').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
-    await page.locator('button:has-text("Connect Anthropic API")').click();
     await expect(page.locator('input[type="password"]')).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Connect Anthropic API' })).toBeVisible();
+    await expect(page.locator('button:has-text("Connect Anthropic API")')).toBeVisible();
 
-    // Cancel returns to the panel, no key persisted
-    await page.locator('.bg-zinc-800.rounded-xl button:text-is("Cancel")').click();
+    // Done closes the modal; no key was persisted.
+    await page.locator('.bg-zinc-800.rounded-xl button:text-is("Done")').click();
     await expect(page.locator('input[type="password"]')).toHaveCount(0);
     await expect(page.locator('#btn-ai')).toContainText(/Connect AI/);
   });
