@@ -866,11 +866,18 @@ async function main() {
       await importMeshPayload(mesh, baseName, { manifold: isManifold });
       return true;
     }
+    // "Add to current part" composes, so both the incoming mesh and the part
+    // it would join must be manifold. An empty current part (no saved version)
+    // is fine — it just gets seeded.
+    const currentComposable = !state.currentVersion || !codeIsRenderOnly(state.currentVersion.code);
+    const canAddToCurrent = isManifold && !!state.currentPart && currentComposable;
     const choice = await showImportTargetModal({
       filename: mesh.filename,
       currentPartName: state.currentPart?.name ?? null,
-      canAddToCurrent: isManifold && !!state.currentPart,
-      addDisabledReason: isManifold ? undefined : 'Render-only meshes can’t be combined with other geometry.',
+      canAddToCurrent,
+      addDisabledReason: !isManifold
+        ? 'Render-only meshes can’t be combined with other geometry.'
+        : (!currentComposable ? 'The current part is render-only and can’t be combined.' : undefined),
     });
     if (!choice) return false;
     if (choice === 'new-session') await importMeshPayload(mesh, baseName, { manifold: isManifold });
