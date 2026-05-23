@@ -6,8 +6,6 @@
 // single-nozzle printers we derive an advisory "swap guide" describing the
 // layer heights at which to change filament — see heightBands.ts / swapGuide.ts.
 
-import type { MeshData } from '../geometry/types';
-
 /** How an imported image is mapped onto relief heights. */
 export type ReliefImportMode = 'luminance' | 'quantized' | 'ai';
 
@@ -164,14 +162,4 @@ export interface ReliefSettings {
   previewMode: PreviewMode;
   options?: ReliefOptions;
   sourceImage?: string;
-}
-
-export function meshDataFromRelief(relief: ReliefMesh): MeshData {
-  return {
-    vertProperties: relief.vertProperties,
-    triVerts: relief.triVerts,
-    numVert: relief.numVert,
-    numTri: relief.numTri,
-    numProp: relief.numProp,
-  };
 }

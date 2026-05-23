@@ -84,20 +84,21 @@ export function buildPreviewTriColors(
   if (mode === 'flat') return flat;
 
   if (mode === 'ams') {
-    // Per-XY full color already; add a subtle translucency sheen so the relief
-    // reads as glossy filament rather than flat paint. Blend each painted color
-    // 12% toward a soft highlight scaled by the triangle's up-facing-ness.
+    // Per-XY full color already; add depth so the relief reads as glossy
+    // multi-material filament rather than flat paint: top faces gain a warm
+    // highlight, near-vertical walls darken for shadow — clearly distinct from
+    // 'flat' even on a fully top-painted relief.
     if (!flat) return null;
     const geom = triGeometry(mesh);
     const painted = (flat as Uint8Array & { _painted?: Uint8Array })._painted;
     for (let t = 0; t < numTri; t++) {
       if (painted && painted[t] !== 1) continue;
       const up = Math.max(0, geom.nz[t]); // 0 (side) .. 1 (top)
-      const k = 0.12 * up;
-      // Soft warm-white highlight (~0.95).
-      flat[t * 3] = Math.round(mix(flat[t * 3], 242, k));
-      flat[t * 3 + 1] = Math.round(mix(flat[t * 3 + 1], 242, k));
-      flat[t * 3 + 2] = Math.round(mix(flat[t * 3 + 2], 238, k));
+      const sheen = 0.08 + 0.24 * up;     // 0.08 (wall) .. 0.32 (top)
+      const shade = up < 0.2 ? 0.8 : 1;   // darken near-vertical walls for depth
+      flat[t * 3] = Math.round(mix(flat[t * 3] * shade, 242, sheen));
+      flat[t * 3 + 1] = Math.round(mix(flat[t * 3 + 1] * shade, 242, sheen));
+      flat[t * 3 + 2] = Math.round(mix(flat[t * 3 + 2] * shade, 238, sheen));
     }
     return flat;
   }

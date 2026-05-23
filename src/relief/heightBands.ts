@@ -177,6 +177,17 @@ export function analyzeHeightBands(
   }
   if (!anyUp) return [];
 
+  // Absolute build-plate datum (lowest vertex; ~0 for a relief on the plate).
+  // Layer indices are reported from here so they match the printer's layer
+  // count — the flat base contributes layers below the first painted surface.
+  let meshMinZ = Infinity;
+  for (let v = 0; v < mesh.numVert; v++) {
+    const z = mesh.vertProperties[v * mesh.numProp + 2];
+    if (z < meshMinZ) meshMinZ = z;
+  }
+  if (!Number.isFinite(meshMinZ)) meshMinZ = minZ;
+  const layerOffset = Math.max(0, Math.round((minZ - meshMinZ) / layerHeight));
+
   const base = baseColor(geom, triRegion, palette, minZ, layerHeight);
   const baseKey = quantKey(base[0], base[1], base[2]);
 
@@ -218,7 +229,7 @@ export function analyzeHeightBands(
     layers[k] = { color, coverage: total > 0 ? domArea / total : 1, area: total };
   }
 
-  return collapseBands(layers, minZ, layerHeight, base, baseKey);
+  return collapseBands(layers, minZ, layerHeight, base, baseKey, layerOffset);
 }
 
 /** Merge consecutive same-colour layers into bands; carry the last seen colour
@@ -229,6 +240,7 @@ function collapseBands(
   layerHeight: number,
   base: RGB,
   baseKey: number,
+  layerOffset: number,
 ): HeightBand[] {
   const bands: HeightBand[] = [];
   let curKey = -1;
@@ -246,8 +258,8 @@ function collapseBands(
     if (curKey < 0) return;
     const coverage = areaSum > 0 ? coverageAreaSum / areaSum : 1;
     bands.push({
-      layerStart: startLayer,
-      layerEnd: endLayerExclusive,
+      layerStart: startLayer + layerOffset,
+      layerEnd: endLayerExclusive + layerOffset,
       zStart: minZ + startLayer * layerHeight,
       zEnd: minZ + endLayerExclusive * layerHeight,
       color: curColor,

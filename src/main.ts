@@ -79,7 +79,7 @@ import { setActiveImports, type ImportedMesh } from './import/importedMesh';
 import { generateRelief } from './relief/imageToRelief';
 import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type ReliefCommonOptions, type SeedRegion, type PreviewMode } from './relief/types';
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
-import { setReliefSettings, getReliefSettings, updateReliefSettings, isReliefSession } from './relief/reliefSettings';
+import { setReliefSettings, getReliefSettings, updateReliefSettings, isReliefSession, getPreviewModeFor } from './relief/reliefSettings';
 import { listFilaments, hexToRgb } from './relief/filaments';
 import { meshBounds } from './color/slabPaint';
 import { openReliefImportModal } from './ui/reliefImportModal';
@@ -792,10 +792,13 @@ async function main() {
   }
 
   // Single source of truth for recoloring the displayed mesh: relief preview
-  // when active, otherwise the normal painted-region colors.
+  // when active (and only in a relief session — the preview mode is a module
+  // global, so gating on isReliefSession keeps a leftover mode from bleeding
+  // onto a normal session's mesh), otherwise the normal painted-region colors.
   function refreshModelColors(): void {
     if (!currentMeshData) return;
-    const preview = isReliefPreviewActive()
+    const reliefPreview = isReliefSession(getState().session?.id) && isReliefPreviewActive();
+    const preview = reliefPreview
       ? computeReliefTriColors(currentMeshData, currentLayerHeight())
       : null;
     if (preview) {
@@ -805,8 +808,16 @@ async function main() {
     }
   }
 
+  // Restore the saved preview mode for the active session (reset to 'flat' for
+  // non-relief sessions so the global never carries over).
+  function syncReliefPreviewFromSettings(): void {
+    const sid = getState().session?.id ?? null;
+    ctlSetReliefPreviewMode(isReliefSession(sid) ? getPreviewModeFor(sid) : 'flat');
+  }
+
   function showReliefStudio(): void {
     if (!reliefStudio) return;
+    syncReliefPreviewFromSettings();
     collapseEditor();
     reliefStudio.show();
     reliefStudio.refresh();
@@ -822,8 +833,25 @@ async function main() {
     }
   }
 
+  // Clamp the common knobs to sane physical/perf bounds. The wizard enforces
+  // these via input attributes, but the programmatic (AI/console) path bypasses
+  // the UI, so guard here against OOM (huge resolution) and degenerate values.
+  function clampReliefCommon(c: ReliefCommonOptions): ReliefCommonOptions {
+    const num = (v: number, def: number) => (Number.isFinite(v) ? v : def);
+    return {
+      widthMm: Math.max(1, Math.min(2000, num(c.widthMm, 100))),
+      layerHeight: Math.max(0.02, Math.min(2, num(c.layerHeight, 0.08))),
+      baseThickness: Math.max(0, Math.min(50, num(c.baseThickness, 0.6))),
+      maxHeight: Math.max(0.1, Math.min(100, num(c.maxHeight, 3))),
+      resolution: Math.max(8, Math.min(256, Math.floor(num(c.resolution, 200)))),
+      smoothing: Math.max(0, Math.min(20, num(c.smoothing, 0))),
+    };
+  }
+
   async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string): Promise<{ sessionId: string }> {
-    const result = generateRelief(image, options);
+    const opts: ReliefOptions = { ...options, common: clampReliefCommon(options.common) };
+    const result = generateRelief(image, opts);
+    if (result.mesh.numTri === 0) throw new Error('Image too small to build a relief — use a larger image.');
     const mesh: ImportedMesh = {
       id: generateId(),
       filename: `${sourceName}.relief`,
@@ -840,10 +868,10 @@ async function main() {
     });
     setReliefSettings(sessionId, {
       isRelief: true,
-      layerHeight: options.common.layerHeight,
-      baseThickness: options.common.baseThickness,
+      layerHeight: opts.common.layerHeight,
+      baseThickness: opts.common.baseThickness,
       previewMode: 'flat',
-      options,
+      options: opts,
     });
     showReliefStudio();
     return { sessionId };
@@ -905,13 +933,20 @@ async function main() {
     openReliefImportModal({
       aiAvailable: true,
       onAiAssist: async (image, opts) => suggestReliefOptions(image, opts),
-      onCreate: async (image, opts, name) => { await createReliefFromImageData(image, opts, name || 'relief'); },
+      onCreate: async (image, opts, name) => {
+        try {
+          await createReliefFromImageData(image, opts, name || 'relief');
+        } catch (e) {
+          alert(`Could not create relief: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      },
     });
   }
 
   function dataUrlToImageData(src: string): Promise<ImageData> {
     return new Promise((resolve, reject) => {
       const img = new Image();
+      img.crossOrigin = 'anonymous';
       img.onload = () => {
         const c = document.createElement('canvas');
         c.width = img.naturalWidth;
@@ -2052,7 +2087,7 @@ async function main() {
 
   // When a color region is painted, re-render the mesh with colors and sync lock
   setOnRegionPainted(() => {
-    refreshModelColors();
+    scheduleColorRefresh();
     syncLockState();
   });
 
@@ -2060,13 +2095,13 @@ async function main() {
   onColorRegionsChange(() => {
     syncLockState();
     if (!isPaintActive() && !isReliefPreviewActive()) return; // refresh while painting or relief-preview is on
-    refreshModelColors();
+    scheduleColorRefresh();
   });
 
   // Toggling paint visibility re-renders the viewport so colors
   // disappear/reappear immediately. Exports remain colored regardless.
   onPaintVisibilityChange(() => {
-    refreshModelColors();
+    scheduleColorRefresh();
   });
 
   editorReady = true;
@@ -6221,9 +6256,7 @@ async function main() {
     paintRefreshPending = true;
     requestAnimationFrame(() => {
       paintRefreshPending = false;
-      if (!currentMeshData) return;
-      const colored = applyTriColorsIfVisible(currentMeshData);
-      updateMesh(colored, { skipAutoFrame: true });
+      refreshModelColors();
     });
   }
 

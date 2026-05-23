@@ -64,10 +64,6 @@ export function removeFilament(id: string): void {
   writeUser(readUser().filter(f => f.id !== id));
 }
 
-export function getFilament(id: string): Filament | undefined {
-  return listFilaments().find(f => f.id === id);
-}
-
 export function hexToRgb(hex: string): [number, number, number] {
   let h = hex.trim().replace(/^#/, '');
   if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
