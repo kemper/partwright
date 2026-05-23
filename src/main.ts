@@ -5042,7 +5042,11 @@ async function main() {
       const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
       // maxEdge (absolute) overrides; otherwise radius / resolution, default 256.
       const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 256));
-      const target = maxEdge !== undefined ? maxEdge : radius / res;
+      // Floor an explicit maxEdge at the same finest edge the resolution path
+      // can request (radius / SMOOTH_DIVISOR_MAX). A tinier value just drives
+      // runaway subdivision for no visible benefit (the safety ceiling in
+      // buildRefinedMesh would cut it off anyway).
+      const target = maxEdge !== undefined ? Math.max(maxEdge, radius / SMOOTH_DIVISOR_MAX) : radius / res;
       const region = addRegion(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
         [color[0], color[1], color[2]],
@@ -6562,16 +6566,17 @@ async function main() {
       // saved version re-runs the code first, which rebuilds the map.
       currentLabelMap = result.labelMap ?? null;
 
-      // Apply any existing color regions to the mesh. Smooth-brush regions
-      // (`brushStroke`) subdivide the mesh: their triangle indices point into
-      // the REFINED tessellation, not this freshly-run coarse base. Re-running
-      // the code (e.g. the debounced auto-run that fires ~300ms after a saved
-      // version loads) resets currentMeshData to the coarse base, so naively
-      // coloring `result.mesh` would stamp those refined-mesh indices onto
-      // coarse triangles — the "shattered shards" load bug. Rebuild the refined
-      // geometry and re-resolve every region against it, exactly as the
+      // Apply any existing color regions to the mesh. Refining regions —
+      // smooth brush strokes AND smooth slab/box regions — subdivide the mesh:
+      // their triangle indices point into the REFINED tessellation, not this
+      // freshly-run coarse base. Re-running the code (e.g. the debounced
+      // auto-run that fires ~300ms after a saved version loads) resets
+      // currentMeshData to the coarse base, so naively coloring `result.mesh`
+      // would stamp those refined-mesh indices onto coarse triangles — the
+      // "shattered shards" bug. Gate on hasRefineDescriptors() (not just brush
+      // strokes) so slab/box smooth regions rebuild too, exactly as the
       // visibility-toggle path does via reconcilePaintedGeometry.
-      if (hasColorRegions() && strokeDescriptors().length > 0) {
+      if (hasColorRegions() && hasRefineDescriptors()) {
         rebuildPaintedGeometry();
         lastStrokeList = strokeDescriptors();
       } else {
