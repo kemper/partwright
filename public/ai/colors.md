@@ -354,6 +354,11 @@ partwright.paintSlab({
   thickness: 5,
   color: [1, 0.4, 0],
   name: "Bottom 5mm",
+  // Smoothing is ON by default: the two slab edges are subdivided so the band
+  // has clean straight edges even across coarse faces. Tune or disable it:
+  // resolution: 256,  // target edge = model bbox diagonal / resolution (2–1024)
+  // maxEdge: 0.1,     // OR absolute target edge length (overrides resolution)
+  // smooth: false,    // keep the raw blocky tessellation
 });
 
 // Tilted/oblique slab — pass an arbitrary normal vector. Doesn't need to be
@@ -365,7 +370,18 @@ partwright.paintSlab({
   thickness: 8,
   color: [0.8, 0, 0.5],
 });
+
+// Oriented shape: paint inside a rotated box (same selector as the UI Box tool).
+// Edge smoothing is ON by default here too (subdivides the mesh near the box
+// faces). smooth / resolution / maxEdge work exactly as for paintSlab.
+partwright.paintInOrientedBox({
+  box: { center: [10, 0, 5], size: [8, 4, 2], quaternion: [0, 0, 0.3827, 0.9239] },
+  color: [0.2, 0.7, 0.9],
+  // smooth: false, resolution: 256, maxEdge: ...
+});
 ```
+
+**Smoothing applies to the analytic shape tools.** `paintSlab` and `paintInOrientedBox` persist a *re-resolvable* descriptor (the slab plane / oriented box), so their boundary can be subdivided for a clean edge and reconstructed deterministically on reload — smoothing is on by default, exactly like `paintStroke`. The id-baking selectors (`paintInBox`, `paintNear`, `paintInCylinder`, `paintFaces`, `paintConnected`, …) lock onto the existing tessellation, so they cannot be smoothed; refine the mesh first (`.refine(n)` in the model code) if you need a finer edge from those.
 
 **Verifying paint before you commit it.** `paintPreview` accepts the same selectors as `paintInBox` / `paintNear` / `paintFaces`, *without* adding a region. Default: count-only (free sanity check). Pass `withImage: true` to also get a thumbnail with the candidate triangles tinted bright yellow on top of any existing paint.
 

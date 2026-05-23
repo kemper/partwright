@@ -32,16 +32,40 @@ export interface BrushStroke {
   maxEdge: number;
 }
 
-/** Hard ceilings so a tiny target edge on a coarse mesh can't run away.
- *  Straddle-only selection already bounds growth to the boundary length (not the
- *  area), but a pathological case shouldn't be able to lock the tab. */
-const MAX_PASSES = 12;
-const MAX_TRIANGLES = 1_500_000;
+export interface Aabb {
+  min: [number, number, number];
+  max: [number, number, number];
+}
+
+export type TriClass = 'inside' | 'outside' | 'straddle';
+
+/** Classify a triangle (given its three world-space vertex coords) against a
+ *  paint region: fully inside, fully outside, or straddling the boundary.
+ *  Only `straddle` triangles get subdivided. A classifier must never report
+ *  `outside` for a triangle the region actually crosses (a missed straddle
+ *  leaves a coarse, blocky edge there) — reporting `straddle` for a triangle
+ *  that turns out to be just outside is harmless (a few extra triangles). */
+export type TriClassifier = (a: number[], b: number[], c: number[]) => TriClass;
+
+/** A region to refine the mesh around: its boundary classifier, the target edge
+ *  length near that boundary, and an optional AABB for cheap spatial rejection.
+ *  Brush strokes, slabs, and oriented shapes all reduce to one of these. */
+export interface RefineRegion {
+  aabb: Aabb | null;
+  maxEdge: number;
+  classify: TriClassifier;
+}
+
+/** Per-stroke depth bound so a single stroke can't run away (each pass ~doubles
+ *  the boundary triangle count). There is deliberately NO cumulative triangle
+ *  cap — the mesh may grow across many strokes; the UI surfaces a high-complexity
+ *  warning and a live triangle count instead of silently degrading quality. */
+const MAX_PASSES = 16;
 
 /** True when `p` is within the brush footprint of any of the stroke's samples,
  *  using the shape's distance metric (circle = Euclidean, square = Chebyshev,
  *  diamond = L1). */
-export function withinFootprint(
+function withinFootprint(
   px: number, py: number, pz: number,
   stroke: BrushStroke,
 ): boolean {
@@ -102,42 +126,20 @@ function maxEdgeLen2(a: number[], b: number[], c: number[]): number {
   return Math.max(e(a, b), e(b, c), e(c, a));
 }
 
-/** Triangles that the brush boundary crosses (partially, not fully covered)
- *  AND are still coarser than `maxEdge`. These are the ones worth subdividing:
- *  fully-inside triangles already paint solid, fully-outside ones never paint,
- *  and boundary triangles already finer than the target are left alone (that's
- *  the stopping condition). Catches the brush-smaller-than-a-triangle case via a
- *  closest-point test so a small brush in the middle of a big face still
- *  tessellates. */
-export function selectStrokeTriangles(mesh: MeshData, stroke: BrushStroke, maxEdge: number): Set<number> {
-  const { triVerts, numTri } = mesh;
-  const selected = new Set<number>();
+/** Classify a triangle against a brush footprint: inside when all three
+ *  vertices are covered, straddle when some (but not all) are — or, for a brush
+ *  smaller than the face, when the footprint's closest point on the triangle is
+ *  within the radius (so a small brush in the middle of a big face still
+ *  tessellates). */
+function brushClassifier(stroke: BrushStroke): TriClassifier {
   const r2 = stroke.radius * stroke.radius;
-  const maxEdge2 = maxEdge * maxEdge;
-  const box = strokeAabb(stroke);
-
-  for (let t = 0; t < numTri; t++) {
-    const a = triVertex(mesh, triVerts[t * 3]);
-    const b = triVertex(mesh, triVerts[t * 3 + 1]);
-    const c = triVertex(mesh, triVerts[t * 3 + 2]);
-
-    // Cheap spatial reject: skip triangles nowhere near the stroke.
-    if (triOutsideAabb(a, b, c, box)) continue;
-
-    // Already fine enough → leave it (keeps the refined band tight and bounded).
-    if (maxEdgeLen2(a, b, c) <= maxEdge2) continue;
-
+  return (a, b, c) => {
     let inside = 0;
     if (withinFootprint(a[0], a[1], a[2], stroke)) inside++;
     if (withinFootprint(b[0], b[1], b[2], stroke)) inside++;
     if (withinFootprint(c[0], c[1], c[2], stroke)) inside++;
-
-    if (inside === 3) continue;       // fully inside — no edge crosses it
-    if (inside >= 1) { selected.add(t); continue; } // straddles the boundary
-
-    // No vertex inside: the footprint might still pass through this triangle
-    // (brush smaller than the face, or grazing an edge). Test the closest point
-    // on the triangle to each sample against the radius.
+    if (inside === 3) return 'inside';
+    if (inside >= 1) return 'straddle';
     for (let s = 0; s < stroke.samples.length; s++) {
       const sp = stroke.samples[s];
       const cp = closestPointOnTriangle(
@@ -145,8 +147,42 @@ export function selectStrokeTriangles(mesh: MeshData, stroke: BrushStroke, maxEd
         a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2],
       );
       const dx = cp[0] - sp[0], dy = cp[1] - sp[1], dz = cp[2] - sp[2];
-      if (dx * dx + dy * dy + dz * dz <= r2) { selected.add(t); break; }
+      if (dx * dx + dy * dy + dz * dz <= r2) return 'straddle';
     }
+    return 'outside';
+  };
+}
+
+/** Build a refine region for a brush stroke (its footprint classifier, AABB,
+ *  and target edge length). */
+export function brushRefineRegion(stroke: BrushStroke): RefineRegion {
+  const maxEdge = stroke.maxEdge > 0 ? stroke.maxEdge : stroke.radius / 256;
+  return { aabb: strokeAabb(stroke), maxEdge, classify: brushClassifier(stroke) };
+}
+
+/** Triangles a region's boundary crosses (partially, not fully covered) AND are
+ *  still coarser than `region.maxEdge`. These are the ones worth subdividing:
+ *  fully-inside triangles already paint solid, fully-outside ones never paint,
+ *  and boundary triangles already finer than the target are left alone (that's
+ *  the stopping condition). */
+function selectByClassify(mesh: MeshData, region: RefineRegion): Set<number> {
+  const { triVerts, numTri } = mesh;
+  const selected = new Set<number>();
+  const maxEdge2 = region.maxEdge * region.maxEdge;
+  const box = region.aabb;
+
+  for (let t = 0; t < numTri; t++) {
+    const a = triVertex(mesh, triVerts[t * 3]);
+    const b = triVertex(mesh, triVerts[t * 3 + 1]);
+    const c = triVertex(mesh, triVerts[t * 3 + 2]);
+
+    // Cheap spatial reject: skip triangles nowhere near the region.
+    if (box && triOutsideAabb(a, b, c, box)) continue;
+
+    // Already fine enough → leave it (keeps the refined band tight and bounded).
+    if (maxEdgeLen2(a, b, c) <= maxEdge2) continue;
+
+    if (region.classify(a, b, c) === 'straddle') selected.add(t);
   }
   return selected;
 }
@@ -183,7 +219,7 @@ export function strokeFootprintTriangles(mesh: MeshData, stroke: BrushStroke): S
  *  Returns the new mesh plus `childToParent`: for each output triangle, the
  *  index of the input triangle it came from (so callers can carry per-triangle
  *  data — e.g. existing colour regions — across the split). */
-export function subdivideSelected(
+function subdivideSelected(
   mesh: MeshData,
   selected: Set<number>,
 ): { mesh: MeshData; childToParent: Int32Array } {
@@ -245,31 +281,38 @@ export function subdivideSelected(
 }
 
 /** Rebuild a refined mesh from a pristine base mesh and an ordered list of
- *  brush strokes. Each stroke refines the (possibly already-refined) mesh near
- *  its own footprint until the boundary triangles fall below `stroke.maxEdge`.
- *  Returns the refined mesh and a `childToParent` map from each final triangle
- *  back to its base-mesh triangle index — used to carry non-stroke colour
- *  regions across the refinement. */
-export function buildStrokeMesh(
+ *  refine regions (brush strokes, slabs, oriented shapes). Each region refines
+ *  the (possibly already-refined) mesh near its own boundary until the boundary
+ *  triangles fall below its `maxEdge`. Returns the refined mesh and a
+ *  `childToParent` map from each final triangle back to its base-mesh triangle
+ *  index (used to carry colour regions across the refinement). */
+export function buildRefinedMesh(
   base: MeshData,
-  strokes: BrushStroke[],
+  regions: RefineRegion[],
 ): { mesh: MeshData; childToParent: Int32Array } {
   let mesh = base;
   let comp: Int32Array = new Int32Array(base.numTri);
   for (let i = 0; i < comp.length; i++) comp[i] = i;
 
-  for (const stroke of strokes) {
-    const target = stroke.maxEdge > 0 ? stroke.maxEdge : stroke.radius / 16;
+  for (const region of regions) {
     for (let pass = 0; pass < MAX_PASSES; pass++) {
-      const selected = selectStrokeTriangles(mesh, stroke, target);
+      const selected = selectByClassify(mesh, region);
       if (selected.size === 0) break;
       const { mesh: nm, childToParent } = subdivideSelected(mesh, selected);
       mesh = nm;
       comp = composeMaps(comp, childToParent);
-      if (nm.numTri > MAX_TRIANGLES) break;
     }
   }
   return { mesh, childToParent: comp };
+}
+
+/** Convenience wrapper: refine a base mesh under an ordered list of brush
+ *  strokes (each mapped to its footprint refine region). */
+export function buildStrokeMesh(
+  base: MeshData,
+  strokes: BrushStroke[],
+): { mesh: MeshData; childToParent: Int32Array } {
+  return buildRefinedMesh(base, strokes.map(brushRefineRegion));
 }
 
 function composeMaps(parentToBase: Int32Array, childToParent: Int32Array): Int32Array {

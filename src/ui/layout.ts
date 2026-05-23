@@ -453,6 +453,15 @@ function createClipControls(): HTMLElement {
   container.id = 'clip-controls';
   container.className = 'absolute top-2 right-2 z-10 flex flex-wrap justify-end items-center gap-2 max-w-[calc(100%-1rem)]';
 
+  // Live triangle count of the displayed model — sits at the left of the bar.
+  // Non-interactive readout, updated on every mesh change (run/paint/simplify).
+  const triCount = document.createElement('div');
+  triCount.id = 'triangle-count';
+  triCount.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 border border-zinc-600/50 tabular-nums select-none';
+  triCount.title = 'Triangle count of the current model (updates as you edit and paint)';
+  triCount.textContent = '— tris';
+  container.appendChild(triCount);
+
   // Mesh edge (wireframe) toggle (off by default) — sits left of the grid toggle
   const wireBtn = document.createElement('button');
   wireBtn.id = 'wireframe-toggle';
