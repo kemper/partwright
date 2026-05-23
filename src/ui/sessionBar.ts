@@ -13,6 +13,7 @@ import {
 } from '../storage/sessionManager';
 import { onChange as onColorRegionsChange } from '../color/regions';
 import { onChange as onAnnotationStrokesChange } from '../annotations/annotations';
+import { showToast } from './toast';
 
 export interface SessionBarCallbacks {
   onSaveVersion: () => Promise<{ code: string; geometryData: Record<string, unknown> | null; thumbnail: Blob | null }>;
@@ -186,6 +187,10 @@ function render(state: SessionState) {
         undefined,
         force ? { force: true } : undefined,
       );
+    } catch (err) {
+      // A failed save must not be silent \u2014 surface it so the user knows their
+      // painted/edited state wasn't captured (rather than assume it saved).
+      showToast(`Couldn't save version: ${err instanceof Error ? err.message : String(err)}`, { variant: 'warn' });
     } finally {
       saving = false;
       saveBtn.disabled = false;
