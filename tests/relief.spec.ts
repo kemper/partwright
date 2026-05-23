@@ -112,4 +112,40 @@ test.describe('Relief Studio', () => {
     // worker warning on plain loads is unrelated and filtered out).
     expect(errors.filter(e => !e.includes('import.meta'))).toEqual([]);
   });
+
+  // Regression: median-cut quantization split the dominant gradient into many
+  // near-identical clusters and dropped small-but-important colors (e.g. a
+  // smiley's black eyes/mouth vanished). K-means must capture distinct colors —
+  // assert the palette spans dark→light, not just one hue.
+  test('color-quantized import captures distinct dark and light colors', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const res = await page.evaluate(async () => {
+      const c = document.createElement('canvas');
+      c.width = 240; c.height = 240;
+      const x = c.getContext('2d')!;
+      x.fillStyle = 'white'; x.fillRect(0, 0, 240, 240);
+      const grad = x.createRadialGradient(120, 120, 16, 120, 120, 112);
+      grad.addColorStop(0, '#fff700'); grad.addColorStop(1, '#e6d600');
+      x.fillStyle = grad; x.beginPath(); x.arc(120, 120, 112, 0, 7); x.fill();
+      x.fillStyle = 'black';
+      x.beginPath(); x.ellipse(92, 96, 13, 21, 0, 0, 7); x.fill();
+      x.beginPath(); x.ellipse(148, 96, 13, 21, 0, 0, 7); x.fill();
+      x.lineWidth = 10; x.strokeStyle = 'black';
+      x.beginPath(); x.arc(120, 128, 56, 0.2 * Math.PI, 0.8 * Math.PI); x.stroke();
+      const src = c.toDataURL('image/png');
+
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      const created = await pw.importImageAsRelief({ src, mode: 'quantized', options: { resolution: 120 } }) as { sessionId?: string; error?: string };
+      const regions = pw.listRegions() as Array<{ color: [number, number, number] }>;
+      const lums = regions.map(r => 0.2126 * r.color[0] + 0.7152 * r.color[1] + 0.0722 * r.color[2]);
+      return { created, count: regions.length, minLum: Math.min(...lums), maxLum: Math.max(...lums) };
+    });
+
+    expect(res.created.error).toBeFalsy();
+    expect(res.count).toBeGreaterThanOrEqual(3);
+    expect(res.minLum).toBeLessThan(0.2);   // a near-black cluster (eyes/mouth) survived
+    expect(res.maxLum).toBeGreaterThan(0.8); // a near-white cluster (background) survived
+  });
 });

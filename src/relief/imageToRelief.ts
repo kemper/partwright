@@ -187,147 +187,6 @@ export function sampleImageToGrid(image: ImageData, opts: ReliefOptions): Height
   return { width: w, height: h, heights };
 }
 
-interface Cluster {
-  r: number;
-  g: number;
-  b: number;
-  height: number;
-}
-
-/** Median-cut color quantization producing exactly `k` clusters (or fewer when
- *  the image has fewer distinct colors). Deterministic and dependency-free. */
-function medianCut(rgb: Float32Array, count: number, k: number): Cluster[] {
-  // Each box is a contiguous slice of `order` (indices into the cells).
-  const order = new Int32Array(count);
-  for (let i = 0; i < count; i++) order[i] = i;
-
-  interface Box {
-    start: number;
-    end: number; // exclusive
-  }
-  const boxes: Box[] = [{ start: 0, end: count }];
-
-  const channelAt = (cellIdx: number, c: number) => rgb[cellIdx * 3 + c];
-
-  while (boxes.length < k) {
-    // Pick the box with the largest single-channel extent.
-    let bestBox = -1;
-    let bestExtent = -1;
-    let bestChannel = 0;
-    for (let bi = 0; bi < boxes.length; bi++) {
-      const b = boxes[bi];
-      if (b.end - b.start <= 1) continue;
-      for (let c = 0; c < 3; c++) {
-        let mn = Infinity;
-        let mx = -Infinity;
-        for (let i = b.start; i < b.end; i++) {
-          const v = channelAt(order[i], c);
-          if (v < mn) mn = v;
-          if (v > mx) mx = v;
-        }
-        const extent = mx - mn;
-        if (extent > bestExtent) {
-          bestExtent = extent;
-          bestBox = bi;
-          bestChannel = c;
-        }
-      }
-    }
-    if (bestBox < 0 || bestExtent <= 0) break; // no splittable box left
-
-    const b = boxes[bestBox];
-    // Sort the box's slice by the chosen channel, split at the median.
-    const slice = Array.from(order.subarray(b.start, b.end));
-    slice.sort((p, q) => channelAt(p, bestChannel) - channelAt(q, bestChannel));
-    for (let i = 0; i < slice.length; i++) order[b.start + i] = slice[i];
-    const mid = b.start + (slice.length >> 1);
-    boxes[bestBox] = { start: b.start, end: mid };
-    boxes.push({ start: mid, end: b.end });
-  }
-
-  // Each box's representative color = mean of its members.
-  const centers: Cluster[] = [];
-  for (let bi = 0; bi < boxes.length; bi++) {
-    const b = boxes[bi];
-    let sr = 0;
-    let sg = 0;
-    let sb = 0;
-    const n = b.end - b.start;
-    for (let i = b.start; i < b.end; i++) {
-      const cell = order[i];
-      sr += rgb[cell * 3];
-      sg += rgb[cell * 3 + 1];
-      sb += rgb[cell * 3 + 2];
-    }
-    const inv = n > 0 ? 1 / n : 0;
-    centers.push({ r: sr * inv, g: sg * inv, b: sb * inv, height: 0 });
-  }
-
-  return centers;
-}
-
-function sampleQuantized(rgb: Float32Array, w: number, h: number, opts: ReliefOptions): HeightGrid {
-  const count = w * h;
-  const { maxHeight, layerHeight } = opts.common;
-  const k = Math.max(1, Math.floor(opts.quantized.clusters));
-
-  const centers = medianCut(rgb, count, k);
-
-  // Order clusters by luminance, then assign evenly spaced height bands snapped
-  // to layer multiples (darkest cluster sits lowest).
-  const sorted = centers
-    .map((c, i) => ({ i, lum: luminance255(c.r, c.g, c.b) }))
-    .sort((a, b) => a.lum - b.lum);
-  const n = sorted.length;
-  const lh = layerHeight > 0 ? layerHeight : 0;
-  for (let s = 0; s < n; s++) {
-    const t = n === 1 ? 0 : s / (n - 1);
-    let height = t * maxHeight;
-    if (lh > 0) height = Math.round(height / lh) * lh;
-    centers[sorted[s].i].height = height;
-  }
-
-  const heights = new Float32Array(count);
-  const colors = new Uint8Array(count * 3);
-
-  if (opts.quantized.dither) {
-    ditherAssign(rgb, w, h, centers, heights, colors);
-  } else {
-    for (let i = 0; i < count; i++) {
-      const ci = nearestCluster(rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2], centers);
-      const c = centers[ci];
-      heights[i] = c.height;
-      writeColor(colors, i, c);
-    }
-  }
-
-  return { width: w, height: h, heights, colors };
-}
-
-function nearestCluster(r: number, g: number, b: number, centers: Cluster[]): number {
-  let best = 0;
-  let bestD = Infinity;
-  for (let i = 0; i < centers.length; i++) {
-    const c = centers[i];
-    const dr = r - c.r;
-    const dg = g - c.g;
-    const db = b - c.b;
-    const d = dr * dr + dg * dg + db * db;
-    if (d < bestD) {
-      bestD = d;
-      best = i;
-    }
-  }
-  return best;
-}
-
-function writeColor(colors: Uint8Array, cell: number, c: Cluster): void {
-  const o = cell * 3;
-  colors[o] = clamp255(c.r);
-  colors[o + 1] = clamp255(c.g);
-  colors[o + 2] = clamp255(c.b);
-}
-
 function clamp255(v: number): number {
   const r = Math.round(v);
   if (r < 0) return 0;
@@ -335,46 +194,194 @@ function clamp255(v: number): number {
   return r;
 }
 
-/** Floyd–Steinberg dithering of the cluster assignment. Diffuses the per-cell
- *  quantization error over a working copy of the RGB grid so the assignment
- *  picks neighbours that average back toward the true color. */
-function ditherAssign(
-  rgb: Float32Array,
-  w: number,
-  h: number,
-  centers: Cluster[],
-  heights: Float32Array,
-  colors: Uint8Array,
-): void {
-  const work = Float32Array.from(rgb);
-  const add = (x: number, y: number, er: number, eg: number, eb: number, f: number) => {
-    if (x < 0 || x >= w || y < 0 || y >= h) return;
-    const o = (y * w + x) * 3;
-    work[o] += er * f;
-    work[o + 1] += eg * f;
-    work[o + 2] += eb * f;
-  };
+// sRGB byte triple -> CIE L*a*b*, for perceptual clustering (the 'lab' option).
+function rgbToLab(r: number, g: number, b: number): [number, number, number] {
+  const lin = (c: number) => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+  const R = lin(r), G = lin(g), B = lin(b);
+  const X = (R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047;
+  const Y = R * 0.2126 + G * 0.7152 + B * 0.0722;
+  const Z = (R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883;
+  const f = (t: number) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+  const fx = f(X), fy = f(Y), fz = f(Z);
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
 
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      const o = i * 3;
-      const r = work[o];
-      const g = work[o + 1];
-      const b = work[o + 2];
-      const ci = nearestCluster(r, g, b, centers);
-      const c = centers[ci];
-      heights[i] = c.height;
-      writeColor(colors, i, c);
-      const er = r - c.r;
-      const eg = g - c.g;
-      const eb = b - c.b;
-      add(x + 1, y, er, eg, eb, 7 / 16);
-      add(x - 1, y + 1, er, eg, eb, 3 / 16);
-      add(x, y + 1, er, eg, eb, 5 / 16);
-      add(x + 1, y + 1, er, eg, eb, 1 / 16);
+// Small deterministic PRNG so a given image always quantizes the same way.
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+interface ClusterResult {
+  assign: Int32Array;   // cluster index per cell
+  repRGB: Float32Array; // k*3 mean sRGB (0..255) per cluster
+  k: number;
+}
+
+/** K-means (k-means++ seeding + Lloyd iterations) over `feat` (count*3 in the
+ *  chosen colour space). Unlike median-cut it places centres at the image's
+ *  actual colour modes, so small-but-distinct colours (e.g. black eyes on a
+ *  yellow face) keep their own cluster instead of being averaged away. Each
+ *  cluster's representative is the MEAN sRGB of its members (from the original
+ *  pixels, so 'lab' clustering doesn't drift the displayed colour). */
+function kmeansCluster(feat: Float32Array, rgb: Float32Array, count: number, k: number, iters: number): ClusterResult {
+  const kk = Math.max(1, Math.min(k, count));
+  const rand = mulberry32(0x9e3779b9);
+  const cx = new Float32Array(kk * 3);
+
+  // k-means++ seeding: first centre random, each next chosen with probability
+  // proportional to squared distance from the nearest existing centre.
+  const f0 = Math.floor(rand() * count);
+  cx[0] = feat[f0 * 3]; cx[1] = feat[f0 * 3 + 1]; cx[2] = feat[f0 * 3 + 2];
+  const nearest2 = new Float32Array(count).fill(Infinity);
+  for (let c = 1; c < kk; c++) {
+    const px = cx[(c - 1) * 3], py = cx[(c - 1) * 3 + 1], pz = cx[(c - 1) * 3 + 2];
+    let sum = 0;
+    for (let i = 0; i < count; i++) {
+      const dx = feat[i * 3] - px, dy = feat[i * 3 + 1] - py, dz = feat[i * 3 + 2] - pz;
+      const d = dx * dx + dy * dy + dz * dz;
+      if (d < nearest2[i]) nearest2[i] = d;
+      sum += nearest2[i];
+    }
+    let target = rand() * sum, pick = count - 1;
+    for (let i = 0; i < count; i++) { target -= nearest2[i]; if (target <= 0) { pick = i; break; } }
+    cx[c * 3] = feat[pick * 3]; cx[c * 3 + 1] = feat[pick * 3 + 1]; cx[c * 3 + 2] = feat[pick * 3 + 2];
+  }
+
+  const assign = new Int32Array(count);
+  const sumF = new Float64Array(kk * 3);
+  const cnt = new Int32Array(kk);
+  for (let it = 0; it < iters; it++) {
+    let moved = 0;
+    for (let i = 0; i < count; i++) {
+      const fx = feat[i * 3], fy = feat[i * 3 + 1], fz = feat[i * 3 + 2];
+      let bc = 0, bd = Infinity;
+      for (let c = 0; c < kk; c++) {
+        const dx = fx - cx[c * 3], dy = fy - cx[c * 3 + 1], dz = fz - cx[c * 3 + 2];
+        const d = dx * dx + dy * dy + dz * dz;
+        if (d < bd) { bd = d; bc = c; }
+      }
+      if (assign[i] !== bc) { assign[i] = bc; moved++; }
+    }
+    sumF.fill(0); cnt.fill(0);
+    for (let i = 0; i < count; i++) {
+      const c = assign[i];
+      sumF[c * 3] += feat[i * 3]; sumF[c * 3 + 1] += feat[i * 3 + 1]; sumF[c * 3 + 2] += feat[i * 3 + 2];
+      cnt[c]++;
+    }
+    for (let c = 0; c < kk; c++) {
+      if (cnt[c] === 0) continue;
+      cx[c * 3] = sumF[c * 3] / cnt[c];
+      cx[c * 3 + 1] = sumF[c * 3 + 1] / cnt[c];
+      cx[c * 3 + 2] = sumF[c * 3 + 2] / cnt[c];
+    }
+    if (it > 0 && moved === 0) break;
+  }
+
+  const repSum = new Float64Array(kk * 3);
+  const repCnt = new Int32Array(kk);
+  for (let i = 0; i < count; i++) {
+    const c = assign[i];
+    repSum[c * 3] += rgb[i * 3]; repSum[c * 3 + 1] += rgb[i * 3 + 1]; repSum[c * 3 + 2] += rgb[i * 3 + 2];
+    repCnt[c]++;
+  }
+  const repRGB = new Float32Array(kk * 3);
+  for (let c = 0; c < kk; c++) {
+    const n = repCnt[c] || 1;
+    repRGB[c * 3] = repSum[c * 3] / n;
+    repRGB[c * 3 + 1] = repSum[c * 3 + 1] / n;
+    repRGB[c * 3 + 2] = repSum[c * 3 + 2] / n;
+  }
+  return { assign, repRGB, k: kk };
+}
+
+function nearestPalette(fr: number, fg: number, fb: number, palFeat: Array<[number, number, number]>): number {
+  let best = 0, bd = Infinity;
+  for (let c = 0; c < palFeat.length; c++) {
+    const dx = fr - palFeat[c][0], dy = fg - palFeat[c][1], dz = fb - palFeat[c][2];
+    const d = dx * dx + dy * dy + dz * dz;
+    if (d < bd) { bd = d; best = c; }
+  }
+  return best;
+}
+
+function sampleQuantized(rgb: Float32Array, w: number, h: number, opts: ReliefOptions): HeightGrid {
+  const count = w * h;
+  const { maxHeight, layerHeight } = opts.common;
+  const lab = opts.quantized.colorSpace === 'lab';
+  const k = Math.max(2, Math.floor(opts.quantized.clusters));
+
+  // Cluster in the chosen colour space.
+  const feat = new Float32Array(count * 3);
+  if (lab) {
+    for (let i = 0; i < count; i++) {
+      const L = rgbToLab(rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
+      feat[i * 3] = L[0]; feat[i * 3 + 1] = L[1]; feat[i * 3 + 2] = L[2];
+    }
+  } else {
+    feat.set(rgb);
+  }
+  const { assign, repRGB, k: kk } = kmeansCluster(feat, rgb, count, k, 16);
+
+  // Representative sRGB palette + per-cluster height. Clusters are ordered by
+  // luminance and given evenly spaced heights snapped to layer multiples, so
+  // each colour reads as one clean flat terrace (darkest sits lowest).
+  const palette: Array<[number, number, number]> = [];
+  for (let c = 0; c < kk; c++) palette.push([clamp255(repRGB[c * 3]), clamp255(repRGB[c * 3 + 1]), clamp255(repRGB[c * 3 + 2])]);
+  const order = palette.map((_, i) => i).sort((a, b) => luminance255(palette[a][0], palette[a][1], palette[a][2]) - luminance255(palette[b][0], palette[b][1], palette[b][2]));
+  const lh = layerHeight > 0 ? layerHeight : 0;
+  const clusterHeight = new Float32Array(kk);
+  for (let s = 0; s < kk; s++) {
+    const t = kk === 1 ? 0 : s / (kk - 1);
+    let z = t * maxHeight;
+    if (lh > 0) z = Math.round(z / lh) * lh;
+    clusterHeight[order[s]] = z;
+  }
+
+  const heights = new Float32Array(count);
+  const colors = new Uint8Array(count * 3);
+
+  if (opts.quantized.dither) {
+    // Floyd–Steinberg over a working copy: choose the nearest palette colour in
+    // the clustering space, diffuse the sRGB error to neighbours.
+    const palFeat: Array<[number, number, number]> = palette.map(p => (lab ? rgbToLab(p[0], p[1], p[2]) : [p[0], p[1], p[2]]));
+    const work = Float32Array.from(rgb);
+    const diffuse = (x: number, y: number, er: number, eg: number, eb: number, f: number) => {
+      if (x < 0 || x >= w || y < 0 || y >= h) return;
+      const o = (y * w + x) * 3;
+      work[o] += er * f; work[o + 1] += eg * f; work[o + 2] += eb * f;
+    };
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x, o = i * 3;
+        const r = work[o], g = work[o + 1], b = work[o + 2];
+        const fl = lab ? rgbToLab(r, g, b) : null;
+        const ci = fl ? nearestPalette(fl[0], fl[1], fl[2], palFeat) : nearestPalette(r, g, b, palFeat);
+        const c = palette[ci];
+        heights[i] = clusterHeight[ci];
+        colors[o] = c[0]; colors[o + 1] = c[1]; colors[o + 2] = c[2];
+        const er = r - c[0], eg = g - c[1], eb = b - c[2];
+        diffuse(x + 1, y, er, eg, eb, 7 / 16);
+        diffuse(x - 1, y + 1, er, eg, eb, 3 / 16);
+        diffuse(x, y + 1, er, eg, eb, 5 / 16);
+        diffuse(x + 1, y + 1, er, eg, eb, 1 / 16);
+      }
+    }
+  } else {
+    for (let i = 0; i < count; i++) {
+      const c = assign[i];
+      heights[i] = clusterHeight[c];
+      const p = palette[c];
+      colors[i * 3] = p[0]; colors[i * 3 + 1] = p[1]; colors[i * 3 + 2] = p[2];
     }
   }
+
+  return { width: w, height: h, heights, colors };
 }
 
 /**
