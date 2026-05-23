@@ -74,11 +74,10 @@ test.describe('AI chat panel', () => {
     await page.click('#btn-ai');
     await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
 
-    const galleryTab = page.locator('button', { hasText: /^Gallery$/ });
-    if (await galleryTab.count()) {
-      await galleryTab.first().click();
-      await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
-    }
+    // Switch to another destination via the activity rail; the drawer should
+    // stay open across the tab change.
+    await page.locator('[data-tab="Versions"]').click();
+    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
   });
 
   test('panel widgets render', async ({ page }) => {
