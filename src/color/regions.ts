@@ -2,6 +2,7 @@
 
 import type { MeshData } from '../geometry/types';
 import type { ShapeType } from './boxPaint';
+import type { BrushShape } from './subdivide';
 
 export interface ColorRegion {
   id: number;
@@ -20,7 +21,12 @@ export type RegionDescriptor =
   | { kind: 'box'; center: [number, number, number]; size: [number, number, number]; quaternion: [number, number, number, number]; shape?: ShapeType }
   | { kind: 'triangles'; ids: number[] }
   | { kind: 'byLabel'; label: string }
-  | { kind: 'connectedFromSeed'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; maxDeviationDeg: number };
+  | { kind: 'connectedFromSeed'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; maxDeviationDeg: number }
+  // Smooth paintbrush stroke: surface samples + brush footprint, plus a target
+  // edge length. Resolving it locally refines the mesh under the stroke until
+  // boundary triangles are below `maxEdge`, so the painted edge follows the
+  // brush outline regardless of base-mesh coarseness. See src/color/subdivide.ts.
+  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number };
 
 export interface SerializedColorRegion {
   id: number;
@@ -224,6 +230,15 @@ export function updateRegionColor(id: number, color: [number, number, number]): 
     region.color = color;
     notify();
   }
+}
+
+/** Replace a region's resolved triangle set in place. Used when the working
+ *  mesh changes (e.g. a smooth brush stroke subdivides it) and every region
+ *  must be re-resolved against the new tessellation. Does not notify — the
+ *  caller drives a single re-render after re-resolving all regions. */
+export function setRegionTriangles(id: number, triangles: Set<number>): void {
+  const region = regions.find(r => r.id === id);
+  if (region) region.triangles = triangles;
 }
 
 export function clearRegions(): void {

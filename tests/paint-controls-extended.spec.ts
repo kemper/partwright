@@ -21,29 +21,30 @@ async function openEditor(page: import('playwright/test').Page) {
 }
 
 test.describe('extended paint controls', () => {
-  test('brush size controls appear when brush tool is selected', async ({ page }) => {
+  test('brush size controls show by default (brush is the default tool)', async ({ page }) => {
     await openEditor(page);
     await page.locator('#paint-toggle').dispatchEvent('click');
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
 
-    // Brush controls should be hidden initially (bucket is default).
+    // Brush is the default tool, so its controls are visible immediately.
     const brushHelp = page.locator('#paint-picker-panel >> text=Single triangle');
-    await expect(brushHelp).toBeHidden();
-
-    // Switch to brush tool.
-    await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
-
-    // Now the brush slider + number input should be visible.
     await expect(brushHelp).toBeVisible();
     const numberInput = page.locator('#paint-picker-panel input[type="number"][title*="mesh units"]');
     await expect(numberInput).toBeVisible();
-    await expect(numberInput).toHaveValue('0.0');
+    // Default brush size is 1mm.
+    await expect(numberInput).toHaveValue('1.0');
+
+    // Switching to bucket hides the brush controls.
+    await page.locator('#paint-picker-panel button:has-text("Bucket")').dispatchEvent('click');
+    await expect(brushHelp).toBeHidden();
   });
 
   test('typing a bucket tolerance angle updates the underlying value', async ({ page }) => {
     await openEditor(page);
     await page.locator('#paint-toggle').dispatchEvent('click');
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    // Bucket is no longer the default tool — switch to it to reveal its controls.
+    await page.locator('#paint-picker-panel button:has-text("Bucket")').dispatchEvent('click');
 
     const angleInput = page.locator('#paint-picker-panel input[type="number"][title*="Bend angle"]');
     await expect(angleInput).toBeVisible();
@@ -124,8 +125,9 @@ test.describe('extended paint controls', () => {
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
     await page.locator('button[title*="positionable, rotatable"]').dispatchEvent('click');
 
-    // Box controls panel should be visible with non-zero default size.
-    const sizeInput = page.locator('#paint-picker-panel input[type="number"]').nth(5);
+    // Box controls panel should be visible with non-zero default size. The Size
+    // vector inputs are the only ones with min="0.001" (robust to control order).
+    const sizeInput = page.locator('#paint-picker-panel input[type="number"][min="0.001"]').first();
     await expect(sizeInput).toBeVisible();
     const sizeValue = await sizeInput.inputValue();
     expect(parseFloat(sizeValue)).toBeGreaterThan(0);
@@ -200,17 +202,17 @@ test.describe('extended paint controls', () => {
     await expect(wireBtn).toHaveAttribute('title', 'Show mesh edges');
   });
 
-  test('paint mode forces mesh edges on and restores the prior state on exit', async ({ page }) => {
+  test('paint mode leaves mesh edges off by default (no auto-enable)', async ({ page }) => {
     await openEditor(page);
     const wireBtn = page.locator('#wireframe-toggle');
     await expect(wireBtn).toHaveAttribute('title', 'Show mesh edges');
 
-    // Entering paint mode turns edges on (they matter for aiming paint).
+    // Entering paint mode does NOT force edges on anymore.
     await page.locator('#paint-toggle').dispatchEvent('click');
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
-    await expect(wireBtn).toHaveAttribute('title', 'Hide mesh edges');
+    await expect(wireBtn).toHaveAttribute('title', 'Show mesh edges');
 
-    // Leaving paint mode restores the previous (off) state.
+    // Leaving paint mode leaves them off too.
     await page.locator('#paint-toggle').dispatchEvent('click');
     await expect(wireBtn).toHaveAttribute('title', 'Show mesh edges');
   });
