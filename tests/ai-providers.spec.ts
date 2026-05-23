@@ -761,7 +761,7 @@ test.describe('Multi-provider AI', () => {
     await expect(modal.locator('text=stop: end_turn')).toBeVisible();
   });
 
-  test('connect modal renders correctly per provider', async ({ page }) => {
+  test('inline key form renders correctly per provider', async ({ page }) => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
@@ -769,12 +769,12 @@ test.describe('Multi-provider AI', () => {
     await page.locator('#btn-ai').dispatchEvent('click');
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
-    // Tabbed modal — view the OpenAI tab first, then its Connect button.
+    // Tabbed modal — the OpenAI tab shows its key form inline (no second
+    // pop-up): placeholder input, console link, and Connect button together.
     await page.locator('button:has-text("OpenAI (cloud)")').dispatchEvent('click');
-    await page.locator('button:has-text("Connect OpenAI")').dispatchEvent('click');
-    await expect(page.getByRole('heading', { name: 'Connect OpenAI' })).toBeVisible();
     await expect(page.locator('input[placeholder*="sk-proj"]')).toBeVisible();
     await expect(page.locator('a[href*="platform.openai.com"]')).toBeVisible();
+    await expect(page.locator('button:has-text("Connect OpenAI")')).toBeVisible();
   });
 });
 
