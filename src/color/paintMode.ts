@@ -61,12 +61,13 @@ const AIRBRUSH_GRAIN = 10;
 let airbrushSmooth = true;
 /** Smooth-edge detail for the airbrush: radius / this = grain / dither-cell size
  *  (and the interior subdivision target). Higher = finer dots, smoother edge,
- *  more triangles. Capped well below the brush's ceiling because the airbrush
- *  refines its whole footprint (fill), so the triangle count grows with the
- *  square of the divisor. */
+ *  more triangles. Shares the brush's 1024 ceiling; because the airbrush refines
+ *  its whole footprint (fill), triangle count grows with the divisor squared, so
+ *  very high values lean on buildStrokeMesh's MAX_TRIANGLES cap rather than
+ *  running away. */
 let airbrushSmoothDivisor = 24;
 export const AIRBRUSH_SMOOTH_DIVISOR_MIN = 4;
-export const AIRBRUSH_SMOOTH_DIVISOR_MAX = 64;
+export const AIRBRUSH_SMOOTH_DIVISOR_MAX = 1024;
 
 /** Target edge length (mesh units) for the active brush settings. */
 export function brushTargetEdge(): number {

@@ -4898,7 +4898,7 @@ async function main() {
      *  (one solid, printable color), but coverage thins from the dense core out
      *  to a feathered rim. `strength` (0..1) is the core density; `softness`
      *  (0..1) is the fraction of the radius that fades out. `smooth` +
-     *  `smoothDivisor` (4..64) finely subdivide the spray so its edge reads as a
+     *  `smoothDivisor` (4..1024) finely subdivide the spray so its edge reads as a
      *  smooth gradient instead of chunky speckle (the airbrush analog of the
      *  smooth brush). Programmatic painters should use
      *  `paintAirbrush({point(s), radius})`. */

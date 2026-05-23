@@ -288,7 +288,7 @@ partwright.hideRegion(id) / showRegion(id) / clearColors()
 partwright.getBucketTolerance() / setBucketTolerance(t)                   // UI bucket tool config
 partwright.getBrushSize() / setBrushSize(r)                               // UI brush tool config
 partwright.getBrushSmooth() / setBrushSmooth(on) / setBrushSmoothDivisor(2..1024) // UI smooth-brush config (detail = radius ÷ divisor)
-partwright.getAirbrush() / setAirbrushSize(r) / setAirbrushStrength(0..1) / setAirbrushSoftness(0..1) / setAirbrushSmooth(on) / setAirbrushSmoothDivisor(4..64) // UI airbrush tool config (smooth = finer grain → smoother edge)
+partwright.getAirbrush() / setAirbrushSize(r) / setAirbrushStrength(0..1) / setAirbrushSoftness(0..1) / setAirbrushSmooth(on) / setAirbrushSmoothDivisor(4..1024) // UI airbrush tool config (smooth = finer grain → smoother edge)
 
 // Notes -- track design context, decisions, and measurements
 await partwright.addSessionNote(text)    // -> {id, text, timestamp}
