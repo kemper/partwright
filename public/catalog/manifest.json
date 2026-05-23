@@ -1,6 +1,146 @@
 {
   "entries": [
     {
+      "id": "creeper-head",
+      "name": "Creeper Head",
+      "file": "creeper_head.partwright.json",
+      "language": "manifold-js",
+      "description": "Blocky creeper head with the classic frown face — raised dark relief on a mossy-green cube."
+    },
+    {
+      "id": "question-block",
+      "name": "Super Mario ? Block",
+      "file": "question_block.partwright.json",
+      "language": "manifold-js",
+      "description": "Classic Super Mario question-mark block: a warm-yellow cube with brown corner rivets and a bold ? glyph."
+    },
+    {
+      "id": "companion-cube",
+      "name": "Portal Companion Cube",
+      "file": "companion_cube.partwright.json",
+      "language": "manifold-js",
+      "description": "Portal Weighted Companion Cube — light-gray cube with pink hearts on each face and steel edge bars."
+    },
+    {
+      "id": "space-invader",
+      "name": "Space Invader",
+      "file": "space_invader.partwright.json",
+      "language": "manifold-js",
+      "description": "The classic 8-bit \"crab\" Space Invader sprite, extruded as a lime-green pixel-art slab."
+    },
+    {
+      "id": "pacman-ghost",
+      "name": "Pac-Man & Ghost",
+      "file": "pacman_ghost.partwright.json",
+      "language": "manifold-js",
+      "description": "Iconic arcade duo — yellow Pac-Man with a wedge mouth beside a red ghost with eyes."
+    },
+    {
+      "id": "castle-tower",
+      "name": "Castle Tower",
+      "file": "castle_tower.partwright.json",
+      "language": "manifold-js",
+      "description": "Round stone tower with crenellated battlements, a blue conical roof, and arched door and windows."
+    },
+    {
+      "id": "heraldic-shield",
+      "name": "Heraldic Shield",
+      "file": "heraldic_shield.partwright.json",
+      "language": "manifold-js",
+      "description": "A knight's shield quartered in red, blue, gold, and silver with a central gold boss."
+    },
+    {
+      "id": "treasure-chest",
+      "name": "Treasure Chest",
+      "file": "treasure_chest.partwright.json",
+      "language": "manifold-js",
+      "description": "Pirate treasure chest with a rounded lid, gold trim straps, and a gold lock plate."
+    },
+    {
+      "id": "chess-king",
+      "name": "Chess King",
+      "file": "chess_king.partwright.json",
+      "language": "manifold-js",
+      "description": "Turned ivory chess king with a tiered base, crown collar, and cross finial."
+    },
+    {
+      "id": "royal-crown",
+      "name": "Royal Crown",
+      "file": "royal_crown.partwright.json",
+      "language": "manifold-js",
+      "description": "A king's gold crown with pointed peaks and red, blue, and green jewels set around the band."
+    },
+    {
+      "id": "arcade-cabinet",
+      "name": "Arcade Cabinet",
+      "file": "arcade_cabinet.partwright.json",
+      "language": "manifold-js",
+      "description": "Classic upright arcade cabinet with a marquee, screen, joystick, buttons, and coin slot."
+    },
+    {
+      "id": "cassette-tape",
+      "name": "Cassette Tape",
+      "file": "cassette_tape.partwright.json",
+      "language": "manifold-js",
+      "description": "Retro audio cassette with reel windows and a cream label strip."
+    },
+    {
+      "id": "handheld-console",
+      "name": "Handheld Console",
+      "file": "handheld_console.partwright.json",
+      "language": "manifold-js",
+      "description": "Game Boy-style handheld with a green screen, D-pad, action buttons, and speaker grille."
+    },
+    {
+      "id": "boombox",
+      "name": "Boombox",
+      "file": "boombox.partwright.json",
+      "language": "manifold-js",
+      "description": "80s boombox with twin speaker grilles, a cassette deck, control buttons, and a carry handle."
+    },
+    {
+      "id": "pixel-heart",
+      "name": "Pixel Heart",
+      "file": "pixel_heart.partwright.json",
+      "language": "manifold-js",
+      "description": "8-bit pixel heart built from unit cubes — bold red with a highlight shine."
+    },
+    {
+      "id": "lowpoly-fox",
+      "name": "Low-Poly Fox",
+      "file": "lowpoly_fox.partwright.json",
+      "language": "manifold-js",
+      "description": "A stylized low-poly fox with a pointed snout, triangular ears, bushy tail, and dark leg socks."
+    },
+    {
+      "id": "lighthouse",
+      "name": "Lighthouse",
+      "file": "lighthouse.partwright.json",
+      "language": "manifold-js",
+      "description": "A striped lighthouse with red and white bands, a glass lamp room, and a black dome cap."
+    },
+    {
+      "id": "hot-air-balloon",
+      "name": "Hot Air Balloon",
+      "file": "hot_air_balloon.partwright.json",
+      "language": "manifold-js",
+      "description": "A colorful balloon with alternating red, yellow, and blue gores and a basket hanging below."
+    },
+    {
+      "id": "d20-die",
+      "name": "D20 Die",
+      "file": "d20_die.partwright.json",
+      "language": "manifold-js",
+      "description": "A 20-sided polyhedral die (icosahedron) built via hull, with a gold face marking the 20."
+    },
+    {
+      "id": "toadstool-mushroom",
+      "name": "Toadstool Mushroom",
+      "file": "toadstool_mushroom.partwright.json",
+      "language": "manifold-js",
+      "description": "A red toadstool with white polka-dot spots painted as smooth rounded patches using the paintStroke brush."
+    },
+    {
       "id": "twisted-vase",
       "name": "Twisted Vase",
       "file": "twisted_vase.partwright.json",
@@ -34,20 +174,6 @@
       "file": "retro_rocket.partwright.json",
       "language": "manifold-js",
       "description": "Classic retro rocket with ogive nose cone, fins, porthole window, and thrust nozzle."
-    },
-    {
-      "id": "steampunk-rocket",
-      "name": "Steampunk Rocket",
-      "file": "steampunk_rocket.partwright.json",
-      "language": "manifold-js",
-      "description": "Tall multi-stage rocket with an ogive nose cone and revolved fuselage."
-    },
-    {
-      "id": "snowman",
-      "name": "Snowman",
-      "file": "snowman.partwright.json",
-      "language": "manifold-js",
-      "description": "Three-sphere snowman with carrot nose, top hat, scarf, and branchy arms across five painted iterations."
     }
   ]
 }
