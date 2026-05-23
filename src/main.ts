@@ -363,16 +363,39 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
   geometryDataEl.textContent = JSON.stringify(data, null, 2);
 }
 
+/** How long to wait for `canvas.toBlob` before giving up on the thumbnail.
+ *  `toBlob` can stall indefinitely when encoding a 2D canvas that a WebGL render
+ *  was composited into (observed after painting subdivides + colors the mesh) —
+ *  the GPU readback never settles the callback. A thumbnail is non-essential, so
+ *  we cap the wait and let the save proceed without it rather than hang forever
+ *  (which silently blocked saving a painted version). */
+const THUMBNAIL_TIMEOUT_MS = 4000;
+
 function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob | null> {
   if (!mesh) return Promise.resolve(null);
+  let canvas: HTMLCanvasElement;
   try {
-    const canvas = renderCompositeCanvas(applyTriColorsIfVisible(mesh));
-    return new Promise(resolve => {
-      canvas.toBlob(b => resolve(b), 'image/png');
-    });
+    canvas = renderCompositeCanvas(applyTriColorsIfVisible(mesh));
   } catch {
     return Promise.resolve(null);
   }
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = (b: Blob | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(b);
+    };
+    // Bound the wait: if toBlob never calls back, resolve null so the caller
+    // (save / snapshot) still completes.
+    const timer = setTimeout(() => finish(null), THUMBNAIL_TIMEOUT_MS);
+    try {
+      canvas.toBlob(b => finish(b), 'image/png');
+    } catch {
+      finish(null);
+    }
+  });
 }
 
 // Capture a thumbnail + geometry-data for an arbitrary `mesh` without touching
