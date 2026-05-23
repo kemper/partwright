@@ -35,7 +35,18 @@ interface FeaturedCatalogEntry {
   thumbnailUrl: string | null;
 }
 
-const FEATURED_CATALOG_IDS = ['twisted-vase', 'retro-rocket', 'chess-rook', 'christmas-tree'];
+/** Number of catalog entries to show in the "What you can build" section. */
+const FEATURED_CATALOG_COUNT = 8;
+
+/** Fisher-Yates shuffle — returns a new array in random order. */
+function shuffleArray<T>(arr: T[]): T[] {
+  const copy = arr.slice();
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
 
 export async function createLandingPage(
   container: HTMLElement,
@@ -253,11 +264,8 @@ async function loadFeaturedCatalogEntries(): Promise<FeaturedCatalogEntry[]> {
     const res = await fetch('/catalog/manifest.json', { cache: 'no-cache' });
     if (!res.ok) return [];
     const manifest = await res.json() as { entries: CatalogManifestEntry[] };
-    const byId = new Map(manifest.entries.map(e => [e.id, e]));
-    const featured = FEATURED_CATALOG_IDS
-      .map(id => byId.get(id))
-      .filter((e): e is CatalogManifestEntry => Boolean(e));
-    const list = featured.length > 0 ? featured : manifest.entries.slice(0, 4);
+    const shuffled = shuffleArray(manifest.entries);
+    const list = shuffled.slice(0, FEATURED_CATALOG_COUNT);
 
     return await Promise.all(list.map(async (manifestEntry) => {
       try {
