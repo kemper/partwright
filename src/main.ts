@@ -600,19 +600,31 @@ function appendStrokeRefine(descriptor: Extract<RegionDescriptor, { kind: 'brush
   const parentToChildren = childrenByParent(childToParent);
   currentMeshData = mesh;
   updatePaintMesh(mesh);
-  // Re-resolve regions exactly as a full rebuild / reload would, so the live
-  // result matches what reload reconstructs (determinism). Explicit sets
-  // (triangles/byLabel index the base tessellation / runtime labelMap) are
-  // carried forward across this split; every spatial/footprint/flood descriptor
-  // is re-resolved by descriptor — its children near the split may fall outside
-  // the region, which a naive parent→children carry would wrongly keep.
-  const needsAdj = getRegions().some(r => r.descriptor.kind === 'coplanar' || r.descriptor.kind === 'connectedFromSeed');
-  const adjacency = needsAdj ? buildAdjacency(mesh) : null;
+  // Triangles of the prior mesh that this stroke actually split (>1 child).
+  // Only regions touching those need descriptor re-resolution; everyone else is
+  // untouched, so forward-carrying their set (each unsplit triangle → its single
+  // child) equals what a reload would re-resolve — and is far cheaper.
+  const splitParents = new Set<number>();
+  for (const [parent, children] of parentToChildren) if (children.length > 1) splitParents.add(parent);
+
+  // A region must be re-resolved by descriptor when it's freshly added (no
+  // triangles yet, e.g. the new stroke) or overlaps the split — because a
+  // spatial/footprint/flood descriptor's split children can fall outside it,
+  // which a naive parent→children carry would wrongly keep. Explicit sets
+  // (triangles/byLabel) always carry forward. This keeps the live result
+  // identical to a reload (determinism) while staying ~O(painted) per stroke.
+  let adjacency: AdjacencyGraph | null = null;
+  const overlapsSplit = (region: { triangles: Set<number> }): boolean => {
+    if (region.triangles.size === 0) return true;
+    for (const t of region.triangles) if (splitParents.has(t)) return true;
+    return false;
+  };
   for (const region of getRegions()) {
     const d = region.descriptor;
-    if (d.kind === 'triangles' || d.kind === 'byLabel') {
+    if (d.kind === 'triangles' || d.kind === 'byLabel' || !overlapsSplit(region)) {
       setRegionTriangles(region.id, remapTriangleIds(region.triangles, parentToChildren));
     } else {
+      if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed')) adjacency = buildAdjacency(mesh);
       setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren));
     }
   }
