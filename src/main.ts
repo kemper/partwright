@@ -29,7 +29,7 @@ import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCamer
 import { renderCompositeCanvas, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
 import { generateId } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
-import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, getAutoFormat, setAutoFormat } from './editor/codeEditor';
+import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, getAutoFormat, setAutoFormat, editorContentDiffersFrom } from './editor/codeEditor';
 import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
@@ -338,7 +338,19 @@ function clearEditorErrorPanel(panel: HTMLElement): void {
   panel.replaceChildren();
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// Surface session URLs in geometry-data so they're accessible even when
+// getGalleryUrl() is sandbox-blocked. Shared by the live geometry-data panel
+// and the off-screen version snapshot below so both carry the same context.
+function withSessionContext(data: Record<string, unknown>): Record<string, unknown> {
+  const state = getState();
+  if (state.session) {
+    data.sessionId = state.session.id;
+    data.sessionUrl = getSessionUrl();
+    data.galleryUrl = getGalleryUrl();
+  }
+  return data;
+}
+
 function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
   if (!currentMeshData) {
     geometryDataEl.textContent = JSON.stringify({ status: 'error', error: 'No geometry' });
@@ -347,26 +359,40 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
 
   // currentManifold may be null for render-only imports (sculpted STLs that
   // can't form a watertight manifold). computeGeometryStats degrades gracefully.
-  const data = computeGeometryStats(currentManifold, currentMeshData, executionTimeMs, sourceCode);
-  // Surface session URLs in geometry-data so they're accessible even when getGalleryUrl() is sandbox-blocked
-  const state = getState();
-  if (state.session) {
-    (data as Record<string, unknown>).sessionId = state.session.id;
-    (data as Record<string, unknown>).sessionUrl = getSessionUrl();
-    (data as Record<string, unknown>).galleryUrl = getGalleryUrl();
-  }
+  const data = withSessionContext(computeGeometryStats(currentManifold, currentMeshData, executionTimeMs, sourceCode));
   geometryDataEl.textContent = JSON.stringify(data, null, 2);
 }
 
-function captureThumbnail(): Promise<Blob | null> {
-  if (!currentMeshData) return Promise.resolve(null);
+function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob | null> {
+  if (!mesh) return Promise.resolve(null);
   try {
-    const canvas = renderCompositeCanvas(applyTriColorsIfVisible(currentMeshData));
+    const canvas = renderCompositeCanvas(applyTriColorsIfVisible(mesh));
     return new Promise(resolve => {
       canvas.toBlob(b => resolve(b), 'image/png');
     });
   } catch {
     return Promise.resolve(null);
+  }
+}
+
+// Capture a thumbnail + geometry-data for an arbitrary `mesh` without touching
+// the live viewport (no updateMesh call → no flicker). Builds a throwaway
+// Manifold purely for the volumetric stats and releases it. Used to snapshot
+// the pre-simplify baseline as its own version during a simplify save.
+async function snapshotMeshAsVersion(
+  mesh: MeshData,
+  sourceCode: string,
+): Promise<{ thumbnail: Blob | null; geometryData: Record<string, unknown> | null }> {
+  const thumbnail = await captureThumbnail(mesh);
+  const mod = getModule();
+  const manifold = mod ? mod.Manifold.ofMesh(mesh) : null;
+  try {
+    const geometryData = withSessionContext(computeGeometryStats(manifold, mesh, undefined, sourceCode));
+    return { thumbnail, geometryData };
+  } finally {
+    if (manifold && typeof manifold.delete === 'function') {
+      try { manifold.delete(); } catch { /* already deleted */ }
+    }
   }
 }
 
@@ -1961,6 +1987,20 @@ async function main() {
       }
       try {
         const reduced = currentMeshData;
+
+        // Preserve the pre-simplify model as its own version first, so baking the
+        // reduced mesh (which overwrites the editor with an import wrapper) never
+        // silently discards the full-detail original. Skip when the editor already
+        // matches the current saved version (formatting-aware, so a version saved
+        // with raw code isn't re-saved just because the editor reformatted it).
+        const originalCode = getValue();
+        const current = getState().currentVersion;
+        let savedOriginal = false;
+        if (!current || editorContentDiffersFrom(current.code)) {
+          const original = await snapshotMeshAsVersion(baseline, originalCode);
+          savedOriginal = !!(await saveVersion(originalCode, original.geometryData, original.thumbnail));
+        }
+
         const baked = toImportedMesh(`simplified-${reduced.numTri}tri`, reduced);
         const code = generateImportCode([baked], { manifold: true });
         setActiveImports([baked]);
@@ -1972,7 +2012,13 @@ async function main() {
           force: true,
           importedMeshes: [baked],
         });
-        return { ok: true, message: `Saved as a new version (${reduced.numTri.toLocaleString()} triangles).` };
+        const tri = reduced.numTri.toLocaleString();
+        return {
+          ok: true,
+          message: savedOriginal
+            ? `Saved original + simplified (${tri} triangles).`
+            : `Saved as a new version (${tri} triangles).`,
+        };
       } catch (e) {
         return { ok: false, message: `Save failed: ${(e as Error).message}` };
       }
