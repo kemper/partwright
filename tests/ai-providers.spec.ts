@@ -93,6 +93,57 @@ test.describe('Multi-provider AI', () => {
     expect(fcPart.thoughtSignature).toBe('SIG_ABC');
   });
 
+  test('Gemini validateKey tolerates a 503 and pings the models endpoint, not generateContent', async ({ page }) => {
+    // Regression: validateKey used a generateContent ping on a hard-coded
+    // model. When that model is overloaded Google answers 503 UNAVAILABLE
+    // ("high demand") and a valid key looked rejected. Validation now hits
+    // the lightweight models-list endpoint and treats 5xx as a transient
+    // hiccup (non-blocking), so a busy backend never blocks a good key.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel');
+    const out = await page.evaluate(async () => {
+      const gemini = await import('/src/ai/gemini.ts');
+      const calls: string[] = [];
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (input: unknown) => {
+        calls.push(String(input));
+        const body = JSON.stringify({ error: { code: 503, status: 'UNAVAILABLE', message: 'high demand' } });
+        return new Response(body, { status: 503 });
+      };
+      try {
+        const result = await gemini.validateKey('AIza-test-key');
+        return { result, calls };
+      } finally {
+        window.fetch = origFetch;
+      }
+    });
+    expect(out.result).toBeNull();
+    expect(out.calls).toHaveLength(1);
+    expect(out.calls[0]).toContain('/models');
+    expect(out.calls[0]).not.toContain('generateContent');
+  });
+
+  test('Gemini validateKey reports a clearly invalid key', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel');
+    const result = await page.evaluate(async () => {
+      const gemini = await import('/src/ai/gemini.ts');
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async () => {
+        const body = JSON.stringify({ error: { code: 400, status: 'INVALID_ARGUMENT', message: 'API key not valid. Please pass a valid API key.' } });
+        return new Response(body, { status: 400 });
+      };
+      try {
+        return await gemini.validateKey('bogus');
+      } finally {
+        window.fetch = origFetch;
+      }
+    });
+    expect(result).toBe('Invalid API key.');
+  });
+
   test('Gemini routes thought parts to the thinking channel', async ({ page }) => {
     // Gemini 3 thinking models emit reasoning as `thought:true` text parts.
     // They must land in result.thinking (the collapsible box), NOT in the
