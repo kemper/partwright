@@ -188,7 +188,14 @@ export function splitForPrinting(module: any, mesh: MeshData, opts: SplitOptions
           try { inMaterial = !probe.isEmpty(); } catch { inMaterial = false; }
           del(probe);
           if (inMaterial) {
-            holes = holes === null ? dowel : holes.add(dowel);
+            if (holes === null) {
+              holes = dowel;
+            } else {
+              const merged = holes.add(dowel);
+              del(holes);
+              del(dowel);
+              holes = merged;
+            }
             placed++;
             holeCount++;
           } else {
