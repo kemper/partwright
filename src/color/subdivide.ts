@@ -32,11 +32,11 @@ export interface BrushStroke {
   maxEdge: number;
 }
 
-/** Hard ceilings so a tiny target edge on a coarse mesh can't run away.
- *  Straddle-only selection already bounds growth to the boundary length (not the
- *  area), but a pathological case shouldn't be able to lock the tab. */
-const MAX_PASSES = 12;
-const MAX_TRIANGLES = 1_500_000;
+/** Per-stroke depth bound so a single stroke can't run away (each pass ~doubles
+ *  the boundary triangle count). There is deliberately NO cumulative triangle
+ *  cap — the mesh may grow across many strokes; the UI surfaces a high-complexity
+ *  warning and a live triangle count instead of silently degrading quality. */
+const MAX_PASSES = 16;
 
 /** True when `p` is within the brush footprint of any of the stroke's samples,
  *  using the shape's distance metric (circle = Euclidean, square = Chebyshev,
@@ -247,19 +247,16 @@ function subdivideSelected(
 /** Rebuild a refined mesh from a pristine base mesh and an ordered list of
  *  brush strokes. Each stroke refines the (possibly already-refined) mesh near
  *  its own footprint until the boundary triangles fall below `stroke.maxEdge`.
- *  Returns the refined mesh, a `childToParent` map from each final triangle back
- *  to its base-mesh triangle index (used to carry non-stroke colour regions
- *  across the refinement), and `capped`: true when subdivision stopped early
- *  because the mesh hit MAX_TRIANGLES (so a stroke couldn't reach its target
- *  detail — the caller should surface that). */
+ *  Returns the refined mesh and a `childToParent` map from each final triangle
+ *  back to its base-mesh triangle index (used to carry non-stroke colour regions
+ *  across the refinement). */
 export function buildStrokeMesh(
   base: MeshData,
   strokes: BrushStroke[],
-): { mesh: MeshData; childToParent: Int32Array; capped: boolean } {
+): { mesh: MeshData; childToParent: Int32Array } {
   let mesh = base;
   let comp: Int32Array = new Int32Array(base.numTri);
   for (let i = 0; i < comp.length; i++) comp[i] = i;
-  let capped = false;
 
   for (const stroke of strokes) {
     const target = stroke.maxEdge > 0 ? stroke.maxEdge : stroke.radius / 256;
@@ -269,10 +266,9 @@ export function buildStrokeMesh(
       const { mesh: nm, childToParent } = subdivideSelected(mesh, selected);
       mesh = nm;
       comp = composeMaps(comp, childToParent);
-      if (nm.numTri > MAX_TRIANGLES) { capped = true; break; }
     }
   }
-  return { mesh, childToParent: comp, capped };
+  return { mesh, childToParent: comp };
 }
 
 function composeMaps(parentToBase: Int32Array, childToParent: Int32Array): Int32Array {

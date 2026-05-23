@@ -248,6 +248,24 @@ test.describe('smooth paintbrush', () => {
     expect(out.abs.maxEdge).toBe(0.5);             // maxEdge override wins
   });
 
+  test('triangle-count readout updates on run, paint, and clear (no hard cap)', async ({ page }) => {
+    await openEditor(page); // runs a 10mm cube (12 triangles)
+    const counter = page.locator('#triangle-count');
+    await expect(counter).toBeVisible();
+    const num = async () => parseInt((await counter.textContent() ?? '').replace(/[^0-9]/g, ''), 10);
+    const base = await num();
+    expect(base).toBe(12);
+
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).partwright.paintStroke({ points: [[0, 0, 5]], radius: 2, resolution: 64, color: [1, 0, 0] });
+    });
+    await expect.poll(num).toBeGreaterThan(base); // count rose with the stroke
+
+    await page.evaluate(() => (window as unknown as { partwright: { clearColors(): void } }).partwright.clearColors());
+    await expect.poll(num).toBe(base); // back to base after clear
+  });
+
   test('a region overlapping a smooth stroke resolves the same live and on reload', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(async () => {

@@ -218,6 +218,13 @@ export function initViewport(container: HTMLElement): {
   return { scene, camera, renderer };
 }
 
+/** Fired after every mesh update with the displayed mesh, so the host can keep
+ *  a live readout (e.g. triangle count) in sync without hooking every call site. */
+let onMeshUpdate: ((mesh: MeshData) => void) | null = null;
+export function setOnMeshUpdate(fn: (mesh: MeshData) => void): void {
+  onMeshUpdate = fn;
+}
+
 export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boolean }): void {
   // Clear previous
   while (meshGroup.children.length > 0) {
@@ -289,6 +296,8 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
       updateClipPlaneVisual();
     }
   }
+
+  onMeshUpdate?.(meshData);
 }
 
 // === Clipping API ===

@@ -25,7 +25,7 @@ import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPa
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
+import { initViewport, updateMesh, setOnMeshUpdate, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
 import { renderCompositeCanvas, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
 import { generateId } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
@@ -402,32 +402,35 @@ function collectStrokeDescriptors(descriptors: RegionDescriptor[]): BrushStroke[
 
 /** Refine a base mesh under the given strokes. Returns the mesh unchanged with
  *  `parentToChildren: null` when there are no strokes (the common case — no
- *  subdivision, identity mapping). `capped` is true when subdivision stopped at
- *  the triangle ceiling (a stroke couldn't reach its requested detail). */
+ *  subdivision, identity mapping). */
 function refineMeshForStrokes(
   base: MeshData,
   strokes: BrushStroke[],
-): { mesh: MeshData; parentToChildren: Map<number, number[]> | null; capped: boolean } {
-  if (strokes.length === 0) return { mesh: base, parentToChildren: null, capped: false };
-  const { mesh, childToParent, capped } = buildStrokeMesh(base, strokes);
-  return { mesh, parentToChildren: childrenByParent(childToParent), capped };
+): { mesh: MeshData; parentToChildren: Map<number, number[]> | null } {
+  if (strokes.length === 0) return { mesh: base, parentToChildren: null };
+  const { mesh, childToParent } = buildStrokeMesh(base, strokes);
+  return { mesh, parentToChildren: childrenByParent(childToParent) };
 }
 
-/** True when the last refine hit the triangle ceiling, so the console
- *  `paintStroke` can report it. */
-let lastRefineCapped = false;
-let detailCappedWarnedAt = 0;
+/** Above this triangle count we warn (once) that the model is getting heavy.
+ *  There is no hard cap — painting keeps working; this is just a heads-up. */
+const HIGH_COMPLEXITY_TRIANGLES = 1_000_000;
+let complexityWarned = false;
 
-/** Surface the "couldn't subdivide further — mesh is at the detail ceiling"
- *  condition so the user understands why a stroke came out coarse (instead of it
- *  silently happening). Debounced; goes to the diagnostic log (⚠ panel) via
- *  console.warn. The actionable fix is to Clear colors or lower Edge smoothing. */
-function notifyDetailCapped(triangleCount: number): void {
-  const now = Date.now();
-  if (now - detailCappedWarnedAt < 4000) return;
-  detailCappedWarnedAt = now;
-  // eslint-disable-next-line no-console
-  console.warn(`Smooth paint: detail limit reached (~${triangleCount.toLocaleString()} triangles). Clear colors or lower "Edge smoothing" to keep painting at full resolution.`);
+/** Refresh the live triangle-count readout and, once, warn when the displayed
+ *  mesh gets heavy. Driven by every viewport mesh update (run, paint, simplify,
+ *  clear). Resets the warning when the mesh drops back below the threshold. */
+function refreshTriangleCount(numTri: number): void {
+  const el = document.getElementById('triangle-count');
+  if (el) el.textContent = `${numTri.toLocaleString()} tris`;
+  if (numTri >= HIGH_COMPLEXITY_TRIANGLES) {
+    if (!complexityWarned) {
+      complexityWarned = true;
+      showToast(`Model complexity is high (${numTri.toLocaleString()} triangles) — painting still works, but it may slow down. Clear colors or lower Edge smoothing to lighten it.`, { variant: 'warn', durationMs: 5000 });
+    }
+  } else if (numTri < HIGH_COMPLEXITY_TRIANGLES * 0.8) {
+    complexityWarned = false; // re-arm once well below the threshold
+  }
 }
 
 /** Map base-mesh triangle ids onto the refined mesh. With no subdivision
@@ -575,15 +578,13 @@ function rebuildPaintedGeometry(): void {
   const base = paintBaseMesh;
   if (!base) return;
   const strokes = collectStrokeDescriptors(getRegions().map(r => r.descriptor));
-  const { mesh, parentToChildren, capped } = refineMeshForStrokes(base, strokes);
+  const { mesh, parentToChildren } = refineMeshForStrokes(base, strokes);
   currentMeshData = mesh;
   updatePaintMesh(mesh);
   const adjacency = buildAdjacency(mesh);
   for (const region of getRegions()) {
     setRegionTriangles(region.id, resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren));
   }
-  lastRefineCapped = capped;
-  if (capped) notifyDetailCapped(mesh.numTri);
   paintedColorRefresh();
   syncLockState();
 }
@@ -596,7 +597,7 @@ function rebuildPaintedGeometry(): void {
  *  many strokes precede it. */
 function appendStrokeRefine(descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }>): void {
   if (!currentMeshData) return;
-  const { mesh, childToParent, capped } = buildStrokeMesh(currentMeshData, [descriptorToStroke(descriptor)]);
+  const { mesh, childToParent } = buildStrokeMesh(currentMeshData, [descriptorToStroke(descriptor)]);
   const parentToChildren = childrenByParent(childToParent);
   currentMeshData = mesh;
   updatePaintMesh(mesh);
@@ -628,8 +629,6 @@ function appendStrokeRefine(descriptor: Extract<RegionDescriptor, { kind: 'brush
       setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren));
     }
   }
-  lastRefineCapped = capped;
-  if (capped) notifyDetailCapped(mesh.numTri);
   paintedColorRefresh();
   syncLockState();
 }
@@ -1871,6 +1870,9 @@ async function main() {
 
   // Init viewport
   initViewport(viewportPane);
+  // Keep the live triangle-count readout (and high-complexity warning) in sync
+  // with every displayed mesh — runs, paint strokes, simplify, clear.
+  setOnMeshUpdate((mesh) => refreshTriangleCount(mesh.numTri));
 
   // Init measure tool
   initMeasureTool(getCanvas(), getCamera(), getMeshGroup(), viewportPane);
@@ -4915,7 +4917,6 @@ async function main() {
       // maxEdge (absolute) overrides; otherwise radius / resolution, default 256.
       const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 256));
       const target = maxEdge !== undefined ? maxEdge : radius / res;
-      lastRefineCapped = false;
       const region = addRegion(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
         [color[0], color[1], color[2]],
@@ -4936,7 +4937,6 @@ async function main() {
         resolution: maxEdge !== undefined ? undefined : res,
         maxEdge: target,
         meshTriangleCount: currentMeshData?.numTri ?? 0,
-        ...(lastRefineCapped ? { capped: true, note: 'Mesh hit the triangle ceiling, so this stroke could not reach the requested detail. Clear colors or use fewer/coarser strokes.' } : {}),
       };
     },
 
