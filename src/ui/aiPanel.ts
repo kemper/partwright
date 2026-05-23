@@ -62,9 +62,10 @@ const state: PanelState = {
 };
 
 /** Cached length of `public/ai.md` + PREAMBLE, in characters, populated
- *  once on init. Used when the active provider is Anthropic. Default is
- *  a rough match for the current slimmed ai.md so the context meter is
- *  sensible before the fetch lands. */
+ *  once on init. Used for every hosted provider (Anthropic/OpenAI/Gemini),
+ *  which all receive the full ai.md system prompt. Default is a rough match
+ *  for the current ai.md so the context meter is sensible before the fetch
+ *  lands. */
 let cachedAiMdLength = 55_000;
 
 /** Effective system-prompt length in characters for the active provider /
@@ -75,7 +76,11 @@ function effectiveSystemPromptChars(): number {
   const s = loadSettings();
   const override = s.systemPromptOverrides?.[s.toggles.provider] ?? null;
   if (override !== null) return override.length;
-  if (s.toggles.provider === 'anthropic') return cachedAiMdLength;
+  // Every hosted provider gets the full ai.md prompt (see chatLoop's
+  // system-prompt branch); only 'local' gets the slim variant. Counting the
+  // local length for OpenAI/Gemini under-reported ~12K tokens of prompt and
+  // made the context meter / auto-compaction fire far too late.
+  if (s.toggles.provider !== 'local') return cachedAiMdLength;
   if (s.toggles.localModel) {
     try {
       const info = resolveLocalModel(s.toggles.localModel);

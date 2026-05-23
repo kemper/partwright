@@ -419,7 +419,8 @@ export async function createSession(name?: string, language?: 'manifold-js' | 's
     ...(language && language !== 'manifold-js' ? { language } : {}),
   };
   const store = await tx('sessions', 'readwrite');
-  await reqToPromise(store.put(session));
+  store.put(session);
+  await txComplete(store.transaction);
   return session;
 }
 
@@ -505,9 +506,11 @@ export async function updateSession(id: string, updates: Partial<Pick<Session, '
 
 export async function deleteSession(id: string): Promise<void> {
   const db = await openDB();
-  const txn = db.transaction(['sessions', 'versions', 'notes', 'parts'], 'readwrite');
+  const txn = db.transaction(['sessions', 'versions', 'notes', 'parts', 'aiChats'], 'readwrite');
   txn.objectStore('sessions').delete(id);
-  // Delete all versions, notes, and parts belonging to this session.
+  // Delete all versions, notes, parts, and AI chat messages belonging to this
+  // session. Chats are keyed by id but indexed by sessionId, so they're swept
+  // here too — otherwise the transcript is orphaned in IndexedDB forever.
   const deleteByIndex = (storeName: string) => {
     const idx = txn.objectStore(storeName).index('sessionId');
     const req = idx.openCursor(IDBKeyRange.only(id));
@@ -528,6 +531,7 @@ export async function deleteSession(id: string): Promise<void> {
     deleteByIndex('versions'),
     deleteByIndex('notes'),
     deleteByIndex('parts'),
+    deleteByIndex('aiChats'),
   ]);
   // Wait for the entire transaction to commit
   await txComplete(txn);
@@ -545,7 +549,8 @@ export async function createPart(sessionId: string, name: string, order: number)
     updated: Date.now(),
   };
   const store = await tx('parts', 'readwrite');
-  await reqToPromise(store.put(part));
+  store.put(part);
+  await txComplete(store.transaction);
   return part;
 }
 
@@ -565,6 +570,26 @@ export async function updatePart(id: string, updates: Partial<Pick<Part, 'name' 
     Object.assign(part, updates);
     store.put(part);
   };
+  await txComplete(store.transaction);
+}
+
+/** Apply a batch of part-order updates in a single transaction so a reorder is
+ *  atomic — an interruption can't leave parts with duplicate/partial `order`
+ *  values the way N separate transactions could. */
+export async function updatePartOrders(updates: { id: string; order: number }[]): Promise<void> {
+  if (updates.length === 0) return;
+  const store = await tx('parts', 'readwrite');
+  const now = Date.now();
+  for (const { id, order } of updates) {
+    const getReq = store.get(id);
+    getReq.onsuccess = () => {
+      const part = getReq.result as Part | null;
+      if (!part) return;
+      part.order = order;
+      part.updated = now;
+      store.put(part);
+    };
+  }
   await txComplete(store.transaction);
 }
 
@@ -753,7 +778,8 @@ export async function addNote(sessionId: string, text: string): Promise<SessionN
     timestamp: Date.now(),
   };
   const store = await tx('notes', 'readwrite');
-  await reqToPromise(store.put(note));
+  store.put(note);
+  await txComplete(store.transaction);
   await updateSession(sessionId, { updated: Date.now() });
   return note;
 }
@@ -767,7 +793,8 @@ export async function listNotes(sessionId: string): Promise<SessionNote[]> {
 
 export async function deleteNote(id: string): Promise<void> {
   const store = await tx('notes', 'readwrite');
-  await reqToPromise(store.delete(id));
+  store.delete(id);
+  await txComplete(store.transaction);
 }
 
 export async function updateNote(id: string, text: string): Promise<void> {
@@ -787,10 +814,14 @@ export async function updateNote(id: string, text: string): Promise<void> {
 
 export async function clearAllData(): Promise<void> {
   const db = await openDB();
-  const txn = db.transaction(['sessions', 'versions', 'notes', 'parts'], 'readwrite');
+  const txn = db.transaction(['sessions', 'versions', 'notes', 'parts', 'aiChats'], 'readwrite');
   txn.objectStore('sessions').clear();
   txn.objectStore('versions').clear();
   txn.objectStore('notes').clear();
   txn.objectStore('parts').clear();
+  // Session-scoped AI transcripts go too; saved API keys (aiKeys) and the
+  // global recent-image cache (aiAttachments) are not session data and are
+  // left for the Uninstall modal's per-category wipe.
+  txn.objectStore('aiChats').clear();
   await txComplete(txn);
 }
