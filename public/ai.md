@@ -266,6 +266,7 @@ partwright.paintRegion({point, normal, color, name?, tolerance?})         // buc
 partwright.paintNearestRegion({point, color, searchRadius?, name?})       // snap-to-nearest variant
 partwright.paintNear({point, radius, normalCone?, color, name?})          // sphere selector
 partwright.paintStroke({points, radius, resolution?, maxEdge?, shape?, color, name?}) // SMOOTH brush: subdivides mesh for a rounded painted edge (see note below)
+partwright.paintAirbrush({points, radius, strength?, softness?, seed?, maxEdge?, color, name?}) // AIRBRUSH: soft edge via coverage dither (no blending — one solid colour per triangle)
 partwright.paintInBox({box, normalCone?, color, name?})                   // AABB selector
 partwright.paintInOrientedBox({box: {center, size, quaternion?}, color})  // rotated box selector (same as UI Box tool)
 partwright.paintFaces({triangleIds, color, name?})                        // explicit triangle ids
@@ -287,6 +288,7 @@ partwright.hideRegion(id) / showRegion(id) / clearColors()
 partwright.getBucketTolerance() / setBucketTolerance(t)                   // UI bucket tool config
 partwright.getBrushSize() / setBrushSize(r)                               // UI brush tool config
 partwright.getBrushSmooth() / setBrushSmooth(on) / setBrushSmoothDivisor(2..1024) // UI smooth-brush config (detail = radius ÷ divisor)
+partwright.getAirbrush() / setAirbrushSize(r) / setAirbrushStrength(0..1) / setAirbrushSoftness(0..1) // UI airbrush tool config
 
 // Notes -- track design context, decisions, and measurements
 await partwright.addSessionNote(text)    // -> {id, text, timestamp}

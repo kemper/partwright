@@ -12,8 +12,14 @@ import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshCha
 import type { BrushShape } from './subdivide';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
-export type PaintTool = 'bucket' | 'brush' | 'slab' | 'box';
+export type PaintTool = 'bucket' | 'brush' | 'airbrush' | 'slab' | 'box';
 export type { BrushShape };
+
+/** Tools that paint a freehand stroke by accumulating drag samples (brush +
+ *  airbrush share the ring, fill preview, and commit machinery). */
+function isStrokeTool(t: PaintTool): boolean {
+  return t === 'brush' || t === 'airbrush';
+}
 
 let active = false;
 let currentColor: [number, number, number] = [1, 0.2, 0.2]; // default red
@@ -34,9 +40,48 @@ let brushSmoothDivisor = 256;
 export const SMOOTH_DIVISOR_MIN = 2;
 export const SMOOTH_DIVISOR_MAX = 1024;
 
+// --- Airbrush tool settings -------------------------------------------------
+/** Airbrush radius in mesh units (the spray cone). */
+let airbrushRadius = 2;
+/** Paint density through the core, 0..1. */
+let airbrushStrength = 0.85;
+/** Feathered-rim fraction of the radius, 0..1 (0 = hard disc, 1 = all fade). */
+let airbrushSoftness = 0.5;
+export const AIRBRUSH_STRENGTH_MIN = 0.05;
+export const AIRBRUSH_STRENGTH_MAX = 1;
+export const AIRBRUSH_SOFTNESS_MIN = 0;
+export const AIRBRUSH_SOFTNESS_MAX = 1;
+/** The airbrush refines (and dithers) at radius / GRAIN, so the speckle's dot
+ *  size — and the triangle count it adds — scale with the brush, staying
+ *  bounded and radius-independent. */
+const AIRBRUSH_GRAIN = 10;
+
 /** Target edge length (mesh units) for the active brush settings. */
 export function brushTargetEdge(): number {
   return brushRadius / brushSmoothDivisor;
+}
+
+/** Grain / dither cell size (mesh units) for the active airbrush settings. */
+export function airbrushTargetEdge(): number {
+  return airbrushRadius / AIRBRUSH_GRAIN;
+}
+
+/** Radius of the active stroke tool (airbrush has its own radius). */
+function activeRadius(): number {
+  return currentTool === 'airbrush' ? airbrushRadius : brushRadius;
+}
+
+/** Footprint shape of the active stroke tool (the airbrush is always round). */
+function activeShape(): BrushShape {
+  return currentTool === 'airbrush' ? 'circle' : brushShape;
+}
+
+/** True when the active stroke tool resolves from accumulated drag samples on
+ *  commit (and subdivides the mesh) rather than painting whole triangles live.
+ *  The airbrush always does; the brush does only with smoothing on + radius. */
+function activeUsesSamples(): boolean {
+  if (currentTool === 'airbrush') return airbrushRadius > 0;
+  return brushSmooth && brushRadius > 0;
 }
 /** Surface points sampled along the in-progress smooth stroke. */
 let strokeSamples: [number, number, number][] = [];
@@ -91,7 +136,7 @@ export function setTool(tool: PaintTool): void {
   const prev = currentTool;
   currentTool = tool;
   clearHighlight();
-  if (tool !== 'brush') clearBrushRing(); // ring is brush-only; don't leave it in the scene
+  if (!isStrokeTool(tool)) clearBrushRing(); // ring is for stroke tools only; don't leave it in the scene
 
   if (active) {
     if (tool === 'slab') activateSlabDrag();
@@ -147,9 +192,28 @@ export function getBrushSmoothDivisor(): number {
   return brushSmoothDivisor;
 }
 
-/** True when the active brush settings will subdivide the mesh on commit. */
-export function brushWillSubdivide(): boolean {
-  return brushSmooth && brushRadius > 0;
+export function setAirbrushRadius(r: number): void {
+  airbrushRadius = Math.max(0, r);
+}
+
+export function getAirbrushRadius(): number {
+  return airbrushRadius;
+}
+
+export function setAirbrushStrength(s: number): void {
+  airbrushStrength = Math.max(AIRBRUSH_STRENGTH_MIN, Math.min(AIRBRUSH_STRENGTH_MAX, s));
+}
+
+export function getAirbrushStrength(): number {
+  return airbrushStrength;
+}
+
+export function setAirbrushSoftness(s: number): void {
+  airbrushSoftness = Math.max(AIRBRUSH_SOFTNESS_MIN, Math.min(AIRBRUSH_SOFTNESS_MAX, s));
+}
+
+export function getAirbrushSoftness(): number {
+  return airbrushSoftness;
 }
 
 export function setOnRegionPainted(fn: () => void): void {
@@ -262,23 +326,23 @@ function onMouseMove(event: MouseEvent): void {
     return;
   }
 
-  // Brush drag: collect triangles into the active brush session.
-  if (currentTool === 'brush' && brushPainting && brushSession) {
+  // Stroke drag (brush/airbrush): collect triangles into the active session.
+  if (isStrokeTool(currentTool) && brushPainting && brushSession) {
     const result = pickFace(event);
     if (result) {
       const added = recordStrokeSample(result.point);
-      if (brushWillSubdivide()) {
-        // Smooth mode resolves triangles from the stroke samples on commit, so
-        // skip the per-move O(mesh) footprint scan. Grow the live fill by one
-        // fan only when a new (decimated) sample was recorded — O(1) per move,
-        // not a full rebuild of the whole trail each mousemove.
+      if (activeUsesSamples()) {
+        // Sample-based mode resolves triangles on commit, so skip the per-move
+        // O(mesh) footprint scan. Grow the live fill by one fan only when a new
+        // (decimated) sample was recorded — O(1) per move, not a full rebuild of
+        // the whole trail each mousemove.
         if (added) appendBrushFillStamp(result.point, result.normal);
       } else {
         addBrushFootprint(result.triangleIndex, result.point, brushSession);
         showHighlight(brushSession);
       }
       // Ring must come after showHighlight (which calls clearHighlight internally).
-      if (brushRadius > 0) showBrushRing(result.point, result.normal);
+      if (activeRadius() > 0) showBrushRing(result.point, result.normal);
       else clearBrushRing();
     } else {
       clearBrushRing();
@@ -293,10 +357,10 @@ function onMouseMove(event: MouseEvent): void {
     return;
   }
 
-  // Smooth brush hover: preview the rounded footprint that will be painted
-  // (a filled disc/square/diamond), not the jagged set of covered triangles.
-  // Not dragging, so reset to a single disc that follows the cursor.
-  if (currentTool === 'brush' && brushWillSubdivide()) {
+  // Sample-based stroke hover (smooth brush / airbrush): preview the rounded
+  // footprint that will be painted (a filled disc), not the jagged set of
+  // covered triangles. Not dragging, so reset to a single disc under the cursor.
+  if (isStrokeTool(currentTool) && activeUsesSamples()) {
     clearHighlight();
     hoveredTriangles = null;
     appendBrushFillStamp(result.point, result.normal);
@@ -305,7 +369,7 @@ function onMouseMove(event: MouseEvent): void {
   }
 
   let region: Set<number>;
-  if (currentTool === 'brush') {
+  if (isStrokeTool(currentTool)) {
     region = new Set<number>();
     addBrushFootprint(result.triangleIndex, result.point, region);
   } else {
@@ -315,15 +379,15 @@ function onMouseMove(event: MouseEvent): void {
 
   if (hoveredTriangles && setsEqual(hoveredTriangles, region)) {
     // Triangles unchanged — just update ring position without rebuilding highlight.
-    if (currentTool === 'brush' && brushRadius > 0) showBrushRing(result.point, result.normal);
+    if (isStrokeTool(currentTool) && activeRadius() > 0) showBrushRing(result.point, result.normal);
     return;
   }
 
   hoveredTriangles = region;
   showHighlight(region);
   // Ring must come after showHighlight.
-  if (currentTool === 'brush' && brushRadius > 0) showBrushRing(result.point, result.normal);
-  else if (currentTool === 'brush') clearBrushRing();
+  if (isStrokeTool(currentTool) && activeRadius() > 0) showBrushRing(result.point, result.normal);
+  else if (isStrokeTool(currentTool)) clearBrushRing();
 }
 
 function onMouseDown(event: MouseEvent): void {
@@ -340,15 +404,15 @@ function onMouseDown(event: MouseEvent): void {
   }
   mouseDownOffModel = false;
 
-  if (currentTool === 'brush') {
+  if (isStrokeTool(currentTool)) {
     brushPainting = true;
     brushSession = new Set<number>();
     strokeSamples = [];
     recordStrokeSample(result.point);
-    if (brushWillSubdivide()) {
-      // Smooth: commit resolves from stroke samples, so skip the footprint scan
-      // and show the smooth fill instead of the covered triangles. clearHighlight
-      // drops any prior fill so this stroke starts fresh.
+    if (activeUsesSamples()) {
+      // Sample-based: commit resolves from stroke samples, so skip the footprint
+      // scan and show the fill preview instead of the covered triangles.
+      // clearHighlight drops any prior fill so this stroke starts fresh.
       clearHighlight();
       appendBrushFillStamp(result.point, result.normal);
     } else {
@@ -363,7 +427,7 @@ function onMouseDown(event: MouseEvent): void {
  *  by sample points; legacy strokes by the covered-triangle session. */
 function hasActiveStroke(): boolean {
   if (!brushPainting) return false;
-  if (brushSmooth && brushRadius > 0) return strokeSamples.length > 0;
+  if (activeUsesSamples()) return strokeSamples.length > 0;
   return !!brushSession && brushSession.size > 0;
 }
 
@@ -373,7 +437,7 @@ function hasActiveStroke(): boolean {
  *  Returns true when a new sample was actually recorded (the caller appends one
  *  fan to the live preview only then — not on every mousemove). */
 function recordStrokeSample(p: [number, number, number]): boolean {
-  const minSpacing = Math.max(brushRadius * 0.4, 0.01);
+  const minSpacing = Math.max(activeRadius() * 0.4, 0.01);
   const last = strokeSamples[strokeSamples.length - 1];
   if (last) {
     const dx = p[0] - last[0], dy = p[1] - last[1], dz = p[2] - last[2];
@@ -392,7 +456,26 @@ function commitBrushStroke(): void {
   const name = `Region ${getRegions().length + 1}`;
   const color = [...currentColor] as [number, number, number];
 
-  if (brushSmooth && brushRadius > 0 && strokeSamples.length > 0) {
+  if (currentTool === 'airbrush' && airbrushRadius > 0 && strokeSamples.length > 0) {
+    // Like the smooth stroke below, triangles are resolved by the regions-change
+    // listener after the working mesh is refined. The seed is captured here so
+    // the speckle is stable across reloads but differs between strokes.
+    addRegion(
+      name,
+      color,
+      'paintbrush',
+      {
+        kind: 'airbrush',
+        samples: strokeSamples.map(s => [s[0], s[1], s[2]] as [number, number, number]),
+        radius: airbrushRadius,
+        strength: airbrushStrength,
+        softness: airbrushSoftness,
+        seed: (Math.random() * 0x7fffffff) | 0,
+        maxEdge: airbrushTargetEdge(),
+      },
+      new Set<number>(),
+    );
+  } else if (brushSmooth && brushRadius > 0 && strokeSamples.length > 0) {
     // Triangles are left empty here: adding a brushStroke region fires the
     // regions-change listener, which rebuilds the refined working mesh and
     // resolves every region (including this one) against it.
@@ -480,14 +563,16 @@ function buildRingPoints(shape: BrushShape, r: number): THREE.Vector3[] {
 }
 
 function showBrushRing(point: [number, number, number], normal: [number, number, number]): void {
-  if (brushRadius <= 0) { clearBrushRing(); return; }
+  const r = activeRadius();
+  const shape = activeShape();
+  if (r <= 0) { clearBrushRing(); return; }
 
   // Rebuild when radius or shape changes.
-  if (!brushRingMesh || brushRingBuiltRadius !== brushRadius || brushRingBuiltShape !== brushShape) {
+  if (!brushRingMesh || brushRingBuiltRadius !== r || brushRingBuiltShape !== shape) {
     clearBrushRing();
-    brushRingBuiltRadius = brushRadius;
-    brushRingBuiltShape = brushShape;
-    const geo = new THREE.BufferGeometry().setFromPoints(buildRingPoints(brushShape, brushRadius));
+    brushRingBuiltRadius = r;
+    brushRingBuiltShape = shape;
+    const geo = new THREE.BufferGeometry().setFromPoints(buildRingPoints(shape, r));
     const mat = new THREE.LineBasicMaterial({ color: 0xffffff, opacity: 0.75, transparent: true, depthTest: false });
     brushRingMesh = new THREE.LineLoop(geo, mat);
     brushRingMesh.name = 'brush-ring';
@@ -521,7 +606,7 @@ function onMouseUp(event: MouseEvent): void {
     return;
   }
 
-  if (currentTool === 'brush') {
+  if (isStrokeTool(currentTool)) {
     if (!hasActiveStroke()) {
       brushPainting = false;
       brushSession = null;
@@ -562,7 +647,7 @@ function onMouseUp(event: MouseEvent): void {
 }
 
 function onMouseLeave(): void {
-  if (currentTool === 'brush' && hasActiveStroke()) {
+  if (isStrokeTool(currentTool) && hasActiveStroke()) {
     commitBrushStroke();
   }
   brushPainting = false;
@@ -667,9 +752,9 @@ function appendBrushFillStamp(point: [number, number, number], normal: [number, 
  *  other (one even layer, no darkening where they overlap). */
 function rebuildBrushFill(): void {
   disposeBrushFillMesh();
-  if (brushRadius <= 0 || fillStamps.length === 0) return;
+  if (activeRadius() <= 0 || fillStamps.length === 0) return;
 
-  const local = buildFanPositions(brushShape, brushRadius);
+  const local = buildFanPositions(activeShape(), activeRadius());
   const positions = new Float32Array(local.length * fillStamps.length);
   const q = new THREE.Quaternion();
   const up = new THREE.Vector3(0, 0, 1);

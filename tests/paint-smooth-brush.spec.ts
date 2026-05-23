@@ -70,7 +70,7 @@ test.describe('smooth paintbrush', () => {
     });
     await page.locator('#paint-toggle').dispatchEvent('click');
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
-    await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
+    await page.locator('#paint-picker-panel button[title^="Paint individual triangles"]').dispatchEvent('click');
 
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

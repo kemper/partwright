@@ -118,8 +118,8 @@ import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
-import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
-import { buildStrokeMesh, strokeFootprintTriangles, childrenByParent, type BrushStroke, type BrushShape } from './color/subdivide';
+import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, setAirbrushRadius as setPaintAirbrushRadius, getAirbrushRadius as getPaintAirbrushRadius, setAirbrushStrength as setPaintAirbrushStrength, getAirbrushStrength as getPaintAirbrushStrength, setAirbrushSoftness as setPaintAirbrushSoftness, getAirbrushSoftness as getPaintAirbrushSoftness } from './color/paintMode';
+import { buildStrokeMesh, strokeFootprintTriangles, airbrushFootprintTriangles, childrenByParent, type BrushStroke, type BrushShape } from './color/subdivide';
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles } from './color/slabPaint';
@@ -391,15 +391,42 @@ function applyVersionAnnotations(version: Version | null | undefined): void {
  *  Returns the names of regions that resolved to ≥1 triangle (`carried`) vs.
  *  those whose descriptor no longer matches the current geometry (`dropped`),
  *  so callers transferring colors across versions can report what landed. */
-/** Pull the ordered `brushStroke` descriptors out of a descriptor list. */
+/** Descriptors that subdivide the mesh under their footprint (brush + airbrush).
+ *  These drive `buildStrokeMesh` and the incremental-append fast path. */
+type StrokeDescriptor = Extract<RegionDescriptor, { kind: 'brushStroke' | 'airbrush' }>;
+function isStrokeDescriptor(d: RegionDescriptor): d is StrokeDescriptor {
+  return d.kind === 'brushStroke' || d.kind === 'airbrush';
+}
+
+/** A subdividing descriptor as a `BrushStroke` for `buildStrokeMesh`. The
+ *  airbrush refines its whole interior (`fill`) so its speckle is fine
+ *  throughout; the brush refines the rim only. */
+function refineStrokeOf(d: StrokeDescriptor): BrushStroke {
+  if (d.kind === 'airbrush') {
+    return { samples: d.samples, radius: d.radius, shape: 'circle', maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 10, fill: true };
+  }
+  return { samples: d.samples, radius: d.radius, shape: d.shape, maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 16 };
+}
+
+/** Pull the ordered subdividing-stroke descriptors out of a descriptor list. */
 function collectStrokeDescriptors(descriptors: RegionDescriptor[]): BrushStroke[] {
   const strokes: BrushStroke[] = [];
   for (const d of descriptors) {
-    if (d.kind === 'brushStroke') {
-      strokes.push({ samples: d.samples, radius: d.radius, shape: d.shape, maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 16 });
-    }
+    if (isStrokeDescriptor(d)) strokes.push(refineStrokeOf(d));
   }
   return strokes;
+}
+
+/** Resolve a subdividing-stroke descriptor to the triangles it colours on
+ *  `mesh` (brush footprint, or airbrush stochastic dither). */
+function resolveStrokeTriangles(d: StrokeDescriptor, mesh: MeshData): Set<number> {
+  if (d.kind === 'airbrush') {
+    return airbrushFootprintTriangles(mesh, {
+      samples: d.samples, radius: d.radius, strength: d.strength, softness: d.softness,
+      seed: d.seed, maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 10,
+    });
+  }
+  return strokeFootprintTriangles(mesh, { samples: d.samples, radius: d.radius, shape: d.shape, maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 16 });
 }
 
 /** Refine a base mesh under the given strokes. Returns the mesh unchanged with
@@ -486,7 +513,8 @@ function resolveDescriptorTriangles(
       return triangles;
     }
     case 'brushStroke':
-      return strokeFootprintTriangles(mesh, { samples: descriptor.samples, radius: descriptor.radius, shape: descriptor.shape, maxEdge: descriptor.maxEdge > 0 ? descriptor.maxEdge : descriptor.radius / 16 });
+    case 'airbrush':
+      return resolveStrokeTriangles(descriptor, mesh);
   }
 }
 
@@ -525,7 +553,7 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { 
     }
   }
   suspendReconcile = false;
-  lastStrokeList = getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
+  lastStrokeList = getRegions().map(r => r.descriptor).filter(isStrokeDescriptor);
 
   syncLockState();
 
@@ -568,16 +596,16 @@ function rebuildPaintedGeometry(): void {
  *  triangles)); only the new stroke is resolved by footprint. This is the hot
  *  path while painting and keeps each stroke ~constant-time regardless of how
  *  many strokes precede it. */
-function appendStrokeRefine(newRegionId: number, descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }>): void {
+function appendStrokeRefine(newRegionId: number, descriptor: StrokeDescriptor): void {
   if (!currentMeshData) return;
-  const stroke: BrushStroke = { samples: descriptor.samples, radius: descriptor.radius, shape: descriptor.shape, maxEdge: descriptor.maxEdge > 0 ? descriptor.maxEdge : descriptor.radius / 16 };
+  const stroke: BrushStroke = refineStrokeOf(descriptor);
   const { mesh, childToParent } = buildStrokeMesh(currentMeshData, [stroke]);
   const parentToChildren = childrenByParent(childToParent);
   currentMeshData = mesh;
   updatePaintMesh(mesh);
   for (const region of getRegions()) {
     if (region.id === newRegionId) {
-      setRegionTriangles(region.id, strokeFootprintTriangles(mesh, stroke));
+      setRegionTriangles(region.id, resolveStrokeTriangles(descriptor, mesh));
     } else {
       // Carry the prior triangle set onto the locally-refined mesh.
       setRegionTriangles(region.id, remapTriangleIds(region.triangles, parentToChildren));
@@ -588,7 +616,7 @@ function appendStrokeRefine(newRegionId: number, descriptor: Extract<RegionDescr
 }
 
 function strokeDescriptors(): RegionDescriptor[] {
-  return getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
+  return getRegions().map(r => r.descriptor).filter(isStrokeDescriptor);
 }
 
 /** True when `a` starts with exactly the entries of `b` (by reference). */
@@ -616,7 +644,7 @@ function reconcilePaintedGeometry(): void {
 
   // Pure append: exactly one new stroke on the end, prior strokes unchanged.
   if (strokesNow.length === lastStrokeList.length + 1 && prefixRefEqual(strokesNow, lastStrokeList)) {
-    const newDesc = strokesNow[strokesNow.length - 1] as Extract<RegionDescriptor, { kind: 'brushStroke' }>;
+    const newDesc = strokesNow[strokesNow.length - 1] as StrokeDescriptor;
     const newRegion = getRegions().find(r => r.descriptor === newDesc);
     if (newRegion) {
       appendStrokeRefine(newRegion.id, newDesc);
@@ -4819,6 +4847,38 @@ async function main() {
       return { divisor: getPaintBrushSmoothDivisor() };
     },
 
+    /** Airbrush settings for the UI airbrush tool. The airbrush sprays a
+     *  soft-edged region: each triangle is still painted fully or not at all
+     *  (one solid, printable color), but coverage thins from the dense core out
+     *  to a feathered rim. `strength` (0..1) is the core density; `softness`
+     *  (0..1) is the fraction of the radius that fades out. Programmatic
+     *  painters should use `paintAirbrush({point(s), radius})`. */
+    getAirbrush() {
+      return { radius: getPaintAirbrushRadius(), strength: getPaintAirbrushStrength(), softness: getPaintAirbrushSoftness() };
+    },
+    setAirbrushSize(radius: number) {
+      if (typeof radius !== 'number' || !Number.isFinite(radius) || radius <= 0) {
+        return { error: 'setAirbrushSize(radius): radius must be a positive finite number (mesh units)' };
+      }
+      const previous = getPaintAirbrushRadius();
+      setPaintAirbrushRadius(radius);
+      return { previous, radius: getPaintAirbrushRadius() };
+    },
+    setAirbrushStrength(strength: number) {
+      if (typeof strength !== 'number' || !Number.isFinite(strength) || strength < 0 || strength > 1) {
+        return { error: 'setAirbrushStrength(strength): strength must be a number in 0..1' };
+      }
+      setPaintAirbrushStrength(strength);
+      return { strength: getPaintAirbrushStrength() };
+    },
+    setAirbrushSoftness(softness: number) {
+      if (typeof softness !== 'number' || !Number.isFinite(softness) || softness < 0 || softness > 1) {
+        return { error: 'setAirbrushSoftness(softness): softness must be a number in 0..1' };
+      }
+      setPaintAirbrushSoftness(softness);
+      return { softness: getPaintAirbrushSoftness() };
+    },
+
     /** Paint a smooth brush stroke along world-space surface points, subdividing
      *  the mesh under the stroke so the painted edge is rounded (the smooth-brush
      *  equivalent of `paintNear`, but for a swept path and with edge
@@ -4890,6 +4950,85 @@ async function main() {
         triangles: region.triangles.size,
         resolution: maxEdge !== undefined ? undefined : res,
         maxEdge: target,
+        meshTriangleCount: currentMeshData?.numTri ?? 0,
+      };
+    },
+
+    /** Spray a soft-edged airbrush region along world-space surface `points`.
+     *  Like `paintStroke` it subdivides the mesh under the footprint, but it
+     *  resolves with a stochastic density falloff: triangles near the centre are
+     *  painted with probability `strength` (0..1, default 0.85), thinning to 0
+     *  across a feathered rim of width `softness` (0..1, default 0.5). NO colour
+     *  blending is used — every triangle is painted fully or not at all, so the
+     *  result stays one printable colour per triangle. `seed` (optional) makes
+     *  the speckle reproducible; omit it for a random pattern. `maxEdge`
+     *  (optional, mesh units) sets the grain/dot size, default radius / 10. */
+    paintAirbrush(opts: {
+      points?: number[][];
+      radius?: number;
+      color?: number[];
+      strength?: number;
+      softness?: number;
+      seed?: number;
+      maxEdge?: number;
+      name?: string;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first, then paint.' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintAirbrush(opts): opts object required' };
+      const { points, radius, color, strength, softness, seed, maxEdge, name } = opts;
+      if (!Array.isArray(points) || points.length === 0) {
+        return { error: 'paintAirbrush: points must be a non-empty array of [x,y,z] surface points (use probePixel to get them)' };
+      }
+      const samples: [number, number, number][] = [];
+      for (const p of points) {
+        if (!Array.isArray(p) || p.length !== 3 || p.some(n => typeof n !== 'number' || !Number.isFinite(n))) {
+          return { error: 'paintAirbrush: each point must be [x,y,z] of finite numbers' };
+        }
+        samples.push([p[0], p[1], p[2]]);
+      }
+      if (typeof radius !== 'number' || !Number.isFinite(radius) || radius <= 0) {
+        return { error: 'paintAirbrush: radius must be a positive finite number (mesh units)' };
+      }
+      if (!Array.isArray(color) || color.length !== 3 || color.some(c => typeof c !== 'number' || !Number.isFinite(c))) {
+        return { error: 'paintAirbrush: color must be [r,g,b] with each channel in 0..1' };
+      }
+      if (strength !== undefined && (typeof strength !== 'number' || !Number.isFinite(strength) || strength < 0 || strength > 1)) {
+        return { error: 'paintAirbrush: strength must be a number in 0..1 when provided' };
+      }
+      if (softness !== undefined && (typeof softness !== 'number' || !Number.isFinite(softness) || softness < 0 || softness > 1)) {
+        return { error: 'paintAirbrush: softness must be a number in 0..1 when provided' };
+      }
+      if (seed !== undefined && (typeof seed !== 'number' || !Number.isFinite(seed))) {
+        return { error: 'paintAirbrush: seed must be a finite number when provided' };
+      }
+      if (maxEdge !== undefined && (typeof maxEdge !== 'number' || !Number.isFinite(maxEdge) || maxEdge <= 0)) {
+        return { error: 'paintAirbrush: maxEdge must be a positive finite number (mesh units) when provided' };
+      }
+      const region = addRegion(
+        typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
+        [color[0], color[1], color[2]],
+        'paintbrush',
+        {
+          kind: 'airbrush',
+          samples,
+          radius,
+          strength: strength ?? 0.85,
+          softness: softness ?? 0.5,
+          seed: seed !== undefined ? (seed | 0) : ((Math.random() * 0x7fffffff) | 0),
+          maxEdge: maxEdge !== undefined ? maxEdge : radius / 10,
+        },
+        new Set<number>(),
+      );
+      // addRegion fires the regions-change listener, which rebuilds the refined
+      // mesh and resolves this region's triangles synchronously.
+      if (region.triangles.size === 0) {
+        removeRegion(region.id);
+        return { error: 'paintAirbrush: no surface fell within the spray footprint — check the points are on the model, the radius is large enough, and strength > 0.' };
+      }
+      return {
+        id: region.id,
+        name: region.name,
+        triangles: region.triangles.size,
         meshTriangleCount: currentMeshData?.numTri ?? 0,
       };
     },

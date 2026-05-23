@@ -20,6 +20,12 @@ import {
   getBrushSmoothDivisor,
   SMOOTH_DIVISOR_MIN,
   SMOOTH_DIVISOR_MAX,
+  setAirbrushRadius,
+  getAirbrushRadius,
+  setAirbrushStrength,
+  getAirbrushStrength,
+  setAirbrushSoftness,
+  getAirbrushSoftness,
   setSlabAxis,
   getSlabAxis,
   previewTriangles,
@@ -83,6 +89,7 @@ let paintShapeBtn: HTMLButtonElement | null = null; // "Paint inside shape" acti
 let toolButtons: Partial<Record<PaintTool, HTMLButtonElement>> = {};
 let bucketControls: HTMLElement | null = null;
 let brushControls: HTMLElement | null = null;
+let airbrushControls: HTMLElement | null = null;
 let slabControls: HTMLElement | null = null;
 let boxControls: HTMLElement | null = null;
 
@@ -178,6 +185,7 @@ function createPickerPanel(): HTMLElement {
   toolRow.className = 'grid grid-cols-2 gap-1 mb-2.5';
   toolRow.appendChild(createToolButton('bucket', '\u{1FAA3} Bucket', 'Flood-fill across coplanar faces'));
   toolRow.appendChild(createToolButton('brush', '\u{1F58C}\uFE0F Brush', 'Paint individual triangles (drag to paint)'));
+  toolRow.appendChild(createToolButton('airbrush', '\u{1F4A8} Airbrush', 'Spray a soft-edged region (drag to paint). Each triangle stays one solid color \u2014 the soft edge is a fade in coverage, so it prints cleanly.'));
   toolRow.appendChild(createToolButton('slab', '\u{1F9F1} Slab', 'Paint all faces inside an axis-aligned range'));
   toolRow.appendChild(createToolButton('box', '\u25C6 Shape', 'Paint everything inside a positionable, rotatable, scalable 3D shape (box, sphere, cylinder, or cone)'));
   panel.appendChild(toolRow);
@@ -240,6 +248,10 @@ function createPickerPanel(): HTMLElement {
   // === Brush tool controls (radius slider + number input) ===
   brushControls = createBrushControls();
   panel.appendChild(brushControls);
+
+  // === Airbrush tool controls (radius + strength + softness) ===
+  airbrushControls = createAirbrushControls();
+  panel.appendChild(airbrushControls);
 
   // === Slab tool controls ===
   slabControls = createSlabControls();
@@ -330,6 +342,7 @@ function syncToolPanels(): void {
   }
   if (bucketControls) bucketControls.classList.toggle('hidden', tool !== 'bucket');
   if (brushControls) brushControls.classList.toggle('hidden', tool !== 'brush');
+  if (airbrushControls) airbrushControls.classList.toggle('hidden', tool !== 'airbrush');
   if (slabControls) slabControls.classList.toggle('hidden', tool !== 'slab');
   if (boxControls) boxControls.classList.toggle('hidden', tool !== 'box');
 }
@@ -569,6 +582,136 @@ function createBrushControls(): HTMLElement {
   wrap.appendChild(smoothHelp);
   syncSmoothToggle();
 
+  return wrap;
+}
+
+function createAirbrushControls(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'mt-2 pt-2 border-t border-zinc-700 hidden';
+
+  // Size (radius in mesh units) — same control shape as the brush size slider.
+  const sizeLabel = document.createElement('div');
+  sizeLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium';
+  sizeLabel.textContent = 'Airbrush size';
+  wrap.appendChild(sizeLabel);
+
+  const sizeRow = document.createElement('div');
+  sizeRow.className = 'flex items-center gap-2';
+
+  const sizeSlider = document.createElement('input');
+  sizeSlider.type = 'range';
+  sizeSlider.min = '5';
+  sizeSlider.max = '200';
+  sizeSlider.step = '1';
+  sizeSlider.value = String(Math.round(Math.min(getAirbrushRadius(), 20) * 10));
+  sizeSlider.className = 'flex-1 accent-blue-500 min-w-0';
+  sizeSlider.title = 'Airbrush radius in mesh units (the spray cone)';
+
+  const sizeInput = document.createElement('input');
+  sizeInput.type = 'number';
+  sizeInput.min = '0.1';
+  sizeInput.step = '0.1';
+  sizeInput.value = getAirbrushRadius().toFixed(1);
+  sizeInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  sizeInput.title = 'Airbrush radius in mesh units';
+
+  const sizeUnit = document.createElement('span');
+  sizeUnit.className = 'text-[10px] text-zinc-500';
+  sizeUnit.textContent = 'u';
+
+  sizeSlider.addEventListener('input', () => {
+    const radius = parseInt(sizeSlider.value, 10) / 10;
+    setAirbrushRadius(radius);
+    sizeInput.value = radius.toFixed(1);
+  });
+  const applySize = (): void => {
+    const raw = parseFloat(sizeInput.value);
+    if (!Number.isFinite(raw) || raw <= 0) { sizeInput.value = getAirbrushRadius().toFixed(1); return; }
+    setAirbrushRadius(raw);
+    sizeSlider.value = String(Math.round(Math.min(raw, 20) * 10));
+    sizeInput.value = raw.toFixed(1);
+  };
+  sizeInput.addEventListener('change', applySize);
+  sizeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applySize(); sizeInput.blur(); } });
+
+  sizeRow.appendChild(sizeSlider);
+  sizeRow.appendChild(sizeInput);
+  sizeRow.appendChild(sizeUnit);
+  wrap.appendChild(sizeRow);
+
+  // Strength (core density) and Softness (feathered-rim width) as 0–100% sliders.
+  wrap.appendChild(makePercentControl('Strength', 'How densely paint lands in the core (lower = a lighter dusting)', getAirbrushStrength, setAirbrushStrength, 5));
+  wrap.appendChild(makePercentControl('Softness', 'Width of the feathered, fading rim (0 = hard edge)', getAirbrushSoftness, setAirbrushSoftness, 0));
+
+  const help = document.createElement('div');
+  help.className = 'text-[10px] text-zinc-500 mt-1';
+  help.textContent = 'Soft edge via coverage fade — every triangle stays one solid, printable color.';
+  wrap.appendChild(help);
+
+  return wrap;
+}
+
+/** A labeled 0–100% slider + number input, two-way wired to a 0..1
+ *  getter/setter. Reads back through the getter after every write so a clamped
+ *  value is reflected in both controls. */
+function makePercentControl(
+  labelText: string,
+  title: string,
+  get: () => number,
+  set: (v: number) => void,
+  minPct: number,
+): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'mt-2';
+
+  const label = document.createElement('div');
+  label.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium';
+  label.textContent = labelText;
+  wrap.appendChild(label);
+
+  const row = document.createElement('div');
+  row.className = 'flex items-center gap-2';
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = String(minPct);
+  slider.max = '100';
+  slider.step = '1';
+  slider.value = String(Math.round(get() * 100));
+  slider.className = 'flex-1 accent-blue-500 min-w-0';
+  slider.title = title;
+
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = String(minPct);
+  input.max = '100';
+  input.step = '1';
+  input.value = String(Math.round(get() * 100));
+  input.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  input.title = title;
+
+  const unit = document.createElement('span');
+  unit.className = 'text-[10px] text-zinc-500';
+  unit.textContent = '%';
+
+  slider.addEventListener('input', () => {
+    set(parseInt(slider.value, 10) / 100);
+    input.value = String(Math.round(get() * 100));
+  });
+  const apply = (): void => {
+    const raw = parseFloat(input.value);
+    if (!Number.isFinite(raw)) { input.value = String(Math.round(get() * 100)); return; }
+    set(raw / 100);
+    slider.value = String(Math.round(get() * 100));
+    input.value = String(Math.round(get() * 100));
+  };
+  input.addEventListener('change', apply);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { apply(); input.blur(); } });
+
+  row.appendChild(slider);
+  row.appendChild(input);
+  row.appendChild(unit);
+  wrap.appendChild(row);
   return wrap;
 }
 

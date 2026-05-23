@@ -30,6 +30,11 @@ export interface BrushStroke {
    *  this — so the painted outline is smooth regardless of how coarse the base
    *  mesh is. Smaller = smoother + more triangles. */
   maxEdge: number;
+  /** When true, refine the FULL interior of the footprint, not just the rim the
+   *  boundary crosses. The airbrush needs fine triangles throughout its
+   *  footprint so its stochastic speckle reads as fine dots; the smooth brush
+   *  leaves this off (rim-only) because its interior paints solid. */
+  fill?: boolean;
 }
 
 /** Hard ceilings so a tiny target edge on a coarse mesh can't run away.
@@ -132,7 +137,10 @@ export function selectStrokeTriangles(mesh: MeshData, stroke: BrushStroke, maxEd
     if (withinFootprint(b[0], b[1], b[2], stroke)) inside++;
     if (withinFootprint(c[0], c[1], c[2], stroke)) inside++;
 
-    if (inside === 3) continue;       // fully inside — no edge crosses it
+    // Fully inside — no edge crosses it. The smooth brush leaves these coarse
+    // (the interior paints solid); the airbrush refines them too (`fill`) so its
+    // speckle has fine triangles across the whole footprint.
+    if (inside === 3) { if (stroke.fill) selected.add(t); continue; }
     if (inside >= 1) { selected.add(t); continue; } // straddles the boundary
 
     // No vertex inside: the footprint might still pass through this triangle
@@ -166,6 +174,104 @@ export function strokeFootprintTriangles(mesh: MeshData, stroke: BrushStroke): S
     if (triOutsideAabb([ax, ay, az], [bx, by, bz], [cx2, cy2, cz2], box)) continue;
     const cx = (ax + bx + cx2) / 3, cy = (ay + by + cy2) / 3, cz = (az + bz + cz2) / 3;
     if (withinFootprint(cx, cy, cz, stroke)) out.add(t);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Airbrush — soft-edged paint via stochastic density falloff.
+//
+// No alpha or colour blending is ever used: every triangle is painted fully or
+// not at all, so each one stays a single printable colour. The "soft" edge is a
+// dither — triangles near the stroke centre are painted with probability
+// `strength`, thinning to zero across a `softness`-wide rim. The decision is
+// made per grain CELL (not per triangle) and keyed by a stored seed, so the
+// speckle is deterministic: it reproduces exactly when a saved version reloads
+// and stays stable as the mesh is subdivided under the stroke.
+// ---------------------------------------------------------------------------
+
+export interface AirbrushStroke {
+  /** World-space surface points sampled along the stroke. */
+  samples: [number, number, number][];
+  /** Brush radius in mesh units. */
+  radius: number;
+  /** Paint density through the core, 0..1. Lower = a lighter dusting. */
+  strength: number;
+  /** Fraction of the radius that fades out (the feathered rim), 0..1.
+   *  0 = hard-edged disc; 1 = fades all the way from the centre. */
+  softness: number;
+  /** Stable per-stroke seed so the speckle reproduces across reloads but
+   *  differs between strokes. */
+  seed: number;
+  /** Grain cell size in mesh units — also the interior subdivision target. The
+   *  paint decision is made per cell of this size, so it is identical no matter
+   *  how finely the mesh is later subdivided. */
+  maxEdge: number;
+}
+
+/** Probability a point at normalized distance `dn` (0 at centre, 1 at the rim)
+ *  is painted: a `strength`-dense core, then a linear fade to 0 across the outer
+ *  `softness` fraction of the radius. */
+export function airbrushProbability(dn: number, strength: number, softness: number): number {
+  if (dn >= 1) return 0;
+  if (dn < 0) dn = 0;
+  const core = 1 - softness;          // softness 0 → core 1 → hard disc
+  if (dn <= core) return strength;
+  const u = (dn - core) / (1 - core); // 0..1 across the feather band
+  return strength * (1 - u);
+}
+
+/** Deterministic hash of an integer grid cell + seed → [0, 1). */
+function cellHash(qx: number, qy: number, qz: number, seed: number): number {
+  let h = (seed | 0) ^ 0x9e3779b9;
+  h = Math.imul(h ^ (qx | 0), 0x85ebca6b);
+  h = Math.imul(h ^ (qy | 0), 0xc2b2ae35);
+  h = Math.imul(h ^ (qz | 0), 0x27d4eb2f);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+/** Triangles the airbrush paints: centroid within the (round) footprint, kept
+ *  with the falloff probability via a per-cell deterministic dither. Run against
+ *  the refined mesh (interior filled to `maxEdge`) so the speckle is fine. */
+export function airbrushFootprintTriangles(mesh: MeshData, stroke: AirbrushStroke): Set<number> {
+  const { triVerts, numTri, vertProperties, numProp } = mesh;
+  const out = new Set<number>();
+  const r = stroke.radius;
+  if (r <= 0 || stroke.samples.length === 0) return out;
+  const r2 = r * r;
+  const strength = Math.max(0, Math.min(1, stroke.strength));
+  const softness = Math.max(0, Math.min(1, stroke.softness));
+  const cell = stroke.maxEdge > 0 ? stroke.maxEdge : r / 10;
+  const seed = stroke.seed | 0;
+  const samples = stroke.samples;
+  const box = strokeAabb({ samples, radius: r, shape: 'circle', maxEdge: cell });
+
+  for (let t = 0; t < numTri; t++) {
+    const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+    const ax = vertProperties[v0 * numProp], ay = vertProperties[v0 * numProp + 1], az = vertProperties[v0 * numProp + 2];
+    const bx = vertProperties[v1 * numProp], by = vertProperties[v1 * numProp + 1], bz = vertProperties[v1 * numProp + 2];
+    const cx2 = vertProperties[v2 * numProp], cy2 = vertProperties[v2 * numProp + 1], cz2 = vertProperties[v2 * numProp + 2];
+    if (triOutsideAabb([ax, ay, az], [bx, by, bz], [cx2, cy2, cz2], box)) continue;
+    const cx = (ax + bx + cx2) / 3, cy = (ay + by + cy2) / 3, cz = (az + bz + cz2) / 3;
+
+    // Nearest sample, Euclidean (the airbrush is round).
+    let best2 = Infinity;
+    for (let s = 0; s < samples.length; s++) {
+      const dx = cx - samples[s][0], dy = cy - samples[s][1], dz = cz - samples[s][2];
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < best2) best2 = d2;
+    }
+    if (best2 > r2) continue;
+
+    const p = airbrushProbability(Math.sqrt(best2) / r, strength, softness);
+    if (p <= 0) continue;
+    if (p >= 1) { out.add(t); continue; }
+
+    // Decide per grain cell so the speckle is identical regardless of how finely
+    // the mesh is later subdivided under (or near) this stroke.
+    const qx = Math.floor(cx / cell), qy = Math.floor(cy / cell), qz = Math.floor(cz / cell);
+    if (cellHash(qx, qy, qz, seed) < p) out.add(t);
   }
   return out;
 }

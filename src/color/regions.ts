@@ -26,7 +26,12 @@ export type RegionDescriptor =
   // edge length. Resolving it locally refines the mesh under the stroke until
   // boundary triangles are below `maxEdge`, so the painted edge follows the
   // brush outline regardless of base-mesh coarseness. See src/color/subdivide.ts.
-  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number };
+  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number }
+  // Airbrush stroke: like a brushStroke but resolved with a stochastic density
+  // falloff (dense core → feathered rim) keyed by `seed`, so the painted edge is
+  // soft. Every triangle is still painted fully or not at all (no blending), so
+  // the result stays a single printable color per triangle. See subdivide.ts.
+  | { kind: 'airbrush'; samples: [number, number, number][]; radius: number; strength: number; softness: number; seed: number; maxEdge: number };
 
 export interface SerializedColorRegion {
   id: number;
