@@ -486,12 +486,14 @@ export function buildRefinedMesh(
   for (let i = 0; i < comp.length; i++) comp[i] = i;
 
   for (const region of regions) {
+    const startTri = mesh.numTri;
     for (let pass = 0; pass < MAX_PASSES; pass++) {
       const selected = selectByClassify(mesh, region);
       if (selected.size === 0) break;
-      // Hard budget: a 1→4 split turns each selected triangle into 4 (net +3).
-      // Skip a pass that would cross the budget, so the cap never overshoots.
-      if (region.maxTriangles && mesh.numTri + selected.size * 3 > region.maxTriangles) break;
+      // Hard budget on the triangles THIS region adds (a 1→4 split nets +3 per
+      // selected triangle). Measured against the region's own additions — NOT the
+      // whole mesh — so a detailed base model can't starve the refinement.
+      if (region.maxTriangles && (mesh.numTri - startTri) + selected.size * 3 > region.maxTriangles) break;
       const { mesh: nm, childToParent } = subdivideSelected(mesh, selected);
       mesh = nm;
       comp = composeMaps(comp, childToParent);

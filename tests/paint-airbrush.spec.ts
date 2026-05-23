@@ -124,6 +124,31 @@ test.describe('airbrush', () => {
     expect(out.after).toBeLessThan(150_000);         // bounded — was millions before
   });
 
+  test('a detailed base mesh does not starve the feather (finer detail = finer, not coarser)', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      // A many-triangle base used to consume the whole triangle budget, leaving
+      // the feather coarse — and coarser at higher detail, since each pass then
+      // selected more. The budget is per-stroke now, so the base size is moot.
+      await pw.run(`const { Manifold } = api; return Manifold.sphere(25, 200);`);
+      pw.clearColors();
+      const base = pw.getMesh().numTri;
+      const coarse = pw.paintAirbrush({ points: [[0, 0, 25]], radius: 10, strength: 1, softness: 0.6, seed: 1, maxEdge: 10 / 24, color: [1, 0, 0] });
+      const afterCoarse = pw.getMesh().numTri;
+      pw.clearColors();
+      const fine = pw.paintAirbrush({ points: [[0, 0, 25]], radius: 10, strength: 1, softness: 0.6, seed: 1, maxEdge: 10 / 256, color: [1, 0, 0] });
+      const afterFine = pw.getMesh().numTri;
+      return { base, addedCoarse: afterCoarse - base, addedFine: afterFine - base, coarseErr: coarse.error, fineErr: fine.error };
+    });
+    expect(out.coarseErr).toBeFalsy();
+    expect(out.fineErr).toBeFalsy();
+    expect(out.base).toBeGreaterThan(15000);                // a genuinely detailed base
+    expect(out.addedCoarse).toBeGreaterThan(0);             // feather still subdivides despite the big base
+    expect(out.addedFine).toBeGreaterThan(out.addedCoarse); // higher detail = finer, NOT coarser
+  });
+
   test('strength and softness change coverage monotonically (fixed seed)', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(() => {
