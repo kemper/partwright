@@ -15,6 +15,7 @@ interface PartsAPI {
   listParts: () => { id: string; name: string; order: number; isCurrent: boolean }[];
   listVersions: () => Promise<{ index: number; label: string }[]>;
   getSessionState: () => { currentPart: { id: string; name: string } | null; versionCount: number };
+  getGeometryData: () => Record<string, number>;
   paintFaces: (o: { triangleIds: number[]; color: [number, number, number]; name?: string }) => unknown;
   listRegions: () => unknown[];
 }
@@ -174,6 +175,48 @@ test.describe('Multi-part sessions', () => {
       .poll(() => page.evaluate(() =>
         (window as unknown as { partwright: PartsAPI }).partwright.listParts().map(p => p.name)))
       .toEqual(['Beta', 'Gamma', 'Part 1']);
+  });
+
+  test('merges another part into the current one and removes the source', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    await page.evaluate(async ({ codeA, codeB }) => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      await pw.createSession('merge');
+      await pw.runAndSave(codeA, 'a');      // Part 1 (centered 10-cube, 12 tris)
+      await pw.createPart('B');
+      await pw.runAndSave(codeB, 'b');      // current = B (offset 8-cube, 12 tris)
+    }, {
+      codeA: cube(10, 'A'),
+      codeB: 'const { Manifold } = api; return Manifold.cube([8, 8, 8], true).translate([30, 0, 0]);',
+    });
+
+    // Open the merge dialog from the rail, pick "Part 1", default mode (remove).
+    await page.locator('#btn-merge-parts').click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await dialog.locator('select').selectOption({ label: 'Part 1' });
+    await dialog.getByRole('button', { name: 'Merge', exact: true }).click();
+
+    // Source removed → one part remains (B), now holding both components.
+    await expect
+      .poll(() => page.evaluate(() =>
+        (window as unknown as { partwright: PartsAPI }).partwright.listParts().length))
+      .toBe(1);
+
+    const after = await page.evaluate(() => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      const geo = pw.getGeometryData();
+      return {
+        parts: pw.listParts().map(p => p.name),
+        tris: geo.triangleCount,
+        comps: geo.componentCount,
+      };
+    });
+    expect(after.parts).toEqual(['B']);
+    expect(after.tris).toBe(24);   // 12 (B) + 12 (Part 1)
+    expect(after.comps).toBe(2);   // two disjoint components
   });
 
   test('adding a part after painting clears stale regions and unlocks the editor', async ({ page }) => {

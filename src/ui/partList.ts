@@ -10,6 +10,8 @@ export interface PartListCallbacks {
   onSelectPart: (id: string) => void | Promise<void>;
   /** Create a new part in the active session. */
   onCreatePart: () => void | Promise<void>;
+  /** Open the merge dialog (combine another part into the current one). */
+  onMergeParts: () => void | Promise<void>;
   onRenamePart: (id: string, name: string) => void | Promise<void>;
   onDeletePart: (id: string) => void | Promise<void>;
   /** Persist a new part order (array of part ids, first = top). */
@@ -56,6 +58,15 @@ function render(state: SessionState): void {
   if (!state.session) addBtn.classList.add('opacity-30', 'cursor-default');
   addBtn.addEventListener('click', () => { if (state.session) void cb.onCreatePart(); });
   header.appendChild(addBtn);
+
+  // Merge needs at least two parts to combine.
+  const canMerge = !!state.session && state.parts.length >= 2;
+  const mergeBtn = iconBtn('⧉', 'Merge parts');
+  mergeBtn.id = 'btn-merge-parts';
+  mergeBtn.disabled = !canMerge;
+  if (!canMerge) mergeBtn.classList.add('opacity-30', 'cursor-default');
+  mergeBtn.addEventListener('click', () => { if (canMerge) void cb.onMergeParts(); });
+  header.appendChild(mergeBtn);
 
   const collapseBtn = iconBtn('«', 'Hide parts panel'); // «
   collapseBtn.addEventListener('click', () => cb.onToggleCollapse());
