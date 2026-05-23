@@ -5,6 +5,7 @@
 import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPEND_CAP_USD, THINKING_LEVELS, type AnthropicModelId, type ChatToggles, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
 import type { LocalModelId } from './localModels';
 import { LOCAL_MODELS } from './localModels';
+import { getKey } from './db';
 
 const STORAGE_KEY = 'partwright-ai-settings-v1';
 
@@ -201,6 +202,21 @@ export function reloadSettingsFromStorage(): AiSettings {
   const next = loadSettings();
   for (const fn of listeners) fn(next);
   return next;
+}
+
+/** Which AI connection the toolbar chip / "Connect AI" flow should reflect:
+ *  a configured local WebGPU model, any stored hosted key ('cloud'), or
+ *  nothing yet ('disconnected'). Shared by the toolbar chip and the panel's
+ *  auto-open-settings-on-connect behaviour so the two never drift. */
+export async function aiConnectionMode(): Promise<'disconnected' | 'cloud' | 'local'> {
+  const settings = loadSettings();
+  if (settings.toggles.provider === 'local' && settings.toggles.localModel) return 'local';
+  const [anthropic, openai, gemini] = await Promise.all([
+    getKey('anthropic'),
+    getKey('openai'),
+    getKey('gemini'),
+  ]);
+  return (anthropic || openai || gemini) ? 'cloud' : 'disconnected';
 }
 
 export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {

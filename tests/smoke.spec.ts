@@ -45,6 +45,12 @@ test.describe('AI chat panel', () => {
     // Drawer exists from boot but is translated off-screen until first open.
     await page.click('#btn-ai');
     await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
+    // Disconnected → opening also pops the AI Settings modal (the "Connect AI"
+    // flow). Dismiss it before reaching for the panel's own close button, which
+    // the modal overlay would otherwise intercept.
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeHidden();
     await page.click('#ai-panel button:has-text("✕")');
     await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-full/);
   });
@@ -73,6 +79,11 @@ test.describe('AI chat panel', () => {
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
     await page.click('#btn-ai');
     await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
+    // Disconnected → the AI Settings modal also opens; dismiss it so its
+    // overlay doesn't intercept the tab click below.
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeHidden();
 
     const galleryTab = page.locator('button', { hasText: /^Gallery$/ });
     if (await galleryTab.count()) {
@@ -86,6 +97,11 @@ test.describe('AI chat panel', () => {
     await page.waitForSelector('#btn-ai');
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
     await page.click('#btn-ai');
+    // Disconnected → dismiss the auto-opened AI Settings modal so the panel
+    // widgets below are genuinely uncovered.
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeHidden();
     const panel = page.locator('#ai-panel');
 
     // Toggle pills
@@ -104,18 +120,19 @@ test.describe('AI chat panel', () => {
     await expect(panel.locator('button', { hasText: /^Send$/ })).toBeVisible();
   });
 
-  test('inline key entry shows in settings and dismisses cleanly', async ({ page }) => {
+  test('clicking Connect AI opens the drawer and the settings modal', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForSelector('#btn-ai');
     // Let editor init (and session auto-restore) settle before clicking, so a
     // late ?session= navigation doesn't tear down the modal mid-test.
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
+    // Disconnected → the button reads "Connect AI" and clicking it opens the
+    // drawer AND the AI Settings modal in one step, landing the user on the
+    // connect flow. The per-provider key form is inline in the tab: the
+    // Anthropic tab shows by default with the password field + Connect button.
+    await expect(page.locator('#btn-ai')).toContainText(/Connect AI/);
     await page.click('#btn-ai');
-    // The panel CTA opens the AI Settings modal. The per-provider key form is
-    // now inline in the tab (no separate pop-up): the Anthropic tab is shown
-    // by default and exposes the password field + Connect button right away.
-    // dispatchEvent — same flex-child viewport quirk as the toggle pills.
-    await page.locator('#ai-panel button:has-text("Connect an AI agent")').dispatchEvent('click');
+    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
     await expect(page.locator('input[type="password"]')).toBeVisible();
     await expect(page.locator('button:has-text("Connect Anthropic API")')).toBeVisible();
@@ -124,6 +141,37 @@ test.describe('AI chat panel', () => {
     await page.locator('.bg-zinc-800.rounded-xl button:text-is("Done")').click();
     await expect(page.locator('input[type="password"]')).toHaveCount(0);
     await expect(page.locator('#btn-ai')).toContainText(/Connect AI/);
+  });
+
+  test('connected: the AI button opens the drawer with no settings modal', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#btn-ai');
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
+    // Seed a hosted key so we're "connected": clicking the button should just
+    // open the drawer, NOT auto-open the connect-settings modal.
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve, reject) => {
+        const open = indexedDB.open('partwright');
+        open.onsuccess = () => {
+          const db = open.result;
+          const txn = db.transaction('aiKeys', 'readwrite');
+          txn.objectStore('aiKeys').put({
+            provider: 'anthropic', apiKey: 'sk-ant-test-0000000000', createdAt: Date.now(),
+            lastUsed: Date.now(), totalInputTokens: 0, totalOutputTokens: 0, totalCostUsd: 0,
+          });
+          txn.oncomplete = () => { db.close(); resolve(); };
+          txn.onerror = () => reject(txn.error);
+        };
+        open.onerror = () => reject(open.error);
+      });
+    });
+    await page.click('#btn-ai');
+    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
+    // No modal overlay → the panel's own close button is reachable. (A covering
+    // settings-modal overlay would intercept this real click and time out.)
+    await page.click('#ai-panel button:has-text("✕")');
+    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-full/);
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toHaveCount(0);
   });
 
   test('stale local-model id falls back to the connect prompt', async ({ page }) => {

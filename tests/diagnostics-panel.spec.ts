@@ -38,6 +38,11 @@ test.describe('Diagnostic log', () => {
 
     await page.click('#btn-ai');
     await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
+    // Disconnected → the AI Settings modal also opens; dismiss it so its
+    // overlay doesn't intercept the diagnostics-button click below.
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeHidden();
 
     await page.click('#btn-diagnostics');
     await expect(page.locator('#diagnostics-panel')).toBeVisible();

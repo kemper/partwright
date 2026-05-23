@@ -37,9 +37,9 @@ test.describe('feedback + a11y', () => {
     await page.goto('/editor');
     await page.waitForSelector('#btn-ai');
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
+    // Disconnected → clicking the toolbar button opens the drawer and the AI
+    // Settings modal (a modalShell dialog) directly.
     await page.click('#btn-ai');
-    // The panel CTA opens the AI Settings modal (a modalShell dialog).
-    await page.locator('#ai-panel button:has-text("Connect an AI agent")').dispatchEvent('click');
 
     const dialog = page.locator('[role="dialog"]');
     await expect(dialog).toBeVisible();
