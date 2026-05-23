@@ -7,7 +7,7 @@
 
 import type { MeshData } from '../geometry/types';
 import { getTriangleCentroid } from './adjacency';
-import type { RefineRegion, TriClass } from './subdivide';
+import type { RefineRegion, TriClass, Aabb } from './subdivide';
 
 export interface AxisAlignedNormal {
   axis: 'x' | 'y' | 'z';
@@ -150,5 +150,28 @@ export function slabRefineRegion(
     if (minD >= lo && maxD <= hi) return 'inside';
     return 'straddle';
   };
-  return { aabb: null, maxEdge, classify };
+  return { aabb: axisAlignedSlabAabb(nx, ny, nz, lo, hi), maxEdge, classify };
+}
+
+/** Cheap spatial-reject box for an axis-aligned slab (the UI's X/Y/Z slabs and
+ *  most API calls): the band only bounds the normal's own axis — the two in-plane
+ *  axes stay unbounded (±Infinity) so only triangles fully clear of the band are
+ *  rejected before the classify. Oblique slabs return null (no tight AABB without
+ *  the mesh bounds; the classify is just three dot products with a maxEdge
+ *  early-out, so a full scan stays cheap for a one-shot paint). */
+function axisAlignedSlabAabb(nx: number, ny: number, nz: number, lo: number, hi: number): Aabb | null {
+  const eps = 1e-9;
+  const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
+  const min: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  const max: [number, number, number] = [Infinity, Infinity, Infinity];
+  // For an axis k with n_k = ±1, P·n = ±P_k, so the slab lo ≤ ±P_k ≤ hi maps to
+  // P_k ∈ [lo, hi] (positive normal) or [-hi, -lo] (negative normal).
+  const bound = (k: number, sign: number): void => {
+    if (sign > 0) { min[k] = lo; max[k] = hi; } else { min[k] = -hi; max[k] = -lo; }
+  };
+  if (ax > 1 - eps && ay < eps && az < eps) bound(0, Math.sign(nx));
+  else if (ay > 1 - eps && ax < eps && az < eps) bound(1, Math.sign(ny));
+  else if (az > 1 - eps && ax < eps && ay < eps) bound(2, Math.sign(nz));
+  else return null;
+  return { min, max };
 }
