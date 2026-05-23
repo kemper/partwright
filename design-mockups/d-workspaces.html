@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Partwright — Concept D · Workspaces</title>
+<style>
+  :root {
+    --bg: #18181b;
+    --surface: #27272a;
+    --raised: #3f3f46;
+    --border: #3f3f46;
+    --border-strong: #52525b;
+    --text: #fafafa;
+    --text-2: #a1a1aa;
+    --muted: #71717a;
+    --brand: #3b82f6;
+    --brand-light: #60a5fa;
+    --ai: #818cf8;
+    --success: #34d399;
+    --warning: #fbbf24;
+    --danger: #f87171;
+    --mono: ui-monospace, 'SF Mono', Menlo, monospace;
+    --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ---------- TOP BAR ---------- */
+  .topbar {
+    height: 48px;
+    flex: 0 0 48px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar-left, .topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .topbar-right { justify-content: flex-end; }
+  .topbar-center {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: center;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+  }
+  .logo-mark {
+    width: 22px; height: 22px;
+    border-radius: 6px;
+    background: linear-gradient(135deg, var(--brand), var(--ai));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 800; color: #fff;
+  }
+  .proj {
+    color: var(--text-2);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 180px;
+  }
+  .divider { width: 1px; height: 22px; background: var(--border); flex: 0 0 auto; }
+
+  .version-stepper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 3px 4px;
+    white-space: nowrap;
+  }
+  .vstep-btn {
+    width: 22px; height: 22px;
+    border-radius: 5px;
+    border: none;
+    background: transparent;
+    color: var(--text-2);
+    cursor: pointer;
+    font-size: 11px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .vstep-btn:hover { background: var(--raised); color: var(--text); }
+  .vstep-label { font-size: 12px; color: var(--text); padding: 0 2px; }
+  .vstep-label .vmuted { color: var(--muted); }
+  .vstep-label .vtag { color: var(--text-2); font-weight: 500; }
+
+  /* segmented workspace switcher */
+  .switcher {
+    display: flex;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 3px;
+    gap: 2px;
+  }
+  .ws-tab {
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: var(--text-2);
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 18px;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background .12s, color .12s;
+  }
+  .ws-tab:hover { color: var(--text); background: var(--raised); }
+  .ws-tab.active {
+    background: var(--brand);
+    color: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,.4);
+  }
+  .ws-tab.active:hover { background: var(--brand); }
+
+  .tbtn {
+    appearance: none;
+    border: 1px solid var(--border);
+    background: var(--raised);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 12px;
+    border-radius: 7px;
+    cursor: pointer;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .tbtn:hover { border-color: var(--border-strong); }
+  .tbtn.icon { padding: 6px 9px; }
+  .tbtn.ai {
+    background: rgba(129,140,248,.14);
+    border-color: rgba(129,140,248,.45);
+    color: var(--ai);
+  }
+  .tbtn.ai:hover { background: rgba(129,140,248,.22); }
+
+  /* ---------- WORKSPACE BODY ---------- */
+  .body { flex: 1 1 auto; min-height: 0; position: relative; }
+  .workspace { display: none; height: 100%; }
+  .workspace.active { display: flex; flex-direction: column; }
+
+  /* context toolbar (Model) */
+  .ctx-toolbar {
+    height: 44px;
+    flex: 0 0 44px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .run-btn {
+    appearance: none;
+    border: none;
+    background: var(--brand);
+    color: #fff;
+    font-family: var(--sans);
+    font-size: 12px;
+    font-weight: 700;
+    padding: 7px 14px;
+    border-radius: 7px;
+    cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .run-btn:hover { background: var(--brand-light); }
+  .seg {
+    display: flex;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 2px;
+    gap: 2px;
+  }
+  .seg button {
+    appearance: none; border: none; background: transparent;
+    color: var(--text-2); font-family: var(--sans); font-size: 12px;
+    font-weight: 600; padding: 4px 11px; border-radius: 5px; cursor: pointer;
+  }
+  .seg button:hover { color: var(--text); }
+  .seg button.on { background: var(--raised); color: var(--text); }
+  .pill-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text-2); font-size: 12px; font-weight: 600;
+    padding: 5px 11px; border-radius: 7px; cursor: pointer;
+  }
+  .pill-toggle:hover { color: var(--text); }
+  .pill-toggle.on { color: var(--text); border-color: var(--border-strong); }
+  .dot-on { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+  .ctx-label { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .ctx-spacer { flex: 1 1 auto; }
+
+  /* main split */
+  .split {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+  }
+
+  /* editor pane */
+  .editor-pane {
+    flex: 0 0 42%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    background: #1c1c1f;
+    border-right: 1px solid var(--border);
+  }
+  .pane-header {
+    height: 36px;
+    flex: 0 0 36px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .pane-title { font-size: 12px; font-weight: 600; color: var(--text-2); }
+  .pane-title .pt-mono { font-family: var(--mono); color: var(--text); }
+  .mini-btn {
+    appearance: none; border: 1px solid var(--border); background: transparent;
+    color: var(--text-2); font-size: 11px; font-weight: 600; padding: 3px 9px;
+    border-radius: 5px; cursor: pointer; font-family: var(--sans);
+  }
+  .mini-btn:hover { color: var(--text); border-color: var(--border-strong); }
+
+  .code-area {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.65;
+  }
+  .gutter {
+    flex: 0 0 auto;
+    padding: 10px 10px 10px 14px;
+    text-align: right;
+    color: var(--muted);
+    user-select: none;
+    background: #1c1c1f;
+    border-right: 1px solid var(--border);
+  }
+  .code {
+    flex: 1 1 auto;
+    padding: 10px 14px;
+    white-space: pre;
+    color: var(--text);
+    overflow-x: auto;
+  }
+  .tk { color: var(--brand-light); }      /* keywords const/return */
+  .ts { color: var(--warning); }          /* strings */
+  .tc { color: #5b8266; }                 /* comments green muted */
+  .tn { color: #f0abfc; }                 /* numbers (subtle) */
+  .tf { color: var(--text); }
+
+  .stats-strip {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding: 7px 12px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    font-size: 11.5px;
+    color: var(--text-2);
+  }
+  .stat { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .stat .skey { color: var(--muted); }
+  .stat .sval { color: var(--text); font-family: var(--mono); font-size: 11px; }
+  .sdot { width: 7px; height: 7px; border-radius: 50%; }
+  .green { background: var(--success); }
+  .check { color: var(--success); }
+
+  /* viewport */
+  .viewport {
+    flex: 1 1 auto;
+    min-width: 0;
+    position: relative;
+    background:
+      radial-gradient(circle at 50% 42%, #232327 0%, #18181b 70%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .vp-grid {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(82,82,91,.10) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(82,82,91,.10) 1px, transparent 1px);
+    background-size: 32px 32px;
+    pointer-events: none;
+  }
+  .ready-chip {
+    position: absolute; top: 12px; left: 12px;
+    display: inline-flex; align-items: center; gap: 7px;
+    background: rgba(39,39,42,.85);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 5px 10px;
+    font-size: 11.5px; font-weight: 600; color: var(--text);
+    backdrop-filter: blur(4px);
+  }
+  .gizmo {
+    position: absolute; bottom: 14px; left: 14px;
+    width: 64px; height: 64px;
+  }
+
+  /* AI drawer */
+  .ai-drawer {
+    flex: 0 0 320px;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+  }
+  .ai-header {
+    height: 44px; flex: 0 0 44px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .ai-title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; }
+  .ai-spark { color: var(--ai); }
+  .model-picker {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 7px; padding: 6px 10px; margin: 10px 12px 4px;
+    font-size: 12px; cursor: pointer;
+  }
+  .model-picker:hover { border-color: var(--border-strong); }
+  .model-picker .mp-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ai); flex: 0 0 auto; }
+  .model-picker .mp-name { color: var(--text); font-weight: 600; }
+  .model-picker .mp-prov { color: var(--muted); }
+  .model-picker .mp-caret { margin-left: auto; color: var(--muted); }
+
+  .transcript {
+    flex: 1 1 auto; min-height: 0; overflow: auto;
+    padding: 10px 12px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .msg { display: flex; flex-direction: column; gap: 4px; }
+  .msg .who { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .bubble {
+    border-radius: 9px; padding: 9px 11px; font-size: 12.5px; line-height: 1.5;
+  }
+  .msg.user .bubble { background: var(--raised); color: var(--text); align-self: flex-end; border-bottom-right-radius: 3px; max-width: 92%; }
+  .msg.user { align-items: flex-end; }
+  .msg.assistant .bubble {
+    background: rgba(129,140,248,.10);
+    border: 1px solid rgba(129,140,248,.28);
+    color: var(--text);
+    border-bottom-left-radius: 3px;
+  }
+  .tool-chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 7px; padding: 5px 10px; font-size: 11.5px;
+    color: var(--text-2); font-family: var(--mono); align-self: flex-start;
+  }
+  .tool-chip .tc-diamond { color: var(--success); }
+  .tool-chip .tc-caret { color: var(--muted); margin-left: 2px; }
+
+  .ai-input-wrap {
+    flex: 0 0 auto; padding: 10px 12px; border-top: 1px solid var(--border);
+    display: flex; gap: 8px; align-items: flex-end;
+  }
+  .ai-input {
+    flex: 1 1 auto;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 11px; color: var(--muted);
+    font-size: 12.5px; min-height: 38px; display: flex; align-items: center;
+  }
+  .send-btn {
+    appearance: none; border: none; background: var(--brand); color: #fff;
+    font-family: var(--sans); font-size: 12px; font-weight: 700;
+    padding: 9px 16px; border-radius: 8px; cursor: pointer; flex: 0 0 auto;
+  }
+  .send-btn:hover { background: var(--brand-light); }
+
+  /* placeholder workspaces */
+  .placeholder {
+    flex: 1 1 auto; min-height: 0;
+    display: flex; align-items: center; justify-content: center;
+    padding: 40px;
+  }
+  .ph-card {
+    max-width: 560px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    text-align: center;
+  }
+  .ph-icon {
+    width: 48px; height: 48px; border-radius: 12px;
+    margin: 0 auto 14px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+    background: var(--raised);
+  }
+  .ph-card h2 { margin: 0 0 8px; font-size: 18px; }
+  .ph-card p { margin: 0 0 18px; color: var(--text-2); line-height: 1.6; }
+  .ph-tools { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .ph-tool {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 7px; padding: 6px 12px; font-size: 12px; font-weight: 600;
+    color: var(--text-2);
+  }
+
+  /* ---------- BOTTOM LEGEND ---------- */
+  .legend {
+    height: 64px; flex: 0 0 64px;
+    display: flex;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+  }
+  .legend-cell {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 9px 16px;
+    display: flex; flex-direction: column; justify-content: center;
+    gap: 3px;
+    border-right: 1px solid var(--border);
+  }
+  .legend-cell:last-child { border-right: none; }
+  .legend-cell .lc-name {
+    font-size: 12.5px; font-weight: 700; color: var(--text-2);
+    display: flex; align-items: center; gap: 7px;
+  }
+  .legend-cell .lc-desc {
+    font-size: 11.5px; color: var(--muted); line-height: 1.35;
+    overflow: hidden;
+  }
+  .legend-cell.active {
+    background: rgba(59,130,246,.10);
+    box-shadow: inset 3px 0 0 var(--brand);
+  }
+  .legend-cell.active .lc-name { color: var(--brand-light); }
+  .legend-cell.active .lc-desc { color: var(--text-2); }
+  .lc-tag {
+    font-size: 9.5px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .05em; color: var(--brand-light);
+    background: rgba(59,130,246,.18); border-radius: 4px; padding: 1px 6px;
+  }
+
+  /* concept badge */
+  .concept-badge {
+    position: fixed; bottom: 12px; left: 12px; z-index: 50;
+    background: rgba(24,24,27,.78);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    padding: 6px 14px;
+    font-size: 11.5px; font-weight: 600; color: var(--text-2);
+    backdrop-filter: blur(6px);
+    pointer-events: none;
+  }
+  .concept-badge b { color: var(--ai); }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ===== TOP BAR ===== -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="logo"><span class="logo-mark">P</span><span>Partwright</span></div>
+      <div class="divider"></div>
+      <span class="proj">Motor mount bracket</span>
+      <div class="version-stepper">
+        <button class="vstep-btn" aria-label="previous version">◀</button>
+        <span class="vstep-label">v4 <span class="vmuted">/ 4</span> · <span class="vtag">fillet corners</span></span>
+        <button class="vstep-btn" aria-label="next version">▶</button>
+      </div>
+    </div>
+
+    <div class="topbar-center">
+      <div class="switcher" role="tablist">
+        <button class="ws-tab active" data-ws="model" role="tab">Model</button>
+        <button class="ws-tab" data-ws="decorate" role="tab">Decorate</button>
+        <button class="ws-tab" data-ws="review" role="tab">Review</button>
+        <button class="ws-tab" data-ws="inspect" role="tab">Inspect</button>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <button class="tbtn ai">✦ AI</button>
+      <button class="tbtn">⤓ Export</button>
+      <button class="tbtn icon" aria-label="help">?</button>
+    </div>
+  </header>
+
+  <!-- ===== WORKSPACE BODIES ===== -->
+  <div class="body">
+
+    <!-- MODEL (active) -->
+    <section class="workspace active" id="ws-model">
+      <!-- context toolbar: modeling tools only -->
+      <div class="ctx-toolbar">
+        <button class="run-btn">▶ Run</button>
+        <button class="pill-toggle on"><span class="dot-on"></span>Auto</button>
+        <div class="divider"></div>
+        <div class="seg">
+          <button class="on">JS</button>
+          <button>OpenSCAD</button>
+        </div>
+        <div class="ctx-spacer"></div>
+        <span class="ctx-label">View</span>
+        <button class="pill-toggle">Wireframe</button>
+        <button class="pill-toggle">Grid</button>
+        <button class="pill-toggle on"><span class="dot-on"></span>Dimensions</button>
+      </div>
+
+      <!-- split: editor | viewport | ai drawer -->
+      <div class="split">
+
+        <!-- editor -->
+        <div class="editor-pane">
+          <div class="pane-header">
+            <span class="pane-title"><span class="pt-mono">main.js</span> · JS</span>
+            <button class="mini-btn">Format</button>
+          </div>
+          <div class="code-area">
+            <div class="gutter">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11</div>
+<div class="code"><span class="tk">const</span> { Manifold } = api;
+<span class="tk">const</span> base = Manifold.<span class="tf">cube</span>([<span class="tn">60</span>, <span class="tn">40</span>, <span class="tn">6</span>], <span class="tk">true</span>);
+<span class="tk">const</span> wall = Manifold.<span class="tf">cube</span>([<span class="tn">60</span>, <span class="tn">6</span>, <span class="tn">35</span>], <span class="tk">true</span>).<span class="tf">translate</span>([<span class="tn">0</span>, <span class="tn">-17</span>, <span class="tn">17</span>]);
+<span class="tk">let</span> bracket = base.<span class="tf">add</span>(wall);
+<span class="tc">// two M4 mounting holes</span>
+<span class="tk">const</span> hole = Manifold.<span class="tf">cylinder</span>(<span class="tn">35</span>, <span class="tn">2.25</span>, <span class="tn">2.25</span>, <span class="tn">32</span>);
+bracket = bracket.<span class="tf">subtract</span>(hole.<span class="tf">translate</span>([<span class="tn">-12</span>, <span class="tn">-17</span>, <span class="tn">17</span>]).<span class="tf">rotate</span>([<span class="tn">90</span>,<span class="tn">0</span>,<span class="tn">0</span>]));
+bracket = bracket.<span class="tf">subtract</span>(hole.<span class="tf">translate</span>([ <span class="tn">12</span>, <span class="tn">-17</span>, <span class="tn">17</span>]).<span class="tf">rotate</span>([<span class="tn">90</span>,<span class="tn">0</span>,<span class="tn">0</span>]));
+<span class="tk">return</span> bracket;</div>
+          </div>
+          <div class="stats-strip">
+            <span class="stat"><span class="sdot green"></span><span class="sval">Ready</span></span>
+            <span class="stat"><span class="skey">tris</span><span class="sval">12,480</span></span>
+            <span class="stat"><span class="skey">manifold</span><span class="sval check">✓</span></span>
+            <span class="stat"><span class="skey">components</span><span class="sval">1</span></span>
+            <span class="stat"><span class="skey">bbox</span><span class="sval">60 × 40 × 35</span></span>
+          </div>
+        </div>
+
+        <!-- viewport -->
+        <div class="viewport">
+          <div class="vp-grid"></div>
+          <div class="ready-chip"><span class="sdot green"></span>Ready</div>
+
+          <!-- isometric L-bracket -->
+          <svg width="360" height="320" viewBox="0 0 360 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- base plate (flat, on ground) -->
+            <!-- top face -->
+            <polygon points="70,200 230,150 320,185 160,235" fill="#3b557a"/>
+            <!-- front face -->
+            <polygon points="70,200 160,235 160,250 70,215" fill="#28384f"/>
+            <!-- right face -->
+            <polygon points="160,235 320,185 320,200 160,250" fill="#1f2c40"/>
+
+            <!-- vertical wall -->
+            <!-- left/front face of wall -->
+            <polygon points="70,200 130,178 130,78 70,100" fill="#4a6da3"/>
+            <!-- top face of wall -->
+            <polygon points="70,100 130,78 250,118 190,140" fill="#5e84c4"/>
+            <!-- right face of wall -->
+            <polygon points="130,178 190,140 190,40 130,78" fill="#2e466b"/>
+            <polygon points="130,78 250,118 190,140" fill="#2e466b" opacity="0"/>
+
+            <!-- two mounting holes on the front wall face -->
+            <ellipse cx="93" cy="138" rx="7" ry="11" fill="#16202f" stroke="#5e84c4" stroke-width="1.2"/>
+            <ellipse cx="111" cy="132" rx="7" ry="11" fill="#16202f" stroke="#5e84c4" stroke-width="1.2"/>
+          </svg>
+
+          <!-- corner gizmo -->
+          <svg class="gizmo" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+            <line x1="32" y1="44" x2="56" y2="52" stroke="#f87171" stroke-width="2.2"/>
+            <line x1="32" y1="44" x2="8" y2="52" stroke="#34d399" stroke-width="2.2"/>
+            <line x1="32" y1="44" x2="32" y2="10" stroke="#60a5fa" stroke-width="2.2"/>
+            <circle cx="32" cy="44" r="3" fill="#a1a1aa"/>
+            <text x="58" y="56" fill="#f87171" font-size="9" font-family="sans-serif" font-weight="700">X</text>
+            <text x="2" y="56" fill="#34d399" font-size="9" font-family="sans-serif" font-weight="700">Y</text>
+            <text x="34" y="11" fill="#60a5fa" font-size="9" font-family="sans-serif" font-weight="700">Z</text>
+          </svg>
+        </div>
+
+        <!-- AI drawer -->
+        <aside class="ai-drawer">
+          <div class="ai-header">
+            <div class="ai-title"><span class="ai-spark">✦</span> AI Assistant</div>
+            <button class="mini-btn">⋯</button>
+          </div>
+          <div class="model-picker">
+            <span class="mp-dot"></span>
+            <span class="mp-prov">Anthropic ·</span>
+            <span class="mp-name">Claude Opus 4.7</span>
+            <span class="mp-caret">▾</span>
+          </div>
+          <div class="transcript">
+            <div class="msg user">
+              <span class="who">You</span>
+              <div class="bubble">Add two M4 mounting holes on the vertical face, 24mm apart.</div>
+            </div>
+            <div class="msg assistant">
+              <span class="who">Claude</span>
+              <div class="tool-chip"><span class="tc-diamond">◆</span> runAndSave('add mounting holes')<span class="tc-caret">▸</span></div>
+              <div class="bubble">Added two Ø4.5 mm through-holes on the vertical wall, centered 24 mm apart. Re-rendered — still manifold (12,480 tris).</div>
+            </div>
+          </div>
+          <div class="ai-input-wrap">
+            <div class="ai-input">Describe a change…</div>
+            <button class="send-btn">Send</button>
+          </div>
+        </aside>
+
+      </div>
+    </section>
+
+    <!-- DECORATE (placeholder) -->
+    <section class="workspace" id="ws-decorate">
+      <div class="placeholder">
+        <div class="ph-card">
+          <div class="ph-icon">🎨</div>
+          <h2>Decorate workspace</h2>
+          <p>Paint color regions and add annotations on a <b>locked snapshot</b> of v4. Locking the editor here is <b>expected</b> — it's the whole point of this mode, not a surprise that happens mid-edit in Model.</p>
+          <div class="ph-tools">
+            <span class="ph-tool">Paint regions</span>
+            <span class="ph-tool">Color picker</span>
+            <span class="ph-tool">Annotate</span>
+            <span class="ph-tool">Snapshot lock</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- REVIEW (placeholder) -->
+    <section class="workspace" id="ws-review">
+      <div class="placeholder">
+        <div class="ph-card">
+          <div class="ph-icon">🗂</div>
+          <h2>Review workspace</h2>
+          <p>Compare versions and browse the project's history without any modeling controls in the way.</p>
+          <div class="ph-tools">
+            <span class="ph-tool">Version compare</span>
+            <span class="ph-tool">Gallery thumbnails</span>
+            <span class="ph-tool">Side-by-side diff</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- INSPECT (placeholder) -->
+    <section class="workspace" id="ws-inspect">
+      <div class="placeholder">
+        <div class="ph-card">
+          <div class="ph-icon">📐</div>
+          <h2>Inspect workspace</h2>
+          <p>Measure, slice, and explore the underlying geometry data — analysis tools that don't belong next to the code editor.</p>
+          <div class="ph-tools">
+            <span class="ph-tool">Measure</span>
+            <span class="ph-tool">Cross-section</span>
+            <span class="ph-tool">Geometry stats</span>
+            <span class="ph-tool">Data explorer</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- ===== BOTTOM LEGEND ===== -->
+  <footer class="legend">
+    <div class="legend-cell active" data-ws="model">
+      <div class="lc-name">Model <span class="lc-tag">active</span></div>
+      <div class="lc-desc">Write code, live 3D preview, AI assistant</div>
+    </div>
+    <div class="legend-cell" data-ws="decorate">
+      <div class="lc-name">Decorate</div>
+      <div class="lc-desc">Paint color regions &amp; annotate on a locked snapshot (no surprise lock — it's its own mode)</div>
+    </div>
+    <div class="legend-cell" data-ws="review">
+      <div class="lc-name">Review</div>
+      <div class="lc-desc">Compare versions, gallery thumbnails, side-by-side diff</div>
+    </div>
+    <div class="legend-cell" data-ws="inspect">
+      <div class="lc-name">Inspect</div>
+      <div class="lc-desc">Measure, cross-section, geometry stats &amp; data explorer</div>
+    </div>
+  </footer>
+
+</div>
+
+<div class="concept-badge">Concept <b>D</b> · Workspaces</div>
+
+<script>
+  (function () {
+    var tabs = document.querySelectorAll('.ws-tab');
+    var cells = document.querySelectorAll('.legend-cell');
+    var spaces = document.querySelectorAll('.workspace');
+
+    function activate(ws) {
+      tabs.forEach(function (t) { t.classList.toggle('active', t.dataset.ws === ws); });
+      cells.forEach(function (c) {
+        var on = c.dataset.ws === ws;
+        c.classList.toggle('active', on);
+        var tag = c.querySelector('.lc-tag');
+        if (on && !tag) {
+          var s = document.createElement('span');
+          s.className = 'lc-tag';
+          s.textContent = 'active';
+          c.querySelector('.lc-name').appendChild(s);
+        } else if (!on && tag) {
+          tag.remove();
+        }
+      });
+      spaces.forEach(function (s) { s.classList.toggle('active', s.id === 'ws-' + ws); });
+    }
+
+    tabs.forEach(function (t) {
+      t.addEventListener('click', function () { activate(t.dataset.ws); });
+    });
+    cells.forEach(function (c) {
+      c.addEventListener('click', function () { activate(c.dataset.ws); });
+    });
+  })();
+</script>
+</body>
+</html>

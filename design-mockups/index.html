@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Partwright — UX Redesign Explorations</title>
+<style>
+  :root{
+    --bg:#18181b; --surface:#27272a; --raised:#3f3f46;
+    --border:#3f3f46; --border-strong:#52525b;
+    --text:#fafafa; --text-2:#a1a1aa; --muted:#71717a;
+    --blue:#3b82f6; --blue-l:#60a5fa; --indigo:#818cf8;
+    --green:#34d399; --amber:#fbbf24; --red:#f87171;
+    --mono:ui-monospace,'SF Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;line-height:1.5}
+  a{color:var(--blue-l);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1120px;margin:0 auto;padding:48px 24px 96px}
+  header.hero{margin-bottom:40px}
+  .eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--indigo);font-weight:600;margin-bottom:10px}
+  h1{font-size:34px;letter-spacing:-.5px;margin:0 0 10px;font-weight:700}
+  h2{font-size:20px;letter-spacing:-.2px;margin:48px 0 14px;font-weight:650;border-bottom:1px solid var(--border);padding-bottom:10px}
+  h3{font-size:15px;margin:0 0 4px;font-weight:650}
+  p.lead{font-size:16px;color:var(--text-2);max-width:760px;margin:0}
+  p{color:var(--text-2);max-width:820px}
+  .sub{font-size:13px;color:var(--muted)}
+  /* problems grid */
+  .problems{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:8px}
+  .prob{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px}
+  .prob .n{font-family:var(--mono);font-size:11px;color:var(--amber);font-weight:700}
+  .prob h3{margin:6px 0 4px;font-size:14px;color:var(--text)}
+  .prob p{margin:0;font-size:13px;color:var(--text-2)}
+  /* concept cards */
+  .cards{display:grid;grid-template-columns:repeat(2,1fr);gap:20px;margin-top:8px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;transition:border-color .15s,transform .15s}
+  .card:hover{border-color:var(--border-strong);transform:translateY(-2px)}
+  .card .thumb{display:block;border-bottom:1px solid var(--border);background:#000;aspect-ratio:1440/900;overflow:hidden}
+  .card .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .card .body{padding:16px 18px 18px}
+  .tag{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;margin-bottom:8px}
+  .tag.a{background:rgba(96,165,250,.15);color:var(--blue-l)}
+  .tag.b{background:rgba(52,211,153,.15);color:var(--green)}
+  .tag.c{background:rgba(129,140,248,.18);color:var(--indigo)}
+  .tag.d{background:rgba(251,191,36,.15);color:var(--amber)}
+  .card h3{font-size:16px}
+  .card .one{font-size:13px;color:var(--text-2);margin:6px 0 12px}
+  .tt{font-size:12.5px;color:var(--text-2);margin:2px 0;display:flex;gap:8px}
+  .tt .ic{flex:0 0 14px;font-weight:700}
+  .tt.pro .ic{color:var(--green)}
+  .tt.con .ic{color:var(--red)}
+  .card .open{margin-top:14px;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;background:var(--blue);color:#fff;padding:7px 14px;border-radius:7px}
+  .card .open:hover{background:var(--blue-l);text-decoration:none}
+  .rec{background:linear-gradient(180deg,rgba(129,140,248,.10),rgba(96,165,250,.04));border:1px solid var(--border-strong);border-radius:12px;padding:20px 22px;margin-top:8px}
+  .rec ul{margin:10px 0 0;padding-left:18px}
+  .rec li{color:var(--text-2);margin:6px 0;font-size:14px}
+  .rec b{color:var(--text)}
+  .note{font-size:12.5px;color:var(--muted);margin-top:40px;border-top:1px solid var(--border);padding-top:16px}
+  kbd{font-family:var(--mono);font-size:11px;background:var(--raised);border:1px solid var(--border-strong);border-radius:4px;padding:1px 5px}
+  @media(max-width:820px){.problems,.cards{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="hero">
+    <div class="eyebrow">Partwright · UX exploration</div>
+    <h1>Rethinking the layout &amp; flow</h1>
+    <p class="lead">Four throwaway prototypes exploring how to make a feature-rich, browser-based, AI-driven CAD tool easier to navigate. Same fake scene in every mock so you can compare layouts apples-to-apples. Static HTML, no build step — open any file in a browser.</p>
+  </header>
+
+  <h2>What the current app does well — and where it strains</h2>
+  <p>The mental model is sound: a landing portal → one editor workspace (code + viewport) → AI drawer, with sessions/versions as the core unit. But years of organic feature growth have produced three competing control zones and a lot of unlabeled iconography. The recurring theme: <b>capability is high, but discoverability lags.</b></p>
+  <div class="problems">
+    <div class="prob"><div class="n">01</div><h3>Icon soup</h3><p>~14 toolbar controls + a crowded viewport-corner overlay, many glyph-only (⚙ ⚠ ? 🎯 ✦, △ ▦ 📏 🔓). Meaning lives only in tooltips. The ruler 📏 means two different things in the same bar.</p></div>
+    <div class="prob"><div class="n">02</div><h3>Three overlapping control zones</h3><p>Top toolbar, session bar, and the viewport overlay all hold "global-ish" actions. View toggles, measure, paint, annotate, simplify and cross-section all pile into one wrapping corner that collides with the gizmo and clip slider.</p></div>
+    <div class="prob"><div class="n">03</div><h3>Tab overload &amp; redundancy</h3><p>Seven right-pane tabs (Interactive / Gallery / Versions / Images / Diff / Notes / Data). Gallery vs Versions overlap heavily; Data is a debug surface sitting beside everyday tabs; Diff hides the editor.</p></div>
+    <div class="prob"><div class="n">04</div><h3>Split project model</h3><p>"Recent sessions" lives on the landing page, but the full session manager is a modal reachable only from inside the editor. No single "my projects" home; versions are managed across four different surfaces.</p></div>
+    <div class="prob"><div class="n">05</div><h3>AI: central pitch, peripheral UI</h3><p>The product sells "built for AI agents," yet in-app AI is one ✦ toggle opening a very dense drawer (11-control toggle strip, no provider switcher in the header) that's disconnected from the tab system.</p></div>
+    <div class="prob"><div class="n">06</div><h3>Surprising mode coupling</h3><p>Painting silently locks the editor and forks a version; overlay tools are mutually exclusive; <kbd>⌘Z</kbd> routes to whichever tool is active. Powerful, but the state changes aren't anticipated.</p></div>
+  </div>
+
+  <h2>Four directions to compare</h2>
+  <p>Each prototype attacks discoverability with a different organizing principle. They aren't mutually exclusive — the best answer is likely a blend (see the recommendation).</p>
+  <div class="cards">
+
+    <div class="card">
+      <a class="thumb" href="a-menubar.html"><img src="a-menubar.png" alt="Concept A — menu bar"></a>
+      <div class="body">
+        <span class="tag a">Concept A</span>
+        <h3>Classic menu bar + labeled toolbar</h3>
+        <div class="one">Give every action a discoverable, categorized home — File / Edit / View / Insert / Measure / AI / Help — plus a contextual toolbar where every tool is icon <i>and</i> word.</div>
+        <div class="tt pro"><span class="ic">+</span><span>Most familiar; exhaustive &amp; self-documenting; shortcuts shown inline; nothing is a mystery glyph.</span></div>
+        <div class="tt pro"><span class="ic">+</span><span>Scales to dozens of features without adding screen clutter.</span></div>
+        <div class="tt con"><span class="ic">–</span><span>Feels like a desktop app; menus hide depth behind clicks; weakest on mobile/touch.</span></div>
+        <a class="open" href="a-menubar.html">Open prototype →</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <a class="thumb" href="b-activity-rail.html"><img src="b-activity-rail.png" alt="Concept B — activity rail"></a>
+      <div class="body">
+        <span class="tag b">Concept B</span>
+        <h3>Left activity rail + clean toolbars</h3>
+        <div class="one">One labeled vertical navigation spine replaces the seven cryptic tabs; a single labeled toolbar pinned to the viewport replaces the crowded corner. Merges Gallery + Versions.</div>
+        <div class="tt pro"><span class="ic">+</span><span>Modern (VS Code / Figma) feel; a calm, labeled home for navigation; collapses to icons or a mobile bottom-bar gracefully.</span></div>
+        <div class="tt pro"><span class="ic">+</span><span>AI sits naturally as a first-class destination in the spine.</span></div>
+        <div class="tt con"><span class="ic">–</span><span>Costs ~56–210px of permanent width; biggest structural change to today's code.</span></div>
+        <a class="open" href="b-activity-rail.html">Open prototype →</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <a class="thumb" href="c-command-first.html"><img src="c-command-first.png" alt="Concept C — command first"></a>
+      <div class="body">
+        <span class="tag c">Concept C</span>
+        <h3>Command-first / minimal chrome</h3>
+        <div class="one">Keep the surface extremely calm (editor + viewport + AI). Make a powerful, searchable, categorized <kbd>⌘K</kbd> palette the primary way to find and do everything.</div>
+        <div class="tt pro"><span class="ic">+</span><span>Maximum focus on the work; fastest for power users; everything labeled &amp; searchable in one place.</span></div>
+        <div class="tt pro"><span class="ic">+</span><span>Builds on the palette the app already has — smallest lift to start.</span></div>
+        <div class="tt con"><span class="ic">–</span><span>Discoverability still depends on people <i>finding</i> the palette; weak for first-timers who don't know what to search.</span></div>
+        <a class="open" href="c-command-first.html">Open prototype →</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <a class="thumb" href="d-workspaces.html"><img src="d-workspaces.png" alt="Concept D — workspaces"></a>
+      <div class="body">
+        <span class="tag d">Concept D</span>
+        <h3>Task workspaces / modes</h3>
+        <div class="one">Split into a few named workspaces — Model · Decorate · Review · Inspect. Each shows only its relevant tools, so you never see everything at once and the paint→lock becomes an expected mode switch.</div>
+        <div class="tt pro"><span class="ic">+</span><span>Dramatically reduces simultaneous complexity; turns surprising state changes into intentional ones; great for onboarding.</span></div>
+        <div class="tt pro"><span class="ic">+</span><span>Each mode can be tuned for its job (and its device).</span></div>
+        <div class="tt con"><span class="ic">–</span><span>Adds switching cost; risks hiding a tool a user wants "right now"; needs clear signposting.</span></div>
+        <a class="open" href="d-workspaces.html">Open prototype →</a>
+      </div>
+    </div>
+
+  </div>
+
+  <h2>My recommendation — a blend, phased</h2>
+  <div class="rec">
+    <p style="margin-top:0">No single concept wins outright; each solves a different slice. A pragmatic path that keeps the browser-only, AI-forward identity:</p>
+    <ul>
+      <li><b>Foundation — Concept B's shell.</b> A labeled left rail is the single biggest discoverability win and the cleanest way to retire the seven-tab strip and the crowded corner overlay. Merge Gallery+Versions; give AI a real home in the spine.</li>
+      <li><b>Always-on — Concept C's palette.</b> Invest in one great categorized <kbd>⌘K</kbd> as the universal accelerator and the home for rarely-used/destructive actions (reset data, diagnostics, tour) so they stop hiding. Cheap, complements any shell.</li>
+      <li><b>Labels everywhere — Concept A's discipline.</b> Adopt the "icon + word" rule and inline shortcut hints for every persistent control. You don't need the full menu bar to steal its self-documenting habit.</li>
+      <li><b>For heavy modes — Concept D's idea, scoped.</b> Don't mode the whole app, but make <b>Decorate</b> (paint + annotate on a locked snapshot) an explicit workspace so the silent paint-lock becomes a deliberate, understood switch.</li>
+    </ul>
+  </div>
+
+  <p class="note">These are disposable visual studies — fake content, no real behavior, no shared code with the app. Built to spark a direction conversation, not to ship. Open <code>a/b/c/d-*.html</code> directly in any browser; each is fully self-contained (no network, no dependencies).</p>
+</div>
+</body>
+</html>

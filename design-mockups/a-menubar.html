@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Partwright — Concept A · Classic menu bar</title>
+<style>
+  :root {
+    --bg: #18181b;
+    --surface: #27272a;
+    --raised: #3f3f46;
+    --border: #3f3f46;
+    --border-strong: #52525b;
+    --text: #fafafa;
+    --text-2: #a1a1aa;
+    --muted: #71717a;
+    --brand: #3b82f6;
+    --brand-2: #60a5fa;
+    --ai: #818cf8;
+    --success: #34d399;
+    --warning: #fbbf24;
+    --danger: #f87171;
+    --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --mono: ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ---------- 1. MENU BAR ---------- */
+  .menubar {
+    height: 34px;
+    flex: 0 0 34px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    gap: 4px;
+    position: relative;
+    z-index: 50;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 10px 0 4px;
+    margin-right: 4px;
+  }
+  .brand-logo {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    background: linear-gradient(135deg, var(--brand) 0%, var(--ai) 100%);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.06) inset;
+  }
+  .brand-name {
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.2px;
+  }
+  .menu-item {
+    padding: 5px 10px;
+    border-radius: 6px;
+    color: var(--text-2);
+    cursor: default;
+    font-size: 13px;
+    user-select: none;
+    line-height: 1;
+  }
+  .menu-item:hover { background: var(--raised); color: var(--text); }
+  .menu-item.open { background: var(--raised); color: var(--text); }
+  .menubar-right { margin-left: auto; display: flex; align-items: center; gap: 6px; padding-right: 4px; }
+  .theme-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    color: var(--text-2);
+    background: transparent;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .theme-toggle:hover { color: var(--text); border-color: var(--muted); }
+  .theme-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--brand-2);
+    box-shadow: 0 0 6px rgba(96,165,250,0.6);
+  }
+
+  /* ---------- Dropdown panels ---------- */
+  .dropdown {
+    position: absolute;
+    top: 34px;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.55), 0 0 0 1px rgba(0,0,0,0.3);
+    padding: 6px;
+    min-width: 230px;
+    display: none;
+    z-index: 60;
+  }
+  .dropdown.open { display: block; }
+  .menu-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    color: var(--text);
+    cursor: default;
+    position: relative;
+    white-space: nowrap;
+  }
+  .menu-row:hover { background: var(--brand); color: #fff; }
+  .menu-row:hover .shortcut { color: rgba(255,255,255,0.85); }
+  .menu-row:hover .submark { color: rgba(255,255,255,0.85); }
+  .menu-row .label { display: flex; align-items: center; gap: 9px; }
+  .menu-row .ico { width: 14px; text-align: center; color: var(--muted); font-size: 12px; }
+  .menu-row:hover .ico { color: rgba(255,255,255,0.85); }
+  .shortcut { color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+  .submark { color: var(--muted); font-size: 11px; }
+  .menu-sep { height: 1px; background: var(--border); margin: 5px 6px; }
+  .menu-row.has-flyout { background: var(--raised); }
+
+  /* Flyout submenu */
+  .flyout {
+    position: absolute;
+    left: 100%;
+    top: -7px;
+    margin-left: 4px;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.55);
+    padding: 6px;
+    min-width: 170px;
+    display: none;
+  }
+  .menu-row.has-flyout > .flyout { display: block; }
+
+  /* ---------- 2. CONTEXTUAL TOOLBAR ---------- */
+  .toolbar {
+    height: 40px;
+    flex: 0 0 40px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    gap: 6px;
+    overflow: hidden;
+  }
+  .tb-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-2);
+    font-family: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+    white-space: nowrap;
+    line-height: 1;
+  }
+  .tb-btn:hover { background: var(--raised); color: var(--text); }
+  .tb-btn .gl { font-size: 12px; line-height: 1; }
+  .tb-run {
+    background: var(--brand);
+    color: #fff;
+    border-color: var(--brand);
+    font-weight: 600;
+  }
+  .tb-run:hover { background: var(--brand-2); color: #fff; }
+  .tb-btn.active {
+    background: rgba(59,130,246,0.16);
+    color: var(--brand-2);
+    border-color: rgba(96,165,250,0.4);
+  }
+  .tb-toggle-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 6px rgba(52,211,153,0.6); }
+  .tb-divider { width: 1px; height: 20px; background: var(--border-strong); margin: 0 6px; flex: 0 0 1px; }
+  .tb-label { color: var(--muted); font-size: 11px; padding: 0 2px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .segmented {
+    display: inline-flex;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .segmented .seg {
+    padding: 5px 11px;
+    font-size: 12px;
+    color: var(--text-2);
+    cursor: pointer;
+    background: transparent;
+    border: none;
+    font-family: inherit;
+    line-height: 1;
+  }
+  .segmented .seg.active { background: var(--brand); color: #fff; font-weight: 600; }
+  .segmented .seg:not(.active):hover { background: var(--raised); color: var(--text); }
+
+  /* ---------- 3. PROJECT STRIP ---------- */
+  .projstrip {
+    height: 30px;
+    flex: 0 0 30px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 12px;
+    font-size: 12px;
+  }
+  .proj-name { color: var(--text); font-weight: 500; }
+  .ver-stepper {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-2);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px 4px;
+  }
+  .ver-arrow {
+    color: var(--muted);
+    cursor: pointer;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 11px;
+  }
+  .ver-arrow:hover { background: var(--raised); color: var(--text); }
+  .ver-text { font-size: 11.5px; }
+  .ver-text .vlabel { color: var(--muted); }
+  .proj-right { margin-left: auto; }
+  .save-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 11px;
+    border-radius: 6px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--text-2);
+    font-family: inherit; font-size: 12px; cursor: pointer;
+  }
+  .save-btn:hover { color: var(--text); border-color: var(--muted); }
+
+  /* ---------- 4. BODY ---------- */
+  .body {
+    flex: 1 1 auto;
+    display: flex;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* LEFT — code editor */
+  .editor {
+    flex: 0 0 40%;
+    min-width: 360px;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border);
+    background: var(--bg);
+    min-height: 0;
+  }
+  .editor-head {
+    height: 32px;
+    flex: 0 0 32px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    gap: 8px;
+  }
+  .editor-head .file {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-2);
+  }
+  .editor-head .file .ext { color: var(--muted); }
+  .format-btn {
+    margin-left: auto;
+    padding: 3px 10px;
+    border-radius: 5px;
+    border: 1px solid var(--border-strong);
+    background: transparent;
+    color: var(--text-2);
+    font-family: inherit; font-size: 11.5px; cursor: pointer;
+  }
+  .format-btn:hover { color: var(--text); border-color: var(--muted); }
+  .code-area {
+    flex: 1 1 auto;
+    overflow: auto;
+    display: flex;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.7;
+    padding: 10px 0;
+  }
+  .gutter {
+    flex: 0 0 42px;
+    text-align: right;
+    color: var(--muted);
+    padding: 0 10px 0 0;
+    user-select: none;
+    opacity: 0.65;
+  }
+  .gutter div { height: 1.7em; }
+  .code {
+    flex: 1 1 auto;
+    white-space: pre;
+    padding-right: 14px;
+    color: var(--text);
+    overflow-x: auto;
+  }
+  .code .ln { height: 1.7em; }
+  .kw { color: var(--brand-2); }
+  .str { color: var(--warning); }
+  .cm { color: #6b8f6b; }
+  .fn { color: var(--ai); }
+  .num { color: #f0a868; }
+  .editor-foot {
+    flex: 0 0 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 0 12px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    font-size: 11.5px;
+    color: var(--text-2);
+    overflow: hidden;
+  }
+  .stat { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .stat .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .dot-green { background: var(--success); box-shadow: 0 0 6px rgba(52,211,153,0.6); }
+  .stat .ok { color: var(--success); }
+  .stat-sep { color: var(--border-strong); }
+
+  /* CENTER — viewport */
+  .viewport {
+    flex: 1 1 auto;
+    position: relative;
+    background:
+      radial-gradient(circle at 50% 38%, #232329 0%, #18181b 70%);
+    min-width: 0;
+    overflow: hidden;
+  }
+  .vp-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .status-chip {
+    position: absolute;
+    top: 12px; left: 12px;
+    display: inline-flex; align-items: center; gap: 7px;
+    background: rgba(39,39,42,0.85);
+    backdrop-filter: blur(6px);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 5px 10px;
+    font-size: 12px;
+    color: var(--text);
+  }
+  .gizmo {
+    position: absolute;
+    bottom: 14px; left: 14px;
+    width: 70px; height: 70px;
+    opacity: 0.95;
+  }
+
+  /* RIGHT — AI chat */
+  .ai-drawer {
+    flex: 0 0 330px;
+    width: 330px;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--border);
+    background: var(--surface);
+    min-height: 0;
+  }
+  .ai-head {
+    height: 38px; flex: 0 0 38px;
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .ai-title { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+  .ai-spark { color: var(--ai); }
+  .model-picker {
+    margin: 10px 12px 6px;
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    font-size: 12px;
+    color: var(--text-2);
+    cursor: pointer;
+  }
+  .model-picker:hover { border-color: var(--border-strong); }
+  .model-picker .mp-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ai); box-shadow: 0 0 6px rgba(129,140,248,0.6); }
+  .model-picker .mp-prov { color: var(--text); font-weight: 500; }
+  .model-picker .mp-caret { margin-left: auto; color: var(--muted); }
+  .transcript {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .bubble {
+    border-radius: 10px;
+    padding: 9px 11px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    max-width: 92%;
+  }
+  .bubble.user {
+    align-self: flex-end;
+    background: var(--brand);
+    color: #fff;
+    border-bottom-right-radius: 4px;
+  }
+  .bubble.assistant {
+    align-self: flex-start;
+    background: var(--raised);
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+    border-bottom-left-radius: 4px;
+  }
+  .tool-chip {
+    align-self: flex-start;
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--ai);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--text-2);
+  }
+  .tool-chip .diamond { color: var(--ai); }
+  .tool-chip .caret { margin-left: 4px; color: var(--muted); font-family: var(--font); }
+  .ai-input-wrap {
+    flex: 0 0 auto;
+    padding: 10px 12px 12px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .ai-input-box {
+    display: flex; align-items: flex-end; gap: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    border-radius: 9px;
+    padding: 8px 8px 8px 12px;
+  }
+  .ai-input-box:focus-within { border-color: var(--brand); }
+  .ai-input {
+    flex: 1 1 auto;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12.5px;
+    resize: none;
+    height: 18px;
+    padding: 1px 0;
+  }
+  .ai-input::placeholder { color: var(--muted); }
+  .send-btn {
+    flex: 0 0 auto;
+    background: var(--brand);
+    color: #fff;
+    border: none;
+    border-radius: 7px;
+    padding: 6px 14px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .send-btn:hover { background: var(--brand-2); }
+
+  /* Concept badge */
+  .concept-badge {
+    position: fixed;
+    left: 12px; bottom: 12px;
+    background: rgba(24,24,27,0.78);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    padding: 6px 14px;
+    font-size: 11.5px;
+    color: var(--text-2);
+    z-index: 100;
+  }
+  .concept-badge b { color: var(--text); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- 1. MENU BAR -->
+  <div class="menubar">
+    <div class="brand">
+      <div class="brand-logo"></div>
+      <div class="brand-name">Partwright</div>
+    </div>
+    <div class="menu-item open" data-menu="file">File</div>
+    <div class="menu-item" data-menu="edit">Edit</div>
+    <div class="menu-item" data-menu="view">View</div>
+    <div class="menu-item" data-menu="insert">Insert</div>
+    <div class="menu-item" data-menu="measure">Measure</div>
+    <div class="menu-item" data-menu="ai">AI</div>
+    <div class="menu-item" data-menu="help">Help</div>
+    <div class="menubar-right">
+      <button class="theme-toggle"><span class="theme-dot"></span>Dark</button>
+    </div>
+
+    <!-- File dropdown (open by default) -->
+    <div class="dropdown open" id="menu-file" style="left: 80px;">
+      <div class="menu-row"><span class="label"><span class="ico">＋</span>New project</span><span class="shortcut">⌘N</span></div>
+      <div class="menu-row"><span class="label"><span class="ico">📂</span>Open project…</span><span class="shortcut">⌘O</span></div>
+      <div class="menu-row"><span class="label"><span class="ico">🕘</span>Recent projects</span><span class="submark">▸</span></div>
+      <div class="menu-sep"></div>
+      <div class="menu-row has-flyout">
+        <span class="label"><span class="ico">⬇</span>Import</span><span class="submark">▸</span>
+        <div class="flyout">
+          <div class="menu-row"><span class="label">STL…</span></div>
+          <div class="menu-row"><span class="label">Session…</span></div>
+          <div class="menu-row"><span class="label">Code…</span></div>
+        </div>
+      </div>
+      <div class="menu-row">
+        <span class="label"><span class="ico">⬆</span>Export</span><span class="submark">▸</span>
+      </div>
+      <div class="menu-sep"></div>
+      <div class="menu-row"><span class="label"><span class="ico">💾</span>Save version</span><span class="shortcut">⌘S</span></div>
+      <div class="menu-sep"></div>
+      <div class="menu-row"><span class="label"><span class="ico">⚙</span>Manage / reset data…</span></div>
+    </div>
+  </div>
+
+  <!-- 2. CONTEXTUAL TOOLBAR -->
+  <div class="toolbar">
+    <button class="tb-btn tb-run"><span class="gl">▶</span>Run</button>
+    <button class="tb-btn"><span class="tb-toggle-dot"></span>Auto-run</button>
+    <div class="tb-divider"></div>
+    <div class="segmented">
+      <button class="seg active">JS</button>
+      <button class="seg">OpenSCAD</button>
+    </div>
+    <div class="tb-divider"></div>
+    <span class="tb-label">View</span>
+    <button class="tb-btn"><span class="gl">▤</span>Wireframe</button>
+    <button class="tb-btn"><span class="gl">▦</span>Grid</button>
+    <button class="tb-btn active"><span class="gl">⟺</span>Dimensions</button>
+    <div class="tb-divider"></div>
+    <span class="tb-label">Tools</span>
+    <button class="tb-btn"><span class="gl">📐</span>Measure</button>
+    <button class="tb-btn"><span class="gl">✂</span>Cross-section</button>
+    <button class="tb-btn"><span class="gl">🖌</span>Paint</button>
+    <button class="tb-btn"><span class="gl">✎</span>Annotate</button>
+    <button class="tb-btn"><span class="gl">◇</span>Simplify</button>
+  </div>
+
+  <!-- 3. PROJECT STRIP -->
+  <div class="projstrip">
+    <span class="proj-name">Motor mount bracket</span>
+    <span class="ver-stepper">
+      <span class="ver-arrow">◀</span>
+      <span class="ver-text">v4 / 4 · <span class="vlabel">fillet corners</span></span>
+      <span class="ver-arrow">▶</span>
+    </span>
+    <div class="proj-right">
+      <button class="save-btn"><span>💾</span>Save</button>
+    </div>
+  </div>
+
+  <!-- 4. BODY -->
+  <div class="body">
+
+    <!-- LEFT: code editor -->
+    <div class="editor">
+      <div class="editor-head">
+        <span class="file">main.js<span class="ext"> · JS</span></span>
+        <button class="format-btn">Format</button>
+      </div>
+      <div class="code-area">
+        <div class="gutter">
+          <div>1</div><div>2</div><div>3</div><div>4</div><div>5</div>
+          <div>6</div><div>7</div><div>8</div><div>9</div><div>10</div>
+        </div>
+        <div class="code"><div class="ln"><span class="kw">const</span> { Manifold } = api;</div><div class="ln"><span class="kw">const</span> base = Manifold.<span class="fn">cube</span>([<span class="num">60</span>, <span class="num">40</span>, <span class="num">6</span>], <span class="kw">true</span>);</div><div class="ln"><span class="kw">const</span> wall = Manifold.<span class="fn">cube</span>([<span class="num">60</span>, <span class="num">6</span>, <span class="num">35</span>], <span class="kw">true</span>).<span class="fn">translate</span>([<span class="num">0</span>, <span class="num">-17</span>, <span class="num">17</span>]);</div><div class="ln"><span class="kw">let</span> bracket = base.<span class="fn">add</span>(wall);</div><div class="ln"><span class="cm">// two M4 mounting holes</span></div><div class="ln"><span class="kw">const</span> hole = Manifold.<span class="fn">cylinder</span>(<span class="num">35</span>, <span class="num">2.25</span>, <span class="num">2.25</span>, <span class="num">32</span>);</div><div class="ln">bracket = bracket.<span class="fn">subtract</span>(hole.<span class="fn">translate</span>([<span class="num">-12</span>, <span class="num">-17</span>, <span class="num">17</span>]).<span class="fn">rotate</span>([<span class="num">90</span>,<span class="num">0</span>,<span class="num">0</span>]));</div><div class="ln">bracket = bracket.<span class="fn">subtract</span>(hole.<span class="fn">translate</span>([ <span class="num">12</span>, <span class="num">-17</span>, <span class="num">17</span>]).<span class="fn">rotate</span>([<span class="num">90</span>,<span class="num">0</span>,<span class="num">0</span>]));</div><div class="ln"><span class="kw">return</span> bracket;</div></div>
+      </div>
+      <div class="editor-foot">
+        <span class="stat"><span class="dot dot-green"></span>Ready</span>
+        <span class="stat-sep">·</span>
+        <span class="stat">12,480 tris</span>
+        <span class="stat-sep">·</span>
+        <span class="stat ok">manifold ✓</span>
+        <span class="stat-sep">·</span>
+        <span class="stat">1 component</span>
+        <span class="stat-sep">·</span>
+        <span class="stat">60 × 40 × 35</span>
+      </div>
+    </div>
+
+    <!-- CENTER: viewport -->
+    <div class="viewport">
+      <svg class="vp-svg" viewBox="0 0 600 480" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+        <!-- Isometric L-bracket: base plate + vertical wall -->
+        <!-- BASE PLATE -->
+        <!-- top face (light) -->
+        <polygon points="180,300 360,260 480,310 300,350" fill="#5b6f9c" />
+        <!-- front face (mid) -->
+        <polygon points="180,300 300,350 300,372 180,322" fill="#3f4f72" />
+        <!-- right face (dark) -->
+        <polygon points="300,350 480,310 480,332 300,372" fill="#2c3852" />
+
+        <!-- VERTICAL WALL (rises from back edge of plate) -->
+        <!-- wall front face (mid-light) -->
+        <polygon points="180,300 360,260 360,150 180,190" fill="#4f6391" />
+        <!-- wall top face (light) -->
+        <polygon points="180,190 360,150 410,168 230,208" fill="#6877a3" />
+        <!-- wall right/side face (dark) -->
+        <polygon points="360,260 410,218 410,168 360,150" fill="#2c3852" />
+        <polygon points="360,150 410,168 410,218 360,260" fill="#33405d" />
+
+        <!-- Two mounting holes on the wall front face -->
+        <ellipse cx="247" cy="218" rx="11" ry="13" fill="#1c2334" stroke="#1a2030" stroke-width="1.5" transform="rotate(-12 247 218)" />
+        <ellipse cx="305" cy="206" rx="11" ry="13" fill="#1c2334" stroke="#1a2030" stroke-width="1.5" transform="rotate(-12 305 206)" />
+      </svg>
+
+      <div class="status-chip"><span class="dot dot-green" style="width:7px;height:7px;border-radius:50%;display:inline-block;"></span>Ready</div>
+
+      <!-- Orientation gizmo -->
+      <svg class="gizmo" viewBox="0 0 70 70" xmlns="http://www.w3.org/2000/svg">
+        <!-- Z up (blue) -->
+        <line x1="35" y1="38" x2="35" y2="8" stroke="#60a5fa" stroke-width="2.5" stroke-linecap="round" />
+        <text x="35" y="6" fill="#60a5fa" font-size="9" text-anchor="middle" font-family="system-ui">Z</text>
+        <!-- X (red) -->
+        <line x1="35" y1="38" x2="62" y2="50" stroke="#f87171" stroke-width="2.5" stroke-linecap="round" />
+        <text x="65" y="53" fill="#f87171" font-size="9" text-anchor="middle" font-family="system-ui">X</text>
+        <!-- Y (green) -->
+        <line x1="35" y1="38" x2="10" y2="50" stroke="#34d399" stroke-width="2.5" stroke-linecap="round" />
+        <text x="6" y="53" fill="#34d399" font-size="9" text-anchor="middle" font-family="system-ui">Y</text>
+        <circle cx="35" cy="38" r="2.5" fill="#a1a1aa" />
+      </svg>
+    </div>
+
+    <!-- RIGHT: AI chat drawer -->
+    <div class="ai-drawer">
+      <div class="ai-head">
+        <div class="ai-title"><span class="ai-spark">✦</span>AI</div>
+      </div>
+      <div class="model-picker">
+        <span class="mp-dot"></span>
+        <span><span class="mp-prov">Anthropic</span> · Claude Opus 4.7</span>
+        <span class="mp-caret">▾</span>
+      </div>
+      <div class="transcript">
+        <div class="bubble user">Add two M4 mounting holes on the vertical face, 24mm apart.</div>
+        <div class="tool-chip"><span class="diamond">◆</span>runAndSave('add mounting holes')<span class="caret">▸</span></div>
+        <div class="bubble assistant">Added two Ø4.5 mm through-holes on the vertical wall, centered 24 mm apart. Re-rendered — still manifold (12,480 tris).</div>
+      </div>
+      <div class="ai-input-wrap">
+        <div class="ai-input-box">
+          <textarea class="ai-input" placeholder="Describe a change…" rows="1"></textarea>
+          <button class="send-btn">Send</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Concept badge -->
+<div class="concept-badge"><b>Concept A</b> · Classic menu bar</div>
+
+<script>
+  (function () {
+    var menuItems = document.querySelectorAll('.menu-item[data-menu]');
+    var dropdowns = { file: document.getElementById('menu-file') };
+
+    function closeAll() {
+      menuItems.forEach(function (m) { m.classList.remove('open'); });
+      Object.keys(dropdowns).forEach(function (k) {
+        if (dropdowns[k]) dropdowns[k].classList.remove('open');
+      });
+    }
+
+    menuItems.forEach(function (item) {
+      item.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var key = item.getAttribute('data-menu');
+        var dd = dropdowns[key];
+        var wasOpen = item.classList.contains('open');
+        closeAll();
+        if (!wasOpen) {
+          item.classList.add('open');
+          // position dropdown under the clicked item
+          if (dd) {
+            dd.style.left = item.offsetLeft + 'px';
+            dd.classList.add('open');
+          }
+        }
+      });
+    });
+
+    // Click outside closes menus (but not on a dropdown row)
+    document.addEventListener('click', function (e) {
+      if (!e.target.closest('.dropdown') && !e.target.closest('.menu-item')) {
+        closeAll();
+      }
+    });
+
+    // Toolbar segmented + toggle buttons (visual only)
+    document.querySelectorAll('.segmented').forEach(function (seg) {
+      seg.querySelectorAll('.seg').forEach(function (b) {
+        b.addEventListener('click', function () {
+          seg.querySelectorAll('.seg').forEach(function (x) { x.classList.remove('active'); });
+          b.classList.add('active');
+        });
+      });
+    });
+
+    document.querySelectorAll('.toolbar .tb-btn:not(.tb-run)').forEach(function (b) {
+      b.addEventListener('click', function () { b.classList.toggle('active'); });
+    });
+  })();
+</script>
+</body>
+</html>
