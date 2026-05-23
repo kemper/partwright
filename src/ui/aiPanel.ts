@@ -238,6 +238,7 @@ function showDrawer(): void {
   state.open = true;
   drawerEl.classList.remove('translate-x-full');
   drawerEl.classList.add('translate-x-0');
+  window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: true } }));
   // Only push content on desktop — mobile layout is stacked, not side-by-side.
   if (window.matchMedia('(min-width: 768px)').matches) {
     const app = document.getElementById('app');
@@ -253,6 +254,7 @@ function hideDrawer(): void {
   state.open = false;
   drawerEl.classList.remove('translate-x-0');
   drawerEl.classList.add('translate-x-full');
+  window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: false } }));
   const app = document.getElementById('app');
   if (app) app.style.paddingRight = '0';
   window.dispatchEvent(new Event('resize'));

@@ -1341,7 +1341,6 @@ async function main() {
     },
     onImportFile: async (file) => { await handleImportFile(file); },
     onImportInboxEntry: handleReimportInboxEntry,
-    onToggleAi: () => { toggleAiPanel(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad') => {
       if (lang === getActiveLanguage()) return;
@@ -1426,7 +1425,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail } = createLayout(editorUI);
+  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail } = createLayout(editorUI, { onToggleAi: () => { toggleAiPanel(); } });
 
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
@@ -6762,7 +6761,7 @@ async function main() {
 
     function reflect(locked: boolean) {
       lockBtn.className = locked ? activeClass : inactiveClass;
-      lockBtn.textContent = locked ? '\uD83D\uDD12' : '\uD83D\uDD13';
+      lockBtn.textContent = locked ? '\uD83D\uDD12 Lock' : '\uD83D\uDD13 Lock';
       lockBtn.title = locked ? 'Unlock camera rotation' : 'Lock camera rotation';
     }
 

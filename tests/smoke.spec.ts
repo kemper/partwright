@@ -120,10 +120,11 @@ test.describe('AI chat panel', () => {
     await expect(page.locator('input[type="password"]')).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Connect Anthropic API' })).toBeVisible();
 
-    // Cancel returns to the panel, no key persisted
+    // Cancel returns to the panel, no key persisted. The AI rail item shows the
+    // disconnected state via its status dot (grey) rather than label text.
     await page.locator('.bg-zinc-800.rounded-xl button:text-is("Cancel")').click();
     await expect(page.locator('input[type="password"]')).toHaveCount(0);
-    await expect(page.locator('#btn-ai')).toContainText(/Connect AI/);
+    await expect(page.locator('#ai-status-dot')).toHaveClass(/bg-zinc-500/);
   });
 
   test('stale local-model id falls back to the connect prompt', async ({ page }) => {
