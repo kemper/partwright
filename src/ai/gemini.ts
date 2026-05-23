@@ -23,21 +23,31 @@ function generateUrl(model: string, apiKey: string): string {
   return `${API_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 }
 
+function modelsUrl(apiKey: string, pageSize: number): string {
+  return `${API_BASE}/models?key=${encodeURIComponent(apiKey)}&pageSize=${pageSize}`;
+}
+
 export function resetClient(): void {
   // Stateless.
 }
 
 export async function validateKey(apiKey: string): Promise<string | null> {
+  // Validate against the lightweight models-list metadata endpoint, NOT a
+  // generateContent ping. A generation call depends on one specific model
+  // being up, so an overloaded model answers 503 UNAVAILABLE ("high demand")
+  // and a perfectly valid key looks rejected. Listing models only checks the
+  // key itself — no per-model availability, no generation quota, and no
+  // hard-coded model id to go stale (the same trap listModels warns about).
   try {
-    const res = await fetch(generateUrl('gemini-2.5-flash-lite', apiKey), {
-      method: 'POST',
+    const res = await fetch(modelsUrl(apiKey, 1), {
+      method: 'GET',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: 'ok' }] }],
-        generationConfig: { maxOutputTokens: 1 },
-      }),
     });
     if (res.ok) return null;
+    // 429/5xx are transient service hiccups (overload, maintenance) — the key
+    // is almost certainly fine, so don't block saving on Google's weather.
+    // This is the case the user hit: a 503 must never look like a bad key.
+    if (res.status === 429 || res.status >= 500) return null;
     const text = await res.text().catch(() => '');
     if ((res.status === 400 || res.status === 401 || res.status === 403)
         && /api[ _]key|unauthorized|forbidden|invalid/i.test(text)) {
@@ -56,7 +66,7 @@ export async function validateKey(apiKey: string): Promise<string | null> {
  *  picks from their real current lineup, including newer models like
  *  Gemini 3 / "Nano Banana" with whatever id Google actually assigned. */
 export async function listModels(apiKey: string): Promise<{ id: string; label: string }[]> {
-  const res = await fetch(`${API_BASE}/models?key=${encodeURIComponent(apiKey)}&pageSize=1000`, {
+  const res = await fetch(modelsUrl(apiKey, 1000), {
     method: 'GET',
     headers: { 'Content-Type': 'application/json' },
   });

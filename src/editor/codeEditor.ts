@@ -255,6 +255,16 @@ export function formatCode(): void {
   }
 }
 
+/** True when the editor's content has real edits relative to `code`, ignoring
+ *  pure formatting differences. `code` is run through the same auto-format pass
+ *  setValue() applies on load, so a freshly-loaded version reports "no edits"
+ *  even when its stored code was never formatted (e.g. saved raw via the
+ *  console API). When auto-format is off, compares the raw strings. */
+export function editorContentDiffersFrom(code: string): boolean {
+  const normalized = autoFormatEnabled ? applyFormat(code, currentLanguage) : code;
+  return getValue() !== normalized;
+}
+
 export function getAutoFormat(): boolean {
   return autoFormatEnabled;
 }
