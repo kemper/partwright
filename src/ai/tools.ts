@@ -459,6 +459,23 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'paintStroke',
+    description: 'Paint a SMOOTH brush stroke along a path of surface points, subdividing the mesh under the stroke so the painted edge is rounded (not stair-stepped along triangle boundaries). This is the only paint tool that changes the tessellation — it is more expensive than the region selectors, so reach for `paintNear`/`paintInBox`/`paintConnected`/`paintRegion` first and use this ONLY when a visibly rounded painted edge matters (e.g. a curved racing stripe, a soft-edged logo patch). Get `points` from `probePixel` against a rendered view (render → pick pixels along the desired stroke → probePixel each → pass the world-space hits here). `radius` is in mesh units. `resolution` sets smoothness (target triangle edge = radius / resolution; higher = smoother + more triangles), default 256, range 2–1024. For absolute control, `maxEdge` overrides it with a target edge length in mesh units (e.g. maxEdge 0.1 for crisp 0.1-unit edges). `shape` is circle (default), square, or diamond.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        points: { type: 'array', items: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 }, description: 'Ordered world-space surface points [[x,y,z], ...] along the stroke path (from probePixel). A single point stamps a rounded dot.' },
+        radius: { type: 'number', description: 'Brush radius in mesh units (must be > 0).' },
+        resolution: { type: 'number', description: 'Smoothness detail: target triangle edge = radius / resolution. Higher = smoother + more triangles. Default 256, clamped 2–1024.' },
+        maxEdge: { type: 'number', description: 'Optional absolute override for the target edge length (mesh units). Takes precedence over resolution.' },
+        shape: { type: 'string', enum: ['circle', 'square', 'diamond'], description: 'Brush footprint shape. Default "circle".' },
+        color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
+        name: { type: 'string' },
+      },
+      required: ['points', 'radius', 'color'],
+    },
+  },
+  {
     name: 'paintInBox',
     description: 'Paint every triangle whose centroid is inside the axis-aligned box (optionally constrained by a normal cone). One call. Use for "paint the top half / the right rim / everything below z=0". Pass `topOnly: true` to skip side walls and the bottom face — the most common over-paint cause. On fan-topology meshes (cylinder/revolve/linear_extrude surfaces), pass `coverageMode: "fully_inside"` and/or `maxTriangleArea` to avoid long radial triangles bleeding paint outside the box.',
     input_schema: {
@@ -932,7 +949,7 @@ const ALWAYS_AVAILABLE = new Set([
 
 const RUN_GATED = new Set(['runCode']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion']);
-const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
+const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
  *  vision spend in one place — when off, the agent has to reason from
@@ -1221,6 +1238,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintFaces(input);
     case 'paintNear':
       return api.paintNear(input);
+    case 'paintStroke':
+      return api.paintStroke(input);
     case 'paintInBox':
       return api.paintInBox(input);
     case 'paintInOrientedBox':

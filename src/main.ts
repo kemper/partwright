@@ -29,7 +29,7 @@ import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCamer
 import { renderCompositeCanvas, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
 import { generateId, getLatestVersion } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
-import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, getAutoFormat, setAutoFormat } from './editor/codeEditor';
+import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, getAutoFormat, setAutoFormat, editorContentDiffersFrom } from './editor/codeEditor';
 import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
@@ -119,10 +119,11 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion } from './color/regions';
-import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius } from './color/paintMode';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
+import { buildStrokeMesh, strokeFootprintTriangles, childrenByParent, type BrushStroke, type BrushShape } from './color/subdivide';
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
-import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle } from './color/adjacency';
+import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles } from './color/boxPaint';
 import { computeFaceGroups } from './color/faceGroups';
@@ -207,6 +208,20 @@ export interface ExampleEntry {
 }
 
 let currentMeshData: MeshData | null = null;
+/** The pristine mesh produced by the authored code, before any smooth brush
+ *  subdivision. `currentMeshData` equals this until a `brushStroke` region
+ *  exists, at which point it becomes the refined (subdivided) mesh rebuilt by
+ *  `rebuildPaintedGeometry`. Kept so the refinement can always be rebuilt from
+ *  a clean base and so unlocking can restore the original tessellation. */
+let paintBaseMesh: MeshData | null = null;
+/** The ordered brushStroke descriptors the current refined mesh was built from.
+ *  Lets the regions-change reconcile detect a pure append (paint one more
+ *  stroke) and refine incrementally from the current mesh, instead of replaying
+ *  every stroke from the base (which is O(strokes²) and made painting lag). */
+let lastStrokeList: RegionDescriptor[] = [];
+/** Set while rehydration adds regions in bulk, so each addRegion doesn't kick
+ *  off a reconcile mid-rebuild. */
+let suspendReconcile = false;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let currentManifold: any = null;
 /** Per-run map from labels (assigned in user code via api.label(shape, name))
@@ -325,7 +340,19 @@ function clearEditorErrorPanel(panel: HTMLElement): void {
   panel.replaceChildren();
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// Surface session URLs in geometry-data so they're accessible even when
+// getGalleryUrl() is sandbox-blocked. Shared by the live geometry-data panel
+// and the off-screen version snapshot below so both carry the same context.
+function withSessionContext(data: Record<string, unknown>): Record<string, unknown> {
+  const state = getState();
+  if (state.session) {
+    data.sessionId = state.session.id;
+    data.sessionUrl = getSessionUrl();
+    data.galleryUrl = getGalleryUrl();
+  }
+  return data;
+}
+
 function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
   if (!currentMeshData) {
     geometryDataEl.textContent = JSON.stringify({ status: 'error', error: 'No geometry' });
@@ -334,26 +361,40 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
 
   // currentManifold may be null for render-only imports (sculpted STLs that
   // can't form a watertight manifold). computeGeometryStats degrades gracefully.
-  const data = computeGeometryStats(currentManifold, currentMeshData, executionTimeMs, sourceCode);
-  // Surface session URLs in geometry-data so they're accessible even when getGalleryUrl() is sandbox-blocked
-  const state = getState();
-  if (state.session) {
-    (data as Record<string, unknown>).sessionId = state.session.id;
-    (data as Record<string, unknown>).sessionUrl = getSessionUrl();
-    (data as Record<string, unknown>).galleryUrl = getGalleryUrl();
-  }
+  const data = withSessionContext(computeGeometryStats(currentManifold, currentMeshData, executionTimeMs, sourceCode));
   geometryDataEl.textContent = JSON.stringify(data, null, 2);
 }
 
-function captureThumbnail(): Promise<Blob | null> {
-  if (!currentMeshData) return Promise.resolve(null);
+function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob | null> {
+  if (!mesh) return Promise.resolve(null);
   try {
-    const canvas = renderCompositeCanvas(applyTriColorsIfVisible(currentMeshData));
+    const canvas = renderCompositeCanvas(applyTriColorsIfVisible(mesh));
     return new Promise(resolve => {
       canvas.toBlob(b => resolve(b), 'image/png');
     });
   } catch {
     return Promise.resolve(null);
+  }
+}
+
+// Capture a thumbnail + geometry-data for an arbitrary `mesh` without touching
+// the live viewport (no updateMesh call → no flicker). Builds a throwaway
+// Manifold purely for the volumetric stats and releases it. Used to snapshot
+// the pre-simplify baseline as its own version during a simplify save.
+async function snapshotMeshAsVersion(
+  mesh: MeshData,
+  sourceCode: string,
+): Promise<{ thumbnail: Blob | null; geometryData: Record<string, unknown> | null }> {
+  const thumbnail = await captureThumbnail(mesh);
+  const mod = getModule();
+  const manifold = mod ? mod.Manifold.ofMesh(mesh) : null;
+  try {
+    const geometryData = withSessionContext(computeGeometryStats(manifold, mesh, undefined, sourceCode));
+    return { thumbnail, geometryData };
+  } finally {
+    if (manifold && typeof manifold.delete === 'function') {
+      try { manifold.delete(); } catch { /* already deleted */ }
+    }
   }
 }
 
@@ -378,6 +419,107 @@ function applyVersionAnnotations(version: Version | null | undefined): void {
  *  Returns the names of regions that resolved to ≥1 triangle (`carried`) vs.
  *  those whose descriptor no longer matches the current geometry (`dropped`),
  *  so callers transferring colors across versions can report what landed. */
+/** Pull the ordered `brushStroke` descriptors out of a descriptor list. */
+function collectStrokeDescriptors(descriptors: RegionDescriptor[]): BrushStroke[] {
+  const strokes: BrushStroke[] = [];
+  for (const d of descriptors) {
+    if (d.kind === 'brushStroke') {
+      strokes.push({ samples: d.samples, radius: d.radius, shape: d.shape, maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 16 });
+    }
+  }
+  return strokes;
+}
+
+/** Refine a base mesh under the given strokes. Returns the mesh unchanged with
+ *  `parentToChildren: null` when there are no strokes (the common case — no
+ *  subdivision, identity mapping). */
+function refineMeshForStrokes(
+  base: MeshData,
+  strokes: BrushStroke[],
+): { mesh: MeshData; parentToChildren: Map<number, number[]> | null } {
+  if (strokes.length === 0) return { mesh: base, parentToChildren: null };
+  const { mesh, childToParent } = buildStrokeMesh(base, strokes);
+  return { mesh, parentToChildren: childrenByParent(childToParent) };
+}
+
+/** Map base-mesh triangle ids onto the refined mesh. With no subdivision
+ *  (`parentToChildren` null) the ids are used as-is. */
+function remapTriangleIds(ids: Iterable<number>, parentToChildren: Map<number, number[]> | null): Set<number> {
+  if (!parentToChildren) return new Set(ids);
+  const out = new Set<number>();
+  for (const id of ids) {
+    const children = parentToChildren.get(id);
+    if (children) for (const c of children) out.add(c);
+  }
+  return out;
+}
+
+/** Resolve a single region descriptor to a triangle set on `mesh`. Shared by
+ *  rehydration (loading a saved version) and the live rebuild after a smooth
+ *  brush stroke changes the working mesh. */
+function resolveDescriptorTriangles(
+  descriptor: RegionDescriptor,
+  mesh: MeshData,
+  adjacency: AdjacencyGraph,
+  parentToChildren: Map<number, number[]> | null,
+): Set<number> {
+  switch (descriptor.kind) {
+    case 'coplanar': {
+      const { seedPoint, seedNormal, normalTolerance } = descriptor;
+      const seedTri = resolveSeed(seedPoint, seedNormal, mesh, adjacency, normalTolerance);
+      return seedTri >= 0 ? findCoplanarRegion(seedTri, adjacency, normalTolerance) : new Set<number>();
+    }
+    case 'triangles':
+      // Raw ids index the base tessellation; carry them across any subdivision.
+      return remapTriangleIds(descriptor.ids, parentToChildren);
+    case 'slab': {
+      const { normal, offset, thickness } = descriptor;
+      return findSlabTriangles(mesh, normal, offset, thickness);
+    }
+    case 'box': {
+      const { center, size, quaternion, shape } = descriptor;
+      return findShapeTriangles(mesh, shape ?? 'box', { center, size, quaternion });
+    }
+    case 'byLabel': {
+      // Labels are runtime state — manifold-3d assigns fresh originalIDs on
+      // every run, so we re-resolve by name from the labelMap the engine just
+      // built (it indexes the base mesh, hence the remap). Missing label →
+      // empty set → region drops silently.
+      const ids = currentLabelMap?.get(descriptor.label);
+      return ids ? remapTriangleIds(ids, parentToChildren) : new Set<number>();
+    }
+    case 'connectedFromSeed': {
+      const { seedPoint, seedNormal, maxDeviationDeg } = descriptor;
+      // Find the closest triangle to the seed point — robust across re-runs
+      // because triangle indices are unstable but world-space points are not.
+      // Then BFS-flood gated by deviation from the stored seed normal.
+      const nearest = findNearestTriangle(seedPoint, mesh, adjacency);
+      if (nearest.triIndex < 0) return new Set<number>();
+      const cos = Math.cos(maxDeviationDeg * Math.PI / 180);
+      let triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos);
+      const sNorm = adjacency.normals;
+      const dotSeed = sNorm[nearest.triIndex * 3] * seedNormal[0]
+                    + sNorm[nearest.triIndex * 3 + 1] * seedNormal[1]
+                    + sNorm[nearest.triIndex * 3 + 2] * seedNormal[2];
+      if (dotSeed < cos) {
+        // Surface re-orientation between runs — re-filter conservatively.
+        const filtered = new Set<number>();
+        for (const t of triangles) {
+          const nx = sNorm[t * 3], ny = sNorm[t * 3 + 1], nz = sNorm[t * 3 + 2];
+          const d = seedNormal[0] * nx + seedNormal[1] * ny + seedNormal[2] * nz;
+          if (d >= cos) filtered.add(t);
+        }
+        triangles = filtered;
+      }
+      return triangles;
+    }
+    case 'brushStroke':
+      return strokeFootprintTriangles(mesh, { samples: descriptor.samples, radius: descriptor.radius, shape: descriptor.shape, maxEdge: descriptor.maxEdge > 0 ? descriptor.maxEdge : descriptor.radius / 16 });
+  }
+}
+
+/** True when any in-memory region is a smooth brush stroke (which drives mesh
+ *  subdivision). */
 function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { carried: string[]; dropped: string[] } {
   clearRegions();
 
@@ -386,70 +528,23 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { 
   const regions = geometryData.colorRegions as SerializedColorRegion[] | undefined;
   if (!regions || regions.length === 0) return report;
 
-  const mesh = currentMeshData;
+  // Refine the pristine base mesh under any smooth strokes before resolving.
+  // Without strokes this is a no-op and currentMeshData is left untouched
+  // (identical to the pre-subdivision behavior).
+  const base = paintBaseMesh ?? currentMeshData;
+  const strokes = collectStrokeDescriptors(regions.map(r => r.descriptor));
+  const { mesh, parentToChildren } = refineMeshForStrokes(base, strokes);
+  if (strokes.length > 0) {
+    currentMeshData = mesh;
+    updatePaintMesh(mesh);
+  }
   const adjacency = buildAdjacency(mesh);
 
+  // Bulk-add the resolved regions without letting each addRegion trigger a
+  // reconcile (we've already built the mesh here).
+  suspendReconcile = true;
   for (const region of regions) {
-    let triangles = new Set<number>();
-
-    if (region.descriptor.kind === 'coplanar') {
-      const { seedPoint, seedNormal, normalTolerance } = region.descriptor;
-      const seedTri = resolveSeed(seedPoint, seedNormal, mesh, adjacency, normalTolerance);
-      if (seedTri >= 0) {
-        triangles = findCoplanarRegion(seedTri, adjacency, normalTolerance);
-      }
-    } else if (region.descriptor.kind === 'triangles') {
-      triangles = new Set(region.descriptor.ids);
-    } else if (region.descriptor.kind === 'slab') {
-      const { normal, offset, thickness } = region.descriptor;
-      triangles = findSlabTriangles(mesh, normal, offset, thickness);
-    } else if (region.descriptor.kind === 'box') {
-      const { center, size, quaternion, shape } = region.descriptor;
-      triangles = findShapeTriangles(mesh, shape ?? 'box', { center, size, quaternion });
-    } else if (region.descriptor.kind === 'byLabel') {
-      // Labels are runtime state — manifold-3d assigns fresh
-      // originalIDs on every run, so we re-resolve by name from the
-      // labelMap the engine just built. If the user edited the code
-      // and the label no longer exists, the region drops silently
-      // (same graceful-skip path the coplanar descriptor uses when
-      // its seed no longer hits a face).
-      const ids = currentLabelMap?.get(region.descriptor.label);
-      if (ids) triangles = new Set(ids);
-    } else if (region.descriptor.kind === 'connectedFromSeed') {
-      const { seedPoint, seedNormal, maxDeviationDeg } = region.descriptor;
-      // Find the closest triangle to the seed point — robust across
-      // re-runs because triangle indices are unstable but world-space
-      // points are not. Then BFS-flood gated by deviation from the
-      // stored seed normal.
-      const nearest = findNearestTriangle(seedPoint, mesh, adjacency);
-      if (nearest.triIndex >= 0) {
-        const cos = Math.cos(maxDeviationDeg * Math.PI / 180);
-        triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos);
-        // The flood starts from the seed triangle's own normal. If the
-        // user supplied a seedNormal that differs (e.g. they probed a
-        // pixel that hit a different feature than expected), the seed
-        // triangle still anchors the flood — but we'd ideally filter by
-        // dot(stored seedNormal, neighbor) >= cos. Compromise: when the
-        // stored seed normal disagrees with the resolved seed triangle's
-        // normal beyond the deviation, fall back to filtering against
-        // the stored normal explicitly so the bucket stays stable.
-        const sNorm = adjacency.normals;
-        const dotSeed = sNorm[nearest.triIndex * 3] * seedNormal[0]
-                      + sNorm[nearest.triIndex * 3 + 1] * seedNormal[1]
-                      + sNorm[nearest.triIndex * 3 + 2] * seedNormal[2];
-        if (dotSeed < cos) {
-          // Surface re-orientation between runs — re-filter conservatively.
-          const filtered = new Set<number>();
-          for (const t of triangles) {
-            const nx = sNorm[t * 3], ny = sNorm[t * 3 + 1], nz = sNorm[t * 3 + 2];
-            const d = seedNormal[0] * nx + seedNormal[1] * ny + seedNormal[2] * nz;
-            if (d >= cos) filtered.add(t);
-          }
-          triangles = filtered;
-        }
-      }
-    }
-
+    const triangles = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren);
     if (triangles.size > 0) {
       addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false);
       report.carried.push(region.name);
@@ -457,6 +552,8 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { 
       report.dropped.push(region.name);
     }
   }
+  suspendReconcile = false;
+  lastStrokeList = getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
 
   syncLockState();
 
@@ -467,6 +564,97 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { 
   }
 
   return report;
+}
+
+function paintedColorRefresh(): void {
+  if (!currentMeshData) return;
+  const colored = applyTriColorsIfVisible(currentMeshData);
+  updateMesh(colored, { skipAutoFrame: true });
+}
+
+/** Full rebuild: refine the pristine base by every current stroke and re-resolve
+ *  all regions. Used on undo/clear/non-stroke changes (when an incremental
+ *  append doesn't apply) — not on the hot path of painting more strokes. */
+function rebuildPaintedGeometry(): void {
+  const base = paintBaseMesh;
+  if (!base) return;
+  const strokes = collectStrokeDescriptors(getRegions().map(r => r.descriptor));
+  const { mesh, parentToChildren } = refineMeshForStrokes(base, strokes);
+  currentMeshData = mesh;
+  updatePaintMesh(mesh);
+  const adjacency = buildAdjacency(mesh);
+  for (const region of getRegions()) {
+    setRegionTriangles(region.id, resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren));
+  }
+  paintedColorRefresh();
+  syncLockState();
+}
+
+/** Incrementally refine the CURRENT mesh by a single newly-added stroke, instead
+ *  of replaying every stroke from the base. Existing regions' triangles are
+ *  carried across the local subdivision via the parent→children map (O(painted
+ *  triangles)); only the new stroke is resolved by footprint. This is the hot
+ *  path while painting and keeps each stroke ~constant-time regardless of how
+ *  many strokes precede it. */
+function appendStrokeRefine(newRegionId: number, descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }>): void {
+  if (!currentMeshData) return;
+  const stroke: BrushStroke = { samples: descriptor.samples, radius: descriptor.radius, shape: descriptor.shape, maxEdge: descriptor.maxEdge > 0 ? descriptor.maxEdge : descriptor.radius / 16 };
+  const { mesh, childToParent } = buildStrokeMesh(currentMeshData, [stroke]);
+  const parentToChildren = childrenByParent(childToParent);
+  currentMeshData = mesh;
+  updatePaintMesh(mesh);
+  for (const region of getRegions()) {
+    if (region.id === newRegionId) {
+      setRegionTriangles(region.id, strokeFootprintTriangles(mesh, stroke));
+    } else {
+      // Carry the prior triangle set onto the locally-refined mesh.
+      setRegionTriangles(region.id, remapTriangleIds(region.triangles, parentToChildren));
+    }
+  }
+  paintedColorRefresh();
+  syncLockState();
+}
+
+function strokeDescriptors(): RegionDescriptor[] {
+  return getRegions().map(r => r.descriptor).filter(d => d.kind === 'brushStroke');
+}
+
+/** True when `a` starts with exactly the entries of `b` (by reference). */
+function prefixRefEqual(a: RegionDescriptor[], b: RegionDescriptor[]): boolean {
+  if (a.length < b.length) return false;
+  for (let i = 0; i < b.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** React to any region change. Picks the cheapest correct update: an incremental
+ *  stroke append when one stroke was just added, a full rebuild on undo/clear or
+ *  mixed changes, or the legacy lightweight color refresh when no subdivision is
+ *  involved. */
+function reconcilePaintedGeometry(): void {
+  if (suspendReconcile) return;
+  syncLockState();
+
+  const strokesNow = strokeDescriptors();
+  const refinedActive = currentMeshData !== paintBaseMesh || strokesNow.length > 0;
+  if (!refinedActive) {
+    lastStrokeList = [];
+    if (isPaintActive()) paintedColorRefresh();
+    return;
+  }
+
+  // Pure append: exactly one new stroke on the end, prior strokes unchanged.
+  if (strokesNow.length === lastStrokeList.length + 1 && prefixRefEqual(strokesNow, lastStrokeList)) {
+    const newDesc = strokesNow[strokesNow.length - 1] as Extract<RegionDescriptor, { kind: 'brushStroke' }>;
+    const newRegion = getRegions().find(r => r.descriptor === newDesc);
+    if (newRegion) {
+      appendStrokeRefine(newRegion.id, newDesc);
+      lastStrokeList = strokesNow;
+      return;
+    }
+  }
+
+  rebuildPaintedGeometry();
+  lastStrokeList = strokesNow;
 }
 
 /** Pull a version's serialized color regions out of its geometryData blob
@@ -1917,6 +2105,7 @@ async function main() {
   // the tail of runCodeSync so exports / slicing / measurements stay correct.
   function applyLiveGeometry(mesh: MeshData): void {
     currentMeshData = mesh;
+    paintBaseMesh = mesh;
     if (currentManifold && typeof currentManifold.delete === 'function') {
       try { currentManifold.delete(); } catch { /* already deleted */ }
     }
@@ -2008,6 +2197,20 @@ async function main() {
       }
       try {
         const reduced = currentMeshData;
+
+        // Preserve the pre-simplify model as its own version first, so baking the
+        // reduced mesh (which overwrites the editor with an import wrapper) never
+        // silently discards the full-detail original. Skip when the editor already
+        // matches the current saved version (formatting-aware, so a version saved
+        // with raw code isn't re-saved just because the editor reformatted it).
+        const originalCode = getValue();
+        const current = getState().currentVersion;
+        let savedOriginal = false;
+        if (!current || editorContentDiffersFrom(current.code)) {
+          const original = await snapshotMeshAsVersion(baseline, originalCode);
+          savedOriginal = !!(await saveVersion(originalCode, original.geometryData, original.thumbnail));
+        }
+
         const baked = meshDataToImportedMesh(reduced, `simplified-${reduced.numTri}tri`);
         const code = generateImportCode([baked], { manifold: true });
         setActiveImports([baked]);
@@ -2019,7 +2222,13 @@ async function main() {
           force: true,
           importedMeshes: [baked],
         });
-        return { ok: true, message: `Saved as a new version (${reduced.numTri.toLocaleString()} triangles).` };
+        const tri = reduced.numTri.toLocaleString();
+        return {
+          ok: true,
+          message: savedOriginal
+            ? `Saved original + simplified (${tri} triangles).`
+            : `Saved as a new version (${tri} triangles).`,
+        };
       } catch (e) {
         return { ok: false, message: `Save failed: ${(e as Error).message}` };
       }
@@ -2090,15 +2299,10 @@ async function main() {
     syncLockState();
   });
 
-  // Also listen for any region change (e.g. clear) to re-render
-  onColorRegionsChange(() => {
-    syncLockState();
-    if (!isPaintActive()) return; // only auto-refresh while paint mode is on
-    if (currentMeshData) {
-      const colored = applyTriColorsIfVisible(currentMeshData);
-      updateMesh(colored, { skipAutoFrame: true });
-    }
-  });
+  // Any region change reconciles the working mesh: incremental stroke append,
+  // full rebuild, or the lightweight no-subdivision refresh — see
+  // reconcilePaintedGeometry.
+  onColorRegionsChange(reconcilePaintedGeometry);
 
   // Toggling paint visibility re-renders the viewport so colors
   // disappear/reappear immediately. Exports remain colored regardless.
@@ -4849,6 +5053,103 @@ async function main() {
       return { previous, radius };
     },
 
+    /** Smooth-brush settings for the UI brush tool. When smooth is on (and the
+     *  brush has a radius), a stroke subdivides the triangles its edge crosses
+     *  until they are below a target edge length, so the painted outline is
+     *  rounded regardless of base-mesh coarseness. `divisor` is the detail
+     *  control: target edge = brush radius / divisor (2..1024; higher =
+     *  smoother + more triangles). */
+    getBrushSmooth() {
+      return { smooth: isPaintBrushSmooth(), divisor: getPaintBrushSmoothDivisor() };
+    },
+    setBrushSmooth(on: boolean) {
+      if (typeof on !== 'boolean') return { error: 'setBrushSmooth(on): on must be a boolean' };
+      setPaintBrushSmooth(on);
+      return { smooth: on };
+    },
+    setBrushSmoothDivisor(divisor: number) {
+      if (typeof divisor !== 'number' || !Number.isFinite(divisor)) {
+        return { error: `setBrushSmoothDivisor(divisor): divisor must be a finite number in ${SMOOTH_DIVISOR_MIN}..${SMOOTH_DIVISOR_MAX}` };
+      }
+      setPaintBrushSmoothDivisor(divisor);
+      return { divisor: getPaintBrushSmoothDivisor() };
+    },
+
+    /** Paint a smooth brush stroke along world-space surface points, subdividing
+     *  the mesh under the stroke so the painted edge is rounded (the smooth-brush
+     *  equivalent of `paintNear`, but for a swept path and with edge
+     *  tessellation). `points` are surface points — obtain them from
+     *  `probePixel` against a rendered view. `radius` is in mesh units.
+     *  `resolution` is the smoothness detail (target triangle edge = radius /
+     *  resolution; higher = smoother + more triangles), default 256, clamped to
+     *  2..1024 — the same knob as the UI slider. `maxEdge` (optional) overrides
+     *  it with an absolute target edge length in
+     *  mesh units (e.g. `maxEdge: 0.1` for crisp 0.1-unit edges). `shape` is
+     *  circle|square|diamond. This MUTATES the working mesh's tessellation
+     *  (triangle count grows near the stroke) and is more expensive than the
+     *  region selectors — prefer `paintNear`/`paintInBox`/`paintConnected` for
+     *  flat-edged fills; use this only when a rounded painted edge matters. */
+    paintStroke(opts: {
+      points?: number[][];
+      radius?: number;
+      color?: number[];
+      shape?: string;
+      resolution?: number;
+      maxEdge?: number;
+      name?: string;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first, then paint.' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintStroke(opts): opts object required' };
+      const { points, radius, color, shape, resolution, maxEdge, name } = opts;
+      if (!Array.isArray(points) || points.length === 0) {
+        return { error: 'paintStroke: points must be a non-empty array of [x,y,z] surface points (use probePixel to get them)' };
+      }
+      const samples: [number, number, number][] = [];
+      for (const p of points) {
+        if (!Array.isArray(p) || p.length !== 3 || p.some(n => typeof n !== 'number' || !Number.isFinite(n))) {
+          return { error: 'paintStroke: each point must be [x,y,z] of finite numbers' };
+        }
+        samples.push([p[0], p[1], p[2]]);
+      }
+      if (typeof radius !== 'number' || !Number.isFinite(radius) || radius <= 0) {
+        return { error: 'paintStroke: radius must be a positive finite number (mesh units)' };
+      }
+      if (!Array.isArray(color) || color.length !== 3 || color.some(c => typeof c !== 'number' || !Number.isFinite(c))) {
+        return { error: 'paintStroke: color must be [r,g,b] with each channel in 0..1' };
+      }
+      if (resolution !== undefined && (typeof resolution !== 'number' || !Number.isFinite(resolution) || resolution <= 0)) {
+        return { error: 'paintStroke: resolution must be a positive finite number (radius / resolution = target edge) when provided' };
+      }
+      if (maxEdge !== undefined && (typeof maxEdge !== 'number' || !Number.isFinite(maxEdge) || maxEdge <= 0)) {
+        return { error: 'paintStroke: maxEdge must be a positive finite number (mesh units) when provided' };
+      }
+      const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
+      // maxEdge (absolute) overrides; otherwise radius / resolution, default 256.
+      const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 256));
+      const target = maxEdge !== undefined ? maxEdge : radius / res;
+      const region = addRegion(
+        typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
+        [color[0], color[1], color[2]],
+        'paintbrush',
+        { kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target },
+        new Set<number>(),
+      );
+      // addRegion fires the regions-change listener, which rebuilds the refined
+      // mesh and resolves this region's triangles synchronously.
+      if (region.triangles.size === 0) {
+        removeRegion(region.id);
+        return { error: 'paintStroke: no surface fell within the stroke footprint — check the points are on the model and the radius is large enough.' };
+      }
+      return {
+        id: region.id,
+        name: region.name,
+        triangles: region.triangles.size,
+        resolution: maxEdge !== undefined ? undefined : res,
+        maxEdge: target,
+        meshTriangleCount: currentMeshData?.numTri ?? 0,
+      };
+    },
+
     /** Undo the most recent paint operation. The removed region goes onto
      *  a redo stack — `redoLastPaint()` puts it back. Returns the removed
      *  region's metadata, or `{ error }` if nothing to undo. */
@@ -6298,6 +6599,10 @@ async function main() {
       clearEditorErrorPanel(editorErrorPanel);
       pendingEditorError = null;
       currentMeshData = result.mesh;
+      // A fresh run is the new pristine base for any subsequent smooth-brush
+      // subdivision; rehydrating a saved version rebuilds the refined mesh from
+      // this base + its stroke descriptors right after.
+      paintBaseMesh = result.mesh;
       // Release the previous Manifold's WASM-heap memory before overwriting.
       // Manifold objects live outside the JS heap and require manual .delete().
       if (currentManifold && typeof currentManifold.delete === 'function') {
