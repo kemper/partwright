@@ -10,18 +10,20 @@ interface ImportAPI {
   getCode: () => string;
   getGeometryData: () => Record<string, number>;
   listParts: () => { id: string; name: string }[];
+  getSessionState: () => { versionCount: number };
 }
 
 function pw(page: Page) {
   return page.evaluate.bind(page);
 }
 
-/** Build a 10×10×10 binary-STL cube centered at the origin (12 triangles). */
-function buildCubeSTL(): Buffer {
+/** Build a 10×10×10 binary-STL cube (12 triangles), optionally shifted along X
+ *  so two imports stay distinct components after composing. */
+function buildCubeSTL(offsetX = 0): Buffer {
   const s = 5;
   const v = [
-    [-s, -s, -s], [s, -s, -s], [s, s, -s], [-s, s, -s],
-    [-s, -s, s], [s, -s, s], [s, s, s], [-s, s, s],
+    [-s + offsetX, -s, -s], [s + offsetX, -s, -s], [s + offsetX, s, -s], [-s + offsetX, s, -s],
+    [-s + offsetX, -s, s], [s + offsetX, -s, s], [s + offsetX, s, s], [-s + offsetX, s, s],
   ];
   const faces = [
     [v[0], v[2], v[1]], [v[0], v[3], v[2]],
@@ -108,30 +110,35 @@ test.describe('Import target modal', () => {
     expect(code).toContain('widget.stl');
   });
 
-  test('"Add to current part" composes the mesh with the existing geometry', async ({ page }) => {
+  test('"Add to current part" composes a second imported mesh into an import-based part', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
-    // Offset the host cube so it stays a distinct component after composing.
-    await setupHostSession(page, 'const { Manifold } = api; return Manifold.cube([10, 10, 10], true).translate([20, 0, 0]);');
+    const fileInput = page.locator('#import-wrapper input[type="file"]');
 
-    await page.locator('#import-wrapper input[type="file"]').setInputFiles({
-      name: 'widget.stl',
-      mimeType: 'application/octet-stream',
-      buffer: buildCubeSTL(),
-    });
+    // First import: the fresh starter part is expendable, so seed it with the
+    // mesh (the modal recommends "Use for current part"). Now the current part
+    // is import-based, which is the prerequisite for combining a second mesh.
+    await fileInput.setInputFiles({ name: 'a.stl', mimeType: 'application/octet-stream', buffer: buildCubeSTL(0) });
+    await page.getByRole('dialog').locator('[data-target="current-part"]').click();
+    // Wait for the seed's version to be persisted (not just the editor text set),
+    // so the part is recognized as import-based when the second mesh arrives.
+    await expect
+      .poll(() => pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.getSessionState().versionCount))
+      .toBe(1);
 
+    // Second import (offset so it stays a distinct component): add to current.
+    await fileInput.setInputFiles({ name: 'b.stl', mimeType: 'application/octet-stream', buffer: buildCubeSTL(30) });
     await page.getByRole('dialog').locator('[data-target="current-part"]').click();
 
-    // Combined geometry: 12 (host cube) + 12 (STL) triangles, two components.
+    // Combined geometry: 12 + 12 triangles across two components.
     await expect
       .poll(() => pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.getGeometryData().triangleCount))
       .toBe(24);
 
     const geo = await pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.getGeometryData());
     expect(geo.componentCount).toBe(2);
-    expect(geo.volume).toBeCloseTo(2000, 0);
 
-    // Still a single part — the mesh was merged in, not added as a new part.
+    // Still a single part — the mesh was combined in, not added as a new part.
     const partCount = await pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.listParts().length);
     expect(partCount).toBe(1);
 

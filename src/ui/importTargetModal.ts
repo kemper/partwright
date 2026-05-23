@@ -11,7 +11,7 @@ import { escapeHtml } from './htmlUtils';
 export type ImportTarget = 'new-part' | 'current-part' | 'new-session';
 
 export interface ImportTargetOptions {
-  /** Display name of the file being imported (extension already stripped). */
+  /** Display name of the file being imported. */
   filename: string;
   /** Name of the active part, or null when none is open. */
   currentPartName: string | null;
@@ -19,6 +19,11 @@ export interface ImportTargetOptions {
   canAddToCurrent: boolean;
   /** Shown under the disabled "Add to current part" option to explain why. */
   addDisabledReason?: string;
+  /** Which option to highlight as the default and focus. Defaults to 'new-part'. */
+  recommend?: ImportTarget;
+  /** When true, the current part is an empty/starter part, so "Add to current
+   *  part" really just makes the mesh the part's content (framed as such). */
+  addReplacesStarter?: boolean;
 }
 
 interface Choice {
@@ -47,18 +52,20 @@ export function showImportTargetModal(opts: ImportTargetOptions): Promise<Import
     intro.innerHTML = `Where should <span class="text-zinc-200 font-medium">${escapeHtml(opts.filename)}</span> go?`;
     shell.body.appendChild(intro);
 
+    const recommend = opts.recommend ?? 'new-part';
     const partLabel = opts.currentPartName ? `"${opts.currentPartName}"` : 'the current part';
     const choices: Choice[] = [
       {
         target: 'new-part',
         title: 'New part',
         desc: 'Add it as a separate part in this session, with its own version history.',
-        recommended: true,
       },
       {
         target: 'current-part',
-        title: `Add to current part — ${partLabel}`,
-        desc: 'Combine it with the geometry already in this part (composed as separate components).',
+        title: opts.addReplacesStarter ? `Use for current part — ${partLabel}` : `Add to current part — ${partLabel}`,
+        desc: opts.addReplacesStarter
+          ? 'Make this mesh the contents of the current (empty) part.'
+          : 'Combine it with the geometry already in this part (composed as separate components).',
         disabled: !opts.canAddToCurrent,
         disabledReason: opts.addDisabledReason,
       },
@@ -68,10 +75,12 @@ export function showImportTargetModal(opts: ImportTargetOptions): Promise<Import
         desc: 'Import into a brand-new session, leaving the current one untouched.',
       },
     ];
+    for (const c of choices) c.recommended = c.target === recommend && !c.disabled;
 
     const pick = (target: ImportTarget) => { result = target; shell.close(); };
 
     let firstEnabled: HTMLButtonElement | null = null;
+    let recommendedBtn: HTMLButtonElement | null = null;
     for (const c of choices) {
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -106,6 +115,7 @@ export function showImportTargetModal(opts: ImportTargetOptions): Promise<Import
       if (!c.disabled) {
         btn.addEventListener('click', () => pick(c.target));
         if (!firstEnabled) firstEnabled = btn;
+        if (c.recommended) recommendedBtn = btn;
       }
       shell.body.appendChild(btn);
     }
@@ -116,7 +126,8 @@ export function showImportTargetModal(opts: ImportTargetOptions): Promise<Import
     cancelBtn.addEventListener('click', () => { result = null; shell.close(); });
     shell.footer.appendChild(cancelBtn);
 
-    // Focus the recommended option so Enter/Space confirms it immediately.
-    requestAnimationFrame(() => firstEnabled?.focus());
+    // Focus the recommended option (falling back to the first enabled one) so
+    // Enter/Space confirms it immediately.
+    requestAnimationFrame(() => (recommendedBtn ?? firstEnabled)?.focus());
   });
 }

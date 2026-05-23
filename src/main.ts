@@ -855,34 +855,74 @@ async function main() {
     await renderAndSaveCombined(generateImportCode(combined, { manifold: true }), combined, 'added mesh');
   }
 
-  // Dispatch a parsed mesh to the right place. With no real session content
-  // open it imports as a new session (the historical behavior); otherwise it
-  // asks the user where the geometry should land. Returns true if it committed
-  // (so the caller updates the recent-imports inbox), false if cancelled.
+  // True when the current part holds nothing worth preserving: no saved version
+  // and the editor is empty or still showing the untouched default starter. Such
+  // a part can be freely seeded/replaced by an import without losing user work.
+  function currentPartIsExpendable(): boolean {
+    const state = getState();
+    if (!state.currentPart || state.currentVersion) return false;
+    const code = getValue().trim();
+    return code === '' || code === defaultCode.trim();
+  }
+
+  // Save the current part's editor content as a version before an import switches
+  // away from it, so unsaved (non-default) work is never silently dropped. No-op
+  // when the editor is empty/default or already matches the saved version.
+  async function preserveCurrentEditsIfNeeded(): Promise<void> {
+    const state = getState();
+    if (!state.session || !state.currentPart) return;
+    const code = getValue();
+    const trimmed = code.trim();
+    if (!trimmed || trimmed === defaultCode.trim()) return;
+    if (state.currentVersion && state.currentVersion.code === code) return;
+    const thumbnail = await captureThumbnail();
+    await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail);
+  }
+
+  // Dispatch a parsed mesh. With no session open it imports as a new session;
+  // otherwise it always asks the user where the geometry should land and never
+  // discards the current part's work without consent. Returns true if it
+  // committed (so the caller updates the recent-imports inbox), false if
+  // cancelled.
   async function importParsedMesh(mesh: ImportedMesh, baseName: string, isManifold: boolean): Promise<boolean> {
     const state = getState();
-    const meaningful = !!state.session && (state.versionCount > 0 || state.parts.length > 1);
-    if (!meaningful) {
+    if (!state.session) {
       await importMeshPayload(mesh, baseName, { manifold: isManifold });
       return true;
     }
-    // "Add to current part" composes, so both the incoming mesh and the part
-    // it would join must be manifold. An empty current part (no saved version)
-    // is fine — it just gets seeded.
-    const currentComposable = !state.currentVersion || !codeIsRenderOnly(state.currentVersion.code);
-    const canAddToCurrent = isManifold && !!state.currentPart && currentComposable;
+
+    // "Add to current part" composes via Manifold.compose, so it's only offered
+    // when the incoming mesh is a manifold AND the current part is import-based
+    // (its geometry is itself imported meshes) or an empty/starter part to seed.
+    // Free-form code parts can't be composed into, so the option is disabled.
+    const cv = state.currentVersion;
+    const expendable = currentPartIsExpendable();
+    const currentIsImportBased = !!cv
+      && !codeIsRenderOnly(cv.code)
+      && isPureImportCode(cv.code, (cv.importedMeshes ?? []) as ImportedMesh[]);
+    const canAddToCurrent = isManifold && !!state.currentPart && (currentIsImportBased || expendable);
+
     const choice = await showImportTargetModal({
       filename: mesh.filename,
       currentPartName: state.currentPart?.name ?? null,
       canAddToCurrent,
+      recommend: expendable ? 'current-part' : 'new-part',
+      addReplacesStarter: expendable,
       addDisabledReason: !isManifold
         ? 'Render-only meshes can’t be combined with other geometry.'
-        : (!currentComposable ? 'The current part is render-only and can’t be combined.' : undefined),
+        : (!canAddToCurrent ? 'This part is code, not imported meshes — import as a new part instead.' : undefined),
     });
     if (!choice) return false;
-    if (choice === 'new-session') await importMeshPayload(mesh, baseName, { manifold: isManifold });
-    else if (choice === 'new-part') await importMeshAsNewPart(mesh, baseName, { manifold: isManifold });
-    else await addMeshToCurrentPart(mesh, { manifold: isManifold });
+
+    if (choice === 'current-part') {
+      await addMeshToCurrentPart(mesh, { manifold: isManifold });
+    } else if (choice === 'new-part') {
+      await preserveCurrentEditsIfNeeded();
+      await importMeshAsNewPart(mesh, baseName, { manifold: isManifold });
+    } else {
+      await preserveCurrentEditsIfNeeded();
+      await importMeshPayload(mesh, baseName, { manifold: isManifold });
+    }
     return true;
   }
 
