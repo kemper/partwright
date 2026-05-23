@@ -269,6 +269,24 @@ partwright.paintInBox({
 
 `paintNear` and `paintInBox` ignore mesh edges entirely — they collect triangles by *position* and (optionally) by face-normal direction, so the result is independent of how the boolean union tessellated the surface. Use them for organic geometry; use `paintRegion` for flat plates with crisp 90° edges.
 
+**Smooth, rounded painted edges (`paintStroke`).** Every selector above paints whole *existing* triangles, so a painted edge is stair-stepped on a coarse mesh. `paintStroke` instead **subdivides the mesh along the stroke's outline** so the painted edge is rounded — the smooth-brush equivalent of dragging a paintbrush along a path. Only the rim triangles are refined (the interior is left coarse), which keeps it lean; the painted band may contain hairline T-junctions (invisible on screen and fine for GLB/most slicers, but not strictly watertight). It's the only paint tool that grows the triangle count, so it's more expensive than the selectors: reach for it **only when a visibly rounded painted edge matters** (a curved stripe, a soft-edged patch), and prefer `paintNear`/`paintInBox`/`paintConnected` otherwise. Drive it by vision — render, pick pixels along the path, `probePixel` each for world-space points:
+
+```js
+const a = await partwright.probePixel({ pixel: [120, 90],  view: { elevation: 30, azimuth: 45 } });
+const b = await partwright.probePixel({ pixel: [160, 110], view: { elevation: 30, azimuth: 45 } });
+partwright.paintStroke({
+  points: [a.point, b.point],   // ordered surface points; a single point stamps a rounded dot
+  radius: 3,                     // mesh units, > 0
+  resolution: 256,               // smoothness: target edge = radius / resolution. Higher = smoother + more triangles. Default 256, range 2–1024
+  // maxEdge: 0.1,               // OR: absolute target edge length (mesh units); overrides resolution
+  shape: 'circle',               // circle | square | diamond
+  color: [0.9, 0.2, 0.2],
+});
+// -> { id, name, triangles, resolution, maxEdge, meshTriangleCount } or { error }
+```
+
+The refinement keeps subdividing the boundary triangles until they fall below the target edge, so it adapts to coarse meshes (a flat plate that's two giant triangles still gets a clean circle). Use `resolution` for the normal smoothness knob; reach for the absolute `maxEdge` override when you need exact edge sizing (e.g. `maxEdge: 0.1` for a crisp ring on a 10-unit part).
+
 **Paint by visual reasoning (organic / character meshes).** When bounding boxes won't separate the features (a hand from a sleeve at the same Z; an ear from a head), use `probePixel` + `paintConnected`. `probePixel` translates a pixel position in a rendered view back to an exact surface point + normal + triangleId — essentially clicking in your own perception. `paintConnected` then flood-fills from that seed, gated by deviation from the SEED normal, so it stays on the feature without bleeding to side faces with different orientations.
 
 ```js

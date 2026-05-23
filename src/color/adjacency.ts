@@ -277,7 +277,7 @@ export function findNearestTriangle(
 
 /** Closest point on triangle ABC to point P (Ericson, Real-Time Collision
  *  Detection, ch. 5.1.5). Inlined for hot-loop use. */
-function closestPointOnTriangle(
+export function closestPointOnTriangle(
   px: number, py: number, pz: number,
   ax: number, ay: number, az: number,
   bx: number, by: number, bz: number,
