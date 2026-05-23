@@ -1704,6 +1704,31 @@ async function main() {
     }
   }
 
+  /** Restore a draft for a session that has unsaved work but no committed version
+   *  yet — e.g. the user painted or typed on a freshly-run model and never hit
+   *  Save. The version-based resume path (loadVersionIntoEditor) can't cover this
+   *  because there's no baseline version to attach the draft to, so without this
+   *  the no-version path would start fresh and silently drop the draft. Returns
+   *  true when a draft was applied. */
+  async function restoreUnsavedSessionDraft(sessionId: string): Promise<boolean> {
+    const draft = loadDraft(sessionId);
+    if (!draft) return false;
+    // No saved baseline to diff against, so treat any real content as unsaved
+    // work: non-default code, painted regions, or annotations.
+    const hasWork =
+      (draft.code.trim().length > 0 && draft.code !== defaultCode) ||
+      draft.colorRegions.length > 0 ||
+      draft.annotations.length > 0;
+    if (!hasWork) return false;
+    setValue(draft.code);
+    const applied = await runCodeSync(draft.code);
+    if (!applied) return false;
+    rehydrateColorRegions({ colorRegions: draft.colorRegions });
+    loadAnnotations(draft.annotations);
+    showToast('Restored unsaved changes from your last session', { variant: 'neutral', durationMs: 4000 });
+    return true;
+  }
+
   async function openEditorFromLanding() {
     updateAppHistory('/editor', 'push');
     transitionToEditor();
@@ -1724,12 +1749,15 @@ async function main() {
     if (version) {
       await loadVersionIntoEditor(version, { restoreDraft: true });
     } else {
-      // openSession returned null — either the session doesn't exist
-      // (e.g. stale tile from another device's data) or it has no saved
-      // versions yet. Run defaults so the viewport renders and the
-      // status doesn't stay stuck on "Loading WASM...".
-      setStatus(statusBar, 'ready', 'Ready');
-      runCode(defaultCode);
+      // openSession returned null — the session is missing (e.g. stale tile from
+      // another device) or has no saved version yet. If it nonetheless holds an
+      // unsaved draft (painted/typed but never saved), restore that; otherwise
+      // run defaults so the viewport renders and status doesn't stick on loading.
+      const restored = getState().session?.id === sid && await restoreUnsavedSessionDraft(sid);
+      if (!restored) {
+        setStatus(statusBar, 'ready', 'Ready');
+        runCode(defaultCode);
+      }
     }
     updateDocumentTitle({ page: 'editor' });
   }
@@ -1887,7 +1915,9 @@ async function main() {
         // — loadPartIntoEditor also clears stale paint state — instead of the
         // generic default example.
         if (getState().session?.id === sessionId) {
-          await loadPartIntoEditor(getState().currentVersion);
+          if (!(await restoreUnsavedSessionDraft(sessionId))) {
+            await loadPartIntoEditor(getState().currentVersion);
+          }
           if (tab === 'gallery') refreshGallery();
           if (tab === 'versions') refreshVersions();
           return;
