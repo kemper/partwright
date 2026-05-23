@@ -2809,15 +2809,18 @@ async function main() {
     /** Render a single view from any camera angle. Returns a data URL (PNG).
      *  elevation: degrees, 0 = horizon, 90 = top-down. Default 30.
      *  azimuth: degrees, 0 = front (-Y), 90 = right (+X). Default 315.
-     *  ortho: true for orthographic projection. Default false. */
-    renderView(options?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number }): string | null {
+     *  ortho: true for orthographic projection. Default false.
+     *  wireframe: force the black topology overlay on (true) or off (false).
+     *  Default leaves it on for uncolored meshes and off for painted ones. */
+    renderView(options?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number; wireframe?: boolean }): string | null {
       if (options !== undefined) {
         const o = assertObject(options, 'renderView(options)')!;
-        assertNoUnknownKeys(o, ['elevation', 'azimuth', 'ortho', 'size'], 'renderView(options)');
+        assertNoUnknownKeys(o, ['elevation', 'azimuth', 'ortho', 'size', 'wireframe'], 'renderView(options)');
         assertNumber(o.elevation, 'renderView(options).elevation', { optional: true, min: -90, max: 90 });
         assertNumber(o.azimuth, 'renderView(options).azimuth', { optional: true });
         assertBoolean(o.ortho, 'renderView(options).ortho', { optional: true });
         assertNumber(o.size, 'renderView(options).size', { optional: true, min: 1, integer: true });
+        assertBoolean(o.wireframe, 'renderView(options).wireframe', { optional: true });
       }
       if (!currentMeshData) return null;
       // Default image size follows the spending-mode resolution budget when the
