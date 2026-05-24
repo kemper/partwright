@@ -227,11 +227,83 @@ test.describe('Multi-provider AI', () => {
     await expect(box.locator('pre')).toContainText('winding order must be CCW');
   });
 
-  test('OpenAI sends max_completion_tokens, not the rejected max_tokens', async ({ page }) => {
-    // Regression: the gpt-5 family and o-series 400 on `max_tokens`
-    // ("Unsupported parameter… Use 'max_completion_tokens' instead"). Stub
-    // the SSE stream, drive streamTurn, and assert the outgoing body uses
-    // the new spelling and drops the old one entirely.
+  test('OpenAI reasoning models hit /v1/responses with max_output_tokens', async ({ page }) => {
+    // Reasoning models run on the Responses API: gpt-5.5+ reject
+    // reasoning_effort alongside function tools on /v1/chat/completions and
+    // direct callers to /v1/responses. Stub the SSE stream, drive
+    // streamTurn, and assert the endpoint + the Responses token spelling.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel');
+    const sent = await page.evaluate(async () => {
+      const openai = await import('/src/ai/openai.ts');
+      let url = '';
+      let captured = '';
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (input: unknown, init: { body?: string }) => {
+        url = String(input);
+        captured = String(init?.body ?? '');
+        const body = 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await openai.streamTurn({ apiKey: 'k', model: 'gpt-5.5', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] });
+      } finally {
+        window.fetch = origFetch;
+      }
+      return { url, body: JSON.parse(captured) };
+    });
+    expect(sent.url).toContain('/v1/responses');
+    expect(sent.body.max_output_tokens).toBeGreaterThan(0);
+    expect(sent.body.max_completion_tokens).toBeUndefined();
+    expect(sent.body.max_tokens).toBeUndefined();
+    // System prompt rides in `instructions`; history converts to `input`.
+    expect(sent.body.instructions).toBe('sys');
+    expect(Array.isArray(sent.body.input)).toBe(true);
+  });
+
+  test('OpenAI non-reasoning models stay on /v1/chat/completions', async ({ page }) => {
+    // Older / non-reasoning models (gpt-4o, gpt-4.1, legacy gpt-4 /
+    // gpt-3.5-turbo) keep using Chat Completions — some exist only there, and
+    // none hit the gpt-5.5 tools+reasoning restriction. Assert the endpoint +
+    // the chat-shaped body (messages, max_completion_tokens).
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel');
+    const sent = await page.evaluate(async () => {
+      const openai = await import('/src/ai/openai.ts');
+      let url = '';
+      let captured = '';
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (input: unknown, init: { body?: string }) => {
+        url = String(input);
+        captured = String(init?.body ?? '');
+        const body = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await openai.streamTurn({ apiKey: 'k', model: 'gpt-4o', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] });
+      } finally {
+        window.fetch = origFetch;
+      }
+      return { url, body: JSON.parse(captured) };
+    });
+    expect(sent.url).toContain('/v1/chat/completions');
+    expect(sent.url).not.toContain('/v1/responses');
+    expect(sent.body.max_completion_tokens).toBeGreaterThan(0);
+    expect(sent.body.max_output_tokens).toBeUndefined();
+    expect(sent.body.max_tokens).toBeUndefined();
+    expect(Array.isArray(sent.body.messages)).toBe(true);
+  });
+
+  test('OpenAI (Responses) repairs a dangling tool_call left by an interrupted turn', async ({ page }) => {
+    // Regression: a turn that ends right after the model emits tool calls
+    // (Stop / stall / spend cap before results post) leaves a dangling
+    // function_call with no function_call_output. The Responses API 400s on
+    // the next send ("No tool output found for function call …") unless we
+    // inject a synthetic output, the way the Anthropic builder already does.
     await page.goto('/editor');
     await page.waitForSelector('#ai-panel');
     const sentBody = await page.evaluate(async () => {
@@ -241,28 +313,42 @@ test.describe('Multi-provider AI', () => {
       // @ts-expect-error test stub
       window.fetch = async (_input: unknown, init: { body?: string }) => {
         captured = String(init?.body ?? '');
-        const body = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+        const body = 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n';
         return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
       };
       try {
+        const history = [
+          // Assistant emitted a tool call...
+          { id: 'a1', sessionId: 's', role: 'assistant', blocks: [], toolCalls: [{ id: 'call_DANGLING', name: 'runIsolated', input: {} }], createdAt: 0, seq: 0 },
+          // ...but the turn ended; the user just typed feedback (no toolResults).
+          { id: 'u1', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'looks good, add a handle' }], createdAt: 0, seq: 1 },
+        ];
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await openai.streamTurn({ apiKey: 'k', model: 'gpt-5-mini', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] });
+        await openai.streamTurn({ apiKey: 'k', model: 'gpt-5.5', systemPrompt: 'sys', systemSuffix: '', history: history as any, tools: [] });
       } finally {
         window.fetch = origFetch;
       }
       return captured;
     });
     const sent = JSON.parse(sentBody);
-    expect(sent.max_completion_tokens).toBeGreaterThan(0);
-    expect(sent.max_tokens).toBeUndefined();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = sent.input as any[];
+    const outputs = items.filter(it => it.type === 'function_call_output' && it.call_id === 'call_DANGLING');
+    expect(outputs).toHaveLength(1);
+    // The synthetic output must sit after the function_call and before the
+    // user's feedback, so the call→output invariant holds.
+    const callIdx = items.findIndex(it => it.type === 'function_call' && it.call_id === 'call_DANGLING');
+    const outputIdx = items.findIndex(it => it.type === 'function_call_output' && it.call_id === 'call_DANGLING');
+    const userIdx = items.findIndex(it => it.type === 'message' && it.role === 'user'
+      && Array.isArray(it.content) && it.content.some((c: { text?: string }) => c.text?.includes('add a handle')));
+    expect(callIdx).toBeLessThan(outputIdx);
+    expect(outputIdx).toBeLessThan(userIdx);
   });
 
-  test('OpenAI repairs a dangling tool_call left by an interrupted turn', async ({ page }) => {
-    // Regression: a turn that ends right after the model emits tool calls
-    // (Stop / stall / spend cap before results post) leaves an assistant
-    // tool_calls message with no tool result. OpenAI 400s on the next send
-    // ("tool_call_ids did not have response messages") unless we inject a
-    // synthetic result, the way the Anthropic builder already does.
+  test('OpenAI (Chat Completions) repairs a dangling tool_call left by an interrupted turn', async ({ page }) => {
+    // Same invariant on the non-reasoning path: an assistant tool_calls
+    // message with no matching `tool` reply 400s ("tool_call_ids did not have
+    // response messages") unless we inject a synthetic tool result.
     await page.goto('/editor');
     await page.waitForSelector('#ai-panel');
     const sentBody = await page.evaluate(async () => {
@@ -277,13 +363,11 @@ test.describe('Multi-provider AI', () => {
       };
       try {
         const history = [
-          // Assistant emitted a tool call...
           { id: 'a1', sessionId: 's', role: 'assistant', blocks: [], toolCalls: [{ id: 'call_DANGLING', name: 'runIsolated', input: {} }], createdAt: 0, seq: 0 },
-          // ...but the turn ended; the user just typed feedback (no toolResults).
           { id: 'u1', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'looks good, add a handle' }], createdAt: 0, seq: 1 },
         ];
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await openai.streamTurn({ apiKey: 'k', model: 'gpt-5-mini', systemPrompt: 'sys', systemSuffix: '', history: history as any, tools: [] });
+        await openai.streamTurn({ apiKey: 'k', model: 'gpt-4o', systemPrompt: 'sys', systemSuffix: '', history: history as any, tools: [] });
       } finally {
         window.fetch = origFetch;
       }
@@ -294,8 +378,6 @@ test.describe('Multi-provider AI', () => {
     const msgs = sent.messages as any[];
     const toolMsgs = msgs.filter(m => m.role === 'tool' && m.tool_call_id === 'call_DANGLING');
     expect(toolMsgs).toHaveLength(1);
-    // The synthetic result must sit after the assistant tool_calls message
-    // and before the user's feedback, so the invariant holds.
     const assistantIdx = msgs.findIndex(m => Array.isArray(m.tool_calls));
     const toolIdx = msgs.findIndex(m => m.tool_call_id === 'call_DANGLING');
     const userIdx = msgs.findIndex(m => m.role === 'user' && typeof m.content === 'string' && m.content.includes('add a handle'));
@@ -428,7 +510,7 @@ test.describe('Multi-provider AI', () => {
     expect(out.high.generationConfig.thinkingConfig.thinkingBudget).toBeGreaterThan(0);
   });
 
-  test('OpenAI sends reasoning_effort only for reasoning models + non-off levels', async ({ page }) => {
+  test('OpenAI sends reasoning.effort only for reasoning models + non-off levels', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForSelector('#ai-panel');
     const out = await page.evaluate(async () => {
@@ -440,21 +522,26 @@ test.describe('Multi-provider AI', () => {
         // @ts-expect-error test stub
         window.fetch = async (_input: unknown, init: { body?: string }) => {
           bodies[key] = JSON.parse(String(init?.body ?? '{}'));
-          const body = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+          const body = 'event: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n';
           return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
         };
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await openai.streamTurn({ apiKey: 'k', model, systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [], thinking: level as any });
       }
       try {
-        await run('gpt-5-mini', 'high', 'reasoningHigh');
-        await run('gpt-5-mini', 'off', 'reasoningOff');
+        await run('gpt-5.5', 'high', 'reasoningHigh');
+        await run('gpt-5.5', 'off', 'reasoningOff');
         await run('gpt-4o', 'high', 'chatHigh');
       } finally { window.fetch = origFetch; }
       return bodies;
     });
-    expect(out.reasoningHigh.reasoning_effort).toBe('high');
-    expect(out.reasoningOff.reasoning_effort).toBeUndefined();
+    // Reasoning model on the Responses path: `reasoning.effort` set when on,
+    // omitted when off.
+    expect(out.reasoningHigh.reasoning.effort).toBe('high');
+    expect(out.reasoningOff.reasoning).toBeUndefined();
+    // Non-reasoning model on the Chat Completions path: never carries a
+    // reasoning request in either spelling, even at thinking=high.
+    expect(out.chatHigh.reasoning).toBeUndefined();
     expect(out.chatHigh.reasoning_effort).toBeUndefined();
   });
 

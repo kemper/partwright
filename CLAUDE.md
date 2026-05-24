@@ -4,8 +4,10 @@
 
 ```bash
 npm run dev          # Start dev server at http://localhost:5173
-npm run build        # Production build to dist/
-npm run test:e2e     # Run Playwright smoke tests (auto-starts dev server)
+npm run build        # Production build to dist/ (runs tsc first — also the type-check)
+npm run test:unit    # Fast vitest unit tier (pure-logic, no browser) — ~1s
+npm run test:e2e     # Playwright browser suite (auto-starts dev server)
+npm test             # Both tiers: unit, then e2e
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -14,27 +16,38 @@ Requires COEP/COOP headers (configured in vite.config.ts) for SharedArrayBuffer 
 
 ## Deployment
 
-Hosted on **Cloudflare Pages** with production custom domain `www.partwrightstudio.com` and branch-based environments:
+Hosted on **Cloudflare Pages**. Three branches map to three environments, wired together as a **quality-gate pipeline** so each environment means something distinct:
 
-- **`staging`** branch → Cloudflare Pages preview deploy
-- **`main`** branch → production deploy (protected, requires PR review)
+| Branch | Cloudflare env | URL | What it is |
+|--------|----------------|-----|------------|
+| `main` | preview | `main.mainifold.pages.dev` | bleeding edge — every merge, deployed **before** the e2e gate runs (may be red) |
+| `staging` | preview | `staging.mainifold.pages.dev` | last commit that **passed** build + unit + e2e (known-good) |
+| `production` | production | `www.partwrightstudio.com` | released; promoted by hand, protected, requires PR review |
 
-**All work should be merged to `staging` first.** Do not push directly to `main`. Feature work follows a **draft-PR-first** flow: open the PR as a draft the moment the implementation looks good, run the slow verification *on the draft*, and only then mark it ready for review. The full sequence:
+**The pipeline:**
 
-1. **Start from the latest `staging`.** Before writing any code, run `git fetch origin staging` and base your feature branch on `origin/staging`. Do this at the *start* of the task, not just before the final push.
+1. Feature PRs merge into **`main`** (the integration branch). Cloudflare deploys the main preview immediately on push — that preview is intentionally *pre-test*, so it can be broken.
+2. On every push to main, the **`Gate main → staging`** GitHub Action (`.github/workflows/staging-gate.yml`) runs `npm run build`, `npm run test:unit`, and `npm run test:e2e`. **Only if all pass** does it fast-forward `staging` to that commit, which Cloudflare then deploys to the staging preview. A red gate leaves `staging` parked on the last known-good commit.
+3. **Release is manual:** once you've validated the staging preview, open a PR from **`staging` → `production`** and merge it. Cloudflare deploys `production` to `www.partwrightstudio.com`.
+
+> **Feature work now targets `main`, not `staging`.** `staging` is written only by the gate Action — never push to it or open a PR into it directly. `production` is written only by the manual release PR.
+
+Feature work follows a **draft-PR-first** flow: open the PR as a draft the moment the implementation looks good, run the slow verification *on the draft*, and only then mark it ready for review. The full sequence:
+
+1. **Start from the latest `main`.** Before writing any code, run `git fetch origin main` and base your feature branch on `origin/main`. Do this at the *start* of the task, not just before the final push.
 2. **Implement** until the change looks good and working by your own lightweight checks (render/stat verification, a quick read-through of the diff). Don't run the slow e2e suite yet — that comes after the draft is up.
-3. **Pre-flight, then push a draft PR.** Re-sync with the latest staging (`git fetch origin staging`, then merge `origin/staging` into your branch, or rebase onto it if the branch hasn't been pushed yet, resolving conflicts), run the fast `npm run build` to catch type errors, push the branch, and open the PR into `staging` **as a draft** (`create_pull_request` with `draft: true`). Keep the pre-flight light — `npm run build` only, *not* `npm run test:e2e`. See [Pull Requests](#pull-requests--open-a-draft-when-the-work-looks-good-mark-ready-once-verified).
+3. **Pre-flight, then push a draft PR.** Re-sync with the latest main (`git fetch origin main`, then merge `origin/main` into your branch, or rebase onto it if the branch hasn't been pushed yet, resolving conflicts), run the fast `npm run build` + `npm run test:unit` to catch type errors and logic regressions, push the branch, and open the PR into `main` **as a draft** (`create_pull_request` with `draft: true`). Keep the pre-flight light — build + unit only, *not* `npm run test:e2e`. The PR-checks CI (`.github/workflows/pr-checks.yml`) re-runs that same build + unit on the PR; the full e2e suite is the *post-merge* staging gate, so you run it yourself during verification (next step). See [Pull Requests](#pull-requests--open-a-draft-when-the-work-looks-good-mark-ready-once-verified).
 4. **Verify on the draft.** Now run the slow checks — `npm run test:e2e` plus any deeper or manual verification the change warrants — and follow CI. Fix any failures on the same branch and re-run until clean. See [After Opening a PR](#after-opening-a-pr).
-5. **Mark ready for review** once the review pass is clean and e2e/CI/deploy are all green (`update_pull_request` with `draft: false`). The task is not done until the PR is out of draft.
-6. After the feature PR merges to `staging`, it auto-deploys for verification. Once validated on staging, open a PR from `staging` → `main` for production release.
+5. **Mark ready for review** once the review pass is clean, PR-checks CI is green, and you've run `npm run test:e2e` locally (`update_pull_request` with `draft: false`). The task is not done until the PR is out of draft.
+6. After the feature PR merges to `main`, the staging gate runs the full e2e suite; on green it advances `staging`, which auto-deploys to the staging preview. Once validated there, open a PR from `staging` → `production` for the production release.
 
-> **Always start from — and re-sync against — the latest `origin/staging`.** Branches cut from a stale staging produce noisy diffs and merge conflicts, and can quietly clobber recently merged work. Re-fetch and merge/rebase `origin/staging` right before pushing the draft, and again before marking the PR ready or opening any `staging` → `main` PR.
+> **Always start from — and re-sync against — the latest `origin/main`.** Branches cut from a stale main produce noisy diffs and merge conflicts, and can quietly clobber recently merged work. Re-fetch and merge/rebase `origin/main` right before pushing the draft, and again before marking the PR ready or opening any `staging` → `production` PR.
 
 ### Pull Requests — open a draft when the work looks good, mark ready once verified
 
-When an implementation looks good and working, **open a draft pull request into `staging`** — don't wait until you've run the slow verification. This is a standing instruction that overrides any default "don't open a PR unless explicitly asked" behavior: treat "the implementation looks done" as the authorization to open the draft. Don't pause to ask whether to create one, and don't report a task as done without it.
+When an implementation looks good and working, **open a draft pull request into `main`** — don't wait until you've run the slow verification. This is a standing instruction that overrides any default "don't open a PR unless explicitly asked" behavior: treat "the implementation looks done" as the authorization to open the draft. Don't pause to ask whether to create one, and don't report a task as done without it.
 
-Open it as a **draft** (`create_pull_request` with `draft: true`) after a fast pre-flight only — re-sync `origin/staging` and run `npm run build`. **Defer the slow `npm run test:e2e` and any deeper verification until after the draft is up** (see [After Opening a PR](#after-opening-a-pr)); the draft PR is what *kicks off* that verification phase, not the finish line. The task is done only once the PR is flipped to **ready for review** (`update_pull_request` with `draft: false`), which you do yourself after the review pass is clean and e2e/CI/deploy are green.
+Open it as a **draft** (`create_pull_request` with `draft: true`) after a fast pre-flight only — re-sync `origin/main` and run `npm run build` + `npm run test:unit`. **Defer the slow `npm run test:e2e` and any deeper verification until after the draft is up** (see [After Opening a PR](#after-opening-a-pr)); the draft PR is what *kicks off* that verification phase, not the finish line. The task is done only once the PR is flipped to **ready for review** (`update_pull_request` with `draft: false`), which you do yourself after the review pass is clean and e2e/CI/deploy are green.
 
 Skip the PR only when the user explicitly scoped you away from it — a request to "just commit" or "push to the branch" is *not* a request for a PR — or for a pure throwaway experiment. If you genuinely can't tell whether the work is a complete, reviewable unit, ask. Follow the [commit & PR conventions](#commit--pr-conventions) below for the title, prefix, and labels.
 
@@ -44,20 +57,47 @@ Skip the PR only when the user explicitly scoped you away from it — a request 
 - **Headers:** `public/_headers` (COEP, COOP, CSP) — Cloudflare Pages serves these automatically
 - **Environment variable:** Set `SITE_URL` in Cloudflare Pages dashboard (Settings > Environment variables) to the production URL (`https://www.partwrightstudio.com`). This is used at build time by the `absoluteUrls` Vite plugin to make Open Graph image URLs and canonical links absolute. If `SITE_URL` is not set, the plugin falls back to `CF_PAGES_URL` (provided automatically by Cloudflare Pages for each deployment).
 
-## Browser Tests (Playwright)
+## Tests — two tiers
 
-End-to-end smoke tests live in `tests/*.spec.ts` and run against a Vite dev
-server that Playwright starts automatically. Run them with:
+The suite is split into a fast unit tier and the browser e2e tier. Run the
+right one for what you touched; run both before marking a PR ready.
 
 ```bash
-npm run test:e2e               # full suite
-npx playwright test --grep "AI chat"   # one describe block
+npm run test:unit              # vitest, pure-logic, no browser — ~1s
+npm run test:e2e               # full Playwright browser suite
+npm test                       # unit then e2e
+npx playwright test --grep "AI chat"   # one e2e describe block
 npx playwright test --headed   # watch the browser run (local only)
 ```
 
-**Run these whenever you touch UI, routing, or anything in `src/ai/` or
-`src/ui/ai*`** — the suite covers landing → editor → AI panel toggle →
-key modal → toggle pills → ai.md serving in ~15s.
+### Unit tier (vitest)
+
+`tests/unit/**/*.test.ts`, run by `vitest run` (config in `vitest.config.ts`,
+node environment). This tier is **only for dependency-free, pure-logic
+modules** — e.g. `src/ai/patch.ts`. It never boots a browser, dev server, or
+WASM, so it's the right home for any helper that can be imported and called in
+isolation. If a module needs browser APIs (`fetch` stubbing, IndexedDB, the
+real DOM), it does **not** belong here — keep it in the e2e tier as a
+`page.evaluate(() => import('/src/...'))` test (see `tests/ai-providers.spec.ts`,
+which exercises the provider request builders, SSE reader, and system-prompt
+assembly in a real browser).
+
+### E2E tier (Playwright)
+
+`tests/*.spec.ts`, run against a Vite dev server Playwright starts
+automatically. **Run this whenever you touch UI, routing, or anything in
+`src/ai/` or `src/ui/ai*`** — it covers landing → editor → AI panel toggle →
+key modal → toggle pills → ai.md serving, plus paint/export/import flows.
+
+Each e2e test boots WASM in its own browser page, which is CPU-heavy, so the
+suite runs **serially on any single machine** (`playwright.config.ts` pins
+`workers: 1`). Running pages concurrently on one box starves the renderer and
+produces 30s timeout flakes — verified empirically, so don't raise `workers`
+without re-checking flake rates. Parallelism comes from **sharding across CI
+jobs** instead: `staging-gate.yml` runs `npx playwright test --shard=i/3` in a
+3-way matrix, so every shard is itself serial and contention-free while
+wall-clock time drops ~3×. `testMatch` is pinned to `**/*.spec.ts` so the unit
+tier's `.test.ts` files stay out of the Playwright run.
 
 ### Multi-environment browser detection
 
@@ -138,7 +178,7 @@ For the full Manifold/CrossSection API, `window.partwright` console API, session
 The right-side AI drawer can drive Partwright through any of:
 
 - **Anthropic (cloud)** — user pastes their own API key (`src/ai/anthropic.ts`). Streams from Anthropic's hosted Claude with prompt caching on the long system prompt + tool list.
-- **OpenAI (cloud)** — `src/ai/openai.ts`. Raw `fetch` against `/v1/chat/completions` with SSE streaming; no extra SDK.
+- **OpenAI (cloud)** — `src/ai/openai.ts`. Raw `fetch` with SSE streaming; no extra SDK. The agent loop (`streamTurn`) routes **per model** (gated by `isReasoningModel`): reasoning models (gpt-5 family incl. gpt-5.5, o1/o3/o4) go to the **Responses API** (`/v1/responses`) because gpt-5.5+ reject `reasoning_effort` alongside function tools on `/v1/chat/completions` and direct callers to `/v1/responses`; every other / older model (gpt-4o, gpt-4.1, and legacy gpt-4 / gpt-3.5-turbo, some of which exist *only* on Chat Completions) stays on **Chat Completions** (`/v1/chat/completions`). The Responses path converts history to the `input` shape (`message`/`function_call`/`function_call_output` items linked by `call_id`); the Chat path uses the `messages`/`tool_calls`/`tool` shape. Both share the same dangling-tool-call repair, image handling, and review serialization. The non-tool, non-reasoning helpers (`validateKey`/`listModels`/`summarize`) always use `/v1/chat/completions` (works for every model).
 - **Google Gemini (cloud)** — `src/ai/gemini.ts`. Raw `fetch` against `generativelanguage.googleapis.com` with SSE streaming via `:streamGenerateContent?alt=sse`; no extra SDK. The Gemini wire format wants `functionResponse.response` as a plain object — `toFunctionResponseObject` unwraps the JSON-stringified tool result before sending, otherwise Gemini silently drops the message and returns zero candidates on the next turn.
 - **Local (WebGPU)** — runs a model entirely in the browser via [WebLLM](https://webllm.mlc.ai) (`src/ai/local.ts`). The user opts in from the AI settings modal and the weights download once into the browser cache. No API key, no network traffic per turn.
 
@@ -156,7 +196,7 @@ Gemini 3 thinking models emit their reasoning as `thought:true` text parts (we o
 
 - **Anthropic** — `low/medium/high` enable extended thinking with `budget_tokens` 2048/8192/16384 (`THINKING_BUDGET` in `anthropic.ts`), and `max_tokens` is floated above the budget (the API requires `>`). Because the agent is a tool-use loop, the API requires the signed `thinking` block to precede each `tool_use` on replay: `collectResult` captures the blocks (with `signature`, plus any `redacted_thinking`) into `ChatMessage.thinkingBlocks`, and `assistantBlocksToApi` re-emits them first — but only when thinking is on for the current request (`buildApiMessages(history, { replayThinking })`). Sending them with thinking off, or replaying display prose, is never done. This path can't be exercised offline (no network in tests/sandbox), so it's covered by request-shape unit tests rather than a live round-trip.
 - **Gemini** — `off` only flips `includeThoughts:false` (deliberately NOT `thinkingBudget:0`, which some Pro models reject); `low/medium/high` set `includeThoughts:true` + a growing `thinkingBudget`. Note: this changed Gemini from always-on thinking to opt-in.
-- **OpenAI** — maps to `reasoning_effort` (`low/medium/high`), sent only for reasoning models (`gpt-5*`, `o1/o3/o4` — sniffed by `isReasoningModel`) so the 4o/4.1 chat models don't 400. 'off' omits the param. OpenAI hides reasoning-model CoT, so this controls cost/quality but never surfaces a thinking box.
+- **OpenAI** — maps to the Responses `reasoning.effort` (`low/medium/high`), sent only for reasoning models (`gpt-5*`, `o1/o3/o4` — sniffed by `isReasoningModel`, which is also what routes them to the Responses endpoint). 'off' omits the `reasoning` field. Non-reasoning models go down the Chat Completions path, which never sends a reasoning request in either spelling, so they don't 400. OpenAI hides reasoning-model CoT, so this controls cost/quality but never surfaces a thinking box.
 - **Local** — no effect (WebLLM models reason on their own; `<think>` is still stripped).
 
 #### Cross-provider review
@@ -295,7 +335,7 @@ The app targets both desktop and mobile. The `md:` breakpoint (768 px) separates
 
 ### Commit & PR Conventions
 
-**Before opening (or updating) a PR, re-sync your branch with the latest `origin/staging`** — `git fetch origin staging`, then merge it in (or rebase onto it) — so the PR diff reflects only your changes and merges cleanly without re-introducing already-merged work. See the Deployment workflow above for the full sequence.
+**Before opening (or updating) a PR, re-sync your branch with the latest `origin/main`** — `git fetch origin main`, then merge it in (or rebase onto it) — so the PR diff reflects only your changes and merges cleanly without re-introducing already-merged work. See the Deployment workflow above for the full sequence.
 
 PR titles, commit subjects, and PR labels feed the auto-generated release notes (`.github/release.yml`). Keep both consistent.
 
@@ -325,19 +365,19 @@ Opening the **draft** PR (see [the standing instruction](#pull-requests--open-a-
 
 **1. Run the slow verification you skipped pre-flight.** Now run `npm run test:e2e` (and any deeper or manual verification the change warrants — e.g. exercising the affected UI in a browser per the [Smoke Test](#smoke-test--verifying-the-app-works)). This is the work you deliberately deferred to keep the path-to-draft fast. Fix failures on the same branch and re-run until clean.
 
-**2. Kick off an automated review pass.** Right after pushing the draft, launch a review subagent (the Agent tool) over your branch diff against `origin/staging` and the code it touches. Have it hunt specifically for problems your change may have introduced:
+**2. Kick off an automated review pass.** Right after pushing the draft, launch a review subagent (the Agent tool) over your branch diff against `origin/main` and the code it touches. Have it hunt specifically for problems your change may have introduced:
 
 - **Defects** — logic errors, unhandled cases, broken or orphaned call sites in the new code.
-- **Functionality dropped in a merge** — features or code paths silently lost while resolving conflicts or re-syncing with `origin/staging`. Diff against what was there before, not just your own edits.
+- **Functionality dropped in a merge** — features or code paths silently lost while resolving conflicts or re-syncing with `origin/main`. Diff against what was there before, not just your own edits.
 - **Backwards-incompatible changes** — anything that breaks existing persisted data or files. Watch session/schema changes most closely: old sessions saved in IndexedDB, and previously exported files (GLB/3MF and any versioned schema), must still import and load. A schema bump needs a migration or back-compat read path, not a hard break.
 - **Security issues** — injection (command/SQL), XSS or unsafe HTML insertion, leaked API keys/secrets, or weakened CSP/COEP/COOP headers.
 
 Surface the results on the PR (a review comment, or fold clear fixes straight into the branch). If the pass turns up something ambiguous or large, raise it with the user rather than silently reworking.
 
-**3. Follow CI and auto-fix what you can.** Watch the PR's checks — the `npm run build` / `npm run test:e2e` workflow and the Cloudflare Pages deployment — and **auto-fix build or deployment failures when you can** by pushing a fix straight to the PR branch:
+**3. Follow CI and auto-fix what you can.** Watch the PR's checks — the **PR-checks** workflow (`npm run build` + `npm run test:unit`) and the Cloudflare Pages preview deployment — and **auto-fix build or deployment failures when you can** by pushing a fix straight to the PR branch. (The full `npm run test:e2e` suite is the *post-merge* staging gate, not a PR check, so it won't show up here — run it locally yourself per step 1.)
 
-1. Reproduce the failure locally first (`npm run build`, `npm run test:e2e`) so you're fixing the real cause, not guessing from the log.
-2. Re-sync with the latest `origin/staging` if the branch has drifted (see the Deployment workflow), then commit and push the fix to the same PR branch.
+1. Reproduce the failure locally first (`npm run build`, `npm run test:unit`, `npm run test:e2e`) so you're fixing the real cause, not guessing from the log.
+2. Re-sync with the latest `origin/main` if the branch has drifted (see the Deployment workflow), then commit and push the fix to the same PR branch.
 3. Re-check CI after the push, and keep iterating until the checks are green.
 
 Only push fixes you're confident in — failures clearly caused by your own changes. If a failure is ambiguous, unrelated to your changes, or would require a large refactor or a risky/destructive change to resolve, stop and ask the user instead of pushing speculative fixes.

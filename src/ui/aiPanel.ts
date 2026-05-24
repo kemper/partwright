@@ -2426,7 +2426,7 @@ function showProgressFinal(detail: string): void {
 function triggerStallRetry(): void {
   const threshSec = Math.round(getStallThresholdMs() / 1000);
   if (progressState.retryCount >= MAX_STALL_RETRIES) {
-    setTransientStatus(`Model stalled (no tokens for ${threshSec}s) after ${MAX_STALL_RETRIES} retries — stopping. Increase "Stall timeout" in AI settings if using a slow model.`);
+    setTransientStatus(`Model stalled (no tokens for ${threshSec}s) after ${MAX_STALL_RETRIES} retries — stopping. Increase "Request timeout" in AI settings if using a slow model.`);
     state.inFlightController?.abort();
     void interruptLocal();
     return;
