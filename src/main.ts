@@ -2035,8 +2035,16 @@ async function main() {
     if (!state.session) return false;
     const cur = state.currentVersion;
     if (!cur) {
+      // No saved version yet: unsaved work is non-default code, OR any painted
+      // regions / annotations on the freshly-run model. Counting paint here is
+      // essential — otherwise the beforeunload flush is skipped (so an immediate
+      // refresh loses paint that the debounced draft hadn't written yet) and the
+      // empty-session reaper deletes the session.
       const code = getValue().trim();
-      return code.length > 0 && getValue() !== defaultCode;
+      if (code.length > 0 && getValue() !== defaultCode) return true;
+      if (hasColorRegions() && serializeRegions().length > 0) return true;
+      if (serializeAnnotations().length > 0) return true;
+      return false;
     }
     if (getValue() !== cur.code) return true;
     const geo = cur.geometryData as Record<string, unknown> | null;

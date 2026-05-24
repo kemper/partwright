@@ -56,4 +56,40 @@ test.describe('autosave draft — paint survives reload', () => {
     await page.waitForSelector('text=Ready', { timeout: 15000 });
     await expect.poll(() => regionCount(page)).toBeGreaterThan(0);
   });
+
+  // The reported repro: paint the freshly-opened default model WITHOUT touching
+  // the code or saving a version, then refresh *immediately* — before the
+  // debounced draft fires. Only the beforeunload flush can persist the paint
+  // here, and that flush is gated by hasUnsavedChanges(), which used to ignore
+  // paint on a no-version session (so the draft was never written → paint lost).
+  test('on the unchanged default model (no version) survives an immediate reload', async ({ page }) => {
+    autoAcceptUnloadPrompt(page);
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+
+    const sid = await page.evaluate(() => new URLSearchParams(location.search).get('session'));
+    expect(sid).toBeTruthy();
+
+    // Paint a solid side face (the default basic_shapes model has a hole through
+    // the top, so paint off-center via the bounding box's +X face).
+    const regions = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const bb = (pw.getGeometryData() as any).boundingBox;
+      const cy = (bb.y[0] + bb.y[1]) / 2;
+      const cz = (bb.z[0] + bb.z[1]) / 2;
+      pw.paintRegion({ point: [bb.x[1], cy, cz], normal: [1, 0, 0], color: [1, 0, 0] });
+      return pw.listRegions().length;
+    });
+    expect(regions).toBeGreaterThan(0);
+
+    // Reload right away — do NOT wait for the debounced draft. The paint only
+    // survives if beforeunload flushes it (which needs the dirty check to count
+    // paint on a no-version session).
+    await page.reload();
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+
+    await expect.poll(() => regionCount(page)).toBeGreaterThan(0);
+  });
 });
