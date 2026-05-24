@@ -64,6 +64,8 @@ export async function showAiSettingsModal(cb: AiSettingsCallbacks, opts: AiSetti
     shell.body.appendChild(tabContent);
     await renderTabContent(viewedTab, tabContent, shell.close, cb, () => { void rerender(); }, switchTab);
     shell.body.appendChild(makeDivider());
+    shell.body.appendChild(buildApiTimeoutSection(cb));
+    shell.body.appendChild(makeDivider());
     shell.body.appendChild(buildAutoCompactSection(cb, () => { void rerender(); }));
 
     const done = document.createElement('button');
@@ -731,29 +733,46 @@ function buildLocalContextSection(cb: AiSettingsCallbacks): HTMLElement {
   reloadHint.textContent = 'Changing these unloads the GPU engine; the next message rebuilds it (cached weights survive — just a fast reload).';
   wrap.appendChild(reloadHint);
 
-  const stallRow = document.createElement('label');
-  stallRow.className = 'flex items-center gap-2 text-xs text-zinc-300';
-  stallRow.innerHTML = '<span>Stall timeout:</span>';
-  const stallInput = document.createElement('input');
-  stallInput.type = 'number';
-  stallInput.min = '5';
-  stallInput.max = '600';
-  stallInput.step = '5';
-  stallInput.className = 'w-20 px-2 py-1 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-xs focus:outline-none focus:border-blue-500';
-  stallInput.value = String(settings.localContext.stallTimeoutSec);
-  stallInput.addEventListener('change', () => {
-    const v = parseInt(stallInput.value, 10);
-    const next = Number.isFinite(v) && v >= 5 ? v : 35;
-    stallInput.value = String(next);
+  return wrap;
+}
+
+/** Request-timeout control. The stall watchdog (aiPanel getStallThresholdMs)
+ *  aborts and auto-retries a turn after this many seconds with no streamed
+ *  token — for every provider, cloud or local. It lives here, outside the
+ *  per-provider tabs, because it applies to all of them; it had been
+ *  reachable only from the Local tab, hiding it from cloud users. */
+function buildApiTimeoutSection(cb: AiSettingsCallbacks): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col gap-2';
+  const head = document.createElement('div');
+  head.className = 'text-xs text-zinc-400';
+  head.textContent = 'Request timeout';
+  wrap.appendChild(head);
+
+  const settings = loadSettings();
+  const row = document.createElement('label');
+  row.className = 'flex items-center gap-2 text-xs text-zinc-300';
+  row.innerHTML = '<span>Timeout:</span>';
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = '5';
+  input.max = '600';
+  input.step = '5';
+  input.className = 'w-20 px-2 py-1 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-xs focus:outline-none focus:border-blue-500';
+  input.value = String(settings.localContext.stallTimeoutSec);
+  input.addEventListener('change', () => {
+    const v = parseInt(input.value, 10);
+    const next = Number.isFinite(v) && v >= 5 ? v : 60;
+    input.value = String(next);
     saveSettings(setLocalContext(loadSettings(), { stallTimeoutSec: next }));
     cb.onChange();
   });
-  stallRow.appendChild(stallInput);
-  const stallHint = document.createElement('span');
-  stallHint.className = 'text-[10px] text-zinc-500';
-  stallHint.textContent = 'seconds · gap between tokens before auto-retry fires. Raise to 120+ for large models on slow hardware.';
-  stallRow.appendChild(stallHint);
-  wrap.appendChild(stallRow);
+  row.appendChild(input);
+  const hint = document.createElement('span');
+  hint.className = 'text-[10px] text-zinc-500';
+  hint.textContent = 'seconds without a streamed token before the request aborts and auto-retries. Applies to every provider; raise to 120+ for large local models on slow hardware.';
+  row.appendChild(hint);
+  wrap.appendChild(row);
 
   return wrap;
 }
