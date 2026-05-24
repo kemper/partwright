@@ -1419,7 +1419,6 @@ async function main() {
       }
       applyVersionAnnotations(loadedVersion);
     },
-    onOpenSessionList: () => showSessionList(),
     onNewSession: startNewSessionInEditor,
   });
 
@@ -1428,6 +1427,7 @@ async function main() {
     onToggleAi: () => { toggleAiPanel(); },
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
+    onOpenSessionList: () => showSessionList(),
   });
 
   // Parts rail — IDE-style list of the session's parts.

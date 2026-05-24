@@ -35,6 +35,8 @@ export interface CreateLayoutOptions {
   onOpenCatalog?: () => void;
   /** Toggle the diagnostic log panel (rail utility item). */
   onToggleDiagnostics?: () => void;
+  /** Open the session switcher list (rail header action). */
+  onOpenSessionList?: () => void;
 }
 
 export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOptions = {}): LayoutElements {
@@ -135,6 +137,17 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   const rail = document.createElement('div');
   rail.id = 'activity-rail';
   rail.className = 'flex md:flex-col shrink-0 w-full md:w-44 overflow-x-auto md:overflow-x-visible md:overflow-y-auto bg-zinc-900/60 border-b md:border-b-0 md:border-r border-zinc-700 [scrollbar-width:thin]';
+
+  // Session switcher — the cross-session "level up" action, pinned to the very
+  // top of the rail above the per-session destinations (the session's name and
+  // version controls stay in the session bar).
+  const sessionsBtn = document.createElement('button');
+  sessionsBtn.id = 'btn-sessions';
+  sessionsBtn.className = 'flex items-center gap-2 shrink-0 whitespace-nowrap px-3 py-2.5 md:py-2 text-sm md:text-[13px] font-medium text-zinc-200 border-b-2 md:border-b border-transparent md:border-zinc-800 [@media(hover:hover)]:hover:text-zinc-100 [@media(hover:hover)]:hover:bg-zinc-800/60 transition-colors';
+  sessionsBtn.title = 'Switch or manage sessions';
+  sessionsBtn.innerHTML = '<span class="text-base leading-none w-5 text-center" aria-hidden="true">🗂️</span><span>Sessions…</span>';
+  if (opts.onOpenSessionList) sessionsBtn.addEventListener('click', opts.onOpenSessionList);
+  rail.appendChild(sessionsBtn);
 
   const railHeading = document.createElement('div');
   railHeading.className = 'hidden md:block px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 select-none';
