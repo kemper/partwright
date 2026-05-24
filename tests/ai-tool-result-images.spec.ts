@@ -1,4 +1,5 @@
 import { test, expect } from 'playwright/test';
+import { openAiPanel } from './helpers/aiPanel';
 
 // Coverage for surfacing tool-returned renderings (renderView / renderViews
 // snapshots) in the chat transcript. Two halves:
@@ -177,8 +178,7 @@ test.describe('Tool-result renderings in the chat transcript', () => {
     }, { tinyPng: TINY_PNG });
 
     await page.reload();
-    await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
 
     // The rendering shows as an <img> in the transcript, visible without the
     // user expanding anything (image-bearing tool results auto-expand).

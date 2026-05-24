@@ -1,5 +1,6 @@
 import { test, expect, type Page } from 'playwright/test';
 import { readFileSync } from 'fs';
+import { openAiPanel } from './helpers/aiPanel';
 
 // Network-free coverage for the chat export feature:
 //   - the standalone "⬇ Chat" button in the AI panel header (Markdown), and
@@ -47,7 +48,7 @@ test.describe('Chat export', () => {
   test('Export button on an empty chat warns and downloads nothing', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.click('#btn-ai');
+    await openAiPanel(page);
     const panel = page.locator('#ai-panel');
 
     let downloaded = false;
@@ -66,7 +67,7 @@ test.describe('Chat export', () => {
 
     await page.goto(`/editor?session=${id}`);
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.click('#btn-ai');
+    await openAiPanel(page);
     const panel = page.locator('#ai-panel');
     await expect(panel).toContainText('Design a widget bracket');
 

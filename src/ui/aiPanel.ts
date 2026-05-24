@@ -259,13 +259,18 @@ function applyDockLayout(): void {
   const desktop = window.matchMedia('(min-width: 768px)').matches;
   if (desktop) {
     // A real flex child of the app row: takes layout space, no overlay chrome.
+    // `relative` makes the panel the containing block for the absolutely-
+    // positioned left-edge resize handle, so the handle lands on the panel's
+    // border instead of escaping to the viewport. On mobile the panel is
+    // `fixed` (its own containing block), so `relative` is dropped there to
+    // avoid the two position utilities colliding.
     drawerEl.classList.remove('fixed', 'inset-0', 'z-40', 'h-dvh', 'w-full', 'shadow-2xl');
-    drawerEl.classList.add('shrink-0', 'self-stretch');
+    drawerEl.classList.add('relative', 'shrink-0', 'self-stretch');
     drawerEl.style.width = `${panelWidth}px`;
   } else {
     // Stacked mobile layout has no side-by-side column to dock into, so cover
     // the screen instead. h-dvh keeps the input above the mobile browser chrome.
-    drawerEl.classList.remove('shrink-0', 'self-stretch');
+    drawerEl.classList.remove('relative', 'shrink-0', 'self-stretch');
     drawerEl.classList.add('fixed', 'inset-0', 'z-40', 'h-dvh', 'w-full', 'shadow-2xl');
     drawerEl.style.width = '';
   }

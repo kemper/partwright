@@ -11,7 +11,9 @@ const STORAGE_KEY = 'partwright-ai-settings-v1';
 export interface AiSettings {
   preset: Preset;
   toggles: ChatToggles;
-  /** When `false`, the chat drawer starts collapsed on page load. */
+  /** Whether the chat drawer is shown. Defaults to open on a first visit so
+   *  the AI surface is discoverable; persists the user's choice thereafter, so
+   *  once they close it it stays closed on reload. */
   drawerOpen: boolean;
   /** Default for new sessions before the user has touched the toggle bar. */
   autoCompactMode: 'off' | 'conservative' | 'standard' | 'aggressive';
@@ -125,7 +127,7 @@ const DEFAULT_TOGGLES: ChatToggles = {
 const DEFAULT_SETTINGS: AiSettings = {
   preset: 'standard',
   toggles: DEFAULT_TOGGLES,
-  drawerOpen: false,
+  drawerOpen: true,
   autoCompactMode: 'off',
   systemPromptOverrides: { anthropic: null, local: null, openai: null, gemini: null },
   customLocalModels: [],

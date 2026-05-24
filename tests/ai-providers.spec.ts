@@ -1,4 +1,5 @@
 import { test, expect } from 'playwright/test';
+import { openAiPanel } from './helpers/aiPanel';
 
 // Regression coverage for the multi-provider extension to the in-app
 // chat. The base in-browser AI surface (Anthropic + Local) has its own
@@ -215,7 +216,7 @@ test.describe('Multi-provider AI', () => {
     });
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
     const box = page.locator('#ai-panel details').filter({ hasText: '🧠 Thinking' });
     await expect(box).toBeVisible();
     // The answer is in its own bubble, visible without expanding anything.
@@ -550,7 +551,7 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
     // Thinking lives in the collapsible ⚙ Options group (advanced knobs are
     // hidden by default to keep the panel uncluttered) — expand it first.
     await page.locator('#ai-panel button:has-text("⚙ Options")').dispatchEvent('click');
@@ -570,7 +571,7 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
     // Open AI Settings via the cog icon (its title starts with "AI settings").
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
@@ -603,7 +604,7 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
 
@@ -646,7 +647,7 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Settings' });
@@ -666,7 +667,7 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
 
     // Default provider is Anthropic — dropdown shows claude-* models.
     const headerModel = page.locator('#ai-panel select').first();
@@ -685,7 +686,7 @@ test.describe('Multi-provider AI', () => {
     });
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
     const openaiOpts = await page.locator('#ai-panel select').first().evaluate(
       (el: HTMLSelectElement) => Array.from(el.options).map(o => o.value),
     );
@@ -701,7 +702,7 @@ test.describe('Multi-provider AI', () => {
     });
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
     const geminiOpts = await page.locator('#ai-panel select').first().evaluate(
       (el: HTMLSelectElement) => Array.from(el.options).map(o => o.value),
     );
@@ -738,7 +739,7 @@ test.describe('Multi-provider AI', () => {
     });
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
     // Header shows OpenAI's chosen model.
     await expect(page.locator('#ai-panel select').first()).toHaveValue('gpt-5-nano');
     // Enabling a provider now requires its key to be connected, so plant a
@@ -783,7 +784,7 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
     await page.locator('#ai-panel button[title^="Get a second opinion"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'Get a second opinion' })).toBeVisible();
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'Get a second opinion' });
@@ -796,7 +797,7 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
     await page.locator('#ai-panel button[title^="AI Call Log"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Call Log' })).toBeVisible();
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Call Log' });
@@ -838,7 +839,7 @@ test.describe('Multi-provider AI', () => {
         requestSummary: '3 msg(s), 30 tool def(s)',
       });
     });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
     await page.locator('#ai-panel button[title^="AI Call Log"]').dispatchEvent('click');
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Call Log' });
     await expect(modal).toBeVisible();
@@ -856,7 +857,7 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
     // Tabbed modal — the OpenAI tab shows its key form inline (no second

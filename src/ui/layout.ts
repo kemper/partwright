@@ -225,9 +225,12 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
 
   // AI assistant — toggles the chat drawer rather than a tab pane. Keeps id
   // `btn-ai` so setAiToolbarState, the tour, and tests stay wired up.
+  // The AI launcher is the primary entry point to the assistant, so it gets an
+  // indigo accent + bolder weight that sets it apart from the muted zinc
+  // utility buttons around it — making it obvious where to (re)open the panel.
   const aiNavBtn = document.createElement('button');
   aiNavBtn.id = 'btn-ai';
-  aiNavBtn.className = railActionClass + ' text-zinc-300';
+  aiNavBtn.className = 'flex items-center gap-2 shrink-0 whitespace-nowrap px-3 py-2.5 md:py-2 text-sm md:text-[13px] font-semibold text-indigo-300 border-b-2 md:border-b-0 border-transparent [@media(hover:hover)]:hover:text-indigo-200 [@media(hover:hover)]:hover:bg-indigo-500/10 transition-colors';
   aiNavBtn.title = 'AI chat — not connected. Click to connect an API key or local model.';
   aiNavBtn.innerHTML = '<span id="ai-status-dot" class="w-1.5 h-1.5 rounded-full shrink-0 bg-zinc-500"></span><span class="text-base leading-none w-5 text-center" aria-hidden="true">✦</span><span>AI</span>';
   if (opts.onToggleAi) aiNavBtn.addEventListener('click', opts.onToggleAi);
@@ -238,11 +241,14 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   rail.appendChild(helpNavBtn);
   rail.appendChild(aiNavBtn);
 
-  // Reflect the drawer's open/closed state on the AI rail item.
+  // Reflect the drawer's open/closed state on the AI rail item — a filled
+  // indigo background + brighter text while open. The two text shades are
+  // toggled mutually exclusively so they never both apply at once.
   window.addEventListener('ai-panel-toggled', (e) => {
     const open = !!(e as CustomEvent).detail?.open;
-    aiNavBtn.classList.toggle('bg-indigo-500/15', open);
+    aiNavBtn.classList.toggle('bg-indigo-500/20', open);
     aiNavBtn.classList.toggle('text-indigo-100', open);
+    aiNavBtn.classList.toggle('text-indigo-300', !open);
   });
 
   // Tab content panels
