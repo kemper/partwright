@@ -213,7 +213,9 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   // next interaction.
   renderTranscript();
   renderCostMeter();
-  if (state.open) showDrawer();
+  // On a default-open load, show the panel without grabbing keyboard focus —
+  // the user hasn't asked to type in it yet.
+  if (state.open) showDrawer(false);
   else hideDrawer();
 }
 
@@ -276,7 +278,11 @@ function applyDockLayout(): void {
   }
 }
 
-function showDrawer(): void {
+/** Show the drawer. `focusInput` moves the caret into the chat box, which is
+ *  what you want when the user *explicitly* opens the panel — but not when it's
+ *  shown automatically on a default-open page load, where stealing focus from
+ *  the editor/viewport (and intercepting shortcuts like ⌘Z) is surprising. */
+function showDrawer(focusInput = true): void {
   if (!drawerEl) return;
   state.open = true;
   drawerEl.classList.remove('hidden');
@@ -284,7 +290,7 @@ function showDrawer(): void {
   window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: true } }));
   window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: true });
-  inputEl?.focus();
+  if (focusInput) inputEl?.focus();
 }
 
 function hideDrawer(): void {
