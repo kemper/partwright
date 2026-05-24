@@ -136,7 +136,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // links keep working unchanged.
   const rail = document.createElement('div');
   rail.id = 'activity-rail';
-  rail.className = 'flex md:flex-col shrink-0 w-full md:w-44 overflow-x-auto md:overflow-x-visible md:overflow-y-auto bg-zinc-900/60 border-b md:border-b-0 md:border-r border-zinc-700 [scrollbar-width:thin]';
+  rail.className = 'flex md:flex-col shrink-0 w-full md:w-52 overflow-x-auto md:overflow-x-visible md:overflow-y-hidden bg-zinc-900/60 border-b md:border-b-0 md:border-r border-zinc-700 [scrollbar-width:thin]';
 
   // Session switcher — the cross-session "level up" action, pinned to the very
   // top of the rail above the per-session destinations (the session's name and
@@ -388,6 +388,9 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     railCollapsed = !railCollapsed;
     partsRail.classList.toggle('hidden', railCollapsed);
     railExpandBtn.classList.toggle('hidden', !railCollapsed);
+    // Re-showing: drop it back into the container that matches the current
+    // breakpoint (it may have changed while collapsed).
+    if (!railCollapsed) placeParts();
     // The floating » chip sits at the group's top-left; when the rail is
     // collapsed (but the editor open) pad the header so it doesn't overlap the
     // title. Cleared when the rail returns.
@@ -515,8 +518,29 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   rightPane.appendChild(notesContainer);
   rightPane.appendChild(dataContainer);
 
-  editorGroup.appendChild(partsRail);
   editorGroup.appendChild(editorPane);
+
+  // Parts panel placement is breakpoint-dependent. On desktop it stacks INSIDE
+  // the activity rail as a flex-1 section between the workspace nav and the
+  // bottom utility cluster, so "Workspace" and "Parts" read as one left sidebar
+  // (the inner #parts-list scrolls; `md:mt-auto` on the utility cluster keeps it
+  // pinned to the bottom in both expanded and collapsed states). On mobile the
+  // rail is a horizontal strip, so Parts goes back to its column beside the
+  // editor. moving a populated element preserves its children + listeners.
+  const PARTS_CLASS_DESKTOP = 'flex flex-col flex-1 min-h-0 border-t border-zinc-800 overflow-hidden';
+  const PARTS_CLASS_MOBILE = 'flex flex-col shrink-0 w-36 min-h-0 border-r border-zinc-700 bg-zinc-900/60 overflow-hidden';
+  function placeParts(): void {
+    if (railCollapsed) return; // hidden either way; reposition when re-shown
+    if (mqDesktop.matches) {
+      partsRail.className = PARTS_CLASS_DESKTOP;
+      rail.insertBefore(partsRail, catalogNavBtn);
+    } else {
+      partsRail.className = PARTS_CLASS_MOBILE;
+      editorGroup.insertBefore(partsRail, editorPane);
+    }
+  }
+  placeParts();
+
   // Rail first so it sits at the left edge (desktop) / top (mobile), then the
   // editor group, the splitter, and the tabbed right pane.
   main.appendChild(rail);
@@ -538,6 +562,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // Re-compose visibility on breakpoint crossing and on mobile-pane changes.
   // Both must dispatch a resize so the Three.js canvas re-fits.
   const onBreakpointChange = () => {
+    placeParts();
     syncPaneVisibility();
     window.dispatchEvent(new Event('resize'));
   };
