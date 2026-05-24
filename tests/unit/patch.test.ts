@@ -1,11 +1,11 @@
 // Unit tests for the literal find/replace patch helpers behind forkVersion
-// and modifyAndTest. These run in Node (no browser) — the module is kept
-// dependency-free precisely so it can be tested in isolation.
+// and modifyAndTest. These run in Node via vitest (no browser) — the module is
+// kept dependency-free precisely so it can be tested in isolation.
 
-import { test, expect } from 'playwright/test';
-import { applyLiteralPatch, applyPatches } from '../src/ai/patch';
+import { describe, test, expect } from 'vitest';
+import { applyLiteralPatch, applyPatches } from '../../src/ai/patch';
 
-test.describe('applyLiteralPatch', () => {
+describe('applyLiteralPatch', () => {
   test('replaces a unique match', () => {
     expect(applyLiteralPatch('const size = 20;', 'size = 20', 'size = 24')).toBe('const size = 24;');
   });
@@ -33,7 +33,7 @@ test.describe('applyLiteralPatch', () => {
   });
 });
 
-test.describe('applyPatches', () => {
+describe('applyPatches', () => {
   test('applies a sequence of unique patches', () => {
     const code = 'const w = 10;\nconst h = 20;';
     const out = applyPatches([
