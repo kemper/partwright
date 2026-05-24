@@ -3,8 +3,8 @@
 // input row, the cost meter, and the compact button. State lives in the
 // ai/* modules; this file is mostly DOM wiring.
 
-import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens } from '../ai/chatLoop';
-import { runTurn, pushQueuedBlocks } from '../ai/agentWorkerClient';
+import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
+import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
@@ -62,9 +62,10 @@ const state: PanelState = {
 };
 
 /** Cached length of `public/ai.md` + PREAMBLE, in characters, populated
- *  once on init. Used when the active provider is Anthropic. Default is
- *  a rough match for the current slimmed ai.md so the context meter is
- *  sensible before the fetch lands. */
+ *  once on init. Used for every hosted provider (Anthropic/OpenAI/Gemini),
+ *  which all receive the full ai.md system prompt. Default is a rough match
+ *  for the current ai.md so the context meter is sensible before the fetch
+ *  lands. */
 let cachedAiMdLength = 55_000;
 
 /** Effective system-prompt length in characters for the active provider /
@@ -75,7 +76,11 @@ function effectiveSystemPromptChars(): number {
   const s = loadSettings();
   const override = s.systemPromptOverrides?.[s.toggles.provider] ?? null;
   if (override !== null) return override.length;
-  if (s.toggles.provider === 'anthropic') return cachedAiMdLength;
+  // Every hosted provider gets the full ai.md prompt (see chatLoop's
+  // system-prompt branch); only 'local' gets the slim variant. Counting the
+  // local length for OpenAI/Gemini under-reported ~12K tokens of prompt and
+  // made the context meter / auto-compaction fire far too late.
+  if (s.toggles.provider !== 'local') return cachedAiMdLength;
   if (s.toggles.localModel) {
     try {
       const info = resolveLocalModel(s.toggles.localModel);
@@ -1994,6 +1999,24 @@ function formatTurnOutcome(o: TurnOutcome): string {
     default:
       return `· ended (${o.detail ?? 'other'}) · ${cost} · ${iters}${tools}`;
   }
+}
+
+/** Route a turn to the right executor.
+ *
+ *  Hosted providers (anthropic / openai / gemini) run in the Agent Worker so
+ *  their HTTP streams keep flowing when the tab is backgrounded.
+ *
+ *  The local (WebLLM) provider MUST run on the main thread. Its engine is
+ *  loaded into the main thread's `local.ts` module state by ensureModelLoaded
+ *  (driven by this panel and the local-model modal). The Worker has its own
+ *  module instance whose `loaded` engine is always null, so a worker-side
+ *  streamLocalTurn throws "Local model … is not loaded" even when the weights
+ *  are cached and the model is resident in GPU on the main thread. Running the
+ *  loop here reunites streamLocalTurn (and interruptLocal) with that engine. */
+function runTurn(input: RunTurnInput, callbacks?: RunTurnCallbacks): Promise<ChatMessage[]> {
+  return input.toggles.provider === 'local'
+    ? runTurnOnMainThread(input, callbacks)
+    : runTurnInWorker(input, callbacks);
 }
 
 async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatToggles, userBlocks: ChatBlock[]): Promise<void> {

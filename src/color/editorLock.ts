@@ -149,6 +149,17 @@ function showUnlockModal(): void {
   optionsContainer.appendChild(opt1.wrapper);
   optionsContainer.appendChild(opt2.wrapper);
 
+  // Single teardown for every dismissal path (Cancel, backdrop click, Escape,
+  // confirm) so the document keydown listener is always removed — closing via
+  // anything other than Escape used to leak one listener per open/close cycle.
+  const close = () => {
+    backdrop.remove();
+    document.removeEventListener('keydown', onKey);
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') close();
+  };
+
   // Buttons
   const btnRow = document.createElement('div');
   btnRow.className = 'flex justify-end gap-2';
@@ -156,7 +167,7 @@ function showUnlockModal(): void {
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'px-4 py-2 rounded text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors';
   cancelBtn.textContent = 'Cancel';
-  cancelBtn.addEventListener('click', () => backdrop.remove());
+  cancelBtn.addEventListener('click', () => close());
 
   const confirmBtn = document.createElement('button');
   confirmBtn.className = 'px-4 py-2 rounded text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors';
@@ -165,7 +176,7 @@ function showUnlockModal(): void {
     const preserveRadio = opt1.wrapper.querySelector('input') as HTMLInputElement;
     const preserve = preserveRadio.checked;
 
-    backdrop.remove();
+    close();
 
     if (preserve && onUnlockFork) {
       const colorData = serializeRegions();
@@ -190,13 +201,9 @@ function showUnlockModal(): void {
 
   // Close on backdrop click
   backdrop.addEventListener('click', (e) => {
-    if (e.target === backdrop) backdrop.remove();
+    if (e.target === backdrop) close();
   });
 
-  // Close on Escape
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') { backdrop.remove(); document.removeEventListener('keydown', onKey); }
-  };
   document.addEventListener('keydown', onKey);
 
   document.body.appendChild(backdrop);

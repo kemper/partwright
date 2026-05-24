@@ -148,6 +148,45 @@ function customModelToInfo(custom: CustomLocalModel): LocalModelInfo {
 let loaded: LoadedEngine | null = null;
 let loadInFlight: Promise<LoadedEngine> | null = null;
 
+// The actual MLCEngine lives in a dedicated Web Worker (localEngineWorker.ts);
+// `engineProxy` is the main-thread `WebWorkerMLCEngine` handle that forwards
+// reload / chat.completions / interrupt / unload to it and exposes the exact
+// same interface as a same-thread MLCEngine. We keep both as singletons for
+// the session: the worker holds the WASM runtime + GPU device, so reusing it
+// across model switches (reload swaps the weights in place) is far cheaper
+// than spawning a fresh worker each time. `loaded` still tracks which model is
+// currently resident; `engineProxy` outlives an unload so the next load is
+// fast.
+let engineWorker: Worker | null = null;
+// Typed loosely (like LoadedEngine.engine) so this module doesn't drag the
+// ~6 MB WebLLM SDK types into every chunk that imports our `types`.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let engineProxy: any = null;
+
+/** Lazily create the model worker + its main-thread proxy, then refresh the
+ *  per-load bits (app config for custom models, progress callback) so the
+ *  current caller sees download progress. Reused across loads. */
+function getEngineProxy(
+  webllm: typeof import('@mlc-ai/web-llm'),
+  appConfig: import('@mlc-ai/web-llm').AppConfig,
+  onProgress: (report: { progress: number; text: string }) => void,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): any {
+  if (!engineWorker) {
+    engineWorker = new Worker(new URL('./localEngineWorker.ts', import.meta.url), { type: 'module' });
+  }
+  if (!engineProxy) {
+    engineProxy = new webllm.WebWorkerMLCEngine(engineWorker, { appConfig, initProgressCallback: onProgress });
+  } else {
+    // setAppConfig posts to the worker; postMessage ordering guarantees it
+    // lands before the reload below. setInitProgressCallback only updates the
+    // proxy-side closure, so progress for this load reaches the right caller.
+    engineProxy.setAppConfig(appConfig);
+    engineProxy.setInitProgressCallback(onProgress);
+  }
+  return engineProxy;
+}
+
 export interface ProgressUpdate {
   /** 0..1, or NaN if WebLLM doesn't know yet. */
   progress: number;
@@ -325,15 +364,14 @@ export async function ensureModelLoaded(modelId: string, opts: LoadOptions = {})
       ...buildCustomModelEntries(webllm),
     ];
 
-    const engine = new webllm.MLCEngine({
-      // Default cache backend is "cache" (Cache API). Safari caps that at
-      // ~1 GB; OPFS is uncapped after the storage permission prompt, so we
-      // prefer it when available. WebLLM falls back if the browser lacks
-      // OPFS.
-      appConfig,
-      initProgressCallback: (report: { progress: number; text: string }) => {
-        opts.onProgress?.({ progress: report.progress, text: report.text });
-      },
+    // The engine runs in localEngineWorker.ts; this proxy forwards to it.
+    // Default cache backend is "cache" (Cache API). Safari caps that at ~1 GB;
+    // OPFS is uncapped after the storage permission prompt, so WebLLM prefers
+    // it when available and falls back if the browser lacks OPFS. The cache is
+    // origin-wide, so weights downloaded by the worker are still visible to
+    // the main-thread cache helpers (getCachedModels / deleteCachedModel).
+    const engine = getEngineProxy(webllm, appConfig, (report: { progress: number; text: string }) => {
+      opts.onProgress?.({ progress: report.progress, text: report.text });
     });
 
     // Compute the context override. Priority: user-set global override,
@@ -474,11 +512,20 @@ export interface LocalRequestSpec {
  *      with an UnsupportedModelIdError. We inject tool descriptions into
  *      the system prompt and ask the model to emit `<tool_call>{...}</tool_call>`
  *      blocks, then parse them out post-stream. */
-export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamCallbacks = {}): Promise<StreamResult> {
+export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamCallbacks = {}, signal?: AbortSignal): Promise<StreamResult> {
   if (!loaded || loaded.modelId !== spec.modelId) {
     throw new Error(`Local model ${spec.modelId} is not loaded. Open AI settings → Local model to download it first.`);
   }
   const { engine, info } = loaded;
+  // Already aborted before we even start — don't kick off a generation we'd
+  // immediately throw away.
+  if (signal?.aborted) {
+    return {
+      text: '', toolCalls: [], stopReason: 'aborted',
+      usage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+      truncated: false,
+    };
+  }
   // Default is intentionally modest — local models share their context
   // with the whole conversation, and the 70B is capped at 4K. Reserving
   // 768 for output leaves room for the system prompt + tool docs +
@@ -504,6 +551,11 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
   }
 
   const stream = await engine.chat.completions.create(baseReq);
+
+  // Stop WebLLM generation promptly on a Stop click, even if no further chunk
+  // arrives to trip the per-chunk signal check inside the loop below.
+  const onAbort = () => { try { engine.interruptGenerate(); } catch { /* noop */ } };
+  if (signal) signal.addEventListener('abort', onAbort, { once: true });
 
   let rawText = '';
   let stopReason = 'unknown';
@@ -533,6 +585,7 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
   const MAX_OPEN_LEN = Math.max(TOOL_CALL_OPEN.length, THINK_OPEN.length);
 
   try { for await (const chunk of stream as AsyncIterable<any>) {
+    if (signal?.aborted) { stopReason = 'aborted'; break; }
     const choice = chunk?.choices?.[0];
     if (choice?.delta?.content) {
       const delta = choice.delta.content as string;
@@ -608,6 +661,8 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
     // as a normal end-of-turn by resetting stopReason to 'stop'.
     if (err?.name !== 'ToolCallOutputParseError') throw err;
     stopReason = 'stop';
+  } finally {
+    if (signal) signal.removeEventListener('abort', onAbort);
   }
 
   // Final flush: anything still unemitted outside a suppressed block goes
@@ -654,7 +709,10 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
   // Normalize finish_reason to match Anthropic vocabulary ("tool_use" /
   // "end_turn") so chatLoop's branching reads the same.
   let normStop = stopReason;
-  if (toolCalls.length > 0 && !truncatedMidToolCall) normStop = 'tool_use';
+  // An aborted turn wins over everything else: chatLoop persists the partial
+  // text and skips tool execution when stopReason is 'aborted'.
+  if (signal?.aborted || stopReason === 'aborted') normStop = 'aborted';
+  else if (toolCalls.length > 0 && !truncatedMidToolCall) normStop = 'tool_use';
   else if (truncatedMidToolCall || truncatedMaxTokens) normStop = 'max_tokens';
   else if (stopReason === 'stop') normStop = 'end_turn';
 

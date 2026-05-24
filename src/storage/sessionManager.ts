@@ -20,6 +20,7 @@ import {
   createPart as dbCreatePart,
   listParts as dbListParts,
   updatePart as dbUpdatePart,
+  updatePartOrders as dbUpdatePartOrders,
   deletePart as dbDeletePart,
   addNote as dbAddNote,
   listNotes as dbListNotes,
@@ -522,6 +523,10 @@ export async function setSessionLanguage(id: string, language: 'manifold-js' | '
  *  live-mirroring the active model across windows (which would fight the user). */
 export async function setSessionAiPreference(provider: string, model: string | null): Promise<void> {
   if (!currentState.session || !model) return;
+  // A read-only viewer must not mutate the shared session row, or it would
+  // clobber the leader's remembered provider/model (last reopen would win
+  // whatever the viewer last picked).
+  if (isViewerTab()) return;
   const cur = currentState.session.aiPreference;
   if (cur && cur.provider === provider && cur.model === model) return;
   const id = currentState.session.id;
@@ -689,7 +694,7 @@ export async function reorderParts(orderedIds: string[]): Promise<void> {
   for (const p of currentState.parts) if (byId.has(p.id)) ordered.push(p);
 
   const next = ordered.map((p, i) => ({ ...p, order: i }));
-  for (const p of next) await dbUpdatePart(p.id, { order: p.order });
+  await dbUpdatePartOrders(next.map(p => ({ id: p.id, order: p.order })));
 
   currentState = {
     ...currentState,
@@ -1376,6 +1381,23 @@ export async function importSession(
   const warning = getSchemaCompatibilityWarning(data);
   if (warning && onWarning) onWarning(warning);
 
+  // Validate before creating anything: a file with no `versions` array would
+  // otherwise throw partway through (data.versions.reduce/for-of) and strand an
+  // empty orphan session. The `Array.isArray` default below prevents that throw;
+  // we still reject a file that carries *nothing* importable. A chat- or
+  // notes-only export (a session used before any geometry was saved) is
+  // legitimate and must still round-trip, so only fail when versions, chat, and
+  // notes are all empty.
+  if (!data.session || typeof data.session !== 'object') {
+    throw new Error('Invalid session file: missing "session" data.');
+  }
+  const versions = Array.isArray(data.versions) ? data.versions : [];
+  const hasChat = Array.isArray(data.chat) && data.chat.length > 0;
+  const hasNotes = Array.isArray(data.notes) && data.notes.length > 0;
+  if (versions.length === 0 && !hasChat && !hasNotes) {
+    throw new Error('Invalid session file: no versions found.');
+  }
+
   const session = await dbCreateSession(data.session.name, data.session.language);
 
   // Restore images if present in the exported data. Handle two legacy shapes:
@@ -1392,7 +1414,7 @@ export async function importSession(
   // Determine the index of the latest exported version. Schema 1.2 stored
   // annotations at the top level; for back-compat we attach them to whichever
   // version was most recent at export time (assumed to be the highest index).
-  const latestExportedIndex = data.versions.reduce((m, v) => Math.max(m, v.index), -Infinity);
+  const latestExportedIndex = versions.reduce((m, v) => Math.max(m, v.index), -Infinity);
 
   // Reconstruct parts. Schema 1.7+ ships an explicit `parts` array; older files
   // have none, so all their versions collapse into a single default part.
@@ -1411,7 +1433,7 @@ export async function importSession(
   // Group versions by owning part, then save each group ordered by original
   // index so the per-part indices we assign preserve the source sequence.
   const versionsByPart = new Map<string, ExportedSession['versions']>();
-  for (const v of data.versions) {
+  for (const v of versions) {
     const partId = orderToPartId.get(v.part ?? 0) ?? firstPartId;
     const arr = versionsByPart.get(partId) ?? [];
     arr.push(v);

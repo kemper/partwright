@@ -79,6 +79,14 @@ const MAX_PASSES = 16;
  *  still add a lot; this keeps a single click bounded and responsive (the
  *  rim-only brush/slab/shape paths are naturally bounded and uncapped). */
 const AIRBRUSH_MAX_FILL_TRIANGLES = 100_000;
+/** Absolute safety ceiling on the refined triangle count. Normal painting stays
+ *  far below this (the UI surfaces a high-complexity warning around 1M). It is
+ *  NOT a quality cap on legitimate multi-stroke growth — it's an OOM guard so a
+ *  single pathological region (e.g. a brush stroke handed a tiny absolute
+ *  `maxEdge`) can't subdivide until the tab runs out of memory. When a pass
+ *  would cross it, we stop refining and accept a coarser-than-requested edge
+ *  rather than freeze. */
+const MAX_REFINED_TRIANGLES = 5_000_000;
 
 /** True when `p` is within the brush footprint of any of the stroke's samples,
  *  using the shape's distance metric (circle = Euclidean, square = Chebyshev,
@@ -550,6 +558,8 @@ export function buildRefinedMesh(
       // selected triangle). Measured against the region's own additions — NOT the
       // whole mesh — so a detailed base model can't starve the refinement.
       if (region.maxTriangles && (mesh.numTri - startTri) + selected.size * 3 > region.maxTriangles) break;
+      // Absolute OOM ceiling for any region (e.g. a tiny absolute maxEdge).
+      if (mesh.numTri + selected.size * 3 > MAX_REFINED_TRIANGLES) break;
       const { mesh: nm, childToParent } = subdivideSelected(mesh, selected);
       mesh = nm;
       comp = composeMaps(comp, childToParent);

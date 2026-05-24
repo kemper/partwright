@@ -56,6 +56,15 @@ export interface AiLocalModalCallbacks {
   onChange: () => void;
 }
 
+export interface LocalPickerOptions {
+  /** When true the picker is rendered inside the AI Settings modal rather
+   *  than its own pop-up. The settings host supplies its own "About"
+   *  framing and a dedicated "Local context" controls section, so the
+   *  embedded picker drops the standalone context-window note to avoid
+   *  saying the same thing twice. */
+  embedded?: boolean;
+}
+
 export async function showAiLocalModal(cb: AiLocalModalCallbacks): Promise<void> {
   closeModal();
 
@@ -88,7 +97,7 @@ export async function showAiLocalModal(cb: AiLocalModalCallbacks): Promise<void>
   modalEl = overlay;
 
   // Re-render reactively when state changes (cache scan, download progress).
-  await rerender(body, cb);
+  await renderLocalPicker(body, cb);
 
   escHandler = (e: KeyboardEvent) => {
     if (e.key === 'Escape') closeModal();
@@ -96,7 +105,17 @@ export async function showAiLocalModal(cb: AiLocalModalCallbacks): Promise<void>
   document.addEventListener('keydown', escHandler);
 }
 
-async function rerender(body: HTMLElement, cb: AiLocalModalCallbacks): Promise<void> {
+/** Fill `body` with the full local-model picker UI: crash warning, WebGPU /
+ *  storage banners, the grouped model cards, the custom-model form, and the
+ *  trust panel. Re-entrant — every state change (cache scan, download
+ *  finish, model removal) calls this again on the same container. Exported
+ *  so the AI Settings "Local" tab can embed it inline instead of opening a
+ *  separate modal. */
+export async function renderLocalPicker(
+  body: HTMLElement,
+  cb: AiLocalModalCallbacks,
+  opts: LocalPickerOptions = {},
+): Promise<void> {
   body.replaceChildren();
   body.appendChild(buildCrashRiskWarning());
   body.appendChild(buildIntro());
@@ -154,7 +173,7 @@ async function rerender(body: HTMLElement, cb: AiLocalModalCallbacks): Promise<v
     const list = document.createElement('div');
     list.className = 'flex flex-col gap-2 mb-1';
     for (const model of models) {
-      list.appendChild(renderModelCard(model, settings.toggles.localModel, body, cb));
+      list.appendChild(renderModelCard(model, settings.toggles.localModel, body, cb, opts));
     }
     body.appendChild(list);
   }
@@ -167,13 +186,13 @@ async function rerender(body: HTMLElement, cb: AiLocalModalCallbacks): Promise<v
     const list = document.createElement('div');
     list.className = 'flex flex-col gap-2 mb-1';
     for (const c of settings.customLocalModels) {
-      list.appendChild(renderCustomModelCard(c, settings.toggles.localModel, body, cb));
+      list.appendChild(renderCustomModelCard(c, settings.toggles.localModel, body, cb, opts));
     }
     body.appendChild(list);
   }
 
-  body.appendChild(buildCustomModelForm(body, cb));
-  body.appendChild(buildContextNote());
+  body.appendChild(buildCustomModelForm(body, cb, opts));
+  if (!opts.embedded) body.appendChild(buildContextNote());
   body.appendChild(buildTrustPanel());
 }
 
@@ -199,6 +218,7 @@ function renderCustomModelCard(
   activeId: string | null,
   parentBody: HTMLElement,
   cb: AiLocalModalCallbacks,
+  opts: LocalPickerOptions,
 ): HTMLElement {
   const isActive = custom.id === activeId;
   const isCached = cachedSet.has(custom.id);
@@ -274,7 +294,7 @@ function renderCustomModelCard(
   } else {
     primary.className = 'px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white';
     primary.textContent = isCached ? 'Use this model' : 'Download & use';
-    primary.addEventListener('click', () => { void selectCustomModel(custom.id, parentBody, cb); });
+    primary.addEventListener('click', () => { void selectCustomModel(custom.id, parentBody, cb, opts); });
   }
   actions.appendChild(primary);
 
@@ -286,7 +306,7 @@ function renderCustomModelCard(
     if (!confirm(`Remove "${custom.label || custom.id}" from your custom model list?`)) return;
     saveSettings(removeCustomLocalModel(loadSettings(), custom.id));
     cb.onChange();
-    await rerender(parentBody, cb);
+    await renderLocalPicker(parentBody, cb, opts);
   });
   actions.appendChild(remove);
 
@@ -295,18 +315,18 @@ function renderCustomModelCard(
   return card;
 }
 
-async function selectCustomModel(modelId: string, parentBody: HTMLElement, cb: AiLocalModalCallbacks): Promise<void> {
+async function selectCustomModel(modelId: string, parentBody: HTMLElement, cb: AiLocalModalCallbacks, opts: LocalPickerOptions): Promise<void> {
   // Reuse the standard download flow; ensureModelLoaded reads the custom
   // entries from settings on every call so a freshly-added model is
   // visible to WebLLM.
-  await selectModel(modelId, parentBody, cb);
+  await selectModel(modelId, parentBody, cb, opts);
 }
 
 /** Form at the bottom of the modal where the user pastes a Hugging Face
  *  URL (or `org/repo`) and optionally a compiled-WASM URL. Validation is
  *  loose — we just save what they typed and let the engine surface a
  *  network error if the URLs are wrong. */
-function buildCustomModelForm(parentBody: HTMLElement, cb: AiLocalModalCallbacks): HTMLElement {
+function buildCustomModelForm(parentBody: HTMLElement, cb: AiLocalModalCallbacks, opts: LocalPickerOptions): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'mt-3 rounded border border-zinc-700 bg-zinc-900/40 p-3 flex flex-col gap-2';
 
@@ -407,7 +427,7 @@ function buildCustomModelForm(parentBody: HTMLElement, cb: AiLocalModalCallbacks
       return;
     }
     cb.onChange();
-    void rerender(parentBody, cb);
+    void renderLocalPicker(parentBody, cb, opts);
   });
   actions.appendChild(addBtn);
   wrap.appendChild(actions);
@@ -629,6 +649,7 @@ function renderModelCard(
   activeId: string | null,
   parentBody: HTMLElement,
   cb: AiLocalModalCallbacks,
+  opts: LocalPickerOptions,
 ): HTMLElement {
   const isActive = model.id === activeId;
   const isCached = cachedSet.has(model.id);
@@ -754,12 +775,12 @@ function renderModelCard(
   } else if (isCached) {
     primary.className = 'px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50';
     primary.textContent = 'Use this model';
-    primary.addEventListener('click', () => { void selectModel(model.id, parentBody, cb); });
+    primary.addEventListener('click', () => { void selectModel(model.id, parentBody, cb, opts); });
   } else {
     primary.className = 'px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
     primary.textContent = `Download ${model.downloadGB.toFixed(1)} GB`;
     if (webGpuStatus.state === 'bad') primary.disabled = true;
-    primary.addEventListener('click', () => { void selectModel(model.id, parentBody, cb); });
+    primary.addEventListener('click', () => { void selectModel(model.id, parentBody, cb, opts); });
   }
   actions.appendChild(primary);
 
@@ -779,7 +800,7 @@ function renderModelCard(
       }
       await deleteCachedModel(model.id);
       cb.onChange();
-      await rerender(parentBody, cb);
+      await renderLocalPicker(parentBody, cb, opts);
     });
     actions.appendChild(remove);
   }
@@ -790,7 +811,7 @@ function renderModelCard(
   return card;
 }
 
-async function selectModel(modelId: string, parentBody: HTMLElement, cb: AiLocalModalCallbacks): Promise<void> {
+async function selectModel(modelId: string, parentBody: HTMLElement, cb: AiLocalModalCallbacks, opts: LocalPickerOptions): Promise<void> {
   // Disable everything in the modal while we download / load.
   const oldBody = parentBody.cloneNode(false) as HTMLElement;
   parentBody.replaceWith(oldBody);
@@ -843,14 +864,14 @@ async function selectModel(modelId: string, parentBody: HTMLElement, cb: AiLocal
     cb.onChange();
 
     // Re-render the model list so the just-loaded model shows as Active.
-    await rerender(oldBody, cb);
+    await renderLocalPicker(oldBody, cb, opts);
   } catch (err) {
     status.textContent = `Failed to load: ${err instanceof Error ? err.message : String(err)}`;
     bar.style.background = '#dc2626';
     const back = document.createElement('button');
     back.className = 'self-start mt-2 px-3 py-1.5 rounded text-xs text-zinc-200 bg-zinc-700 hover:bg-zinc-600';
     back.textContent = 'Back';
-    back.addEventListener('click', () => { void rerender(oldBody, cb); });
+    back.addEventListener('click', () => { void renderLocalPicker(oldBody, cb, opts); });
     progressWrap.appendChild(back);
   }
 }
