@@ -42,11 +42,12 @@ test.describe('AI chat panel', () => {
     // a COI service-worker reload / WASM boot on the default Interactive tab.
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
 
-    // Drawer exists from boot but is translated off-screen until first open.
+    // Drawer is built at boot but the docked column stays display:none until
+    // first open.
     await page.click('#btn-ai');
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
+    await expect(page.locator('#ai-panel')).toBeVisible();
     await page.click('#ai-panel button:has-text("✕")');
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-full/);
+    await expect(page.locator('#ai-panel')).toBeHidden();
   });
 
   test('drawer state persists across reload', async ({ page }) => {
@@ -58,11 +59,11 @@ test.describe('AI chat panel', () => {
     // a COI service-worker reload / WASM boot on the default Interactive tab.
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
     await page.click('#btn-ai');
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
+    await expect(page.locator('#ai-panel')).toBeVisible();
 
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await expect(page.locator('#ai-panel')).toBeVisible();
   });
 
   test('drawer survives switching tabs', async ({ page }) => {
@@ -72,12 +73,12 @@ test.describe('AI chat panel', () => {
     // a COI service-worker reload / WASM boot on the default Interactive tab.
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
     await page.click('#btn-ai');
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
+    await expect(page.locator('#ai-panel')).toBeVisible();
 
     // Switch to another destination via the activity rail; the drawer should
     // stay open across the tab change.
     await page.locator('[data-tab="Versions"]').click();
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
+    await expect(page.locator('#ai-panel')).toBeVisible();
   });
 
   test('panel widgets render', async ({ page }) => {
@@ -172,7 +173,7 @@ test.describe('AI chat panel', () => {
 
   test('toggle pills carry tooltips explaining what they do', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.locator('#btn-ai').dispatchEvent('click');
     const pillNames = ['📸 Auto-render', '▶ Run', '💾 Save', '🎨 Paint'];
     for (const name of pillNames) {
@@ -187,19 +188,19 @@ test.describe('AI chat panel', () => {
 
   test('drawer + send from landing page navigates to editor', async ({ page }) => {
     // Open the drawer on /editor first so it persists open, then go back
-    // to the landing page. The drawer is a body-level overlay so it
-    // should still be visible there.
+    // to the landing page. The drawer docks into the app-level row (outside
+    // the per-page subtrees), so it stays mounted and visible there.
     await page.goto('/editor');
     // Wait for the panel itself, not just the toolbar button — the button
     // mounts first, the panel's click-handler comes online a beat later.
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     // Click via dispatchEvent so we sidestep the same viewport-hit-test
     // edge case that bites the toggle-pill click on a freshly-mounted
     // panel; we just need the click handler to fire.
     await page.locator('#btn-ai').dispatchEvent('click');
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/, { timeout: 5000 });
+    await expect(page.locator('#ai-panel')).toBeVisible({ timeout: 5000 });
     await page.goto('/');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await expect(page.locator('#ai-panel')).toBeVisible();
 
     // Sending a message from the landing page should navigate to /editor.
@@ -219,7 +220,7 @@ test.describe('AI chat panel', () => {
     // (queueing mid-run) with Stop split out as its own button so a typed
     // follow-up doesn't accidentally abort the agent.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.locator('#btn-ai').dispatchEvent('click');
 
     const panel = page.locator('#ai-panel');

@@ -13,7 +13,7 @@ test.describe('Multi-provider AI', () => {
     // turn "exited without a final message" with 0 tokens. Feed the
     // reader a CRLF-framed body and confirm it yields both events.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const events = await page.evaluate(async () => {
       const mod = await import('/src/ai/sse.ts');
       const body = 'data: {"x":1}\r\n\r\ndata: {"y":2}\r\n\r\ndata: [DONE]\r\n\r\n';
@@ -32,7 +32,7 @@ test.describe('Multi-provider AI', () => {
     // assistant text and spurious stalls. Feed deliberately awkward
     // chunk splits and confirm every event still parses.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const events = await page.evaluate(async () => {
       const mod = await import('/src/ai/sse.ts');
       // Full stream is three CRLF-separated events:
@@ -64,7 +64,7 @@ test.describe('Multi-provider AI', () => {
     // tool call that carries a signature, stub fetch to capture the
     // outgoing body, and assert the functionCall part replays the sig.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const sentBody = await page.evaluate(async () => {
       const gemini = await import('/src/ai/gemini.ts');
       let captured = '';
@@ -100,7 +100,7 @@ test.describe('Multi-provider AI', () => {
     // the lightweight models-list endpoint and treats 5xx as a transient
     // hiccup (non-blocking), so a busy backend never blocks a good key.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const out = await page.evaluate(async () => {
       const gemini = await import('/src/ai/gemini.ts');
       const calls: string[] = [];
@@ -126,7 +126,7 @@ test.describe('Multi-provider AI', () => {
 
   test('Gemini validateKey reports a clearly invalid key', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const result = await page.evaluate(async () => {
       const gemini = await import('/src/ai/gemini.ts');
       const origFetch = window.fetch;
@@ -151,7 +151,7 @@ test.describe('Multi-provider AI', () => {
     // thinkingConfig so they come back flagged. Stub the SSE stream and
     // assert the split. (Thinking is opt-in now, so drive a non-off level.)
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const out = await page.evaluate(async () => {
       const gemini = await import('/src/ai/gemini.ts');
       let captured = '';
@@ -195,7 +195,7 @@ test.describe('Multi-provider AI', () => {
     // with the answer in its own bubble.
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     // Bare /editor auto-restores a session (id in the URL, stable across
     // reload), so the chat pins to that bucket — seed there, not global.
     await page.evaluate(async () => {
@@ -214,7 +214,7 @@ test.describe('Multi-provider AI', () => {
       } as any]);
     });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.locator('#btn-ai').dispatchEvent('click');
     const box = page.locator('#ai-panel details').filter({ hasText: '🧠 Thinking' });
     await expect(box).toBeVisible();
@@ -233,7 +233,7 @@ test.describe('Multi-provider AI', () => {
     // direct callers to /v1/responses. Stub the SSE stream, drive
     // streamTurn, and assert the endpoint + the Responses token spelling.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const sent = await page.evaluate(async () => {
       const openai = await import('/src/ai/openai.ts');
       let url = '';
@@ -269,7 +269,7 @@ test.describe('Multi-provider AI', () => {
     // none hit the gpt-5.5 tools+reasoning restriction. Assert the endpoint +
     // the chat-shaped body (messages, max_completion_tokens).
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const sent = await page.evaluate(async () => {
       const openai = await import('/src/ai/openai.ts');
       let url = '';
@@ -305,7 +305,7 @@ test.describe('Multi-provider AI', () => {
     // the next send ("No tool output found for function call …") unless we
     // inject a synthetic output, the way the Anthropic builder already does.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const sentBody = await page.evaluate(async () => {
       const openai = await import('/src/ai/openai.ts');
       let captured = '';
@@ -350,7 +350,7 @@ test.describe('Multi-provider AI', () => {
     // message with no matching `tool` reply 400s ("tool_call_ids did not have
     // response messages") unless we inject a synthetic tool result.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const sentBody = await page.evaluate(async () => {
       const openai = await import('/src/ai/openai.ts');
       let captured = '';
@@ -390,7 +390,7 @@ test.describe('Multi-provider AI', () => {
     // field); a non-off level enables extended thinking with budget_tokens
     // and floats max_tokens above the budget (the API requires >).
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const out = await page.evaluate(async () => {
       const a = await import('/src/ai/anthropic.ts');
       const bodies: Record<string, { thinking?: unknown; max_tokens?: number }> = {};
@@ -448,7 +448,7 @@ test.describe('Multi-provider AI', () => {
     // next request 400s. buildApiMessages is a pure function, so assert the
     // ordering directly. With replay off, no thinking block leaks in.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const out = await page.evaluate(async () => {
       const a = await import('/src/ai/anthropic.ts');
       const history = [
@@ -485,7 +485,7 @@ test.describe('Multi-provider AI', () => {
     // off → reasoning hidden, no forced budget (so Pro models don't 400 on
     // budget 0). A non-off level surfaces thoughts with a positive budget.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const out = await page.evaluate(async () => {
       const gemini = await import('/src/ai/gemini.ts');
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -512,7 +512,7 @@ test.describe('Multi-provider AI', () => {
 
   test('OpenAI sends reasoning.effort only for reasoning models + non-off levels', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const out = await page.evaluate(async () => {
       const openai = await import('/src/ai/openai.ts');
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -549,8 +549,11 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.locator('#btn-ai').dispatchEvent('click');
+    // Thinking lives in the collapsible ⚙ Options group (advanced knobs are
+    // hidden by default to keep the panel uncluttered) — expand it first.
+    await page.locator('#ai-panel button:has-text("⚙ Options")').dispatchEvent('click');
     const thinkSel = page.locator('#ai-panel select[title^="Thinking:"]');
     await expect(thinkSel).toBeVisible();
     // Thinking now ships on by default (the standard preset uses 'high').
@@ -566,7 +569,7 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.locator('#btn-ai').dispatchEvent('click');
     // Open AI Settings via the cog icon (its title starts with "AI settings").
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
@@ -599,7 +602,7 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.locator('#btn-ai').dispatchEvent('click');
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
@@ -642,7 +645,7 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.locator('#btn-ai').dispatchEvent('click');
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
@@ -662,7 +665,7 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.locator('#btn-ai').dispatchEvent('click');
 
     // Default provider is Anthropic — dropdown shows claude-* models.
@@ -681,7 +684,7 @@ test.describe('Multi-provider AI', () => {
       localStorage.setItem('partwright-ai-settings-v1', JSON.stringify(cur));
     });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.locator('#btn-ai').dispatchEvent('click');
     const openaiOpts = await page.locator('#ai-panel select').first().evaluate(
       (el: HTMLSelectElement) => Array.from(el.options).map(o => o.value),
@@ -697,7 +700,7 @@ test.describe('Multi-provider AI', () => {
       localStorage.setItem('partwright-ai-settings-v1', JSON.stringify(cur));
     });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.locator('#btn-ai').dispatchEvent('click');
     const geminiOpts = await page.locator('#ai-panel select').first().evaluate(
       (el: HTMLSelectElement) => Array.from(el.options).map(o => o.value),
@@ -734,7 +737,7 @@ test.describe('Multi-provider AI', () => {
       }));
     });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.locator('#btn-ai').dispatchEvent('click');
     // Header shows OpenAI's chosen model.
     await expect(page.locator('#ai-panel select').first()).toHaveValue('gpt-5-nano');
@@ -779,7 +782,7 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.locator('#btn-ai').dispatchEvent('click');
     await page.locator('#ai-panel button[title^="Get a second opinion"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'Get a second opinion' })).toBeVisible();
@@ -792,7 +795,7 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.locator('#btn-ai').dispatchEvent('click');
     await page.locator('#ai-panel button[title^="AI Call Log"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Call Log' })).toBeVisible();
@@ -809,7 +812,7 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.evaluate(async () => {
       const mod = await import('/src/ai/diagnostics.ts');
       mod.clearEvents();
@@ -852,7 +855,7 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.locator('#btn-ai').dispatchEvent('click');
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
@@ -875,7 +878,7 @@ test.describe('Capability suffix', () => {
   // enabled tool is unambiguous on the very next turn.
   test('positively declares paint ON/OFF based on the toggle', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const { offSuffix, onSuffix } = await page.evaluate(async () => {
       const sp = await import('/src/ai/systemPrompt.ts');
       const settings = await import('/src/ai/settings.ts');

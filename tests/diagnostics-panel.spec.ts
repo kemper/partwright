@@ -37,7 +37,7 @@ test.describe('Diagnostic log', () => {
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
 
     await page.click('#btn-ai');
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
+    await expect(page.locator('#ai-panel')).toBeVisible();
 
     await page.click('#btn-diagnostics');
     await expect(page.locator('#diagnostics-panel')).toBeVisible();

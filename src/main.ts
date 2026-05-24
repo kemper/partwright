@@ -1614,9 +1614,21 @@ async function main() {
     startNewSessionInEditor,
   );
 
-  // Assemble DOM early so landing/help pages can render before WASM loads
-  app.appendChild(editorUI);
-  app.appendChild(overlayContainer);
+  // Assemble DOM early so landing/help pages can render before WASM loads.
+  // The page subtrees (editor + landing/help/catalog overlays) share a flex row
+  // with the AI panel so the panel docks as a persistent right-hand column: it
+  // sits OUTSIDE the per-page subtrees, so it survives route changes (the
+  // landing-page chat flow relies on the panel staying mounted across nav).
+  const appRow = document.createElement('div');
+  appRow.id = 'app-row';
+  appRow.className = 'flex flex-row flex-1 min-h-0 w-full';
+  const pageArea = document.createElement('div');
+  pageArea.id = 'page-area';
+  pageArea.className = 'flex flex-col flex-1 min-w-0 min-h-0';
+  pageArea.appendChild(editorUI);
+  pageArea.appendChild(overlayContainer);
+  appRow.appendChild(pageArea);
+  app.appendChild(appRow);
 
   let editorReady = false;
   let editorReadyResolve: (() => void) = () => {};
@@ -2270,6 +2282,7 @@ async function main() {
           updateAppHistory('/editor', 'push');
           await syncRouteFromURL();
         },
+        mountInto: appRow,
       });
       const cur = getState();
       await setAiActiveSession(cur.session?.id ?? null);

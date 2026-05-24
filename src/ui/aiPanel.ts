@@ -152,6 +152,8 @@ let navigateToEditorFn: (() => Promise<void> | void) | null = null;
 let modelPickerEl: HTMLElement | null = null;
 let promptChipEl: HTMLElement | null = null;
 let panelWidth = 420;
+/** App-level flex row the docked panel mounts into (see AiPanelOptions). */
+let mountTarget: HTMLElement | null = null;
 
 /** Set by the watchdog when it abort()s mid-stream so sendMessage knows
  *  this was a stall recovery (auto-resume), not a user-initiated stop. */
@@ -163,12 +165,18 @@ export interface AiPanelOptions {
    *  silent-modeling-on-landing-page UX bug where the AI runs code but
    *  the user can't see the result. */
   onNavigateToEditor?: () => Promise<void> | void;
+  /** App-level flex row the panel docks into as its right-hand column. It
+   *  lives outside the per-page subtrees, so the docked panel survives route
+   *  changes (landing ↔ editor) — the landing-page chat flow depends on that.
+   *  Falls back to <body> if omitted. */
+  mountInto?: HTMLElement;
 }
 
 /** Mount the drawer once on app start. Idempotent. */
 export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   if (drawerEl) return;
   navigateToEditorFn = opts.onNavigateToEditor ?? null;
+  mountTarget = opts.mountInto ?? null;
   // Pre-load ai.md so the first turn doesn't pay the fetch latency on top
   // of the API round trip. Also caches its length for the context meter.
   const aiMd = await loadAiMd();
@@ -179,6 +187,12 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   state.open = settings.drawerOpen;
 
   buildDrawer();
+  // The panel docks as a column on desktop but becomes a full-screen overlay
+  // on mobile; recompose its layout when the breakpoint is crossed while open.
+  const mq = window.matchMedia('(min-width: 768px)');
+  const onBreakpoint = () => { if (state.open) applyDockLayout(); };
+  if (typeof mq.addEventListener === 'function') mq.addEventListener('change', onBreakpoint);
+  else (mq as unknown as { addListener: (cb: () => void) => void }).addListener(onBreakpoint);
   // Re-assert this session's remembered model when the tab regains focus, so
   // the tab you're actively using reflects its own session's model even if a
   // peer tab changed the shared settings while this tab was in the background.
@@ -238,17 +252,31 @@ export function toggleAiPanel(): void {
   else showDrawer();
 }
 
+/** Switch the panel between its desktop "docked column" form and its mobile
+ *  "full-screen overlay" form. Only meaningful while open. */
+function applyDockLayout(): void {
+  if (!drawerEl) return;
+  const desktop = window.matchMedia('(min-width: 768px)').matches;
+  if (desktop) {
+    // A real flex child of the app row: takes layout space, no overlay chrome.
+    drawerEl.classList.remove('fixed', 'inset-0', 'z-40', 'h-dvh', 'w-full', 'shadow-2xl');
+    drawerEl.classList.add('shrink-0', 'self-stretch');
+    drawerEl.style.width = `${panelWidth}px`;
+  } else {
+    // Stacked mobile layout has no side-by-side column to dock into, so cover
+    // the screen instead. h-dvh keeps the input above the mobile browser chrome.
+    drawerEl.classList.remove('shrink-0', 'self-stretch');
+    drawerEl.classList.add('fixed', 'inset-0', 'z-40', 'h-dvh', 'w-full', 'shadow-2xl');
+    drawerEl.style.width = '';
+  }
+}
+
 function showDrawer(): void {
   if (!drawerEl) return;
   state.open = true;
-  drawerEl.classList.remove('translate-x-full');
-  drawerEl.classList.add('translate-x-0');
+  drawerEl.classList.remove('hidden');
+  applyDockLayout();
   window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: true } }));
-  // Only push content on desktop — mobile layout is stacked, not side-by-side.
-  if (window.matchMedia('(min-width: 768px)').matches) {
-    const app = document.getElementById('app');
-    if (app) app.style.paddingRight = `${panelWidth}px`;
-  }
   window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: true });
   inputEl?.focus();
@@ -257,11 +285,8 @@ function showDrawer(): void {
 function hideDrawer(): void {
   if (!drawerEl) return;
   state.open = false;
-  drawerEl.classList.remove('translate-x-0');
-  drawerEl.classList.add('translate-x-full');
+  drawerEl.classList.add('hidden');
   window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: false } }));
-  const app = document.getElementById('app');
-  if (app) app.style.paddingRight = '0';
   window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: false });
 }
@@ -413,24 +438,21 @@ function upsertHistoryMessage(msg: ChatMessage): void {
 function buildDrawer(): void {
   const root = document.createElement('div');
   root.id = 'ai-panel';
-  // h-dvh (dynamic viewport height) rather than h-screen/100vh: on mobile
-  // browsers 100vh measures the viewport with the URL bar hidden, so a
-  // fixed-position panel pushes its bottom (input + Send button) behind the
-  // browser chrome where scrolling can't reach it. dvh tracks the actually
-  // visible height. max-w-[100vw] caps the inline px width so the drawer can't
-  // overflow a phone narrower than panelWidth (it has no effect on desktop).
-  root.className = 'fixed top-0 right-0 h-dvh max-w-[100vw] bg-zinc-900 border-l border-zinc-700 shadow-2xl z-40 flex flex-col transition-transform duration-200 translate-x-full';
+  // Docked right-hand column of the app row (#app-row): a real flex child that
+  // takes layout space rather than floating over the page. `hidden` is the
+  // closed state; showDrawer()/applyDockLayout() add the desktop-docked vs
+  // mobile-overlay classes. Starts hidden — initAiPanel calls show/hideDrawer
+  // once panelWidth and drawerOpen are known.
+  root.className = 'flex flex-col min-h-0 bg-zinc-900 border-l border-zinc-700 hidden';
   root.style.width = `${panelWidth}px`;
   drawerEl = root;
 
-  const app = document.getElementById('app');
-  if (app) app.style.transition = 'padding-right 200ms ease';
-
-  // Left-edge drag handle for resizing panel width.
+  // Left-edge drag handle for resizing panel width. Desktop-only — on the
+  // mobile full-screen overlay there's no column to widen.
   // w-5 (20px) gives a finger-friendly touch target; the visible stripe stays
   // 1px wide so it doesn't look like a thick border.
   const panelResizeHandle = document.createElement('div');
-  panelResizeHandle.className = 'absolute top-0 left-0 h-full w-5 -translate-x-1/2 cursor-col-resize z-10 touch-none group';
+  panelResizeHandle.className = 'hidden md:block absolute top-0 left-0 h-full w-5 -translate-x-1/2 cursor-col-resize z-10 touch-none group';
   const panelResizeStripe = document.createElement('div');
   panelResizeStripe.className = 'absolute inset-y-0 left-1/2 w-px bg-zinc-700 group-hover:bg-blue-500 group-[.is-dragging]:bg-blue-500 transition-colors';
   panelResizeHandle.appendChild(panelResizeStripe);
@@ -690,7 +712,7 @@ function buildDrawer(): void {
     for (const file of Array.from(e.dataTransfer.files)) await attachFile(file);
   });
 
-  document.body.appendChild(root);
+  (mountTarget ?? document.body).appendChild(root);
 
   renderToggleStrip();
   renderCostMeter();
@@ -719,11 +741,9 @@ function initPanelResizer(handle: HTMLElement): void {
     const minW = 280;
     const maxW = Math.min(900, window.innerWidth - 200);
     panelWidth = Math.max(minW, Math.min(maxW, startWidth + delta));
+    // The docked column owns real layout width, so widening it reflows the page
+    // automatically — no #app padding to keep in sync.
     if (drawerEl) drawerEl.style.width = `${panelWidth}px`;
-    if (state.open && window.matchMedia('(min-width: 768px)').matches) {
-      const app = document.getElementById('app');
-      if (app) app.style.paddingRight = `${panelWidth}px`;
-    }
     window.dispatchEvent(new Event('resize'));
   });
 
