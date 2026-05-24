@@ -306,8 +306,11 @@ test.describe('smooth paintbrush', () => {
       const paintedColored = pw.listRegions()[0].triangles;
 
       const sv = await pw.runAndSave(pw.getCode(), 'smooth-v');
-      // Re-run the bare code so the refined mesh is gone, then reload the version:
-      // loadVersion re-runs the code and replays the stroke descriptor.
+      // Re-run the same code. A refining region that persists across the re-run
+      // deterministically rebuilds the refined mesh — it does NOT reset to the
+      // coarse base, otherwise the region's refined-mesh triangle indices would
+      // be stamped onto coarse triangles ("shattered shards"). loadVersion then
+      // independently reconstructs the same refined mesh from the descriptor.
       await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 4], true);`);
       const baseTri = pw.getMesh().numTri;
       await pw.loadVersion({ index: sv.version.index });
@@ -321,8 +324,8 @@ test.describe('smooth paintbrush', () => {
       };
     });
 
-    expect(out.baseTri).toBe(12);                         // bare cube, no refinement
     expect(out.paintedTri).toBeGreaterThan(12);
+    expect(out.baseTri).toBe(out.paintedTri);             // re-run rebuilds the refined mesh deterministically
     expect(out.reloadedTri).toBe(out.paintedTri);         // refined mesh reconstructed deterministically
     expect(out.reloadedColored).toBe(out.paintedColored); // same painted triangle set
     expect(out.reloadedRegions).toBe(1);
@@ -411,6 +414,9 @@ test.describe('smooth slab & shape painting', () => {
       const liveColored = pw.listRegions().find((r: { id: number }) => r.id === region.id).triangles;
 
       const sv = await pw.runAndSave(pw.getCode(), 'slab-v');
+      // Re-run the same code: the persisting smooth-slab region rebuilds the
+      // refined mesh deterministically (matching the brush path) rather than
+      // leaving the coarse base with stale refined indices.
       await pw.run(`const { Manifold } = api; return Manifold.cube([30, 30, 30], true);`);
       const baseTri = pw.getMesh().numTri;
       await pw.loadVersion({ index: sv.version.index });
@@ -418,8 +424,8 @@ test.describe('smooth slab & shape painting', () => {
       return { liveTri, liveColored, baseTri, reloadTri: pw.getMesh().numTri, reloadColored: reloaded?.triangles ?? -1 };
     });
 
-    expect(out.baseTri).toBe(12);                    // bare cube, no refinement
     expect(out.liveTri).toBeGreaterThan(12);         // smoothing subdivided
+    expect(out.baseTri).toBe(out.liveTri);           // re-run rebuilds the refined mesh deterministically
     expect(out.reloadTri).toBe(out.liveTri);         // refined mesh reconstructed deterministically
     expect(out.reloadColored).toBe(out.liveColored); // same painted set
   });

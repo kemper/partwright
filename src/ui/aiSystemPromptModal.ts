@@ -15,7 +15,7 @@
 // override to localStorage so it sticks across reloads. Picking a built-in
 // tier replaces the textarea contents and clears the override on save.
 
-import { loadSettings, saveSettings, setSystemPromptOverride } from '../ai/settings';
+import { loadSettings, saveSettings, setSystemPromptOverride, providerLabel } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { resolveLocalModel } from '../ai/local';
 import type { Provider } from '../ai/types';
@@ -50,7 +50,7 @@ export async function showSystemPromptModal(provider: Provider, cb: SystemPrompt
   header.className = 'px-5 py-3 border-b border-zinc-700 flex items-center justify-between shrink-0';
   const title = document.createElement('h2');
   title.className = 'text-sm font-semibold text-zinc-100';
-  title.textContent = `System prompt — ${provider === 'local' ? 'Local (WebGPU)' : 'Anthropic (cloud)'}`;
+  title.textContent = `System prompt — ${provider === 'local' ? 'Local (WebGPU)' : `${providerLabel(provider)} (cloud)`}`;
   header.appendChild(title);
   const closeBtn = document.createElement('button');
   closeBtn.className = 'px-2 py-1 rounded text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 text-sm';
@@ -75,7 +75,8 @@ export async function showSystemPromptModal(provider: Provider, cb: SystemPrompt
   // for this model)" next to the tier picker. Anthropic defaults to full;
   // local defaults to whichever tier the active model declares.
   let providerDefaultTier: Tier;
-  if (provider === 'anthropic') {
+  if (provider !== 'local') {
+    // Every hosted provider (Anthropic/OpenAI/Gemini) is sent the Full ai.md.
     providerDefaultTier = 'full';
   } else if (settings.toggles.localModel) {
     providerDefaultTier = resolveLocalModel(settings.toggles.localModel).promptTier;
@@ -123,7 +124,10 @@ export async function showSystemPromptModal(provider: Provider, cb: SystemPrompt
           : 'The Full tier (~' + Math.round(fullPromptTokens / 1000) + 'K tokens) is too large for this model — pick Slim or Medium, or enable sliding-window mode in AI settings.'}`;
     intro.innerHTML = `This is the wrapper prompt sent to every local-model turn. Pick a built-in tier or edit your own. ${ctxLine}`;
   } else {
-    intro.innerHTML = 'This is the wrapper prompt sent to every Anthropic turn. The Full tier is the default (it\'s prompt-cached, so you pay for it once per cache window). The Slim and Medium tiers are useful when you want to fit more conversation into context, paired with <code>readDoc</code> to pull subdoc detail on demand.';
+    const cacheNote = provider === 'anthropic'
+      ? ' (it\'s prompt-cached, so you pay for it once per cache window)'
+      : '';
+    intro.innerHTML = `This is the wrapper prompt sent to every ${providerLabel(provider)} turn. The Full tier is the default${cacheNote}. The Slim and Medium tiers are useful when you want to fit more conversation into context, paired with <code>readDoc</code> to pull subdoc detail on demand.`;
   }
   body.appendChild(intro);
 

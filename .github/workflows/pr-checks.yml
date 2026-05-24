@@ -1,0 +1,33 @@
+name: PR checks
+
+# Fast pre-merge feedback on PRs into main: type-check, production build, and
+# the unit tier. Deliberately NOT the e2e suite — the full e2e run is the
+# staging gate that fires after merge (see staging-gate.yml), keeping the main
+# preview a fast, pre-test deploy. This just stops type errors and obvious
+# breakage from reaching the main preview in the first place.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build (type-check + vite build)
+        run: npm run build
+
+      - name: Unit tests
+        run: npm run test:unit

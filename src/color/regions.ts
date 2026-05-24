@@ -47,6 +47,11 @@ type ChangeListener = () => void;
 
 let regions: ColorRegion[] = [];
 let nextOrder = 1;
+// Monotonic, session-unique region id source. Deliberately never reset (not
+// even on clearRegions) so an id can't collide with a region still held in an
+// undo snapshot. Ids are runtime-only — the rehydrate path assigns fresh ones
+// via addRegion rather than restoring the serialized id.
+let nextRegionId = 1;
 let visible = true;
 const listeners: ChangeListener[] = [];
 const visibilityListeners: ChangeListener[] = [];
@@ -157,7 +162,7 @@ export function addRegion(
   triangles: Set<number>,
   visible: boolean = true,
 ): ColorRegion {
-  const id = Date.now() + Math.floor(Math.random() * 1000);
+  const id = nextRegionId++;
   const region: ColorRegion = {
     id,
     name,
