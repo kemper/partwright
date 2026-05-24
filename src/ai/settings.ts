@@ -69,8 +69,9 @@ export interface LocalContextSettings {
    *  but the model loses long-range coherence. */
   sliding: boolean;
   /** Seconds without a new token before the stall watchdog fires and
-   *  auto-retries the request. Default 35. Increase for slow models on
-   *  modest hardware (e.g. a large quant on CPU-assisted inference). */
+   *  auto-retries the request. Default 60. Applies to every provider
+   *  (cloud and local); increase for slow models on modest hardware
+   *  (e.g. a large quant on CPU-assisted inference). */
   stallTimeoutSec: number;
 }
 
@@ -128,7 +129,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   autoCompactMode: 'off',
   systemPromptOverrides: { anthropic: null, local: null, openai: null, gemini: null },
   customLocalModels: [],
-  localContext: { windowSizeOverride: null, sliding: false, stallTimeoutSec: 35 },
+  localContext: { windowSizeOverride: null, sliding: false, stallTimeoutSec: 60 },
   aiPanelWidth: 420,
 };
 
@@ -450,7 +451,7 @@ function normalizeLocalContext(raw: Partial<LocalContextSettings> | undefined): 
   return {
     windowSizeOverride: typeof override === 'number' && override > 0 ? Math.floor(override) : null,
     sliding: raw?.sliding === true,
-    stallTimeoutSec: typeof timeout === 'number' && timeout >= 5 ? Math.floor(timeout) : 35,
+    stallTimeoutSec: typeof timeout === 'number' && timeout >= 5 ? Math.floor(timeout) : 60,
   };
 }
 
