@@ -50,11 +50,18 @@ export function commitUrl(info: BuildInfo): string | null {
   return base && SHA_RE.test(info.commit) ? `${base}/commit/${info.commit}` : null;
 }
 
+// Encode each path segment but keep slashes literal — GitHub's /tree/<branch>
+// route 404s on a percent-encoded slash (%2F), and branch names here are
+// routinely slash-namespaced (e.g. "claude/foo").
+function encodeBranchPath(branch: string): string {
+  return branch.split('/').map(encodeURIComponent).join('/');
+}
+
 /** GitHub URL for the branch tree, or null if branch / repo are unusable. */
 export function branchUrl(info: BuildInfo): string | null {
   const base = repoBase(info.repo);
   return base && info.branch && info.branch !== 'unknown'
-    ? `${base}/tree/${encodeURIComponent(info.branch)}`
+    ? `${base}/tree/${encodeBranchPath(info.branch)}`
     : null;
 }
 

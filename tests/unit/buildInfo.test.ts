@@ -44,9 +44,16 @@ describe('commitUrl', () => {
 });
 
 describe('branchUrl', () => {
-  test('links to the branch tree, URL-encoding slashes', () => {
+  test('links to the branch tree, keeping namespace slashes literal', () => {
+    // GitHub's /tree/<branch> 404s on a percent-encoded slash, so slashes in
+    // slash-namespaced branch names must stay raw.
     expect(branchUrl({ ...base, branch: 'claude/laughing-davinci' }))
-      .toBe('https://github.com/kemper/mainifold/tree/claude%2Flaughing-davinci');
+      .toBe('https://github.com/kemper/mainifold/tree/claude/laughing-davinci');
+  });
+
+  test('encodes unsafe characters per segment but preserves slashes', () => {
+    expect(branchUrl({ ...base, branch: 'feature/a b' }))
+      .toBe('https://github.com/kemper/mainifold/tree/feature/a%20b');
   });
 
   test('returns null when the branch is unknown', () => {
