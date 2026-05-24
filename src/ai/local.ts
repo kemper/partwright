@@ -512,11 +512,20 @@ export interface LocalRequestSpec {
  *      with an UnsupportedModelIdError. We inject tool descriptions into
  *      the system prompt and ask the model to emit `<tool_call>{...}</tool_call>`
  *      blocks, then parse them out post-stream. */
-export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamCallbacks = {}): Promise<StreamResult> {
+export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamCallbacks = {}, signal?: AbortSignal): Promise<StreamResult> {
   if (!loaded || loaded.modelId !== spec.modelId) {
     throw new Error(`Local model ${spec.modelId} is not loaded. Open AI settings → Local model to download it first.`);
   }
   const { engine, info } = loaded;
+  // Already aborted before we even start — don't kick off a generation we'd
+  // immediately throw away.
+  if (signal?.aborted) {
+    return {
+      text: '', toolCalls: [], stopReason: 'aborted',
+      usage: { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+      truncated: false,
+    };
+  }
   // Default is intentionally modest — local models share their context
   // with the whole conversation, and the 70B is capped at 4K. Reserving
   // 768 for output leaves room for the system prompt + tool docs +
@@ -542,6 +551,11 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
   }
 
   const stream = await engine.chat.completions.create(baseReq);
+
+  // Stop WebLLM generation promptly on a Stop click, even if no further chunk
+  // arrives to trip the per-chunk signal check inside the loop below.
+  const onAbort = () => { try { engine.interruptGenerate(); } catch { /* noop */ } };
+  if (signal) signal.addEventListener('abort', onAbort, { once: true });
 
   let rawText = '';
   let stopReason = 'unknown';
@@ -571,6 +585,7 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
   const MAX_OPEN_LEN = Math.max(TOOL_CALL_OPEN.length, THINK_OPEN.length);
 
   try { for await (const chunk of stream as AsyncIterable<any>) {
+    if (signal?.aborted) { stopReason = 'aborted'; break; }
     const choice = chunk?.choices?.[0];
     if (choice?.delta?.content) {
       const delta = choice.delta.content as string;
@@ -646,6 +661,8 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
     // as a normal end-of-turn by resetting stopReason to 'stop'.
     if (err?.name !== 'ToolCallOutputParseError') throw err;
     stopReason = 'stop';
+  } finally {
+    if (signal) signal.removeEventListener('abort', onAbort);
   }
 
   // Final flush: anything still unemitted outside a suppressed block goes
@@ -692,7 +709,10 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
   // Normalize finish_reason to match Anthropic vocabulary ("tool_use" /
   // "end_turn") so chatLoop's branching reads the same.
   let normStop = stopReason;
-  if (toolCalls.length > 0 && !truncatedMidToolCall) normStop = 'tool_use';
+  // An aborted turn wins over everything else: chatLoop persists the partial
+  // text and skips tool execution when stopReason is 'aborted'.
+  if (signal?.aborted || stopReason === 'aborted') normStop = 'aborted';
+  else if (toolCalls.length > 0 && !truncatedMidToolCall) normStop = 'tool_use';
   else if (truncatedMidToolCall || truncatedMaxTokens) normStop = 'max_tokens';
   else if (stopReason === 'stop') normStop = 'end_turn';
 

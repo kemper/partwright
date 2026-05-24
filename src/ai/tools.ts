@@ -701,6 +701,17 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'runAndExplain',
+    description: 'Run code in isolation and decompose the result into its boolean-distinct components — the diagnostic to reach for when getGeometryData reports componentCount > 1 and you need to know WHICH pieces failed to union. Does NOT save a version or touch the editor/viewport. Returns {stats, components, hints?, containmentWarnings?}: `components` is the per-piece breakdown ({index, volume, surfaceArea, centroid, boundingBox}, or null when the result is a single component), `hints` names the main body vs. tiny floaters and which face/axis a floater sits on with a concrete .translate() overlap suggestion, and `containmentWarnings` flags pieces fully hidden inside another (geometrically invisible). Turns a failed union into an actionable fix instead of guessing coordinates.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        code: { type: 'string', description: 'Code to run in the active language. Must return a Manifold (manifold-js) or evaluate to one (SCAD).' },
+      },
+      required: ['code'],
+    },
+  },
+  {
     name: 'query',
     description: 'Multi-query the current geometry in one call. Pass any combination of sliceAt (cross-section areas at given Z heights), decompose (component breakdown), boundingBox. Returns only the keys you asked for. Cheaper than separate calls.',
     input_schema: {
@@ -939,6 +950,7 @@ const ALWAYS_AVAILABLE = new Set([
   'paintExplain',
   'forkVersion',
   'runAndAssert',
+  'runAndExplain',
   'query',
   'modifyAndTest',
   'probeRay',
@@ -1340,6 +1352,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.copyColorsFromVersion({ index: input.index });
     case 'runAndAssert':
       return api.runAndAssert(input.code, input.assertions);
+    case 'runAndExplain':
+      return api.runAndExplain(input.code as string);
     case 'query':
       return api.query(input);
     case 'modifyAndTest': {

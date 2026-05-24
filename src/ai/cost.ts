@@ -25,6 +25,9 @@ const ANTHROPIC_PRICING: Record<string, ModelPricing> = {
 };
 
 const OPENAI_PRICING: Record<string, ModelPricing> = {
+  // gpt-5.5 rates are a best-effort estimate (pinned to the gpt-5 tier)
+  // until OpenAI publishes them; the cost meter is explicitly "estimated".
+  'gpt-5.5':       { input: 5.00, output: 25.00 },
   'gpt-5':         { input: 5.00, output: 25.00 },
   'gpt-5-mini':    { input: 0.50, output:  2.00 },
   'gpt-5-nano':    { input: 0.10, output:  0.40 },

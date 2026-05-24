@@ -566,6 +566,7 @@ export const ANTHROPIC_MODEL_OPTIONS: { id: AnthropicModelId; label: string }[] 
  *  can also type a custom id in the settings modal (e.g. a dated
  *  snapshot) and have it stick across provider switches. */
 export const OPENAI_MODEL_OPTIONS: { id: string; label: string }[] = [
+  { id: 'gpt-5.5', label: 'GPT-5.5' },
   { id: 'gpt-5', label: 'GPT-5' },
   { id: 'gpt-5-mini', label: 'GPT-5 mini' },
   { id: 'gpt-5-nano', label: 'GPT-5 nano' },

@@ -253,7 +253,18 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
     await workerReady;
     const callId = `val-${++callIdCounter}`;
     return new Promise<ValidateResult>((resolve, reject) => {
-      pendingValidations.set(callId, { resolve, reject });
+      // A hung validate never posts a result back. Mirror executeCodeAsync's
+      // timeout so a stuck OpenSCAD parse restarts the worker (which rejects all
+      // pending validations) instead of leaving the promise unsettled forever.
+      const timer = setTimeout(() => {
+        if (pendingValidations.has(callId)) {
+          restartEngineWorker(`OpenSCAD validation timed out after ${EXECUTE_TIMEOUT_MS / 1000}s`);
+        }
+      }, EXECUTE_TIMEOUT_MS);
+      pendingValidations.set(callId, {
+        resolve: (r) => { clearTimeout(timer); resolve(r); },
+        reject:  (e) => { clearTimeout(timer); reject(e); },
+      });
       engineWorker!.postMessage({ type: 'validate', callId, code: source, lang: l });
     });
   }

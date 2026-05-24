@@ -1382,14 +1382,19 @@ export async function importSession(
   if (warning && onWarning) onWarning(warning);
 
   // Validate before creating anything: a file with no `versions` array would
-  // throw partway through (data.versions.reduce/for-of) and strand an empty
-  // orphan session. `parts`/`chat` are already guarded with Array.isArray, so
-  // mirror that here for `versions` and fail with a clear message instead.
+  // otherwise throw partway through (data.versions.reduce/for-of) and strand an
+  // empty orphan session. The `Array.isArray` default below prevents that throw;
+  // we still reject a file that carries *nothing* importable. A chat- or
+  // notes-only export (a session used before any geometry was saved) is
+  // legitimate and must still round-trip, so only fail when versions, chat, and
+  // notes are all empty.
   if (!data.session || typeof data.session !== 'object') {
     throw new Error('Invalid session file: missing "session" data.');
   }
   const versions = Array.isArray(data.versions) ? data.versions : [];
-  if (versions.length === 0) {
+  const hasChat = Array.isArray(data.chat) && data.chat.length > 0;
+  const hasNotes = Array.isArray(data.notes) && data.notes.length > 0;
+  if (versions.length === 0 && !hasChat && !hasNotes) {
     throw new Error('Invalid session file: no versions found.');
   }
 

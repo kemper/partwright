@@ -62,6 +62,15 @@ export interface RefineRegion {
  *  warning and a live triangle count instead of silently degrading quality. */
 const MAX_PASSES = 16;
 
+/** Absolute safety ceiling on the refined triangle count. Normal painting stays
+ *  far below this (the UI surfaces a high-complexity warning around 1M). It is
+ *  NOT a quality cap on legitimate multi-stroke growth — it's an OOM guard so a
+ *  single pathological region (e.g. a brush stroke handed a tiny absolute
+ *  `maxEdge`) can't subdivide until the tab runs out of memory. When a pass
+ *  would cross it, we stop refining and accept a coarser-than-requested edge
+ *  rather than freeze. */
+const MAX_REFINED_TRIANGLES = 5_000_000;
+
 /** True when `p` is within the brush footprint of any of the stroke's samples,
  *  using the shape's distance metric (circle = Euclidean, square = Chebyshev,
  *  diamond = L1). */
@@ -298,6 +307,9 @@ export function buildRefinedMesh(
     for (let pass = 0; pass < MAX_PASSES; pass++) {
       const selected = selectByClassify(mesh, region);
       if (selected.size === 0) break;
+      // Each selected triangle becomes 4 (+3 net). Stop before crossing the
+      // safety ceiling so a tiny maxEdge can't OOM the tab.
+      if (mesh.numTri + selected.size * 3 > MAX_REFINED_TRIANGLES) break;
       const { mesh: nm, childToParent } = subdivideSelected(mesh, selected);
       mesh = nm;
       comp = composeMaps(comp, childToParent);
