@@ -17,6 +17,7 @@ export type AnthropicModelId = 'claude-haiku-4-5' | 'claude-sonnet-4-6' | 'claud
  *  string on ChatToggles so custom ids the user types in the settings
  *  modal still fit. */
 export type OpenaiModelId =
+  | 'gpt-5.5'
   | 'gpt-5'
   | 'gpt-5-mini'
   | 'gpt-5-nano'
