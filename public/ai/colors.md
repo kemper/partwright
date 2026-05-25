@@ -280,12 +280,16 @@ partwright.paintStroke({
   resolution: 256,               // smoothness: target edge = radius / resolution. Higher = smoother + more triangles. Default 256, range 2–1024
   // maxEdge: 0.1,               // OR: absolute target edge length (mesh units); overrides resolution
   shape: 'circle',               // circle | square | diamond
+  // surface: 'geodesic',        // 'geodesic' (default) | 'slab' — see below
+  // depth: 0,                   // slab only: how far through the wall paint reaches (0 = auto = ½ radius)
   color: [0.9, 0.2, 0.2],
 });
 // -> { id, name, triangles, resolution, maxEdge, meshTriangleCount } or { error }
 ```
 
 The refinement keeps subdividing the boundary triangles until they fall below the target edge, so it adapts to coarse meshes (a flat plate that's two giant triangles still gets a clean circle). Use `resolution` for the normal smoothness knob; reach for the absolute `maxEdge` override when you need exact edge sizing (e.g. `maxEdge: 0.1` for a crisp ring on a 10-unit part).
+
+**The brush is a *surface* tool, not a 3D ball.** `surface: 'geodesic'` (the default) flood-fills the footprint along the *connected* surface from the stroke, so paint follows curves and wraps over edges but never bleeds through to the opposite wall of a thin or hollow part — no tuning needed. `surface: 'slab'` instead keeps a thin shell within `depth` (mesh units) of the picked surface along its normal; raise `depth` to deliberately reach through a wall, lower it to hug the surface (`0` = auto = half the radius). Sessions saved before this feature load as `slab`. The interactive brush exposes the same controls — `getBrushSurface()` / `setBrushSurface('geodesic'|'slab')` and `setBrushDepth(u)`.
 
 **Paint by visual reasoning (organic / character meshes).** When bounding boxes won't separate the features (a hand from a sleeve at the same Z; an ear from a head), use `probePixel` + `paintConnected`. `probePixel` translates a pixel position in a rendered view back to an exact surface point + normal + triangleId — essentially clicking in your own perception. `paintConnected` then flood-fills from that seed, gated by deviation from the SEED normal, so it stays on the feature without bleeding to side faces with different orientations.
 
