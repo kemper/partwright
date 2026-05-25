@@ -591,7 +591,8 @@ function resolveDescriptorTriangles(
  *  the pristine base mesh (stable across reloads) when the descriptor doesn't
  *  carry one, and defaults `depth` to half the radius when unset (0/omitted). */
 function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }>): BrushStroke {
-  const surface = d.surface ?? 'slab';
+  // An airbrush spray is always geodesic (surface-following, no through-wall).
+  const surface = d.spray ? 'geodesic' : (d.surface ?? 'slab');
   const stroke: BrushStroke = {
     samples: d.samples,
     radius: d.radius,
@@ -599,6 +600,7 @@ function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }
     maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 256,
     surface,
     depth: d.depth !== undefined && d.depth > 0 ? d.depth : d.radius * 0.5,
+    spray: d.spray,
   };
   const base = paintBaseMesh ?? currentMeshData;
   if (base) {
@@ -5137,6 +5139,88 @@ async function main() {
         triangles: region.triangles.size,
         resolution: maxEdge !== undefined ? undefined : res,
         maxEdge: target,
+        meshTriangleCount: currentMeshData?.numTri ?? 0,
+      };
+    },
+
+    /** Geodesic airbrush: spray a soft speckle along world-space surface points.
+     *  Coverage fades from the core out via a deterministic per-triangle dither
+     *  (each triangle stays one printable colour). Always surface-following — it
+     *  never bleeds through a thin/hollow wall. `strength` (0..1, default 0.4) is
+     *  the core density, `softness` (0..1, default 0.5) the feather fraction,
+     *  `seed` (default 1) makes the speckle reproducible. `shape` is
+     *  circle|square|diamond; `resolution`/`maxEdge` set the speckle grain. */
+    paintAirbrush(opts: {
+      points?: number[][];
+      radius?: number;
+      color?: number[];
+      shape?: string;
+      strength?: number;
+      softness?: number;
+      seed?: number;
+      resolution?: number;
+      maxEdge?: number;
+      name?: string;
+    }) {
+      if (!currentMeshData) return { error: 'No geometry loaded — run code first, then paint.' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintAirbrush(opts): opts object required' };
+      const { points, radius, color, shape, strength, softness, seed, resolution, maxEdge, name } = opts;
+      if (!Array.isArray(points) || points.length === 0) {
+        return { error: 'paintAirbrush: points must be a non-empty array of [x,y,z] surface points (use probePixel to get them)' };
+      }
+      const samples: [number, number, number][] = [];
+      for (const p of points) {
+        if (!Array.isArray(p) || p.length !== 3 || p.some(n => typeof n !== 'number' || !Number.isFinite(n))) {
+          return { error: 'paintAirbrush: each point must be [x,y,z] of finite numbers' };
+        }
+        samples.push([p[0], p[1], p[2]]);
+      }
+      if (typeof radius !== 'number' || !Number.isFinite(radius) || radius <= 0) {
+        return { error: 'paintAirbrush: radius must be a positive finite number (mesh units)' };
+      }
+      if (!Array.isArray(color) || color.length !== 3 || color.some(c => typeof c !== 'number' || !Number.isFinite(c))) {
+        return { error: 'paintAirbrush: color must be [r,g,b] with each channel in 0..1' };
+      }
+      for (const [v, n] of [[strength, 'strength'], [softness, 'softness']] as const) {
+        if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > 1)) {
+          return { error: `paintAirbrush: ${n} must be a number in 0..1 when provided` };
+        }
+      }
+      if (seed !== undefined && (typeof seed !== 'number' || !Number.isFinite(seed))) {
+        return { error: 'paintAirbrush: seed must be a finite number when provided' };
+      }
+      if (resolution !== undefined && (typeof resolution !== 'number' || !Number.isFinite(resolution) || resolution <= 0)) {
+        return { error: 'paintAirbrush: resolution must be a positive finite number when provided' };
+      }
+      if (maxEdge !== undefined && (typeof maxEdge !== 'number' || !Number.isFinite(maxEdge) || maxEdge <= 0)) {
+        return { error: 'paintAirbrush: maxEdge must be a positive finite number when provided' };
+      }
+      const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
+      const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 96));
+      const target = maxEdge !== undefined ? Math.max(maxEdge, radius / SMOOTH_DIVISOR_MAX) : radius / res;
+      const spray = {
+        strength: strength ?? 0.4,
+        softness: softness ?? 0.5,
+        seed: seed !== undefined ? (seed | 0) : 1,
+      };
+      const region = addRegion(
+        typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
+        [color[0], color[1], color[2]],
+        'paintbrush',
+        { kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target, surface: 'geodesic', spray },
+        new Set<number>(),
+      );
+      if (region.triangles.size === 0) {
+        removeRegion(region.id);
+        return { error: 'paintAirbrush: no surface was sprayed — check the points are on the model, the radius is large enough, and strength > 0.' };
+      }
+      return {
+        id: region.id,
+        name: region.name,
+        triangles: region.triangles.size,
+        strength: spray.strength,
+        softness: spray.softness,
+        seed: spray.seed,
         meshTriangleCount: currentMeshData?.numTri ?? 0,
       };
     },

@@ -259,9 +259,19 @@ function sprayClassifier(stroke: BrushStroke): TriClassifier {
     const fa = strokeSignedDist(a[0], a[1], a[2], stroke);
     const fb = strokeSignedDist(b[0], b[1], b[2], stroke);
     const fc = strokeSignedDist(c[0], c[1], c[2], stroke);
-    if (fa > 0 && fb > 0 && fc > 0) return 'outside';
-    if (solidCore && fa < -featherWidth && fb < -featherWidth && fc < -featherWidth) return 'inside';
-    return 'straddle';
+    if (fa <= 0 || fb <= 0 || fc <= 0) {
+      if (solidCore && fa < -featherWidth && fb < -featherWidth && fc < -featherWidth) return 'inside';
+      return 'straddle';
+    }
+    // All vertices outside the footprint — but a spray smaller than the face may
+    // still sit inside this triangle; refine if its closest point to a sample is
+    // within the footprint (mirrors the brush's small-footprint fallback).
+    for (let s = 0; s < stroke.samples.length; s++) {
+      const sp = stroke.samples[s];
+      const cp = closestPointOnTriangle(sp[0], sp[1], sp[2], a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+      if (strokeSignedDist(cp[0], cp[1], cp[2], stroke) < 0) return 'straddle';
+    }
+    return 'outside';
   };
 }
 

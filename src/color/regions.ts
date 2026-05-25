@@ -34,7 +34,9 @@ export type RegionDescriptor =
   // `surface`/`depth` constrain the footprint to a thin shell on the picked
   // surface (so paint doesn't bleed through thin/hollow walls); descriptors
   // saved before this omit both and are read as `slab` with an auto depth.
-  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: 'geodesic' | 'slab'; depth?: number };
+  // `spray` turns the stroke into a geodesic airbrush: a soft speckle whose
+  // coverage fades from the core out via a per-triangle dither (no hard edge).
+  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: 'geodesic' | 'slab'; depth?: number; spray?: { strength: number; softness: number; seed: number } };
 
 export interface SerializedColorRegion {
   id: number;
