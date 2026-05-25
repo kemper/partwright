@@ -26,7 +26,7 @@ import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEng
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setOnMeshUpdate, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
-import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
+import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { generateId, getLatestVersion } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, getAutoFormat, setAutoFormat, editorContentDiffersFrom } from './editor/codeEditor';
@@ -3039,17 +3039,18 @@ async function main() {
      *  elevation: degrees, 0 = horizon, 90 = top-down. Default 30.
      *  azimuth: degrees, 0 = front (-Y), 90 = right (+X). Default 315.
      *  ortho: true for orthographic projection. Default false.
-     *  wireframe: force the black topology overlay on (true) or off (false).
-     *  Default leaves it on for uncolored meshes and off for painted ones. */
-    renderView(options?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number; wireframe?: boolean }): string | null {
+     *  edges: edge overlay — 'none' (plain shaded), 'crease' (feature edges
+     *  only), or 'wireframe' (every triangle). Default: 'crease' for
+     *  uncolored meshes, 'none' for painted ones. */
+    renderView(options?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number; edges?: EdgeMode }): string | null {
       if (options !== undefined) {
         const o = assertObject(options, 'renderView(options)')!;
-        assertNoUnknownKeys(o, ['elevation', 'azimuth', 'ortho', 'size', 'wireframe'], 'renderView(options)');
+        assertNoUnknownKeys(o, ['elevation', 'azimuth', 'ortho', 'size', 'edges'], 'renderView(options)');
         assertNumber(o.elevation, 'renderView(options).elevation', { optional: true, min: -90, max: 90 });
         assertNumber(o.azimuth, 'renderView(options).azimuth', { optional: true });
         assertBoolean(o.ortho, 'renderView(options).ortho', { optional: true });
         assertNumber(o.size, 'renderView(options).size', { optional: true, min: 1, integer: true });
-        assertBoolean(o.wireframe, 'renderView(options).wireframe', { optional: true });
+        if (o.edges !== undefined) assertEnum(o.edges, EDGE_MODES, 'renderView(options).edges');
       }
       if (!currentMeshData) return null;
       // Default image size follows the spending-mode resolution budget when the
@@ -3072,12 +3073,15 @@ async function main() {
      *  guaranteed all-faces check, since back/left/bottom are otherwise
      *  never shown. For total control, pass `angles` (an explicit list of
      *  {elevation, azimuth, ortho?, label?}) which overrides `views`.
-     *  Bump `size` for a higher-resolution final inspection. */
-    async renderViews(options?: { views?: RenderViewMode; angles?: Array<{ elevation: number; azimuth: number; ortho?: boolean; label?: string }>; size?: number }): Promise<string | null> {
+     *  Bump `size` for a higher-resolution final inspection. `edges`
+     *  ('none' | 'crease' | 'wireframe', default 'crease' for uncolored
+     *  meshes) sets the edge overlay on every tile. */
+    async renderViews(options?: { views?: RenderViewMode; angles?: Array<{ elevation: number; azimuth: number; ortho?: boolean; label?: string }>; size?: number; edges?: EdgeMode }): Promise<string | null> {
       if (options !== undefined) {
         const o = assertObject(options, 'renderViews(options)')!;
-        assertNoUnknownKeys(o, ['views', 'angles', 'size'], 'renderViews(options)');
+        assertNoUnknownKeys(o, ['views', 'angles', 'size', 'edges'], 'renderViews(options)');
         if (o.views !== undefined) assertEnum(o.views, RENDER_VIEW_MODES, 'renderViews(options).views');
+        if (o.edges !== undefined) assertEnum(o.edges, EDGE_MODES, 'renderViews(options).edges');
         if (o.angles !== undefined) {
           const arr = assertArray(o.angles, 'renderViews(options).angles') as unknown[];
           for (let i = 0; i < arr.length; i++) {
@@ -3123,7 +3127,7 @@ async function main() {
       // HTMLImageElement, then stamp into the composite grid.
       for (let i = 0; i < angles.length; i++) {
         const { label, opts } = angles[i];
-        const dataUrl = renderSingleView(colored, { ...opts, size: tileSize });
+        const dataUrl = renderSingleView(colored, { ...opts, size: tileSize, edges: options?.edges });
         if (!dataUrl) continue;
         const img = await loadImageFromDataUrl(dataUrl);
         if (!img) continue;
@@ -5971,8 +5975,8 @@ async function main() {
         // Inspection
         'sliceAtZ':        { signature: 'sliceAtZ(z) -- Cross-section at height -> {polygons, svg, area}', docs: '/ai.md#console-api--windowpartwright' },
         'getBoundingBox':  { signature: 'getBoundingBox() -- -> {min, max}', docs: '/ai.md#console-api--windowpartwright' },
-        'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?}) -- Render from any angle -> data URL (default/cap size follows spending mode)', docs: '/ai.md#visual-verification' },
-        'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
+        'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?, edges?: "none"|"crease"|"wireframe"}) -- Render from any angle -> data URL (default/cap size follows spending mode; edges default "crease")', docs: '/ai.md#visual-verification' },
+        'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?, edges?: "none"|"crease"|"wireframe"}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
         // Spending mode (AI budget)
         'getSpendingMode': { signature: 'getSpendingMode() -- Read the AI budget (preset + thinking/vision/paint/notes/caps); respect it', docs: '/ai.md#spending-mode' },
         'setSpendingMode': { signature: 'setSpendingMode("cheap"|"balanced"|"expensive") -- Set the AI budget preset', docs: '/ai.md#spending-mode' },

@@ -16,7 +16,7 @@
 
 import type { ChatToggles } from './types';
 import type { Language } from '../geometry/engines/types';
-import { RENDER_VIEW_MODES } from '../renderer/multiview';
+import { RENDER_VIEW_MODES, EDGE_MODES } from '../renderer/multiview';
 import { getRenderBudget } from './settings';
 import { applyLiteralPatch, applyPatches } from './patch';
 
@@ -285,6 +285,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         azimuth: { type: 'number', description: 'Camera azimuth in degrees. 0 = front, 90 = right, 180 = back, 270 = left. Default 0.' },
         ortho: { type: 'boolean', description: 'true = orthographic (technical drawing), false = perspective. Default false.' },
         size: { type: 'integer', description: 'Pixel size of the rendered square. Default 320. Larger costs more tokens.' },
+        edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay style. "crease" (default for uncolored models) draws only feature edges — corners and the silhouette — so the shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best when reading painted colors; the default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
       },
     },
   },
@@ -297,6 +298,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         views: { type: 'string', enum: [...RENDER_VIEW_MODES], description: '"auto" (default) picks angles from the model aspect ratio. "tri" = front + top + iso (3 cells). "all" = front + right + top + iso (4 cells). "box" = all 6 orthographic faces front/back/left/right/top/bottom (guaranteed all-faces check). Ignored when `angles` is given.' },
         angles: { type: 'array', description: 'Explicit list of camera angles; overrides `views`. Same angle semantics as renderView. Use to put specific suspect angles side-by-side in one composite.', items: { type: 'object', properties: { elevation: { type: 'number', description: '0 = side, 90 = top, -90 = bottom.' }, azimuth: { type: 'number', description: '0 = front, 90 = right, 180 = back, 270 = left.' }, ortho: { type: 'boolean', description: 'true = orthographic. Default false.' }, label: { type: 'string', description: 'Optional caption for the cell.' } }, required: ['elevation', 'azimuth'] } },
         size: { type: 'integer', description: 'Pixel size per cell. Default 320. Raise to 512-768 for a high-resolution final check; larger costs more tokens.' },
+        edges: { type: 'string', enum: [...EDGE_MODES], description: 'Edge overlay applied to every tile. "crease" (default for uncolored models) draws only feature edges — corners and silhouette — so shape reads cleanly without facet noise on curves. "none" is a plain shaded surface (best for reading painted colors; default for painted models). "wireframe" draws every triangle edge — use only to inspect tessellation or debug a failed boolean.' },
       },
     },
   },
