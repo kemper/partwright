@@ -82,6 +82,30 @@ test.describe('geodesic airbrush', () => {
     expect(out.regions).toBe(1);
   });
 
+  test('overlapping sprays survive save + reload identically (multi-stroke determinism)', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.createSession('airbrush-multi');
+      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 4], true);`);
+      // Two overlapping sprays — the second appends onto the mesh the first
+      // already refined; reload replays both from the base. The dither keys off
+      // refined centroids, so both paths must converge.
+      pw.paintAirbrush({ points: [[-3, 0, 2]], radius: 5, strength: 0.6, softness: 0.5, seed: 2, maxEdge: 0.3, color: [1, 0, 0] });
+      pw.paintAirbrush({ points: [[3, 0, 2]], radius: 5, strength: 0.6, softness: 0.5, seed: 3, maxEdge: 0.3, color: [0, 0, 1] });
+      const live = pw.listRegions().map((r: { triangles: number }) => r.triangles);
+      const sv = await pw.runAndSave(pw.getCode(), 'multi-v');
+      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 4], true);`);
+      await pw.loadVersion({ index: sv.version.index });
+      return { live, reloaded: pw.listRegions().map((r: { triangles: number }) => r.triangles) };
+    });
+    expect(out.live.length).toBe(2);
+    expect(out.live[0]).toBeGreaterThan(0);
+    expect(out.live[1]).toBeGreaterThan(0);
+    expect(out.reloaded).toEqual(out.live); // both sprays reproduce exactly on reload
+  });
+
   test('the brush panel has a Spray toggle that reveals strength/softness and disables Slab', async ({ page }) => {
     await openEditor(page);
     await page.locator('#paint-toggle').dispatchEvent('click');

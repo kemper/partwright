@@ -277,7 +277,7 @@ const b = await partwright.probePixel({ pixel: [160, 110], view: { elevation: 30
 partwright.paintStroke({
   points: [a.point, b.point],   // ordered surface points; a single point stamps a rounded dot
   radius: 3,                     // mesh units, > 0
-  resolution: 256,               // smoothness: target edge = radius / resolution. Higher = smoother + more triangles. Default 256, range 2–1024
+  resolution: 64,                // curve segments: target edge = radius / resolution. Edge is clipped exact, so this only smooths curves. Default 64, range 2–1024
   // maxEdge: 0.1,               // OR: absolute target edge length (mesh units); overrides resolution
   shape: 'circle',               // circle | square | diamond
   // surface: 'geodesic',        // 'geodesic' (default) | 'slab' — see below

@@ -590,7 +590,18 @@ function resolveDescriptorTriangles(
  *  For the `slab` surface constraint, derives a per-sample surface normal from
  *  the pristine base mesh (stable across reloads) when the descriptor doesn't
  *  carry one, and defaults `depth` to half the radius when unset (0/omitted). */
+// Resolved-stroke cache: descriptorToStroke is called for the same descriptor
+// both when collecting refine regions and when resolving triangles (and again on
+// every later reconcile). Building the geodesic field / sample normals is the
+// expensive part, and it only depends on the descriptor + the pristine base
+// mesh — so memoize per descriptor, rebuilding only when the base changes (a new
+// code run). WeakMap so dropped regions are collected automatically.
+const strokeCache = new WeakMap<object, { base: MeshData; stroke: BrushStroke }>();
+
 function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }>): BrushStroke {
+  const cacheBase = paintBaseMesh ?? currentMeshData;
+  const cached = strokeCache.get(d);
+  if (cached && cached.base === cacheBase) return cached.stroke;
   // An airbrush spray is always geodesic (surface-following, no through-wall).
   const surface = d.spray ? 'geodesic' : (d.surface ?? 'slab');
   const stroke: BrushStroke = {
@@ -610,6 +621,7 @@ function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }
       stroke.sampleNormals = deriveSampleNormals(d.samples, base);
       stroke.sampleTangents = stroke.sampleNormals.map(tangentBasis);
     }
+    strokeCache.set(d, { base, stroke });
   }
   return stroke;
 }
