@@ -20,6 +20,8 @@ import {
   getBrushSmoothDivisor,
   setBrushPaintDepth,
   getBrushPaintDepth,
+  setBrushSurface,
+  getBrushSurface,
   SMOOTH_DIVISOR_MIN,
   SMOOTH_DIVISOR_MAX,
   setShapeSmooth,
@@ -480,13 +482,47 @@ function createBrushControls(): HTMLElement {
   help.textContent = 'Single triangle \u2190\u2014\u2014\u2192 Wider brush';
   wrap.appendChild(help);
 
-  // Paint depth \u2014 how far through the surface a stroke reaches. The brush is a
-  // surface tool: paint is constrained to a thin shell so it can't bleed through
-  // thin / hollow walls. 0 = auto (half the radius); lower hugs the surface.
+  // Surface mode \u2014 geodesic (default) flood-fills paint along the connected
+  // surface so it never bleeds through a wall (no depth needed); slab keeps a
+  // thin shell within Paint depth of the picked surface.
+  const surfaceLabel = document.createElement('div');
+  surfaceLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+  surfaceLabel.textContent = 'Surface';
+  wrap.appendChild(surfaceLabel);
+
+  const surfaceRow = document.createElement('div');
+  surfaceRow.className = 'grid grid-cols-2 gap-1';
+  const surfaceButtons: Partial<Record<'geodesic' | 'slab', HTMLButtonElement>> = {};
+  // Reassigned once depthWrap exists; called on every mode change.
+  let syncDepthVisibility = (): void => {};
+  for (const [mode, labelText, tip] of [
+    ['geodesic', 'Geodesic', 'Paint follows the connected surface and never bleeds through walls \u2014 no depth needed. Recommended.'],
+    ['slab', 'Slab', 'Paint a thin shell within Paint depth of the surface. Use the depth knob to control how far through a wall paint reaches.'],
+  ] as const) {
+    const btn = document.createElement('button');
+    btn.textContent = labelText;
+    btn.title = tip;
+    btn.className = axisButtonClass(mode === getBrushSurface());
+    btn.addEventListener('click', () => {
+      setBrushSurface(mode);
+      for (const [k, b] of Object.entries(surfaceButtons)) {
+        if (b) b.className = axisButtonClass(k === getBrushSurface());
+      }
+      syncDepthVisibility();
+    });
+    surfaceRow.appendChild(btn);
+    surfaceButtons[mode] = btn;
+  }
+  wrap.appendChild(surfaceRow);
+
+  // Paint depth (slab mode only) \u2014 how far through the surface a stroke reaches.
+  const depthWrap = document.createElement('div');
+  depthWrap.id = 'brush-depth-wrap';
+
   const depthLabel = document.createElement('div');
   depthLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
   depthLabel.textContent = 'Paint depth';
-  wrap.appendChild(depthLabel);
+  depthWrap.appendChild(depthLabel);
 
   const depthRow = document.createElement('div');
   depthRow.className = 'flex items-center gap-2';
@@ -532,12 +568,18 @@ function createBrushControls(): HTMLElement {
   depthRow.appendChild(depthSlider);
   depthRow.appendChild(depthInput);
   depthRow.appendChild(depthUnit);
-  wrap.appendChild(depthRow);
+  depthWrap.appendChild(depthRow);
 
   const depthHelp = document.createElement('div');
   depthHelp.className = 'text-[10px] text-zinc-500 mt-1';
   depthHelp.textContent = 'Surface only \u2190\u2014\u2014\u2192 Through thicker walls \u00b7 0 = auto';
-  wrap.appendChild(depthHelp);
+  depthWrap.appendChild(depthHelp);
+  wrap.appendChild(depthWrap);
+
+  syncDepthVisibility = (): void => {
+    depthWrap.classList.toggle('hidden', getBrushSurface() !== 'slab');
+  };
+  syncDepthVisibility();
 
   // Brush shape selector
   const shapeLabel = document.createElement('div');

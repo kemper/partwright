@@ -34,10 +34,11 @@ let brushSmooth = true;
 let brushSmoothDivisor = 256;
 export const SMOOTH_DIVISOR_MIN = 2;
 export const SMOOTH_DIVISOR_MAX = 1024;
-/** Brush surface mode: `slab` keeps the footprint a thin shell on the picked
- *  surface so paint can't bleed through thin/hollow walls. (Geodesic mode and a
- *  UI toggle land in a later pass; for now the brush is always slab-constrained.) */
-let brushSurface: 'geodesic' | 'slab' = 'slab';
+/** Brush surface mode. `geodesic` (default for new painting) flood-fills the
+ *  footprint along the connected surface so paint never bleeds through a wall and
+ *  needs no depth tuning; `slab` keeps a thin shell within `depth` of the surface
+ *  (the depth knob below). Old sessions resolve as `slab` for back-compat. */
+let brushSurface: 'geodesic' | 'slab' = 'geodesic';
 /** Paint depth in mesh units: how far through the surface a slab-mode stroke may
  *  reach. 0 = auto (half the brush radius), resolved at commit time. */
 let brushPaintDepth = 0;

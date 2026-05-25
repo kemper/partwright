@@ -155,7 +155,7 @@ test.describe('smooth paintbrush', () => {
       await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 2], true);`);
       const spray = (depth: number) => {
         pw.clearColors();
-        return pw.paintStroke({ points: [[0, 0, 1]], radius: 4, maxEdge: 0.5, depth, color: [1, 0, 0] }).triangles;
+        return pw.paintStroke({ points: [[0, 0, 1]], radius: 4, maxEdge: 0.5, surface: 'slab', depth, color: [1, 0, 0] }).triangles;
       };
       const thin = spray(0.5); // hugs the top face
       const deep = spray(5);   // depth exceeds the 2-thick plate → also paints the back face
@@ -163,6 +163,26 @@ test.describe('smooth paintbrush', () => {
     });
     expect(out.thin).toBeGreaterThan(0);        // the top surface was painted
     expect(out.deep).toBeGreaterThan(out.thin); // a deep slab reaches the back face; the shallow one doesn't
+  });
+
+  test('geodesic surface mode (the default) never bleeds through a wall', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 2], true);`);
+      // Geodesic flood-fills along the connected surface, so the back face (a
+      // disconnected wall within the 3D radius) stays clean with no depth knob.
+      pw.clearColors();
+      const geo = pw.paintStroke({ points: [[0, 0, 1]], radius: 4, maxEdge: 0.5, surface: 'geodesic', color: [0, 1, 0] }).triangles;
+      // A deep slab DOES punch through to the back face — geodesic paints fewer.
+      pw.clearColors();
+      const slabDeep = pw.paintStroke({ points: [[0, 0, 1]], radius: 4, maxEdge: 0.5, surface: 'slab', depth: 5, color: [0, 1, 0] }).triangles;
+      return { geo, slabDeep, surface: pw.getBrushSurface().surface };
+    });
+    expect(out.surface).toBe('geodesic');        // new painting defaults to geodesic
+    expect(out.geo).toBeGreaterThan(0);          // the top surface was painted
+    expect(out.slabDeep).toBeGreaterThan(out.geo); // geodesic stayed on the top; the deep slab reached the back
   });
 
   test('many strokes stay fast and bounded (no O(strokes^2) replay)', async ({ page }) => {

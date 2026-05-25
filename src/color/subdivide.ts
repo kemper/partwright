@@ -44,6 +44,9 @@ export interface BrushStroke {
    *  `slab` normal-offset test; derived from the base mesh (`deriveSampleNormals`)
    *  when a descriptor doesn't carry them. */
   sampleNormals?: [number, number, number][];
+  /** Geodesic reachability for `geodesic` mode (built from the base mesh via
+   *  `buildGeodesicField`). Runtime-only — never persisted; rebuilt on demand. */
+  geoField?: GeodesicField;
 }
 
 export interface Aabb {
@@ -105,6 +108,11 @@ function withinFootprint(
 ): boolean {
   const { samples, radius, shape } = stroke;
   const r = radius;
+  // Geodesic mode: the in-plane footprint still defines the extent, but a point
+  // off the seed-connected surface region is rejected outright (no bleed-through).
+  if (stroke.surface === 'geodesic' && stroke.geoField && !stroke.geoField.reachableAt(px, py, pz)) {
+    return false;
+  }
   const slab = slabActive(stroke);
   const depth = stroke.depth ?? Infinity;
   const normals = stroke.sampleNormals;
@@ -179,6 +187,7 @@ function maxEdgeLen2(a: number[], b: number[], c: number[]): number {
 function brushClassifier(stroke: BrushStroke): TriClassifier {
   const r2 = stroke.radius * stroke.radius;
   const slab = slabActive(stroke);
+  const geodesic = stroke.surface === 'geodesic' && !!stroke.geoField;
   const depth = stroke.depth ?? Infinity;
   const normals = stroke.sampleNormals;
   return (a, b, c) => {
@@ -201,6 +210,7 @@ function brushClassifier(stroke: BrushStroke): TriClassifier {
           const off = dx * n[0] + dy * n[1] + dz * n[2];
           if (off > depth || off < -depth) continue; // closest point is through a wall
         }
+        if (geodesic && !stroke.geoField!.reachableAt(cp[0], cp[1], cp[2])) continue; // closest point is off the connected surface
         return 'straddle';
       }
     }
@@ -241,6 +251,124 @@ export function deriveSampleNormals(
     out.push(bn);
   }
   return out;
+}
+
+/** Geodesic reachability for a stroke: which surface points are reachable by
+ *  walking along the mesh from the seed (vs. lying across a gap through a wall). */
+export interface GeodesicField {
+  /** True when `p`'s nearest base triangle is in the flood-filled reachable set —
+   *  i.e. it's on the surface region connected to the seed within the radius.
+   *  Combined with the in-plane footprint test, this is what stops a geodesic
+   *  stroke bleeding onto a disconnected wall. */
+  reachableAt(px: number, py: number, pz: number): boolean;
+}
+
+/** Build the geodesic reachability field for a stroke against a base mesh: flood
+ *  fills base triangles outward from the sample seeds across shared edges,
+ *  keeping only triangles whose surface comes within `radius` of a sample. The
+ *  painted region is then (in-plane footprint) ∩ (reachable), so paint follows
+ *  the surface around curves and over edges but never jumps the gap through a
+ *  thin / hollow wall — and, unlike the slab, needs no depth tuning. All work is
+ *  bounded to a local AABB (samples padded by 2·radius) so it stays cheap on
+ *  large base meshes. */
+export function buildGeodesicField(
+  base: MeshData,
+  samples: [number, number, number][],
+  radius: number,
+): GeodesicField {
+  const { triVerts, numTri, numVert } = base;
+  const r2 = radius * radius;
+
+  const pad = 2 * radius;
+  const box: Aabb = { min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+  for (const s of samples) {
+    for (let k = 0; k < 3; k++) {
+      if (s[k] - pad < box.min[k]) box.min[k] = s[k] - pad;
+      if (s[k] + pad > box.max[k]) box.max[k] = s[k] + pad;
+    }
+  }
+
+  // Local triangles only, with their vertex coords cached for the distance math.
+  const active: number[] = [];
+  const coords: [number[], number[], number[]][] = [];
+  for (let t = 0; t < numTri; t++) {
+    const a = triVertex(base, triVerts[t * 3]);
+    const b = triVertex(base, triVerts[t * 3 + 1]);
+    const c = triVertex(base, triVerts[t * 3 + 2]);
+    if (triOutsideAabb(a, b, c, box)) continue;
+    active.push(t);
+    coords.push([a, b, c]);
+  }
+
+  const dist2ToActive = (px: number, py: number, pz: number, li: number): number => {
+    const [a, b, c] = coords[li];
+    const cp = closestPointOnTriangle(px, py, pz, a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+    const dx = cp[0] - px, dy = cp[1] - py, dz = cp[2] - pz;
+    return dx * dx + dy * dy + dz * dz;
+  };
+  const nearestActive = (px: number, py: number, pz: number): number => {
+    let best = Infinity, bi = -1;
+    for (let li = 0; li < active.length; li++) {
+      const d2 = dist2ToActive(px, py, pz, li);
+      if (d2 < best) { best = d2; bi = li; }
+    }
+    return bi;
+  };
+  const withinR = (li: number): boolean => {
+    for (const s of samples) if (dist2ToActive(s[0], s[1], s[2], li) <= r2) return true;
+    return false;
+  };
+
+  // Shared-edge adjacency among the active triangles.
+  const ekey = (u: number, v: number): number => (u < v ? u * numVert + v : v * numVert + u);
+  const edgeMap = new Map<number, number[]>();
+  for (let li = 0; li < active.length; li++) {
+    const t = active[li];
+    const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+    for (const [u, v] of [[v0, v1], [v1, v2], [v2, v0]] as const) {
+      const arr = edgeMap.get(ekey(u, v));
+      if (arr) arr.push(li); else edgeMap.set(ekey(u, v), [li]);
+    }
+  }
+  const neighbors = (li: number): number[] => {
+    const t = active[li];
+    const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+    const out: number[] = [];
+    for (const [u, v] of [[v0, v1], [v1, v2], [v2, v0]] as const) {
+      const arr = edgeMap.get(ekey(u, v));
+      if (!arr) continue;
+      for (const other of arr) if (other !== li) out.push(other);
+    }
+    return out;
+  };
+
+  // Flood fill from each sample's nearest active triangle.
+  const reachable = new Uint8Array(active.length);
+  const stack: number[] = [];
+  for (const s of samples) {
+    const li = nearestActive(s[0], s[1], s[2]);
+    if (li >= 0 && !reachable[li]) { reachable[li] = 1; stack.push(li); }
+  }
+  while (stack.length) {
+    const li = stack.pop()!;
+    for (const nb of neighbors(li)) {
+      if (reachable[nb]) continue;
+      if (withinR(nb)) { reachable[nb] = 1; stack.push(nb); }
+    }
+  }
+
+  const memo = new Map<string, boolean>();
+  return {
+    reachableAt(px, py, pz) {
+      const k = `${Math.round(px * 1e4)},${Math.round(py * 1e4)},${Math.round(pz * 1e4)}`;
+      const hit = memo.get(k);
+      if (hit !== undefined) return hit;
+      const li = nearestActive(px, py, pz);
+      const res = li >= 0 && reachable[li] === 1;
+      memo.set(k, res);
+      return res;
+    },
+  };
 }
 
 /** Build a refine region for a brush stroke (its footprint classifier, AABB,

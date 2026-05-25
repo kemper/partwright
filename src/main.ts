@@ -120,7 +120,7 @@ import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontS
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
-import { buildStrokeMesh, buildRefinedMesh, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
+import { buildStrokeMesh, buildRefinedMesh, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
@@ -600,9 +600,10 @@ function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }
     surface,
     depth: d.depth !== undefined && d.depth > 0 ? d.depth : d.radius * 0.5,
   };
-  if (surface !== 'geodesic') {
-    const base = paintBaseMesh ?? currentMeshData;
-    if (base) stroke.sampleNormals = deriveSampleNormals(d.samples, base);
+  const base = paintBaseMesh ?? currentMeshData;
+  if (base) {
+    if (surface === 'geodesic') stroke.geoField = buildGeodesicField(base, d.samples, d.radius);
+    else stroke.sampleNormals = deriveSampleNormals(d.samples, base);
   }
   return stroke;
 }
@@ -5114,7 +5115,7 @@ async function main() {
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
         [color[0], color[1], color[2]],
         'paintbrush',
-        { kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target, surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0 },
+        { kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target, surface: (surface as 'geodesic' | 'slab') ?? 'geodesic', depth: depth ?? 0 },
         new Set<number>(),
       );
       // addRegion fires the regions-change listener, which rebuilds the refined
