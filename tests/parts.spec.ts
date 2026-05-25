@@ -15,6 +15,7 @@ interface PartsAPI {
   listParts: () => { id: string; name: string; order: number; isCurrent: boolean }[];
   listVersions: () => Promise<{ index: number; label: string }[]>;
   getSessionState: () => { currentPart: { id: string; name: string } | null; versionCount: number };
+  getGeometryData: () => Record<string, number>;
   paintFaces: (o: { triangleIds: number[]; color: [number, number, number]; name?: string }) => unknown;
   listRegions: () => unknown[];
 }
@@ -29,6 +30,10 @@ async function waitForEngine(page: Page) {
 
 const cube = (s: number, marker: string) =>
   `// ${marker}\nconst { Manifold } = api; return Manifold.cube([${s}, ${s}, ${s}], true);`;
+
+// A cube shifted along X so two merged parts stay distinct compose components.
+const cubeAt = (s: number, x: number, marker: string) =>
+  `// ${marker}\nconst { Manifold } = api; return Manifold.cube([${s}, ${s}, ${s}], true).translate([${x}, 0, 0]);`;
 
 test.describe('Multi-part sessions', () => {
   // Suppress the first-visit guided tour so its backdrop doesn't intercept clicks.
@@ -289,5 +294,90 @@ test.describe('Multi-part sessions', () => {
     const delBtn = page.locator('#btn-delete-parts');
     await expect(delBtn).toHaveText('Delete 2');
     await expect(delBtn).toBeDisabled();
+  });
+
+  // The Merge button lives in the same multi-select action bar as bulk delete.
+  // It bakes each selected part's geometry and composes them, so it works for
+  // plain hand-coded parts (the case that used to fail with "No geometry data").
+  test('multi-select merge combines parts into a new part, keeping the originals', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    await page.evaluate(async ({ codeA, codeB }) => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      await pw.createSession('merge-new');
+      await pw.runAndSave(codeA, 'a');     // Part 1
+      await pw.createPart('Beta');
+      await pw.runAndSave(codeB, 'b');     // Beta (offset so it stays distinct)
+    }, { codeA: cube(10, 'A'), codeB: cubeAt(10, 30, 'B') });
+
+    const list = page.locator('#parts-list');
+    await expect(list.locator('[data-part-id]')).toHaveCount(2);
+
+    const checkbox = (name: string) =>
+      list.locator('[data-part-id]', { hasText: name }).locator('input[type="checkbox"]');
+    await checkbox('Part 1').click();
+    await checkbox('Beta').click();
+
+    // The action bar offers a matching merge.
+    const mergeBtn = page.locator('#btn-merge-parts');
+    await expect(mergeBtn).toHaveText('Merge 2');
+    await mergeBtn.click();
+
+    // Default mode ("combine into a new part") keeps the originals.
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('Merge parts');
+    await dialog.locator('[data-action="merge"]').click();
+
+    // A third (combined) part appears; the two originals remain.
+    await expect
+      .poll(() => page.evaluate(() =>
+        (window as unknown as { partwright: PartsAPI }).partwright.listParts().length))
+      .toBe(3);
+
+    // The combined part is current and holds both cubes as separate components.
+    await expect
+      .poll(() => page.evaluate(() =>
+        (window as unknown as { partwright: PartsAPI }).partwright.getGeometryData().componentCount))
+      .toBe(2);
+    const code = await page.evaluate(() =>
+      (window as unknown as { partwright: PartsAPI }).partwright.getCode());
+    expect(code).toContain('Manifold.compose');
+  });
+
+  test('multi-select merge can replace the originals with one combined part', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    await page.evaluate(async ({ codeA, codeB }) => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      await pw.createSession('merge-replace');
+      await pw.runAndSave(codeA, 'a');     // Part 1
+      await pw.createPart('Beta');
+      await pw.runAndSave(codeB, 'b');     // Beta
+    }, { codeA: cube(10, 'A'), codeB: cubeAt(10, 30, 'B') });
+
+    const list = page.locator('#parts-list');
+    const checkbox = (name: string) =>
+      list.locator('[data-part-id]', { hasText: name }).locator('input[type="checkbox"]');
+    await checkbox('Part 1').click();
+    await checkbox('Beta').click();
+    await page.locator('#btn-merge-parts').click();
+
+    // Pick "merge into one part" — replaces the originals.
+    const dialog = page.getByRole('dialog');
+    await dialog.locator('[data-mode="replace"]').click();
+    await dialog.locator('[data-action="merge"]').click();
+
+    // Only the single combined part remains, holding both components.
+    await expect
+      .poll(() => page.evaluate(() =>
+        (window as unknown as { partwright: PartsAPI }).partwright.listParts().length))
+      .toBe(1);
+    await expect
+      .poll(() => page.evaluate(() =>
+        (window as unknown as { partwright: PartsAPI }).partwright.getGeometryData().componentCount))
+      .toBe(2);
   });
 });

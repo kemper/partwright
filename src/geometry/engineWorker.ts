@@ -123,6 +123,17 @@ self.onmessage = async (event: MessageEvent) => {
           labelMapEntries: null,
         });
       }
+
+      // Only the extracted mesh data crosses the thread boundary, so the live
+      // result Manifold is no longer needed. Free it (manifold-js path only —
+      // the SCAD engine owns its own result) so repeated executions, including
+      // the editor's per-edit auto-run, don't leak one Manifold each.
+      if (effectiveLang === 'manifold-js') {
+        const live = (result as { manifold?: { delete?: () => void } } | undefined)?.manifold;
+        if (live && typeof live.delete === 'function') {
+          try { live.delete(); } catch { /* already freed */ }
+        }
+      }
     } catch (err) {
       self.postMessage({
         type: 'error',
