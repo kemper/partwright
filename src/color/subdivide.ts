@@ -70,11 +70,18 @@ export type TriClassifier = (a: number[], b: number[], c: number[]) => TriClass;
 
 /** A region to refine the mesh around: its boundary classifier, the target edge
  *  length near that boundary, and an optional AABB for cheap spatial rejection.
- *  Brush strokes, slabs, and oriented shapes all reduce to one of these. */
+ *  Brush strokes, slabs, and oriented shapes all reduce to one of these.
+ *
+ *  `field` (optional) is a signed-distance function for the region boundary
+ *  (≤0 inside, 0 on the boundary). When present, after the rim is refined the
+ *  boundary triangles are *clipped* exactly along `field = 0`, so the painted
+ *  edge follows the analytic outline (crisp squares, clean circles) instead of a
+ *  staircase — letting a much coarser refinement still look exact. */
 export interface RefineRegion {
   aabb: Aabb | null;
   maxEdge: number;
   classify: TriClassifier;
+  field?: (px: number, py: number, pz: number) => number;
 }
 
 /** Per-stroke depth bound so a single stroke can't run away (each pass ~doubles
@@ -434,7 +441,14 @@ export function buildGeodesicField(
  *  and target edge length). */
 export function brushRefineRegion(stroke: BrushStroke): RefineRegion {
   const maxEdge = stroke.maxEdge > 0 ? stroke.maxEdge : stroke.radius / 256;
-  return { aabb: strokeAabb(stroke), maxEdge, classify: brushClassifier(stroke) };
+  return {
+    aabb: strokeAabb(stroke),
+    maxEdge,
+    classify: brushClassifier(stroke),
+    // The rim is refined to maxEdge for curve segment density, then clipped
+    // exactly along this field so the painted edge is the analytic outline.
+    field: (px, py, pz) => strokeSignedDist(px, py, pz, stroke),
+  };
 }
 
 /** Triangles a region's boundary crosses (partially, not fully covered) AND are
@@ -481,6 +495,104 @@ export function strokeFootprintTriangles(mesh: MeshData, stroke: BrushStroke): S
     if (withinFootprint(cx, cy, cz, stroke)) out.add(t);
   }
   return out;
+}
+
+/** Clip the mesh exactly along a region's boundary field (marching-triangles):
+ *  every triangle the contour `field = 0` crosses is split so the cut lies on the
+ *  outline, with edge crossings shared between neighbours (watertight, no
+ *  T-junctions). Fully-inside / fully-outside triangles (and any touching a +∞
+ *  region — geodesic-disconnected surface) pass through untouched. After this the
+ *  painted set still resolves by centroid, but the boundary is the analytic
+ *  outline rather than a staircase, so a coarse refinement looks crisp.
+ *
+ *  Returns the new mesh + `childToParent` (each output triangle's source index),
+ *  same contract as `subdivideSelected`. */
+function clipByField(
+  mesh: MeshData,
+  region: RefineRegion,
+): { mesh: MeshData; childToParent: Int32Array } {
+  const field = region.field!;
+  const box = region.aabb;
+  const { vertProperties, triVerts, numVert, numTri, numProp } = mesh;
+  const P = numProp;
+
+  // Lazy per-vertex field value (NaN = not yet evaluated).
+  const fval = new Float32Array(numVert).fill(NaN);
+  const fieldAt = (v: number): number => {
+    let f = fval[v];
+    if (Number.isNaN(f)) {
+      f = field(vertProperties[v * P], vertProperties[v * P + 1], vertProperties[v * P + 2]);
+      fval[v] = f;
+    }
+    return f;
+  };
+
+  // Shared crossing vertex per edge — deduped so neighbours meet exactly.
+  const key = (a: number, b: number): number => (a < b ? a * numVert + b : b * numVert + a);
+  const crossIndex = new Map<number, number>();
+  const newVertProps: number[] = [];
+  let nextV = numVert;
+  const crossOf = (a: number, b: number): number => {
+    const k = key(a, b);
+    const existing = crossIndex.get(k);
+    if (existing !== undefined) return existing;
+    const fa = fieldAt(a), fb = fieldAt(b);
+    // Crossing parameter, clamped just off the endpoints so a contour grazing a
+    // vertex can't spawn a zero-area sliver.
+    let t = fa / (fa - fb);
+    if (!(t > 1e-6)) t = 1e-6;
+    if (!(t < 1 - 1e-6)) t = 1 - 1e-6;
+    const m = nextV++;
+    crossIndex.set(k, m);
+    for (let p = 0; p < P; p++) {
+      newVertProps.push(vertProperties[a * P + p] + t * (vertProperties[b * P + p] - vertProperties[a * P + p]));
+    }
+    return m;
+  };
+
+  const outTris: number[] = [];
+  const childParent: number[] = [];
+  const emit = (a: number, b: number, c: number, parent: number): void => {
+    outTris.push(a, b, c);
+    childParent.push(parent);
+  };
+
+  for (let t = 0; t < numTri; t++) {
+    const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+    if (box) {
+      const a = triVertex(mesh, v0), b = triVertex(mesh, v1), c = triVertex(mesh, v2);
+      if (triOutsideAabb(a, b, c, box)) { emit(v0, v1, v2, t); continue; }
+    }
+    const f0 = fieldAt(v0), f1 = fieldAt(v1), f2 = fieldAt(v2);
+    // +∞ (geodesic-disconnected) or all-same-side → no boundary inside this tri.
+    if (!Number.isFinite(f0 + f1 + f2)) { emit(v0, v1, v2, t); continue; }
+    const in0 = f0 <= 0, in1 = f1 <= 0, in2 = f2 <= 0;
+    const cnt = (in0 ? 1 : 0) + (in1 ? 1 : 0) + (in2 ? 1 : 0);
+    if (cnt === 0 || cnt === 3) { emit(v0, v1, v2, t); continue; }
+    // Rotate so the lone-sign vertex is A (cyclic → winding preserved). The cut
+    // crosses edges A-B and A-C; the resulting 3 triangles split inside/outside.
+    let A: number, B: number, C: number;
+    if (in0 !== in1 && in0 !== in2) { A = v0; B = v1; C = v2; }
+    else if (in1 !== in0 && in1 !== in2) { A = v1; B = v2; C = v0; }
+    else { A = v2; B = v0; C = v1; }
+    const P1 = crossOf(A, B), Q = crossOf(A, C);
+    emit(A, P1, Q, t);
+    emit(P1, B, C, t);
+    emit(P1, C, Q, t);
+  }
+
+  const totalVert = numVert + newVertProps.length / P;
+  const vp = new Float32Array(totalVert * P);
+  vp.set(vertProperties.subarray(0, numVert * P), 0);
+  vp.set(newVertProps, numVert * P);
+  const newMesh: MeshData = {
+    vertProperties: vp,
+    triVerts: new Uint32Array(outTris),
+    numVert: totalVert,
+    numTri: outTris.length / 3,
+    numProp: P,
+  };
+  return { mesh: newMesh, childToParent: Int32Array.from(childParent) };
 }
 
 /** One refinement pass that splits ONLY the `selected` (rim) triangles 1→4,
@@ -579,6 +691,13 @@ export function buildRefinedMesh(
       // safety ceiling so a tiny maxEdge can't OOM the tab.
       if (mesh.numTri + selected.size * 3 > MAX_REFINED_TRIANGLES) break;
       const { mesh: nm, childToParent } = subdivideSelected(mesh, selected);
+      mesh = nm;
+      comp = composeMaps(comp, childToParent);
+    }
+    // Boundary-conforming clip: cut the now-fine rim exactly along the region
+    // outline so the painted edge is the analytic curve, not a staircase.
+    if (region.field && mesh.numTri < MAX_REFINED_TRIANGLES) {
+      const { mesh: nm, childToParent } = clipByField(mesh, region);
       mesh = nm;
       comp = composeMaps(comp, childToParent);
     }
