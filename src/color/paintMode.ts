@@ -34,6 +34,13 @@ let brushSmooth = true;
 let brushSmoothDivisor = 256;
 export const SMOOTH_DIVISOR_MIN = 2;
 export const SMOOTH_DIVISOR_MAX = 1024;
+/** Brush surface mode: `slab` keeps the footprint a thin shell on the picked
+ *  surface so paint can't bleed through thin/hollow walls. (Geodesic mode and a
+ *  UI toggle land in a later pass; for now the brush is always slab-constrained.) */
+let brushSurface: 'geodesic' | 'slab' = 'slab';
+/** Paint depth in mesh units: how far through the surface a slab-mode stroke may
+ *  reach. 0 = auto (half the brush radius), resolved at commit time. */
+let brushPaintDepth = 0;
 
 /** Target edge length (mesh units) for the active brush settings. */
 export function brushTargetEdge(): number {
@@ -146,6 +153,23 @@ export function setBrushSmoothDivisor(n: number): void {
 
 export function getBrushSmoothDivisor(): number {
   return brushSmoothDivisor;
+}
+
+export function setBrushSurface(mode: 'geodesic' | 'slab'): void {
+  brushSurface = mode;
+}
+
+export function getBrushSurface(): 'geodesic' | 'slab' {
+  return brushSurface;
+}
+
+/** Set the slab-mode paint depth (mesh units). 0 = auto (half the radius). */
+export function setBrushPaintDepth(d: number): void {
+  brushPaintDepth = Math.max(0, d);
+}
+
+export function getBrushPaintDepth(): number {
+  return brushPaintDepth;
 }
 
 /** True when the active brush settings will subdivide the mesh on commit. */
@@ -430,6 +454,8 @@ function commitBrushStroke(): void {
         radius: brushRadius,
         shape: brushShape,
         maxEdge: brushTargetEdge(),
+        surface: brushSurface,
+        depth: brushPaintDepth,
       },
       new Set<number>(),
     );

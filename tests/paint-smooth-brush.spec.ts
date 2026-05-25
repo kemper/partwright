@@ -142,6 +142,29 @@ test.describe('smooth paintbrush', () => {
     expect(out.regions).toBe(1);
   });
 
+  test('slab surface mode keeps paint on the picked surface (no bleed-through)', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      // A thin plate: top face at z=1, bottom at z=-1 (2 units thick). A radius-4
+      // brush is a 3D ball big enough to punch through to the bottom face — the
+      // old behavior painted both. The slab constraint gates by depth instead, so
+      // a shallow depth paints only the top while a depth past the plate reaches
+      // the back face too (the extra triangles prove the gate is what stops it).
+      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 2], true);`);
+      const spray = (depth: number) => {
+        pw.clearColors();
+        return pw.paintStroke({ points: [[0, 0, 1]], radius: 4, maxEdge: 0.5, depth, color: [1, 0, 0] }).triangles;
+      };
+      const thin = spray(0.5); // hugs the top face
+      const deep = spray(5);   // depth exceeds the 2-thick plate → also paints the back face
+      return { thin, deep };
+    });
+    expect(out.thin).toBeGreaterThan(0);        // the top surface was painted
+    expect(out.deep).toBeGreaterThan(out.thin); // a deep slab reaches the back face; the shallow one doesn't
+  });
+
   test('many strokes stay fast and bounded (no O(strokes^2) replay)', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(async () => {

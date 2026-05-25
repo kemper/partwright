@@ -30,6 +30,20 @@ export interface BrushStroke {
    *  this — so the painted outline is smooth regardless of how coarse the base
    *  mesh is. Smaller = smoother + more triangles. */
   maxEdge: number;
+  /** Surface-painting mode. `slab` constrains the footprint to a thin shell
+   *  hugging the picked surface so paint can't bleed through thin / hollow walls
+   *  (the brush is a surface tool, not a 3D ball). Omitted → treated as `slab`
+   *  for back-compat. (A true `geodesic` walk is added in a later pass; until
+   *  then it falls back to the unconstrained 3D footprint.) */
+  surface?: 'geodesic' | 'slab';
+  /** Slab thickness in mesh units: the largest offset along the local surface
+   *  normal a point may have and still count as inside the footprint. Only used
+   *  in `slab` mode; the depth knob is how far through a wall paint may reach. */
+  depth?: number;
+  /** Per-sample unit surface normals, parallel to `samples`. Required for the
+   *  `slab` normal-offset test; derived from the base mesh (`deriveSampleNormals`)
+   *  when a descriptor doesn't carry them. */
+  sampleNormals?: [number, number, number][];
 }
 
 export interface Aabb {
@@ -71,26 +85,48 @@ const MAX_PASSES = 16;
  *  rather than freeze. */
 const MAX_REFINED_TRIANGLES = 5_000_000;
 
+/** Whether the `slab` surface constraint is active for a stroke (mode not
+ *  geodesic, a finite depth, and per-sample normals to measure offset against). */
+function slabActive(stroke: BrushStroke): boolean {
+  return stroke.surface !== 'geodesic'
+    && !!stroke.sampleNormals
+    && stroke.depth !== undefined
+    && Number.isFinite(stroke.depth);
+}
+
 /** True when `p` is within the brush footprint of any of the stroke's samples,
  *  using the shape's distance metric (circle = Euclidean, square = Chebyshev,
- *  diamond = L1). */
+ *  diamond = L1). In `slab` mode a point is rejected unless it also lies within
+ *  `depth` of the surface along that sample's normal — so the footprint is a
+ *  thin shell on the picked surface, not a 3D ball that punches through walls. */
 function withinFootprint(
   px: number, py: number, pz: number,
   stroke: BrushStroke,
 ): boolean {
   const { samples, radius, shape } = stroke;
   const r = radius;
+  const slab = slabActive(stroke);
+  const depth = stroke.depth ?? Infinity;
+  const normals = stroke.sampleNormals;
   for (let i = 0; i < samples.length; i++) {
     const dx = px - samples[i][0];
     const dy = py - samples[i][1];
     const dz = pz - samples[i][2];
+    let inShape: boolean;
     if (shape === 'square') {
-      if (Math.abs(dx) <= r && Math.abs(dy) <= r && Math.abs(dz) <= r) return true;
+      inShape = Math.abs(dx) <= r && Math.abs(dy) <= r && Math.abs(dz) <= r;
     } else if (shape === 'diamond') {
-      if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) <= r) return true;
+      inShape = Math.abs(dx) + Math.abs(dy) + Math.abs(dz) <= r;
     } else {
-      if (dx * dx + dy * dy + dz * dz <= r * r) return true;
+      inShape = dx * dx + dy * dy + dz * dz <= r * r;
     }
+    if (!inShape) continue;
+    if (slab && normals) {
+      const n = normals[i];
+      const off = dx * n[0] + dy * n[1] + dz * n[2];
+      if (off > depth || off < -depth) continue; // beyond the slab → through-wall, skip
+    }
+    return true;
   }
   return false;
 }
@@ -142,6 +178,9 @@ function maxEdgeLen2(a: number[], b: number[], c: number[]): number {
  *  tessellates). */
 function brushClassifier(stroke: BrushStroke): TriClassifier {
   const r2 = stroke.radius * stroke.radius;
+  const slab = slabActive(stroke);
+  const depth = stroke.depth ?? Infinity;
+  const normals = stroke.sampleNormals;
   return (a, b, c) => {
     let inside = 0;
     if (withinFootprint(a[0], a[1], a[2], stroke)) inside++;
@@ -156,10 +195,52 @@ function brushClassifier(stroke: BrushStroke): TriClassifier {
         a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2],
       );
       const dx = cp[0] - sp[0], dy = cp[1] - sp[1], dz = cp[2] - sp[2];
-      if (dx * dx + dy * dy + dz * dz <= r2) return 'straddle';
+      if (dx * dx + dy * dy + dz * dz <= r2) {
+        if (slab && normals) {
+          const n = normals[s];
+          const off = dx * n[0] + dy * n[1] + dz * n[2];
+          if (off > depth || off < -depth) continue; // closest point is through a wall
+        }
+        return 'straddle';
+      }
     }
     return 'outside';
   };
+}
+
+/** Per-sample unit surface normals derived from a base mesh: each sample takes
+ *  the geometric normal of the base triangle whose surface is closest to it.
+ *  Used for the `slab` constraint when a stroke descriptor doesn't carry stored
+ *  normals (old sessions, or console paints that omit them). The sign is
+ *  irrelevant — the slab test uses |offset| — so winding is not normalized. */
+export function deriveSampleNormals(
+  samples: [number, number, number][],
+  base: MeshData,
+): [number, number, number][] {
+  const { triVerts, numTri } = base;
+  const out: [number, number, number][] = [];
+  for (const s of samples) {
+    let best = Infinity;
+    let bn: [number, number, number] = [0, 0, 1];
+    for (let t = 0; t < numTri; t++) {
+      const a = triVertex(base, triVerts[t * 3]);
+      const b = triVertex(base, triVerts[t * 3 + 1]);
+      const c = triVertex(base, triVerts[t * 3 + 2]);
+      const cp = closestPointOnTriangle(s[0], s[1], s[2], a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+      const dx = cp[0] - s[0], dy = cp[1] - s[1], dz = cp[2] - s[2];
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < best) {
+        best = d2;
+        const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+        const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+        const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        const len = Math.hypot(nx, ny, nz) || 1;
+        bn = [nx / len, ny / len, nz / len];
+      }
+    }
+    out.push(bn);
+  }
+  return out;
 }
 
 /** Build a refine region for a brush stroke (its footprint classifier, AABB,

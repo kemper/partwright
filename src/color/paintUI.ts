@@ -18,6 +18,8 @@ import {
   isBrushSmooth,
   setBrushSmoothDivisor,
   getBrushSmoothDivisor,
+  setBrushPaintDepth,
+  getBrushPaintDepth,
   SMOOTH_DIVISOR_MIN,
   SMOOTH_DIVISOR_MAX,
   setShapeSmooth,
@@ -477,6 +479,65 @@ function createBrushControls(): HTMLElement {
   help.className = 'text-[10px] text-zinc-500 mt-1';
   help.textContent = 'Single triangle \u2190\u2014\u2014\u2192 Wider brush';
   wrap.appendChild(help);
+
+  // Paint depth \u2014 how far through the surface a stroke reaches. The brush is a
+  // surface tool: paint is constrained to a thin shell so it can't bleed through
+  // thin / hollow walls. 0 = auto (half the radius); lower hugs the surface.
+  const depthLabel = document.createElement('div');
+  depthLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+  depthLabel.textContent = 'Paint depth';
+  wrap.appendChild(depthLabel);
+
+  const depthRow = document.createElement('div');
+  depthRow.className = 'flex items-center gap-2';
+
+  const depthSlider = document.createElement('input');
+  depthSlider.id = 'brush-depth-slider';
+  depthSlider.type = 'range';
+  depthSlider.min = '0';
+  depthSlider.max = '200';
+  depthSlider.step = '1';
+  depthSlider.value = String(Math.round(Math.min(getBrushPaintDepth(), 20) * 10));
+  depthSlider.className = 'flex-1 accent-blue-500 min-w-0';
+  depthSlider.title = 'How far through the surface paint reaches (mesh units). 0 = auto (half the brush size). Lower values stop paint bleeding through thin/hollow walls.';
+
+  const depthInput = document.createElement('input');
+  depthInput.type = 'number';
+  depthInput.min = '0';
+  // No max: type past the slider for thicker walls.
+  depthInput.step = '0.1';
+  depthInput.value = getBrushPaintDepth().toFixed(1);
+  depthInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  depthInput.title = 'Paint depth in mesh units (0 = auto = half the radius)';
+
+  const depthUnit = document.createElement('span');
+  depthUnit.className = 'text-[10px] text-zinc-500';
+  depthUnit.textContent = 'u';
+
+  depthSlider.addEventListener('input', () => {
+    const d = parseInt(depthSlider.value, 10) / 10;
+    setBrushPaintDepth(d);
+    depthInput.value = d.toFixed(1);
+  });
+  const applyDepth = (): void => {
+    const raw = parseFloat(depthInput.value);
+    if (!Number.isFinite(raw) || raw < 0) { depthInput.value = getBrushPaintDepth().toFixed(1); return; }
+    setBrushPaintDepth(raw);
+    depthSlider.value = String(Math.round(Math.min(raw, 20) * 10));
+    depthInput.value = raw.toFixed(1);
+  };
+  depthInput.addEventListener('change', applyDepth);
+  depthInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyDepth(); depthInput.blur(); } });
+
+  depthRow.appendChild(depthSlider);
+  depthRow.appendChild(depthInput);
+  depthRow.appendChild(depthUnit);
+  wrap.appendChild(depthRow);
+
+  const depthHelp = document.createElement('div');
+  depthHelp.className = 'text-[10px] text-zinc-500 mt-1';
+  depthHelp.textContent = 'Surface only \u2190\u2014\u2014\u2192 Through thicker walls \u00b7 0 = auto';
+  wrap.appendChild(depthHelp);
 
   // Brush shape selector
   const shapeLabel = document.createElement('div');

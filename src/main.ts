@@ -119,8 +119,8 @@ import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
-import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
-import { buildStrokeMesh, buildRefinedMesh, brushRefineRegion, strokeFootprintTriangles, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
+import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
+import { buildStrokeMesh, buildRefinedMesh, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
@@ -586,9 +586,25 @@ function resolveDescriptorTriangles(
 }
 
 /** Normalize a brushStroke descriptor to a BrushStroke, filling a sane default
- *  maxEdge (matching the default detail divisor) for any malformed/legacy data. */
+ *  maxEdge (matching the default detail divisor) for any malformed/legacy data.
+ *  For the `slab` surface constraint, derives a per-sample surface normal from
+ *  the pristine base mesh (stable across reloads) when the descriptor doesn't
+ *  carry one, and defaults `depth` to half the radius when unset (0/omitted). */
 function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }>): BrushStroke {
-  return { samples: d.samples, radius: d.radius, shape: d.shape, maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 256 };
+  const surface = d.surface ?? 'slab';
+  const stroke: BrushStroke = {
+    samples: d.samples,
+    radius: d.radius,
+    shape: d.shape,
+    maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 256,
+    surface,
+    depth: d.depth !== undefined && d.depth > 0 ? d.depth : d.radius * 0.5,
+  };
+  if (surface !== 'geodesic') {
+    const base = paintBaseMesh ?? currentMeshData;
+    if (base) stroke.sampleNormals = deriveSampleNormals(d.samples, base);
+  }
+  return stroke;
 }
 
 /** True when any in-memory region is a smooth brush stroke (which drives mesh
@@ -4986,6 +5002,28 @@ async function main() {
       return { previous, radius };
     },
 
+    /** Surface-painting settings for the UI brush tool. `slab` (default) keeps a
+     *  stroke's footprint a thin shell on the picked surface so paint can't bleed
+     *  through thin / hollow walls; `depth` (mesh units, 0 = auto = half the
+     *  radius) is how far through the wall paint may reach. */
+    getBrushSurface() {
+      return { surface: getPaintBrushSurface(), depth: getPaintBrushDepth() };
+    },
+    setBrushSurface(mode: string) {
+      if (mode !== 'geodesic' && mode !== 'slab') {
+        return { error: "setBrushSurface(mode): mode must be 'geodesic' or 'slab'" };
+      }
+      setPaintBrushSurface(mode);
+      return { surface: getPaintBrushSurface() };
+    },
+    setBrushDepth(depth: number) {
+      if (typeof depth !== 'number' || !Number.isFinite(depth) || depth < 0) {
+        return { error: 'setBrushDepth(depth): depth must be a non-negative finite number (mesh units; 0 = auto)' };
+      }
+      setPaintBrushDepth(depth);
+      return { depth: getPaintBrushDepth() };
+    },
+
     /** Smooth-brush settings for the UI brush tool. When smooth is on (and the
      *  brush has a radius), a stroke subdivides the triangles its edge crosses
      *  until they are below a target edge length, so the painted outline is
@@ -5029,11 +5067,13 @@ async function main() {
       shape?: string;
       resolution?: number;
       maxEdge?: number;
+      surface?: string;
+      depth?: number;
       name?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first, then paint.' };
       if (!opts || typeof opts !== 'object') return { error: 'paintStroke(opts): opts object required' };
-      const { points, radius, color, shape, resolution, maxEdge, name } = opts;
+      const { points, radius, color, shape, resolution, maxEdge, surface, depth, name } = opts;
       if (!Array.isArray(points) || points.length === 0) {
         return { error: 'paintStroke: points must be a non-empty array of [x,y,z] surface points (use probePixel to get them)' };
       }
@@ -5056,6 +5096,12 @@ async function main() {
       if (maxEdge !== undefined && (typeof maxEdge !== 'number' || !Number.isFinite(maxEdge) || maxEdge <= 0)) {
         return { error: 'paintStroke: maxEdge must be a positive finite number (mesh units) when provided' };
       }
+      if (surface !== undefined && surface !== 'geodesic' && surface !== 'slab') {
+        return { error: "paintStroke: surface must be 'geodesic' or 'slab' when provided" };
+      }
+      if (depth !== undefined && (typeof depth !== 'number' || !Number.isFinite(depth) || depth < 0)) {
+        return { error: 'paintStroke: depth must be a non-negative finite number (mesh units) when provided' };
+      }
       const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
       // maxEdge (absolute) overrides; otherwise radius / resolution, default 256.
       const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 256));
@@ -5068,7 +5114,7 @@ async function main() {
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
         [color[0], color[1], color[2]],
         'paintbrush',
-        { kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target },
+        { kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target, surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0 },
         new Set<number>(),
       );
       // addRegion fires the regions-change listener, which rebuilds the refined
