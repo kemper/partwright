@@ -200,8 +200,8 @@ await partwright.runAndAssert(code, assertions) // -> {passed, failures?, stats}
 await partwright.runAndExplain(code)     // -> {stats, components[], hints[]} (debug disconnects)
 await partwright.modifyAndTest(patchFn, assertions?) // Modify current code + test in isolation
 partwright.query({sliceAt?, decompose?, boundingBox?}) // Multi-query current geometry in one call
-partwright.renderView({elevation?, azimuth?, ortho?, size?})  // Render ONE angle -> data URL
-await partwright.renderViews({views?: 'auto'|'tri'|'all'|'box', angles?, size?})  // multi-angle labeled composite -> data URL; 'auto' (default) picks angles by aspect ratio; 'box' = all 6 faces (the all-faces final check); pass `angles` for a custom set; prefer for verification
+partwright.renderView({elevation?, azimuth?, ortho?, size?, edges?})  // Render ONE angle -> data URL. edges: 'none'|'crease'|'wireframe' (default 'crease' uncolored / 'none' painted)
+await partwright.renderViews({views?: 'auto'|'tri'|'all'|'box', angles?, size?, edges?})  // multi-angle labeled composite -> data URL; 'auto' (default) picks angles by aspect ratio; 'box' = all 6 faces (the all-faces final check); pass `angles` for a custom set; `edges` sets the overlay on every tile; prefer for verification
 partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}
 partwright.isRunning()                   // -> boolean (is code executing?)
 
@@ -878,6 +878,26 @@ const s = partwright.sliceAtZVisual(10);  // returns {svg, area, contours}
    - Made something hollow? Slice at mid-height -- should show wall ring, not solid fill.
    - Anything asymmetric front-to-back or left-to-right? Use `views: "box"` -- the back and left
      faces are invisible to every other preset.
+
+### Edge overlay (`edges`)
+
+Both `renderView` and `renderViews` take an `edges` option controlling what is drawn
+on top of the shaded surface:
+
+- **`'crease'`** (default for uncolored models) -- only feature edges: corners and the
+  silhouette. Sharpens shape-reading without spraying facet noise across tessellated
+  curves. This is what you want almost always.
+- **`'none'`** -- plain shaded surface, no overlay. Default for painted models, since an
+  overlay competes with the colors you're checking. Use it on uncolored models too when you
+  want the cleanest read of form and surface.
+- **`'wireframe'`** -- every triangle edge (full topology). Reach for this only to inspect
+  tessellation density or debug a failed boolean (stray edges, non-manifold artifacts); on a
+  dense mesh it compounds into a dark mass, so it's the wrong default for shape verification.
+
+```js
+await partwright.renderViews({ views: "box", edges: "none" })       // cleanest shape read
+partwright.renderView({ elevation: 30, azimuth: 315, edges: "wireframe" })  // inspect topology
+```
 
 ### Render tiers
 

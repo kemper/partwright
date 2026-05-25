@@ -64,7 +64,7 @@ async function doRethumb(page, job) {
     if (imp && imp.error) return { error: imp.error };
     await new Promise(r => setTimeout(r, 600)); // let color rehydrate settle
     const regions = window.partwright.listRegions ? window.partwright.listRegions() : [];
-    const thumb = window.partwright.renderView({ ...view, wireframe: false });
+    const thumb = window.partwright.renderView({ ...view, edges: 'none' });
     if (!thumb) return { error: 'renderView returned null' };
     const geo = window.partwright.getGeometryData();
     return { thumb, regionCount: Array.isArray(regions) ? regions.length : 0, geo };
@@ -104,7 +104,7 @@ async function doBuild(page, job, write) {
     }
     // Persist a single version carrying the color regions.
     await window.partwright.saveVersion('v1');
-    const hero = window.partwright.renderView({ ...view, wireframe: false });
+    const hero = window.partwright.renderView({ ...view, edges: 'none' });
     const exported = await window.partwright.exportSession(undefined, { includeThumbnails: true, includeColorRegions: true });
     const finalGeo = window.partwright.getGeometryData();
     return { hero, exported, paintErrors, geo: finalGeo };
