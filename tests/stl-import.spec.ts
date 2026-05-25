@@ -39,6 +39,12 @@ function buildCubeSTLBase64(): string {
 }
 
 test.describe('STL import', () => {
+  // Suppress the first-visit guided tour so its backdrop doesn't intercept the
+  // import-target modal's buttons.
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+  });
+
   test('binary STL creates a new session with an editable Manifold.ofMesh wrapper', async ({ page }) => {
     const stlBase64 = buildCubeSTLBase64();
 
@@ -52,6 +58,10 @@ test.describe('STL import', () => {
       mimeType: 'application/octet-stream',
       buffer: Buffer.from(stlBase64, 'base64'),
     });
+
+    // The fresh editor is an expendable starter part, so the import-target modal
+    // appears; choose to use the mesh as the current part.
+    await page.getByRole('dialog').locator('[data-target="current-part"]').click();
 
     // Wait for the import to finish — the editor's code buffer should pick up
     // the auto-generated wrapper. "Ready" alone isn't sufficient because the
@@ -91,6 +101,10 @@ test.describe('STL import', () => {
       mimeType: 'application/octet-stream',
       buffer: Buffer.from(stlBase64, 'base64'),
     });
+
+    // The fresh editor is an expendable starter part, so the import-target modal
+    // appears; choose to use the mesh as the current part.
+    await page.getByRole('dialog').locator('[data-target="current-part"]').click();
 
     // Wait for the import to finish — the editor's code buffer should pick up
     // the auto-generated wrapper. "Ready" alone isn't sufficient because the
