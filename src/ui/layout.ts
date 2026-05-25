@@ -1,4 +1,6 @@
 import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
+import { showQualitySettingsModal } from './qualitySettingsModal';
+import { showAboutModal } from './aboutModal';
 
 export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data';
 
@@ -27,7 +29,18 @@ export interface SwitchTabOptions {
   history?: 'push' | 'replace' | 'none';
 }
 
-export function createLayout(appContainer: HTMLElement): LayoutElements {
+export interface CreateLayoutOptions {
+  /** Toggle the AI chat drawer — wired to the AI item in the activity rail. */
+  onToggleAi?: () => void;
+  /** Navigate to the catalog page (rail utility item). */
+  onOpenCatalog?: () => void;
+  /** Toggle the diagnostic log panel (rail utility item). */
+  onToggleDiagnostics?: () => void;
+  /** Open the session switcher list (rail header action). */
+  onOpenSessionList?: () => void;
+}
+
+export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOptions = {}): LayoutElements {
   const main = document.createElement('div');
   // Stack panes vertically on narrow viewports, side-by-side at md+.
   main.className = 'flex flex-col md:flex-row flex-1 min-h-0';
@@ -117,36 +130,139 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   splitter.appendChild(splitterStripe);
   initSplitter(splitter, editorGroup);
 
-  // === Right (or bottom on mobile): Tabbed viewport ===
+  // === Activity rail: labeled navigation spine ===
+  // Replaces the old cryptic top tab strip. Vertical on desktop (a left rail),
+  // a horizontally-scrollable strip on mobile. Each item drives switchTab and
+  // keeps its canonical `data-tab` value so tests, the guided tour, and deep
+  // links keep working unchanged.
+  const rail = document.createElement('div');
+  rail.id = 'activity-rail';
+  rail.className = 'flex md:flex-col shrink-0 w-full md:w-52 overflow-x-auto md:overflow-x-visible md:overflow-y-hidden bg-zinc-900/60 border-b md:border-b-0 md:border-r border-zinc-700 [scrollbar-width:thin]';
+
+  // Session switcher — the cross-session "level up" action, pinned to the very
+  // top of the rail above the per-session destinations (the session's name and
+  // version controls stay in the session bar).
+  const sessionsBtn = document.createElement('button');
+  sessionsBtn.id = 'btn-sessions';
+  sessionsBtn.className = 'flex items-center gap-2 shrink-0 whitespace-nowrap px-3 py-2.5 md:py-2 text-sm md:text-[13px] font-medium text-zinc-200 border-b-2 md:border-b border-transparent md:border-zinc-800 [@media(hover:hover)]:hover:text-zinc-100 [@media(hover:hover)]:hover:bg-zinc-800/60 transition-colors';
+  sessionsBtn.title = 'Switch or manage sessions';
+  sessionsBtn.innerHTML = '<span class="text-base leading-none w-5 text-center" aria-hidden="true">🗂️</span><span>Sessions…</span>';
+  if (opts.onOpenSessionList) sessionsBtn.addEventListener('click', opts.onOpenSessionList);
+  rail.appendChild(sessionsBtn);
+
+  const railHeading = document.createElement('div');
+  railHeading.className = 'hidden md:block px-3 pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 select-none';
+  railHeading.textContent = 'Workspace';
+  rail.appendChild(railHeading);
+
+  // === Right (or bottom on mobile): viewport + tab panes ===
   const rightPane = document.createElement('div');
   rightPane.className = 'flex-1 flex flex-col min-w-0 min-h-0 relative';
 
-  // Tab bar — horizontally scrollable on narrow viewports so all tabs stay reachable.
-  const tabBar = document.createElement('div');
-  tabBar.className = 'flex items-stretch bg-zinc-800 border-b border-zinc-700 shrink-0 overflow-x-auto [scrollbar-width:thin]';
-
-  const tabInteractive = createTab('Interactive', true);
+  const tabInteractive = createRailItem('Interactive', '3D View', '\ud83e\uddca', true);
   tabInteractive.title = 'Live 3D viewport \u2014 orbit, zoom, and inspect';
-  const tabGallery = createTab('Gallery', false);
-  tabGallery.title = 'Compare saved versions side-by-side';
-  const tabVersions = createTab('Versions', false);
-  tabVersions.title = 'Manage saved versions — rename and delete';
-  const tabImages = createTab('Images', false);
+  // Gallery is folded into Versions: the Versions pane shows the same thumbnail
+  // tiles plus rename/delete, so it's a superset. The `gallery` tab/route stays
+  // valid for deep links and the AI getViewState() contract, but no longer
+  // needs a separate rail item.
+  const tabVersions = createRailItem('Versions', 'Versions', '🕒', false);
+  tabVersions.title = 'Saved versions — thumbnails, rename, delete';
+  const tabImages = createRailItem('Images', 'Images', '📷', false);
   tabImages.title = 'Reference images attached to this session';
-  const tabDiff = createTab('Diff', false);
+  const tabDiff = createRailItem('Diff', 'Diff', '🔀', false);
   tabDiff.title = 'Compare code between two versions';
-  const tabNotes = createTab('Notes', false);
+  const tabNotes = createRailItem('Notes', 'Notes', '📝', false);
   tabNotes.title = 'Session notes and design decisions log';
-  const tabData = createTab('Data', false);
+  const tabData = createRailItem('Data', 'Data', '🗄️', false);
   tabData.title = 'Browse everything Partwright has stored in this browser';
 
-  tabBar.appendChild(tabInteractive);
-  tabBar.appendChild(tabGallery);
-  tabBar.appendChild(tabVersions);
-  tabBar.appendChild(tabImages);
-  tabBar.appendChild(tabDiff);
-  tabBar.appendChild(tabNotes);
-  tabBar.appendChild(tabData);
+  rail.appendChild(tabInteractive);
+  rail.appendChild(tabVersions);
+  rail.appendChild(tabImages);
+  rail.appendChild(tabDiff);
+  rail.appendChild(tabNotes);
+  rail.appendChild(tabData);
+
+  // === Bottom utility group ===
+  // Catalog, Settings (quality), Diagnostics, and Help move out of the top
+  // toolbar so it can slim down. `md:mt-auto` on the first item pushes the whole
+  // cluster to the bottom of the desktop rail. Element ids are preserved
+  // (btn-catalog, btn-quality, btn-diagnostics, btn-help, btn-ai) so the tour
+  // and existing tests keep finding them.
+  const railActionClass = 'flex items-center gap-2 shrink-0 whitespace-nowrap px-3 py-2.5 md:py-2 text-sm md:text-[13px] font-medium text-zinc-400 border-b-2 md:border-b-0 border-transparent [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-800/60 transition-colors';
+  const makeAction = (id: string, icon: string, label: string, onClick: () => void): HTMLButtonElement => {
+    const b = document.createElement('button');
+    b.id = id;
+    b.className = railActionClass;
+    b.innerHTML = `<span class="text-base leading-none w-5 text-center" aria-hidden="true">${icon}</span><span>${label}</span>`;
+    b.addEventListener('click', onClick);
+    return b;
+  };
+
+  const catalogNavBtn = makeAction('btn-catalog', '📚', 'Catalog', () => opts.onOpenCatalog?.());
+  catalogNavBtn.title = 'Browse the catalog of premade models';
+  // Separator + push-to-bottom anchor for the whole utility cluster.
+  catalogNavBtn.classList.add('md:mt-auto', 'md:border-t', 'md:border-zinc-800');
+
+  const qualityNavBtn = makeAction('btn-quality', '⚙', 'Settings', () => { showQualitySettingsModal(); });
+  qualityNavBtn.title = 'Modeling quality (default curve resolution)';
+  qualityNavBtn.setAttribute('aria-label', 'Modeling quality settings');
+
+  const diagNavBtn = makeAction('btn-diagnostics', '⚠', 'Diagnostics', () => opts.onToggleDiagnostics?.());
+  diagNavBtn.classList.add('relative');
+  diagNavBtn.title = 'Diagnostic log — errors and warnings';
+  diagNavBtn.setAttribute('aria-label', 'Diagnostic log');
+  const diagBadge = document.createElement('span');
+  diagBadge.id = 'diag-badge';
+  diagBadge.className = 'hidden absolute top-1 left-6 text-[8px] font-bold bg-red-500 text-white rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5 leading-none pointer-events-none';
+  diagNavBtn.appendChild(diagBadge);
+
+  const helpNavBtn = makeAction('btn-help', '?', 'Help', () => {
+    const record = window as unknown as Record<string, unknown>;
+    const showHelp = (record.__partwrightShowHelp ?? record.__mainifoldShowHelp) as (() => void) | undefined;
+    if (showHelp) showHelp();
+  });
+  helpNavBtn.title = 'Help';
+
+  // About — build/version info (commit, branch, links) for verifying which
+  // Cloudflare branch/PR deploy you're testing.
+  const aboutNavBtn = makeAction(
+    'btn-about',
+    '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+    'About',
+    () => { showAboutModal(); },
+  );
+  aboutNavBtn.title = 'About — build & version info';
+  aboutNavBtn.setAttribute('aria-label', 'About this build');
+
+  // AI assistant — toggles the chat drawer rather than a tab pane. Keeps id
+  // `btn-ai` so setAiToolbarState, the tour, and tests stay wired up.
+  // The AI launcher is the primary entry point to the assistant, so it gets an
+  // indigo accent + bolder weight that sets it apart from the muted zinc
+  // utility buttons around it — making it obvious where to (re)open the panel.
+  const aiNavBtn = document.createElement('button');
+  aiNavBtn.id = 'btn-ai';
+  aiNavBtn.className = 'flex items-center gap-2 shrink-0 whitespace-nowrap px-3 py-2.5 md:py-2 text-sm md:text-[13px] font-semibold text-indigo-300 border-b-2 md:border-b-0 border-transparent [@media(hover:hover)]:hover:text-indigo-200 [@media(hover:hover)]:hover:bg-indigo-500/10 transition-colors';
+  aiNavBtn.title = 'AI chat — not connected. Click to connect an API key or local model.';
+  aiNavBtn.innerHTML = '<span id="ai-status-dot" class="w-1.5 h-1.5 rounded-full shrink-0 bg-zinc-500"></span><span class="text-base leading-none w-5 text-center" aria-hidden="true">✦</span><span>AI</span>';
+  if (opts.onToggleAi) aiNavBtn.addEventListener('click', opts.onToggleAi);
+
+  rail.appendChild(catalogNavBtn);
+  rail.appendChild(qualityNavBtn);
+  rail.appendChild(diagNavBtn);
+  rail.appendChild(helpNavBtn);
+  rail.appendChild(aboutNavBtn);
+  rail.appendChild(aiNavBtn);
+
+  // Reflect the drawer's open/closed state on the AI rail item — a filled
+  // indigo background + brighter text while open. The two text shades are
+  // toggled mutually exclusively so they never both apply at once.
+  window.addEventListener('ai-panel-toggled', (e) => {
+    const open = !!(e as CustomEvent).detail?.open;
+    aiNavBtn.classList.toggle('bg-indigo-500/20', open);
+    aiNavBtn.classList.toggle('text-indigo-100', open);
+    aiNavBtn.classList.toggle('text-indigo-300', !open);
+  });
 
   // Tab content panels
   const viewportPane = document.createElement('div');
@@ -186,8 +302,29 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   dataContainer.id = 'data-container';
   dataContainer.className = 'flex-1 min-h-0 overflow-auto bg-zinc-900 hidden p-4 flex flex-col';
 
-  const allTabs = [tabInteractive, tabGallery, tabVersions, tabImages, tabDiff, tabNotes, tabData];
-  const allPanes = [viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer];
+  // Pane shown for each tab. `gallery` and `versions` both still exist (deep
+  // links + the AI getViewState() contract) but share one rail item.
+  const paneByTab: Record<TabName, HTMLElement> = {
+    interactive: viewportPane,
+    gallery: galleryContainer,
+    versions: versionsContainer,
+    images: imagesContainer,
+    diff: diffContainer,
+    notes: notesContainer,
+    data: dataContainer,
+  };
+  // Rail item highlighted for each tab — gallery + versions both map to Versions.
+  const railByTab: Record<TabName, HTMLButtonElement> = {
+    interactive: tabInteractive,
+    gallery: tabVersions,
+    versions: tabVersions,
+    images: tabImages,
+    diff: tabDiff,
+    notes: tabNotes,
+    data: tabData,
+  };
+  const navItems = [tabInteractive, tabVersions, tabImages, tabDiff, tabNotes, tabData];
+  const allPanes = Object.values(paneByTab);
 
   // Mobile-only pane toggle: lets the user swap between editor and viewport
   // when the layout is stacked. Hidden at md+ and on tabs that already hide
@@ -270,6 +407,9 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     railCollapsed = !railCollapsed;
     partsRail.classList.toggle('hidden', railCollapsed);
     railExpandBtn.classList.toggle('hidden', !railCollapsed);
+    // Re-showing: drop it back into the container that matches the current
+    // breakpoint (it may have changed while collapsed).
+    if (!railCollapsed) placeParts();
     // The floating » chip sits at the group's top-left; when the rail is
     // collapsed (but the editor open) pad the header so it doesn't overlap the
     // title. Cleared when the rail returns.
@@ -315,16 +455,10 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   // Shared tab activation logic (DOM toggling, editor visibility, events)
   function applyTab(tab: TabName) {
     _currentTab = tab;
-    const idx = tab === 'interactive' ? 0 : tab === 'gallery' ? 1 : tab === 'versions' ? 2 : tab === 'images' ? 3 : tab === 'diff' ? 4 : tab === 'notes' ? 5 : 6;
-    for (let i = 0; i < allPanes.length; i++) {
-      if (i === idx) {
-        allPanes[i].classList.remove('hidden');
-        allTabs[i].className = TAB_ACTIVE_CLASS;
-      } else {
-        allPanes[i].classList.add('hidden');
-        allTabs[i].className = TAB_INACTIVE_CLASS;
-      }
-    }
+    const activePane = paneByTab[tab];
+    for (const pane of allPanes) pane.classList.toggle('hidden', pane !== activePane);
+    const activeItem = railByTab[tab];
+    for (const item of navItems) item.className = item === activeItem ? RAIL_ITEM_ACTIVE : RAIL_ITEM_INACTIVE;
     syncPaneVisibility();
     window.dispatchEvent(new CustomEvent('tab-switched', { detail: { tab } }));
     window.dispatchEvent(new Event('resize'));
@@ -333,6 +467,11 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   // Tab switching — updates URL to reflect current tab
   function switchTab(tab: TabName, options: SwitchTabOptions = {}) {
     applyTab(tab);
+
+    // On mobile the rail is always visible, but every destination pane lives in
+    // the right pane (hidden while the editor pane is showing). Reveal it so a
+    // tapped rail item actually surfaces its content.
+    if (!mqDesktop.matches) setMobilePane('viewport');
 
     const basePath = '/editor';
     const params = new URLSearchParams(window.location.search);
@@ -368,7 +507,6 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   }
 
   tabInteractive.addEventListener('click', () => switchTab('interactive'));
-  tabGallery.addEventListener('click', () => switchTab('gallery'));
   tabVersions.addEventListener('click', () => switchTab('versions'));
   tabImages.addEventListener('click', () => switchTab('images'));
   tabDiff.addEventListener('click', () => switchTab('diff'));
@@ -391,7 +529,6 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
     applyTab('gallery');
   }
 
-  rightPane.appendChild(tabBar);
   rightPane.appendChild(viewportPane);
   rightPane.appendChild(galleryContainer);
   rightPane.appendChild(versionsContainer);
@@ -400,8 +537,32 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   rightPane.appendChild(notesContainer);
   rightPane.appendChild(dataContainer);
 
-  editorGroup.appendChild(partsRail);
   editorGroup.appendChild(editorPane);
+
+  // Parts panel placement is breakpoint-dependent. On desktop it stacks INSIDE
+  // the activity rail as a flex-1 section between the workspace nav and the
+  // bottom utility cluster, so "Workspace" and "Parts" read as one left sidebar
+  // (the inner #parts-list scrolls; `md:mt-auto` on the utility cluster keeps it
+  // pinned to the bottom in both expanded and collapsed states). On mobile the
+  // rail is a horizontal strip, so Parts goes back to its column beside the
+  // editor. moving a populated element preserves its children + listeners.
+  const PARTS_CLASS_DESKTOP = 'flex flex-col flex-1 min-h-0 border-t border-zinc-800 overflow-hidden';
+  const PARTS_CLASS_MOBILE = 'flex flex-col shrink-0 w-36 min-h-0 border-r border-zinc-700 bg-zinc-900/60 overflow-hidden';
+  function placeParts(): void {
+    if (railCollapsed) return; // hidden either way; reposition when re-shown
+    if (mqDesktop.matches) {
+      partsRail.className = PARTS_CLASS_DESKTOP;
+      rail.insertBefore(partsRail, catalogNavBtn);
+    } else {
+      partsRail.className = PARTS_CLASS_MOBILE;
+      editorGroup.insertBefore(partsRail, editorPane);
+    }
+  }
+  placeParts();
+
+  // Rail first so it sits at the left edge (desktop) / top (mobile), then the
+  // editor group, the splitter, and the tabbed right pane.
+  main.appendChild(rail);
   main.appendChild(editorGroup);
   main.appendChild(splitter);
   main.appendChild(rightPane);
@@ -420,6 +581,7 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   // Re-compose visibility on breakpoint crossing and on mobile-pane changes.
   // Both must dispatch a resize so the Three.js canvas re-fits.
   const onBreakpointChange = () => {
+    placeParts();
     syncPaneVisibility();
     window.dispatchEvent(new Event('resize'));
   };
@@ -437,14 +599,20 @@ export function createLayout(appContainer: HTMLElement): LayoutElements {
   return { editorPane, partsRail, editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, togglePartsRail };
 }
 
-const TAB_ACTIVE_CLASS = 'shrink-0 whitespace-nowrap px-4 py-2 md:py-1.5 text-sm md:text-xs font-medium text-zinc-100 border-b-2 border-blue-500 bg-zinc-900';
-const TAB_INACTIVE_CLASS = 'shrink-0 whitespace-nowrap px-4 py-2 md:py-1.5 text-sm md:text-xs font-medium text-zinc-500 [@media(hover:hover)]:hover:text-zinc-300 border-b-2 border-transparent';
+// Rail item base — a bottom accent border on mobile (horizontal strip) becomes
+// a left accent border on desktop (vertical rail) for the active item.
+const RAIL_ITEM_BASE = 'flex items-center gap-2 shrink-0 whitespace-nowrap px-3 py-2.5 md:py-2 text-sm md:text-[13px] font-medium transition-colors border-b-2 md:border-b-0 md:border-l-2';
+const RAIL_ITEM_ACTIVE = RAIL_ITEM_BASE + ' text-zinc-100 bg-zinc-800 border-blue-500';
+const RAIL_ITEM_INACTIVE = RAIL_ITEM_BASE + ' text-zinc-400 border-transparent [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-800/60';
 
-function createTab(label: string, active: boolean): HTMLButtonElement {
+// `canonical` is the stable TabName label kept on data-tab (tests/tour/links
+// depend on it); `display` + `icon` are presentational only.
+function createRailItem(canonical: string, display: string, icon: string, active: boolean): HTMLButtonElement {
   const btn = document.createElement('button');
-  btn.className = active ? TAB_ACTIVE_CLASS : TAB_INACTIVE_CLASS;
-  btn.textContent = label;
-  btn.dataset.tab = label;
+  btn.className = active ? RAIL_ITEM_ACTIVE : RAIL_ITEM_INACTIVE;
+  btn.dataset.tab = canonical;
+  // icon comes from a fixed in-source set, never user input.
+  btn.innerHTML = `<span class="text-base leading-none w-5 text-center" aria-hidden="true">${icon}</span><span>${display}</span>`;
   return btn;
 }
 
@@ -466,7 +634,7 @@ function createClipControls(): HTMLElement {
   const wireBtn = document.createElement('button');
   wireBtn.id = 'wireframe-toggle';
   wireBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  wireBtn.textContent = '△';
+  wireBtn.textContent = '△ Edges';
   wireBtn.title = 'Show mesh edges';
   container.appendChild(wireBtn);
 
@@ -474,7 +642,7 @@ function createClipControls(): HTMLElement {
   const gridBtn = document.createElement('button');
   gridBtn.id = 'grid-toggle';
   gridBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  gridBtn.textContent = '\u25A6';
+  gridBtn.textContent = '\u25A6 Grid';
   gridBtn.title = 'Show grid plane';
   container.appendChild(gridBtn);
 
@@ -482,7 +650,7 @@ function createClipControls(): HTMLElement {
   const dimBtn = document.createElement('button');
   dimBtn.id = 'dimensions-toggle';
   dimBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-blue-500/20 backdrop-blur text-blue-400 [@media(hover:hover)]:hover:bg-blue-500/30 transition-colors border border-blue-500/30';
-  dimBtn.textContent = '\uD83D\uDCCF';
+  dimBtn.textContent = '\u2B1A Dims';
   dimBtn.title = 'Toggle bounding box dimensions';
   container.appendChild(dimBtn);
 
@@ -490,9 +658,15 @@ function createClipControls(): HTMLElement {
   const lockBtn = document.createElement('button');
   lockBtn.id = 'orbit-lock-toggle';
   lockBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  lockBtn.textContent = '\uD83D\uDD13';
+  lockBtn.textContent = '\uD83D\uDD13 Lock';
   lockBtn.title = 'Lock camera rotation';
   container.appendChild(lockBtn);
+
+  // Visual separator between the view toggles (above) and the tools that follow
+  // (Measure, Cross Section, plus the injected Paint/Annotate/Simplify buttons).
+  const divider = document.createElement('div');
+  divider.className = 'hidden md:block w-px self-stretch bg-zinc-600/50 mx-0.5';
+  container.appendChild(divider);
 
   // Measure toggle button
   const measureBtn = document.createElement('button');
