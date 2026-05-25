@@ -26,7 +26,7 @@ import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEng
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setOnMeshUpdate, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
-import { renderCompositeCanvas, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
+import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
 import { generateId } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, getAutoFormat, setAutoFormat, editorContentDiffersFrom } from './editor/codeEditor';
@@ -377,7 +377,11 @@ function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob
   if (!mesh) return Promise.resolve(null);
   let canvas: HTMLCanvasElement;
   try {
-    canvas = renderCompositeCanvas(applyTriColorsIfVisible(mesh));
+    canvas = renderSingleViewCanvas(applyTriColorsIfVisible(mesh), {
+      elevation: STANDARD_VIEWS.iso.elevation,
+      azimuth: STANDARD_VIEWS.iso.azimuth,
+      ortho: STANDARD_VIEWS.iso.ortho,
+    });
   } catch {
     return Promise.resolve(null);
   }
