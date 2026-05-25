@@ -369,13 +369,13 @@ export function buildViewCamera(meshData: MeshData, options: {
   return camera;
 }
 
-export function renderSingleView(meshData: MeshData, options: {
+export function renderSingleViewCanvas(meshData: MeshData, options: {
   elevation?: number;
   azimuth?: number;
   ortho?: boolean;
   size?: number;
   wireframe?: boolean;
-} = {}): string {
+} = {}): HTMLCanvasElement {
   const viewSize = options.size ?? 500;
 
   const geometry = meshDataToGeometry(meshData);
@@ -400,7 +400,18 @@ export function renderSingleView(meshData: MeshData, options: {
   }
   disposeScene(scene);
   geometry.dispose();
-  return canvas.toDataURL('image/png');
+  return canvas;
+}
+
+/** Render a single named angle to a PNG data URL. */
+export function renderSingleView(meshData: MeshData, options: {
+  elevation?: number;
+  azimuth?: number;
+  ortho?: boolean;
+  size?: number;
+  wireframe?: boolean;
+} = {}): string {
+  return renderSingleViewCanvas(meshData, options).toDataURL('image/png');
 }
 
 /** Render a cross-section at a given Z height as an SVG string */
