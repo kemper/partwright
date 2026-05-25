@@ -148,6 +148,7 @@ import {
   changePart,
   renamePart,
   deletePart,
+  deleteParts,
   reorderParts,
   getState,
   getSessionUrl,
@@ -1452,6 +1453,15 @@ async function main() {
       const wasCurrent = getState().currentPart?.id === partId;
       const result = await deletePart(partId);
       if (result && wasCurrent) {
+        await loadPartIntoEditor(getState().currentVersion);
+      }
+    },
+    onDeleteParts: async (partIds: string[]) => {
+      if (isReadOnlyViewer()) return;
+      const result = await deleteParts(partIds);
+      // Only reload the editor when the active part was among those removed
+      // (deleteParts reports this via newCurrent).
+      if (result && result.newCurrent) {
         await loadPartIntoEditor(getState().currentVersion);
       }
     },

@@ -200,4 +200,70 @@ test.describe('Multi-part sessions', () => {
     expect(regionCount).toBe(0);
     await expect(page.locator('#editor-lock-overlay')).toHaveCount(0);
   });
+
+  test('multi-select bulk-deletes parts from the rail', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    await page.evaluate(async ({ code }) => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      await pw.createSession('bulk');
+      await pw.runAndSave(code, 'a1');     // Part 1
+      await pw.createPart('Beta');
+      await pw.createPart('Gamma');        // becomes the current part
+    }, { code: cube(10, 'A1') });
+
+    const list = page.locator('#parts-list');
+    await expect(list.locator('[data-part-id]')).toHaveCount(3);
+    // No bulk-action bar until at least one part is checked.
+    await expect(page.locator('#parts-bulk-actions')).toHaveCount(0);
+
+    const checkbox = (name: string) =>
+      list.locator('[data-part-id]', { hasText: name }).locator('input[type="checkbox"]');
+    await checkbox('Beta').click();
+    await checkbox('Gamma').click();
+
+    // The footer reports the count and offers a matching delete.
+    const bar = page.locator('#parts-bulk-actions');
+    await expect(bar).toBeVisible();
+    await expect(bar).toContainText('2 selected');
+    const delBtn = page.locator('#btn-delete-parts');
+    await expect(delBtn).toHaveText('Delete 2');
+    await expect(delBtn).toBeEnabled();
+
+    // Confirm and delete; the current part (Gamma) was selected, so the active
+    // part must fall back to a survivor and the editor title follows.
+    page.once('dialog', d => d.accept());
+    await delBtn.click();
+
+    await expect
+      .poll(() => page.evaluate(() =>
+        (window as unknown as { partwright: PartsAPI }).partwright.listParts().map(p => p.name)))
+      .toEqual(['Part 1']);
+    await expect(page.locator('#parts-bulk-actions')).toHaveCount(0);
+    await expect(page.locator('#editor-title')).toHaveText('Part 1');
+  });
+
+  test('bulk delete refuses to remove every part', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    await page.evaluate(async ({ code }) => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      await pw.createSession('guard');
+      await pw.runAndSave(code, 'a1');
+      await pw.createPart('Beta');
+    }, { code: cube(10, 'A1') });
+
+    const list = page.locator('#parts-list');
+    await expect(list.locator('[data-part-id]')).toHaveCount(2);
+
+    // Selecting every part disables delete — a session must keep one.
+    for (const row of await list.locator('[data-part-id]').all()) {
+      await row.locator('input[type="checkbox"]').click();
+    }
+    const delBtn = page.locator('#btn-delete-parts');
+    await expect(delBtn).toHaveText('Delete 2');
+    await expect(delBtn).toBeDisabled();
+  });
 });

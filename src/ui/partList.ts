@@ -1,7 +1,7 @@
 // Parts rail — an IDE-style list of the active session's parts. Supports
-// create, select, inline rename, delete, and pointer-based drag-to-reorder.
-// Renders into the rail container created by layout.ts and re-renders on every
-// session-state change.
+// create, select, inline rename, delete, multi-select bulk delete, and
+// pointer-based drag-to-reorder. Renders into the rail container created by
+// layout.ts and re-renders on every session-state change.
 
 import { getState, onStateChange, type SessionState, type Part } from '../storage/sessionManager';
 
@@ -12,6 +12,8 @@ export interface PartListCallbacks {
   onCreatePart: () => void | Promise<void>;
   onRenamePart: (id: string, name: string) => void | Promise<void>;
   onDeletePart: (id: string) => void | Promise<void>;
+  /** Delete several parts at once (multi-select bulk delete). */
+  onDeleteParts: (ids: string[]) => void | Promise<void>;
   /** Persist a new part order (array of part ids, first = top). */
   onReorderParts: (orderedIds: string[]) => void | Promise<void>;
   /** Collapse the rail (handled by layout). */
@@ -26,6 +28,11 @@ let dragging = false;
 // Set when a state change arrives mid-drag (suppressed); flushed on drag end so
 // the rail never shows stale parts after an async update lands during a drag.
 let pendingRender = false;
+// Ids of parts checked for a bulk action. Pruned on every render so it never
+// references a part that was deleted or belongs to another session.
+const selected = new Set<string>();
+// Anchor row id for shift-click range selection.
+let lastClickedId: string | null = null;
 
 export function createPartList(container: HTMLElement, callbacks: PartListCallbacks): void {
   railEl = container;
@@ -39,6 +46,17 @@ export function createPartList(container: HTMLElement, callbacks: PartListCallba
 
 function render(state: SessionState): void {
   if (!railEl) return;
+
+  // Drop any selection that no longer maps to a live part (deleted, or the
+  // session was switched/closed) so the action bar can't act on stale ids.
+  if (state.session) {
+    const live = new Set(state.parts.map(p => p.id));
+    for (const id of [...selected]) if (!live.has(id)) selected.delete(id);
+    if (lastClickedId && !live.has(lastClickedId)) lastClickedId = null;
+  } else {
+    clearSelection();
+  }
+
   railEl.innerHTML = '';
 
   // Header: title + collapse + add.
@@ -80,9 +98,15 @@ function render(state: SessionState): void {
   for (const part of state.parts) {
     list.appendChild(buildRow(part, part.id === state.currentPart?.id, state.parts.length, list));
   }
+
+  // Bulk-action footer — only present while one or more parts are checked.
+  if (selected.size > 0) {
+    railEl.appendChild(buildActionBar(state));
+  }
 }
 
 function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLElement): HTMLElement {
+  const isSelected = selected.has(part.id);
   const row = document.createElement('div');
   row.dataset.partId = part.id;
   row.setAttribute('role', 'button');
@@ -91,8 +115,38 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
     'group flex items-center gap-1 px-1.5 py-2.5 mx-1 rounded cursor-pointer select-none',
     isCurrent
       ? 'bg-blue-500/15 text-zinc-100 border-l-2 border-blue-500'
-      : 'text-zinc-400 [@media(hover:hover)]:hover:bg-zinc-700/40 border-l-2 border-transparent',
+      : isSelected
+        ? 'bg-blue-500/10 text-zinc-200 border-l-2 border-blue-500/40'
+        : 'text-zinc-400 [@media(hover:hover)]:hover:bg-zinc-700/40 border-l-2 border-transparent',
   ].join(' ');
+
+  // Selection checkbox (multi-select bulk delete). Only offered when more than
+  // one part exists — a session must always keep at least one. Subtle until
+  // hover on pointer devices, but always shown on touch and whenever a
+  // selection is already in progress (so it can't silently hide checked rows).
+  if (partCount > 1) {
+    const anySelected = selected.size > 0;
+    const cbWrap = document.createElement('span');
+    cbWrap.className = 'shrink-0 flex items-center justify-center px-1 py-1 cursor-pointer';
+    if (!anySelected) {
+      cbWrap.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus-within:opacity-100';
+    }
+    const cbx = document.createElement('input');
+    cbx.type = 'checkbox';
+    cbx.checked = isSelected;
+    cbx.className = 'w-3.5 h-3.5 accent-blue-500 cursor-pointer';
+    cbx.setAttribute('aria-label', `Select part ${part.name}`);
+    const onToggle = (e: Event) => {
+      e.stopPropagation();
+      toggleSelection(part.id, (e as MouseEvent).shiftKey);
+    };
+    cbx.addEventListener('click', onToggle);
+    cbWrap.addEventListener('click', (e) => {
+      if (e.target !== cbx) onToggle(e); // let padding around the box toggle too
+    });
+    cbWrap.appendChild(cbx);
+    row.appendChild(cbWrap);
+  }
 
   // Drag handle (pointer-based reorder — works for mouse, touch, and pen).
   // Always visible (not hover-gated) so it's discoverable on touch.
@@ -137,6 +191,80 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
   }
 
   return row;
+}
+
+// === Multi-select bulk actions ===
+
+/** Toggle one part's checkbox, or — with shift held — select the inclusive
+ *  range between the last-clicked anchor and this row, then re-render. */
+function toggleSelection(id: string, shift: boolean): void {
+  const parts = getState().parts;
+  const a = lastClickedId ? parts.findIndex(p => p.id === lastClickedId) : -1;
+  const b = parts.findIndex(p => p.id === id);
+  if (shift && a >= 0 && b >= 0 && a !== b) {
+    const [lo, hi] = a < b ? [a, b] : [b, a];
+    for (let i = lo; i <= hi; i++) selected.add(parts[i].id);
+  } else if (selected.has(id)) {
+    selected.delete(id);
+  } else {
+    selected.add(id);
+  }
+  lastClickedId = id;
+  render(getState());
+}
+
+function clearSelection(): void {
+  selected.clear();
+  lastClickedId = null;
+}
+
+/** Footer bar shown while parts are checked: count, clear, and bulk delete. */
+function buildActionBar(state: SessionState): HTMLElement {
+  const bar = document.createElement('div');
+  bar.id = 'parts-bulk-actions';
+  bar.className = 'shrink-0 flex items-center gap-1.5 px-2 py-1.5 border-t border-zinc-700/70 bg-zinc-800/70';
+
+  const count = document.createElement('span');
+  count.className = 'flex-1 min-w-0 truncate text-[11px] text-zinc-300';
+  count.textContent = `${selected.size} selected`;
+  bar.appendChild(count);
+
+  const clearBtn = document.createElement('button');
+  clearBtn.className = 'shrink-0 px-2 h-7 rounded text-[11px] text-zinc-300 hover:text-zinc-100 hover:bg-zinc-700 transition-colors';
+  clearBtn.textContent = 'Clear';
+  clearBtn.title = 'Clear selection';
+  clearBtn.addEventListener('click', () => { clearSelection(); render(getState()); });
+  bar.appendChild(clearBtn);
+
+  // A session must always keep at least one part, so a select-all delete is
+  // refused (mirrors the single-row delete, which hides when only one remains).
+  const wouldEmptySession = selected.size >= state.parts.length;
+  const delBtn = document.createElement('button');
+  delBtn.id = 'btn-delete-parts';
+  delBtn.className = 'shrink-0 px-2 h-7 rounded text-[11px] font-medium text-white transition-colors '
+    + (wouldEmptySession ? 'bg-red-600/40 opacity-60 cursor-default' : 'bg-red-600/80 hover:bg-red-600');
+  delBtn.textContent = `Delete ${selected.size}`;
+  if (wouldEmptySession) {
+    delBtn.disabled = true;
+    delBtn.title = 'At least one part must remain — deselect one to delete.';
+  } else {
+    delBtn.title = 'Delete the selected parts and all their versions';
+  }
+  delBtn.addEventListener('click', () => {
+    if (delBtn.disabled) return;
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    const msg = ids.length === 1
+      ? 'Delete this part and all of its versions? This cannot be undone.'
+      : `Delete ${ids.length} parts and all of their versions? This cannot be undone.`;
+    if (!confirm(msg)) return;
+    clearSelection();
+    render(getState()); // hide the bar immediately; the delete re-renders on commit
+    void cb.onDeleteParts(ids);
+  });
+  bar.appendChild(delBtn);
+
+  return bar;
 }
 
 function beginRename(name: HTMLElement, part: Part): void {
