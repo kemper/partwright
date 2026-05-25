@@ -2450,9 +2450,10 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
     // Surface a sticky completion banner so the user knows the turn
     // actually ended and why — better than a silent hideProgress that
     // reads as "the model stalled and gave up".
-    // Cast needed: lastTurnOutcome is assigned inside the runTurn callbacks,
-    // which TS can't flow-narrow, so it reads back as `null` here even though
-    // a completed turn has set it.
+    // Snapshot the outcome before the null reset below. The cast is also
+    // required: lastTurnOutcome is assigned inside the runTurn callbacks,
+    // which TS can't flow-narrow, so without it the read is typed `null` and
+    // the resumable-stop check further down fails to compile.
     const finalOutcome = lastTurnOutcome as TurnOutcome | null;
     if (lastTurnOutcome) {
       showProgressFinal(formatTurnOutcome(lastTurnOutcome));
