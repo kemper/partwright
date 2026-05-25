@@ -1,4 +1,5 @@
 import { test, expect } from 'playwright/test';
+import { openAiPanel } from './helpers/aiPanel';
 
 // Coverage for surfacing tool-returned renderings (renderView / renderViews
 // snapshots) in the chat transcript. Two halves:
@@ -17,7 +18,7 @@ const TINY_PNG =
 test.describe('Tool-result renderings in the chat transcript', () => {
   test('chatLoop surfaces the renderViews image to the panel as the turn runs', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
 
     const captured = await page.evaluate(async ({ tinyPng }) => {
       const cl = await import('/src/ai/chatLoop.ts');
@@ -146,7 +147,7 @@ test.describe('Tool-result renderings in the chat transcript', () => {
   test('a persisted tool_result image renders inline in the transcript', async ({ page }) => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ } });
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
 
     await page.evaluate(async ({ tinyPng }) => {
       const db = await import('/src/ai/db.ts');
@@ -177,8 +178,7 @@ test.describe('Tool-result renderings in the chat transcript', () => {
     }, { tinyPng: TINY_PNG });
 
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
 
     // The rendering shows as an <img> in the transcript, visible without the
     // user expanding anything (image-bearing tool results auto-expand).

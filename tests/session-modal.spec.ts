@@ -51,7 +51,7 @@ test.describe('Session modal', () => {
     // The modal's New Session button prompts for a name — accept it.
     page.on('dialog', (d) => d.accept('Fresh Session'));
 
-    await page.locator('#session-bar button', { hasText: 'Sessions' }).click();
+    await page.locator('#btn-sessions').click();
     await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
     await page.locator('button', { hasText: '+ New Session' }).click();
 
@@ -106,7 +106,7 @@ test.describe('Session modal', () => {
       db.close();
     }, withThumb);
 
-    await page.locator('#session-bar button', { hasText: 'Sessions' }).click();
+    await page.locator('#btn-sessions').click();
     await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
 
     // The seeded session shows its thumbnail as an <img>; the version-less one

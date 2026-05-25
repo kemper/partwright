@@ -1,4 +1,5 @@
 import { test, expect } from 'playwright/test';
+import { openAiPanel } from './helpers/aiPanel';
 
 // Covers the diagnostic-log fixes:
 //   1. The viewport no longer constructs THREE.Clock (deprecated in r183), so
@@ -32,17 +33,11 @@ test.describe('Diagnostic log', () => {
 
   test('panel stacks above the AI drawer', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#btn-ai');
     // Wait for full editor init so the click doesn't race the WASM/COI boot.
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
 
-    await page.click('#btn-ai');
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
-    // Disconnected → the AI Settings modal also opens; dismiss it so its
-    // overlay doesn't intercept the diagnostics-button click below.
-    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
-    await page.keyboard.press('Escape');
-    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeHidden();
+    await openAiPanel(page);
+    await expect(page.locator('#ai-panel')).toBeVisible();
 
     await page.click('#btn-diagnostics');
     await expect(page.locator('#diagnostics-panel')).toBeVisible();

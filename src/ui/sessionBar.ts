@@ -18,7 +18,6 @@ import { showToast } from './toast';
 export interface SessionBarCallbacks {
   onSaveVersion: () => Promise<{ code: string; geometryData: Record<string, unknown> | null; thumbnail: Blob | null }>;
   onLoadVersion: (code: string) => void;
-  onOpenSessionList: () => void;
   onNewSession: () => void;
 }
 
@@ -77,9 +76,6 @@ function render(state: SessionState) {
       callbacks.onNewSession();
     });
     barEl.appendChild(btnNew);
-
-    const btnList = btn('Sessions…', () => callbacks.onOpenSessionList());
-    barEl.appendChild(btnList);
 
     return;
   }
@@ -203,9 +199,7 @@ function render(state: SessionState) {
   // Spacer
   barEl.appendChild(el('div', 'flex-1', ''));
 
-  // Sessions list
-  const listBtn = btn('Sessions…', () => callbacks.onOpenSessionList());
-  barEl.appendChild(listBtn);
+  // (Session switcher moved to the activity rail header — see createLayout.)
 
   // "Close" starts a fresh blank session rather than dropping to a
   // session-less editor — a session always exists while the editor is open.
