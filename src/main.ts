@@ -118,7 +118,7 @@ import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
-import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, setAirbrushRadius as setPaintAirbrushRadius, getAirbrushRadius as getPaintAirbrushRadius, setAirbrushStrength as setPaintAirbrushStrength, getAirbrushStrength as getPaintAirbrushStrength, setAirbrushSoftness as setPaintAirbrushSoftness, getAirbrushSoftness as getPaintAirbrushSoftness, setAirbrushSmooth as setPaintAirbrushSmooth, isAirbrushSmooth as isPaintAirbrushSmooth, setAirbrushSmoothDivisor as setPaintAirbrushSmoothDivisor, getAirbrushSmoothDivisor as getPaintAirbrushSmoothDivisor, AIRBRUSH_SMOOTH_DIVISOR_MIN, AIRBRUSH_SMOOTH_DIVISOR_MAX } from './color/paintMode';
+import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, setAirbrushRadius as setPaintAirbrushRadius, getAirbrushRadius as getPaintAirbrushRadius, setAirbrushStrength as setPaintAirbrushStrength, getAirbrushStrength as getPaintAirbrushStrength, setAirbrushSoftness as setPaintAirbrushSoftness, getAirbrushSoftness as getPaintAirbrushSoftness, setAirbrushSmooth as setPaintAirbrushSmooth, isAirbrushSmooth as isPaintAirbrushSmooth, setAirbrushSmoothDivisor as setPaintAirbrushSmoothDivisor, getAirbrushSmoothDivisor as getPaintAirbrushSmoothDivisor } from './color/paintMode';
 import { buildRefinedMesh, brushRefineRegion, airbrushRefineRegion, strokeFootprintTriangles, airbrushFootprintTriangles, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
@@ -5003,7 +5003,7 @@ async function main() {
     },
     setBrushSmoothDivisor(divisor: number) {
       if (typeof divisor !== 'number' || !Number.isFinite(divisor)) {
-        return { error: `setBrushSmoothDivisor(divisor): divisor must be a finite number in ${SMOOTH_DIVISOR_MIN}..${SMOOTH_DIVISOR_MAX}` };
+        return { error: `setBrushSmoothDivisor(divisor): divisor must be a finite number >= ${SMOOTH_DIVISOR_MIN} (slider tops out at ${SMOOTH_DIVISOR_MAX}; higher is allowed)` };
       }
       setPaintBrushSmoothDivisor(divisor);
       return { divisor: getPaintBrushSmoothDivisor() };
@@ -5050,7 +5050,7 @@ async function main() {
     },
     setAirbrushSmoothDivisor(divisor: number) {
       if (typeof divisor !== 'number' || !Number.isFinite(divisor)) {
-        return { error: `setAirbrushSmoothDivisor(divisor): divisor must be a finite number in ${AIRBRUSH_SMOOTH_DIVISOR_MIN}..${AIRBRUSH_SMOOTH_DIVISOR_MAX}` };
+        return { error: `setAirbrushSmoothDivisor(divisor): divisor must be a finite number >= ${SMOOTH_DIVISOR_MIN} (slider tops out at ${SMOOTH_DIVISOR_MAX}; higher is allowed)` };
       }
       setPaintAirbrushSmoothDivisor(divisor);
       return { divisor: getPaintAirbrushSmoothDivisor() };

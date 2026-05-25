@@ -287,8 +287,8 @@ partwright.removeRegion(id) / setRegionVisibility(id, visible)            // per
 partwright.hideRegion(id) / showRegion(id) / clearColors()
 partwright.getBucketTolerance() / setBucketTolerance(t)                   // UI bucket tool config
 partwright.getBrushSize() / setBrushSize(r)                               // UI brush tool config
-partwright.getBrushSmooth() / setBrushSmooth(on) / setBrushSmoothDivisor(2..1024) // UI smooth-brush config (detail = radius ÷ divisor)
-partwright.getAirbrush() / setAirbrushSize(r) / setAirbrushStrength(0..1) / setAirbrushSoftness(0..1) / setAirbrushSmooth(on) / setAirbrushSmoothDivisor(4..32) // UI airbrush tool config (grain: radius ÷ divisor = droplet size)
+partwright.getBrushSmooth() / setBrushSmooth(on) / setBrushSmoothDivisor(2..1024, higher allowed) // UI smooth-brush config (detail = radius ÷ divisor)
+partwright.getAirbrush() / setAirbrushSize(r) / setAirbrushStrength(0..1) / setAirbrushSoftness(0..1) / setAirbrushSmooth(on) / setAirbrushSmoothDivisor(2..1024, higher allowed; default 256) // UI airbrush tool config (grain: radius ÷ divisor = droplet size)
 
 // Notes -- track design context, decisions, and measurements
 await partwright.addSessionNote(text)    // -> {id, text, timestamp}

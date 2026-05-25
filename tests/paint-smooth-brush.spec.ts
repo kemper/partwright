@@ -106,16 +106,16 @@ test.describe('smooth paintbrush', () => {
       const badBool = pw.setBrushSmooth('yes');
       const okBool = pw.setBrushSmooth(true);
       const badNum = pw.setBrushSmoothDivisor('lots');
-      const clampHi = pw.setBrushSmoothDivisor(99999);
+      const noUpperClamp = pw.setBrushSmoothDivisor(99999);
       const clampLo = pw.setBrushSmoothDivisor(0);
       const ok = pw.setBrushSmoothDivisor(300);
-      return { badBool, okBool, badNum, clampHi, clampLo, ok, cfg: pw.getBrushSmooth() };
+      return { badBool, okBool, badNum, noUpperClamp, clampLo, ok, cfg: pw.getBrushSmooth() };
     });
     expect(result.badBool.error).toBeTruthy();
     expect(result.okBool.smooth).toBe(true);
     expect(result.badNum.error).toBeTruthy();
-    expect(result.clampHi.divisor).toBe(1024); // clamped to max
-    expect(result.clampLo.divisor).toBe(2);     // clamped to min
+    expect(result.noUpperClamp.divisor).toBe(99999); // no upper clamp — type past the slider for a smoother edge
+    expect(result.clampLo.divisor).toBe(2);          // clamped up to the minimum
     expect(result.ok.divisor).toBe(300);
     expect(result.cfg).toMatchObject({ smooth: true, divisor: 300 });
   });

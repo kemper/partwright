@@ -59,12 +59,11 @@ export const AIRBRUSH_SOFTNESS_MAX = 1;
  *  a coarse mesh, already fine on a dense one). On by default. */
 let airbrushSmooth = true;
 /** Droplet grain: radius / this = droplet radius, so higher = smaller droplets =
- *  a finer spray (and more triangles, still bounded by the refine budget). The
- *  range is modest because the airbrush draws actual circles — going finer than
- *  the eye/printer resolves just adds triangles. */
-let airbrushSmoothDivisor = 16;
-export const AIRBRUSH_SMOOTH_DIVISOR_MIN = 4;
-export const AIRBRUSH_SMOOTH_DIVISOR_MAX = 32;
+ *  a finer spray (and more triangles, bounded by the refine budget). Shares the
+ *  brush's range (SMOOTH_DIVISOR_MIN..MAX) and 256 default so "smoother" reads the
+ *  same on both tools; the per-stroke triangle budget — not a small cap — keeps a
+ *  fine spray affordable. */
+let airbrushSmoothDivisor = 256;
 
 /** Target edge length (mesh units) for the active brush settings. */
 export function brushTargetEdge(): number {
@@ -197,7 +196,10 @@ export function isBrushSmooth(): boolean {
 }
 
 export function setBrushSmoothDivisor(n: number): void {
-  brushSmoothDivisor = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, Math.round(n)));
+  // No upper clamp: the slider stops at SMOOTH_DIVISOR_MAX for ergonomics, but a
+  // typed value may exceed it for a smoother edge (MAX_PASSES + the OOM ceiling
+  // in subdivide.ts bound the cost).
+  brushSmoothDivisor = Math.max(SMOOTH_DIVISOR_MIN, Math.round(n));
 }
 
 export function getBrushSmoothDivisor(): number {
@@ -237,7 +239,10 @@ export function isAirbrushSmooth(): boolean {
 }
 
 export function setAirbrushSmoothDivisor(n: number): void {
-  airbrushSmoothDivisor = Math.max(AIRBRUSH_SMOOTH_DIVISOR_MIN, Math.min(AIRBRUSH_SMOOTH_DIVISOR_MAX, Math.round(n)));
+  // No upper clamp: the slider stops at SMOOTH_DIVISOR_MAX for ergonomics, but a
+  // typed value may exceed it for a finer spray (the per-stroke refine budget
+  // bounds the cost).
+  airbrushSmoothDivisor = Math.max(SMOOTH_DIVISOR_MIN, Math.round(n));
 }
 
 export function getAirbrushSmoothDivisor(): number {
@@ -255,7 +260,8 @@ let shapeSmoothResolution = 256;
 export function setShapeSmooth(on: boolean): void { shapeSmooth = on; }
 export function isShapeSmooth(): boolean { return shapeSmooth; }
 export function setShapeSmoothResolution(n: number): void {
-  shapeSmoothResolution = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, Math.round(n)));
+  // No upper clamp (slider caps for ergonomics; a typed value may go finer).
+  shapeSmoothResolution = Math.max(SMOOTH_DIVISOR_MIN, Math.round(n));
 }
 export function getShapeSmoothResolution(): number { return shapeSmoothResolution; }
 

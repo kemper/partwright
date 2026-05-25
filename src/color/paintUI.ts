@@ -30,8 +30,6 @@ import {
   isAirbrushSmooth,
   setAirbrushSmoothDivisor,
   getAirbrushSmoothDivisor,
-  AIRBRUSH_SMOOTH_DIVISOR_MIN,
-  AIRBRUSH_SMOOTH_DIVISOR_MAX,
   setShapeSmooth,
   isShapeSmooth,
   setShapeSmoothResolution,
@@ -609,8 +607,8 @@ function createAirbrushControls(): HTMLElement {
     setOn: setAirbrushSmooth,
     getDivisor: getAirbrushSmoothDivisor,
     setDivisor: setAirbrushSmoothDivisor,
-    min: AIRBRUSH_SMOOTH_DIVISOR_MIN,
-    max: AIRBRUSH_SMOOTH_DIVISOR_MAX,
+    min: SMOOTH_DIVISOR_MIN,
+    max: SMOOTH_DIVISOR_MAX,
     radiusNoun: 'airbrush radius',
     toggleTitle: 'Refine the mesh under the airbrush so its speckled edge reads as a smooth gradient instead of chunky dots. Adds triangles across the spray footprint; Softness still controls how wide the fade is.',
     toggleId: 'airbrush-smooth-toggle',
@@ -733,11 +731,13 @@ function makeSmoothEdgeControl(opts: {
   const detailInput = document.createElement('input');
   detailInput.type = 'number';
   detailInput.min = String(opts.min);
-  detailInput.max = String(opts.max);
+  // No max attribute: the slider stops at opts.max, but the number field accepts a
+  // higher typed value for a finer/smoother edge (cost is bounded by the refine
+  // budget / pass limit in subdivide.ts).
   detailInput.step = '1';
   detailInput.value = String(opts.getDivisor());
   detailInput.className = 'w-16 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
-  detailInput.title = `Detail (${opts.radiusNoun} ÷ this = target edge). ${opts.min}–${opts.max}.`;
+  detailInput.title = `Detail (${opts.radiusNoun} ÷ this = target edge). Slider stops at ${opts.max}; type a higher value for finer.`;
 
   detailSlider.addEventListener('input', () => {
     opts.setDivisor(parseInt(detailSlider.value, 10));
@@ -876,11 +876,12 @@ function createShapeSmoothControls(): HTMLElement {
   const input = document.createElement('input');
   input.type = 'number';
   input.min = String(SMOOTH_DIVISOR_MIN);
-  input.max = String(SMOOTH_DIVISOR_MAX);
+  // No max attribute: the slider caps for ergonomics; the number field accepts a
+  // higher typed value for a finer edge.
   input.step = '1';
   input.value = String(getShapeSmoothResolution());
   input.className = 'w-16 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
-  input.title = `Detail (model size ÷ this = target edge). ${SMOOTH_DIVISOR_MIN}–${SMOOTH_DIVISOR_MAX}.`;
+  input.title = `Detail (model size ÷ this = target edge). Slider stops at ${SMOOTH_DIVISOR_MAX}; type a higher value for finer.`;
 
   slider.addEventListener('input', () => {
     setShapeSmoothResolution(parseInt(slider.value, 10));
