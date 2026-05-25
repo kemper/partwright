@@ -10,12 +10,12 @@ export interface PartListCallbacks {
   onSelectPart: (id: string) => void | Promise<void>;
   /** Create a new part in the active session. */
   onCreatePart: () => void | Promise<void>;
-  /** Open the merge dialog (combine another part into the current one). */
-  onMergeParts: () => void | Promise<void>;
   onRenamePart: (id: string, name: string) => void | Promise<void>;
   onDeletePart: (id: string) => void | Promise<void>;
   /** Delete several parts at once (multi-select bulk delete). */
   onDeleteParts: (ids: string[]) => void | Promise<void>;
+  /** Combine the multi-selected parts into one (multi-select merge). */
+  onMergeParts: (ids: string[]) => void | Promise<void>;
   /** Persist a new part order (array of part ids, first = top). */
   onReorderParts: (orderedIds: string[]) => void | Promise<void>;
   /** Collapse the rail (handled by layout). */
@@ -76,15 +76,6 @@ function render(state: SessionState): void {
   if (!state.session) addBtn.classList.add('opacity-30', 'cursor-default');
   addBtn.addEventListener('click', () => { if (state.session) void cb.onCreatePart(); });
   header.appendChild(addBtn);
-
-  // Merge needs at least two parts to combine.
-  const canMerge = !!state.session && state.parts.length >= 2;
-  const mergeBtn = iconBtn('⧉', 'Merge parts');
-  mergeBtn.id = 'btn-merge-parts';
-  mergeBtn.disabled = !canMerge;
-  if (!canMerge) mergeBtn.classList.add('opacity-30', 'cursor-default');
-  mergeBtn.addEventListener('click', () => { if (canMerge) void cb.onMergeParts(); });
-  header.appendChild(mergeBtn);
 
   const collapseBtn = iconBtn('«', 'Hide parts panel'); // «
   collapseBtn.addEventListener('click', () => cb.onToggleCollapse());
@@ -246,6 +237,23 @@ function buildActionBar(state: SessionState): HTMLElement {
   clearBtn.title = 'Clear selection';
   clearBtn.addEventListener('click', () => { clearSelection(); render(getState()); });
   bar.appendChild(clearBtn);
+
+  // Merge needs at least two parts to combine into one.
+  if (selected.size >= 2) {
+    const mergeBtn = document.createElement('button');
+    mergeBtn.id = 'btn-merge-parts';
+    mergeBtn.className = 'shrink-0 px-2 h-7 rounded text-[11px] font-medium text-white bg-blue-600/80 hover:bg-blue-600 transition-colors';
+    mergeBtn.textContent = `Merge ${selected.size}`;
+    mergeBtn.title = 'Combine the selected parts into one';
+    mergeBtn.addEventListener('click', () => {
+      const ids = [...selected];
+      if (ids.length < 2) return;
+      clearSelection();
+      render(getState()); // hide the bar; the merge flow re-renders on commit
+      void cb.onMergeParts(ids);
+    });
+    bar.appendChild(mergeBtn);
+  }
 
   // A session must always keep at least one part, so a select-all delete is
   // refused (mirrors the single-row delete, which hides when only one remains).

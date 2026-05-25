@@ -74,11 +74,11 @@ import {
   type ImportInboxEntry,
 } from './import/importInbox';
 import { showImportPreview, summarizeSessionImport } from './ui/importPreview';
-import { parseSTL } from './import/parsers/stl';
-import { generateImportCode, isPureImportCode, codeIsRenderOnly } from './import/codegen';
-import { setActiveImports, getActiveImports, meshDataToImportedMesh, type ImportedMesh } from './import/importedMesh';
 import { showImportTargetModal } from './ui/importTargetModal';
-import { showMergePartsModal, type MergeMode } from './ui/mergePartsModal';
+import { showMergePartsModal } from './ui/mergePartsModal';
+import { parseSTL } from './import/parsers/stl';
+import { generateImportCode } from './import/codegen';
+import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import type { BuiltExport } from './export/gltf';
 
 /** Register a freshly-built export blob in the inbox so it shows up in Recent Exports. */
@@ -1035,268 +1035,18 @@ async function main() {
   async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean } = { manifold: true }): Promise<{ sessionId: string }> {
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const session = await createSession(sessionName, 'manifold-js');
-    await seedPartWithMesh(mesh, opts.manifold);
-    return { sessionId: session.id };
-  }
-
-  // Seed the active part (already current) with a single imported mesh: build
-  // the wrapper, render it, and persist v1 with the mesh attached so it survives
-  // a reload. Shared by the new-session, new-part, and empty-part import paths.
-  async function seedPartWithMesh(mesh: ImportedMesh, manifold: boolean): Promise<void> {
     setActiveImports([mesh]);
-    const code = generateImportCode([mesh], { manifold });
+    const code = generateImportCode([mesh], { manifold: opts.manifold });
     setValue(code);
     await runCodeSync(code);
     const thumbnail = await captureThumbnail();
-    const label = manifold ? 'imported' : 'imported (render-only)';
-    await saveVersion(code, getGeometryDataObj(), thumbnail, label, undefined, {
+    const geometryData = getGeometryDataObj();
+    const label = opts.manifold ? 'imported' : 'imported (render-only)';
+    await saveVersion(code, geometryData, thumbnail, label, undefined, {
       force: true,
       importedMeshes: [mesh],
     });
-  }
-
-  // Import a parsed mesh as a brand-new part in the current session. Falls back
-  // to a new session if (somehow) none is open.
-  async function importMeshAsNewPart(mesh: ImportedMesh, baseName: string, opts: { manifold: boolean }): Promise<void> {
-    const part = await createPart(baseName);
-    if (!part) { await importMeshPayload(mesh, baseName, opts); return; }
-    await seedPartWithMesh(mesh, opts.manifold);
-  }
-
-  // Run a version's code (with its own imports) off to the side and bake the
-  // result into an importable mesh, restoring the active imports afterwards so
-  // the current part's sandbox state is untouched. Returns null if the code
-  // errors or yields no geometry.
-  async function bakePartGeometry(version: Version, label: string): Promise<ImportedMesh | null> {
-    const saved = getActiveImports();
-    try {
-      setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
-      const result = await executeCodeAsync(version.code);
-      if (result.error || !result.mesh || result.mesh.numTri === 0) return null;
-      return meshDataToImportedMesh(result.mesh, label, 'mesh');
-    } finally {
-      setActiveImports(saved);
-    }
-  }
-
-  // The manifold component meshes that make up a part's current geometry.
-  // Import-based parts contribute their imports directly (keeping them as
-  // separate compose components); hand-coded parts are baked into a single mesh
-  // by re-running their code. Returns null for render-only parts, which can't
-  // take part in a compose.
-  async function partComponentMeshes(version: Version, label: string): Promise<ImportedMesh[] | null> {
-    if (codeIsRenderOnly(version.code)) return null;
-    const imports = (version.importedMeshes ?? []) as ImportedMesh[];
-    if (imports.length > 0 && isPureImportCode(version.code, imports)) return imports;
-    const baked = await bakePartGeometry(version, label);
-    return baked ? [baked] : null;
-  }
-
-  // Validate combined compose code, then render it and persist it as a new
-  // version of the current part. Returns true on success. On failure the active
-  // imports are restored to the current version's so nothing is left dangling.
-  async function renderAndSaveCombined(code: string, combined: ImportedMesh[], label: string): Promise<boolean> {
-    setActiveImports(combined);
-    const probe = await executeCodeAsync(code);
-    if (probe.error || !probe.mesh) {
-      showToast(`Couldn't combine geometry: ${probe.error ?? 'no mesh produced'}`, { variant: 'warn' });
-      setActiveImports((getState().currentVersion?.importedMeshes ?? []) as ImportedMesh[]);
-      return false;
-    }
-    setValue(code);
-    await runCodeSync(code);
-    await saveVersion(code, getGeometryDataObj(), await captureThumbnail(), label, undefined, {
-      force: true,
-      importedMeshes: combined,
-    });
-    return true;
-  }
-
-  // Combine a parsed mesh into the current part. An empty part is simply seeded;
-  // otherwise the mesh is composed with the part's existing components. Only
-  // valid for manifold meshes (compose can't include render-only geometry).
-  async function addMeshToCurrentPart(mesh: ImportedMesh, opts: { manifold: boolean }): Promise<void> {
-    const state = getState();
-    const part = state.currentPart;
-    if (!part) { await importMeshAsNewPart(mesh, mesh.filename, opts); return; }
-
-    const currentVersion = state.currentVersion;
-    if (!currentVersion) { await seedPartWithMesh(mesh, opts.manifold); return; }
-
-    const existing = await partComponentMeshes(currentVersion, part.name);
-    if (!existing) {
-      showToast('That part isn’t a manifold — imported as a new part instead.', { variant: 'warn' });
-      await importMeshAsNewPart(mesh, mesh.filename, opts);
-      return;
-    }
-    const combined = [...existing, mesh];
-    await renderAndSaveCombined(generateImportCode(combined, { manifold: true }), combined, 'added mesh');
-  }
-
-  // The default example and the new-session/new-part starters are throwaway
-  // scaffolding, not user work — they shouldn't be preserved or block seeding.
-  function isStarterCode(code: string): boolean {
-    const t = code.trim();
-    if (t === '' || t === defaultCode.trim()) return true;
-    return ['New session', 'New part'].some(
-      c => t === `// ${c}\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);`,
-    );
-  }
-
-  // True when the current part holds nothing worth preserving: no saved version
-  // and the editor is still showing throwaway starter scaffolding. Such a part
-  // can be freely seeded/replaced by an import without losing user work.
-  function currentPartIsExpendable(): boolean {
-    const state = getState();
-    if (!state.currentPart || state.currentVersion) return false;
-    return isStarterCode(getValue());
-  }
-
-  // Save the current part's editor content as a version before something
-  // switches away from it (import, part switch, merge), so unsaved work is never
-  // silently dropped. No-op for read-only viewers, starter scaffolding, or when
-  // the editor already matches the saved version.
-  async function preserveCurrentEditsIfNeeded(): Promise<void> {
-    if (isReadOnlyViewer()) return;
-    const state = getState();
-    if (!state.session || !state.currentPart) return;
-    const code = getValue();
-    if (isStarterCode(code)) return;
-    if (state.currentVersion && state.currentVersion.code === code) return;
-    const thumbnail = await captureThumbnail();
-    await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail);
-  }
-
-  // The current part's component meshes, taken from what's actually rendered so
-  // it works whether or not the part has a saved version. Import-based parts keep
-  // their imports as separate components; everything else (hand-written code) is
-  // baked from the live mesh. Returns null when there's no manifold geometry to
-  // contribute (empty or render-only).
-  function currentPartLiveComponents(label: string): ImportedMesh[] | null {
-    const cv = getState().currentVersion;
-    if (cv && !codeIsRenderOnly(cv.code) && isPureImportCode(cv.code, (cv.importedMeshes ?? []) as ImportedMesh[])) {
-      return (cv.importedMeshes ?? []) as ImportedMesh[];
-    }
-    if (currentMeshData && !codeIsRenderOnly(getValue())) {
-      return [meshDataToImportedMesh(currentMeshData, label, 'mesh')];
-    }
-    return null;
-  }
-
-  // Dispatch a parsed mesh. With no session open it imports as a new session;
-  // otherwise it always asks the user where the geometry should land and never
-  // discards the current part's work without consent. Returns true if it
-  // committed (so the caller updates the recent-imports inbox), false if
-  // cancelled.
-  async function importParsedMesh(mesh: ImportedMesh, baseName: string, isManifold: boolean): Promise<boolean> {
-    const state = getState();
-    if (!state.session) {
-      await importMeshPayload(mesh, baseName, { manifold: isManifold });
-      return true;
-    }
-
-    // "Add to current part" composes via Manifold.compose, so it's only offered
-    // when the incoming mesh is a manifold AND the current part is import-based
-    // (its geometry is itself imported meshes) or an empty/starter part to seed.
-    // Free-form code parts can't be composed into, so the option is disabled.
-    const cv = state.currentVersion;
-    const expendable = currentPartIsExpendable();
-    const currentIsImportBased = !!cv
-      && !codeIsRenderOnly(cv.code)
-      && isPureImportCode(cv.code, (cv.importedMeshes ?? []) as ImportedMesh[]);
-    const canAddToCurrent = isManifold && !!state.currentPart && (currentIsImportBased || expendable);
-
-    const choice = await showImportTargetModal({
-      filename: mesh.filename,
-      currentPartName: state.currentPart?.name ?? null,
-      canAddToCurrent,
-      recommend: expendable ? 'current-part' : 'new-part',
-      addReplacesStarter: expendable,
-      addDisabledReason: !isManifold
-        ? 'Render-only meshes can’t be combined with other geometry.'
-        : (!canAddToCurrent ? 'This part is code, not imported meshes — import as a new part instead.' : undefined),
-    });
-    if (!choice) return false;
-
-    if (choice === 'current-part') {
-      await addMeshToCurrentPart(mesh, { manifold: isManifold });
-    } else if (choice === 'new-part') {
-      await preserveCurrentEditsIfNeeded();
-      await importMeshAsNewPart(mesh, baseName, { manifold: isManifold });
-    } else {
-      await preserveCurrentEditsIfNeeded();
-      await importMeshPayload(mesh, baseName, { manifold: isManifold });
-    }
-    return true;
-  }
-
-  // Open the merge dialog and run the chosen merge. Combines another part's
-  // geometry into the current one (or into a new part), per the user's pick.
-  async function mergePartsFlow(): Promise<void> {
-    if (isReadOnlyViewer()) return;
-    if (!getState().session || !getState().currentPart) return;
-    // Precreate a version for the current part if it has unsaved work, so the
-    // user never has to hit Save first before merging.
-    await preserveCurrentEditsIfNeeded();
-    const state = getState();
-    const currentPart = state.currentPart;
-    if (!currentPart) return;
-    const others = state.parts.filter(p => p.id !== currentPart.id);
-    if (others.length === 0) return;
-    const choice = await showMergePartsModal({
-      currentPartName: currentPart.name,
-      otherParts: others.map(p => ({ id: p.id, name: p.name })),
-    });
-    if (!choice) return;
-    await performMerge(choice.sourcePartId, choice.mode);
-  }
-
-  async function performMerge(sourcePartId: string, mode: MergeMode): Promise<void> {
-    const state = getState();
-    const target = state.currentPart;
-    if (!state.session || !target) return;
-    const source = state.parts.find(p => p.id === sourcePartId);
-    if (!source) return;
-
-    showToast('Merging…', { variant: 'neutral' });
-
-    // Current part: use the live rendered geometry so an unsaved hand-coded part
-    // merges fine (no need to save a version first).
-    const targetComponents = currentPartLiveComponents(target.name);
-    if (targetComponents === null) {
-      showToast(`Couldn't merge — "${target.name}" has no manifold geometry to combine.`, { variant: 'warn' });
-      return;
-    }
-
-    // Source part: not loaded, so bake it from its latest saved version. Parts
-    // are auto-preserved on switch, so a part you've worked on has one.
-    const sourceVersion = await getLatestVersion(source.id);
-    if (!sourceVersion) { showToast(`Open "${source.name}" and run it once so it has geometry to merge.`, { variant: 'warn' }); return; }
-    const sourceComponents = await partComponentMeshes(sourceVersion, source.name);
-    if (!sourceComponents || sourceComponents.length === 0) {
-      showToast(`Couldn't merge "${source.name}" — its code didn't produce a manifold mesh.`, { variant: 'warn' });
-      return;
-    }
-
-    const combined = [...targetComponents, ...sourceComponents];
-    const code = generateImportCode(combined, { manifold: true });
-
-    if (mode === 'new') {
-      const part = await createPart(`${target.name} + ${source.name}`);
-      if (!part) return;
-      if (await renderAndSaveCombined(code, combined, 'merged')) {
-        showToast(`Created "${part.name}".`, { variant: 'success' });
-      }
-      return;
-    }
-
-    if (!await renderAndSaveCombined(code, combined, `merged ${source.name}`)) return;
-    if (mode === 'remove') {
-      await deletePart(source.id);
-      showToast(`Merged "${source.name}" into "${target.name}" and removed it.`, { variant: 'success' });
-    } else {
-      showToast(`Merged "${source.name}" into "${target.name}".`, { variant: 'success' });
-    }
+    return { sessionId: session.id };
   }
 
   // Run a JSON session import end-to-end: validate, show the preview modal, import.
@@ -1332,7 +1082,8 @@ async function main() {
 
     // Raw code imports don't get a preview modal of their own — confirm before clobber.
     // JSON imports skip this confirm because the preview modal already serves as
-    // confirmation; STL imports skip it because the import-target modal does.
+    // confirmation; STL imports skip it because the import-target modal lets the
+    // user choose a new part / current part / new session instead.
     if (!options.skipPreActiveConfirm && source !== 'JSON' && source !== 'STL') {
       const cur = getState();
       if (cur.session && cur.versionCount > 0) {
@@ -1358,8 +1109,7 @@ async function main() {
       } else if (source === 'STL') {
         const parsed = await parseSTLFile(file);
         if (parsed) {
-          const sessionName = file.name.replace(/\.stl$/i, '');
-          committed = await importParsedMesh(parsed.mesh, sessionName, parsed.isManifold);
+          committed = await placeImportedMesh(parsed, file.name);
         }
       }
       if (committed) registerImport(file, file.name, source);
@@ -1411,7 +1161,7 @@ async function main() {
       if (!mesh || mesh.numTri === 0) continue;
       const trial = tryConstructManifold(mesh);
       if (trial.ok) {
-        return { mesh: meshDataToImportedMesh(mesh, file.name), isManifold: true };
+        return { mesh: toImportedMesh(file.name, mesh), isManifold: true };
       }
       manifoldError = trial.error;
       if (tol > maxTried) maxTried = tol;
@@ -1434,7 +1184,20 @@ async function main() {
     );
     if (!accepted) return null;
 
-    return { mesh: meshDataToImportedMesh(bestMesh, file.name), isManifold: false };
+    return { mesh: toImportedMesh(file.name, bestMesh), isManifold: false };
+  }
+
+  function toImportedMesh(filename: string, mesh: MeshData): ImportedMesh {
+    return {
+      id: generateId(),
+      filename,
+      format: 'stl',
+      vertProperties: mesh.vertProperties,
+      triVerts: mesh.triVerts,
+      numVert: mesh.numVert,
+      numTri: mesh.numTri,
+      numProp: mesh.numProp,
+    };
   }
 
   /** Attempt Manifold.ofMesh() on a parsed mesh; report success/failure. The
@@ -1461,6 +1224,209 @@ async function main() {
     }
   }
 
+  // ── Import placement & part merging ──────────────────────────────────────
+  // A mesh import (or a merge) never silently clobbers the active part: the
+  // user is offered a choice, and any unsaved edits on the current part are
+  // committed first. Both flows funnel mesh geometry through the same import
+  // wrapper (`Manifold.ofMesh` / `Manifold.compose`) main already uses for STL
+  // imports and simplify-bakes, so the result is an ordinary, editable version.
+
+  /** True when the editor still holds a fresh starter snippet (blank, the
+   *  default example, or a "New session"/"New part" cube) — i.e. nothing worth
+   *  preserving before an import overwrites it. */
+  function isStarterCode(code: string): boolean {
+    const t = code.trim();
+    if (!t) return true;
+    if (t === defaultCode.trim()) return true;
+    return /^(\/\/ (New session|New part)\n)?const \{ Manifold \} = api;\nreturn Manifold\.cube\(\[10, 10, 10\], true\);$/.test(t);
+  }
+
+  /** The current part is "expendable" when it has no saved version and the
+   *  editor still shows starter code — seeding a mesh into it discards nothing. */
+  function currentPartIsExpendable(): boolean {
+    const s = getState();
+    return !!s.currentPart && !s.currentVersion && isStarterCode(getValue());
+  }
+
+  /** Save the current part's editor content as a version when it holds real,
+   *  unsaved work — so a following import/merge never loses it and a part that
+   *  was only run (not saved) can still be used as merge input. */
+  async function preserveCurrentEditsIfNeeded(): Promise<void> {
+    if (isReadOnlyViewer()) return;
+    const s = getState();
+    if (!s.session || !s.currentPart) return;
+    const code = getValue();
+    if (isStarterCode(code)) return;
+    if (s.currentVersion && !editorContentDiffersFrom(s.currentVersion.code)) return;
+    const thumbnail = await captureThumbnail();
+    const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
+    await saveVersion(code, geometryData, thumbnail);
+  }
+
+  /** Drop an import wrapper for `components` into the current part: set the
+   *  active imports, render, and save a version that carries the mesh data. */
+  async function applyImportWrapper(components: ImportedMesh[], manifold: boolean): Promise<void> {
+    const code = generateImportCode(components, { manifold });
+    setActiveImports(components);
+    setValue(code);
+    await runCodeSync(code);
+    const thumbnail = await captureThumbnail();
+    const geometryData = getGeometryDataObj();
+    const label = manifold ? 'imported' : 'imported (render-only)';
+    await saveVersion(code, geometryData, thumbnail, label, undefined, {
+      force: true,
+      importedMeshes: components,
+    });
+  }
+
+  /** Execute a part's latest version off-editor and capture its geometry as a
+   *  single compose component. Returns null when the part has no version or
+   *  produced no usable mesh (e.g. render-only or a code error). */
+  async function bakePartComponents(partId: string, label: string): Promise<ImportedMesh[] | null> {
+    const version = await getLatestVersion(partId);
+    if (!version) return null;
+    const saved = getActiveImports();
+    try {
+      setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
+      const result = await executeCodeAsync(version.code);
+      if (result.error || !result.mesh) return null;
+      return [toImportedMesh(label, result.mesh)];
+    } finally {
+      setActiveImports(saved);
+    }
+  }
+
+  /** Add the imported mesh as a brand-new part (becomes current). */
+  async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean): Promise<void> {
+    const part = await createPart(filename.replace(/\.stl$/i, ''));
+    if (!part) return;
+    await applyImportWrapper([mesh], manifold);
+  }
+
+  /** Compose the imported mesh with the current part's existing geometry. */
+  async function composeMeshIntoCurrentPart(mesh: ImportedMesh): Promise<boolean> {
+    const cur = getState().currentPart;
+    if (!cur) return false;
+    const baked = await bakePartComponents(cur.id, cur.name);
+    if (!baked) {
+      showToast('Couldn’t read the current part’s geometry to combine.', { variant: 'warn' });
+      return false;
+    }
+    await applyImportWrapper([...baked, mesh], true);
+    return true;
+  }
+
+  /** Decide where a freshly-parsed STL mesh lands. With no session open it
+   *  creates one (legacy behavior); otherwise the import-target modal lets the
+   *  user pick a new part, the current part, or a new session. */
+  async function placeImportedMesh(parsed: ParsedSTL, filename: string): Promise<boolean> {
+    const sessionName = filename.replace(/\.stl$/i, '');
+    const state = getState();
+    if (!state.session) {
+      await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+      return true;
+    }
+
+    const expendable = currentPartIsExpendable();
+    const target = await showImportTargetModal({
+      filename,
+      currentPartName: state.currentPart?.name ?? null,
+      canAddToCurrent: parsed.isManifold && !!state.currentPart,
+      addDisabledReason: !parsed.isManifold
+        ? 'Render-only meshes can’t be combined into an existing part.'
+        : undefined,
+      recommend: expendable ? 'current-part' : 'new-part',
+      addReplacesStarter: expendable,
+    });
+    if (!target) return false;
+
+    if (target === 'new-session') {
+      await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
+      return true;
+    }
+    if (target === 'new-part') {
+      await preserveCurrentEditsIfNeeded();
+      await seedNewPartWithMesh(parsed.mesh, filename, parsed.isManifold);
+      return true;
+    }
+    // current-part: seed an expendable starter, else compose into real work.
+    if (expendable) {
+      await applyImportWrapper([parsed.mesh], parsed.isManifold);
+      return true;
+    }
+    await preserveCurrentEditsIfNeeded();
+    return composeMeshIntoCurrentPart(parsed.mesh);
+  }
+
+  function mergedPartName(names: string[]): string {
+    const joined = names.join(' + ');
+    return joined.length <= 40 ? joined : `Merged (${names.length} parts)`;
+  }
+
+  /** Build a new part holding the composed geometry of `components`. Probes the
+   *  combine first so a failure surfaces as a toast instead of a broken part. */
+  async function createCombinedPart(components: ImportedMesh[], name: string): Promise<boolean> {
+    const code = generateImportCode(components, { manifold: true });
+    const saved = getActiveImports();
+    setActiveImports(components);
+    const probe = await executeCodeAsync(code);
+    if (probe.error || !probe.mesh) {
+      setActiveImports(saved);
+      showToast(`Couldn’t combine parts: ${probe.error ?? 'no geometry produced'}`, { variant: 'warn' });
+      return false;
+    }
+    const part = await createPart(name);
+    if (!part) { setActiveImports(saved); return false; }
+    setActiveImports(components);
+    setValue(code);
+    await runCodeSync(code);
+    const thumbnail = await captureThumbnail();
+    const geometryData = getGeometryDataObj();
+    await saveVersion(code, geometryData, thumbnail, 'merged', undefined, {
+      force: true,
+      importedMeshes: components,
+    });
+    return true;
+  }
+
+  /** Combine the multi-selected parts into one. Each part's latest version is
+   *  baked to geometry and composed; the result is a new part, optionally
+   *  replacing the originals. */
+  async function mergePartsFlow(ids: string[]): Promise<void> {
+    if (isReadOnlyViewer()) return;
+    if (!getState().session) return;
+    // Precreate a version for the current part if it has unsaved work, so a
+    // merge that includes the active part uses its latest geometry — no manual
+    // Save first.
+    await preserveCurrentEditsIfNeeded();
+
+    const parts = getState().parts.filter(p => ids.includes(p.id));
+    if (parts.length < 2) {
+      showToast('Select at least two parts to merge.', { variant: 'warn' });
+      return;
+    }
+    const choice = await showMergePartsModal({ partNames: parts.map(p => p.name) });
+    if (!choice) return;
+
+    const components: ImportedMesh[] = [];
+    for (const p of parts) {
+      const baked = await bakePartComponents(p.id, p.name);
+      if (baked) components.push(...baked);
+    }
+    if (components.length < 2) {
+      showToast('Couldn’t merge — at least two parts need usable geometry (render-only parts can’t be combined).', { variant: 'warn' });
+      return;
+    }
+
+    const ok = await createCombinedPart(components, mergedPartName(parts.map(p => p.name)));
+    if (!ok) return;
+
+    if (choice.mode === 'replace') {
+      // The combined part is brand-new (not in `ids`), so it survives the delete.
+      await deleteParts(ids);
+    }
+  }
+
 
   // Re-import an entry from the Recent Imports inbox. Reuses the same flow as
   // a fresh file import, including the JSON preview modal — it is still a
@@ -1472,15 +1438,12 @@ async function main() {
         await importJSONFromText(entry.filename, text);
         return;
       }
-      // STL re-imports get the import-target modal (new part / add / new
-      // session); the modal serves as the confirmation, so no pre-confirm here.
+      // STL re-imports go through the import-target modal (new part / current
+      // part / new session) just like a fresh file import.
       if (entry.source === 'STL') {
         const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
         const parsed = await parseSTLFile(file);
-        if (parsed) {
-          const sessionName = entry.filename.replace(/\.stl$/i, '');
-          await importParsedMesh(parsed.mesh, sessionName, parsed.isManifold);
-        }
+        if (parsed) await placeImportedMesh(parsed, entry.filename);
         return;
       }
       const cur = getState();
@@ -1675,9 +1638,6 @@ async function main() {
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
     onSelectPart: async (partId: string) => {
-      // Preserve unsaved work in the part we're leaving so switching away never
-      // loses it (and so it stays mergeable later).
-      await preserveCurrentEditsIfNeeded();
       const version = await changePart(partId);
       await loadPartIntoEditor(version);
     },
@@ -1685,11 +1645,9 @@ async function main() {
       // Structural part edits are leader-only — a read-only viewer must not
       // write to the shared session (mirrors the run/save guard).
       if (isReadOnlyViewer()) return;
-      await preserveCurrentEditsIfNeeded();
       await createPart();
       startNewPartInEditor();
     },
-    onMergeParts: () => mergePartsFlow(),
     onRenamePart: async (partId: string, name: string) => {
       if (isReadOnlyViewer()) return;
       await renamePart(partId, name);
@@ -1710,6 +1668,10 @@ async function main() {
       if (result && result.newCurrent) {
         await loadPartIntoEditor(getState().currentVersion);
       }
+    },
+    onMergeParts: async (partIds: string[]) => {
+      if (isReadOnlyViewer()) return;
+      await mergePartsFlow(partIds);
     },
     onReorderParts: async (orderedIds: string[]) => {
       if (isReadOnlyViewer()) return;
@@ -2364,7 +2326,7 @@ async function main() {
           savedOriginal = !!(await saveVersion(originalCode, original.geometryData, original.thumbnail));
         }
 
-        const baked = meshDataToImportedMesh(reduced, `simplified-${reduced.numTri}tri`);
+        const baked = toImportedMesh(`simplified-${reduced.numTri}tri`, reduced);
         const code = generateImportCode([baked], { manifold: true });
         setActiveImports([baked]);
         setValue(code);

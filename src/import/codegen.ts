@@ -60,29 +60,3 @@ ${parts}
 ]);
 `;
 }
-
-/** Strip leading `//` comment lines (and trailing whitespace) so two code
- *  blobs can be compared by body, ignoring the dated import header. */
-export function stripLeadingComments(code: string): string {
-  return code.replace(/^(?:[ \t]*\/\/[^\n]*\n)+/, '').trim();
-}
-
-/** True when `code` is exactly what {@link generateImportCode} would emit for
- *  `imports` (ignoring the dated header comment). Lets the import / merge flow
- *  append a mesh to an import-based part by regenerating clean compose code,
- *  while hand-edited parts fall back to being baked instead. */
-export function isPureImportCode(code: string, imports: ImportedMesh[]): boolean {
-  if (imports.length === 0) return false;
-  const body = stripLeadingComments(code);
-  return (
-    body === stripLeadingComments(generateImportCode(imports, { manifold: true })) ||
-    body === stripLeadingComments(generateImportCode(imports, { manifold: false }))
-  );
-}
-
-/** True when code renders a mesh without constructing a Manifold (a render-only
- *  import). Such geometry can't take part in boolean / compose operations, so
- *  it can't be combined into another part. */
-export function codeIsRenderOnly(code: string): boolean {
-  return /\bapi\s*\.\s*renderMesh\s*\(/.test(code);
-}

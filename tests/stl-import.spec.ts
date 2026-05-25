@@ -39,7 +39,7 @@ function buildCubeSTLBase64(): string {
 }
 
 test.describe('STL import', () => {
-  // Suppress the first-visit guided tour so its tooltip doesn't intercept the
+  // Suppress the first-visit guided tour so its backdrop doesn't intercept the
   // import-target modal's buttons.
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
@@ -59,8 +59,8 @@ test.describe('STL import', () => {
       buffer: Buffer.from(stlBase64, 'base64'),
     });
 
-    // The fresh editor is a starter part, so the import-target modal appears;
-    // choose to use the mesh as the current part.
+    // The fresh editor is an expendable starter part, so the import-target modal
+    // appears; choose to use the mesh as the current part.
     await page.getByRole('dialog').locator('[data-target="current-part"]').click();
 
     // Wait for the import to finish — the editor's code buffer should pick up
@@ -102,8 +102,8 @@ test.describe('STL import', () => {
       buffer: Buffer.from(stlBase64, 'base64'),
     });
 
-    // The fresh editor is a starter part, so the import-target modal appears;
-    // choose to use the mesh as the current part.
+    // The fresh editor is an expendable starter part, so the import-target modal
+    // appears; choose to use the mesh as the current part.
     await page.getByRole('dialog').locator('[data-target="current-part"]').click();
 
     // Wait for the import to finish — the editor's code buffer should pick up

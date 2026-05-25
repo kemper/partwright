@@ -10,7 +10,6 @@ interface PartsAPI {
   runAndSave: (code: string, label?: string) => Promise<unknown>;
   getCode: () => string;
   setCode: (code: string) => void;
-  run: (code: string) => Promise<unknown>;
   createPart: (name?: string) => Promise<{ id: string; name: string } | { error: string }>;
   changePart: (target: string | { id?: string; name?: string }) => Promise<unknown>;
   listParts: () => { id: string; name: string; order: number; isCurrent: boolean }[];
@@ -31,6 +30,10 @@ async function waitForEngine(page: Page) {
 
 const cube = (s: number, marker: string) =>
   `// ${marker}\nconst { Manifold } = api; return Manifold.cube([${s}, ${s}, ${s}], true);`;
+
+// A cube shifted along X so two merged parts stay distinct compose components.
+const cubeAt = (s: number, x: number, marker: string) =>
+  `// ${marker}\nconst { Manifold } = api; return Manifold.cube([${s}, ${s}, ${s}], true).translate([${x}, 0, 0]);`;
 
 test.describe('Multi-part sessions', () => {
   // Suppress the first-visit guided tour so its backdrop doesn't intercept clicks.
@@ -178,110 +181,6 @@ test.describe('Multi-part sessions', () => {
       .toEqual(['Beta', 'Gamma', 'Part 1']);
   });
 
-  test('merges another part into the current one and removes the source', async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEngine(page);
-
-    await page.evaluate(async ({ codeA, codeB }) => {
-      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
-      await pw.createSession('merge');
-      await pw.runAndSave(codeA, 'a');      // Part 1 (centered 10-cube, 12 tris)
-      await pw.createPart('B');
-      await pw.runAndSave(codeB, 'b');      // current = B (offset 8-cube, 12 tris)
-    }, {
-      codeA: cube(10, 'A'),
-      codeB: 'const { Manifold } = api; return Manifold.cube([8, 8, 8], true).translate([30, 0, 0]);',
-    });
-
-    // Open the merge dialog from the rail, pick "Part 1", default mode (remove).
-    await page.locator('#btn-merge-parts').click();
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-    await dialog.locator('select').selectOption({ label: 'Part 1' });
-    await dialog.getByRole('button', { name: 'Merge', exact: true }).click();
-
-    // Source removed → one part remains (B), now holding both components.
-    await expect
-      .poll(() => page.evaluate(() =>
-        (window as unknown as { partwright: PartsAPI }).partwright.listParts().length))
-      .toBe(1);
-
-    const after = await page.evaluate(() => {
-      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
-      const geo = pw.getGeometryData();
-      return {
-        parts: pw.listParts().map(p => p.name),
-        tris: geo.triangleCount,
-        comps: geo.componentCount,
-      };
-    });
-    expect(after.parts).toEqual(['B']);
-    expect(after.tris).toBe(24);   // 12 (B) + 12 (Part 1)
-    expect(after.comps).toBe(2);   // two disjoint components
-  });
-
-  test('merges a hand-coded part into a current part that was only run, not saved', async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEngine(page);
-
-    await page.evaluate(async ({ codeA, codeB }) => {
-      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
-      await pw.createSession('merge-code');
-      await pw.runAndSave(codeA, 'a');     // Part 1 — saved
-      await pw.createPart('B');
-      await pw.run(codeB);                  // current = B, run but NOT saved (no version)
-    }, {
-      codeA: cube(10, 'A'),
-      codeB: 'const { Manifold } = api; return Manifold.cube([8, 8, 8], true).translate([30, 0, 0]);',
-    });
-
-    // The current part has live geometry but no saved version — merging used to
-    // drop it. Merge Part 1 into it; the result must include both pieces.
-    await page.locator('#btn-merge-parts').click();
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-    await dialog.locator('select').selectOption({ label: 'Part 1' });
-    await dialog.getByRole('button', { name: 'Merge', exact: true }).click();
-
-    await expect
-      .poll(() => page.evaluate(() => (window as unknown as { partwright: PartsAPI }).partwright.getGeometryData().triangleCount))
-      .toBe(24);
-  });
-
-  test('preserves an unsaved part on switch so it can be merged as a source', async ({ page }) => {
-    await page.goto('/editor');
-    await waitForEngine(page);
-
-    await page.evaluate(async ({ codeA, codeB }) => {
-      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
-      await pw.createSession('merge-src');
-      await pw.runAndSave(codeA, 'a');     // Part 1 — saved
-      await pw.createPart('B');
-      pw.setCode(codeB);                    // editor reflects the user's code
-      await pw.run(codeB);                  // run, NOT saved
-    }, {
-      codeA: cube(10, 'A'),
-      codeB: 'const { Manifold } = api;\nreturn Manifold.cube([8, 8, 8], true).translate([30, 0, 0]);',
-    });
-
-    // Switch to Part 1 via the rail — B's unsaved work is preserved as a version.
-    await page.locator('#parts-list').getByText('Part 1', { exact: true }).click();
-    await expect
-      .poll(() => page.evaluate(() => (window as unknown as { partwright: PartsAPI }).partwright.getCode()))
-      .toContain('A');
-
-    // Merge the (now-preserved) code part B into Part 1.
-    await page.locator('#btn-merge-parts').click();
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-    await dialog.locator('select').selectOption({ label: 'B' });
-    await dialog.getByRole('button', { name: 'Merge', exact: true }).click();
-
-    await expect
-      .poll(() => page.evaluate(() => (window as unknown as { partwright: PartsAPI }).partwright.getGeometryData().triangleCount))
-      .toBe(24);
-  });
-
   test('adding a part after painting clears stale regions and unlocks the editor', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
@@ -371,5 +270,90 @@ test.describe('Multi-part sessions', () => {
     const delBtn = page.locator('#btn-delete-parts');
     await expect(delBtn).toHaveText('Delete 2');
     await expect(delBtn).toBeDisabled();
+  });
+
+  // The Merge button lives in the same multi-select action bar as bulk delete.
+  // It bakes each selected part's geometry and composes them, so it works for
+  // plain hand-coded parts (the case that used to fail with "No geometry data").
+  test('multi-select merge combines parts into a new part, keeping the originals', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    await page.evaluate(async ({ codeA, codeB }) => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      await pw.createSession('merge-new');
+      await pw.runAndSave(codeA, 'a');     // Part 1
+      await pw.createPart('Beta');
+      await pw.runAndSave(codeB, 'b');     // Beta (offset so it stays distinct)
+    }, { codeA: cube(10, 'A'), codeB: cubeAt(10, 30, 'B') });
+
+    const list = page.locator('#parts-list');
+    await expect(list.locator('[data-part-id]')).toHaveCount(2);
+
+    const checkbox = (name: string) =>
+      list.locator('[data-part-id]', { hasText: name }).locator('input[type="checkbox"]');
+    await checkbox('Part 1').click();
+    await checkbox('Beta').click();
+
+    // The action bar offers a matching merge.
+    const mergeBtn = page.locator('#btn-merge-parts');
+    await expect(mergeBtn).toHaveText('Merge 2');
+    await mergeBtn.click();
+
+    // Default mode ("combine into a new part") keeps the originals.
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('Merge parts');
+    await dialog.locator('[data-action="merge"]').click();
+
+    // A third (combined) part appears; the two originals remain.
+    await expect
+      .poll(() => page.evaluate(() =>
+        (window as unknown as { partwright: PartsAPI }).partwright.listParts().length))
+      .toBe(3);
+
+    // The combined part is current and holds both cubes as separate components.
+    await expect
+      .poll(() => page.evaluate(() =>
+        (window as unknown as { partwright: PartsAPI }).partwright.getGeometryData().componentCount))
+      .toBe(2);
+    const code = await page.evaluate(() =>
+      (window as unknown as { partwright: PartsAPI }).partwright.getCode());
+    expect(code).toContain('Manifold.compose');
+  });
+
+  test('multi-select merge can replace the originals with one combined part', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    await page.evaluate(async ({ codeA, codeB }) => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      await pw.createSession('merge-replace');
+      await pw.runAndSave(codeA, 'a');     // Part 1
+      await pw.createPart('Beta');
+      await pw.runAndSave(codeB, 'b');     // Beta
+    }, { codeA: cube(10, 'A'), codeB: cubeAt(10, 30, 'B') });
+
+    const list = page.locator('#parts-list');
+    const checkbox = (name: string) =>
+      list.locator('[data-part-id]', { hasText: name }).locator('input[type="checkbox"]');
+    await checkbox('Part 1').click();
+    await checkbox('Beta').click();
+    await page.locator('#btn-merge-parts').click();
+
+    // Pick "merge into one part" — replaces the originals.
+    const dialog = page.getByRole('dialog');
+    await dialog.locator('[data-mode="replace"]').click();
+    await dialog.locator('[data-action="merge"]').click();
+
+    // Only the single combined part remains, holding both components.
+    await expect
+      .poll(() => page.evaluate(() =>
+        (window as unknown as { partwright: PartsAPI }).partwright.listParts().length))
+      .toBe(1);
+    await expect
+      .poll(() => page.evaluate(() =>
+        (window as unknown as { partwright: PartsAPI }).partwright.getGeometryData().componentCount))
+      .toBe(2);
   });
 });
