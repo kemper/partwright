@@ -34,6 +34,7 @@ import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { registerCommands } from './ui/commandPalette';
+import { showQualitySettingsModal } from './ui/qualitySettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel } from './ui/aiPanel';
@@ -1332,7 +1333,6 @@ async function main() {
       updateAppHistory('/', 'push');
       void syncRouteFromURL();
     },
-    onOpenCatalog: () => { void showCatalogPage(); },
     onRun: () => runCode(),
     onExportGLB: actionExportGLB,
     onExportSTL: actionExportSTL,
@@ -1359,8 +1359,6 @@ async function main() {
     },
     onImportFile: async (file) => { await handleImportFile(file); },
     onImportInboxEntry: handleReimportInboxEntry,
-    onToggleAi: () => { toggleAiPanel(); },
-    onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad') => {
       if (lang === getActiveLanguage()) return;
       // If current session has work, ask before switching
@@ -1439,12 +1437,16 @@ async function main() {
       }
       applyVersionAnnotations(loadedVersion);
     },
-    onOpenSessionList: () => showSessionList(),
     onNewSession: startNewSessionInEditor,
   });
 
   // Create layout
-  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail } = createLayout(editorUI);
+  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail } = createLayout(editorUI, {
+    onToggleAi: () => { toggleAiPanel(); },
+    onOpenCatalog: () => { void showCatalogPage(); },
+    onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
+    onOpenSessionList: () => showSessionList(),
+  });
 
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
@@ -1537,7 +1539,7 @@ async function main() {
     { id: 'new-session', title: 'New session', hint: 'Session', keywords: 'create blank', run: () => startNewSessionInEditor() },
     { id: 'open-sessions', title: 'Open session…', hint: 'Session', keywords: 'switch list recent', run: () => showSessionList() },
     { id: 'tab-interactive', title: 'Go to 3D view', hint: 'Tab', keywords: 'interactive viewport model', run: () => switchTab('interactive') },
-    { id: 'tab-gallery', title: 'Go to Gallery', hint: 'Tab', keywords: 'thumbnails versions', run: () => switchTab('gallery') },
+    { id: 'tab-gallery', title: 'Go to Gallery (read-only)', hint: 'Tab', keywords: 'thumbnails versions visual grid', run: () => switchTab('gallery') },
     { id: 'tab-versions', title: 'Go to Versions', hint: 'Tab', keywords: 'history rename delete', run: () => switchTab('versions') },
     { id: 'tab-images', title: 'Go to Reference images', hint: 'Tab', keywords: 'photos reference', run: () => switchTab('images') },
     { id: 'tab-diff', title: 'Go to Diff', hint: 'Tab', keywords: 'compare changes', run: () => switchTab('diff') },
@@ -1551,6 +1553,8 @@ async function main() {
     { id: 'toggle-diagnostics', title: 'Toggle diagnostic log', hint: 'View', keywords: 'errors warnings console', run: () => toggleDiagnosticsPanel() },
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
     { id: 'open-help', title: 'Open help', hint: 'Navigate', keywords: 'docs documentation guide', run: () => showHelp() },
+    { id: 'open-quality', title: 'Modeling quality settings', hint: 'Settings', keywords: 'resolution curve segments smoothness', run: () => showQualitySettingsModal() },
+    { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); } },
   ]);
 
   // Init gallery
@@ -1628,9 +1632,21 @@ async function main() {
     startNewSessionInEditor,
   );
 
-  // Assemble DOM early so landing/help pages can render before WASM loads
-  app.appendChild(editorUI);
-  app.appendChild(overlayContainer);
+  // Assemble DOM early so landing/help pages can render before WASM loads.
+  // The page subtrees (editor + landing/help/catalog overlays) share a flex row
+  // with the AI panel so the panel docks as a persistent right-hand column: it
+  // sits OUTSIDE the per-page subtrees, so it survives route changes (the
+  // landing-page chat flow relies on the panel staying mounted across nav).
+  const appRow = document.createElement('div');
+  appRow.id = 'app-row';
+  appRow.className = 'flex flex-row flex-1 min-h-0 w-full';
+  const pageArea = document.createElement('div');
+  pageArea.id = 'page-area';
+  pageArea.className = 'flex flex-col flex-1 min-w-0 min-h-0';
+  pageArea.appendChild(editorUI);
+  pageArea.appendChild(overlayContainer);
+  appRow.appendChild(pageArea);
+  app.appendChild(appRow);
 
   let editorReady = false;
   let editorReadyResolve: (() => void) = () => {};
@@ -2284,6 +2300,7 @@ async function main() {
           updateAppHistory('/editor', 'push');
           await syncRouteFromURL();
         },
+        mountInto: appRow,
       });
       const cur = getState();
       await setAiActiveSession(cur.session?.id ?? null);
@@ -6914,7 +6931,7 @@ async function main() {
 
     function reflect(locked: boolean) {
       lockBtn.className = locked ? activeClass : inactiveClass;
-      lockBtn.textContent = locked ? '\uD83D\uDD12' : '\uD83D\uDD13';
+      lockBtn.textContent = locked ? '\uD83D\uDD12 Lock' : '\uD83D\uDD13 Lock';
       lockBtn.title = locked ? 'Unlock camera rotation' : 'Lock camera rotation';
     }
 

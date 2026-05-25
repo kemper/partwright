@@ -1,6 +1,4 @@
-import { resetTour, startTour } from './tour';
 import { partwrightMarkSvg } from './brand';
-import { showQualitySettingsModal } from './qualitySettingsModal';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
 import { downloadBlob } from '../export/download';
 import {
@@ -27,28 +25,21 @@ export interface ToolbarCallbacks {
   onImportFile: (file: File) => void | Promise<void>;
   /** Re-import a blob already held in the inbox (e.g. recent-imports re-click). */
   onImportInboxEntry: (entry: ImportInboxEntry) => void | Promise<void>;
-  onOpenCatalog: () => void;
   onLanguageSwitch: (lang: 'manifold-js' | 'scad') => void;
   onGoHome: () => void;
-  /** Toggle the AI chat side panel. */
-  onToggleAi: () => void;
-  /** Toggle the diagnostic log panel. */
-  onToggleDiagnostics: () => void;
 }
 
-let _aiBtn: HTMLButtonElement | null = null;
-
-let _diagBadgeEl: HTMLElement | null = null;
-
-/** Update the unseen-error badge count on the diagnostics toolbar button.
- *  Called by diagnosticsPanel when new entries arrive while the panel is closed. */
+/** Update the unseen-error badge count on the diagnostics rail button.
+ *  Called by diagnosticsPanel when new entries arrive while the panel is closed.
+ *  The badge (id `diag-badge`) lives in the activity rail — see createLayout. */
 export function setDiagnosticsToolbarBadge(count: number): void {
-  if (!_diagBadgeEl) return;
+  const badge = document.getElementById('diag-badge');
+  if (!badge) return;
   if (count === 0) {
-    _diagBadgeEl.classList.add('hidden');
+    badge.classList.add('hidden');
   } else {
-    _diagBadgeEl.classList.remove('hidden');
-    _diagBadgeEl.textContent = count > 99 ? '99+' : String(count);
+    badge.classList.remove('hidden');
+    badge.textContent = count > 99 ? '99+' : String(count);
   }
 }
 
@@ -58,22 +49,24 @@ export type AiToolbarMode = 'disconnected' | 'cloud' | 'local';
  *  connected; Local = a local WebGPU model is configured; Disconnected =
  *  neither, so clicking opens the connect flow. */
 export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
-  if (!_aiBtn) return;
+  // The AI control now lives in the activity rail (id `btn-ai`) as a labeled
+  // item with a small connection-status dot. Update the dot colour + title.
+  const dot = document.getElementById('ai-status-dot');
+  const btn = document.getElementById('btn-ai');
+  if (!dot || !btn) return;
   // Tolerate the legacy boolean caller signature so an old import doesn't
-  // crash the toolbar at runtime.
+  // crash at runtime.
   const actual: AiToolbarMode = typeof mode === 'boolean' ? (mode ? 'cloud' : 'disconnected') : mode;
+  const base = 'w-1.5 h-1.5 rounded-full shrink-0 ';
   if (actual === 'cloud') {
-    _aiBtn.className = 'flex items-center gap-1.5 px-2 py-1 rounded text-xs text-blue-300 bg-blue-900/30 border border-blue-700/50 hover:bg-blue-900/50 transition-colors';
-    _aiBtn.innerHTML = '<span>✦ AI</span>';
-    _aiBtn.title = 'Open AI chat panel (hosted Claude).';
+    dot.className = base + 'bg-blue-400';
+    btn.title = 'AI chat — hosted Claude connected. Click to open.';
   } else if (actual === 'local') {
-    _aiBtn.className = 'flex items-center gap-1.5 px-2 py-1 rounded text-xs text-emerald-300 bg-emerald-900/30 border border-emerald-700/50 hover:bg-emerald-900/50 transition-colors';
-    _aiBtn.innerHTML = '<span>✦ AI · Local</span>';
-    _aiBtn.title = 'Open AI chat panel (local WebGPU model).';
+    dot.className = base + 'bg-emerald-400';
+    btn.title = 'AI chat — local WebGPU model. Click to open.';
   } else {
-    _aiBtn.className = 'flex items-center gap-1.5 px-2 py-1 rounded text-xs text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100 transition-colors';
-    _aiBtn.innerHTML = '<span>✦ Connect AI</span>';
-    _aiBtn.title = 'Connect an API key or download a local model to chat with the AI.';
+    dot.className = base + 'bg-zinc-500';
+    btn.title = 'AI chat — not connected. Click to connect an API key or local model.';
   }
 }
 
@@ -208,10 +201,7 @@ export function createToolbar(
   toolbar.appendChild(spacer);
 
   // Catalog — navigates to /catalog where premade sessions are browsed.
-  const btnCatalog = createButton('btn-catalog', '\u2630 Catalog');
-  btnCatalog.title = 'Browse the catalog of premade models';
-  btnCatalog.addEventListener('click', callbacks.onOpenCatalog);
-  toolbar.appendChild(btnCatalog);
+  // (Catalog moved to the activity rail's utility group \u2014 see createLayout.)
 
   // Import dropdown — mirrors the Export dropdown. Holds a "Choose file…" entry
   // (the existing OS file picker) and a "Recent Imports" section for re-import.
@@ -515,15 +505,7 @@ export function createToolbar(
 
   toolbar.appendChild(exportWrapper);
 
-  // AI chat toggle — opens the side drawer; switches between "Connect AI"
-  // (no key yet) and a connected chip via setAiToolbarState() from main.ts.
-  _aiBtn = document.createElement('button');
-  _aiBtn.id = 'btn-ai';
-  _aiBtn.className = 'flex items-center gap-1.5 px-2 py-1 rounded text-xs text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100 transition-colors ml-1';
-  _aiBtn.innerHTML = '<span>✦ Connect AI</span>';
-  _aiBtn.title = 'Connect an API key or download a local model to chat with the AI.';
-  _aiBtn.addEventListener('click', callbacks.onToggleAi);
-  toolbar.appendChild(_aiBtn);
+  // (The AI chat toggle lives in the activity rail — see createLayout.)
 
   // Dark mode toggle — text button, on by default, off when clicked
   const themeBtn = document.createElement('button');
@@ -543,57 +525,8 @@ export function createToolbar(
   onThemeChange(syncThemeBtn);
   toolbar.appendChild(themeBtn);
 
-  // Modeling-quality settings — gear icon opens a modal where users
-  // pick the default curve resolution. Defaults to "Very High" so the
-  // out-of-the-box rendering is smooth; "Ultra" goes up to 1024 segments.
-  const qualityBtn = document.createElement('button');
-  qualityBtn.id = 'btn-quality';
-  qualityBtn.className = 'flex items-center justify-center w-10 h-10 md:w-6 md:h-6 rounded-full text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700 transition-colors text-sm md:text-xs ml-2';
-  qualityBtn.textContent = '⚙';
-  qualityBtn.title = 'Modeling quality (default curve resolution)';
-  qualityBtn.setAttribute('aria-label', 'Modeling quality settings');
-  qualityBtn.addEventListener('click', () => { showQualitySettingsModal(); });
-  toolbar.appendChild(qualityBtn);
-
-  // Diagnostic log toggle — shows a badge when unseen errors/warnings exist.
-  const diagBtn = document.createElement('button');
-  diagBtn.id = 'btn-diagnostics';
-  diagBtn.className = 'relative flex items-center justify-center w-10 h-10 md:w-6 md:h-6 rounded-full text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700 transition-colors text-sm md:text-xs ml-1';
-  diagBtn.title = 'Diagnostic log — errors and warnings';
-  diagBtn.setAttribute('aria-label', 'Diagnostic log');
-  diagBtn.innerHTML = '⚠';
-
-  _diagBadgeEl = document.createElement('span');
-  _diagBadgeEl.className = 'hidden absolute -top-0.5 -right-0.5 text-[8px] font-bold bg-red-500 text-white rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5 leading-none pointer-events-none';
-  diagBtn.appendChild(_diagBadgeEl);
-
-  diagBtn.addEventListener('click', callbacks.onToggleDiagnostics);
-  toolbar.appendChild(diagBtn);
-
-  // Help button
-  const helpBtn = document.createElement('button');
-  helpBtn.id = 'btn-help';
-  helpBtn.className = 'flex items-center justify-center w-10 h-10 md:w-6 md:h-6 rounded-full text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700 transition-colors text-sm md:text-xs font-bold ml-1';
-  helpBtn.textContent = '?';
-  helpBtn.title = 'Help';
-  helpBtn.addEventListener('click', () => {
-    const record = window as unknown as Record<string, unknown>;
-    const showHelp = (record.__partwrightShowHelp ?? record.__mainifoldShowHelp) as (() => void) | undefined;
-    if (showHelp) showHelp();
-  });
-  toolbar.appendChild(helpBtn);
-
-  // Tour re-entry button
-  const tourBtn = document.createElement('button');
-  tourBtn.id = 'btn-retake-tour';
-  tourBtn.className = 'flex items-center justify-center w-10 h-10 md:w-6 md:h-6 rounded-full text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700 transition-colors text-sm md:text-xs ml-1';
-  tourBtn.textContent = '\uD83C\uDFAF';
-  tourBtn.title = 'Take the guided tour';
-  tourBtn.addEventListener('click', () => {
-    resetTour();
-    startTour();
-  });
-  toolbar.appendChild(tourBtn);
+  // Quality settings, Diagnostics, and Help moved to the activity rail's utility
+  // group — see createLayout. The tour is reachable from the ⌘K palette.
 
   container.appendChild(toolbar);
 
