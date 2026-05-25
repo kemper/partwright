@@ -4,6 +4,7 @@
 //  - modalShell dialogs expose dialog semantics and trap Tab focus
 
 import { test, expect } from 'playwright/test';
+import { openAiPanel } from './helpers/aiPanel';
 
 async function openEditor(page: import('playwright/test').Page) {
   await page.addInitScript(() => {
@@ -35,9 +36,8 @@ test.describe('feedback + a11y', () => {
       try { localStorage.setItem('partwright-tour-completed', new Date().toISOString()); } catch { /* ignore */ }
     });
     await page.goto('/editor');
-    await page.waitForSelector('#btn-ai');
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
-    await page.click('#btn-ai');
+    await openAiPanel(page);
     // The panel CTA opens the AI Settings modal (a modalShell dialog).
     await page.locator('#ai-panel button:has-text("Connect an AI agent")').dispatchEvent('click');
 

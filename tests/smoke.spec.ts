@@ -1,4 +1,5 @@
 import { test, expect, type Page } from 'playwright/test';
+import { openAiPanel } from './helpers/aiPanel';
 
 // Smoke tests that run with no external network — every assertion either
 // hits localhost or a same-origin static asset. The bad-key test does try
@@ -42,50 +43,45 @@ test.describe('AI chat panel', () => {
     // a COI service-worker reload / WASM boot on the default Interactive tab.
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
 
-    // Drawer exists from boot but is translated off-screen until first open.
-    await page.click('#btn-ai');
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
+    // The drawer opens by default on a fresh visit.
+    await expect(page.locator('#ai-panel')).toBeVisible();
+    // Close via the ✕, then reopen via the rail button.
     await page.click('#ai-panel button:has-text("✕")');
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-full/);
+    await expect(page.locator('#ai-panel')).toBeHidden();
+    await page.click('#btn-ai');
+    await expect(page.locator('#ai-panel')).toBeVisible();
   });
 
-  test('drawer state persists across reload', async ({ page }) => {
-    // Start clean (beforeEach cleared storage), open drawer, then reload —
-    // the stored drawerOpen=true should bring it back open.
+  test('drawer close state persists across reload', async ({ page }) => {
+    // The drawer opens by default, but the user's choice is remembered: once
+    // they close it, the stored drawerOpen=false keeps it closed on reload.
     await page.goto('/editor');
     await page.waitForSelector('#btn-ai');
     // Wait for full editor init (console API ready) so the click doesn't race
     // a COI service-worker reload / WASM boot on the default Interactive tab.
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
-    await page.click('#btn-ai');
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
+    await expect(page.locator('#ai-panel')).toBeVisible();
+    await page.click('#ai-panel button:has-text("✕")');
+    await expect(page.locator('#ai-panel')).toBeHidden();
 
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await expect(page.locator('#ai-panel')).toBeHidden();
   });
 
   test('drawer survives switching tabs', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#btn-ai');
-    // Wait for full editor init (console API ready) so the click doesn't race
-    // a COI service-worker reload / WASM boot on the default Interactive tab.
-    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
-    await page.click('#btn-ai');
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
+    await openAiPanel(page);
 
-    const galleryTab = page.locator('button', { hasText: /^Gallery$/ });
-    if (await galleryTab.count()) {
-      await galleryTab.first().click();
-      await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/);
-    }
+    // Switch to another destination via the activity rail; the drawer should
+    // stay open across the tab change.
+    await page.locator('[data-tab="Versions"]').click();
+    await expect(page.locator('#ai-panel')).toBeVisible();
   });
 
   test('panel widgets render', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#btn-ai');
-    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
-    await page.click('#btn-ai');
+    await openAiPanel(page);
     const panel = page.locator('#ai-panel');
 
     // Toggle pills
@@ -106,11 +102,10 @@ test.describe('AI chat panel', () => {
 
   test('inline key entry shows in settings and dismisses cleanly', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#btn-ai');
-    // Let editor init (and session auto-restore) settle before clicking, so a
-    // late ?session= navigation doesn't tear down the modal mid-test.
+    // Let editor init (and session auto-restore) settle before interacting, so
+    // a late ?session= navigation doesn't tear down the modal mid-test.
     await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
-    await page.click('#btn-ai');
+    await openAiPanel(page);
     // The panel CTA opens the AI Settings modal. The per-provider key form is
     // now inline in the tab (no separate pop-up): the Anthropic tab is shown
     // by default and exposes the password field + Connect button right away.
@@ -120,10 +115,11 @@ test.describe('AI chat panel', () => {
     await expect(page.locator('input[type="password"]')).toBeVisible();
     await expect(page.locator('button:has-text("Connect Anthropic API")')).toBeVisible();
 
-    // Done closes the modal; no key was persisted.
+    // Done closes the modal; no key was persisted. The AI control now lives in
+    // the rail and shows the disconnected state via its status dot (grey).
     await page.locator('.bg-zinc-800.rounded-xl button:text-is("Done")').click();
     await expect(page.locator('input[type="password"]')).toHaveCount(0);
-    await expect(page.locator('#btn-ai')).toContainText(/Connect AI/);
+    await expect(page.locator('#ai-status-dot')).toHaveClass(/bg-zinc-500/);
   });
 
   test('stale local-model id falls back to the connect prompt', async ({ page }) => {
@@ -138,14 +134,14 @@ test.describe('AI chat panel', () => {
       }));
     });
     await page.goto('/editor');
-    await page.click('#btn-ai');
+    await openAiPanel(page);
     const panel = page.locator('#ai-panel');
     await expect(panel.locator('button:has-text("Connect an AI agent")')).toBeVisible();
   });
 
   test('toggle pills flip state on click', async ({ page }) => {
     await page.goto('/editor');
-    await page.click('#btn-ai');
+    await openAiPanel(page);
     const viewsPill = page.locator('#ai-panel button', { hasText: /📸 Auto-render/ });
     const before = await viewsPill.getAttribute('class');
     // The toggle strip lives inside the panel's bottom region. Playwright
@@ -172,8 +168,7 @@ test.describe('AI chat panel', () => {
 
   test('toggle pills carry tooltips explaining what they do', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
     const pillNames = ['📸 Auto-render', '▶ Run', '💾 Save', '🎨 Paint'];
     for (const name of pillNames) {
       const pill = page.locator('#ai-panel button', { hasText: name });
@@ -186,20 +181,13 @@ test.describe('AI chat panel', () => {
   });
 
   test('drawer + send from landing page navigates to editor', async ({ page }) => {
-    // Open the drawer on /editor first so it persists open, then go back
-    // to the landing page. The drawer is a body-level overlay so it
-    // should still be visible there.
+    // Ensure the drawer is open on /editor first so it persists open, then go
+    // back to the landing page. The drawer docks into the app-level row
+    // (outside the per-page subtrees), so it stays mounted and visible there.
     await page.goto('/editor');
-    // Wait for the panel itself, not just the toolbar button — the button
-    // mounts first, the panel's click-handler comes online a beat later.
-    await page.waitForSelector('#ai-panel');
-    // Click via dispatchEvent so we sidestep the same viewport-hit-test
-    // edge case that bites the toggle-pill click on a freshly-mounted
-    // panel; we just need the click handler to fire.
-    await page.locator('#btn-ai').dispatchEvent('click');
-    await expect(page.locator('#ai-panel')).toHaveClass(/translate-x-0/, { timeout: 5000 });
+    await openAiPanel(page);
     await page.goto('/');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await expect(page.locator('#ai-panel')).toBeVisible();
 
     // Sending a message from the landing page should navigate to /editor.
@@ -219,8 +207,7 @@ test.describe('AI chat panel', () => {
     // (queueing mid-run) with Stop split out as its own button so a typed
     // follow-up doesn't accidentally abort the agent.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
 
     const panel = page.locator('#ai-panel');
     // Idle state: Send is visible, Stop and queued-message badge are hidden.
