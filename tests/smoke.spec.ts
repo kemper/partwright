@@ -50,6 +50,42 @@ test.describe('AI chat panel', () => {
     await expect(page.locator('#ai-panel')).toBeHidden();
     await page.click('#btn-ai');
     await expect(page.locator('#ai-panel')).toBeVisible();
+    // Disconnected → reopening via the rail also surfaces the AI Settings modal
+    // (the connect flow). Dismiss it to leave a clean state.
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeHidden();
+  });
+
+  test('connected: reopening via the rail opens the panel with no settings modal', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#btn-ai');
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
+    // Seed a hosted key so we're "connected": reopening should just show the
+    // panel, NOT auto-open the connect-settings modal.
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve, reject) => {
+        const open = indexedDB.open('partwright');
+        open.onsuccess = () => {
+          const db = open.result;
+          const txn = db.transaction('aiKeys', 'readwrite');
+          txn.objectStore('aiKeys').put({
+            provider: 'anthropic', apiKey: 'sk-ant-test-0000000000', createdAt: Date.now(),
+            lastUsed: Date.now(), totalInputTokens: 0, totalOutputTokens: 0, totalCostUsd: 0,
+          });
+          txn.oncomplete = () => { db.close(); resolve(); };
+          txn.onerror = () => reject(txn.error);
+        };
+        open.onerror = () => reject(open.error);
+      });
+    });
+    // Panel is open by default; close it, then reopen via the rail.
+    await expect(page.locator('#ai-panel')).toBeVisible();
+    await page.click('#ai-panel button:has-text("✕")');
+    await expect(page.locator('#ai-panel')).toBeHidden();
+    await page.click('#btn-ai');
+    await expect(page.locator('#ai-panel')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toHaveCount(0);
   });
 
   test('drawer close state persists across reload', async ({ page }) => {
