@@ -594,24 +594,38 @@ export async function updatePartOrders(updates: { id: string; order: number }[])
 }
 
 export async function deletePart(id: string): Promise<void> {
+  await deleteParts([id]);
+}
+
+/**
+ * Delete several parts (and cascade-delete their versions) atomically in a
+ * single transaction, so a multi-select bulk delete either fully commits or
+ * fully rolls back. No-op for an empty list.
+ */
+export async function deleteParts(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
   const db = await openDB();
   const txn = db.transaction(['parts', 'versions'], 'readwrite');
-  txn.objectStore('parts').delete(id);
-  // Cascade-delete the part's versions.
+  const partStore = txn.objectStore('parts');
   const vIdx = txn.objectStore('versions').index('partId');
-  const vReq = vIdx.openCursor(IDBKeyRange.only(id));
-  await new Promise<void>((resolve, reject) => {
-    vReq.onsuccess = () => {
-      const cursor = vReq.result;
-      if (cursor) {
-        cursor.delete();
-        cursor.continue();
-      } else {
-        resolve();
-      }
-    };
-    vReq.onerror = () => reject(vReq.error);
-  });
+  for (const id of ids) {
+    partStore.delete(id);
+    // Cascade-delete the part's versions. Awaiting each cursor keeps the shared
+    // transaction alive (its requests resolve in the IDB callbacks above).
+    await new Promise<void>((resolve, reject) => {
+      const vReq = vIdx.openCursor(IDBKeyRange.only(id));
+      vReq.onsuccess = () => {
+        const cursor = vReq.result;
+        if (cursor) {
+          cursor.delete();
+          cursor.continue();
+        } else {
+          resolve();
+        }
+      };
+      vReq.onerror = () => reject(vReq.error);
+    });
+  }
   await txComplete(txn);
 }
 
