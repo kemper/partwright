@@ -1,5 +1,6 @@
 import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
 import { showQualitySettingsModal } from './qualitySettingsModal';
+import { showAboutModal } from './aboutModal';
 
 export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data';
 
@@ -223,6 +224,17 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   });
   helpNavBtn.title = 'Help';
 
+  // About — build/version info (commit, branch, links) for verifying which
+  // Cloudflare branch/PR deploy you're testing.
+  const aboutNavBtn = makeAction(
+    'btn-about',
+    '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+    'About',
+    () => { showAboutModal(); },
+  );
+  aboutNavBtn.title = 'About — build & version info';
+  aboutNavBtn.setAttribute('aria-label', 'About this build');
+
   // AI assistant — toggles the chat drawer rather than a tab pane. Keeps id
   // `btn-ai` so setAiToolbarState, the tour, and tests stay wired up.
   // The AI launcher is the primary entry point to the assistant, so it gets an
@@ -239,6 +251,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   rail.appendChild(qualityNavBtn);
   rail.appendChild(diagNavBtn);
   rail.appendChild(helpNavBtn);
+  rail.appendChild(aboutNavBtn);
   rail.appendChild(aiNavBtn);
 
   // Reflect the drawer's open/closed state on the AI rail item — a filled
