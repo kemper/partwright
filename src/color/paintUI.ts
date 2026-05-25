@@ -499,7 +499,7 @@ function createBrushControls(): HTMLElement {
   depthSlider.step = '1';
   depthSlider.value = String(Math.round(Math.min(getBrushPaintDepth(), 20) * 10));
   depthSlider.className = 'flex-1 accent-blue-500 min-w-0';
-  depthSlider.title = 'How far through the surface paint reaches (mesh units). 0 = auto (half the brush size). Lower values stop paint bleeding through thin/hollow walls.';
+  depthSlider.title = 'How far through the surface paint reaches. 0 = auto (half the brush size). Lower values stop paint bleeding through thin/hollow walls.';
 
   const depthInput = document.createElement('input');
   depthInput.type = 'number';
@@ -508,7 +508,7 @@ function createBrushControls(): HTMLElement {
   depthInput.step = '0.1';
   depthInput.value = getBrushPaintDepth().toFixed(1);
   depthInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
-  depthInput.title = 'Paint depth in mesh units (0 = auto = half the radius)';
+  depthInput.title = 'Paint depth (0 = auto = half the brush size)';
 
   const depthUnit = document.createElement('span');
   depthUnit.className = 'text-[10px] text-zinc-500';
