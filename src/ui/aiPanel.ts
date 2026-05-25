@@ -8,7 +8,7 @@ import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerC
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setProvider, setLocalModel, setToggles, providerLabel, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { generateId } from '../storage/db';
@@ -252,6 +252,31 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
 export function toggleAiPanel(): void {
   if (state.open) hideDrawer();
   else showDrawer();
+}
+
+/** Re-render everything that an AI-settings change (provider / model / key)
+ *  can affect, and persist the new provider+model as the session preference. */
+function afterAiSettingsChange(): void {
+  recordSessionAiPreference();
+  renderTranscript();
+  renderToggleStrip();
+  renderCostMeter();
+  renderModelPicker();
+  renderPromptChip();
+  panelStatusUpdate();
+}
+
+/** Activity-rail AI button entry point. Toggles the docked panel like
+ *  toggleAiPanel, but when it's *opening* the panel from a not-yet-connected
+ *  state it also pops the AI settings modal so the user lands directly on the
+ *  connect flow. The default-open-on-load path uses showDrawer() directly, so
+ *  it never triggers this. */
+export async function toggleAiPanelFromToolbar(): Promise<void> {
+  if (state.open) { hideDrawer(); return; }
+  showDrawer();
+  if (await aiConnectionMode() === 'disconnected') {
+    void showAiSettingsModal({ onChange: afterAiSettingsChange });
+  }
 }
 
 /** Switch the panel between its desktop "docked column" form and its mobile
@@ -518,7 +543,7 @@ function buildDrawer(): void {
   const settingsBtn = createIconButton('Settings', '⚙');
   settingsBtn.title = 'AI settings: provider, key, lifetime usage.';
   settingsBtn.addEventListener('click', () => {
-    void showAiSettingsModal({ onChange: () => { recordSessionAiPreference(); renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); renderPromptChip(); panelStatusUpdate(); } });
+    void showAiSettingsModal({ onChange: afterAiSettingsChange });
   });
   header.appendChild(settingsBtn);
 

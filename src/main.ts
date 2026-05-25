@@ -37,9 +37,9 @@ import { registerCommands } from './ui/commandPalette';
 import { showQualitySettingsModal } from './ui/qualitySettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
-import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel } from './ui/aiPanel';
-import { getKey as getAiKey, mergeChatBucket } from './ai/db';
-import { loadSettings as loadAiSettings, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
+import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar } from './ui/aiPanel';
+import { mergeChatBucket } from './ai/db';
+import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
 import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
@@ -1424,7 +1424,7 @@ async function main() {
 
   // Create layout
   const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail } = createLayout(editorUI, {
-    onToggleAi: () => { toggleAiPanel(); },
+    onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
     onOpenSessionList: () => showSessionList(),
@@ -2306,20 +2306,10 @@ async function main() {
   })();
 
   async function refreshAiToolbarChip(): Promise<void> {
-    const settings = loadAiSettings();
-    if (settings.toggles.provider === 'local' && settings.toggles.localModel) {
-      setAiToolbarState('local');
-      return;
-    }
-    // Any hosted-provider key counts as "connected" — the chat panel
-    // surfaces its own per-provider banner when the active dropdown is
-    // on a provider missing a key.
-    const [anthropicKey, openaiKey, geminiKey] = await Promise.all([
-      getAiKey('anthropic'),
-      getAiKey('openai'),
-      getAiKey('gemini'),
-    ]);
-    setAiToolbarState(anthropicKey || openaiKey || geminiKey ? 'cloud' : 'disconnected');
+    // Local model configured → 'local'; any hosted-provider key → 'cloud';
+    // otherwise 'disconnected'. The chat panel surfaces its own per-provider
+    // banner when the active dropdown is on a provider missing a key.
+    setAiToolbarState(await aiConnectionMode());
   }
 
   // Set initial editor title if we're on the editor page
