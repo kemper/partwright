@@ -14,8 +14,14 @@ type PW = {
 };
 
 function waitForApi(page: Page) {
+  // Require crossOriginIsolated too: it only flips true on the page *after* the
+  // one-time COI service-worker reload (coi-serviceworker.js), so this gates the
+  // following createSession / IndexedDB-seed evaluates until the reload that
+  // would otherwise destroy their execution context is behind us.
   return page.waitForFunction(
-    () => !!(window as unknown as { partwright?: { createSession?: unknown } }).partwright?.createSession,
+    () =>
+      (window as unknown as { crossOriginIsolated: boolean }).crossOriginIsolated === true &&
+      !!(window as unknown as { partwright?: { createSession?: unknown } }).partwright?.createSession,
   );
 }
 

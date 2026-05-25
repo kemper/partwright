@@ -1,6 +1,6 @@
 import { test, expect, type Page } from 'playwright/test';
 import { readFileSync } from 'fs';
-import { openAiPanel } from './helpers/aiPanel';
+import { openAiPanel, waitForEditorReady } from './helpers/aiPanel';
 
 // Network-free coverage for the chat export feature:
 //   - the standalone "⬇ Chat" button in the AI panel header (Markdown), and
@@ -47,7 +47,7 @@ test.beforeEach(async ({ page }) => {
 test.describe('Chat export', () => {
   test('Export button on an empty chat warns and downloads nothing', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await waitForEditorReady(page);
     await openAiPanel(page);
     const panel = page.locator('#ai-panel');
 
@@ -61,12 +61,12 @@ test.describe('Chat export', () => {
 
   test('Export button downloads a Markdown transcript of the conversation', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await waitForEditorReady(page);
     const id = await createSession(page, 'Export Test');
     await seedChat(page, id);
 
     await page.goto(`/editor?session=${id}`);
-    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await waitForEditorReady(page);
     await openAiPanel(page);
     const panel = page.locator('#ai-panel');
     await expect(panel).toContainText('Design a widget bracket');
@@ -86,7 +86,7 @@ test.describe('Chat export', () => {
 
   test('session export embeds chat and import restores it under the new session', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await waitForEditorReady(page);
     const id = await createSession(page, 'Roundtrip');
     await seedChat(page, id);
 
@@ -163,7 +163,7 @@ async function seedSplit(page: Page, fromId: string, toId: string): Promise<void
 test.describe('Chat history recovery', () => {
   test('mergeChatHistory reunites a conversation split across two sessions', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await waitForEditorReady(page);
     const a = await createSession(page, 'First half');
     const b = await createSession(page, 'Second half');
     await seedSplit(page, a, b);

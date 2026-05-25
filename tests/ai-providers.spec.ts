@@ -1,5 +1,5 @@
 import { test, expect } from 'playwright/test';
-import { openAiPanel } from './helpers/aiPanel';
+import { openAiPanel, waitForChatSessionId } from './helpers/aiPanel';
 
 // Regression coverage for the multi-provider extension to the in-app
 // chat. The base in-browser AI surface (Anthropic + Local) has its own
@@ -198,11 +198,12 @@ test.describe('Multi-provider AI', () => {
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.waitForSelector('#ai-panel', { state: 'attached' });
     // Bare /editor auto-restores a session (id in the URL, stable across
-    // reload), so the chat pins to that bucket — seed there, not global.
-    await page.evaluate(async () => {
+    // reload), so the chat pins to that bucket — seed there, not global. The
+    // session is created after WASM init, so wait for it before seeding or the
+    // message lands in the global bucket and the reload restore never shows it.
+    const sid = await waitForChatSessionId(page);
+    await page.evaluate(async ({ sid }) => {
       const db = await import('/src/ai/db.ts');
-      const sm = await import('/src/storage/sessionManager.ts');
-      const sid = sm.getState().session?.id ?? db.GLOBAL_CHAT_BUCKET;
       await db.putMessages([{
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         id: 'm-think-1', sessionId: sid, role: 'assistant',
@@ -213,7 +214,7 @@ test.describe('Multi-provider AI', () => {
         createdAt: Date.now(), seq: 1,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any]);
-    });
+    }, { sid });
     await page.reload();
     await page.waitForSelector('#ai-panel', { state: 'attached' });
     await openAiPanel(page);

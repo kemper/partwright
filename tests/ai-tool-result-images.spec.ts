@@ -1,5 +1,5 @@
 import { test, expect } from 'playwright/test';
-import { openAiPanel } from './helpers/aiPanel';
+import { openAiPanel, waitForChatSessionId, waitForEditorReady } from './helpers/aiPanel';
 
 // Coverage for surfacing tool-returned renderings (renderView / renderViews
 // snapshots) in the chat transcript. Two halves:
@@ -18,7 +18,7 @@ const TINY_PNG =
 test.describe('Tool-result renderings in the chat transcript', () => {
   test('chatLoop surfaces the renderViews image to the panel as the turn runs', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await waitForEditorReady(page);
 
     const captured = await page.evaluate(async ({ tinyPng }) => {
       const cl = await import('/src/ai/chatLoop.ts');
@@ -147,12 +147,14 @@ test.describe('Tool-result renderings in the chat transcript', () => {
   test('a persisted tool_result image renders inline in the transcript', async ({ page }) => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ } });
-    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await waitForEditorReady(page);
+    // Seed under the bootstrapped session bucket (stable across the reload
+    // below). The session is created after WASM init, so wait for it first or
+    // the messages land in the global bucket and the reload restore drops them.
+    const sid = await waitForChatSessionId(page);
 
-    await page.evaluate(async ({ tinyPng }) => {
+    await page.evaluate(async ({ tinyPng, sid }) => {
       const db = await import('/src/ai/db.ts');
-      const sm = await import('/src/storage/sessionManager.ts');
-      const sid = sm.getState().session?.id ?? db.GLOBAL_CHAT_BUCKET;
       await db.putMessages([
         {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -175,7 +177,7 @@ test.describe('Tool-result renderings in the chat transcript', () => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ]);
-    }, { tinyPng: TINY_PNG });
+    }, { tinyPng: TINY_PNG, sid });
 
     await page.reload();
     await openAiPanel(page);
