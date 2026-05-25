@@ -81,4 +81,56 @@ test.describe('geodesic airbrush', () => {
     expect(out.reloadedColored).toBe(out.paintedColored); // same speckle reproduced
     expect(out.regions).toBe(1);
   });
+
+  test('the brush panel has a Spray toggle that reveals strength/softness and disables Slab', async ({ page }) => {
+    await openEditor(page);
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
+
+    const sprayToggle = page.locator('#brush-spray-toggle');
+    await expect(sprayToggle).toBeVisible();
+    await expect(sprayToggle).toContainText('Off');
+    await expect(page.locator('#brush-spray-strength')).toBeHidden();
+
+    await sprayToggle.dispatchEvent('click');
+    await expect(sprayToggle).toContainText('On');
+    await expect(page.locator('#brush-spray-strength')).toBeVisible();
+    await expect(page.locator('#brush-spray-softness')).toBeVisible();
+    // Spray is geodesic-only, so the Slab surface button is disabled while on.
+    await expect(page.locator('#paint-picker-panel button[title*="thin shell"]')).toBeDisabled();
+  });
+
+  test('a spray drag commits a speckled region and subdivides the mesh', async ({ page }) => {
+    await openEditor(page);
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run(`const { Manifold } = api; return Manifold.cube([40, 40, 3], true);`);
+      pw.setBrushSize(5);
+    });
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
+    await page.locator('#brush-spray-toggle').dispatchEvent('click'); // spray on
+    await page.waitForTimeout(150);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const before = pw.getMesh().numTri;
+      const canvas = document.querySelector('canvas')!;
+      const r = canvas.getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      const fire = (t: string, x: number, y: number) =>
+        canvas.dispatchEvent(new MouseEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0 }));
+      fire('mousemove', cx, cy);
+      fire('mousedown', cx, cy);
+      for (let dx = 6; dx <= 24; dx += 6) fire('mousemove', cx + dx, cy);
+      fire('mouseup', cx + 24, cy);
+      await new Promise(res => requestAnimationFrame(() => res(null)));
+      return { before, after: pw.getMesh().numTri, regions: pw.listRegions().length };
+    });
+    expect(out.regions).toBe(1);
+    expect(out.after).toBeGreaterThan(out.before); // the spray subdivided for speckle
+  });
 });

@@ -44,6 +44,15 @@ let brushSurface: 'geodesic' | 'slab' = 'geodesic';
  *  reach. 0 = auto (half the brush radius), resolved at commit time. */
 let brushPaintDepth = 0;
 
+/** Airbrush spray: when on, the brush sprays a soft geodesic speckle instead of
+ *  a solid fill. `strength` is the core density (light by default), `softness`
+ *  the feather fraction. Each committed stroke gets the next seed so overlapping
+ *  sprays vary; the seed is persisted per stroke so the speckle reloads exactly. */
+let brushSpray = false;
+let brushSprayStrength = 0.4;
+let brushSpraySoftness = 0.5;
+let spraySeed = 1;
+
 /** Target edge length (mesh units) for the active brush settings. */
 export function brushTargetEdge(): number {
   return brushRadius / brushSmoothDivisor;
@@ -184,8 +193,15 @@ export function getBrushPaintDepth(): number {
 
 /** True when the active brush settings will subdivide the mesh on commit. */
 export function brushWillSubdivide(): boolean {
-  return brushSmooth && brushRadius > 0;
+  return (brushSmooth || brushSpray) && brushRadius > 0;
 }
+
+export function setBrushSpray(on: boolean): void { brushSpray = on; }
+export function isBrushSpray(): boolean { return brushSpray; }
+export function setBrushSprayStrength(v: number): void { brushSprayStrength = Math.max(0, Math.min(1, v)); }
+export function getBrushSprayStrength(): number { return brushSprayStrength; }
+export function setBrushSpraySoftness(v: number): void { brushSpraySoftness = Math.max(0, Math.min(1, v)); }
+export function getBrushSpraySoftness(): number { return brushSpraySoftness; }
 
 /** Slab / oriented-shape smoothing. When on, the slab and box tools subdivide
  *  the mesh near the painted region's boundary so its edge follows the analytic
@@ -421,7 +437,7 @@ function onMouseDown(event: MouseEvent): void {
  *  by sample points; legacy strokes by the covered-triangle session. */
 function hasActiveStroke(): boolean {
   if (!brushPainting) return false;
-  if (brushSmooth && brushRadius > 0) return strokeSamples.length > 0;
+  if (brushWillSubdivide()) return strokeSamples.length > 0;
   return !!brushSession && brushSession.size > 0;
 }
 
@@ -450,7 +466,7 @@ function commitBrushStroke(): void {
   const name = `Region ${getRegions().length + 1}`;
   const color = [...currentColor] as [number, number, number];
 
-  if (brushSmooth && brushRadius > 0 && strokeSamples.length > 0) {
+  if (brushWillSubdivide() && strokeSamples.length > 0) {
     // Triangles are left empty here: adding a brushStroke region fires the
     // regions-change listener, which rebuilds the refined working mesh and
     // resolves every region (including this one) against it.
@@ -464,8 +480,10 @@ function commitBrushStroke(): void {
         radius: brushRadius,
         shape: brushShape,
         maxEdge: brushTargetEdge(),
-        surface: brushSurface,
+        // A spray is always geodesic; descriptorToStroke also forces this.
+        surface: brushSpray ? 'geodesic' : brushSurface,
         depth: brushPaintDepth,
+        spray: brushSpray ? { strength: brushSprayStrength, softness: brushSpraySoftness, seed: spraySeed++ } : undefined,
       },
       new Set<number>(),
     );
