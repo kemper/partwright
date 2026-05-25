@@ -28,10 +28,11 @@ let brushShape: BrushShape = 'circle';
  *  following the existing tessellation. On by default. */
 let brushSmooth = true;
 /** Smooth-edge detail: the brush radius is divided by this to get the target
- *  triangle edge length near the stroke boundary (higher = finer/smoother +
- *  more triangles). The painted-edge facet count scales with it (≈2π·divisor),
- *  independent of radius, so finer values stay affordable. */
-let brushSmoothDivisor = 256;
+ *  triangle edge length near the stroke boundary. Since the boundary is now
+ *  clipped exactly to the outline, this only controls how many segments a
+ *  *curve* is approximated with (≈2π·divisor) — straight edges are exact at any
+ *  setting — so a much lower default stays crisp while keeping meshes lean. */
+let brushSmoothDivisor = 64;
 export const SMOOTH_DIVISOR_MIN = 2;
 export const SMOOTH_DIVISOR_MAX = 1024;
 /** Brush surface mode. `geodesic` (default for new painting) flood-fills the

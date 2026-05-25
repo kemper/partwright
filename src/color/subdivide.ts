@@ -461,6 +461,13 @@ function selectByClassify(mesh: MeshData, region: RefineRegion): Set<number> {
   const selected = new Set<number>();
   const maxEdge2 = region.maxEdge * region.maxEdge;
   const box = region.aabb;
+  const field = region.field;
+  // Only densify where the boundary actually curves: if the signed-distance
+  // field is (near-)linear across a triangle, the boundary runs straight through
+  // it and the exact clip already gives a perfect edge — refining there just
+  // burns triangles. A straight square edge skips the band entirely; a circle
+  // (curved everywhere) still refines to maxEdge. Tiny, FP-noise-proof tolerance.
+  const straightTol = region.maxEdge * 1e-3;
 
   for (let t = 0; t < numTri; t++) {
     const a = triVertex(mesh, triVerts[t * 3]);
@@ -473,7 +480,20 @@ function selectByClassify(mesh: MeshData, region: RefineRegion): Set<number> {
     // Already fine enough → leave it (keeps the refined band tight and bounded).
     if (maxEdgeLen2(a, b, c) <= maxEdge2) continue;
 
-    if (region.classify(a, b, c) === 'straddle') selected.add(t);
+    if (region.classify(a, b, c) !== 'straddle') continue;
+
+    if (field) {
+      const fa = field(a[0], a[1], a[2]), fb = field(b[0], b[1], b[2]), fc = field(c[0], c[1], c[2]);
+      const dab = Math.abs(field((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2) - (fa + fb) / 2);
+      const dbc = Math.abs(field((b[0] + c[0]) / 2, (b[1] + c[1]) / 2, (b[2] + c[2]) / 2) - (fb + fc) / 2);
+      const dca = Math.abs(field((c[0] + a[0]) / 2, (c[1] + a[1]) / 2, (c[2] + a[2]) / 2) - (fc + fa) / 2);
+      const dev = Math.max(dab, dbc, dca);
+      // Skip only when the boundary is provably straight here (finite & flat);
+      // a +∞ region edge or any curvature falls through to refine.
+      if (Number.isFinite(dev) && dev <= straightTol) continue;
+    }
+
+    selected.add(t);
   }
   return selected;
 }

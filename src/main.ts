@@ -5057,8 +5057,10 @@ async function main() {
      *  tessellation). `points` are surface points — obtain them from
      *  `probePixel` against a rendered view. `radius` is in mesh units.
      *  `resolution` is the smoothness detail (target triangle edge = radius /
-     *  resolution; higher = smoother + more triangles), default 256, clamped to
-     *  2..1024 — the same knob as the UI slider. `maxEdge` (optional) overrides
+     *  resolution; higher = smoother + more triangles), default 64, clamped to
+     *  2..1024 — the same knob as the UI slider. The painted edge is clipped to
+     *  the exact outline, so this only sets how many segments a curve uses;
+     *  straight edges are crisp at any setting. `maxEdge` (optional) overrides
      *  it with an absolute target edge length in
      *  mesh units (e.g. `maxEdge: 0.1` for crisp 0.1-unit edges). `shape` is
      *  circle|square|diamond. This MUTATES the working mesh's tessellation
@@ -5108,8 +5110,9 @@ async function main() {
         return { error: 'paintStroke: depth must be a non-negative finite number (mesh units) when provided' };
       }
       const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
-      // maxEdge (absolute) overrides; otherwise radius / resolution, default 256.
-      const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 256));
+      // maxEdge (absolute) overrides; otherwise radius / resolution, default 64
+      // (the exact-outline clip keeps edges crisp, so curves need fewer segments).
+      const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 64));
       // Floor an explicit maxEdge at the same finest edge the resolution path
       // can request (radius / SMOOTH_DIVISOR_MAX). A tinier value just drives
       // runaway subdivision for no visible benefit (the safety ceiling in

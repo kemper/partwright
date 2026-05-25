@@ -44,12 +44,13 @@ test.describe('smooth paintbrush', () => {
     await expect(detailSlider).toHaveAttribute('max', '1024');
     await expect(detailSlider).toHaveAttribute('min', '2');
 
-    // Defaults: smooth on, divisor 256.
+    // Defaults: smooth on, divisor 64 (the exact-outline clip keeps edges crisp
+    // at a far lower segment count than the old 256).
     const cfg = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (window as any).partwright.getBrushSmooth();
     });
-    expect(cfg).toMatchObject({ smooth: true, divisor: 256 });
+    expect(cfg).toMatchObject({ smooth: true, divisor: 64 });
 
     // Turning smoothing off hides the detail slider.
     await smoothBtn.dispatchEvent('click');
@@ -185,48 +186,50 @@ test.describe('smooth paintbrush', () => {
     expect(out.slabDeep).toBeGreaterThan(out.geo); // geodesic stayed on the top; the deep slab reached the back
   });
 
-  test('slab is an extruded prism: shapes reach through the wall by depth', async ({ page }) => {
+  test('slab is an extruded prism: depth reaches through to the back face', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
-      // Thin plate (2 thick): a shallow prism hugs the top, a deep one extrudes
-      // the same cross-section through to the back face.
+      // Thin plate (2 thick): top z=1, bottom z=-1. A shallow prism hugs the top;
+      // a deep one extrudes the cross-section through to the back face. We measure
+      // the painted region's z-extent (its bbox), not triangle count.
       await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 2], true);`);
-      const sq = (depth: number) => {
+      const sprayMinZ = (depth: number) => {
         pw.clearColors();
-        return pw.paintStroke({ points: [[0, 0, 1]], radius: 6, maxEdge: 0.5, surface: 'slab', depth, shape: 'square', color: [1, 0, 0] }).triangles;
+        pw.paintStroke({ points: [[0, 0, 1]], radius: 6, surface: 'slab', depth, shape: 'square', color: [1, 0, 0] });
+        return pw.listRegions()[0].bbox.min[2];
       };
-      const shallow = sq(0.5);
-      const deep = sq(5);
-      return { shallow, deep };
+      return { shallowMinZ: sprayMinZ(0.5), deepMinZ: sprayMinZ(5) };
     });
-    expect(out.shallow).toBeGreaterThan(0);       // square cross-section painted on the top
-    expect(out.deep).toBeGreaterThan(out.shallow); // extruded through to the back face
+    expect(out.shallowMinZ).toBeGreaterThan(0);  // stayed on the top face
+    expect(out.deepMinZ).toBeLessThan(0);        // reached through to the back face
   });
 
-  test('slab matches geodesic shape-for-shape on a flat face (corners handled)', async ({ page }) => {
+  test('slab matches geodesic footprint on a flat face (corners reached)', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
       await pw.run(`const { Manifold } = api; return Manifold.cube([60, 60, 4], true);`);
-      const paint = (shape: string, surface: string) => {
+      const paintBox = (shape: string, surface: string) => {
         pw.clearColors();
-        return pw.paintStroke({ points: [[0, 0, 2]], radius: 8, maxEdge: 0.5, surface, depth: 1, shape, color: [1, 0, 0] }).triangles;
+        pw.paintStroke({ points: [[0, 0, 2]], radius: 8, surface, depth: 1, shape, color: [1, 0, 0] });
+        return pw.listRegions()[0].bbox;
       };
       return {
-        slabSquare: paint('square', 'slab'),
-        geoSquare: paint('square', 'geodesic'),
-        slabCircle: paint('circle', 'slab'),
-        geoCircle: paint('circle', 'geodesic'),
+        slabSquare: paintBox('square', 'slab'),
+        geoSquare: paintBox('square', 'geodesic'),
+        slabCircle: paintBox('circle', 'slab'),
       };
     });
-    // On a flat face the slab prism resolves to the same footprint as the
-    // (known-correct) geodesic — including the square's corners.
-    expect(out.slabSquare).toBeGreaterThan(0);
-    expect(out.slabSquare).toBe(out.geoSquare);
-    expect(out.slabCircle).toBe(out.geoCircle);
+    // The square reaches its full ±8 extent (corners painted, not clipped to a
+    // disc), and the slab prism covers the same footprint as the geodesic one.
+    expect(out.slabSquare.max[0]).toBeGreaterThan(7);
+    expect(out.slabSquare.max[0]).toBeCloseTo(out.geoSquare.max[0], 1);
+    expect(out.slabSquare.min[1]).toBeCloseTo(out.geoSquare.min[1], 1);
+    // A circle of the same radius reaches ±8 in-plane too (round, not square).
+    expect(out.slabCircle.max[0]).toBeGreaterThan(7);
   });
 
   test('many strokes stay fast and bounded (no O(strokes^2) replay)', async ({ page }) => {
@@ -313,7 +316,7 @@ test.describe('smooth paintbrush', () => {
     expect(out.offModel.error).toBeTruthy(); // nothing within the footprint
   });
 
-  test('paintStroke resolution defaults to 256, is settable, and maxEdge overrides', async ({ page }) => {
+  test('paintStroke resolution defaults to 64, is settable, and maxEdge overrides', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -329,10 +332,10 @@ test.describe('smooth paintbrush', () => {
       const abs = pw.paintStroke({ points: [[0, 0, 2]], radius: 8, maxEdge: 0.5, color: [1, 0, 0] });
       return { def, defTri, coarse, coarseTri, abs };
     });
-    expect(out.def.resolution).toBe(256);          // default
-    expect(out.def.maxEdge).toBeCloseTo(8 / 256, 5);
+    expect(out.def.resolution).toBe(64);           // default
+    expect(out.def.maxEdge).toBeCloseTo(8 / 64, 5);
     expect(out.coarse.resolution).toBe(32);        // settable
-    expect(out.defTri).toBeGreaterThan(out.coarseTri); // 256 is finer than 32
+    expect(out.defTri).toBeGreaterThan(out.coarseTri); // 64 is finer than 32
     expect(out.abs.maxEdge).toBe(0.5);             // maxEdge override wins
   });
 
