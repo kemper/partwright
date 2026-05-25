@@ -8,16 +8,39 @@ import { waitFor } from './waitFor';
  *  is idempotent: it only clicks when the panel is hidden, and retries so it
  *  tolerates the brief window during editor init where `state.open` is already
  *  true but the drawer hasn't been un-hidden yet (a click then would race the
- *  init and toggle it shut). */
+ *  init and toggle it shut).
+ *
+ *  Opening the panel from the rail *while disconnected* also kicks off the
+ *  connect flow, which auto-opens the AI Settings modal one tick later (after an
+ *  async connection check). Left open, that modal races — and clobbers — the
+ *  next modal a caller opens, since `createModalShell` permits only one modal at
+ *  a time. So whenever we actually had to click to open the panel, wait for that
+ *  connect modal to settle and dismiss it. Callers that genuinely want a modal
+ *  open it explicitly after this resolves. On a fast machine the default-open
+ *  wins the race and no click happens, so this path is skipped entirely. */
 export async function openAiPanel(page: Page): Promise<void> {
   await page.waitForSelector('#ai-panel', { state: 'attached' });
   const panel = page.locator('#ai-panel');
+  let clicked = false;
   await expect(async () => {
     if (!(await panel.isVisible())) {
       await page.locator('#btn-ai').dispatchEvent('click');
+      clicked = true;
     }
     await expect(panel).toBeVisible({ timeout: 500 });
   }).toPass({ timeout: 10_000 });
+
+  if (clicked) {
+    const settingsHeading = page.getByRole('heading', { name: 'AI Settings' });
+    const appeared = await settingsHeading
+      .waitFor({ state: 'visible', timeout: 2_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (appeared) {
+      await page.keyboard.press('Escape');
+      await expect(settingsHeading).toBeHidden();
+    }
+  }
 }
 
 /** Wait until the editor is fully booted and *past* the one-time COI service-
