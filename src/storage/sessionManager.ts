@@ -20,7 +20,9 @@ import {
   createPart as dbCreatePart,
   listParts as dbListParts,
   updatePart as dbUpdatePart,
+  updatePartOrders as dbUpdatePartOrders,
   deletePart as dbDeletePart,
+  deleteParts as dbDeleteParts,
   addNote as dbAddNote,
   listNotes as dbListNotes,
   deleteNote as dbDeleteNote,
@@ -522,6 +524,10 @@ export async function setSessionLanguage(id: string, language: 'manifold-js' | '
  *  live-mirroring the active model across windows (which would fight the user). */
 export async function setSessionAiPreference(provider: string, model: string | null): Promise<void> {
   if (!currentState.session || !model) return;
+  // A read-only viewer must not mutate the shared session row, or it would
+  // clobber the leader's remembered provider/model (last reopen would win
+  // whatever the viewer last picked).
+  if (isViewerTab()) return;
   const cur = currentState.session.aiPreference;
   if (cur && cur.provider === provider && cur.model === model) return;
   const id = currentState.session.id;
@@ -672,6 +678,55 @@ export async function deletePart(partId: string): Promise<DeletePartResult | nul
   return { deleted: target, newCurrent: null };
 }
 
+export interface DeletePartsResult {
+  /** Ids actually removed (input ids that matched a current part). */
+  deletedIds: string[];
+  /** The part that became active after deletion (only set when the active part
+   *  was among those deleted). */
+  newCurrent: Part | null;
+}
+
+/**
+ * Delete several parts and all their versions in one atomic transaction. Mirrors
+ * the single-part rule: a session must keep at least one part, so the call is
+ * refused (returns null) if the selection covers every remaining part. When the
+ * active part is among those deleted, the nearest survivor above it in display
+ * order — else the first remaining — becomes active. Returns null if nothing
+ * matched or the delete was refused.
+ */
+export async function deleteParts(partIds: string[]): Promise<DeletePartsResult | null> {
+  if (!currentState.session) return null;
+  const parts = currentState.parts;
+  const idSet = new Set(partIds);
+  const targets = parts.filter(p => idSet.has(p.id));
+  if (targets.length === 0) return null;
+  if (targets.length >= parts.length) return null; // keep at least one part
+
+  const deletedSet = new Set(targets.map(p => p.id));
+  await dbDeleteParts(targets.map(p => p.id));
+
+  const remaining = parts.filter(p => !deletedSet.has(p.id));
+  const currentId = currentState.currentPart?.id;
+  const currentDeleted = currentId != null && deletedSet.has(currentId);
+
+  if (currentDeleted) {
+    const pos = parts.findIndex(p => p.id === currentId);
+    let next = remaining[0];
+    for (let i = pos - 1; i >= 0; i--) {
+      if (!deletedSet.has(parts[i].id)) { next = parts[i]; break; }
+    }
+    currentState = { ...currentState, parts: remaining };
+    await changePart(next.id);
+    return { deletedIds: [...deletedSet], newCurrent: next };
+  }
+
+  currentState = { ...currentState, parts: remaining };
+  broadcastPartChange();
+  updateURL();
+  notify();
+  return { deletedIds: [...deletedSet], newCurrent: null };
+}
+
 /**
  * Persist a new display order for the active session's parts. `orderedIds` is
  * the full list of part ids, first = top. Ids not present are appended in their
@@ -689,7 +744,7 @@ export async function reorderParts(orderedIds: string[]): Promise<void> {
   for (const p of currentState.parts) if (byId.has(p.id)) ordered.push(p);
 
   const next = ordered.map((p, i) => ({ ...p, order: i }));
-  for (const p of next) await dbUpdatePart(p.id, { order: p.order });
+  await dbUpdatePartOrders(next.map(p => ({ id: p.id, order: p.order })));
 
   currentState = {
     ...currentState,
@@ -1376,6 +1431,23 @@ export async function importSession(
   const warning = getSchemaCompatibilityWarning(data);
   if (warning && onWarning) onWarning(warning);
 
+  // Validate before creating anything: a file with no `versions` array would
+  // otherwise throw partway through (data.versions.reduce/for-of) and strand an
+  // empty orphan session. The `Array.isArray` default below prevents that throw;
+  // we still reject a file that carries *nothing* importable. A chat- or
+  // notes-only export (a session used before any geometry was saved) is
+  // legitimate and must still round-trip, so only fail when versions, chat, and
+  // notes are all empty.
+  if (!data.session || typeof data.session !== 'object') {
+    throw new Error('Invalid session file: missing "session" data.');
+  }
+  const versions = Array.isArray(data.versions) ? data.versions : [];
+  const hasChat = Array.isArray(data.chat) && data.chat.length > 0;
+  const hasNotes = Array.isArray(data.notes) && data.notes.length > 0;
+  if (versions.length === 0 && !hasChat && !hasNotes) {
+    throw new Error('Invalid session file: no versions found.');
+  }
+
   const session = await dbCreateSession(data.session.name, data.session.language);
 
   // Restore images if present in the exported data. Handle two legacy shapes:
@@ -1392,7 +1464,7 @@ export async function importSession(
   // Determine the index of the latest exported version. Schema 1.2 stored
   // annotations at the top level; for back-compat we attach them to whichever
   // version was most recent at export time (assumed to be the highest index).
-  const latestExportedIndex = data.versions.reduce((m, v) => Math.max(m, v.index), -Infinity);
+  const latestExportedIndex = versions.reduce((m, v) => Math.max(m, v.index), -Infinity);
 
   // Reconstruct parts. Schema 1.7+ ships an explicit `parts` array; older files
   // have none, so all their versions collapse into a single default part.
@@ -1411,7 +1483,7 @@ export async function importSession(
   // Group versions by owning part, then save each group ordered by original
   // index so the per-part indices we assign preserve the source sequence.
   const versionsByPart = new Map<string, ExportedSession['versions']>();
-  for (const v of data.versions) {
+  for (const v of versions) {
     const partId = orderToPartId.get(v.part ?? 0) ?? firstPartId;
     const arr = versionsByPart.get(partId) ?? [];
     arr.push(v);

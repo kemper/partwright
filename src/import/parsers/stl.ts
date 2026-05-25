@@ -67,6 +67,9 @@ function parseBinarySTL(bytes: Uint8Array, weldTolerance: number): MeshData | nu
       const x = view.getFloat32(offset, true); offset += 4;
       const y = view.getFloat32(offset, true); offset += 4;
       const z = view.getFloat32(offset, true); offset += 4;
+      // Reject non-finite coords here rather than letting a NaN/Infinity vertex
+      // flow downstream and fail export later with a misleading "geometry" error.
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
       const key = `${quantize(x)},${quantize(y)},${quantize(z)}`;
       let idx = vertIndex.get(key);
       if (idx === undefined) {
@@ -120,6 +123,9 @@ function parseAsciiSTL(bytes: Uint8Array, weldTolerance: number): MeshData | nul
       const x = parseFloat(m[1]);
       const y = parseFloat(m[2]);
       const z = parseFloat(m[3]);
+      // Guard against overflow tokens like "1e999" (→ Infinity) producing a
+      // non-finite mesh; fail the parse cleanly instead.
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
       const key = `${quantize(x)},${quantize(y)},${quantize(z)}`;
       let idx = vertIndex.get(key);
       if (idx === undefined) {

@@ -31,7 +31,9 @@ interface ProviderUi {
   reset: () => void;
 }
 
-const PROVIDER_UI: Record<Exclude<Provider, 'local'>, ProviderUi> = {
+export type HostedProvider = Exclude<Provider, 'local'>;
+
+const PROVIDER_UI: Record<HostedProvider, ProviderUi> = {
   anthropic: {
     title: 'Connect Anthropic API',
     intro: 'Partwright AI uses your Anthropic API key. The key is stored only in this browser — not on any Partwright server.',
@@ -61,9 +63,74 @@ const PROVIDER_UI: Record<Exclude<Provider, 'local'>, ProviderUi> = {
   },
 };
 
+/** Display-only metadata for a hosted provider's key entry (title, console
+ *  link, input placeholder). Exposed so the inline key form in the AI
+ *  Settings modal can render the same copy without launching this modal. */
+export function providerKeyMeta(provider: HostedProvider): {
+  title: string;
+  intro: string;
+  consoleUrl: string;
+  consoleLabel: string;
+  placeholder: string;
+} {
+  const ui = PROVIDER_UI[provider];
+  return {
+    title: ui.title,
+    intro: ui.intro,
+    consoleUrl: ui.consoleUrl,
+    consoleLabel: ui.consoleLabel,
+    placeholder: ui.placeholder,
+  };
+}
+
+/** Validate a pasted key, then persist it and promote its provider to
+ *  active. Returns an error message on failure, or `null` on success.
+ *  Shared by the standalone key modal and the inline key form in AI
+ *  Settings so the validate → store → set-active sequence lives in one
+ *  place. */
+export async function validateAndStoreKey(provider: HostedProvider, rawKey: string): Promise<string | null> {
+  const ui = PROVIDER_UI[provider];
+  const key = rawKey.trim();
+  if (key.length < 10) return 'That key looks too short.';
+
+  const t0 = performance.now();
+  const error = await ui.validate(key);
+  recordEvent({
+    provider,
+    model: '(validate)',
+    kind: 'validateKey',
+    durationMs: Math.round(performance.now() - t0),
+    status: error ? 'error' : 'ok',
+    errorMessage: error ?? undefined,
+    requestSummary: '1-token ping',
+  });
+  if (error) return error;
+
+  const existing = await getKey(provider);
+  await putKey({
+    provider,
+    apiKey: key,
+    createdAt: existing?.createdAt ?? Date.now(),
+    lastUsed: Date.now(),
+    totalInputTokens: existing?.totalInputTokens ?? 0,
+    totalOutputTokens: existing?.totalOutputTokens ?? 0,
+    totalCostUsd: existing?.totalCostUsd ?? 0,
+  });
+  ui.reset();
+  // Promote the just-connected provider to active so the key "just works"
+  // without an extra dropdown trip. Per-provider model selections are
+  // preserved by setProvider.
+  const cur = loadSettings();
+  if (cur.toggles.provider !== provider) {
+    saveSettings(setProvider(cur, provider));
+  }
+  return null;
+}
+
 export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
-  const providerId: Provider = cb.provider ?? 'anthropic';
-  if (providerId === 'local') return; // local uses no key
+  const requested: Provider = cb.provider ?? 'anthropic';
+  if (requested === 'local') return; // local uses no key
+  const providerId: HostedProvider = requested;
   const ui = PROVIDER_UI[providerId];
   const shell = createModalShell({ title: ui.title });
 
@@ -139,8 +206,7 @@ export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
   setTimeout(() => input.focus(), 0);
 
   async function attemptConnect() {
-    const key = input.value.trim();
-    if (key.length < 10) {
+    if (input.value.trim().length < 10) {
       showError('That key looks too short.');
       return;
     }
@@ -150,42 +216,13 @@ export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
     status.textContent = 'Sending a 1-token test request to verify the key...';
     errorBox.classList.add('hidden');
 
-    const t0 = performance.now();
-    const error = await ui.validate(key);
-    recordEvent({
-      provider: providerId,
-      model: '(validate)',
-      kind: 'validateKey',
-      durationMs: Math.round(performance.now() - t0),
-      status: error ? 'error' : 'ok',
-      errorMessage: error ?? undefined,
-      requestSummary: '1-token ping',
-    });
+    const error = await validateAndStoreKey(providerId, input.value);
     if (error) {
       showError(error);
       connectBtn.disabled = false;
       connectBtn.textContent = 'Connect';
       status.classList.add('hidden');
       return;
-    }
-
-    const existing = await getKey(providerId);
-    await putKey({
-      provider: providerId,
-      apiKey: key,
-      createdAt: existing?.createdAt ?? Date.now(),
-      lastUsed: Date.now(),
-      totalInputTokens: existing?.totalInputTokens ?? 0,
-      totalOutputTokens: existing?.totalOutputTokens ?? 0,
-      totalCostUsd: existing?.totalCostUsd ?? 0,
-    });
-    ui.reset();
-    // Promote the just-connected provider to active so the key "just
-    // works" without an extra dropdown trip. Per-provider model
-    // selections are preserved by setProvider.
-    const cur = loadSettings();
-    if (cur.toggles.provider !== providerId) {
-      saveSettings(setProvider(cur, providerId));
     }
     shell.close();
     cb.onConnected();

@@ -139,6 +139,30 @@ test.describe('Multi-part sessions', () => {
       .toBe(3);
   });
 
+  test('each part row shows a geometry preview thumbnail', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    await page.evaluate(async ({ codeA1, codeB1 }) => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      await pw.createSession('previews');
+      await pw.runAndSave(codeA1, 'a1');   // Part 1 gets a saved version (+thumbnail)
+      await pw.createPart('Lid');
+      await pw.runAndSave(codeB1, 'b1');   // Lid (now current) gets its own
+    }, { codeA1: cube(10, 'A1'), codeB1: cube(6, 'LID') });
+
+    const list = page.locator('#parts-list');
+    await expect(list.locator('[data-part-id]')).toHaveCount(2);
+
+    // Both rows render an <img> preview in their thumbnail slot: the current part
+    // (Lid) is painted synchronously from in-memory state, the other (Part 1) via
+    // the cached async fetch. toHaveCount auto-waits for the async paint to land.
+    const thumbs = list.locator('[data-part-id] [data-thumb] img');
+    await expect(thumbs).toHaveCount(2);
+    const srcs = await thumbs.evaluateAll((imgs) => imgs.map((i) => (i as HTMLImageElement).src));
+    for (const src of srcs) expect(src).toMatch(/^blob:/);
+  });
+
   test('parts can be drag-reordered in the rail', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
@@ -199,5 +223,71 @@ test.describe('Multi-part sessions', () => {
     });
     expect(regionCount).toBe(0);
     await expect(page.locator('#editor-lock-overlay')).toHaveCount(0);
+  });
+
+  test('multi-select bulk-deletes parts from the rail', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    await page.evaluate(async ({ code }) => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      await pw.createSession('bulk');
+      await pw.runAndSave(code, 'a1');     // Part 1
+      await pw.createPart('Beta');
+      await pw.createPart('Gamma');        // becomes the current part
+    }, { code: cube(10, 'A1') });
+
+    const list = page.locator('#parts-list');
+    await expect(list.locator('[data-part-id]')).toHaveCount(3);
+    // No bulk-action bar until at least one part is checked.
+    await expect(page.locator('#parts-bulk-actions')).toHaveCount(0);
+
+    const checkbox = (name: string) =>
+      list.locator('[data-part-id]', { hasText: name }).locator('input[type="checkbox"]');
+    await checkbox('Beta').click();
+    await checkbox('Gamma').click();
+
+    // The footer reports the count and offers a matching delete.
+    const bar = page.locator('#parts-bulk-actions');
+    await expect(bar).toBeVisible();
+    await expect(bar).toContainText('2 selected');
+    const delBtn = page.locator('#btn-delete-parts');
+    await expect(delBtn).toHaveText('Delete 2');
+    await expect(delBtn).toBeEnabled();
+
+    // Confirm and delete; the current part (Gamma) was selected, so the active
+    // part must fall back to a survivor and the editor title follows.
+    page.once('dialog', d => d.accept());
+    await delBtn.click();
+
+    await expect
+      .poll(() => page.evaluate(() =>
+        (window as unknown as { partwright: PartsAPI }).partwright.listParts().map(p => p.name)))
+      .toEqual(['Part 1']);
+    await expect(page.locator('#parts-bulk-actions')).toHaveCount(0);
+    await expect(page.locator('#editor-title')).toHaveText('Part 1');
+  });
+
+  test('bulk delete refuses to remove every part', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    await page.evaluate(async ({ code }) => {
+      const pw = (window as unknown as { partwright: PartsAPI }).partwright;
+      await pw.createSession('guard');
+      await pw.runAndSave(code, 'a1');
+      await pw.createPart('Beta');
+    }, { code: cube(10, 'A1') });
+
+    const list = page.locator('#parts-list');
+    await expect(list.locator('[data-part-id]')).toHaveCount(2);
+
+    // Selecting every part disables delete — a session must keep one.
+    for (const row of await list.locator('[data-part-id]').all()) {
+      await row.locator('input[type="checkbox"]').click();
+    }
+    const delBtn = page.locator('#btn-delete-parts');
+    await expect(delBtn).toHaveText('Delete 2');
+    await expect(delBtn).toBeDisabled();
   });
 });

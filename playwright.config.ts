@@ -35,6 +35,15 @@ if (executablePath) {
 
 export default defineConfig({
   testDir: './tests',
+  // Only the browser e2e specs. Pure-logic *.test.ts files under tests/unit/
+  // belong to the fast vitest runner (see vitest.config.ts) — keep them out.
+  testMatch: '**/*.spec.ts',
+  // Run serially on any single machine. Each test boots WASM in its own page,
+  // which is CPU-heavy; running pages concurrently on one box starves the
+  // renderer and produces 30s timeout flakes. We get parallelism instead by
+  // SHARDING across CI jobs (see staging-gate.yml: --shard=i/N), so every
+  // shard is itself serial and contention-free while wall-clock time still
+  // drops ~N×. Don't raise `workers` here without re-validating flake rates.
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,

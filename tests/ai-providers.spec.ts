@@ -1,4 +1,5 @@
 import { test, expect } from 'playwright/test';
+import { openAiPanel, waitForChatSessionId } from './helpers/aiPanel';
 
 // Regression coverage for the multi-provider extension to the in-app
 // chat. The base in-browser AI surface (Anthropic + Local) has its own
@@ -13,7 +14,7 @@ test.describe('Multi-provider AI', () => {
     // turn "exited without a final message" with 0 tokens. Feed the
     // reader a CRLF-framed body and confirm it yields both events.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const events = await page.evaluate(async () => {
       const mod = await import('/src/ai/sse.ts');
       const body = 'data: {"x":1}\r\n\r\ndata: {"y":2}\r\n\r\ndata: [DONE]\r\n\r\n';
@@ -32,7 +33,7 @@ test.describe('Multi-provider AI', () => {
     // assistant text and spurious stalls. Feed deliberately awkward
     // chunk splits and confirm every event still parses.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const events = await page.evaluate(async () => {
       const mod = await import('/src/ai/sse.ts');
       // Full stream is three CRLF-separated events:
@@ -64,7 +65,7 @@ test.describe('Multi-provider AI', () => {
     // tool call that carries a signature, stub fetch to capture the
     // outgoing body, and assert the functionCall part replays the sig.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const sentBody = await page.evaluate(async () => {
       const gemini = await import('/src/ai/gemini.ts');
       let captured = '';
@@ -93,6 +94,57 @@ test.describe('Multi-provider AI', () => {
     expect(fcPart.thoughtSignature).toBe('SIG_ABC');
   });
 
+  test('Gemini validateKey tolerates a 503 and pings the models endpoint, not generateContent', async ({ page }) => {
+    // Regression: validateKey used a generateContent ping on a hard-coded
+    // model. When that model is overloaded Google answers 503 UNAVAILABLE
+    // ("high demand") and a valid key looked rejected. Validation now hits
+    // the lightweight models-list endpoint and treats 5xx as a transient
+    // hiccup (non-blocking), so a busy backend never blocks a good key.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const out = await page.evaluate(async () => {
+      const gemini = await import('/src/ai/gemini.ts');
+      const calls: string[] = [];
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (input: unknown) => {
+        calls.push(String(input));
+        const body = JSON.stringify({ error: { code: 503, status: 'UNAVAILABLE', message: 'high demand' } });
+        return new Response(body, { status: 503 });
+      };
+      try {
+        const result = await gemini.validateKey('AIza-test-key');
+        return { result, calls };
+      } finally {
+        window.fetch = origFetch;
+      }
+    });
+    expect(out.result).toBeNull();
+    expect(out.calls).toHaveLength(1);
+    expect(out.calls[0]).toContain('/models');
+    expect(out.calls[0]).not.toContain('generateContent');
+  });
+
+  test('Gemini validateKey reports a clearly invalid key', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const result = await page.evaluate(async () => {
+      const gemini = await import('/src/ai/gemini.ts');
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async () => {
+        const body = JSON.stringify({ error: { code: 400, status: 'INVALID_ARGUMENT', message: 'API key not valid. Please pass a valid API key.' } });
+        return new Response(body, { status: 400 });
+      };
+      try {
+        return await gemini.validateKey('bogus');
+      } finally {
+        window.fetch = origFetch;
+      }
+    });
+    expect(result).toBe('Invalid API key.');
+  });
+
   test('Gemini routes thought parts to the thinking channel', async ({ page }) => {
     // Gemini 3 thinking models emit reasoning as `thought:true` text parts.
     // They must land in result.thinking (the collapsible box), NOT in the
@@ -100,7 +152,7 @@ test.describe('Multi-provider AI', () => {
     // thinkingConfig so they come back flagged. Stub the SSE stream and
     // assert the split. (Thinking is opt-in now, so drive a non-off level.)
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const out = await page.evaluate(async () => {
       const gemini = await import('/src/ai/gemini.ts');
       let captured = '';
@@ -144,13 +196,14 @@ test.describe('Multi-provider AI', () => {
     // with the answer in its own bubble.
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     // Bare /editor auto-restores a session (id in the URL, stable across
-    // reload), so the chat pins to that bucket — seed there, not global.
-    await page.evaluate(async () => {
+    // reload), so the chat pins to that bucket — seed there, not global. The
+    // session is created after WASM init, so wait for it before seeding or the
+    // message lands in the global bucket and the reload restore never shows it.
+    const sid = await waitForChatSessionId(page);
+    await page.evaluate(async ({ sid }) => {
       const db = await import('/src/ai/db.ts');
-      const sm = await import('/src/storage/sessionManager.ts');
-      const sid = sm.getState().session?.id ?? db.GLOBAL_CHAT_BUCKET;
       await db.putMessages([{
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         id: 'm-think-1', sessionId: sid, role: 'assistant',
@@ -161,10 +214,10 @@ test.describe('Multi-provider AI', () => {
         createdAt: Date.now(), seq: 1,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any]);
-    });
+    }, { sid });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await openAiPanel(page);
     const box = page.locator('#ai-panel details').filter({ hasText: '🧠 Thinking' });
     await expect(box).toBeVisible();
     // The answer is in its own bubble, visible without expanding anything.
@@ -176,13 +229,85 @@ test.describe('Multi-provider AI', () => {
     await expect(box.locator('pre')).toContainText('winding order must be CCW');
   });
 
-  test('OpenAI sends max_completion_tokens, not the rejected max_tokens', async ({ page }) => {
-    // Regression: the gpt-5 family and o-series 400 on `max_tokens`
-    // ("Unsupported parameter… Use 'max_completion_tokens' instead"). Stub
-    // the SSE stream, drive streamTurn, and assert the outgoing body uses
-    // the new spelling and drops the old one entirely.
+  test('OpenAI reasoning models hit /v1/responses with max_output_tokens', async ({ page }) => {
+    // Reasoning models run on the Responses API: gpt-5.5+ reject
+    // reasoning_effort alongside function tools on /v1/chat/completions and
+    // direct callers to /v1/responses. Stub the SSE stream, drive
+    // streamTurn, and assert the endpoint + the Responses token spelling.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const sent = await page.evaluate(async () => {
+      const openai = await import('/src/ai/openai.ts');
+      let url = '';
+      let captured = '';
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (input: unknown, init: { body?: string }) => {
+        url = String(input);
+        captured = String(init?.body ?? '');
+        const body = 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await openai.streamTurn({ apiKey: 'k', model: 'gpt-5.5', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] });
+      } finally {
+        window.fetch = origFetch;
+      }
+      return { url, body: JSON.parse(captured) };
+    });
+    expect(sent.url).toContain('/v1/responses');
+    expect(sent.body.max_output_tokens).toBeGreaterThan(0);
+    expect(sent.body.max_completion_tokens).toBeUndefined();
+    expect(sent.body.max_tokens).toBeUndefined();
+    // System prompt rides in `instructions`; history converts to `input`.
+    expect(sent.body.instructions).toBe('sys');
+    expect(Array.isArray(sent.body.input)).toBe(true);
+  });
+
+  test('OpenAI non-reasoning models stay on /v1/chat/completions', async ({ page }) => {
+    // Older / non-reasoning models (gpt-4o, gpt-4.1, legacy gpt-4 /
+    // gpt-3.5-turbo) keep using Chat Completions — some exist only there, and
+    // none hit the gpt-5.5 tools+reasoning restriction. Assert the endpoint +
+    // the chat-shaped body (messages, max_completion_tokens).
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const sent = await page.evaluate(async () => {
+      const openai = await import('/src/ai/openai.ts');
+      let url = '';
+      let captured = '';
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (input: unknown, init: { body?: string }) => {
+        url = String(input);
+        captured = String(init?.body ?? '');
+        const body = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await openai.streamTurn({ apiKey: 'k', model: 'gpt-4o', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] });
+      } finally {
+        window.fetch = origFetch;
+      }
+      return { url, body: JSON.parse(captured) };
+    });
+    expect(sent.url).toContain('/v1/chat/completions');
+    expect(sent.url).not.toContain('/v1/responses');
+    expect(sent.body.max_completion_tokens).toBeGreaterThan(0);
+    expect(sent.body.max_output_tokens).toBeUndefined();
+    expect(sent.body.max_tokens).toBeUndefined();
+    expect(Array.isArray(sent.body.messages)).toBe(true);
+  });
+
+  test('OpenAI (Responses) repairs a dangling tool_call left by an interrupted turn', async ({ page }) => {
+    // Regression: a turn that ends right after the model emits tool calls
+    // (Stop / stall / spend cap before results post) leaves a dangling
+    // function_call with no function_call_output. The Responses API 400s on
+    // the next send ("No tool output found for function call …") unless we
+    // inject a synthetic output, the way the Anthropic builder already does.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const sentBody = await page.evaluate(async () => {
       const openai = await import('/src/ai/openai.ts');
       let captured = '';
@@ -190,30 +315,44 @@ test.describe('Multi-provider AI', () => {
       // @ts-expect-error test stub
       window.fetch = async (_input: unknown, init: { body?: string }) => {
         captured = String(init?.body ?? '');
-        const body = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+        const body = 'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n';
         return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
       };
       try {
+        const history = [
+          // Assistant emitted a tool call...
+          { id: 'a1', sessionId: 's', role: 'assistant', blocks: [], toolCalls: [{ id: 'call_DANGLING', name: 'runIsolated', input: {} }], createdAt: 0, seq: 0 },
+          // ...but the turn ended; the user just typed feedback (no toolResults).
+          { id: 'u1', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'looks good, add a handle' }], createdAt: 0, seq: 1 },
+        ];
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await openai.streamTurn({ apiKey: 'k', model: 'gpt-5-mini', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] });
+        await openai.streamTurn({ apiKey: 'k', model: 'gpt-5.5', systemPrompt: 'sys', systemSuffix: '', history: history as any, tools: [] });
       } finally {
         window.fetch = origFetch;
       }
       return captured;
     });
     const sent = JSON.parse(sentBody);
-    expect(sent.max_completion_tokens).toBeGreaterThan(0);
-    expect(sent.max_tokens).toBeUndefined();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = sent.input as any[];
+    const outputs = items.filter(it => it.type === 'function_call_output' && it.call_id === 'call_DANGLING');
+    expect(outputs).toHaveLength(1);
+    // The synthetic output must sit after the function_call and before the
+    // user's feedback, so the call→output invariant holds.
+    const callIdx = items.findIndex(it => it.type === 'function_call' && it.call_id === 'call_DANGLING');
+    const outputIdx = items.findIndex(it => it.type === 'function_call_output' && it.call_id === 'call_DANGLING');
+    const userIdx = items.findIndex(it => it.type === 'message' && it.role === 'user'
+      && Array.isArray(it.content) && it.content.some((c: { text?: string }) => c.text?.includes('add a handle')));
+    expect(callIdx).toBeLessThan(outputIdx);
+    expect(outputIdx).toBeLessThan(userIdx);
   });
 
-  test('OpenAI repairs a dangling tool_call left by an interrupted turn', async ({ page }) => {
-    // Regression: a turn that ends right after the model emits tool calls
-    // (Stop / stall / spend cap before results post) leaves an assistant
-    // tool_calls message with no tool result. OpenAI 400s on the next send
-    // ("tool_call_ids did not have response messages") unless we inject a
-    // synthetic result, the way the Anthropic builder already does.
+  test('OpenAI (Chat Completions) repairs a dangling tool_call left by an interrupted turn', async ({ page }) => {
+    // Same invariant on the non-reasoning path: an assistant tool_calls
+    // message with no matching `tool` reply 400s ("tool_call_ids did not have
+    // response messages") unless we inject a synthetic tool result.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const sentBody = await page.evaluate(async () => {
       const openai = await import('/src/ai/openai.ts');
       let captured = '';
@@ -226,13 +365,11 @@ test.describe('Multi-provider AI', () => {
       };
       try {
         const history = [
-          // Assistant emitted a tool call...
           { id: 'a1', sessionId: 's', role: 'assistant', blocks: [], toolCalls: [{ id: 'call_DANGLING', name: 'runIsolated', input: {} }], createdAt: 0, seq: 0 },
-          // ...but the turn ended; the user just typed feedback (no toolResults).
           { id: 'u1', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'looks good, add a handle' }], createdAt: 0, seq: 1 },
         ];
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await openai.streamTurn({ apiKey: 'k', model: 'gpt-5-mini', systemPrompt: 'sys', systemSuffix: '', history: history as any, tools: [] });
+        await openai.streamTurn({ apiKey: 'k', model: 'gpt-4o', systemPrompt: 'sys', systemSuffix: '', history: history as any, tools: [] });
       } finally {
         window.fetch = origFetch;
       }
@@ -243,8 +380,6 @@ test.describe('Multi-provider AI', () => {
     const msgs = sent.messages as any[];
     const toolMsgs = msgs.filter(m => m.role === 'tool' && m.tool_call_id === 'call_DANGLING');
     expect(toolMsgs).toHaveLength(1);
-    // The synthetic result must sit after the assistant tool_calls message
-    // and before the user's feedback, so the invariant holds.
     const assistantIdx = msgs.findIndex(m => Array.isArray(m.tool_calls));
     const toolIdx = msgs.findIndex(m => m.tool_call_id === 'call_DANGLING');
     const userIdx = msgs.findIndex(m => m.role === 'user' && typeof m.content === 'string' && m.content.includes('add a handle'));
@@ -257,7 +392,7 @@ test.describe('Multi-provider AI', () => {
     // field); a non-off level enables extended thinking with budget_tokens
     // and floats max_tokens above the budget (the API requires >).
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const out = await page.evaluate(async () => {
       const a = await import('/src/ai/anthropic.ts');
       const bodies: Record<string, { thinking?: unknown; max_tokens?: number }> = {};
@@ -315,7 +450,7 @@ test.describe('Multi-provider AI', () => {
     // next request 400s. buildApiMessages is a pure function, so assert the
     // ordering directly. With replay off, no thinking block leaks in.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const out = await page.evaluate(async () => {
       const a = await import('/src/ai/anthropic.ts');
       const history = [
@@ -352,7 +487,7 @@ test.describe('Multi-provider AI', () => {
     // off → reasoning hidden, no forced budget (so Pro models don't 400 on
     // budget 0). A non-off level surfaces thoughts with a positive budget.
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const out = await page.evaluate(async () => {
       const gemini = await import('/src/ai/gemini.ts');
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -377,9 +512,9 @@ test.describe('Multi-provider AI', () => {
     expect(out.high.generationConfig.thinkingConfig.thinkingBudget).toBeGreaterThan(0);
   });
 
-  test('OpenAI sends reasoning_effort only for reasoning models + non-off levels', async ({ page }) => {
+  test('OpenAI sends reasoning.effort only for reasoning models + non-off levels', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const out = await page.evaluate(async () => {
       const openai = await import('/src/ai/openai.ts');
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -389,21 +524,26 @@ test.describe('Multi-provider AI', () => {
         // @ts-expect-error test stub
         window.fetch = async (_input: unknown, init: { body?: string }) => {
           bodies[key] = JSON.parse(String(init?.body ?? '{}'));
-          const body = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+          const body = 'event: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n';
           return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
         };
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await openai.streamTurn({ apiKey: 'k', model, systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [], thinking: level as any });
       }
       try {
-        await run('gpt-5-mini', 'high', 'reasoningHigh');
-        await run('gpt-5-mini', 'off', 'reasoningOff');
+        await run('gpt-5.5', 'high', 'reasoningHigh');
+        await run('gpt-5.5', 'off', 'reasoningOff');
         await run('gpt-4o', 'high', 'chatHigh');
       } finally { window.fetch = origFetch; }
       return bodies;
     });
-    expect(out.reasoningHigh.reasoning_effort).toBe('high');
-    expect(out.reasoningOff.reasoning_effort).toBeUndefined();
+    // Reasoning model on the Responses path: `reasoning.effort` set when on,
+    // omitted when off.
+    expect(out.reasoningHigh.reasoning.effort).toBe('high');
+    expect(out.reasoningOff.reasoning).toBeUndefined();
+    // Non-reasoning model on the Chat Completions path: never carries a
+    // reasoning request in either spelling, even at thinking=high.
+    expect(out.chatHigh.reasoning).toBeUndefined();
     expect(out.chatHigh.reasoning_effort).toBeUndefined();
   });
 
@@ -411,8 +551,11 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await openAiPanel(page);
+    // Thinking lives in the collapsible ⚙ Options group (advanced knobs are
+    // hidden by default to keep the panel uncluttered) — expand it first.
+    await page.locator('#ai-panel button:has-text("⚙ Options")').dispatchEvent('click');
     const thinkSel = page.locator('#ai-panel select[title^="Thinking:"]');
     await expect(thinkSel).toBeVisible();
     // Thinking now ships on by default (the standard preset uses 'high').
@@ -428,8 +571,8 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await openAiPanel(page);
     // Open AI Settings via the cog icon (its title starts with "AI settings").
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
@@ -461,8 +604,8 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await openAiPanel(page);
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
 
@@ -504,8 +647,8 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await openAiPanel(page);
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Settings' });
@@ -524,8 +667,8 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await openAiPanel(page);
 
     // Default provider is Anthropic — dropdown shows claude-* models.
     const headerModel = page.locator('#ai-panel select').first();
@@ -543,8 +686,8 @@ test.describe('Multi-provider AI', () => {
       localStorage.setItem('partwright-ai-settings-v1', JSON.stringify(cur));
     });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await openAiPanel(page);
     const openaiOpts = await page.locator('#ai-panel select').first().evaluate(
       (el: HTMLSelectElement) => Array.from(el.options).map(o => o.value),
     );
@@ -559,8 +702,8 @@ test.describe('Multi-provider AI', () => {
       localStorage.setItem('partwright-ai-settings-v1', JSON.stringify(cur));
     });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await openAiPanel(page);
     const geminiOpts = await page.locator('#ai-panel select').first().evaluate(
       (el: HTMLSelectElement) => Array.from(el.options).map(o => o.value),
     );
@@ -596,8 +739,8 @@ test.describe('Multi-provider AI', () => {
       }));
     });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await openAiPanel(page);
     // Header shows OpenAI's chosen model.
     await expect(page.locator('#ai-panel select').first()).toHaveValue('gpt-5-nano');
     // Enabling a provider now requires its key to be connected, so plant a
@@ -641,8 +784,8 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await openAiPanel(page);
     await page.locator('#ai-panel button[title^="Get a second opinion"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'Get a second opinion' })).toBeVisible();
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'Get a second opinion' });
@@ -654,8 +797,8 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await openAiPanel(page);
     await page.locator('#ai-panel button[title^="AI Call Log"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Call Log' })).toBeVisible();
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Call Log' });
@@ -671,7 +814,7 @@ test.describe('Multi-provider AI', () => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     await page.evaluate(async () => {
       const mod = await import('/src/ai/diagnostics.ts');
       mod.clearEvents();
@@ -697,7 +840,7 @@ test.describe('Multi-provider AI', () => {
         requestSummary: '3 msg(s), 30 tool def(s)',
       });
     });
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await openAiPanel(page);
     await page.locator('#ai-panel button[title^="AI Call Log"]').dispatchEvent('click');
     const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Call Log' });
     await expect(modal).toBeVisible();
@@ -710,20 +853,20 @@ test.describe('Multi-provider AI', () => {
     await expect(modal.locator('text=stop: end_turn')).toBeVisible();
   });
 
-  test('connect modal renders correctly per provider', async ({ page }) => {
+  test('inline key form renders correctly per provider', async ({ page }) => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await openAiPanel(page);
     await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
-    // Tabbed modal — view the OpenAI tab first, then its Connect button.
+    // Tabbed modal — the OpenAI tab shows its key form inline (no second
+    // pop-up): placeholder input, console link, and Connect button together.
     await page.locator('button:has-text("OpenAI (cloud)")').dispatchEvent('click');
-    await page.locator('button:has-text("Connect OpenAI")').dispatchEvent('click');
-    await expect(page.getByRole('heading', { name: 'Connect OpenAI' })).toBeVisible();
     await expect(page.locator('input[placeholder*="sk-proj"]')).toBeVisible();
     await expect(page.locator('a[href*="platform.openai.com"]')).toBeVisible();
+    await expect(page.locator('button:has-text("Connect OpenAI")')).toBeVisible();
   });
 });
 
@@ -737,7 +880,7 @@ test.describe('Capability suffix', () => {
   // enabled tool is unambiguous on the very next turn.
   test('positively declares paint ON/OFF based on the toggle', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
     const { offSuffix, onSuffix } = await page.evaluate(async () => {
       const sp = await import('/src/ai/systemPrompt.ts');
       const settings = await import('/src/ai/settings.ts');

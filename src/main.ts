@@ -25,8 +25,8 @@ import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPa
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
-import { renderCompositeCanvas, renderSingleView, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
+import { initViewport, updateMesh, setOnMeshUpdate, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
+import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode } from './renderer/multiview';
 import { generateId } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, getSelection, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, getAutoFormat, setAutoFormat, editorContentDiffersFrom } from './editor/codeEditor';
@@ -34,11 +34,12 @@ import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { registerCommands } from './ui/commandPalette';
+import { showQualitySettingsModal } from './ui/qualitySettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
-import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel } from './ui/aiPanel';
-import { getKey as getAiKey, mergeChatBucket } from './ai/db';
-import { loadSettings as loadAiSettings, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
+import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar } from './ui/aiPanel';
+import { mergeChatBucket } from './ai/db';
+import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
 import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
@@ -119,12 +120,12 @@ import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontS
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
-import { buildStrokeMesh, strokeFootprintTriangles, childrenByParent, type BrushStroke, type BrushShape } from './color/subdivide';
+import { buildStrokeMesh, buildRefinedMesh, brushRefineRegion, strokeFootprintTriangles, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { initEditorLock, syncLockState, setUnlockHandlers, isLocked } from './color/editorLock';
 import { initInsertPalette, toggleInsertPalette } from './ui/insertPalette';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
-import { findSlabTriangles } from './color/slabPaint';
-import { findBoxTriangles, findShapeTriangles } from './color/boxPaint';
+import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
+import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
 import { computeFaceGroups } from './color/faceGroups';
 import {
   getSessionIdFromURL,
@@ -148,6 +149,7 @@ import {
   changePart,
   renamePart,
   deletePart,
+  deleteParts,
   reorderParts,
   getState,
   getSessionUrl,
@@ -364,16 +366,43 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
   geometryDataEl.textContent = JSON.stringify(data, null, 2);
 }
 
+/** How long to wait for `canvas.toBlob` before giving up on the thumbnail.
+ *  `toBlob` can stall indefinitely when encoding a 2D canvas that a WebGL render
+ *  was composited into (observed after painting subdivides + colors the mesh) —
+ *  the GPU readback never settles the callback. A thumbnail is non-essential, so
+ *  we cap the wait and let the save proceed without it rather than hang forever
+ *  (which silently blocked saving a painted version). */
+const THUMBNAIL_TIMEOUT_MS = 4000;
+
 function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob | null> {
   if (!mesh) return Promise.resolve(null);
+  let canvas: HTMLCanvasElement;
   try {
-    const canvas = renderCompositeCanvas(applyTriColorsIfVisible(mesh));
-    return new Promise(resolve => {
-      canvas.toBlob(b => resolve(b), 'image/png');
+    canvas = renderSingleViewCanvas(applyTriColorsIfVisible(mesh), {
+      elevation: STANDARD_VIEWS.iso.elevation,
+      azimuth: STANDARD_VIEWS.iso.azimuth,
+      ortho: STANDARD_VIEWS.iso.ortho,
     });
   } catch {
     return Promise.resolve(null);
   }
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = (b: Blob | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(b);
+    };
+    // Bound the wait: if toBlob never calls back, resolve null so the caller
+    // (save / snapshot) still completes.
+    const timer = setTimeout(() => finish(null), THUMBNAIL_TIMEOUT_MS);
+    try {
+      canvas.toBlob(b => finish(b), 'image/png');
+    } catch {
+      finish(null);
+    }
+  });
 }
 
 // Capture a thumbnail + geometry-data for an arbitrary `mesh` without touching
@@ -418,27 +447,70 @@ function applyVersionAnnotations(version: Version | null | undefined): void {
  *  Returns the names of regions that resolved to ≥1 triangle (`carried`) vs.
  *  those whose descriptor no longer matches the current geometry (`dropped`),
  *  so callers transferring colors across versions can report what landed. */
-/** Pull the ordered `brushStroke` descriptors out of a descriptor list. */
-function collectStrokeDescriptors(descriptors: RegionDescriptor[]): BrushStroke[] {
-  const strokes: BrushStroke[] = [];
-  for (const d of descriptors) {
-    if (d.kind === 'brushStroke') {
-      strokes.push({ samples: d.samples, radius: d.radius, shape: d.shape, maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 16 });
-    }
-  }
-  return strokes;
+/** True when a descriptor drives mesh subdivision: any brush stroke, or a slab /
+ *  oriented shape with smoothing enabled (`smooth` + a positive `maxEdge`).
+ *  Descriptors saved before smoothing existed omit those fields and refine
+ *  nothing, preserving their original blocky edges. */
+function descriptorRefines(d: RegionDescriptor): boolean {
+  if (d.kind === 'brushStroke') return true;
+  if (d.kind === 'slab' || d.kind === 'box') return !!d.smooth && (d.maxEdge ?? 0) > 0;
+  return false;
 }
 
-/** Refine a base mesh under the given strokes. Returns the mesh unchanged with
- *  `parentToChildren: null` when there are no strokes (the common case — no
+/** Build the ordered refine regions (brush footprints, slab/shape boundaries)
+ *  from a descriptor list. Drives the local subdivision so painted edges follow
+ *  the analytic boundary rather than the coarse base tessellation. */
+function collectRefineRegions(descriptors: RegionDescriptor[]): RefineRegion[] {
+  const regions: RefineRegion[] = [];
+  for (const d of descriptors) {
+    if (d.kind === 'brushStroke') {
+      regions.push(brushRefineRegion(descriptorToStroke(d)));
+    } else if (d.kind === 'slab' && descriptorRefines(d)) {
+      regions.push(slabRefineRegion(d.normal, d.offset, d.thickness, d.maxEdge!));
+    } else if (d.kind === 'box' && descriptorRefines(d)) {
+      regions.push(shapeRefineRegion(d.shape ?? 'box', { center: d.center, size: d.size, quaternion: d.quaternion }, d.maxEdge!));
+    }
+  }
+  return regions;
+}
+
+/** True when any current region drives subdivision (see `descriptorRefines`). */
+function hasRefineDescriptors(): boolean {
+  return getRegions().some(r => descriptorRefines(r.descriptor));
+}
+
+/** Refine a base mesh under the given descriptors. Returns the mesh unchanged
+ *  with `parentToChildren: null` when nothing refines (the common case — no
  *  subdivision, identity mapping). */
-function refineMeshForStrokes(
+function refineMeshForRegions(
   base: MeshData,
-  strokes: BrushStroke[],
+  descriptors: RegionDescriptor[],
 ): { mesh: MeshData; parentToChildren: Map<number, number[]> | null } {
-  if (strokes.length === 0) return { mesh: base, parentToChildren: null };
-  const { mesh, childToParent } = buildStrokeMesh(base, strokes);
+  const regions = collectRefineRegions(descriptors);
+  if (regions.length === 0) return { mesh: base, parentToChildren: null };
+  const { mesh, childToParent } = buildRefinedMesh(base, regions);
   return { mesh, parentToChildren: childrenByParent(childToParent) };
+}
+
+/** Above this triangle count we warn (once) that the model is getting heavy.
+ *  There is no hard cap — painting keeps working; this is just a heads-up. */
+const HIGH_COMPLEXITY_TRIANGLES = 1_000_000;
+let complexityWarned = false;
+
+/** Refresh the live triangle-count readout and, once, warn when the displayed
+ *  mesh gets heavy. Driven by every viewport mesh update (run, paint, simplify,
+ *  clear). Resets the warning when the mesh drops back below the threshold. */
+function refreshTriangleCount(numTri: number): void {
+  const el = document.getElementById('triangle-count');
+  if (el) el.textContent = `${numTri.toLocaleString()} tris`;
+  if (numTri >= HIGH_COMPLEXITY_TRIANGLES) {
+    if (!complexityWarned) {
+      complexityWarned = true;
+      showToast(`Model complexity is high (${numTri.toLocaleString()} triangles) — painting still works, but it may slow down. Clear colors or lower Edge smoothing to lighten it.`, { variant: 'warn', durationMs: 5000 });
+    }
+  } else if (numTri < HIGH_COMPLEXITY_TRIANGLES * 0.8) {
+    complexityWarned = false; // re-arm once well below the threshold
+  }
 }
 
 /** Map base-mesh triangle ids onto the refined mesh. With no subdivision
@@ -459,11 +531,12 @@ function remapTriangleIds(ids: Iterable<number>, parentToChildren: Map<number, n
 function resolveDescriptorTriangles(
   descriptor: RegionDescriptor,
   mesh: MeshData,
-  adjacency: AdjacencyGraph,
+  adjacency: AdjacencyGraph | null,
   parentToChildren: Map<number, number[]> | null,
 ): Set<number> {
   switch (descriptor.kind) {
     case 'coplanar': {
+      if (!adjacency) return new Set<number>();
       const { seedPoint, seedNormal, normalTolerance } = descriptor;
       const seedTri = resolveSeed(seedPoint, seedNormal, mesh, adjacency, normalTolerance);
       return seedTri >= 0 ? findCoplanarRegion(seedTri, adjacency, normalTolerance) : new Set<number>();
@@ -488,6 +561,7 @@ function resolveDescriptorTriangles(
       return ids ? remapTriangleIds(ids, parentToChildren) : new Set<number>();
     }
     case 'connectedFromSeed': {
+      if (!adjacency) return new Set<number>();
       const { seedPoint, seedNormal, maxDeviationDeg } = descriptor;
       // Find the closest triangle to the seed point — robust across re-runs
       // because triangle indices are unstable but world-space points are not.
@@ -513,8 +587,14 @@ function resolveDescriptorTriangles(
       return triangles;
     }
     case 'brushStroke':
-      return strokeFootprintTriangles(mesh, { samples: descriptor.samples, radius: descriptor.radius, shape: descriptor.shape, maxEdge: descriptor.maxEdge > 0 ? descriptor.maxEdge : descriptor.radius / 16 });
+      return strokeFootprintTriangles(mesh, descriptorToStroke(descriptor));
   }
+}
+
+/** Normalize a brushStroke descriptor to a BrushStroke, filling a sane default
+ *  maxEdge (matching the default detail divisor) for any malformed/legacy data. */
+function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }>): BrushStroke {
+  return { samples: d.samples, radius: d.radius, shape: d.shape, maxEdge: d.maxEdge > 0 ? d.maxEdge : d.radius / 256 };
 }
 
 /** True when any in-memory region is a smooth brush stroke (which drives mesh
@@ -527,13 +607,12 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { 
   const regions = geometryData.colorRegions as SerializedColorRegion[] | undefined;
   if (!regions || regions.length === 0) return report;
 
-  // Refine the pristine base mesh under any smooth strokes before resolving.
-  // Without strokes this is a no-op and currentMeshData is left untouched
-  // (identical to the pre-subdivision behavior).
+  // Refine the pristine base mesh under any smooth strokes/slabs/shapes before
+  // resolving. Without refine regions this is a no-op and currentMeshData is
+  // left untouched (identical to the pre-subdivision behavior).
   const base = paintBaseMesh ?? currentMeshData;
-  const strokes = collectStrokeDescriptors(regions.map(r => r.descriptor));
-  const { mesh, parentToChildren } = refineMeshForStrokes(base, strokes);
-  if (strokes.length > 0) {
+  const { mesh, parentToChildren } = refineMeshForRegions(base, regions.map(r => r.descriptor));
+  if (parentToChildren) {
     currentMeshData = mesh;
     updatePaintMesh(mesh);
   }
@@ -577,8 +656,7 @@ function paintedColorRefresh(): void {
 function rebuildPaintedGeometry(): void {
   const base = paintBaseMesh;
   if (!base) return;
-  const strokes = collectStrokeDescriptors(getRegions().map(r => r.descriptor));
-  const { mesh, parentToChildren } = refineMeshForStrokes(base, strokes);
+  const { mesh, parentToChildren } = refineMeshForRegions(base, getRegions().map(r => r.descriptor));
   currentMeshData = mesh;
   updatePaintMesh(mesh);
   const adjacency = buildAdjacency(mesh);
@@ -595,19 +673,38 @@ function rebuildPaintedGeometry(): void {
  *  triangles)); only the new stroke is resolved by footprint. This is the hot
  *  path while painting and keeps each stroke ~constant-time regardless of how
  *  many strokes precede it. */
-function appendStrokeRefine(newRegionId: number, descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }>): void {
+function appendStrokeRefine(descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }>): void {
   if (!currentMeshData) return;
-  const stroke: BrushStroke = { samples: descriptor.samples, radius: descriptor.radius, shape: descriptor.shape, maxEdge: descriptor.maxEdge > 0 ? descriptor.maxEdge : descriptor.radius / 16 };
-  const { mesh, childToParent } = buildStrokeMesh(currentMeshData, [stroke]);
+  const { mesh, childToParent } = buildStrokeMesh(currentMeshData, [descriptorToStroke(descriptor)]);
   const parentToChildren = childrenByParent(childToParent);
   currentMeshData = mesh;
   updatePaintMesh(mesh);
+  // Triangles of the prior mesh that this stroke actually split (>1 child).
+  // Only regions touching those need descriptor re-resolution; everyone else is
+  // untouched, so forward-carrying their set (each unsplit triangle → its single
+  // child) equals what a reload would re-resolve — and is far cheaper.
+  const splitParents = new Set<number>();
+  for (const [parent, children] of parentToChildren) if (children.length > 1) splitParents.add(parent);
+
+  // A region must be re-resolved by descriptor when it's freshly added (no
+  // triangles yet, e.g. the new stroke) or overlaps the split — because a
+  // spatial/footprint/flood descriptor's split children can fall outside it,
+  // which a naive parent→children carry would wrongly keep. Explicit sets
+  // (triangles/byLabel) always carry forward. This keeps the live result
+  // identical to a reload (determinism) while staying ~O(painted) per stroke.
+  let adjacency: AdjacencyGraph | null = null;
+  const overlapsSplit = (region: { triangles: Set<number> }): boolean => {
+    if (region.triangles.size === 0) return true;
+    for (const t of region.triangles) if (splitParents.has(t)) return true;
+    return false;
+  };
   for (const region of getRegions()) {
-    if (region.id === newRegionId) {
-      setRegionTriangles(region.id, strokeFootprintTriangles(mesh, stroke));
-    } else {
-      // Carry the prior triangle set onto the locally-refined mesh.
+    const d = region.descriptor;
+    if (d.kind === 'triangles' || d.kind === 'byLabel' || !overlapsSplit(region)) {
       setRegionTriangles(region.id, remapTriangleIds(region.triangles, parentToChildren));
+    } else {
+      if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed')) adjacency = buildAdjacency(mesh);
+      setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren));
     }
   }
   paintedColorRefresh();
@@ -634,7 +731,7 @@ function reconcilePaintedGeometry(): void {
   syncLockState();
 
   const strokesNow = strokeDescriptors();
-  const refinedActive = currentMeshData !== paintBaseMesh || strokesNow.length > 0;
+  const refinedActive = currentMeshData !== paintBaseMesh || hasRefineDescriptors();
   if (!refinedActive) {
     lastStrokeList = [];
     if (isPaintActive()) paintedColorRefresh();
@@ -644,12 +741,9 @@ function reconcilePaintedGeometry(): void {
   // Pure append: exactly one new stroke on the end, prior strokes unchanged.
   if (strokesNow.length === lastStrokeList.length + 1 && prefixRefEqual(strokesNow, lastStrokeList)) {
     const newDesc = strokesNow[strokesNow.length - 1] as Extract<RegionDescriptor, { kind: 'brushStroke' }>;
-    const newRegion = getRegions().find(r => r.descriptor === newDesc);
-    if (newRegion) {
-      appendStrokeRefine(newRegion.id, newDesc);
-      lastStrokeList = strokesNow;
-      return;
-    }
+    appendStrokeRefine(newDesc);
+    lastStrokeList = strokesNow;
+    return;
   }
 
   rebuildPaintedGeometry();
@@ -1227,7 +1321,6 @@ async function main() {
       updateAppHistory('/', 'push');
       void syncRouteFromURL();
     },
-    onOpenCatalog: () => { void showCatalogPage(); },
     onRun: () => runCode(),
     onExportGLB: actionExportGLB,
     onExportSTL: actionExportSTL,
@@ -1254,8 +1347,6 @@ async function main() {
     },
     onImportFile: async (file) => { await handleImportFile(file); },
     onImportInboxEntry: handleReimportInboxEntry,
-    onToggleAi: () => { toggleAiPanel(); },
-    onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad') => {
       if (lang === getActiveLanguage()) return;
       // If current session has work, ask before switching
@@ -1334,12 +1425,16 @@ async function main() {
       }
       applyVersionAnnotations(loadedVersion);
     },
-    onOpenSessionList: () => showSessionList(),
     onNewSession: startNewSessionInEditor,
   });
 
   // Create layout
-  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail } = createLayout(editorUI);
+  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail } = createLayout(editorUI, {
+    onToggleAi: () => { void toggleAiPanelFromToolbar(); },
+    onOpenCatalog: () => { void showCatalogPage(); },
+    onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
+    onOpenSessionList: () => showSessionList(),
+  });
 
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
@@ -1363,6 +1458,15 @@ async function main() {
       const wasCurrent = getState().currentPart?.id === partId;
       const result = await deletePart(partId);
       if (result && wasCurrent) {
+        await loadPartIntoEditor(getState().currentVersion);
+      }
+    },
+    onDeleteParts: async (partIds: string[]) => {
+      if (isReadOnlyViewer()) return;
+      const result = await deleteParts(partIds);
+      // Only reload the editor when the active part was among those removed
+      // (deleteParts reports this via newCurrent).
+      if (result && result.newCurrent) {
         await loadPartIntoEditor(getState().currentVersion);
       }
     },
@@ -1432,7 +1536,7 @@ async function main() {
     { id: 'new-session', title: 'New session', hint: 'Session', keywords: 'create blank', run: () => startNewSessionInEditor() },
     { id: 'open-sessions', title: 'Open session…', hint: 'Session', keywords: 'switch list recent', run: () => showSessionList() },
     { id: 'tab-interactive', title: 'Go to 3D view', hint: 'Tab', keywords: 'interactive viewport model', run: () => switchTab('interactive') },
-    { id: 'tab-gallery', title: 'Go to Gallery', hint: 'Tab', keywords: 'thumbnails versions', run: () => switchTab('gallery') },
+    { id: 'tab-gallery', title: 'Go to Gallery (read-only)', hint: 'Tab', keywords: 'thumbnails versions visual grid', run: () => switchTab('gallery') },
     { id: 'tab-versions', title: 'Go to Versions', hint: 'Tab', keywords: 'history rename delete', run: () => switchTab('versions') },
     { id: 'tab-images', title: 'Go to Reference images', hint: 'Tab', keywords: 'photos reference', run: () => switchTab('images') },
     { id: 'tab-diff', title: 'Go to Diff', hint: 'Tab', keywords: 'compare changes', run: () => switchTab('diff') },
@@ -1446,6 +1550,8 @@ async function main() {
     { id: 'toggle-diagnostics', title: 'Toggle diagnostic log', hint: 'View', keywords: 'errors warnings console', run: () => toggleDiagnosticsPanel() },
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
     { id: 'open-help', title: 'Open help', hint: 'Navigate', keywords: 'docs documentation guide', run: () => showHelp() },
+    { id: 'open-quality', title: 'Modeling quality settings', hint: 'Settings', keywords: 'resolution curve segments smoothness', run: () => showQualitySettingsModal() },
+    { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); } },
   ]);
 
   // Init gallery
@@ -1523,9 +1629,21 @@ async function main() {
     startNewSessionInEditor,
   );
 
-  // Assemble DOM early so landing/help pages can render before WASM loads
-  app.appendChild(editorUI);
-  app.appendChild(overlayContainer);
+  // Assemble DOM early so landing/help pages can render before WASM loads.
+  // The page subtrees (editor + landing/help/catalog overlays) share a flex row
+  // with the AI panel so the panel docks as a persistent right-hand column: it
+  // sits OUTSIDE the per-page subtrees, so it survives route changes (the
+  // landing-page chat flow relies on the panel staying mounted across nav).
+  const appRow = document.createElement('div');
+  appRow.id = 'app-row';
+  appRow.className = 'flex flex-row flex-1 min-h-0 w-full';
+  const pageArea = document.createElement('div');
+  pageArea.id = 'page-area';
+  pageArea.className = 'flex flex-col flex-1 min-w-0 min-h-0';
+  pageArea.appendChild(editorUI);
+  pageArea.appendChild(overlayContainer);
+  appRow.appendChild(pageArea);
+  app.appendChild(appRow);
 
   let editorReady = false;
   let editorReadyResolve: (() => void) = () => {};
@@ -1854,6 +1972,9 @@ async function main() {
 
   // Init viewport
   initViewport(viewportPane);
+  // Keep the live triangle-count readout (and high-complexity warning) in sync
+  // with every displayed mesh — runs, paint strokes, simplify, clear.
+  setOnMeshUpdate((mesh) => refreshTriangleCount(mesh.numTri));
 
   // Init measure tool
   initMeasureTool(getCanvas(), getCamera(), getMeshGroup(), viewportPane);
@@ -2194,6 +2315,7 @@ async function main() {
           updateAppHistory('/editor', 'push');
           await syncRouteFromURL();
         },
+        mountInto: appRow,
       });
       const cur = getState();
       await setAiActiveSession(cur.session?.id ?? null);
@@ -2217,20 +2339,10 @@ async function main() {
   })();
 
   async function refreshAiToolbarChip(): Promise<void> {
-    const settings = loadAiSettings();
-    if (settings.toggles.provider === 'local' && settings.toggles.localModel) {
-      setAiToolbarState('local');
-      return;
-    }
-    // Any hosted-provider key counts as "connected" — the chat panel
-    // surfaces its own per-provider banner when the active dropdown is
-    // on a provider missing a key.
-    const [anthropicKey, openaiKey, geminiKey] = await Promise.all([
-      getAiKey('anthropic'),
-      getAiKey('openai'),
-      getAiKey('gemini'),
-    ]);
-    setAiToolbarState(anthropicKey || openaiKey || geminiKey ? 'cloud' : 'disconnected');
+    // Local model configured → 'local'; any hosted-provider key → 'cloud';
+    // otherwise 'disconnected'. The chat panel surfaces its own per-provider
+    // banner when the active dropdown is on a provider missing a key.
+    setAiToolbarState(await aiConnectionMode());
   }
 
   // Set initial editor title if we're on the editor page
@@ -2737,15 +2849,18 @@ async function main() {
     /** Render a single view from any camera angle. Returns a data URL (PNG).
      *  elevation: degrees, 0 = horizon, 90 = top-down. Default 30.
      *  azimuth: degrees, 0 = front (-Y), 90 = right (+X). Default 315.
-     *  ortho: true for orthographic projection. Default false. */
-    renderView(options?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number }): string | null {
+     *  ortho: true for orthographic projection. Default false.
+     *  wireframe: force the black topology overlay on (true) or off (false).
+     *  Default leaves it on for uncolored meshes and off for painted ones. */
+    renderView(options?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number; wireframe?: boolean }): string | null {
       if (options !== undefined) {
         const o = assertObject(options, 'renderView(options)')!;
-        assertNoUnknownKeys(o, ['elevation', 'azimuth', 'ortho', 'size'], 'renderView(options)');
+        assertNoUnknownKeys(o, ['elevation', 'azimuth', 'ortho', 'size', 'wireframe'], 'renderView(options)');
         assertNumber(o.elevation, 'renderView(options).elevation', { optional: true, min: -90, max: 90 });
         assertNumber(o.azimuth, 'renderView(options).azimuth', { optional: true });
         assertBoolean(o.ortho, 'renderView(options).ortho', { optional: true });
         assertNumber(o.size, 'renderView(options).size', { optional: true, min: 1, integer: true });
+        assertBoolean(o.wireframe, 'renderView(options).wireframe', { optional: true });
       }
       if (!currentMeshData) return null;
       // Default image size follows the spending-mode resolution budget when the
@@ -4244,7 +4359,7 @@ async function main() {
     /** Paint a slab — all faces whose centroid falls inside a planar slab.
      *  `axis` is shorthand for axis-aligned slabs ('x'/'y'/'z'). For oblique
      *  slabs, pass `normal` directly (does not need to be normalized). */
-    paintSlab(opts: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number; color: [number, number, number]; name?: string; coverageMode?: CoverageMode; maxTriangleArea?: number }) {
+    paintSlab(opts: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number; color: [number, number, number]; name?: string; coverageMode?: CoverageMode; maxTriangleArea?: number; smooth?: boolean; resolution?: number; maxEdge?: number }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintSlab requires {axis|normal, offset, thickness, color}' };
       const { axis, normal: rawNormal, offset, thickness, color, name, coverageMode, maxTriangleArea } = opts;
@@ -4269,6 +4384,8 @@ async function main() {
       if (coverageErr) return { error: coverageErr };
       const areaErr = validateMaxTriangleArea(maxTriangleArea);
       if (areaErr) return { error: areaErr };
+      const smoothErr = validateSmoothParams(opts);
+      if (smoothErr) return { error: smoothErr };
 
       let triangles = findSlabTriangles(currentMeshData, normal, offset, thickness, coverageMode);
       if (maxTriangleArea !== undefined && triangles.size > 0) {
@@ -4277,17 +4394,21 @@ async function main() {
       if (triangles.size === 0) return { error: 'No triangles found inside the slab' };
 
       const regionName = name ?? `Region ${getRegions().length + 1}`;
+      const { smooth, maxEdge } = resolveShapeSmoothFields(opts);
+      // Adding the region fires the change listener, which (when smoothing is on)
+      // rebuilds the refined mesh and re-resolves this region against it — so by
+      // the time addRegion returns, region.triangles holds the smoothed count.
       const region = addRegion(
         regionName,
         color as [number, number, number],
         'slab',
-        { kind: 'slab', normal, offset, thickness },
+        { kind: 'slab', normal, offset, thickness, smooth, maxEdge },
         triangles,
       );
       scheduleColorRefresh();
       syncLockState();
 
-      return { id: region.id, name: region.name, triangles: triangles.size };
+      return { id: region.id, name: region.name, triangles: region.triangles.size, smooth, maxEdge };
     },
 
     /** List all color regions on the current geometry. Each entry includes
@@ -4470,6 +4591,14 @@ async function main() {
       };
       color: [number, number, number];
       name?: string;
+      /** Smooth the box's painted edge by subdividing the mesh near its faces.
+       *  On by default — pass `false` to keep the blocky base tessellation. */
+      smooth?: boolean;
+      /** Smoothing detail: target boundary edge length = model bbox diagonal /
+       *  resolution (2..1024, default 256). Ignored when `maxEdge` is set. */
+      resolution?: number;
+      /** Absolute target boundary edge length (mesh units); overrides `resolution`. */
+      maxEdge?: number;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintInOrientedBox requires { box, color }' };
@@ -4480,15 +4609,33 @@ async function main() {
       const q: [number, number, number, number] = quaternion ?? [0, 0, 0, 1];
       if (!Array.isArray(q) || q.length !== 4 || !q.every(Number.isFinite)) return { error: 'paintInOrientedBox.box.quaternion must be [x, y, z, w] of finite numbers (defaults to identity if omitted)' };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r, g, b] with values 0..1' };
+      const smoothErr = validateSmoothParams(opts);
+      if (smoothErr) return { error: smoothErr };
 
-      const triangles = findBoxTriangles(currentMeshData, {
-        center: [center[0], center[1], center[2]],
-        size: [size[0], size[1], size[2]],
+      const box = {
+        center: [center[0], center[1], center[2]] as [number, number, number],
+        size: [size[0], size[1], size[2]] as [number, number, number],
         quaternion: q,
-      });
+      };
+      const triangles = findBoxTriangles(currentMeshData, box);
       if (triangles.size === 0) return { error: 'paintInOrientedBox: no triangles inside the box. Try a larger size, recheck the center, or use paintPreview to see what the box covers.' };
 
-      return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
+      // Persist a re-resolvable box descriptor (not baked triangle ids) so the
+      // edge can be smoothed: adding it rebuilds the refined mesh and re-resolves
+      // this region against it before addRegion returns.
+      const { smooth, maxEdge } = resolveShapeSmoothFields(opts);
+      const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
+      const region = addRegion(
+        regionName,
+        opts.color as [number, number, number],
+        'slab',
+        { kind: 'box', center: box.center, size: box.size, quaternion: box.quaternion, smooth, maxEdge },
+        triangles,
+      );
+      scheduleColorRefresh();
+      syncLockState();
+      const stats = regionTriangleStats(region.triangles, currentMeshData);
+      return { id: region.id, name: region.name, triangles: region.triangles.size, bbox: stats.bbox, centroid: stats.centroid, smooth, maxEdge };
     },
 
     /** Paint every triangle whose centroid lies within `radius` of `point`.
@@ -4935,7 +5082,11 @@ async function main() {
       const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
       // maxEdge (absolute) overrides; otherwise radius / resolution, default 256.
       const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 256));
-      const target = maxEdge !== undefined ? maxEdge : radius / res;
+      // Floor an explicit maxEdge at the same finest edge the resolution path
+      // can request (radius / SMOOTH_DIVISOR_MAX). A tinier value just drives
+      // runaway subdivision for no visible benefit (the safety ceiling in
+      // buildRefinedMesh would cut it off anyway).
+      const target = maxEdge !== undefined ? Math.max(maxEdge, radius / SMOOTH_DIVISOR_MAX) : radius / res;
       const region = addRegion(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
         [color[0], color[1], color[2]],
@@ -6034,6 +6185,29 @@ async function main() {
     return null;
   }
 
+  /** Validate the optional edge-smoothing params shared by slab/shape paint
+   *  methods (`smooth`, `resolution`, `maxEdge`). */
+  function validateSmoothParams(opts: { smooth?: unknown; resolution?: unknown; maxEdge?: unknown }): string | null {
+    if (opts.smooth !== undefined && typeof opts.smooth !== 'boolean') return 'smooth must be a boolean';
+    if (opts.resolution !== undefined && (typeof opts.resolution !== 'number' || !Number.isFinite(opts.resolution) || opts.resolution < SMOOTH_DIVISOR_MIN || opts.resolution > SMOOTH_DIVISOR_MAX)) {
+      return `resolution must be a number from ${SMOOTH_DIVISOR_MIN} to ${SMOOTH_DIVISOR_MAX}`;
+    }
+    if (opts.maxEdge !== undefined && (typeof opts.maxEdge !== 'number' || !Number.isFinite(opts.maxEdge) || opts.maxEdge <= 0)) return 'maxEdge must be a positive finite number';
+    return null;
+  }
+
+  /** Resolve smoothing fields for a slab/shape descriptor from API opts.
+   *  `smooth` defaults to true; an explicit positive `maxEdge` (absolute edge
+   *  length) wins over `resolution` (model bbox diagonal / resolution, default
+   *  256). With smoothing off, the fields refine nothing. */
+  function resolveShapeSmoothFields(opts: { smooth?: boolean; resolution?: number; maxEdge?: number }): { smooth: boolean; maxEdge: number } {
+    if (opts.smooth === false) return { smooth: false, maxEdge: 0 };
+    if (typeof opts.maxEdge === 'number' && opts.maxEdge > 0) return { smooth: true, maxEdge: opts.maxEdge };
+    const resolution = typeof opts.resolution === 'number' && opts.resolution > 0 ? opts.resolution : 256;
+    const maxEdge = currentMeshData ? smoothEdgeForResolution(currentMeshData, resolution) : 0;
+    return { smooth: maxEdge > 0, maxEdge };
+  }
+
   function validateNormalCone(cone: { axis: [number, number, number]; angleDeg: number } | undefined): string | null {
     if (cone === undefined) return null;
     if (typeof cone !== 'object' || cone === null) return 'normalCone must be { axis: [x,y,z], angleDeg: number }';
@@ -6432,10 +6606,24 @@ async function main() {
       // saved version re-runs the code first, which rebuilds the map.
       currentLabelMap = result.labelMap ?? null;
 
-      // Apply any existing color regions to the mesh
-      const displayMesh = hasColorRegions() ? applyTriColorsIfVisible(result.mesh) : result.mesh;
-      updateMesh(displayMesh);
-      updatePaintMesh(result.mesh); // always pass uncolored mesh for adjacency
+      // Apply any existing color regions to the mesh. Refining regions —
+      // smooth brush strokes AND smooth slab/box regions — subdivide the mesh:
+      // their triangle indices point into the REFINED tessellation, not this
+      // freshly-run coarse base. Re-running the code (e.g. the debounced
+      // auto-run that fires ~300ms after a saved version loads) resets
+      // currentMeshData to the coarse base, so naively coloring `result.mesh`
+      // would stamp those refined-mesh indices onto coarse triangles — the
+      // "shattered shards" bug. Gate on hasRefineDescriptors() (not just brush
+      // strokes) so slab/box smooth regions rebuild too, exactly as the
+      // visibility-toggle path does via reconcilePaintedGeometry.
+      if (hasColorRegions() && hasRefineDescriptors()) {
+        rebuildPaintedGeometry();
+        lastStrokeList = strokeDescriptors();
+      } else {
+        const displayMesh = hasColorRegions() ? applyTriColorsIfVisible(result.mesh) : result.mesh;
+        updateMesh(displayMesh);
+        updatePaintMesh(result.mesh); // always pass uncolored mesh for adjacency
+      }
 
       updateGeometryData(elapsed, src);
       syncClipSliderBounds();
@@ -6622,7 +6810,7 @@ async function main() {
 
     function reflect(locked: boolean) {
       lockBtn.className = locked ? activeClass : inactiveClass;
-      lockBtn.textContent = locked ? '\uD83D\uDD12' : '\uD83D\uDD13';
+      lockBtn.textContent = locked ? '\uD83D\uDD12 Lock' : '\uD83D\uDD13 Lock';
       lockBtn.title = locked ? 'Unlock camera rotation' : 'Lock camera rotation';
     }
 

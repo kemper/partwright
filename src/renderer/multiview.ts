@@ -277,7 +277,7 @@ export function sortImagesByPreset(images: readonly AttachedImage[]): AttachedIm
 
 // === Scene construction for offscreen single-view renders ===
 
-function createElevationScene(geometry: THREE.BufferGeometry, bgColor: number): THREE.Scene {
+function createElevationScene(geometry: THREE.BufferGeometry, bgColor: number, wireframe?: boolean): THREE.Scene {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(bgColor);
   const ambient = new THREE.AmbientLight(0xffffff, 0.7);
@@ -294,11 +294,13 @@ function createElevationScene(geometry: THREE.BufferGeometry, bgColor: number): 
   // Wireframe overlay obscures vertex-color verification on dense
   // organic meshes — at 320px tile size, the 30% black edges of tens
   // of thousands of triangles compound into a dark mass that washes
-  // out painted regions. Skip the wireframe when the mesh carries
-  // per-triangle colors (the user is in a paint workflow and wants
-  // to read colors, not topology). Keep it for uncolored renders
-  // where topology IS the subject.
-  if (!hasColors) {
+  // out painted regions. Default: skip the wireframe when the mesh
+  // carries per-triangle colors (paint workflow — read colors, not
+  // topology); keep it for uncolored renders where topology IS the
+  // subject. An explicit `wireframe` arg overrides either way — catalog
+  // hero thumbnails pass `false` for a clean render regardless of color.
+  const showWire = wireframe ?? !hasColors;
+  if (showWire) {
     const wireMesh = new THREE.Mesh(geometry, createBlackWireframeMaterial());
     scene.add(wireMesh);
   }
@@ -367,16 +369,17 @@ export function buildViewCamera(meshData: MeshData, options: {
   return camera;
 }
 
-export function renderSingleView(meshData: MeshData, options: {
+export function renderSingleViewCanvas(meshData: MeshData, options: {
   elevation?: number;
   azimuth?: number;
   ortho?: boolean;
   size?: number;
-} = {}): string {
+  wireframe?: boolean;
+} = {}): HTMLCanvasElement {
   const viewSize = options.size ?? 500;
 
   const geometry = meshDataToGeometry(meshData);
-  const scene = createElevationScene(geometry, 0xffffff);
+  const scene = createElevationScene(geometry, 0xffffff, options.wireframe);
   const camera = buildViewCamera(meshData, options);
   const renderer = getOffscreenRenderer(viewSize);
 
@@ -397,7 +400,18 @@ export function renderSingleView(meshData: MeshData, options: {
   }
   disposeScene(scene);
   geometry.dispose();
-  return canvas.toDataURL('image/png');
+  return canvas;
+}
+
+/** Render a single named angle to a PNG data URL. */
+export function renderSingleView(meshData: MeshData, options: {
+  elevation?: number;
+  azimuth?: number;
+  ortho?: boolean;
+  size?: number;
+  wireframe?: boolean;
+} = {}): string {
+  return renderSingleViewCanvas(meshData, options).toDataURL('image/png');
 }
 
 /** Render a cross-section at a given Z height as an SVG string */

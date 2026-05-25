@@ -8,8 +8,8 @@ import { resetClient, listModels as listAnthropicModels } from '../ai/anthropic'
 import { resetClient as resetOpenaiClient, listModels as listOpenaiModels } from '../ai/openai';
 import { resetClient as resetGeminiClient, listModels as listGeminiModels } from '../ai/gemini';
 import { formatUsd } from '../ai/cost';
-import { showAiKeyModal } from './aiKeyModal';
-import { showAiLocalModal } from './aiLocalModal';
+import { providerKeyMeta, validateAndStoreKey, type HostedProvider } from './aiKeyModal';
+import { renderLocalPicker } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { createModalShell } from './modalShell';
 import {
@@ -27,7 +27,7 @@ import {
   OPENAI_MODEL_OPTIONS,
   GEMINI_MODEL_OPTIONS,
 } from '../ai/settings';
-import { effectiveContextCeiling, resolveLocalModel, isModelLoaded, unloadActiveLocalModel } from '../ai/local';
+import { effectiveContextCeiling, resolveLocalModel, unloadActiveLocalModel } from '../ai/local';
 import { getCachedCeiling } from '../ai/modelMetadata';
 import type { AnthropicModelId, Provider } from '../ai/types';
 
@@ -41,26 +41,38 @@ export interface AiSettingsOptions {
 }
 
 export async function showAiSettingsModal(cb: AiSettingsCallbacks, opts: AiSettingsOptions = {}): Promise<void> {
-  const shell = createModalShell({ title: 'AI Settings', scrollable: true });
+  // Wider than the default 'md' so the inlined local-model cards (left
+  // metadata + right action column) and the per-provider key form have
+  // room to breathe. The shell is scrollable, so tall tabs (Local) scroll.
+  const shell = createModalShell({ title: 'AI Settings', scrollable: true, maxWidth: 'lg' });
   shell.body.classList.remove('gap-3');
   shell.body.classList.add('gap-4');
 
   let viewedTab: Provider = opts.initialTab ?? loadSettings().toggles.provider;
+  const switchTab = (tab: Provider): void => {
+    viewedTab = tab;
+    void rerender();
+  };
 
   const rerender = async (): Promise<void> => {
     shell.body.replaceChildren();
     shell.footer.replaceChildren();
-    const tabBar = buildTabBar(viewedTab, tab => {
-      viewedTab = tab;
-      void rerender();
-    });
+    const tabBar = buildTabBar(viewedTab, switchTab);
     shell.body.appendChild(tabBar);
     const tabContent = document.createElement('div');
     tabContent.className = 'flex flex-col gap-4';
     shell.body.appendChild(tabContent);
-    await renderTabContent(viewedTab, tabContent, shell.footer, shell.close, cb, () => { void rerender(); });
+    await renderTabContent(viewedTab, tabContent, shell.close, cb, () => { void rerender(); }, switchTab);
+    shell.body.appendChild(makeDivider());
+    shell.body.appendChild(buildApiTimeoutSection(cb));
     shell.body.appendChild(makeDivider());
     shell.body.appendChild(buildAutoCompactSection(cb, () => { void rerender(); }));
+
+    const done = document.createElement('button');
+    done.className = 'px-3 py-1.5 rounded text-xs font-medium bg-zinc-700 hover:bg-zinc-600 text-zinc-100';
+    done.textContent = 'Done';
+    done.addEventListener('click', shell.close);
+    shell.footer.appendChild(done);
   };
 
   await rerender();
@@ -110,33 +122,43 @@ function buildTabBar(viewedTab: Provider, onSwitch: (tab: Provider) => void): HT
 async function renderTabContent(
   viewedTab: Provider,
   container: HTMLElement,
-  footer: HTMLElement,
   close: () => void,
   cb: AiSettingsCallbacks,
   rerender: () => void,
+  switchTab: (tab: Provider) => void,
 ): Promise<void> {
-  container.appendChild(await buildEnableRow(viewedTab, cb, rerender));
+  // The Enable row reflects whether the viewed provider is active. Picking a
+  // local model (inline below) flips that without a full tab rebuild, so the
+  // row lives in its own host we can refresh on its own.
+  const enableRowHost = document.createElement('div');
+  enableRowHost.appendChild(await buildEnableRow(viewedTab, cb, rerender));
+  container.appendChild(enableRowHost);
+  const refreshEnableRow = async (): Promise<void> => {
+    enableRowHost.replaceChildren(await buildEnableRow(viewedTab, cb, rerender));
+  };
 
-  if (viewedTab === 'anthropic') {
-    container.appendChild(buildAnthropicIntro());
+  if (viewedTab === 'anthropic' || viewedTab === 'openai' || viewedTab === 'gemini') {
+    const hosted = viewedTab;
+    container.appendChild(buildHostedIntro(hosted));
     container.appendChild(makeDivider());
-    await buildAnthropicKeySection(close, footer, container, cb);
+    container.appendChild(await buildKeySection(hosted, cb, rerender, switchTab));
     container.appendChild(makeDivider());
-    container.appendChild(buildAnthropicModelSection(cb));
+    container.appendChild(hosted === 'anthropic'
+      ? buildAnthropicModelSection(cb)
+      : buildHostedModelSection(hosted, cb));
     container.appendChild(makeDivider());
-    container.appendChild(buildSystemPromptSection('anthropic', close, cb));
-  } else if (viewedTab === 'openai' || viewedTab === 'gemini') {
-    container.appendChild(buildHostedIntro(viewedTab));
-    container.appendChild(makeDivider());
-    await buildHostedKeySection(viewedTab, close, footer, container, cb);
-    container.appendChild(makeDivider());
-    container.appendChild(buildHostedModelSection(viewedTab, cb));
-    container.appendChild(makeDivider());
-    container.appendChild(buildSystemPromptSection(viewedTab, close, cb));
+    container.appendChild(buildSystemPromptSection(hosted, close, cb));
   } else {
-    container.appendChild(buildLocalIntro());
-    container.appendChild(makeDivider());
-    container.appendChild(buildLocalSection(close, cb));
+    // Inline the full local-model picker (formerly a separate pop-up).
+    // Activating a model here also flips the Enable row above to "active".
+    const picker = document.createElement('div');
+    picker.className = 'flex flex-col gap-3';
+    container.appendChild(picker);
+    void renderLocalPicker(
+      picker,
+      { onChange: () => { cb.onChange(); void refreshEnableRow(); } },
+      { embedded: true },
+    );
     container.appendChild(makeDivider());
     container.appendChild(buildLocalContextSection(cb));
     container.appendChild(makeDivider());
@@ -207,7 +229,9 @@ async function buildEnableRow(viewedTab: Provider, cb: AiSettingsCallbacks, rere
   return wrap;
 }
 
-function buildAnthropicIntro(): HTMLElement {
+/** "About" blurb for a hosted (cloud) provider. Covers all three so the
+ *  Anthropic / OpenAI / Gemini tabs share one builder. */
+function buildHostedIntro(provider: HostedProvider): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'flex flex-col gap-2';
   const head = document.createElement('div');
@@ -216,21 +240,11 @@ function buildAnthropicIntro(): HTMLElement {
   wrap.appendChild(head);
   const body = document.createElement('p');
   body.className = 'text-[11px] text-zinc-300 leading-snug';
-  body.innerHTML = 'Sends chat turns to <strong>Anthropic\'s hosted Claude</strong> models. Higher quality, vision support, and full <code>ai.md</code> system prompt — but each turn costs a few cents charged to your Anthropic account. The API key is stored only in this browser and never sent to a Partwright server.';
-  wrap.appendChild(body);
-  return wrap;
-}
-
-function buildLocalIntro(): HTMLElement {
-  const wrap = document.createElement('div');
-  wrap.className = 'flex flex-col gap-2';
-  const head = document.createElement('div');
-  head.className = 'text-xs text-zinc-400';
-  head.textContent = 'About';
-  wrap.appendChild(head);
-  const body = document.createElement('p');
-  body.className = 'text-[11px] text-zinc-300 leading-snug';
-  body.innerHTML = 'Runs a <strong>WebLLM model entirely in this browser</strong> on your GPU. No API key, no per-turn cost, no network traffic after the one-time weight download — but quality is noticeably lower than Claude, and you\'ll need a few GB of GPU memory. Best on Chrome / Edge / Safari 26+ on a recent discrete GPU.';
+  body.innerHTML = provider === 'anthropic'
+    ? 'Sends chat turns to <strong>Anthropic\'s hosted Claude</strong> models. Higher quality, vision support, and full <code>ai.md</code> system prompt — but each turn costs a few cents charged to your Anthropic account. The API key is stored only in this browser and never sent to a Partwright server.'
+    : provider === 'openai'
+      ? 'Sends chat turns to <strong>OpenAI\'s hosted GPT / o-series</strong> models. Vision support and the full <code>ai.md</code> system prompt; each turn is billed to your OpenAI account. The API key is stored only in this browser and never sent to a Partwright server.'
+      : 'Sends chat turns to <strong>Google\'s hosted Gemini</strong> models. Vision support and the full <code>ai.md</code> system prompt; each turn is billed to your Google AI account. The API key is stored only in this browser and never sent to a Partwright server.';
   wrap.appendChild(body);
   return wrap;
 }
@@ -343,42 +357,18 @@ function buildAnthropicModelSection(cb: AiSettingsCallbacks): HTMLElement {
   return wrap;
 }
 
-// === OpenAI / Gemini tabs ===
-// These two hosted providers share one set of builders (they differ only
-// in copy, model list, and which setter/resetClient to call). Anthropic
-// keeps its own bespoke builders above because its key section predates
-// this and the smoke test anchors on its exact "Connect Anthropic API"
-// string.
+// === OpenAI / Gemini model picker ===
+// These two cloud providers share the bespoke model-picker builder below
+// (custom-id input + loader). Anthropic uses buildAnthropicModelSection.
+// Key entry + status is unified across all three in buildKeySection.
 
-type HostedProvider = 'openai' | 'gemini';
-
-function hostedConsoleUrl(provider: HostedProvider): { url: string; label: string } {
-  return provider === 'openai'
-    ? { url: 'https://platform.openai.com/api-keys', label: 'platform.openai.com' }
-    : { url: 'https://aistudio.google.com/app/apikey', label: 'aistudio.google.com' };
-}
-
-function buildHostedIntro(provider: HostedProvider): HTMLElement {
-  const wrap = document.createElement('div');
-  wrap.className = 'flex flex-col gap-2';
-  const head = document.createElement('div');
-  head.className = 'text-xs text-zinc-400';
-  head.textContent = 'About';
-  wrap.appendChild(head);
-  const body = document.createElement('p');
-  body.className = 'text-[11px] text-zinc-300 leading-snug';
-  body.innerHTML = provider === 'openai'
-    ? 'Sends chat turns to <strong>OpenAI\'s hosted GPT / o-series</strong> models. Vision support and the full <code>ai.md</code> system prompt; each turn is billed to your OpenAI account. The API key is stored only in this browser and never sent to a Partwright server.'
-    : 'Sends chat turns to <strong>Google\'s hosted Gemini</strong> models. Vision support and the full <code>ai.md</code> system prompt; each turn is billed to your Google AI account. The API key is stored only in this browser and never sent to a Partwright server.';
-  wrap.appendChild(body);
-  return wrap;
-}
+type CloudPairProvider = 'openai' | 'gemini';
 
 /** Default-model picker for a hosted provider. Mirrors
  *  buildAnthropicModelSection but reads/writes the provider's own model
  *  field and includes a custom-id input for dated snapshots / brand-new
  *  releases not in the curated list. */
-function buildHostedModelSection(provider: HostedProvider, cb: AiSettingsCallbacks): HTMLElement {
+function buildHostedModelSection(provider: CloudPairProvider, cb: AiSettingsCallbacks): HTMLElement {
   // Starts from the curated list; for Gemini the user can replace it with
   // their key's real lineup via the "Load models from your key" button.
   let optionList = provider === 'openai' ? OPENAI_MODEL_OPTIONS : GEMINI_MODEL_OPTIONS;
@@ -469,20 +459,32 @@ function buildHostedModelSection(provider: HostedProvider, cb: AiSettingsCallbac
   return wrap;
 }
 
-/** Key status + connect/replace/disconnect for a hosted provider. Mirrors
- *  buildAnthropicKeySection; actions live in the modal footer like the
- *  Anthropic tab. */
-async function buildHostedKeySection(
-  provider: HostedProvider,
-  close: () => void,
-  footer: HTMLElement,
-  body: HTMLElement,
-  cb: AiSettingsCallbacks,
-): Promise<void> {
-  const label = providerLabel(provider);
-  const reset = provider === 'openai' ? resetOpenaiClient : resetGeminiClient;
-  const console = hostedConsoleUrl(provider);
+function resetClientFor(provider: HostedProvider): void {
+  if (provider === 'anthropic') resetClient();
+  else if (provider === 'openai') resetOpenaiClient();
+  else resetGeminiClient();
+}
 
+/** The submit/label text on a hosted provider's connect button. Anchored
+ *  by the e2e tests, so keep the exact strings:
+ *  Anthropic → "Connect Anthropic API", OpenAI → "Connect OpenAI",
+ *  Gemini → "Connect Google Gemini". */
+function connectButtonLabel(provider: HostedProvider): string {
+  return provider === 'anthropic' ? 'Connect Anthropic API' : `Connect ${providerLabel(provider)}`;
+}
+
+/** Unified key section for any hosted provider. When no key is stored it
+ *  renders the inline entry form (input + validate); once connected it
+ *  shows lifetime usage stats and an inline "Remove key" link. This
+ *  replaces the old pattern of a "Connect…" button that closed Settings
+ *  and popped a separate key modal. */
+async function buildKeySection(
+  provider: HostedProvider,
+  cb: AiSettingsCallbacks,
+  rerender: () => void,
+  switchTab: (tab: Provider) => void,
+): Promise<HTMLElement> {
+  const label = providerLabel(provider);
   const wrap = document.createElement('div');
   wrap.className = 'flex flex-col gap-2';
   const head = document.createElement('div');
@@ -492,30 +494,8 @@ async function buildHostedKeySection(
 
   const key = await getKey(provider);
   if (!key) {
-    const empty = document.createElement('p');
-    empty.className = 'text-[11px] text-zinc-400';
-    empty.textContent = `No ${label} key connected.`;
-    wrap.appendChild(empty);
-    const linkRow = document.createElement('p');
-    linkRow.className = 'text-[11px]';
-    const a = document.createElement('a');
-    a.href = console.url;
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    a.className = 'text-blue-400 hover:text-blue-300 underline';
-    a.textContent = `Get a key at ${console.label} →`;
-    linkRow.appendChild(a);
-    wrap.appendChild(linkRow);
-    const connectBtn = document.createElement('button');
-    connectBtn.className = 'self-start px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white';
-    connectBtn.textContent = `Connect ${label}`;
-    connectBtn.addEventListener('click', () => {
-      close();
-      void showAiKeyModal({ provider, onConnected: cb.onChange });
-    });
-    wrap.appendChild(connectBtn);
-    body.appendChild(wrap);
-    return;
+    wrap.appendChild(buildKeyEntryForm(provider, cb, rerender, switchTab));
+    return wrap;
   }
 
   const last4 = key.apiKey.slice(-4);
@@ -541,72 +521,123 @@ async function buildHostedKeySection(
 
   const note = document.createElement('p');
   note.className = 'text-[11px] text-zinc-500 leading-snug';
-  note.textContent = 'Estimated spend uses public list prices and may differ slightly from your provider invoice.';
+  note.textContent = `Estimated spend uses public list prices and may differ slightly from your ${provider === 'anthropic' ? 'Anthropic' : 'provider'} invoice.`;
   wrap.appendChild(note);
-  body.appendChild(wrap);
 
-  const replaceBtn = document.createElement('button');
-  replaceBtn.className = 'px-3 py-1.5 rounded text-xs text-zinc-200 bg-zinc-700 hover:bg-zinc-600';
-  replaceBtn.textContent = 'Replace key';
-  replaceBtn.addEventListener('click', () => {
-    close();
-    void showAiKeyModal({ provider, onConnected: cb.onChange });
-  });
-  footer.appendChild(replaceBtn);
-
-  const disconnectBtn = document.createElement('button');
-  disconnectBtn.className = 'px-3 py-1.5 rounded text-xs text-red-300 bg-red-900/40 hover:bg-red-800/60';
-  disconnectBtn.textContent = 'Disconnect';
-  disconnectBtn.addEventListener('click', async () => {
-    if (!confirm(`Disconnect ${label}? Your chat history is kept; only the key is removed.`)) return;
+  const remove = document.createElement('button');
+  remove.className = 'self-start text-[11px] text-red-300 hover:text-red-200 underline';
+  remove.textContent = `Remove ${label} key`;
+  remove.title = 'Delete this key from the browser. Your chat history is kept; you can paste a new key any time.';
+  remove.addEventListener('click', async () => {
+    if (!confirm(`Remove your ${label} key? Your chat history is kept; only the key is removed.`)) return;
     await deleteKey(provider);
-    reset();
-    close();
+    resetClientFor(provider);
     cb.onChange();
+    // Re-render the tab so the inline entry form reappears.
+    rerender();
   });
-  footer.appendChild(disconnectBtn);
+  wrap.appendChild(remove);
+  return wrap;
+}
+
+/** Inline API-key entry form rendered directly inside a provider tab. On a
+ *  successful validate it stores the key, promotes the provider to active,
+ *  and re-renders the tab (flipping to the usage-stats view) — no separate
+ *  pop-up modal. */
+function buildKeyEntryForm(
+  provider: HostedProvider,
+  cb: AiSettingsCallbacks,
+  rerender: () => void,
+  switchTab: (tab: Provider) => void,
+): HTMLElement {
+  const meta = providerKeyMeta(provider);
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col gap-2';
+
+  const link = document.createElement('a');
+  link.href = meta.consoleUrl;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.className = 'text-blue-400 hover:text-blue-300 underline text-[11px]';
+  link.textContent = meta.consoleLabel;
+  wrap.appendChild(link);
+
+  const tip = document.createElement('div');
+  tip.className = 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-[11px] text-amber-200 leading-snug';
+  tip.innerHTML = '<strong>Recommended:</strong> use a workspace-scoped key with a monthly spend cap. Anyone who can run code in this page (extensions, devtools) can read the key.';
+  wrap.appendChild(tip);
+
+  const input = document.createElement('input');
+  input.type = 'password';
+  input.placeholder = meta.placeholder;
+  input.className = 'w-full px-3 py-2 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-sm font-mono placeholder:text-zinc-600 focus:outline-none focus:border-blue-500';
+  input.spellcheck = false;
+  input.autocomplete = 'off';
+  wrap.appendChild(input);
+
+  const errorBox = document.createElement('div');
+  errorBox.className = 'text-[11px] text-red-400 hidden';
+  wrap.appendChild(errorBox);
+
+  const status = document.createElement('div');
+  status.className = 'text-[11px] text-zinc-500 hidden';
+  wrap.appendChild(status);
+
+  const connectBtn = document.createElement('button');
+  connectBtn.className = 'self-start px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
+  connectBtn.textContent = connectButtonLabel(provider);
+  wrap.appendChild(connectBtn);
+
+  // Local-model escape hatch — switches to the Local tab (no pop-up).
+  const altRow = document.createElement('div');
+  altRow.className = 'text-[11px] text-zinc-400 leading-snug';
+  altRow.appendChild(document.createTextNode('Don’t want an API key? '));
+  const localLink = document.createElement('button');
+  localLink.className = 'underline text-emerald-300 hover:text-emerald-200';
+  localLink.textContent = 'Run a local model in your browser';
+  localLink.addEventListener('click', () => switchTab('local'));
+  altRow.appendChild(localLink);
+  altRow.appendChild(document.createTextNode(' — free, runs on your GPU.'));
+  wrap.appendChild(altRow);
+
+  const showError = (msg: string) => {
+    errorBox.textContent = msg;
+    errorBox.classList.remove('hidden');
+  };
+
+  async function attempt(): Promise<void> {
+    if (input.value.trim().length < 10) {
+      showError('That key looks too short.');
+      return;
+    }
+    connectBtn.disabled = true;
+    connectBtn.textContent = 'Validating…';
+    status.classList.remove('hidden');
+    status.textContent = 'Sending a 1-token test request to verify the key…';
+    errorBox.classList.add('hidden');
+
+    const error = await validateAndStoreKey(provider, input.value);
+    if (error) {
+      showError(error);
+      connectBtn.disabled = false;
+      connectBtn.textContent = connectButtonLabel(provider);
+      status.classList.add('hidden');
+      return;
+    }
+    cb.onChange();
+    rerender();
+  }
+
+  connectBtn.addEventListener('click', () => { void attempt(); });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); void attempt(); }
+  });
+  return wrap;
 }
 
 function formatK(n: number): string {
   if (n >= 1024 && n % 1024 === 0) return `${n / 1024}K`;
   return n.toLocaleString();
-}
-
-function buildLocalSection(close: () => void, cb: AiSettingsCallbacks): HTMLElement {
-  const wrap = document.createElement('div');
-  wrap.className = 'flex flex-col gap-2';
-  const head = document.createElement('div');
-  head.className = 'flex items-center justify-between';
-  const h = document.createElement('div');
-  h.className = 'text-xs text-zinc-400';
-  h.textContent = 'Local model';
-  head.appendChild(h);
-  const pick = document.createElement('button');
-  pick.className = 'px-3 py-1 rounded text-xs text-zinc-200 bg-zinc-700 hover:bg-zinc-600';
-  pick.textContent = 'Choose model…';
-  pick.addEventListener('click', () => {
-    close();
-    void showAiLocalModal({ onChange: cb.onChange });
-  });
-  head.appendChild(pick);
-  wrap.appendChild(head);
-
-  const settings = loadSettings();
-  const status = document.createElement('div');
-  status.className = 'text-[11px] text-zinc-400 leading-snug';
-  if (settings.toggles.localModel) {
-    try {
-      const info = resolveLocalModel(settings.toggles.localModel);
-      const resident = isModelLoaded(info.id);
-      status.textContent = `${info.label} · ${(info.vramMB / 1024).toFixed(1)} GB VRAM · ${resident ? 'in GPU memory' : 'not yet loaded'}`;
-    } catch {
-      status.textContent = 'Previously selected model is no longer available. Pick another.';
-    }
-  } else {
-    status.textContent = 'No local model picked yet. Click “Choose model…” to download one.';
-  }
-  wrap.appendChild(status);
-  return wrap;
 }
 
 /** "Local context" section — controls the trade-off between conversation
@@ -702,29 +733,46 @@ function buildLocalContextSection(cb: AiSettingsCallbacks): HTMLElement {
   reloadHint.textContent = 'Changing these unloads the GPU engine; the next message rebuilds it (cached weights survive — just a fast reload).';
   wrap.appendChild(reloadHint);
 
-  const stallRow = document.createElement('label');
-  stallRow.className = 'flex items-center gap-2 text-xs text-zinc-300';
-  stallRow.innerHTML = '<span>Stall timeout:</span>';
-  const stallInput = document.createElement('input');
-  stallInput.type = 'number';
-  stallInput.min = '5';
-  stallInput.max = '600';
-  stallInput.step = '5';
-  stallInput.className = 'w-20 px-2 py-1 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-xs focus:outline-none focus:border-blue-500';
-  stallInput.value = String(settings.localContext.stallTimeoutSec);
-  stallInput.addEventListener('change', () => {
-    const v = parseInt(stallInput.value, 10);
-    const next = Number.isFinite(v) && v >= 5 ? v : 35;
-    stallInput.value = String(next);
+  return wrap;
+}
+
+/** Request-timeout control. The stall watchdog (aiPanel getStallThresholdMs)
+ *  aborts and auto-retries a turn after this many seconds with no streamed
+ *  token — for every provider, cloud or local. It lives here, outside the
+ *  per-provider tabs, because it applies to all of them; it had been
+ *  reachable only from the Local tab, hiding it from cloud users. */
+function buildApiTimeoutSection(cb: AiSettingsCallbacks): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex flex-col gap-2';
+  const head = document.createElement('div');
+  head.className = 'text-xs text-zinc-400';
+  head.textContent = 'Request timeout';
+  wrap.appendChild(head);
+
+  const settings = loadSettings();
+  const row = document.createElement('label');
+  row.className = 'flex items-center gap-2 text-xs text-zinc-300';
+  row.innerHTML = '<span>Timeout:</span>';
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = '5';
+  input.max = '600';
+  input.step = '5';
+  input.className = 'w-20 px-2 py-1 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-xs focus:outline-none focus:border-blue-500';
+  input.value = String(settings.localContext.stallTimeoutSec);
+  input.addEventListener('change', () => {
+    const v = parseInt(input.value, 10);
+    const next = Number.isFinite(v) && v >= 5 ? v : 60;
+    input.value = String(next);
     saveSettings(setLocalContext(loadSettings(), { stallTimeoutSec: next }));
     cb.onChange();
   });
-  stallRow.appendChild(stallInput);
-  const stallHint = document.createElement('span');
-  stallHint.className = 'text-[10px] text-zinc-500';
-  stallHint.textContent = 'seconds · gap between tokens before auto-retry fires. Raise to 120+ for large models on slow hardware.';
-  stallRow.appendChild(stallHint);
-  wrap.appendChild(stallRow);
+  row.appendChild(input);
+  const hint = document.createElement('span');
+  hint.className = 'text-[10px] text-zinc-500';
+  hint.textContent = 'seconds without a streamed token before the request aborts and auto-retries. Applies to every provider; raise to 120+ for large local models on slow hardware.';
+  row.appendChild(hint);
+  wrap.appendChild(row);
 
   return wrap;
 }
@@ -810,82 +858,4 @@ function buildSystemPromptSection(provider: Provider, close: () => void, cb: AiS
   });
   wrap.appendChild(editBtn);
   return wrap;
-}
-
-/** Anthropic key + lifetime usage panel. Renders the empty-state connect
- *  button inline, and (when a key exists) puts Replace / Disconnect into
- *  the modal footer. */
-async function buildAnthropicKeySection(close: () => void, footer: HTMLElement, body: HTMLElement, cb: AiSettingsCallbacks): Promise<void> {
-  const wrap = document.createElement('div');
-  wrap.className = 'flex flex-col gap-2';
-  const head = document.createElement('div');
-  head.className = 'text-xs text-zinc-400';
-  head.textContent = 'Anthropic key';
-  wrap.appendChild(head);
-
-  const key = await getKey('anthropic');
-  if (!key) {
-    const empty = document.createElement('p');
-    empty.className = 'text-[11px] text-zinc-400';
-    empty.textContent = 'No Anthropic key connected.';
-    wrap.appendChild(empty);
-    const connectBtn = document.createElement('button');
-    connectBtn.className = 'self-start px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white';
-    connectBtn.textContent = 'Connect Anthropic API';
-    connectBtn.addEventListener('click', () => {
-      close();
-      void showAiKeyModal({ onConnected: cb.onChange });
-    });
-    wrap.appendChild(connectBtn);
-    body.appendChild(wrap);
-    return;
-  }
-
-  const last4 = key.apiKey.slice(-4);
-  const row = (label: string, value: string) => {
-    const r = document.createElement('div');
-    r.className = 'flex justify-between gap-3 text-xs';
-    const l = document.createElement('span');
-    l.className = 'text-zinc-400';
-    l.textContent = label;
-    const v = document.createElement('span');
-    v.className = 'text-zinc-100 font-mono';
-    v.textContent = value;
-    r.appendChild(l);
-    r.appendChild(v);
-    return r;
-  };
-  wrap.appendChild(row('Key', `…${last4}`));
-  wrap.appendChild(row('Connected', new Date(key.createdAt).toLocaleString()));
-  wrap.appendChild(row('Last used', new Date(key.lastUsed).toLocaleString()));
-  wrap.appendChild(row('Input tokens', key.totalInputTokens.toLocaleString()));
-  wrap.appendChild(row('Output tokens', key.totalOutputTokens.toLocaleString()));
-  wrap.appendChild(row('Spent (estimated)', formatUsd(key.totalCostUsd)));
-
-  const note = document.createElement('p');
-  note.className = 'text-[11px] text-zinc-500 leading-snug';
-  note.textContent = 'Estimated spend uses public list prices and may differ slightly from your Anthropic invoice.';
-  wrap.appendChild(note);
-  body.appendChild(wrap);
-
-  const replaceBtn = document.createElement('button');
-  replaceBtn.className = 'px-3 py-1.5 rounded text-xs text-zinc-200 bg-zinc-700 hover:bg-zinc-600';
-  replaceBtn.textContent = 'Replace key';
-  replaceBtn.addEventListener('click', () => {
-    close();
-    void showAiKeyModal({ onConnected: cb.onChange });
-  });
-  footer.appendChild(replaceBtn);
-
-  const disconnectBtn = document.createElement('button');
-  disconnectBtn.className = 'px-3 py-1.5 rounded text-xs text-red-300 bg-red-900/40 hover:bg-red-800/60';
-  disconnectBtn.textContent = 'Disconnect';
-  disconnectBtn.addEventListener('click', async () => {
-    if (!confirm('Disconnect Anthropic? Your chat history is kept; only the key is removed.')) return;
-    await deleteKey('anthropic');
-    resetClient();
-    close();
-    cb.onChange();
-  });
-  footer.appendChild(disconnectBtn);
 }

@@ -267,9 +267,9 @@ partwright.paintNearestRegion({point, color, searchRadius?, name?})       // sna
 partwright.paintNear({point, radius, normalCone?, color, name?})          // sphere selector
 partwright.paintStroke({points, radius, resolution?, maxEdge?, shape?, color, name?}) // SMOOTH brush: subdivides mesh for a rounded painted edge (see note below)
 partwright.paintInBox({box, normalCone?, color, name?})                   // AABB selector
-partwright.paintInOrientedBox({box: {center, size, quaternion?}, color})  // rotated box selector (same as UI Box tool)
+partwright.paintInOrientedBox({box: {center, size, quaternion?}, color, smooth?, resolution?, maxEdge?})  // rotated box selector (same as UI Box tool); SMOOTH edges by default
 partwright.paintFaces({triangleIds, color, name?})                        // explicit triangle ids
-partwright.paintSlab({axis|normal, offset, thickness, color, name?})      // planar range
+partwright.paintSlab({axis|normal, offset, thickness, color, name?, smooth?, resolution?, maxEdge?})  // planar range; SMOOTH edges by default
 partwright.paintByLabel({label, color, name?})                            // by api.label() name (manifold-js only)
 partwright.paintByLabels([{label, color, name?}, ...])                    // batch sibling
 partwright.paintComponent({index, color, name?, topOnly?})                // by listComponents() index
@@ -512,6 +512,8 @@ partwright.paintStroke({ points: [a.point, b.point], radius: 3, resolution: 256,
 ```
 
 `resolution` is the smoothness detail (target triangle edge = radius / resolution; higher = smoother + more triangles), default **256**, range 2–1024. For absolute control pass `maxEdge` instead (target edge in mesh units, e.g. `maxEdge: 0.1` for crisp 0.1-unit edges) — it overrides resolution. A single point stamps a rounded dot.
+
+`paintSlab` and `paintInOrientedBox` share the same subdivision pipeline: their analytic boundary (slab planes / box faces) is **smoothed by default**, so a slab band or box patch gets a clean edge across coarse faces and reconstructs deterministically on reload. Same knobs — `smooth` (default true), `resolution` (model bbox diagonal / resolution, default 256), and `maxEdge` (absolute override). Pass `smooth: false` for the old blocky behavior. The id-baking selectors (`paintInBox`, `paintNear`, `paintInCylinder`, `paintFaces`, …) can't be smoothed — they lock onto existing triangles; refine the model mesh first if you need a finer edge from them.
 
 ## Common gotchas
 

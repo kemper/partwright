@@ -5,13 +5,16 @@
 import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPEND_CAP_USD, THINKING_LEVELS, type AnthropicModelId, type ChatToggles, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
 import type { LocalModelId } from './localModels';
 import { LOCAL_MODELS } from './localModels';
+import { getKey } from './db';
 
 const STORAGE_KEY = 'partwright-ai-settings-v1';
 
 export interface AiSettings {
   preset: Preset;
   toggles: ChatToggles;
-  /** When `false`, the chat drawer starts collapsed on page load. */
+  /** Whether the chat drawer is shown. Defaults to open on a first visit so
+   *  the AI surface is discoverable; persists the user's choice thereafter, so
+   *  once they close it it stays closed on reload. */
   drawerOpen: boolean;
   /** Default for new sessions before the user has touched the toggle bar. */
   autoCompactMode: 'off' | 'conservative' | 'standard' | 'aggressive';
@@ -69,8 +72,9 @@ export interface LocalContextSettings {
    *  but the model loses long-range coherence. */
   sliding: boolean;
   /** Seconds without a new token before the stall watchdog fires and
-   *  auto-retries the request. Default 35. Increase for slow models on
-   *  modest hardware (e.g. a large quant on CPU-assisted inference). */
+   *  auto-retries the request. Default 60. Applies to every provider
+   *  (cloud and local); increase for slow models on modest hardware
+   *  (e.g. a large quant on CPU-assisted inference). */
   stallTimeoutSec: number;
 }
 
@@ -97,7 +101,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     // can flip the Paint pill on, or pick the Full preset.
     scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: true },
     autoRetry: 1,
-    maxIterations: 'medium',
+    maxIterations: 'high',
     maxSpend: 'medium',
     thinking: 'high',
     anthropicModel: 'claude-sonnet-4-6',
@@ -106,7 +110,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     vision: { views: true, resolution: 'high', angles: 'all' },
     scope: { runCode: true, saveVersions: true, paintFaces: true, sessionNotes: true },
     autoRetry: 3,
-    maxIterations: 'high',
+    maxIterations: 'ultra',
     maxSpend: 'high',
     thinking: 'high',
     anthropicModel: 'claude-opus-4-7',
@@ -124,11 +128,11 @@ const DEFAULT_TOGGLES: ChatToggles = {
 const DEFAULT_SETTINGS: AiSettings = {
   preset: 'standard',
   toggles: DEFAULT_TOGGLES,
-  drawerOpen: false,
+  drawerOpen: true,
   autoCompactMode: 'off',
   systemPromptOverrides: { anthropic: null, local: null, openai: null, gemini: null },
   customLocalModels: [],
-  localContext: { windowSizeOverride: null, sliding: false, stallTimeoutSec: 35 },
+  localContext: { windowSizeOverride: null, sliding: false, stallTimeoutSec: 60 },
   aiPanelWidth: 420,
 };
 
@@ -201,6 +205,21 @@ export function reloadSettingsFromStorage(): AiSettings {
   const next = loadSettings();
   for (const fn of listeners) fn(next);
   return next;
+}
+
+/** Which AI connection the toolbar chip / "Connect AI" flow should reflect:
+ *  a configured local WebGPU model, any stored hosted key ('cloud'), or
+ *  nothing yet ('disconnected'). Shared by the toolbar chip and the panel's
+ *  auto-open-settings-on-connect behaviour so the two never drift. */
+export async function aiConnectionMode(): Promise<'disconnected' | 'cloud' | 'local'> {
+  const settings = loadSettings();
+  if (settings.toggles.provider === 'local' && settings.toggles.localModel) return 'local';
+  const [anthropic, openai, gemini] = await Promise.all([
+    getKey('anthropic'),
+    getKey('openai'),
+    getKey('gemini'),
+  ]);
+  return (anthropic || openai || gemini) ? 'cloud' : 'disconnected';
 }
 
 export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
@@ -450,7 +469,7 @@ function normalizeLocalContext(raw: Partial<LocalContextSettings> | undefined): 
   return {
     windowSizeOverride: typeof override === 'number' && override > 0 ? Math.floor(override) : null,
     sliding: raw?.sliding === true,
-    stallTimeoutSec: typeof timeout === 'number' && timeout >= 5 ? Math.floor(timeout) : 35,
+    stallTimeoutSec: typeof timeout === 'number' && timeout >= 5 ? Math.floor(timeout) : 60,
   };
 }
 
@@ -550,6 +569,7 @@ export const ANTHROPIC_MODEL_OPTIONS: { id: AnthropicModelId; label: string }[] 
  *  can also type a custom id in the settings modal (e.g. a dated
  *  snapshot) and have it stick across provider switches. */
 export const OPENAI_MODEL_OPTIONS: { id: string; label: string }[] = [
+  { id: 'gpt-5.5', label: 'GPT-5.5' },
   { id: 'gpt-5', label: 'GPT-5' },
   { id: 'gpt-5-mini', label: 'GPT-5 mini' },
   { id: 'gpt-5-nano', label: 'GPT-5 nano' },

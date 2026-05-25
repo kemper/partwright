@@ -109,7 +109,10 @@ export async function runReview(
         systemSuffix: '',
         apiMessages: buildApiMessages([ephemeral]),
         tools: [],
-        maxTokens: 1024,
+        // No maxTokens override: use each provider's reasoning-aware default
+        // (Anthropic 8192, OpenAI 8192, Gemini 32768). A hardcoded 1024 here
+        // let a thinking/reasoning reviewer model (Gemini Pro, OpenAI o-series)
+        // spend the whole ceiling on hidden reasoning and return an empty review.
       });
       text = r.text;
       usage = r.usage;
@@ -123,7 +126,8 @@ export async function runReview(
         systemSuffix: '',
         history: [ephemeral],
         tools: [],
-        maxTokens: 1024,
+        // See the Anthropic branch: use the provider default so an o-series /
+        // gpt-5 reviewer has headroom for hidden reasoning + the answer.
       });
       text = r.text;
       usage = r.usage;
@@ -137,19 +141,21 @@ export async function runReview(
         systemSuffix: '',
         history: [ephemeral],
         tools: [],
-        maxTokens: 1024,
+        // See the Anthropic branch: Gemini's 32768 default is what keeps a
+        // Pro/2.5 thinking reviewer from spending the ceiling on reasoning.
       });
       text = r.text;
       usage = r.usage;
     } else {
-      // local
+      // local — keep an explicit ceiling (local's default is only 768, which
+      // can truncate a multi-sentence review), but give the answer headroom.
       const r = await streamLocalTurn({
         modelId: req.model,
         systemPrompt: REVIEW_SYSTEM,
         systemSuffix: '',
         history: [ephemeral],
         tools: [],
-        maxTokens: 1024,
+        maxTokens: 2048,
       });
       text = r.text;
       usage = r.usage;

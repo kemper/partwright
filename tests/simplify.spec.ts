@@ -157,6 +157,7 @@ test.describe('Simplify tool', () => {
 
     const target = Math.max(50, Math.round(base / 4));
     await page.locator('#simplify-input').fill(String(target));
+    await page.locator('#simplify-apply').dispatchEvent('click');
     await page.waitForFunction(
       (b) => {
         const pw = (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } } }).partwright;

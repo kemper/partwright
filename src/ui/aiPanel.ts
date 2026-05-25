@@ -3,12 +3,12 @@
 // input row, the cost meter, and the compact button. State lives in the
 // ai/* modules; this file is mostly DOM wiring.
 
-import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens } from '../ai/chatLoop';
-import { runTurn, pushQueuedBlocks } from '../ai/agentWorkerClient';
+import { totalCost, totalTokensEstimate, estimateCachedPrefixTokens, runTurn as runTurnOnMainThread, type RunTurnInput, type RunTurnCallbacks } from '../ai/chatLoop';
+import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerClient';
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setProvider, setLocalModel, setToggles, providerLabel, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { generateId } from '../storage/db';
@@ -62,9 +62,10 @@ const state: PanelState = {
 };
 
 /** Cached length of `public/ai.md` + PREAMBLE, in characters, populated
- *  once on init. Used when the active provider is Anthropic. Default is
- *  a rough match for the current slimmed ai.md so the context meter is
- *  sensible before the fetch lands. */
+ *  once on init. Used for every hosted provider (Anthropic/OpenAI/Gemini),
+ *  which all receive the full ai.md system prompt. Default is a rough match
+ *  for the current ai.md so the context meter is sensible before the fetch
+ *  lands. */
 let cachedAiMdLength = 55_000;
 
 /** Effective system-prompt length in characters for the active provider /
@@ -75,7 +76,11 @@ function effectiveSystemPromptChars(): number {
   const s = loadSettings();
   const override = s.systemPromptOverrides?.[s.toggles.provider] ?? null;
   if (override !== null) return override.length;
-  if (s.toggles.provider === 'anthropic') return cachedAiMdLength;
+  // Every hosted provider gets the full ai.md prompt (see chatLoop's
+  // system-prompt branch); only 'local' gets the slim variant. Counting the
+  // local length for OpenAI/Gemini under-reported ~12K tokens of prompt and
+  // made the context meter / auto-compaction fire far too late.
+  if (s.toggles.provider !== 'local') return cachedAiMdLength;
   if (s.toggles.localModel) {
     try {
       const info = resolveLocalModel(s.toggles.localModel);
@@ -147,6 +152,8 @@ let navigateToEditorFn: (() => Promise<void> | void) | null = null;
 let modelPickerEl: HTMLElement | null = null;
 let promptChipEl: HTMLElement | null = null;
 let panelWidth = 420;
+/** App-level flex row the docked panel mounts into (see AiPanelOptions). */
+let mountTarget: HTMLElement | null = null;
 
 /** Set by the watchdog when it abort()s mid-stream so sendMessage knows
  *  this was a stall recovery (auto-resume), not a user-initiated stop. */
@@ -158,12 +165,18 @@ export interface AiPanelOptions {
    *  silent-modeling-on-landing-page UX bug where the AI runs code but
    *  the user can't see the result. */
   onNavigateToEditor?: () => Promise<void> | void;
+  /** App-level flex row the panel docks into as its right-hand column. It
+   *  lives outside the per-page subtrees, so the docked panel survives route
+   *  changes (landing ↔ editor) — the landing-page chat flow depends on that.
+   *  Falls back to <body> if omitted. */
+  mountInto?: HTMLElement;
 }
 
 /** Mount the drawer once on app start. Idempotent. */
 export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   if (drawerEl) return;
   navigateToEditorFn = opts.onNavigateToEditor ?? null;
+  mountTarget = opts.mountInto ?? null;
   // Pre-load ai.md so the first turn doesn't pay the fetch latency on top
   // of the API round trip. Also caches its length for the context meter.
   const aiMd = await loadAiMd();
@@ -174,6 +187,12 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   state.open = settings.drawerOpen;
 
   buildDrawer();
+  // The panel docks as a column on desktop but becomes a full-screen overlay
+  // on mobile; recompose its layout when the breakpoint is crossed while open.
+  const mq = window.matchMedia('(min-width: 768px)');
+  const onBreakpoint = () => { if (state.open) applyDockLayout(); };
+  if (typeof mq.addEventListener === 'function') mq.addEventListener('change', onBreakpoint);
+  else (mq as unknown as { addListener: (cb: () => void) => void }).addListener(onBreakpoint);
   // Re-assert this session's remembered model when the tab regains focus, so
   // the tab you're actively using reflects its own session's model even if a
   // peer tab changed the shared settings while this tab was in the background.
@@ -194,7 +213,9 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   // next interaction.
   renderTranscript();
   renderCostMeter();
-  if (state.open) showDrawer();
+  // On a default-open load, show the panel without grabbing keyboard focus —
+  // the user hasn't asked to type in it yet.
+  if (state.open) showDrawer(false);
   else hideDrawer();
 }
 
@@ -233,28 +254,75 @@ export function toggleAiPanel(): void {
   else showDrawer();
 }
 
-function showDrawer(): void {
+/** Re-render everything that an AI-settings change (provider / model / key)
+ *  can affect, and persist the new provider+model as the session preference. */
+function afterAiSettingsChange(): void {
+  recordSessionAiPreference();
+  renderTranscript();
+  renderToggleStrip();
+  renderCostMeter();
+  renderModelPicker();
+  renderPromptChip();
+  panelStatusUpdate();
+}
+
+/** Activity-rail AI button entry point. Toggles the docked panel like
+ *  toggleAiPanel, but when it's *opening* the panel from a not-yet-connected
+ *  state it also pops the AI settings modal so the user lands directly on the
+ *  connect flow. The default-open-on-load path uses showDrawer() directly, so
+ *  it never triggers this. */
+export async function toggleAiPanelFromToolbar(): Promise<void> {
+  if (state.open) { hideDrawer(); return; }
+  showDrawer();
+  if (await aiConnectionMode() === 'disconnected') {
+    void showAiSettingsModal({ onChange: afterAiSettingsChange });
+  }
+}
+
+/** Switch the panel between its desktop "docked column" form and its mobile
+ *  "full-screen overlay" form. Only meaningful while open. */
+function applyDockLayout(): void {
+  if (!drawerEl) return;
+  const desktop = window.matchMedia('(min-width: 768px)').matches;
+  if (desktop) {
+    // A real flex child of the app row: takes layout space, no overlay chrome.
+    // `relative` makes the panel the containing block for the absolutely-
+    // positioned left-edge resize handle, so the handle lands on the panel's
+    // border instead of escaping to the viewport. On mobile the panel is
+    // `fixed` (its own containing block), so `relative` is dropped there to
+    // avoid the two position utilities colliding.
+    drawerEl.classList.remove('fixed', 'inset-0', 'z-40', 'h-dvh', 'w-full', 'shadow-2xl');
+    drawerEl.classList.add('relative', 'shrink-0', 'self-stretch');
+    drawerEl.style.width = `${panelWidth}px`;
+  } else {
+    // Stacked mobile layout has no side-by-side column to dock into, so cover
+    // the screen instead. h-dvh keeps the input above the mobile browser chrome.
+    drawerEl.classList.remove('relative', 'shrink-0', 'self-stretch');
+    drawerEl.classList.add('fixed', 'inset-0', 'z-40', 'h-dvh', 'w-full', 'shadow-2xl');
+    drawerEl.style.width = '';
+  }
+}
+
+/** Show the drawer. `focusInput` moves the caret into the chat box, which is
+ *  what you want when the user *explicitly* opens the panel — but not when it's
+ *  shown automatically on a default-open page load, where stealing focus from
+ *  the editor/viewport (and intercepting shortcuts like ⌘Z) is surprising. */
+function showDrawer(focusInput = true): void {
   if (!drawerEl) return;
   state.open = true;
-  drawerEl.classList.remove('translate-x-full');
-  drawerEl.classList.add('translate-x-0');
-  // Only push content on desktop — mobile layout is stacked, not side-by-side.
-  if (window.matchMedia('(min-width: 768px)').matches) {
-    const app = document.getElementById('app');
-    if (app) app.style.paddingRight = `${panelWidth}px`;
-  }
+  drawerEl.classList.remove('hidden');
+  applyDockLayout();
+  window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: true } }));
   window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: true });
-  inputEl?.focus();
+  if (focusInput) inputEl?.focus();
 }
 
 function hideDrawer(): void {
   if (!drawerEl) return;
   state.open = false;
-  drawerEl.classList.remove('translate-x-0');
-  drawerEl.classList.add('translate-x-full');
-  const app = document.getElementById('app');
-  if (app) app.style.paddingRight = '0';
+  drawerEl.classList.add('hidden');
+  window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: false } }));
   window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: false });
 }
@@ -406,24 +474,21 @@ function upsertHistoryMessage(msg: ChatMessage): void {
 function buildDrawer(): void {
   const root = document.createElement('div');
   root.id = 'ai-panel';
-  // h-dvh (dynamic viewport height) rather than h-screen/100vh: on mobile
-  // browsers 100vh measures the viewport with the URL bar hidden, so a
-  // fixed-position panel pushes its bottom (input + Send button) behind the
-  // browser chrome where scrolling can't reach it. dvh tracks the actually
-  // visible height. max-w-[100vw] caps the inline px width so the drawer can't
-  // overflow a phone narrower than panelWidth (it has no effect on desktop).
-  root.className = 'fixed top-0 right-0 h-dvh max-w-[100vw] bg-zinc-900 border-l border-zinc-700 shadow-2xl z-40 flex flex-col transition-transform duration-200 translate-x-full';
+  // Docked right-hand column of the app row (#app-row): a real flex child that
+  // takes layout space rather than floating over the page. `hidden` is the
+  // closed state; showDrawer()/applyDockLayout() add the desktop-docked vs
+  // mobile-overlay classes. Starts hidden — initAiPanel calls show/hideDrawer
+  // once panelWidth and drawerOpen are known.
+  root.className = 'flex flex-col min-h-0 bg-zinc-900 border-l border-zinc-700 hidden';
   root.style.width = `${panelWidth}px`;
   drawerEl = root;
 
-  const app = document.getElementById('app');
-  if (app) app.style.transition = 'padding-right 200ms ease';
-
-  // Left-edge drag handle for resizing panel width.
+  // Left-edge drag handle for resizing panel width. Desktop-only — on the
+  // mobile full-screen overlay there's no column to widen.
   // w-5 (20px) gives a finger-friendly touch target; the visible stripe stays
   // 1px wide so it doesn't look like a thick border.
   const panelResizeHandle = document.createElement('div');
-  panelResizeHandle.className = 'absolute top-0 left-0 h-full w-5 -translate-x-1/2 cursor-col-resize z-10 touch-none group';
+  panelResizeHandle.className = 'hidden md:block absolute top-0 left-0 h-full w-5 -translate-x-1/2 cursor-col-resize z-10 touch-none group';
   const panelResizeStripe = document.createElement('div');
   panelResizeStripe.className = 'absolute inset-y-0 left-1/2 w-px bg-zinc-700 group-hover:bg-blue-500 group-[.is-dragging]:bg-blue-500 transition-colors';
   panelResizeHandle.appendChild(panelResizeStripe);
@@ -478,7 +543,7 @@ function buildDrawer(): void {
   const settingsBtn = createIconButton('Settings', '⚙');
   settingsBtn.title = 'AI settings: provider, key, lifetime usage.';
   settingsBtn.addEventListener('click', () => {
-    void showAiSettingsModal({ onChange: () => { recordSessionAiPreference(); renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); renderPromptChip(); panelStatusUpdate(); } });
+    void showAiSettingsModal({ onChange: afterAiSettingsChange });
   });
   header.appendChild(settingsBtn);
 
@@ -532,7 +597,7 @@ function buildDrawer(): void {
 
   // Toggle strip
   toggleStripEl = document.createElement('div');
-  toggleStripEl.className = 'px-3 py-1.5 border-t border-zinc-800 flex flex-wrap items-center gap-1.5 shrink-0';
+  toggleStripEl.className = 'px-3 py-1.5 border-t border-zinc-800 flex flex-col gap-1 shrink-0';
   bottomSection.appendChild(toggleStripEl);
 
   // Cost meter
@@ -683,7 +748,7 @@ function buildDrawer(): void {
     for (const file of Array.from(e.dataTransfer.files)) await attachFile(file);
   });
 
-  document.body.appendChild(root);
+  (mountTarget ?? document.body).appendChild(root);
 
   renderToggleStrip();
   renderCostMeter();
@@ -712,11 +777,9 @@ function initPanelResizer(handle: HTMLElement): void {
     const minW = 280;
     const maxW = Math.min(900, window.innerWidth - 200);
     panelWidth = Math.max(minW, Math.min(maxW, startWidth + delta));
+    // The docked column owns real layout width, so widening it reflows the page
+    // automatically — no #app padding to keep in sync.
     if (drawerEl) drawerEl.style.width = `${panelWidth}px`;
-    if (state.open && window.matchMedia('(min-width: 768px)').matches) {
-      const app = document.getElementById('app');
-      if (app) app.style.paddingRight = `${panelWidth}px`;
-    }
     window.dispatchEvent(new Event('resize'));
   });
 
@@ -904,13 +967,24 @@ function renderPromptChip(): void {
 
 // === Toggle strip rendering ===
 
+// Whether the collapsible "Options" group (verification knobs, caps, thinking
+// level) is expanded. In-memory; collapsed by default so the panel reads clean.
+let advancedOpen = false;
+
 function renderToggleStrip(): void {
   if (!toggleStripEl) return;
   toggleStripEl.replaceChildren();
   const settings = loadSettings();
   const { toggles } = settings;
 
-  toggleStripEl.appendChild(togglePill(
+  // Primary actions — always visible (the pills the user flips most often).
+  const primary = document.createElement('div');
+  primary.className = 'flex flex-wrap items-center gap-1';
+  // Advanced knobs — set once and rarely touched; tucked behind ⚙ Options.
+  const adv = document.createElement('div');
+  adv.className = 'flex flex-wrap items-center gap-1 mt-1.5 pt-1.5 border-t border-zinc-800';
+
+  primary.appendChild(togglePill(
     '📸 Auto-render',
     toggles.vision.views,
     'Auto-render: lets the model call renderView() to take its own screenshots after paint / geometry changes. Each render ≈ 1500 tokens of input on the next turn — verification is valuable but it adds up. The 📷 Show AI button still works manually when this is OFF.',
@@ -939,7 +1013,7 @@ function renderToggleStrip(): void {
     saveSettings(setToggles(loadSettings(), { vision: { resolution: resSel.value as ChatToggles['vision']['resolution'] } }));
     renderCostMeter();
   });
-  toggleStripEl.appendChild(resSel);
+  adv.appendChild(resSel);
 
   // Verification angles — how many camera angles renderViews captures per check.
   const anglesSel = document.createElement('select');
@@ -956,9 +1030,9 @@ function renderToggleStrip(): void {
   anglesSel.addEventListener('change', () => {
     saveSettings(setToggles(loadSettings(), { vision: { angles: anglesSel.value as ChatToggles['vision']['angles'] } }));
   });
-  toggleStripEl.appendChild(anglesSel);
+  adv.appendChild(anglesSel);
 
-  toggleStripEl.appendChild(togglePill(
+  primary.appendChild(togglePill(
     '▶ Run',
     toggles.scope.runCode,
     'Run code: allow the AI to execute geometry code (runCode, runAndSave). OFF makes it suggest code in chat without running.',
@@ -967,7 +1041,7 @@ function renderToggleStrip(): void {
       renderToggleStrip();
     },
   ));
-  toggleStripEl.appendChild(togglePill(
+  primary.appendChild(togglePill(
     '💾 Save',
     toggles.scope.saveVersions,
     'Save versions: allow the AI to commit results to the gallery (runAndSave, loadVersion). OFF keeps the model in run-only / dry-run mode.',
@@ -976,7 +1050,7 @@ function renderToggleStrip(): void {
       renderToggleStrip();
     },
   ));
-  toggleStripEl.appendChild(togglePill(
+  primary.appendChild(togglePill(
     '🎨 Paint',
     toggles.scope.paintFaces,
     'Paint: allow the AI to set color regions (paintInBox, paintSlab, paintNear, etc.). OFF by default — painting locks the editor and is the easiest place for the AI to over-select.',
@@ -985,7 +1059,7 @@ function renderToggleStrip(): void {
       renderToggleStrip();
     },
   ));
-  toggleStripEl.appendChild(togglePill(
+  primary.appendChild(togglePill(
     '📝 Notes',
     toggles.scope.sessionNotes,
     'Session notes: allow the AI to call addSessionNote to log design decisions. OFF saves a tool round-trip per note — the chat transcript already records the reasoning.',
@@ -1008,7 +1082,7 @@ function renderToggleStrip(): void {
   retry.addEventListener('change', () => {
     saveSettings(setToggles(loadSettings(), { autoRetry: Number(retry.value) as 0 | 1 | 3 }));
   });
-  toggleStripEl.appendChild(retry);
+  adv.appendChild(retry);
 
   // Iteration cap — how many tool round-trips per user turn before the
   // loop forces a stop. Lower = safer (model can't run away on cost or
@@ -1027,7 +1101,7 @@ function renderToggleStrip(): void {
   iterCap.addEventListener('change', () => {
     saveSettings(setToggles(loadSettings(), { maxIterations: iterCap.value as ChatToggles['maxIterations'] }));
   });
-  toggleStripEl.appendChild(iterCap);
+  adv.appendChild(iterCap);
 
   // Spend cap — alternative / parallel control to iteration cap. Both
   // apply; whichever trips first stops the loop. Useful when iteration
@@ -1047,7 +1121,7 @@ function renderToggleStrip(): void {
   spendCap.addEventListener('change', () => {
     saveSettings(setToggles(loadSettings(), { maxSpend: spendCap.value as ChatToggles['maxSpend'] }));
   });
-  toggleStripEl.appendChild(spendCap);
+  adv.appendChild(spendCap);
 
   // Thinking level — how much the model reasons before answering. Maps
   // per-provider to Anthropic extended-thinking budget_tokens, Gemini
@@ -1069,7 +1143,21 @@ function renderToggleStrip(): void {
     saveSettings(setToggles(loadSettings(), { thinking: thinkSel.value as ChatToggles['thinking'] }));
     renderCostMeter();
   });
-  toggleStripEl.appendChild(thinkSel);
+  adv.appendChild(thinkSel);
+
+  // Disclosure toggle for the advanced group.
+  const optBtn = document.createElement('button');
+  optBtn.className = advancedOpen
+    ? 'px-2 py-0.5 rounded text-[10px] bg-zinc-700/60 border border-zinc-600 text-zinc-200'
+    : 'px-2 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200';
+  optBtn.textContent = advancedOpen ? '⚙ Options ▴' : '⚙ Options ▾';
+  optBtn.title = 'Advanced AI controls: verification image resolution & angles, auto-retry, iteration & spend caps, and thinking level. Hidden by default to keep the panel uncluttered.';
+  optBtn.setAttribute('aria-expanded', String(advancedOpen));
+  optBtn.addEventListener('click', () => { advancedOpen = !advancedOpen; renderToggleStrip(); });
+  primary.appendChild(optBtn);
+
+  toggleStripEl.appendChild(primary);
+  if (advancedOpen) toggleStripEl.appendChild(adv);
 }
 
 function togglePill(label: string, on: boolean, tooltip: string, onClick: () => void): HTMLButtonElement {
@@ -1348,6 +1436,14 @@ function renderMessage(msg: ChatMessage): HTMLElement {
     return wrap;
   }
 
+  // Resumable auto-stop (iteration/spend cap, truncation, refusal, empty
+  // final): an amber notice with a "Keep going" button instead of normal
+  // rendering.
+  if (msg.stopNotice) {
+    wrap.appendChild(renderStopNotice(msg));
+    return wrap;
+  }
+
   // Assistant placeholders are pushed with an empty text block during a
   // streaming turn so the live bubble exists *before* any tokens arrive —
   // otherwise the streaming scanner finds nothing to update and the user
@@ -1495,6 +1591,144 @@ async function retryLastUserMessage(errorMsgId: string): Promise<void> {
   state.pendingImages = lastUser.blocks.filter(b => b.type === 'image').map(b => (b as { source: ImageSource }).source);
   inputEl.value = text;
   await sendMessage();
+}
+
+/** Rendered for turns that auto-stopped early but can be picked back up — the
+ *  iteration cap, the session spend cap, a max_tokens truncation, a refusal,
+ *  or an empty final. Visually distinct (amber) from the red error bubble, and
+ *  offers a one-click "Keep going" that resumes the loop from where it left
+ *  off rather than re-sending the original prompt. */
+function renderStopNotice(msg: ChatMessage): HTMLElement {
+  const notice = msg.stopNotice!;
+  const card = document.createElement('div');
+  card.className = 'max-w-[95%] rounded border border-amber-700/60 bg-amber-900/15 px-3 py-2 flex flex-col gap-2';
+
+  const head = document.createElement('div');
+  head.className = 'flex items-center gap-1.5 text-xs font-medium text-amber-200';
+  const icon = document.createElement('span');
+  icon.textContent = '⏸';
+  const title = document.createElement('span');
+  title.textContent = stopNoticeTitle(notice);
+  head.append(icon, title);
+  card.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'text-[12px] text-amber-100/90 whitespace-pre-wrap leading-snug';
+  body.textContent = stopNoticeBody(notice);
+  card.appendChild(body);
+
+  const actions = document.createElement('div');
+  actions.className = 'flex items-center gap-2 pt-1';
+
+  // A spend-cap stop is only resumable with more budget, so its button bumps
+  // the cap one tier (the click is the explicit OK to spend more). Every other
+  // stop just continues the loop.
+  const isSpend = notice.reason === 'spend_cap';
+  const curSpend = loadSettings().toggles.maxSpend;
+  const bumpedSpend = isSpend ? nextSpendTier(curSpend) : curSpend;
+  const canRaise = isSpend && bumpedSpend !== curSpend;
+
+  const resumeBtn = document.createElement('button');
+  resumeBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
+  resumeBtn.textContent = canRaise
+    ? `↻ Raise cap to ${spendTierLabel(bumpedSpend)} & keep going`
+    : '↻ Keep going';
+  resumeBtn.title = 'Continue the agent loop from where it stopped — no need to retype your request.';
+  resumeBtn.addEventListener('click', () => { void resumeFromNotice(msg.id, canRaise); });
+  actions.appendChild(resumeBtn);
+
+  const dismissBtn = document.createElement('button');
+  dismissBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800';
+  dismissBtn.textContent = 'Dismiss';
+  dismissBtn.title = 'Hide this notice (it\'s not stored anyway).';
+  dismissBtn.addEventListener('click', () => {
+    state.history = state.history.filter(m => m.id !== msg.id);
+    renderTranscript();
+  });
+  actions.appendChild(dismissBtn);
+
+  card.appendChild(actions);
+  return card;
+}
+
+function stopNoticeTitle(notice: NonNullable<ChatMessage['stopNotice']>): string {
+  switch (notice.reason) {
+    case 'iteration_cap': return `Stopped at the ${notice.iterations}-iteration cap`;
+    case 'spend_cap': return 'Stopped at the session spend cap';
+    case 'max_tokens': return 'Response was cut off';
+    case 'refusal': return 'The model declined';
+    case 'empty_final': return 'Stopped without a final message';
+    default: return 'Stopped early';
+  }
+}
+
+function stopNoticeBody(notice: NonNullable<ChatMessage['stopNotice']>): string {
+  switch (notice.reason) {
+    case 'iteration_cap':
+      return `The agent used all ${notice.iterations} tool round-trips allowed per turn and was still working. Keep going to grant another batch, or raise the ⟲ iteration cap in the toggle strip for longer autonomous runs.`;
+    case 'spend_cap':
+      return `This session reached its ${notice.detail ?? 'spend'} budget. Raise the cap and keep going, or pick a higher $ cap in the toggle strip.`;
+    case 'max_tokens':
+      return 'The model hit its output-token limit before finishing this step. Keep going to let it continue from where it left off.';
+    case 'refusal':
+      return 'The model declined to continue this turn. Keep going to try again, or rephrase your request.';
+    case 'empty_final':
+      return 'The model ended the turn without a final message. Keep going to nudge it to continue.';
+    default:
+      return `The turn ended early${notice.detail ? ` (${notice.detail})` : ''}. Keep going to continue.`;
+  }
+}
+
+/** Next tier up in the spend-cap ladder (clamped at the top). */
+function nextSpendTier(cur: ChatToggles['maxSpend']): ChatToggles['maxSpend'] {
+  const ids = MAX_SPEND_OPTIONS.map(o => o.id);
+  const i = ids.indexOf(cur);
+  return i >= 0 && i < ids.length - 1 ? ids[i + 1] : cur;
+}
+
+function spendTierLabel(id: ChatToggles['maxSpend']): string {
+  return MAX_SPEND_OPTIONS.find(o => o.id === id)?.label ?? '';
+}
+
+/** Continue an auto-stopped turn from the existing history — no new user
+ *  prompt. Mirrors sendMessage's pre-flight, then runs a turn with empty
+ *  userBlocks: every provider's request builder drops the empty trailing
+ *  user message, so the model resumes from the last real turn (its tool
+ *  results or its own last message). The per-turn iteration budget resets,
+ *  so an iteration-cap stop gets a fresh batch of round-trips. */
+async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean): Promise<void> {
+  if (state.inFlight) {
+    setTransientStatus('Wait for the current turn to finish before resuming.');
+    return;
+  }
+  if (!writeOwner) return;
+  if (raiseSpendCap) {
+    const cur = loadSettings().toggles.maxSpend;
+    const next = nextSpendTier(cur);
+    if (next !== cur) {
+      saveSettings(setToggles(loadSettings(), { maxSpend: next }));
+      renderToggleStrip();
+      renderCostMeter();
+    }
+  }
+
+  const settings = loadSettings();
+  // Honor the (possibly just-raised) session spend cap before spending more.
+  const sessionCap = SPEND_CAP_USD[settings.toggles.maxSpend];
+  if (Number.isFinite(sessionCap) && totalCost(state.history) >= sessionCap) {
+    setTransientStatus(`Session has spent ${formatUsd(totalCost(state.history))} — at or over the ${formatUsd(sessionCap)} cap. Raise the $ cap to continue.`);
+    return;
+  }
+
+  const apiKey = await preflightTurn(settings, () => { void resumeFromNotice(noticeMsgId, false); });
+  if (apiKey === PREFLIGHT_ABORT) return;
+
+  // Drop the notice card now that we're actually resuming.
+  state.history = state.history.filter(m => m.id !== noticeMsgId);
+  renderTranscript();
+  progressState.retryCount = 0;
+  stalledByWatchdog = false;
+  await runTurnWithStallRetry(apiKey, settings.toggles, []);
 }
 
 function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: boolean): HTMLElement {
@@ -1857,30 +2091,34 @@ function updateRewindButtons(): void {
 
 // === Send message ===
 
-async function sendMessage(): Promise<void> {
-  if (state.inFlight) return;
-  // Another tab is the leader for this session — don't run a second chat loop
-  // against the same transcript. The viewer overlay offers "Take control".
-  if (!writeOwner) return;
-  if (!inputEl) return;
-  const text = inputEl.value.trim();
-  if (text.length === 0 && state.pendingImages.length === 0) return;
+/** Returned by preflightTurn when the turn must not proceed — a key/model
+ *  modal was opened (and will re-fire via onReady), or navigation failed. */
+const PREFLIGHT_ABORT = Symbol('preflight-abort');
 
-  const settings = loadSettings();
+/** Shared pre-flight for any turn we're about to run: resolve the provider's
+ *  API key (opening the key modal if missing), ensure the local model is
+ *  loaded, and make sure we're on /editor so the AI's tools have a live
+ *  window.partwright. Returns the apiKey (undefined for local), or
+ *  PREFLIGHT_ABORT if the caller should bail. `onReady` is invoked from a
+ *  modal's success callback so the caller can retry once the user finishes. */
+async function preflightTurn(
+  settings: AiSettings,
+  onReady: () => void,
+): Promise<string | undefined | typeof PREFLIGHT_ABORT> {
   let apiKey: string | undefined;
   if (settings.toggles.provider !== 'local') {
     // Hosted provider (anthropic / openai / gemini): need a stored key.
     const provider = settings.toggles.provider;
     const key = await getKey(provider);
     if (!key) {
-      void showAiKeyModal({ provider, onConnected: () => { panelStatusUpdate(); void sendMessage(); } });
-      return;
+      void showAiKeyModal({ provider, onConnected: () => { panelStatusUpdate(); onReady(); } });
+      return PREFLIGHT_ABORT;
     }
     apiKey = key.apiKey;
   } else {
     if (!settings.toggles.localModel) {
-      void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderModelPicker(); renderToggleStrip(); renderCostMeter(); void sendMessage(); } });
-      return;
+      void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderModelPicker(); renderToggleStrip(); renderCostMeter(); onReady(); } });
+      return PREFLIGHT_ABORT;
     }
     // Auto-load the model into GPU on first message — saves a click.
     if (!isModelLoaded(settings.toggles.localModel)) {
@@ -1892,22 +2130,8 @@ async function sendMessage(): Promise<void> {
         setTransientStatus('');
       } catch (err) {
         setTransientStatus(`Failed to load: ${err instanceof Error ? err.message : String(err)}`);
-        return;
+        return PREFLIGHT_ABORT;
       }
-    }
-  }
-
-  // Session spend gate. The dropdown is a session-total budget, so block
-  // a new turn once historical spend has reached it. The user has to
-  // raise the cap (or pick ∞) to keep going — otherwise the dropdown
-  // would be advisory only and continued prompting would silently sail
-  // past the chosen budget.
-  const sessionCap = SPEND_CAP_USD[loadSettings().toggles.maxSpend];
-  if (Number.isFinite(sessionCap)) {
-    const sessionTotal = totalCost(state.history);
-    if (sessionTotal >= sessionCap) {
-      setTransientStatus(`Session has spent ${formatUsd(sessionTotal)} — at or over the ${formatUsd(sessionCap)} cap. Raise the $ cap in the toggle strip to continue.`);
-      return;
     }
   }
 
@@ -1922,7 +2146,7 @@ async function sendMessage(): Promise<void> {
       await navigateToEditorFn();
     } catch (err) {
       setTransientStatus(`Navigation failed: ${err instanceof Error ? err.message : String(err)}`);
-      return;
+      return PREFLIGHT_ABORT;
     }
     // Wait for window.partwright to actually be live before proceeding.
     // The editor mount + engine init is async; polling is simpler than
@@ -1934,6 +2158,36 @@ async function sendMessage(): Promise<void> {
       await new Promise(r => setTimeout(r, 50));
     }
   }
+  return apiKey;
+}
+
+async function sendMessage(): Promise<void> {
+  if (state.inFlight) return;
+  // Another tab is the leader for this session — don't run a second chat loop
+  // against the same transcript. The viewer overlay offers "Take control".
+  if (!writeOwner) return;
+  if (!inputEl) return;
+  const text = inputEl.value.trim();
+  if (text.length === 0 && state.pendingImages.length === 0) return;
+
+  const settings = loadSettings();
+
+  // Session spend gate. The dropdown is a session-total budget, so block
+  // a new turn once historical spend has reached it. The user has to
+  // raise the cap (or pick ∞) to keep going — otherwise the dropdown
+  // would be advisory only and continued prompting would silently sail
+  // past the chosen budget.
+  const sessionCap = SPEND_CAP_USD[settings.toggles.maxSpend];
+  if (Number.isFinite(sessionCap)) {
+    const sessionTotal = totalCost(state.history);
+    if (sessionTotal >= sessionCap) {
+      setTransientStatus(`Session has spent ${formatUsd(sessionTotal)} — at or over the ${formatUsd(sessionCap)} cap. Raise the $ cap in the toggle strip to continue.`);
+      return;
+    }
+  }
+
+  const apiKey = await preflightTurn(settings, () => { void sendMessage(); });
+  if (apiKey === PREFLIGHT_ABORT) return;
 
   const blocks: ChatBlock[] = [];
   if (text.length > 0) blocks.push({ type: 'text', text });
@@ -1994,6 +2248,24 @@ function formatTurnOutcome(o: TurnOutcome): string {
     default:
       return `· ended (${o.detail ?? 'other'}) · ${cost} · ${iters}${tools}`;
   }
+}
+
+/** Route a turn to the right executor.
+ *
+ *  Hosted providers (anthropic / openai / gemini) run in the Agent Worker so
+ *  their HTTP streams keep flowing when the tab is backgrounded.
+ *
+ *  The local (WebLLM) provider MUST run on the main thread. Its engine is
+ *  loaded into the main thread's `local.ts` module state by ensureModelLoaded
+ *  (driven by this panel and the local-model modal). The Worker has its own
+ *  module instance whose `loaded` engine is always null, so a worker-side
+ *  streamLocalTurn throws "Local model … is not loaded" even when the weights
+ *  are cached and the model is resident in GPU on the main thread. Running the
+ *  loop here reunites streamLocalTurn (and interruptLocal) with that engine. */
+function runTurn(input: RunTurnInput, callbacks?: RunTurnCallbacks): Promise<ChatMessage[]> {
+  return input.toggles.provider === 'local'
+    ? runTurnOnMainThread(input, callbacks)
+    : runTurnInWorker(input, callbacks);
 }
 
 async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatToggles, userBlocks: ChatBlock[]): Promise<void> {
@@ -2166,11 +2438,11 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         // flash and vanish from the transcript.
         renderTranscript();
         renderCostMeter();
-        // Auto-compaction only fires on clean turns — skip it after an
-        // abort, error, or errored placeholder so the user can keep
-        // context for retry/recovery.
-        const erroredFromThisTurn = state.history.some(m => m.errored);
-        if (!erroredFromThisTurn && info.reason !== 'aborted' && info.reason !== 'error') {
+        // Auto-compaction only fires on a clean end_turn — skip it after an
+        // abort, error, or any resumable auto-stop (iteration/spend cap,
+        // truncation, refusal, empty final) so the user keeps full context
+        // for the "Keep going" resume.
+        if (info.reason === 'end_turn' && !state.history.some(m => m.errored)) {
           void maybeAutoCompact();
         }
         lastTurnOutcome = info;
@@ -2203,6 +2475,11 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
     // Surface a sticky completion banner so the user knows the turn
     // actually ended and why — better than a silent hideProgress that
     // reads as "the model stalled and gave up".
+    // Snapshot the outcome before the null reset below. The cast is also
+    // required: lastTurnOutcome is assigned inside the runTurn callbacks,
+    // which TS can't flow-narrow, so without it the read is typed `null` and
+    // the resumable-stop check further down fails to compile.
+    const finalOutcome = lastTurnOutcome as TurnOutcome | null;
     if (lastTurnOutcome) {
       showProgressFinal(formatTurnOutcome(lastTurnOutcome));
       lastTurnOutcome = null;
@@ -2233,9 +2510,48 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
       attempt = 0;
       continue;
     }
+
+    // The turn truly ended. If it auto-stopped early but is resumable (hit
+    // the iteration cap, spend cap, a max_tokens truncation, a refusal, or an
+    // empty final) and didn't already surface a hard error, drop a notice into
+    // the transcript with a one-click "Keep going" so the user can continue
+    // without retyping their request.
+    if (finalOutcome && isResumableStop(finalOutcome.reason) && !state.history.some(m => m.errored)) {
+      pushStopNotice(finalOutcome);
+    }
     broadcastChatChanged();
     return;
   }
+}
+
+/** Stop reasons the user can pick up from with a single "Keep going". Excludes
+ *  a clean end_turn (nothing to resume), an intentional user abort, and a hard
+ *  error (handled by the red error bubble's "Retry last message" instead). */
+function isResumableStop(reason: TurnOutcomeReason): boolean {
+  return reason === 'iteration_cap'
+    || reason === 'spend_cap'
+    || reason === 'max_tokens'
+    || reason === 'refusal'
+    || reason === 'empty_final'
+    || reason === 'other';
+}
+
+/** Append an in-memory (not persisted) resumable-stop notice to the transcript.
+ *  Mirrors the errored-bubble pattern: a session change wipes it, but until
+ *  then it gives the user a clear reason + a "Keep going" button. */
+function pushStopNotice(outcome: TurnOutcome): void {
+  const last = state.history[state.history.length - 1];
+  const msg: ChatMessage = {
+    id: generateId(),
+    sessionId: state.sessionId,
+    role: 'assistant',
+    blocks: [],
+    createdAt: Date.now(),
+    seq: (last?.seq ?? 0) + 1,
+    stopNotice: { reason: outcome.reason, detail: outcome.detail, iterations: outcome.iterations },
+  };
+  state.history.push(msg);
+  renderTranscript();
 }
 
 /** Find the last assistant message marked `aborted` at the tail of the
@@ -2376,7 +2692,7 @@ function showProgressFinal(detail: string): void {
 function triggerStallRetry(): void {
   const threshSec = Math.round(getStallThresholdMs() / 1000);
   if (progressState.retryCount >= MAX_STALL_RETRIES) {
-    setTransientStatus(`Model stalled (no tokens for ${threshSec}s) after ${MAX_STALL_RETRIES} retries — stopping. Increase "Stall timeout" in AI settings if using a slow model.`);
+    setTransientStatus(`Model stalled (no tokens for ${threshSec}s) after ${MAX_STALL_RETRIES} retries — stopping. Increase "Request timeout" in AI settings if using a slow model.`);
     state.inFlightController?.abort();
     void interruptLocal();
     return;

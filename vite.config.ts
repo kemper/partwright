@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin, type Connect } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
+import { execSync } from 'node:child_process';
 
 // Set charset=utf-8 on .md and .txt files served from public/ during dev.
 // Prevents em-dashes and other UTF-8 chars from rendering as mojibake.
@@ -51,8 +52,43 @@ function absoluteUrls(): Plugin {
   };
 }
 
+// Build/version metadata surfaced by the in-app About dialog so a given deploy
+// can be traced back to an exact commit/branch — handy for Cloudflare branch &
+// PR preview deploys, which otherwise look identical. Cloudflare sets CF_PAGES_*
+// at build time; we fall back to local git so `npm run dev` and laptop builds
+// show real values too.
+function parseGitHubRepo(remoteUrl: string): string {
+  const m = remoteUrl.match(/github\.com[:/]+([\w.-]+\/[\w.-]+?)(?:\.git)?$/i);
+  return m ? m[1] : '';
+}
+
+function resolveBuildInfo() {
+  const git = (cmd: string): string => {
+    try {
+      return execSync(cmd, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    } catch {
+      return '';
+    }
+  };
+  const onCloudflare = !!process.env.CF_PAGES;
+  const commit = process.env.CF_PAGES_COMMIT_SHA || git('git rev-parse HEAD') || 'unknown';
+  const branch = process.env.CF_PAGES_BRANCH || git('git rev-parse --abbrev-ref HEAD') || 'unknown';
+  const repo =
+    process.env.GITHUB_REPOSITORY ||
+    parseGitHubRepo(git('git config --get remote.origin.url')) ||
+    'kemper/mainifold';
+  // "dirty" only means something for a local working tree; a fresh CI / CF
+  // clone is always clean, so skip the (possibly slow) status call there.
+  const dirty = !onCloudflare && git('git status --porcelain') !== '';
+  return { commit, branch, buildTime: new Date().toISOString(), repo, dirty };
+}
+
 export default defineConfig({
   base: '/',
+  // Replaced verbatim wherever `__BUILD_INFO__` appears (see src/buildInfo.ts).
+  define: {
+    __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
+  },
   plugins: [tailwindcss(), absoluteUrls(), markdownCharset()],
   worker: {
     // ES module Workers support code-splitting and are required when
