@@ -100,7 +100,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     // can flip the Paint pill on, or pick the Full preset.
     scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: true },
     autoRetry: 1,
-    maxIterations: 'medium',
+    maxIterations: 'high',
     maxSpend: 'medium',
     thinking: 'high',
     anthropicModel: 'claude-sonnet-4-6',
@@ -109,7 +109,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     vision: { views: true, resolution: 'high', angles: 'all' },
     scope: { runCode: true, saveVersions: true, paintFaces: true, sessionNotes: true },
     autoRetry: 3,
-    maxIterations: 'high',
+    maxIterations: 'ultra',
     maxSpend: 'high',
     thinking: 'high',
     anthropicModel: 'claude-opus-4-7',

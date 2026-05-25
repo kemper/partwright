@@ -1411,6 +1411,14 @@ function renderMessage(msg: ChatMessage): HTMLElement {
     return wrap;
   }
 
+  // Resumable auto-stop (iteration/spend cap, truncation, refusal, empty
+  // final): an amber notice with a "Keep going" button instead of normal
+  // rendering.
+  if (msg.stopNotice) {
+    wrap.appendChild(renderStopNotice(msg));
+    return wrap;
+  }
+
   // Assistant placeholders are pushed with an empty text block during a
   // streaming turn so the live bubble exists *before* any tokens arrive —
   // otherwise the streaming scanner finds nothing to update and the user
@@ -1558,6 +1566,144 @@ async function retryLastUserMessage(errorMsgId: string): Promise<void> {
   state.pendingImages = lastUser.blocks.filter(b => b.type === 'image').map(b => (b as { source: ImageSource }).source);
   inputEl.value = text;
   await sendMessage();
+}
+
+/** Rendered for turns that auto-stopped early but can be picked back up — the
+ *  iteration cap, the session spend cap, a max_tokens truncation, a refusal,
+ *  or an empty final. Visually distinct (amber) from the red error bubble, and
+ *  offers a one-click "Keep going" that resumes the loop from where it left
+ *  off rather than re-sending the original prompt. */
+function renderStopNotice(msg: ChatMessage): HTMLElement {
+  const notice = msg.stopNotice!;
+  const card = document.createElement('div');
+  card.className = 'max-w-[95%] rounded border border-amber-700/60 bg-amber-900/15 px-3 py-2 flex flex-col gap-2';
+
+  const head = document.createElement('div');
+  head.className = 'flex items-center gap-1.5 text-xs font-medium text-amber-200';
+  const icon = document.createElement('span');
+  icon.textContent = '⏸';
+  const title = document.createElement('span');
+  title.textContent = stopNoticeTitle(notice);
+  head.append(icon, title);
+  card.appendChild(head);
+
+  const body = document.createElement('div');
+  body.className = 'text-[12px] text-amber-100/90 whitespace-pre-wrap leading-snug';
+  body.textContent = stopNoticeBody(notice);
+  card.appendChild(body);
+
+  const actions = document.createElement('div');
+  actions.className = 'flex items-center gap-2 pt-1';
+
+  // A spend-cap stop is only resumable with more budget, so its button bumps
+  // the cap one tier (the click is the explicit OK to spend more). Every other
+  // stop just continues the loop.
+  const isSpend = notice.reason === 'spend_cap';
+  const curSpend = loadSettings().toggles.maxSpend;
+  const bumpedSpend = isSpend ? nextSpendTier(curSpend) : curSpend;
+  const canRaise = isSpend && bumpedSpend !== curSpend;
+
+  const resumeBtn = document.createElement('button');
+  resumeBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-100 bg-zinc-700 hover:bg-zinc-600 border border-zinc-600';
+  resumeBtn.textContent = canRaise
+    ? `↻ Raise cap to ${spendTierLabel(bumpedSpend)} & keep going`
+    : '↻ Keep going';
+  resumeBtn.title = 'Continue the agent loop from where it stopped — no need to retype your request.';
+  resumeBtn.addEventListener('click', () => { void resumeFromNotice(msg.id, canRaise); });
+  actions.appendChild(resumeBtn);
+
+  const dismissBtn = document.createElement('button');
+  dismissBtn.className = 'px-2 py-1 rounded text-[11px] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800';
+  dismissBtn.textContent = 'Dismiss';
+  dismissBtn.title = 'Hide this notice (it\'s not stored anyway).';
+  dismissBtn.addEventListener('click', () => {
+    state.history = state.history.filter(m => m.id !== msg.id);
+    renderTranscript();
+  });
+  actions.appendChild(dismissBtn);
+
+  card.appendChild(actions);
+  return card;
+}
+
+function stopNoticeTitle(notice: NonNullable<ChatMessage['stopNotice']>): string {
+  switch (notice.reason) {
+    case 'iteration_cap': return `Stopped at the ${notice.iterations}-iteration cap`;
+    case 'spend_cap': return 'Stopped at the session spend cap';
+    case 'max_tokens': return 'Response was cut off';
+    case 'refusal': return 'The model declined';
+    case 'empty_final': return 'Stopped without a final message';
+    default: return 'Stopped early';
+  }
+}
+
+function stopNoticeBody(notice: NonNullable<ChatMessage['stopNotice']>): string {
+  switch (notice.reason) {
+    case 'iteration_cap':
+      return `The agent used all ${notice.iterations} tool round-trips allowed per turn and was still working. Keep going to grant another batch, or raise the ⟲ iteration cap in the toggle strip for longer autonomous runs.`;
+    case 'spend_cap':
+      return `This session reached its ${notice.detail ?? 'spend'} budget. Raise the cap and keep going, or pick a higher $ cap in the toggle strip.`;
+    case 'max_tokens':
+      return 'The model hit its output-token limit before finishing this step. Keep going to let it continue from where it left off.';
+    case 'refusal':
+      return 'The model declined to continue this turn. Keep going to try again, or rephrase your request.';
+    case 'empty_final':
+      return 'The model ended the turn without a final message. Keep going to nudge it to continue.';
+    default:
+      return `The turn ended early${notice.detail ? ` (${notice.detail})` : ''}. Keep going to continue.`;
+  }
+}
+
+/** Next tier up in the spend-cap ladder (clamped at the top). */
+function nextSpendTier(cur: ChatToggles['maxSpend']): ChatToggles['maxSpend'] {
+  const ids = MAX_SPEND_OPTIONS.map(o => o.id);
+  const i = ids.indexOf(cur);
+  return i >= 0 && i < ids.length - 1 ? ids[i + 1] : cur;
+}
+
+function spendTierLabel(id: ChatToggles['maxSpend']): string {
+  return MAX_SPEND_OPTIONS.find(o => o.id === id)?.label ?? '';
+}
+
+/** Continue an auto-stopped turn from the existing history — no new user
+ *  prompt. Mirrors sendMessage's pre-flight, then runs a turn with empty
+ *  userBlocks: every provider's request builder drops the empty trailing
+ *  user message, so the model resumes from the last real turn (its tool
+ *  results or its own last message). The per-turn iteration budget resets,
+ *  so an iteration-cap stop gets a fresh batch of round-trips. */
+async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean): Promise<void> {
+  if (state.inFlight) {
+    setTransientStatus('Wait for the current turn to finish before resuming.');
+    return;
+  }
+  if (!writeOwner) return;
+  if (raiseSpendCap) {
+    const cur = loadSettings().toggles.maxSpend;
+    const next = nextSpendTier(cur);
+    if (next !== cur) {
+      saveSettings(setToggles(loadSettings(), { maxSpend: next }));
+      renderToggleStrip();
+      renderCostMeter();
+    }
+  }
+
+  const settings = loadSettings();
+  // Honor the (possibly just-raised) session spend cap before spending more.
+  const sessionCap = SPEND_CAP_USD[settings.toggles.maxSpend];
+  if (Number.isFinite(sessionCap) && totalCost(state.history) >= sessionCap) {
+    setTransientStatus(`Session has spent ${formatUsd(totalCost(state.history))} — at or over the ${formatUsd(sessionCap)} cap. Raise the $ cap to continue.`);
+    return;
+  }
+
+  const apiKey = await preflightTurn(settings, () => { void resumeFromNotice(noticeMsgId, false); });
+  if (apiKey === PREFLIGHT_ABORT) return;
+
+  // Drop the notice card now that we're actually resuming.
+  state.history = state.history.filter(m => m.id !== noticeMsgId);
+  renderTranscript();
+  progressState.retryCount = 0;
+  stalledByWatchdog = false;
+  await runTurnWithStallRetry(apiKey, settings.toggles, []);
 }
 
 function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: boolean): HTMLElement {
@@ -1920,30 +2066,34 @@ function updateRewindButtons(): void {
 
 // === Send message ===
 
-async function sendMessage(): Promise<void> {
-  if (state.inFlight) return;
-  // Another tab is the leader for this session — don't run a second chat loop
-  // against the same transcript. The viewer overlay offers "Take control".
-  if (!writeOwner) return;
-  if (!inputEl) return;
-  const text = inputEl.value.trim();
-  if (text.length === 0 && state.pendingImages.length === 0) return;
+/** Returned by preflightTurn when the turn must not proceed — a key/model
+ *  modal was opened (and will re-fire via onReady), or navigation failed. */
+const PREFLIGHT_ABORT = Symbol('preflight-abort');
 
-  const settings = loadSettings();
+/** Shared pre-flight for any turn we're about to run: resolve the provider's
+ *  API key (opening the key modal if missing), ensure the local model is
+ *  loaded, and make sure we're on /editor so the AI's tools have a live
+ *  window.partwright. Returns the apiKey (undefined for local), or
+ *  PREFLIGHT_ABORT if the caller should bail. `onReady` is invoked from a
+ *  modal's success callback so the caller can retry once the user finishes. */
+async function preflightTurn(
+  settings: AiSettings,
+  onReady: () => void,
+): Promise<string | undefined | typeof PREFLIGHT_ABORT> {
   let apiKey: string | undefined;
   if (settings.toggles.provider !== 'local') {
     // Hosted provider (anthropic / openai / gemini): need a stored key.
     const provider = settings.toggles.provider;
     const key = await getKey(provider);
     if (!key) {
-      void showAiKeyModal({ provider, onConnected: () => { panelStatusUpdate(); void sendMessage(); } });
-      return;
+      void showAiKeyModal({ provider, onConnected: () => { panelStatusUpdate(); onReady(); } });
+      return PREFLIGHT_ABORT;
     }
     apiKey = key.apiKey;
   } else {
     if (!settings.toggles.localModel) {
-      void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderModelPicker(); renderToggleStrip(); renderCostMeter(); void sendMessage(); } });
-      return;
+      void showAiLocalModal({ onChange: () => { panelStatusUpdate(); renderModelPicker(); renderToggleStrip(); renderCostMeter(); onReady(); } });
+      return PREFLIGHT_ABORT;
     }
     // Auto-load the model into GPU on first message — saves a click.
     if (!isModelLoaded(settings.toggles.localModel)) {
@@ -1955,22 +2105,8 @@ async function sendMessage(): Promise<void> {
         setTransientStatus('');
       } catch (err) {
         setTransientStatus(`Failed to load: ${err instanceof Error ? err.message : String(err)}`);
-        return;
+        return PREFLIGHT_ABORT;
       }
-    }
-  }
-
-  // Session spend gate. The dropdown is a session-total budget, so block
-  // a new turn once historical spend has reached it. The user has to
-  // raise the cap (or pick ∞) to keep going — otherwise the dropdown
-  // would be advisory only and continued prompting would silently sail
-  // past the chosen budget.
-  const sessionCap = SPEND_CAP_USD[loadSettings().toggles.maxSpend];
-  if (Number.isFinite(sessionCap)) {
-    const sessionTotal = totalCost(state.history);
-    if (sessionTotal >= sessionCap) {
-      setTransientStatus(`Session has spent ${formatUsd(sessionTotal)} — at or over the ${formatUsd(sessionCap)} cap. Raise the $ cap in the toggle strip to continue.`);
-      return;
     }
   }
 
@@ -1985,7 +2121,7 @@ async function sendMessage(): Promise<void> {
       await navigateToEditorFn();
     } catch (err) {
       setTransientStatus(`Navigation failed: ${err instanceof Error ? err.message : String(err)}`);
-      return;
+      return PREFLIGHT_ABORT;
     }
     // Wait for window.partwright to actually be live before proceeding.
     // The editor mount + engine init is async; polling is simpler than
@@ -1997,6 +2133,36 @@ async function sendMessage(): Promise<void> {
       await new Promise(r => setTimeout(r, 50));
     }
   }
+  return apiKey;
+}
+
+async function sendMessage(): Promise<void> {
+  if (state.inFlight) return;
+  // Another tab is the leader for this session — don't run a second chat loop
+  // against the same transcript. The viewer overlay offers "Take control".
+  if (!writeOwner) return;
+  if (!inputEl) return;
+  const text = inputEl.value.trim();
+  if (text.length === 0 && state.pendingImages.length === 0) return;
+
+  const settings = loadSettings();
+
+  // Session spend gate. The dropdown is a session-total budget, so block
+  // a new turn once historical spend has reached it. The user has to
+  // raise the cap (or pick ∞) to keep going — otherwise the dropdown
+  // would be advisory only and continued prompting would silently sail
+  // past the chosen budget.
+  const sessionCap = SPEND_CAP_USD[settings.toggles.maxSpend];
+  if (Number.isFinite(sessionCap)) {
+    const sessionTotal = totalCost(state.history);
+    if (sessionTotal >= sessionCap) {
+      setTransientStatus(`Session has spent ${formatUsd(sessionTotal)} — at or over the ${formatUsd(sessionCap)} cap. Raise the $ cap in the toggle strip to continue.`);
+      return;
+    }
+  }
+
+  const apiKey = await preflightTurn(settings, () => { void sendMessage(); });
+  if (apiKey === PREFLIGHT_ABORT) return;
 
   const blocks: ChatBlock[] = [];
   if (text.length > 0) blocks.push({ type: 'text', text });
@@ -2247,11 +2413,11 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         // flash and vanish from the transcript.
         renderTranscript();
         renderCostMeter();
-        // Auto-compaction only fires on clean turns — skip it after an
-        // abort, error, or errored placeholder so the user can keep
-        // context for retry/recovery.
-        const erroredFromThisTurn = state.history.some(m => m.errored);
-        if (!erroredFromThisTurn && info.reason !== 'aborted' && info.reason !== 'error') {
+        // Auto-compaction only fires on a clean end_turn — skip it after an
+        // abort, error, or any resumable auto-stop (iteration/spend cap,
+        // truncation, refusal, empty final) so the user keeps full context
+        // for the "Keep going" resume.
+        if (info.reason === 'end_turn' && !state.history.some(m => m.errored)) {
           void maybeAutoCompact();
         }
         lastTurnOutcome = info;
@@ -2284,6 +2450,10 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
     // Surface a sticky completion banner so the user knows the turn
     // actually ended and why — better than a silent hideProgress that
     // reads as "the model stalled and gave up".
+    // Cast needed: lastTurnOutcome is assigned inside the runTurn callbacks,
+    // which TS can't flow-narrow, so it reads back as `null` here even though
+    // a completed turn has set it.
+    const finalOutcome = lastTurnOutcome as TurnOutcome | null;
     if (lastTurnOutcome) {
       showProgressFinal(formatTurnOutcome(lastTurnOutcome));
       lastTurnOutcome = null;
@@ -2314,9 +2484,48 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
       attempt = 0;
       continue;
     }
+
+    // The turn truly ended. If it auto-stopped early but is resumable (hit
+    // the iteration cap, spend cap, a max_tokens truncation, a refusal, or an
+    // empty final) and didn't already surface a hard error, drop a notice into
+    // the transcript with a one-click "Keep going" so the user can continue
+    // without retyping their request.
+    if (finalOutcome && isResumableStop(finalOutcome.reason) && !state.history.some(m => m.errored)) {
+      pushStopNotice(finalOutcome);
+    }
     broadcastChatChanged();
     return;
   }
+}
+
+/** Stop reasons the user can pick up from with a single "Keep going". Excludes
+ *  a clean end_turn (nothing to resume), an intentional user abort, and a hard
+ *  error (handled by the red error bubble's "Retry last message" instead). */
+function isResumableStop(reason: TurnOutcomeReason): boolean {
+  return reason === 'iteration_cap'
+    || reason === 'spend_cap'
+    || reason === 'max_tokens'
+    || reason === 'refusal'
+    || reason === 'empty_final'
+    || reason === 'other';
+}
+
+/** Append an in-memory (not persisted) resumable-stop notice to the transcript.
+ *  Mirrors the errored-bubble pattern: a session change wipes it, but until
+ *  then it gives the user a clear reason + a "Keep going" button. */
+function pushStopNotice(outcome: TurnOutcome): void {
+  const last = state.history[state.history.length - 1];
+  const msg: ChatMessage = {
+    id: generateId(),
+    sessionId: state.sessionId,
+    role: 'assistant',
+    blocks: [],
+    createdAt: Date.now(),
+    seq: (last?.seq ?? 0) + 1,
+    stopNotice: { reason: outcome.reason, detail: outcome.detail, iterations: outcome.iterations },
+  };
+  state.history.push(msg);
+  renderTranscript();
 }
 
 /** Find the last assistant message marked `aborted` at the tail of the
