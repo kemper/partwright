@@ -10,7 +10,7 @@ import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOve
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 import { smoothEdgeForResolution } from './slabPaint';
-import type { BrushShape } from './subdivide';
+import { tangentBasis, type BrushShape } from './subdivide';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
 export type PaintTool = 'bucket' | 'brush' | 'slab' | 'box';
@@ -28,12 +28,30 @@ let brushShape: BrushShape = 'circle';
  *  following the existing tessellation. On by default. */
 let brushSmooth = true;
 /** Smooth-edge detail: the brush radius is divided by this to get the target
- *  triangle edge length near the stroke boundary (higher = finer/smoother +
- *  more triangles). The painted-edge facet count scales with it (≈2π·divisor),
- *  independent of radius, so finer values stay affordable. */
-let brushSmoothDivisor = 256;
+ *  triangle edge length near the stroke boundary. Since the boundary is now
+ *  clipped exactly to the outline, this only controls how many segments a
+ *  *curve* is approximated with (≈2π·divisor) — straight edges are exact at any
+ *  setting — so a much lower default stays crisp while keeping meshes lean. */
+let brushSmoothDivisor = 64;
 export const SMOOTH_DIVISOR_MIN = 2;
 export const SMOOTH_DIVISOR_MAX = 1024;
+/** Brush surface mode. `geodesic` (default for new painting) flood-fills the
+ *  footprint along the connected surface so paint never bleeds through a wall and
+ *  needs no depth tuning; `slab` keeps a thin shell within `depth` of the surface
+ *  (the depth knob below). Old sessions resolve as `slab` for back-compat. */
+let brushSurface: 'geodesic' | 'slab' = 'geodesic';
+/** Paint depth in mesh units: how far through the surface a slab-mode stroke may
+ *  reach. 0 = auto (half the brush radius), resolved at commit time. */
+let brushPaintDepth = 0;
+
+/** Airbrush spray: when on, the brush sprays a soft geodesic speckle instead of
+ *  a solid fill. `strength` is the core density (light by default), `softness`
+ *  the feather fraction. Each committed stroke gets the next seed so overlapping
+ *  sprays vary; the seed is persisted per stroke so the speckle reloads exactly. */
+let brushSpray = false;
+let brushSprayStrength = 0.4;
+let brushSpraySoftness = 0.5;
+let spraySeed = 1;
 
 /** Target edge length (mesh units) for the active brush settings. */
 export function brushTargetEdge(): number {
@@ -52,6 +70,14 @@ let hoveredTriangles: Set<number> | null = null;
 let brushRingMesh: THREE.LineLoop | null = null;
 let brushRingBuiltRadius = -1;
 let brushRingBuiltShape: BrushShape | '' = '';
+
+// Slab depth preview — a translucent prism (cylinder for circle, cuboid for
+// square, diamond-prism for diamond) extruded from the surface into the wall by
+// the paint depth, so the user can see how the shape + depth punches through.
+// Only shown in slab mode (geodesic hugs the surface and has no depth).
+let brushPrismMesh: THREE.Mesh | null = null;
+let brushPrismEdges: THREE.LineSegments | null = null;
+let brushPrismKey = '';
 
 // Filled footprint preview (smooth brush only) — a translucent disc/square/
 // diamond in the paint color showing the rounded area that will actually be
@@ -148,10 +174,34 @@ export function getBrushSmoothDivisor(): number {
   return brushSmoothDivisor;
 }
 
+export function setBrushSurface(mode: 'geodesic' | 'slab'): void {
+  brushSurface = mode;
+}
+
+export function getBrushSurface(): 'geodesic' | 'slab' {
+  return brushSurface;
+}
+
+/** Set the slab-mode paint depth (mesh units). 0 = auto (half the radius). */
+export function setBrushPaintDepth(d: number): void {
+  brushPaintDepth = Math.max(0, d);
+}
+
+export function getBrushPaintDepth(): number {
+  return brushPaintDepth;
+}
+
 /** True when the active brush settings will subdivide the mesh on commit. */
 export function brushWillSubdivide(): boolean {
-  return brushSmooth && brushRadius > 0;
+  return (brushSmooth || brushSpray) && brushRadius > 0;
 }
+
+export function setBrushSpray(on: boolean): void { brushSpray = on; }
+export function isBrushSpray(): boolean { return brushSpray; }
+export function setBrushSprayStrength(v: number): void { brushSprayStrength = Math.max(0, Math.min(1, v)); }
+export function getBrushSprayStrength(): number { return brushSprayStrength; }
+export function setBrushSpraySoftness(v: number): void { brushSpraySoftness = Math.max(0, Math.min(1, v)); }
+export function getBrushSpraySoftness(): number { return brushSpraySoftness; }
 
 /** Slab / oriented-shape smoothing. When on, the slab and box tools subdivide
  *  the mesh near the painted region's boundary so its edge follows the analytic
@@ -387,7 +437,7 @@ function onMouseDown(event: MouseEvent): void {
  *  by sample points; legacy strokes by the covered-triangle session. */
 function hasActiveStroke(): boolean {
   if (!brushPainting) return false;
-  if (brushSmooth && brushRadius > 0) return strokeSamples.length > 0;
+  if (brushWillSubdivide()) return strokeSamples.length > 0;
   return !!brushSession && brushSession.size > 0;
 }
 
@@ -416,7 +466,7 @@ function commitBrushStroke(): void {
   const name = `Region ${getRegions().length + 1}`;
   const color = [...currentColor] as [number, number, number];
 
-  if (brushSmooth && brushRadius > 0 && strokeSamples.length > 0) {
+  if (brushWillSubdivide() && strokeSamples.length > 0) {
     // Triangles are left empty here: adding a brushStroke region fires the
     // regions-change listener, which rebuilds the refined working mesh and
     // resolves every region (including this one) against it.
@@ -430,6 +480,10 @@ function commitBrushStroke(): void {
         radius: brushRadius,
         shape: brushShape,
         maxEdge: brushTargetEdge(),
+        // A spray is always geodesic; descriptorToStroke also forces this.
+        surface: brushSpray ? 'geodesic' : brushSurface,
+        depth: brushPaintDepth,
+        spray: brushSpray ? { strength: brushSprayStrength, softness: brushSpraySoftness, seed: spraySeed++ } : undefined,
       },
       new Set<number>(),
     );
@@ -522,6 +576,10 @@ function showBrushRing(point: [number, number, number], normal: [number, number,
   brushRingMesh.position.set(point[0], point[1], point[2]);
   const nrm = new THREE.Vector3(normal[0], normal[1], normal[2]).normalize();
   brushRingMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), nrm);
+
+  // Slab mode also shows the depth as an extruded prism; geodesic doesn't.
+  if (brushSurface === 'slab') showBrushPrism(point, normal);
+  else clearBrushPrism();
 }
 
 function clearBrushRing(): void {
@@ -533,6 +591,83 @@ function clearBrushRing(): void {
     brushRingBuiltRadius = -1;
     brushRingBuiltShape = '';
   }
+  clearBrushPrism();
+}
+
+/** Effective slab paint depth in mesh units (0 = auto = half the radius), the
+ *  same value `descriptorToStroke` resolves at paint time. */
+function effectivePaintDepth(): number {
+  return brushPaintDepth > 0 ? brushPaintDepth : brushRadius * 0.5;
+}
+
+/** Geometry for the slab depth prism: the brush cross-section (cylinder / cuboid
+ *  / diamond-prism) spanning [-depth, 0] along local Z, so once oriented to the
+ *  surface normal it bores from the surface into the wall by `depth`. */
+function buildPrismGeometry(shape: BrushShape, r: number, depth: number): THREE.BufferGeometry {
+  let geo: THREE.BufferGeometry;
+  if (shape === 'square') {
+    geo = new THREE.BoxGeometry(r * 2, r * 2, depth);
+  } else if (shape === 'diamond') {
+    geo = new THREE.CylinderGeometry(r, r, depth, 4); // 4 sides → diamond cross-section
+    geo.rotateX(Math.PI / 2); // cylinder axis Y → local Z
+  } else {
+    geo = new THREE.CylinderGeometry(r, r, depth, 48);
+    geo.rotateX(Math.PI / 2);
+  }
+  geo.translate(0, 0, -depth / 2); // center [-d/2, d/2] → span [-depth, 0]
+  return geo;
+}
+
+function showBrushPrism(point: [number, number, number], normal: [number, number, number]): void {
+  const depth = effectivePaintDepth();
+  if (brushRadius <= 0 || depth <= 0) { clearBrushPrism(); return; }
+
+  const key = `${brushShape}|${brushRadius}|${depth}`;
+  if (!brushPrismMesh || brushPrismKey !== key) {
+    clearBrushPrism();
+    brushPrismKey = key;
+    const geo = buildPrismGeometry(brushShape, brushRadius, depth);
+    const col = new THREE.Color(currentColor[0], currentColor[1], currentColor[2]);
+    const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.16, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+    brushPrismMesh = new THREE.Mesh(geo, mat);
+    brushPrismMesh.name = 'brush-prism';
+    brushPrismMesh.renderOrder = 1000;
+    getScene().add(brushPrismMesh);
+    const edgeMat = new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.6, depthTest: false });
+    brushPrismEdges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), edgeMat);
+    brushPrismEdges.renderOrder = 1001;
+    getScene().add(brushPrismEdges);
+  } else {
+    const col = new THREE.Color(currentColor[0], currentColor[1], currentColor[2]);
+    (brushPrismMesh.material as THREE.MeshBasicMaterial).color.copy(col);
+    (brushPrismEdges!.material as THREE.LineBasicMaterial).color.copy(col);
+  }
+
+  // Orient so local (X,Y,Z) = (tangentU, tangentV, normal) — matches the brush's
+  // own basis, so the square/diamond prism lines up with the painted footprint.
+  const [u, v] = tangentBasis(normal);
+  const basis = new THREE.Matrix4().makeBasis(
+    new THREE.Vector3(u[0], u[1], u[2]),
+    new THREE.Vector3(v[0], v[1], v[2]),
+    new THREE.Vector3(normal[0], normal[1], normal[2]).normalize(),
+  );
+  const quat = new THREE.Quaternion().setFromRotationMatrix(basis);
+  for (const m of [brushPrismMesh, brushPrismEdges!]) {
+    m.position.set(point[0], point[1], point[2]);
+    m.quaternion.copy(quat);
+  }
+}
+
+function clearBrushPrism(): void {
+  for (const m of [brushPrismMesh, brushPrismEdges] as (THREE.Object3D & { geometry?: THREE.BufferGeometry; material?: THREE.Material })[]) {
+    if (!m) continue;
+    m.parent?.remove(m);
+    m.geometry?.dispose();
+    m.material?.dispose();
+  }
+  brushPrismMesh = null;
+  brushPrismEdges = null;
+  brushPrismKey = '';
 }
 
 function onMouseUp(event: MouseEvent): void {
