@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { __testables__ } from '../../src/geometry/meshOps';
 
-const { alignOffset, parsePlaneNormal, parseAxis, isVec3 } = __testables__;
+const { alignOffset, parsePlaneNormal, parseAxis, isVec3, resolveAlignTargetPure } = __testables__;
 
 describe('meshOps.alignOffset', () => {
   it('returns 0 when mode is undefined (no-op)', () => {
@@ -75,6 +75,28 @@ describe('meshOps.parseAxis', () => {
 
   it('rejects a zero-length axis', () => {
     expect(() => parseAxis([0, 0, 0], 'test')).toThrow(/non-zero length/);
+  });
+});
+
+describe('meshOps.resolveAlignTargetPure', () => {
+  it("'origin' returns a zero-extent bbox at world (0,0,0)", () => {
+    const r = resolveAlignTargetPure('origin', 'test');
+    expect(r.min).toEqual([0, 0, 0]);
+    expect(r.max).toEqual([0, 0, 0]);
+    expect(r.size).toEqual([0, 0, 0]);
+    expect(r.center).toEqual([0, 0, 0]);
+  });
+
+  it('accepts a bbox literal and computes size/center', () => {
+    const r = resolveAlignTargetPure({ min: [-5, 0, 10], max: [5, 10, 20] }, 'test');
+    expect(r.size).toEqual([10, 10, 10]);
+    expect(r.center).toEqual([0, 5, 15]);
+  });
+
+  it('rejects malformed targets with a clear message', () => {
+    expect(() => resolveAlignTargetPure(undefined, 'test')).toThrow(/target must be/);
+    expect(() => resolveAlignTargetPure({ min: [1, 2], max: [3, 4] }, 'test')).toThrow(/3-element min\/max/);
+    expect(() => resolveAlignTargetPure({ min: [1, 2, NaN], max: [3, 4, 5] }, 'test')).toThrow(/finite numbers/);
   });
 });
 

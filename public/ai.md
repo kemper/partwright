@@ -392,8 +392,9 @@ Curves: arc, bezier, naca4, polyline, loft, sweep, revolveAxis,
 meshOps (flat on api): intersects, contains, pointInside, bbox,
                        componentBounds, volumeDelta,
                        alignTo, placeOn, mirrorAcross, mirrorCopy,
-                       linearPattern, circularPattern,
-                       expectUnion, expectDifference, heal     (see below)
+                       linearPattern, circularPattern, spiralPattern,
+                       expectUnion, expectDifference, expectComponents,
+                       heal                                     (see below)
 ```
 
 ### Mesh-operations helpers (`api.meshOps`, also flat as `api.*`)
@@ -414,19 +415,44 @@ api.volumeDelta(a, b)            // b.volume() - a.volume()
 **Alignment + patterns — return a Manifold, lazy/chainable.** These eat the mental-trig category of bug ("I rotated 60° times 6 but accidentally went CW"; "the lid should sit on the box top but I added the box height to the wrong axis").
 
 ```
-api.alignTo(shape, target, {x?, y?, z?})  // axes are 'min'|'max'|'center' (also left/right/top/bottom/front/back)
-api.placeOn(shape, target, {at?, gap?})   // shape's minZ → target's maxZ; centered on target by default
+api.alignTo(shape, target, {x?, y?, z?})
+   // axes are 'min'|'max'|'center' (also left/right/top/bottom/front/back).
+   // target: a Manifold | 'origin' | { min:[x,y,z], max:[x,y,z] } literal.
+
+api.placeOn(shape, target, {at?, gap?})
+   // shape's minZ → target's maxZ.
+   // at: 'center' (default — match target's XY center)
+   //     'preserve' — keep shape's own XY (skip re-centering)
+   //     [x, y]    — match a specific point
+   // gap: 0 leaves a touching seam (boolean treats as 2 pieces);
+   //      negative (e.g. -0.5) overlaps volumetrically — what you usually want.
+
 api.mirrorAcross(shape, plane)            // plane: 'x'|'y'|'z' or a normal vector
 api.mirrorCopy(shape, plane)              // shape unioned with its mirror — symmetric parts
 api.linearPattern(shape, count, step)     // step: number (X) or [x,y,z] vector
-api.circularPattern(shape, count, {axis?, angle?, center?})  // axis defaults to 'z', angle to 360
+
+api.circularPattern(shape, count, {axis?, angle?, center?, radius?})
+   // axis: 'z' default; angle: 360 default = full ring.
+   // ENDPOINT CONVENTION:
+   //   angle === ±360 → N copies at 360/N (no duplicate at seam).
+   //   any other angle → endpoints INCLUSIVE: first copy at 0°, last at angle°
+   //                     (step = angle/(count-1)).
+   // radius: shortcut — pushes shape outward by `radius` BEFORE rotating
+   //   (so you write `circularPattern(stud, 8, {radius: 25})` instead of
+   //   pre-translating the stud yourself).
+
+api.spiralPattern(shape, count, {anglePerCopy, risePerCopy, axis?, center?})
+   // The "staircase / screw / spring" case — each copy gets both a rotation
+   // AND an axial translation. Steps + helical fins + threaded rod profile
+   // all fall under this one.
 ```
 
-**Robust booleans + heal — catch silent failures.** `expectUnion` is the one to reach for when an agent has hit "I expected one piece, got three" — it tells you *immediately* instead of after the next render.
+**Robust booleans + heal — catch silent failures.** `expectUnion` is the one to reach for when an agent has hit "I expected one piece, got three" — it tells you *immediately* instead of after the next render, and the error message includes a bbox/volume dump of each component so you can see which piece floated free.
 
 ```
-api.expectUnion(parts, {expectComponents: 1})   // throws with diagnostic if mismatched
+api.expectUnion(parts, {expectComponents: 1})   // union + component-count check
 api.expectDifference(a, b, {expectNonEmpty: true})
+api.expectComponents(m, n)                      // standalone "is m exactly n pieces?" predicate
 api.heal(m, {tolerance?})                       // .simplify() + status check, for STL imports / suspect booleans
 ```
 

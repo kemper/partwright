@@ -257,16 +257,44 @@ export function createMeshOpsNamespace(module: any) {
     z?: AlignMode;
   }
 
+  /** Resolve the target argument into a bbox-shaped object. Accepts a Manifold,
+   *  the string 'origin' (a zero-extent bbox at world (0,0,0)), or a plain
+   *  bbox literal `{ min:[…], max:[…] }`. This lets users say
+   *  `alignTo(shape, 'origin', {x:'center'})` to drop a shape onto the world
+   *  axis without inventing a target Manifold. */
+  function resolveAlignTarget(target: unknown, name: string): BBoxInfo {
+    if (target === 'origin') {
+      return { min: [0, 0, 0], max: [0, 0, 0], size: [0, 0, 0], center: [0, 0, 0] };
+    }
+    if (target && typeof target === 'object'
+        && Array.isArray((target as { min?: unknown }).min)
+        && Array.isArray((target as { max?: unknown }).max)) {
+      const t = target as { min: number[]; max: number[] };
+      need(t.min.length === 3 && t.max.length === 3, `${name}: bbox target must have 3-element min/max arrays`);
+      for (let i = 0; i < 3; i++) {
+        need(isFiniteNum(t.min[i]) && isFiniteNum(t.max[i]), `${name}: bbox target min/max must be finite numbers`);
+      }
+      const min: Vec3 = [t.min[0], t.min[1], t.min[2]];
+      const max: Vec3 = [t.max[0], t.max[1], t.max[2]];
+      return {
+        min, max,
+        size: [max[0] - min[0], max[1] - min[1], max[2] - min[2]],
+        center: [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2],
+      };
+    }
+    if (isManifold(target)) return bboxInfo(target);
+    throw new Error(`meshOps: ${name}: target must be a Manifold, the string 'origin', or { min:[x,y,z], max:[x,y,z] }`);
+  }
+
   function alignTo(shape: any, target: any, opts: AlignOpts): any {
     need(isManifold(shape), 'alignTo(shape, target, opts): shape must be a Manifold');
-    need(isManifold(target), 'alignTo(shape, target, opts): target must be a Manifold');
     need(opts && typeof opts === 'object', 'alignTo requires an options object {x?, y?, z?}');
     const allowed = ['x', 'y', 'z'];
     for (const k of Object.keys(opts)) {
       if (!allowed.includes(k)) throw new Error(`meshOps: alignTo: unknown option "${k}" (allowed: x, y, z)`);
     }
     const sb = bboxInfo(shape);
-    const tb = bboxInfo(target);
+    const tb = resolveAlignTarget(target, 'alignTo');
     const dx = alignOffset(sb.min[0], sb.max[0], tb.min[0], tb.max[0], opts.x);
     const dy = alignOffset(sb.min[1], sb.max[1], tb.min[1], tb.max[1], opts.y);
     const dz = alignOffset(sb.min[2], sb.max[2], tb.min[2], tb.max[2], opts.z);
@@ -274,8 +302,10 @@ export function createMeshOpsNamespace(module: any) {
   }
 
   interface PlaceOnOpts {
-    at?: 'center' | [number, number];
-    /** Vertical gap between target's top and shape's bottom; default 0. */
+    at?: 'center' | 'preserve' | [number, number];
+    /** Vertical gap between target's top and shape's bottom; default 0.
+     *  Use a small negative value (e.g. -0.5) to overlap volumetrically so
+     *  the boolean union actually fuses the parts instead of leaving a seam. */
     gap?: number;
   }
 
@@ -293,12 +323,19 @@ export function createMeshOpsNamespace(module: any) {
     // Z: shape bottom sits on target top (+ gap).
     const dz = tb.max[2] - sb.min[2] + gap;
     let cx: number, cy: number;
-    if (opts.at === undefined || opts.at === 'center') {
+    if (opts.at === 'preserve') {
+      // Keep the shape's own XY — only the Z lift happens. Useful when the
+      // shape was already positioned correctly horizontally (e.g. placing a
+      // platform on an off-axis target whose bbox center isn't what you want
+      // to align to).
+      cx = sb.center[0];
+      cy = sb.center[1];
+    } else if (opts.at === undefined || opts.at === 'center') {
       cx = tb.center[0];
       cy = tb.center[1];
     } else {
       need(Array.isArray(opts.at) && opts.at.length === 2 && isFiniteNum(opts.at[0]) && isFiniteNum(opts.at[1]),
-        'placeOn.at must be "center" or a [x, y] vector');
+        'placeOn.at must be "center", "preserve", or a [x, y] vector');
       cx = opts.at[0];
       cy = opts.at[1];
     }
@@ -339,33 +376,106 @@ export function createMeshOpsNamespace(module: any) {
 
   interface CircularPatternOpts {
     axis?: 'x' | 'y' | 'z' | Vec3;
-    /** Total spread in degrees. 360 = full ring (count copies, no endpoint overlap).
-     *  Anything less spans the endpoints inclusively (count copies for spread/(count-1)). */
+    /** Total spread in degrees.
+     *  Endpoint convention:
+     *  - `angle === ±360` (full ring) → N copies at 360/N spacing, NO duplicate
+     *    at the seam (step = total/count).
+     *  - any other angle (partial arc) → endpoints INCLUSIVE; first copy at 0°,
+     *    last copy at `angle°` (step = total/(count-1)).
+     *  Default: 360 (full ring). */
     angle?: number;
     /** Rotation center; default [0,0,0]. */
     center?: Vec3;
+    /** Shortcut: translate the shape by `[radius, 0, 0]` (then any axis-specific
+     *  permutation) BEFORE rotating it into the ring. Lets you write
+     *  `circularPattern(stud, 8, { radius: 25 })` instead of pre-translating
+     *  the stud yourself. */
+    radius?: number;
   }
 
   function circularPattern(shape: any, count: number, opts: CircularPatternOpts = {}): any {
     need(isManifold(shape), 'circularPattern(shape, count, opts?): shape must be a Manifold');
     need(Number.isInteger(count) && count >= 1, 'circularPattern.count must be a positive integer');
-    const allowed = ['axis', 'angle', 'center'];
+    const allowed = ['axis', 'angle', 'center', 'radius'];
     for (const k of Object.keys(opts)) {
-      if (!allowed.includes(k)) throw new Error(`meshOps: circularPattern: unknown option "${k}" (allowed: axis, angle, center)`);
+      if (!allowed.includes(k)) throw new Error(`meshOps: circularPattern: unknown option "${k}" (allowed: axis, angle, center, radius)`);
     }
     const axis = parseAxis(opts.axis, 'circularPattern');
     const totalAngle = opts.angle ?? 360;
     need(isFiniteNum(totalAngle), 'circularPattern.angle must be a number');
     const center = opts.center;
     if (center !== undefined) need(isVec3(center), 'circularPattern.center must be a [x,y,z] vector');
-    if (count === 1) return shape;
-    // Endpoint convention: full ring = no endpoint repeat (step = total/count);
-    // partial arc = endpoints inclusive (step = total/(count-1)). Matches Curves.ringCopy.
+    if (opts.radius !== undefined) need(isFiniteNum(opts.radius), 'circularPattern.radius must be a number');
+
+    // Apply the radius shortcut. The default orientation pushes "outward" from
+    // the rotation center along the in-plane axis that's NOT the rotation axis:
+    //   axis=z → push along +X (the canonical "12 o'clock" position pre-rotation)
+    //   axis=y → push along +X (so blades fan in the XZ plane, like a turbine)
+    //   axis=x → push along +Y
+    //   general → push along the canonical "out" direction
+    //              (whichever world axis has the smallest |dot| with the rotation axis)
+    let positioned = shape;
+    if (opts.radius !== undefined && opts.radius !== 0) {
+      const r = opts.radius;
+      let push: Vec3;
+      const ax = Math.abs(axis[0]), ay = Math.abs(axis[1]), az = Math.abs(axis[2]);
+      // Pick the world axis least aligned with the rotation axis, so the radial
+      // direction is genuinely orthogonal to the axis of rotation.
+      if (ax <= ay && ax <= az) push = [r, 0, 0];
+      else if (ay <= az) push = [0, r, 0];
+      else push = [0, 0, r];
+      positioned = positioned.translate(push);
+    }
+
+    if (count === 1) return positioned;
+
+    // Endpoint convention (see opts.angle docs above): full ring divides by N,
+    // partial arc divides by N-1. Matches Curves.ringCopy.
     const denom = Math.abs(Math.abs(totalAngle) - 360) < 1e-9 ? count : Math.max(1, count - 1);
     const parts: any[] = [];
     for (let i = 0; i < count; i++) {
       const a = (i / denom) * totalAngle;
-      parts.push(rotateAroundAxis(shape, axis, a, center));
+      parts.push(rotateAroundAxis(positioned, axis, a, center));
+    }
+    return Manifold.union(parts);
+  }
+
+  // ---- Spiral pattern (rotate + axial rise per copy) --------------------
+
+  interface SpiralPatternOpts {
+    axis?: 'x' | 'y' | 'z' | Vec3;
+    /** Rotation per copy in degrees. */
+    anglePerCopy: number;
+    /** Translation per copy along the rotation axis. */
+    risePerCopy: number;
+    /** Rotation center; default [0,0,0]. The rise translates along the axis,
+     *  not from the center, so center only affects the rotation. */
+    center?: Vec3;
+  }
+
+  /** N copies arranged in a helix: each copy rotated by `anglePerCopy` AND
+   *  translated by `risePerCopy` along the rotation axis. The "staircase"
+   *  pattern that no single helper could express before — pairing with
+   *  `expectUnion` validates the steps actually all merged. */
+  function spiralPattern(shape: any, count: number, opts: SpiralPatternOpts): any {
+    need(isManifold(shape), 'spiralPattern(shape, count, opts): shape must be a Manifold');
+    need(Number.isInteger(count) && count >= 1, 'spiralPattern.count must be a positive integer');
+    need(opts && typeof opts === 'object', 'spiralPattern: opts is required (anglePerCopy, risePerCopy)');
+    const allowed = ['axis', 'anglePerCopy', 'risePerCopy', 'center'];
+    for (const k of Object.keys(opts)) {
+      if (!allowed.includes(k)) throw new Error(`meshOps: spiralPattern: unknown option "${k}" (allowed: axis, anglePerCopy, risePerCopy, center)`);
+    }
+    need(isFiniteNum(opts.anglePerCopy), 'spiralPattern.anglePerCopy must be a number');
+    need(isFiniteNum(opts.risePerCopy), 'spiralPattern.risePerCopy must be a number');
+    if (opts.center !== undefined) need(isVec3(opts.center), 'spiralPattern.center must be a [x,y,z] vector');
+    const axis = parseAxis(opts.axis, 'spiralPattern');
+    if (count === 1) return shape;
+    const parts: any[] = [];
+    for (let i = 0; i < count; i++) {
+      const rot = rotateAroundAxis(shape, axis, i * opts.anglePerCopy, opts.center);
+      const rise = i * opts.risePerCopy;
+      const lift: Vec3 = [axis[0] * rise, axis[1] * rise, axis[2] * rise];
+      parts.push(rot.translate(lift));
     }
     return Manifold.union(parts);
   }
@@ -387,17 +497,52 @@ export function createMeshOpsNamespace(module: any) {
     const expected = opts.expectComponents;
     if (expected !== undefined) {
       need(Number.isInteger(expected) && expected >= 0, 'expectUnion.expectComponents must be a non-negative integer');
-      const actual = result.decompose().length;
+      const pieces = result.decompose();
+      const actual = pieces.length;
       if (actual !== expected) {
+        // Include per-piece bbox/volume in the error so the agent can see at a
+        // glance which component is the orphan. Sorted largest-first.
+        const summary = pieces
+          .map((p: any) => ({ vol: p.volume(), bb: p.boundingBox() }))
+          .sort((a: { vol: number }, b: { vol: number }) => b.vol - a.vol)
+          .slice(0, 6) // cap output so a 50-piece blast doesn't flood the log
+          .map(({ vol, bb }: { vol: number; bb: { min: number[]; max: number[] } }, i: number) =>
+            `[${i}] vol=${vol.toFixed(2)} bbox=([${bb.min[0].toFixed(1)},${bb.min[1].toFixed(1)},${bb.min[2].toFixed(1)}] → [${bb.max[0].toFixed(1)},${bb.max[1].toFixed(1)},${bb.max[2].toFixed(1)}])`)
+          .join('; ');
+        const tail = actual > 6 ? `; …${actual - 6} more` : '';
         throw new Error(
           `meshOps: expectUnion: expected ${expected} component(s) but got ${actual}. ` +
           (actual > expected
             ? 'Inputs likely don\'t overlap enough — translate them so they share ~0.5+ units of volume.'
-            : 'Inputs overlap more than expected — re-check positions.'),
+            : 'Inputs overlap more than expected — re-check positions.') +
+          `\nComponents (largest first): ${summary}${tail}`,
         );
       }
     }
     return result;
+  }
+
+  /** Standalone "is this manifold the expected number of components?" predicate.
+   *  Useful as a runtime invariant check after any boolean op without having
+   *  to re-shape the union into expectUnion. Returns the actual count when ok,
+   *  throws with bbox-per-piece detail when mismatched. */
+  function expectComponents(m: any, expected: number): number {
+    need(isManifold(m), 'expectComponents(m, expected): m must be a Manifold');
+    need(Number.isInteger(expected) && expected >= 0, 'expectComponents.expected must be a non-negative integer');
+    const pieces = m.decompose();
+    const actual = pieces.length;
+    if (actual === expected) return actual;
+    const summary = pieces
+      .map((p: any) => ({ vol: p.volume(), bb: p.boundingBox() }))
+      .sort((a: { vol: number }, b: { vol: number }) => b.vol - a.vol)
+      .slice(0, 6)
+      .map(({ vol, bb }: { vol: number; bb: { min: number[]; max: number[] } }, i: number) =>
+        `[${i}] vol=${vol.toFixed(2)} bbox=([${bb.min[0].toFixed(1)},${bb.min[1].toFixed(1)},${bb.min[2].toFixed(1)}] → [${bb.max[0].toFixed(1)},${bb.max[1].toFixed(1)},${bb.max[2].toFixed(1)}])`)
+      .join('; ');
+    const tail = actual > 6 ? `; …${actual - 6} more` : '';
+    throw new Error(
+      `meshOps: expectComponents: expected ${expected} component(s) but got ${actual}.\nComponents (largest first): ${summary}${tail}`,
+    );
   }
 
   function expectDifference(a: any, b: any, opts: { expectNonEmpty?: boolean } = {}): any {
@@ -448,9 +593,11 @@ export function createMeshOpsNamespace(module: any) {
     // patterns
     linearPattern,
     circularPattern,
+    spiralPattern,
     // robust booleans / heal
     expectUnion,
     expectDifference,
+    expectComponents,
     heal,
   };
 }
@@ -461,9 +608,40 @@ export type MeshOpsNamespace = ReturnType<typeof createMeshOpsNamespace>;
 // Pure-logic helpers exported for unit testing (no manifold-3d dependency).
 // ---------------------------------------------------------------------------
 
+/** Resolve an alignTo target — exported pure so unit tests can exercise the
+ *  'origin' / bbox-literal / Manifold dispatch without spinning up WASM.
+ *  Module-level so callers outside `createMeshOpsNamespace` can reuse it. */
+function resolveAlignTargetPure(target: unknown, name: string): BBoxInfo {
+  if (target === 'origin') {
+    return { min: [0, 0, 0], max: [0, 0, 0], size: [0, 0, 0], center: [0, 0, 0] };
+  }
+  if (target && typeof target === 'object'
+      && Array.isArray((target as { min?: unknown }).min)
+      && Array.isArray((target as { max?: unknown }).max)) {
+    const t = target as { min: number[]; max: number[] };
+    if (t.min.length !== 3 || t.max.length !== 3) {
+      throw new Error(`meshOps: ${name}: bbox target must have 3-element min/max arrays`);
+    }
+    for (let i = 0; i < 3; i++) {
+      if (!isFiniteNum(t.min[i]) || !isFiniteNum(t.max[i])) {
+        throw new Error(`meshOps: ${name}: bbox target min/max must be finite numbers`);
+      }
+    }
+    const min: Vec3 = [t.min[0], t.min[1], t.min[2]];
+    const max: Vec3 = [t.max[0], t.max[1], t.max[2]];
+    return {
+      min, max,
+      size: [max[0] - min[0], max[1] - min[1], max[2] - min[2]],
+      center: [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2],
+    };
+  }
+  throw new Error(`meshOps: ${name}: target must be a Manifold, the string 'origin', or { min:[x,y,z], max:[x,y,z] }`);
+}
+
 export const __testables__ = {
   alignOffset,
   parsePlaneNormal,
   parseAxis,
   isVec3,
+  resolveAlignTargetPure,
 };

@@ -209,9 +209,11 @@ export const manifoldJsEngine: Engine = {
       mirrorCopy: meshOpsNamespace.mirrorCopy,
       linearPattern: meshOpsNamespace.linearPattern,
       circularPattern: meshOpsNamespace.circularPattern,
+      spiralPattern: meshOpsNamespace.spiralPattern,
       // Robust booleans + heal:
       expectUnion: meshOpsNamespace.expectUnion,
       expectDifference: meshOpsNamespace.expectDifference,
+      expectComponents: meshOpsNamespace.expectComponents,
       heal: meshOpsNamespace.heal,
       // ----
       setMinCircularAngle,

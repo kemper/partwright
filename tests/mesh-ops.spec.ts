@@ -139,6 +139,100 @@ test.describe('meshOps sandbox helpers', () => {
     expect(res.geometry.componentCount).toBe(1);
   });
 
+  test('circularPattern.radius shortcut + alignTo("origin") + placeOn("preserve")', async ({ page }) => {
+    const res = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: { runAndSave: (code: string, label?: string) => Promise<{ geometry: { isManifold: boolean; componentCount: number } }> } }).partwright;
+      const code = `
+        const { Manifold } = api;
+        // Six studs around a hub — the radius shortcut pushes each stud out
+        // by 8 before rotation, so we don't have to pre-translate.
+        const hub = Manifold.cylinder(4, 10, 10, 48);
+        const studProto = Manifold.cylinder(6, 1.5, 1.5, 16);
+        const studs = api.circularPattern(studProto, 6, { radius: 8 });
+        const hubWithStuds = api.expectUnion([hub, studs], { expectComponents: 1 });
+
+        // alignTo('origin') — center an off-origin shape on the world axis.
+        const drifted = Manifold.cube([4, 4, 4], true).translate([50, 50, 50]);
+        const centered = api.alignTo(drifted, 'origin', { x: 'center', y: 'center', z: 'center' });
+        const cb = api.bbox(centered);
+        if (Math.abs(cb.center[0]) > 0.01 || Math.abs(cb.center[1]) > 0.01 || Math.abs(cb.center[2]) > 0.01) {
+          throw new Error('alignTo origin did not center: ' + JSON.stringify(cb.center));
+        }
+
+        // placeOn({ at: 'preserve' }) — Z-lift only, no XY re-centering.
+        // Block at (15, 0) — placeOn would normally drag it to (0, 0); 'preserve'
+        // keeps its X position.
+        const offBlock = Manifold.cube([3, 3, 3], true).translate([15, 0, 0]);
+        const placed = api.placeOn(offBlock, hub, { at: 'preserve' });
+        const pb = api.bbox(placed);
+        if (Math.abs(pb.center[0] - 15) > 0.01) {
+          throw new Error('placeOn preserve dragged X: ' + pb.center[0]);
+        }
+
+        return hubWithStuds;
+      `;
+      return await pw.runAndSave(code, 'circular-radius-and-origin-align');
+    });
+    expect(res.geometry.isManifold).toBe(true);
+    expect(res.geometry.componentCount).toBe(1);
+  });
+
+  test('spiralPattern builds a helical stack', async ({ page }) => {
+    const res = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: { runAndSave: (code: string, label?: string) => Promise<{ geometry: { isManifold: boolean; triangleCount: number } }> } }).partwright;
+      const code = `
+        const { Manifold } = api;
+        // 12 wedges rising 2mm and rotating 30° per copy — the classic
+        // "spiral step" pattern that no helper expressed before.
+        const step = Manifold.cube([20, 4, 4], true).translate([10, 0, 0]);
+        const helix = api.spiralPattern(step, 12, { anglePerCopy: 30, risePerCopy: 2 });
+        // Spine: a tall column so all 12 wedges share material with it.
+        const spine = Manifold.cylinder(24, 1.2, 1.2, 24).translate([0, 0, -2]);
+        return api.expectUnion([spine, helix], { expectComponents: 1 });
+      `;
+      return await pw.runAndSave(code, 'spiral-pattern-stack');
+    });
+    expect(res.geometry.isManifold).toBe(true);
+    expect(res.geometry.triangleCount).toBeGreaterThan(0);
+  });
+
+  test('expectComponents standalone predicate throws with bbox detail on mismatch', async ({ page }) => {
+    const errMessage = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: { runIsolated: (c: string) => Promise<{ geometryData: { error?: string } }> } }).partwright;
+      const code = `
+        const { Manifold } = api;
+        // Disjoint cubes — 2 components, but we'll claim 1 to trigger the throw.
+        const a = Manifold.cube([4, 4, 4], true);
+        const b = Manifold.cube([4, 4, 4], true).translate([20, 0, 0]);
+        const both = Manifold.compose([a, b]);
+        api.expectComponents(both, 1);
+        return a;
+      `;
+      const res = await pw.runIsolated(code);
+      return res.geometryData.error ?? '';
+    });
+    expect(errMessage).toMatch(/expected 1 component\(s\) but got 2/);
+    expect(errMessage).toMatch(/bbox=/); // bbox-per-piece dump present
+  });
+
+  test('expectUnion error message includes per-piece bbox dump', async ({ page }) => {
+    const errMessage = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: { runIsolated: (c: string) => Promise<{ geometryData: { error?: string } }> } }).partwright;
+      const code = `
+        const { Manifold } = api;
+        const a = Manifold.cube([5, 5, 5], true);
+        const b = Manifold.cube([3, 3, 3], true).translate([20, 0, 0]);
+        return api.expectUnion([a, b], { expectComponents: 1 });
+      `;
+      const res = await pw.runIsolated(code);
+      return res.geometryData.error ?? '';
+    });
+    expect(errMessage).toMatch(/expected 1 component\(s\) but got 2/);
+    // Largest first — the 5×5×5 cube should show up before the 3×3×3.
+    expect(errMessage).toMatch(/\[0\] vol=125\.00/);
+    expect(errMessage).toMatch(/\[1\] vol=27\.00/);
+  });
+
   test('circularPattern with a non-axis-aligned axis produces a valid manifold', async ({ page }) => {
     const res = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { runAndSave: (code: string, label?: string) => Promise<{ geometry: { isManifold: boolean; triangleCount: number } }> } }).partwright;
@@ -222,5 +316,54 @@ test.describe('partwright window API: renderSection + componentBounds + pointIns
     expect(Math.abs(r.volumeDelta)).toBeLessThan(0.01);
     expect(r.componentCountBefore).toBe(1);
     expect(r.componentCountAfter).toBe(1);
+  });
+
+  // Engine-agnostic check — the window-level helpers (renderSection,
+  // componentBounds, pointInside) should behave the same whether the model
+  // came from manifold-js or OpenSCAD, since they operate on the rendered
+  // Manifold rather than the source code.
+  test('window helpers work on a SCAD-engine model too', async ({ page }) => {
+    page.on('dialog', d => d.accept());
+    // Switch to SCAD via the language toggle; the test session has no
+    // versions yet so the switch should be silent.
+    await page.locator('#lang-toggle button:has-text("SCAD")').click();
+    // SCAD WASM is heavy (~10MB) and the language switch tears down + rebuilds
+    // the partwright surface. Re-wait until it's back, then give SCAD a moment
+    // for its first compile.
+    await page.waitForFunction(
+      () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
+      { timeout: 30_000 },
+    );
+    await page.waitForTimeout(3_000);
+
+    const result = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: { run: (c: string) => Promise<unknown>; renderSection: (o: { axis: 'x' | 'y' | 'z' }) => unknown; componentBounds: () => unknown; pointInside: (p: [number, number, number]) => boolean | null } }).partwright;
+      // Tiny sphere — coarse polyhedron, but a real solid.
+      await pw.run('sphere(r=8, $fn=24);');
+      return {
+        section: pw.renderSection({ axis: 'z' }),
+        comps: pw.componentBounds(),
+        insideCenter: pw.pointInside([0, 0, 0]),
+        outside: pw.pointInside([100, 0, 0]),
+      };
+    });
+    const r = result as {
+      section: { dataUrl: string; area: number; contours: number };
+      comps: Array<{ volume: number; bbox: { size: number[] } }>;
+      insideCenter: boolean;
+      outside: boolean;
+    };
+    expect(r.section).toBeTruthy();
+    // Sphere r=8 cut at the midpoint should give a single ~circular contour.
+    // The exact area depends on OpenSCAD's $fn discretization and where the
+    // section plane lands relative to a latitude band; just check it's a
+    // plausible solid (greater than zero, less than the bbox cap).
+    expect(r.section.area).toBeGreaterThan(50);
+    expect(r.section.area).toBeLessThan(300);
+    expect(r.section.contours).toBe(1);
+    expect(r.section.dataUrl).toMatch(/^data:image\/svg\+xml/);
+    expect(r.comps).toHaveLength(1);
+    expect(r.insideCenter).toBe(true);
+    expect(r.outside).toBe(false);
   });
 });
