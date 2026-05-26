@@ -29,7 +29,7 @@ import {
 } from '../ai/settings';
 import { effectiveContextCeiling, resolveLocalModel, unloadActiveLocalModel } from '../ai/local';
 import { getCachedCeiling } from '../ai/modelMetadata';
-import type { AnthropicModelId, Provider } from '../ai/types';
+import type { Provider } from '../ai/types';
 
 export interface AiSettingsCallbacks {
   onChange: () => void;
@@ -331,7 +331,7 @@ function buildAnthropicModelSection(cb: AiSettingsCallbacks): HTMLElement {
         : 'px-2 py-1 rounded text-[11px] text-zinc-300 border border-zinc-700 hover:bg-zinc-700/60';
       b.textContent = opt.label;
       b.addEventListener('click', () => {
-        saveSettings(setAnthropicModel(loadSettings(), opt.id as AnthropicModelId));
+        saveSettings(setAnthropicModel(loadSettings(), opt.id));
         cb.onChange();
         renderButtons();
       });
