@@ -7,7 +7,7 @@ export interface Session {
   updated: number;
   images?: AttachedImage[] | null;
   /** Modeling language for this session. Missing = 'manifold-js'. */
-  language?: 'manifold-js' | 'scad';
+  language?: 'manifold-js' | 'scad' | 'replicad';
   /** Id of the part that is active when the session is (re)opened. Missing =
    *  fall back to the first part by `order`. Set on every part switch so the
    *  editor restores to the part the user last worked on. */
@@ -410,7 +410,7 @@ async function migratePartsData(targetDb: IDBDatabase): Promise<void> {
 
 // === Sessions ===
 
-export async function createSession(name?: string, language?: 'manifold-js' | 'scad'): Promise<Session> {
+export async function createSession(name?: string, language?: 'manifold-js' | 'scad' | 'replicad'): Promise<Session> {
   const session: Session = {
     id: generateId(),
     name: name || `Session ${new Date().toLocaleDateString()}`,

@@ -16,13 +16,17 @@ CAD tool that runs in the user's browser. You drive the app through tools
 that wrap window.partwright. You always operate inside the single session the
 user already has open — you cannot create, switch, or close sessions, so just
 save your work into the current session with runAndSave (do not write to
-examples/). The current modeling language is
-shown in the per-turn suffix below — write code in that language. If the
-user explicitly asks for a different language, or if the request is much
-better expressed in the other one, switch via setActiveLanguage('scad'
-| 'manifold-js'); otherwise stay in whatever the user has open. When you
-write JavaScript, return a Manifold object — see ai.md below for the
-full conventions.
+examples/). The current modeling language is shown in the per-turn suffix
+below — write code in that language. Three languages exist:
+'manifold-js' (default, mesh kernel), 'scad' (OpenSCAD), and 'replicad'
+(BREP / OpenCASCADE — true edge fillets, chamfers, STEP export). Switch via
+setActiveLanguage('scad' | 'manifold-js' | 'replicad') only when justified.
+When you write manifold-js, return a Manifold object. In manifold-js you can
+also call \`api.BREP.box([…]).fillet(r)\` (etc.) and pipe the result back
+through Manifold via \`api.BREP.toManifold(shape, api.Manifold)\` — useful
+when one feature needs an exact fillet but the rest of the model is mesh-
+native. The full BREP-language session is for STEP export and BREP-only
+workflows. See ai.md below for the full conventions.
 
 Be concise in chat. Long explanations cost tokens the user pays for. When a
 task involves geometry, prefer to act (call a tool, run code, save a
@@ -263,10 +267,12 @@ export function toggleSuffix(toggles: ChatToggles): string {
     '',
     '## Session toggle state',
     '',
-    `Active language: ${lang}  — write code in this language. Use setActiveLanguage to switch only when justified (e.g. user asked, or the request maps obviously better to the other engine: OpenSCAD for parametric extrusion-heavy parts, manifold-js for boolean composition and fine programmatic control).${
+    `Active language: ${lang}  — write code in this language. Use setActiveLanguage to switch only when justified (e.g. user asked, or the request maps obviously better to another engine: OpenSCAD for parametric extrusion-heavy parts, manifold-js for boolean composition and fine programmatic control, replicad/BREP for exact fillets/chamfers and STEP export).${
       lang === 'scad'
         ? ' Note: SCAD\'s revolve / linear_extrude / cylinder produce radial-fan triangle topology that is awkward to paint cleanly (every triangle radiates from the center axis). If the task involves precise painting of curved features, consider switching to manifold-js up front rather than wrestling with the fan mesh.'
-        : ''
+        : lang === 'replicad'
+          ? ' Note: BREP sessions return a BREP shape (api.BREP.box/cylinder/sphere.fillet/.chamfer/.fuse/.cut/.intersect), not a Manifold. See /ai/replicad.md for the full BREP API and STEP-export workflow. Mesh-only ops (api.Manifold.warp / .levelSet) are not exposed in BREP sessions — switch to manifold-js if you need them.'
+          : ' Tip: you can also reach for api.BREP.* inside a manifold-js session for one-off exact fillets/chamfers (then api.BREP.toManifold(shape, api.Manifold) to drop back into the mesh world) — no language switch needed unless STEP export is the goal.'
     }`,
     `Model: ${model}`,
     `Auto-retry on tool error: ${toggles.autoRetry}`,
@@ -298,7 +304,9 @@ export function toggleSuffix(toggles: ChatToggles): string {
 function currentLanguage(): Language {
   try {
     const w = window as unknown as { partwright?: { getActiveLanguage?: () => Language } };
-    return w.partwright?.getActiveLanguage?.() ?? 'manifold-js';
+    const lang = w.partwright?.getActiveLanguage?.();
+    if (lang === 'manifold-js' || lang === 'scad' || lang === 'replicad') return lang;
+    return 'manifold-js';
   } catch {
     return 'manifold-js';
   }
@@ -366,6 +374,7 @@ Available tools you'll use most:
   prompt doesn't have room for. Available names:
   curves (smooth shapes / lofts / airfoils),
   bosl2 (OpenSCAD rounding / threads / gears),
+  replicad (BREP / OpenCASCADE — exact fillets / chamfers / STEP export),
   colors (paintRegion + paint helpers),
   print-safety (FDM rules before exporting STL/3MF),
   reference-images (when the user attaches photos),
@@ -504,8 +513,8 @@ arbitrary — treat as mm unless the user says otherwise.
 - \`addSessionNote({text})\` — prefix with [REQUIREMENT], [DECISION],
   [FEEDBACK], [MEASUREMENT], or [TODO].
 - \`readDoc({name})\` — fetch a topic subdoc with full API + examples.
-  Call BEFORE writing code in that area. Names: curves, bosl2, colors,
-  print-safety, reference-images, file-io, annotations.
+  Call BEFORE writing code in that area. Names: curves, bosl2, replicad,
+  colors, print-safety, reference-images, file-io, annotations.
 - \`findFaces({box?, normal?, ...})\` — query triangles before painting.
 - \`paintRegion({point, color})\`, \`paintFaces({triangleIds, color})\`,
   \`clearColors()\` — color assignment helpers (read \`readDoc("colors")\`

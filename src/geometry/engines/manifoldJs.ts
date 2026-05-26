@@ -3,6 +3,7 @@ import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnos
 import { createCurvesNamespace } from '../curves';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
+import { getBrepNamespace } from '../brepRuntime';
 
 /** Marker the sandbox attaches to render-only proxies (see `renderMesh` below).
  *  The engine looks for it on the user-returned object to decide whether the
@@ -183,10 +184,18 @@ export const manifoldJsEngine: Engine = {
       triVerts: m.triVerts,
     }));
 
+    // `BREP` is only present when the engine Worker has lazy-loaded
+    // OpenCASCADE.js — otherwise the namespace is undefined and the user
+    // sees a normal "BREP is not defined" ReferenceError if they touch it
+    // without the loader having run. The pre-scan in engineWorker.ts
+    // (`sourceUsesBrep(code)`) is what triggers the load.
+    const BREP = getBrepNamespace();
+
     const api = {
       Manifold,
       CrossSection,
       Curves: curvesNamespace,
+      BREP,
       setMinCircularAngle,
       setMinCircularEdgeLength,
       setCircularSegments,

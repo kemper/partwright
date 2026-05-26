@@ -22,7 +22,7 @@
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
+import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setOnMeshUpdate, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
@@ -1585,14 +1585,13 @@ async function main() {
     },
     onImportFile: async (file) => { await handleImportFile(file); },
     onImportInboxEntry: handleReimportInboxEntry,
-    onLanguageSwitch: async (lang: 'manifold-js' | 'scad') => {
+    onLanguageSwitch: async (lang: 'manifold-js' | 'scad' | 'replicad') => {
       if (lang === getActiveLanguage()) return;
       // If current session has work, ask before switching
       const curState = getState();
       if (curState.session && curState.versionCount > 0) {
-        const msg = lang === 'scad'
-          ? 'Your current JS session will be kept. Start new OpenSCAD session?'
-          : 'Your current SCAD session will be kept. Start new JavaScript session?';
+        const langLabel = lang === 'scad' ? 'OpenSCAD' : lang === 'replicad' ? 'BREP' : 'JavaScript';
+        const msg = `Your current session will be kept. Start new ${langLabel} session?`;
         const ok = await showInlineConfirm(editorUI, msg);
         if (!ok) return;
       }
@@ -1601,7 +1600,14 @@ async function main() {
       await createSession(undefined, lang);
       const defaultScad = '// OpenSCAD\ncube([10, 10, 10], center=true);';
       const defaultJs = 'const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
-      const code = lang === 'scad' ? defaultScad : defaultJs;
+      // BREP starter shows off the headline feature: a true filleted box that
+      // would be impossible at this quality in the mesh engine.
+      const defaultBrep = `// BREP — replicad / OpenCASCADE. Returns a BrepShape (api.BREP.*),
+// not a Manifold. The shape is tessellated for the viewport, but
+// the underlying B-rep is kept for STEP export.
+const { BREP } = api;
+return BREP.box([20, 20, 10]).fillet(2);`;
+      const code = lang === 'scad' ? defaultScad : lang === 'replicad' ? defaultBrep : defaultJs;
       setValue(code);
       runCode(code);
     },
@@ -1727,6 +1733,8 @@ async function main() {
     const editorTitleEl = document.getElementById('editor-title');
     if (!editorTitleEl) return;
     const part = state.currentPart;
+    // BREP/replicad sessions are still JavaScript files (api.BREP.*), so they
+    // share the .js extension fallback with manifold-js.
     editorTitleEl.textContent = part ? part.name : (getActiveLanguage() === 'scad' ? 'editor.scad' : 'editor.js');
   }
   syncEditorTitle(getState());
@@ -2602,7 +2610,11 @@ async function main() {
     // Update the editor title (shows the active part name, or the filename
     // fallback when no part is open).
     syncEditorTitle(getState());
-    setStatus(statusBar, 'running', lang === 'scad' ? 'Loading OpenSCAD...' : 'Switching...');
+    const loadingLabel =
+      lang === 'scad' ? 'Loading OpenSCAD...' :
+      lang === 'replicad' ? 'Loading BREP (OpenCASCADE)...' :
+      'Switching...';
+    setStatus(statusBar, 'running', loadingLabel);
     try {
       await ensureEngineReady(lang);
     } catch (e) {
@@ -2729,6 +2741,37 @@ async function main() {
     export3MF(filename?: string) {
       assertString(filename, 'export3MF(filename)', { optional: true });
       if (currentMeshData) export3MF(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData, filename);
+    },
+
+    /** Export the most-recent BREP shape as a STEP file. Only meaningful in
+     *  replicad-language sessions — BREP shapes built ad-hoc inside a
+     *  manifold-js session (via api.BREP.*) are not retained past the
+     *  toManifold() conversion, so this won't pick them up. Returns
+     *  `{ ok: true, filename, sizeBytes }` on success, or
+     *  `{ ok: false, error }` when no BREP shape is available. */
+    async exportSTEP(filename?: string) {
+      assertString(filename, 'exportSTEP(filename)', { optional: true });
+      try {
+        const blob = await exportLastBrepAsSTEP();
+        if (!blob) {
+          return { ok: false as const, error: 'No BREP shape available. Switch to BREP language (setActiveLanguage("replicad")) and run a model first.' };
+        }
+        const state = getState();
+        const base = state.session?.name ?? 'model';
+        const versionLabel = state.currentVersion?.label;
+        const name = filename ?? `${base}${versionLabel ? '_' + versionLabel : ''}.step`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        a.click();
+        // Revoke after a tick so Safari/older browsers actually finish the
+        // download. Matches the pattern used by exportGLB/exportSTL.
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        return { ok: true as const, filename: name, sizeBytes: blob.size };
+      } catch (e) {
+        return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+      }
     },
 
     // === AI-friendly export API ===
@@ -2870,7 +2913,7 @@ async function main() {
     async importCodeData(code: string, language: Language, sessionName?: string) {
       const check = guard(() => {
         assertString(code, 'importCodeData(code)', { allowEmpty: false });
-        assertEnum(language, ['manifold-js', 'scad'], 'importCodeData(language)');
+        assertEnum(language, ['manifold-js', 'scad', 'replicad'], 'importCodeData(language)');
         assertString(sessionName, 'importCodeData(sessionName)', { optional: true, allowEmpty: false });
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
@@ -2938,7 +2981,7 @@ async function main() {
         if (opts !== undefined) {
           const o = assertObject(opts, 'validate(code, opts)')!;
           assertNoUnknownKeys(o, ['language'], 'validate(opts)');
-          if (o.language !== undefined) assertEnum(o.language, ['manifold-js', 'scad'], 'validate(opts).language');
+          if (o.language !== undefined) assertEnum(o.language, ['manifold-js', 'scad', 'replicad'], 'validate(opts).language');
         }
         return true;
       });
@@ -2954,7 +2997,7 @@ async function main() {
 
     /** Switch active engine language. Lazy-inits SCAD on first switch. */
     async setActiveLanguage(lang: Language): Promise<void> {
-      assertEnum(lang, ['manifold-js', 'scad'], 'setActiveLanguage(lang)');
+      assertEnum(lang, ['manifold-js', 'scad', 'replicad'], 'setActiveLanguage(lang)');
       await switchLanguage(lang);
     },
 

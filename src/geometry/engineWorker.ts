@@ -6,20 +6,24 @@
 //
 // Protocol — Main → Worker:
 //   { type: 'init' }
-//   { type: 'execute',  callId, code, lang?, imports? }
-//   { type: 'validate', callId, code, lang? }
+//   { type: 'execute',     callId, code, lang?, imports? }
+//   { type: 'validate',    callId, code, lang? }
+//   { type: 'exportSTEP',  callId }
 //
 // Protocol — Worker → Main:
 //   { type: 'ready' }
-//   { type: 'execute_result',  callId, mesh, error, diagnostics, labelMapEntries }
-//   { type: 'validate_result', callId, result }
-//   { type: 'error',           callId, message }
+//   { type: 'execute_result',     callId, mesh, error, diagnostics, labelMapEntries }
+//   { type: 'validate_result',    callId, result }
+//   { type: 'exportSTEP_result',  callId, blob, error }
+//   { type: 'error',              callId, message }
 //
 // Mesh typed arrays are transferred (zero-copy) to the main thread.
 // labelMap (Map<string, Set<number>>) is serialised as [string, number[]][].
 
 import { manifoldJsEngine } from './engines/manifoldJs';
 import { runScadAsync, openscadEngine } from './engines/openscad';
+import { runReplicadAsync, replicadEngine, getLastBrepShape } from './engines/replicad';
+import { ensureBrepLoaded, sourceUsesBrep } from './brepRuntime';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { setCircularSegmentsOverride } from './qualitySettings';
 import type { Language } from './engines/types';
@@ -73,12 +77,20 @@ self.onmessage = async (event: MessageEvent) => {
       // Populate the per-run import registry so api.imports works in user code.
       setActiveImports(imports ?? []);
 
-      const effectiveLang: Language = lang === 'scad' ? 'scad' : 'manifold-js';
+      const effectiveLang: Language =
+        lang === 'scad' ? 'scad' :
+        lang === 'replicad' ? 'replicad' :
+        'manifold-js';
       let result;
       if (effectiveLang === 'scad') {
         // Ensure the OpenSCAD engine is loaded (lazy init).
         if (!openscadEngine.isReady()) await openscadEngine.init();
         result = await runScadAsync(code as string);
+      } else if (effectiveLang === 'replicad') {
+        // Full replicad-language session — lazy-init OCCT then evaluate as
+        // BREP. Tessellation happens inside the engine before returning.
+        if (!replicadEngine.isReady()) await replicadEngine.init();
+        result = await runReplicadAsync(code as string);
       } else {
         if (!manifoldReady) {
           self.postMessage({
@@ -87,6 +99,13 @@ self.onmessage = async (event: MessageEvent) => {
             message: 'Geometry engine not initialised — try again after loading completes.',
           });
           return;
+        }
+        // Phase C: if the user's manifold-js source mentions `BREP`, preload
+        // OCCT before evaluating so `api.BREP` is populated. Skipped entirely
+        // when the source doesn't touch BREP — keeps the WASM payload off the
+        // critical path for everyone else.
+        if (sourceUsesBrep(code as string)) {
+          await ensureBrepLoaded();
         }
         result = manifoldJsEngine.run(code as string);
       }
@@ -126,8 +145,9 @@ self.onmessage = async (event: MessageEvent) => {
 
       // Only the extracted mesh data crosses the thread boundary, so the live
       // result Manifold is no longer needed. Free it (manifold-js path only —
-      // the SCAD engine owns its own result) so repeated executions, including
-      // the editor's per-edit auto-run, don't leak one Manifold each.
+      // the SCAD and replicad engines own their own result lifecycle) so
+      // repeated executions, including the editor's per-edit auto-run, don't
+      // leak one Manifold each.
       if (effectiveLang === 'manifold-js') {
         const live = (result as { manifold?: { delete?: () => void } } | undefined)?.manifold;
         if (live && typeof live.delete === 'function') {
@@ -155,11 +175,18 @@ self.onmessage = async (event: MessageEvent) => {
       lang?: Language;
     };
     try {
-      const effectiveLang: Language = lang === 'scad' ? 'scad' : 'manifold-js';
+      const effectiveLang: Language =
+        lang === 'scad' ? 'scad' :
+        lang === 'replicad' ? 'replicad' :
+        'manifold-js';
       let result;
       if (effectiveLang === 'scad') {
         if (!openscadEngine.isReady()) await openscadEngine.init();
         result = await openscadEngine.validate(code);
+      } else if (effectiveLang === 'replicad') {
+        // Validation = syntax-parse only; replicad shares the JS parser, so
+        // we use a cheap Function-constructor check without booting OCCT.
+        result = replicadEngine.validate(code);
       } else {
         result = manifoldJsEngine.validate(code);
       }
@@ -169,6 +196,38 @@ self.onmessage = async (event: MessageEvent) => {
         type: 'error',
         callId,
         message: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
+  // ── exportSTEP ─────────────────────────────────────────────────────────
+  // Returns the STEP blob for the BREP shape produced by the most recent
+  // replicad-engine run. Only meaningful in `replicad`-language sessions;
+  // manifold-js code that ends with `api.BREP.toManifold(...)` doesn't
+  // retain the BREP source past the mesh conversion, so STEP isn't
+  // available for that path.
+  if (msg.type === 'exportSTEP') {
+    const { callId } = msg as unknown as { callId: string };
+    try {
+      const shape = getLastBrepShape();
+      if (!shape) {
+        self.postMessage({
+          type: 'exportSTEP_result',
+          callId,
+          blob: null,
+          error: 'No BREP shape available — switch to BREP language and run a model first.',
+        });
+        return;
+      }
+      const blob = shape.blobSTEP();
+      self.postMessage({ type: 'exportSTEP_result', callId, blob, error: null });
+    } catch (err) {
+      self.postMessage({
+        type: 'exportSTEP_result',
+        callId,
+        blob: null,
+        error: err instanceof Error ? err.message : String(err),
       });
     }
   }

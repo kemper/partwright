@@ -195,8 +195,14 @@ async function createSessionRow(session: Session): Promise<HTMLElement> {
 
   const meta = document.createElement('div');
   meta.className = 'text-xs text-zinc-500 font-mono mt-0.5 flex items-center gap-1.5';
-  const langLabel = session.language === 'scad' ? 'SCAD' : 'JS';
-  const langColor = session.language === 'scad' ? 'text-amber-400 border-amber-400/30' : 'text-blue-400 border-blue-400/30';
+  const langLabel =
+    session.language === 'scad' ? 'SCAD' :
+    session.language === 'replicad' ? 'BREP' :
+    'JS';
+  const langColor =
+    session.language === 'scad' ? 'text-amber-400 border-amber-400/30' :
+    session.language === 'replicad' ? 'text-emerald-400 border-emerald-400/30' :
+    'text-blue-400 border-blue-400/30';
   meta.innerHTML = `<span class="text-[10px] font-semibold border rounded px-1 ${langColor}">${langLabel}</span>${count} version${count !== 1 ? 's' : ''} · ${formatDate(session.updated)}`;
   info.appendChild(meta);
 

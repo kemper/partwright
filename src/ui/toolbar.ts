@@ -25,7 +25,7 @@ export interface ToolbarCallbacks {
   onImportFile: (file: File) => void | Promise<void>;
   /** Re-import a blob already held in the inbox (e.g. recent-imports re-click). */
   onImportInboxEntry: (entry: ImportInboxEntry) => void | Promise<void>;
-  onLanguageSwitch: (lang: 'manifold-js' | 'scad') => void;
+  onLanguageSwitch: (lang: 'manifold-js' | 'scad' | 'replicad') => void;
   onGoHome: () => void;
 }
 
@@ -94,19 +94,21 @@ export function onAutoRunChange(cb: (on: boolean) => void): void { _onAutoRunCha
 // Language toggle state — managed externally via setToolbarLanguage()
 let _langBtnJs: HTMLButtonElement | null = null;
 let _langBtnScad: HTMLButtonElement | null = null;
-let _currentLang: 'manifold-js' | 'scad' = 'manifold-js';
+let _langBtnBrep: HTMLButtonElement | null = null;
+let _currentLang: 'manifold-js' | 'scad' | 'replicad' = 'manifold-js';
 
 const LANG_ACTIVE = 'px-2 py-0.5 rounded text-xs font-medium transition-colors bg-zinc-700 text-zinc-100';
 const LANG_INACTIVE = 'px-2 py-0.5 rounded text-xs font-medium transition-colors text-zinc-500 hover:text-zinc-300';
 
 function syncLangToggle() {
-  if (!_langBtnJs || !_langBtnScad) return;
+  if (!_langBtnJs || !_langBtnScad || !_langBtnBrep) return;
   _langBtnJs.className = _currentLang === 'manifold-js' ? LANG_ACTIVE : LANG_INACTIVE;
   _langBtnScad.className = _currentLang === 'scad' ? LANG_ACTIVE : LANG_INACTIVE;
+  _langBtnBrep.className = _currentLang === 'replicad' ? LANG_ACTIVE : LANG_INACTIVE;
 }
 
 /** Update the toolbar language toggle from outside (e.g. when opening a session). */
-export function setToolbarLanguage(lang: 'manifold-js' | 'scad'): void {
+export function setToolbarLanguage(lang: 'manifold-js' | 'scad' | 'replicad'): void {
   _currentLang = lang;
   syncLangToggle();
 }
@@ -190,9 +192,19 @@ export function createToolbar(
     }
   });
 
+  _langBtnBrep = document.createElement('button');
+  _langBtnBrep.textContent = 'BREP';
+  _langBtnBrep.title = 'BREP (replicad / OpenCASCADE) — exact fillets, chamfers, STEP export. Lazy-loads on first switch.';
+  _langBtnBrep.addEventListener('click', () => {
+    if (_currentLang !== 'replicad') {
+      callbacks.onLanguageSwitch('replicad');
+    }
+  });
+
   syncLangToggle();
   langGroup.appendChild(_langBtnJs);
   langGroup.appendChild(_langBtnScad);
+  langGroup.appendChild(_langBtnBrep);
   toolbar.appendChild(langGroup);
 
   // Spacer

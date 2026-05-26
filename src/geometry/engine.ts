@@ -3,6 +3,7 @@ import type { Engine, Language, ValidateResult } from './engines/types';
 import { DEFAULT_LANGUAGE, isLanguage } from './engines/types';
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
 import { openscadEngine } from './engines/openscad';
+import { replicadEngine } from './engines/replicad';
 import { getActiveImports } from '../import/importedMesh';
 import { getDefaultCircularSegments } from './qualitySettings';
 
@@ -12,6 +13,7 @@ export { isLanguage, DEFAULT_LANGUAGE };
 const engines: Record<Language, Engine> = {
   'manifold-js': manifoldJsEngine,
   'scad': openscadEngine,
+  'replicad': replicadEngine,
 };
 
 let activeLanguage: Language = DEFAULT_LANGUAGE;
@@ -55,11 +57,11 @@ function pickLang(lang?: Language): Language {
  *  For all other code execution use executeCodeAsync(). */
 export function executeCode(source: string, lang?: Language): MeshResult {
   const l = pickLang(lang);
-  if (l === 'scad') {
+  if (l === 'scad' || l === 'replicad') {
     return {
       mesh: null,
       manifold: null,
-      error: 'OpenSCAD requires async execution — use executeCodeAsync() instead.',
+      error: `${l === 'scad' ? 'OpenSCAD' : 'BREP/replicad'} requires async execution — use executeCodeAsync() instead.`,
     };
   }
   const engine = engines[l];
@@ -85,14 +87,17 @@ let callIdCounter = 0;
 
 const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void }>();
 const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => void; reject: (e: Error) => void }>();
+const pendingStepExports = new Map<string, { resolve: (blob: Blob | null) => void; reject: (e: Error) => void }>();
 
 const EXECUTE_TIMEOUT_MS = 60_000;
 
 function rejectAllPending(err: Error): void {
   for (const p of pendingExecutions.values()) p.reject(err);
   for (const p of pendingValidations.values()) p.reject(err);
+  for (const p of pendingStepExports.values()) p.reject(err);
   pendingExecutions.clear();
   pendingValidations.clear();
+  pendingStepExports.clear();
 }
 
 /** Terminate an unresponsive Worker and reject everything in flight so the next
@@ -170,6 +175,20 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     return;
   }
 
+  if (msg.type === 'exportSTEP_result') {
+    const callId = msg.callId as string;
+    const pending = pendingStepExports.get(callId);
+    if (!pending) return;
+    pendingStepExports.delete(callId);
+    const error = msg.error as string | null;
+    if (error) {
+      pending.reject(new Error(error));
+      return;
+    }
+    pending.resolve(msg.blob as Blob | null);
+    return;
+  }
+
   if (msg.type === 'error') {
     const callId = msg.callId as string | null;
     const err = new Error(msg.message as string);
@@ -178,6 +197,8 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingExecutions.delete(callId ?? '');
       pendingValidations.get(callId)?.reject(err);
       pendingValidations.delete(callId ?? '');
+      pendingStepExports.get(callId)?.reject(err);
+      pendingStepExports.delete(callId ?? '');
     }
   }
 }
@@ -230,14 +251,18 @@ export async function ensureEngineReady(lang: Language): Promise<void> {
   }
 }
 
-/** Sync validation — works for manifold-js (cheap parse check). */
+/** Sync validation — works for manifold-js and replicad (both share a JS
+ *  parser, so the validate step doesn't need to boot WASM). SCAD still goes
+ *  async because its parser lives inside the WASM module. */
 export function validateCode(source: string, lang?: Language): ValidateResult {
   const l = pickLang(lang);
   if (l === 'scad') {
     return { valid: false, error: 'OpenSCAD validation requires async — use validateCodeAsync()' };
   }
   const engine = engines[l];
-  if (!engine.isReady()) {
+  // The replicad engine's `validate()` is a parse-only Function check that
+  // doesn't need the OCCT module loaded, so we don't gate on isReady() for it.
+  if (l !== 'replicad' && !engine.isReady()) {
     return { valid: false, error: `${engine.id} engine not initialized` };
   }
   return engine.validate(source);
@@ -273,4 +298,27 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
 
 export function isEngineReady(lang: Language): boolean {
   return engines[lang].isReady();
+}
+
+/** Ask the engine Worker for a STEP blob of the most recent BREP-engine
+ *  result. Returns `null` (with no rejection) when no shape is available so
+ *  the caller can surface a user-friendly "save your BREP model first"
+ *  message rather than treating it as a hard error. Any *real* failure
+ *  (worker dead, OCCT threw) rejects. */
+export async function exportLastBrepAsSTEP(): Promise<Blob | null> {
+  initEngineWorker();
+  await workerReady;
+  const callId = `step-${++callIdCounter}`;
+  return new Promise<Blob | null>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (pendingStepExports.has(callId)) {
+        restartEngineWorker('STEP export timed out');
+      }
+    }, EXECUTE_TIMEOUT_MS);
+    pendingStepExports.set(callId, {
+      resolve: (b) => { clearTimeout(timer); resolve(b); },
+      reject: (e) => { clearTimeout(timer); reject(e); },
+    });
+    engineWorker!.postMessage({ type: 'exportSTEP', callId });
+  });
 }

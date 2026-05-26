@@ -108,9 +108,16 @@ function render(state: SessionState) {
   });
   barEl.appendChild(nameEl);
 
-  // Language badge
-  const langLabel = state.session.language === 'scad' ? 'SCAD' : 'JS';
-  const langColor = state.session.language === 'scad' ? 'text-amber-400 border-amber-400/30' : 'text-blue-400 border-blue-400/30';
+  // Language badge — JS (manifold-js, default), SCAD (OpenSCAD), or BREP
+  // (replicad / OpenCASCADE). Colour-coded to match the toolbar toggle.
+  const langLabel =
+    state.session.language === 'scad' ? 'SCAD' :
+    state.session.language === 'replicad' ? 'BREP' :
+    'JS';
+  const langColor =
+    state.session.language === 'scad' ? 'text-amber-400 border-amber-400/30' :
+    state.session.language === 'replicad' ? 'text-emerald-400 border-emerald-400/30' :
+    'text-blue-400 border-blue-400/30';
   const langBadge = el('span', `text-[10px] font-semibold border rounded px-1 ${langColor}`, langLabel);
   barEl.appendChild(langBadge);
 
