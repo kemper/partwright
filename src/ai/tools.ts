@@ -967,12 +967,13 @@ const ALL_TOOLS: ToolDefinition[] = [
         axes: { type: 'array', items: { type: 'string', enum: ['x', 'y', 'z'] }, description: 'Axes allowed to be cut. Default ["x", "y"].' },
         connector: {
           type: 'object',
-          description: 'Alignment connector across cuts. type "pin" (default) drills dowel holes; "none" leaves plain cut faces.',
+          description: 'Connector across each internal cut. "dowel" (default) drills matching holes for a rod; "peg" mates a peg + socket between adjacent cells; "screw" carves a bolt counterbore + hex nut pocket; "dovetail" places a self-locking tapered key; "none" leaves plain cut faces. ("pin" is a legacy alias for "dowel".)',
           properties: {
-            type: { type: 'string', enum: ['none', 'pin'] },
-            diameter: { type: 'number', description: 'Dowel diameter (mm). Default 5.' },
-            depth: { type: 'number', description: 'Hole depth into each side (mm). Default 8.' },
-            count: { type: 'integer', description: 'Max holes per cut plane. Default 2.' },
+            type: { type: 'string', enum: ['none', 'dowel', 'peg', 'screw', 'dovetail'] },
+            diameter: { type: 'number', description: 'Pin / peg / screw ⌀ (mm). Default 5.' },
+            depth: { type: 'number', description: 'Depth into each side (mm). Default 8.' },
+            width: { type: 'number', description: 'Dovetail key width (mm). Default 12.' },
+            count: { type: 'integer', description: 'Max connectors per cut plane. Default 2.' },
           },
         },
         save: { type: 'boolean', description: 'Save the result as a new version (default true).' },

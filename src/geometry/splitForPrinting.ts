@@ -11,19 +11,22 @@
 // (a single multi-component mesh) for preview / baking as a version.
 
 import type { MeshData } from './types';
-import { buildConnector, type ConnectorSpec } from './splitConnectors';
+import { buildConnector, type ConnectorSpec, type ConnectorType } from './splitConnectors';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export interface SplitConnector {
-  type: 'none' | 'pin';
-  /** Dowel-pin nominal diameter (mm). Default 5. */
+  /** Connector kind across each cut. 'pin' is accepted as a legacy alias for 'dowel'. */
+  type: ConnectorType | 'pin';
+  /** Pin / peg / screw ⌀ (mm). Default 5. */
   diameter?: number;
-  /** How deep the hole goes into each side of the cut (mm). Default 8. */
+  /** How deep the connector reaches into each side (mm). Default 8. */
   depth?: number;
-  /** Extra radius added for assembly fit (mm). Default from printer clearance. */
+  /** Dovetail key width (mm). Default 12. */
+  width?: number;
+  /** Extra radius/clearance added for assembly fit (mm). Default from printer clearance. */
   clearance?: number;
-  /** Max holes per cut plane. Default 2. */
+  /** Max connectors per cut plane. Default 2. */
   count?: number;
 }
 
@@ -46,6 +49,9 @@ export interface SplitResult {
   /** Cells per axis [x, y, z]. */
   grid: [number, number, number];
   partCount: number;
+  /** Total connectors placed across all internal cut planes. Alias of holeCount for back-compat. */
+  connectorCount: number;
+  /** @deprecated use connectorCount */
   holeCount: number;
   notes: string[];
 }
@@ -106,14 +112,6 @@ function concatMeshes(items: { mesh: MeshData; offset: Vec3 }[]): MeshData {
   return { vertProperties: vp, triVerts: tv, numVert: totalVert, numTri: totalTri, numProp };
 }
 
-/** A cylinder centered on the origin with its axis along axis index `ai`. */
-function orientedDowel(Manifold: any, ai: number, halfLen: number, r: number, segs: number): any {
-  let c = Manifold.cylinder(2 * halfLen, r, r, segs).translate([0, 0, -halfLen]);
-  if (ai === 0) c = c.rotate([0, 90, 0]);
-  else if (ai === 1) c = c.rotate([90, 0, 0]);
-  return c;
-}
-
 export function splitForPrinting(module: any, mesh: MeshData, opts: SplitOptions): SplitResult | { error: string } {
   const { Manifold } = module;
   const bb = meshBounds(mesh);
@@ -157,65 +155,97 @@ export function splitForPrinting(module: any, mesh: MeshData, opts: SplitOptions
     return arr;
   });
 
-  // ── Alignment dowel holes straddling each internal cut plane ──────────────
-  const connector = opts.connector ?? { type: 'pin' };
-  let holeCount = 0;
-  if (connector.type === 'pin') {
-    const dia = connector.diameter ?? 5;
-    const depth = connector.depth ?? 8;
-    const clr = connector.clearance ?? 0.2;
-    const maxHoles = Math.max(1, connector.count ?? 2);
-    const r = dia / 2 + clr;
-    const segs = 24;
-    const fracs = [[0.5, 0.5], [0.35, 0.5], [0.65, 0.5], [0.5, 0.35], [0.5, 0.65]];
+  // ── Connectors straddling each internal cut plane ─────────────────────────
+  // Drill-style connectors (dowel, screw) are unioned and subtracted from M
+  // before cell extraction so both halves inherit the cut. Add/sub-style
+  // connectors (peg, dovetail) need to know which neighbouring cell is
+  // positive vs. negative of the plane, so they're queued per-cell and
+  // applied after the chunk is extracted.
+  const rawConnector = opts.connector ?? { type: 'dowel' as const };
+  const connectorType: ConnectorType = rawConnector.type === 'pin' ? 'dowel' : rawConnector.type;
+  const spec: ConnectorSpec = {
+    type: connectorType,
+    diameter: rawConnector.diameter,
+    depth: rawConnector.depth,
+    width: rawConnector.width,
+    clearance: rawConnector.clearance,
+  };
+  let connectorCount = 0;
+  const cellEdits = new Map<string, { adds: any[]; subs: any[] }>();
+  const editsFor = (i: number, j: number, k: number): { adds: any[]; subs: any[] } => {
+    const key = `${i},${j},${k}`;
+    let e = cellEdits.get(key);
+    if (!e) { e = { adds: [], subs: [] }; cellEdits.set(key, e); }
+    return e;
+  };
 
-    let holes: any = null;
+  if (connectorType !== 'none') {
+    const maxConnectors = Math.max(1, rawConnector.count ?? 2);
+    const fracs: [number, number][] = [[0.5, 0.5], [0.35, 0.5], [0.65, 0.5], [0.5, 0.35], [0.5, 0.65]];
+    const probeSize = Math.max(2, spec.diameter ?? spec.width ?? 5);
+
+    let drillUnion: any = null;
     for (let ai = 0; ai < 3; ai++) {
       if (counts[ai] <= 1) continue;
       const o1 = (ai + 1) % 3, o2 = (ai + 2) % 3;
-      for (let k = 1; k < counts[ai]; k++) {
-        const c = bb.min[ai] + (bb.dim[ai] * k) / counts[ai];
+      const normal: Vec3 = [0, 0, 0]; normal[ai] = 1;
+      const cellWidthO1 = bb.dim[o1] / counts[o1];
+      const cellWidthO2 = bb.dim[o2] / counts[o2];
+
+      for (let kPlane = 1; kPlane < counts[ai]; kPlane++) {
+        const planeCoord = bb.min[ai] + (bb.dim[ai] * kPlane) / counts[ai];
         let placed = 0;
         for (const [f1, f2] of fracs) {
-          if (placed >= maxHoles) break;
-          const center: Vec3 = [0, 0, 0];
-          center[ai] = c;
-          center[o1] = bb.min[o1] + bb.dim[o1] * f1;
-          center[o2] = bb.min[o2] + bb.dim[o2] * f2;
-          const dowel = orientedDowel(Manifold, ai, depth, r, segs).translate(center);
-          // Keep the hole only if the cut plane has material here (probe ∩ solid).
+          if (placed >= maxConnectors) break;
+          const pos: Vec3 = [0, 0, 0];
+          pos[ai] = planeCoord;
+          pos[o1] = bb.min[o1] + bb.dim[o1] * f1;
+          pos[o2] = bb.min[o2] + bb.dim[o2] * f2;
+          // Probe for material at this point on the cut plane.
+          const probe = Manifold.cube([probeSize, probeSize, probeSize], true).translate(pos);
           let inMaterial = false;
-          const probe = M.intersect(dowel);
-          try { inMaterial = !probe.isEmpty(); } catch { inMaterial = false; }
-          del(probe);
-          if (inMaterial) {
-            if (holes === null) {
-              holes = dowel;
-            } else {
-              const merged = holes.add(dowel);
-              del(holes);
-              del(dowel);
-              holes = merged;
-            }
-            placed++;
-            holeCount++;
-          } else {
-            del(dowel);
+          const inter = M.intersect(probe);
+          try { inMaterial = !inter.isEmpty(); } catch { inMaterial = false; }
+          del(inter); del(probe);
+          if (!inMaterial) continue;
+
+          const g = buildConnector(module, pos, normal, spec);
+          if (!g) continue;
+
+          if (g.drillBoth) {
+            if (drillUnion === null) drillUnion = g.drillBoth;
+            else { const m = drillUnion.add(g.drillBoth); del(drillUnion); del(g.drillBoth); drillUnion = m; }
           }
+          if (g.addPositive || g.subNegative) {
+            // The positive side along ai is the cell at index kPlane (cells 0..counts-1).
+            const idxO1 = Math.max(0, Math.min(counts[o1] - 1, Math.floor((pos[o1] - bb.min[o1]) / cellWidthO1)));
+            const idxO2 = Math.max(0, Math.min(counts[o2] - 1, Math.floor((pos[o2] - bb.min[o2]) / cellWidthO2)));
+            if (g.addPositive) {
+              const ci: [number, number, number] = [0, 0, 0];
+              ci[ai] = kPlane; ci[o1] = idxO1; ci[o2] = idxO2;
+              editsFor(ci[0], ci[1], ci[2]).adds.push(g.addPositive);
+            }
+            if (g.subNegative) {
+              const ci: [number, number, number] = [0, 0, 0];
+              ci[ai] = kPlane - 1; ci[o1] = idxO1; ci[o2] = idxO2;
+              editsFor(ci[0], ci[1], ci[2]).subs.push(g.subNegative);
+            }
+          }
+          placed++;
+          connectorCount++;
         }
       }
     }
-    if (holes) {
-      const drilled = M.subtract(holes);
-      del(holes);
-      del(M);
-      M = drilled;
+    if (drillUnion) { const drilled = M.subtract(drillUnion); del(drillUnion); del(M); M = drilled; }
+
+    if (connectorCount === 0) {
+      notes.push('No connectors could be placed (thin geometry at the cut planes) — pieces will need manual alignment.');
+    } else {
+      notes.push(`${connectorCount} ${connectorType} connector${connectorCount === 1 ? '' : 's'} across the cuts.`);
     }
-    if (holeCount === 0) notes.push('No alignment holes could be placed (thin geometry at the cut planes) — pieces will need manual alignment.');
-    else notes.push(`${holeCount} ⌀${(dia)}mm dowel hole${holeCount === 1 ? '' : 's'} drilled across the cuts (print pins or use rod to align).`);
   }
 
-  // ── Intersect with each cell box ──────────────────────────────────────────
+  // ── Intersect with each cell box and apply per-cell connector edits ───────
   const parts: MeshData[] = [];
   for (let i = 0; i < counts[0]; i++) {
     for (let j = 0; j < counts[1]; j++) {
@@ -224,14 +254,26 @@ export function splitForPrinting(module: any, mesh: MeshData, opts: SplitOptions
         const hi: Vec3 = [bounds[0][i + 1], bounds[1][j + 1], bounds[2][k + 1]];
         const size: Vec3 = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
         const box = Manifold.cube(size).translate(lo);
-        const chunk = M.intersect(box);
+        let chunk = M.intersect(box);
         del(box);
         let empty = true;
         try { empty = chunk.isEmpty(); } catch { empty = true; }
-        if (!empty) parts.push(toMeshDataCopy(chunk));
+        if (!empty) {
+          const e = cellEdits.get(`${i},${j},${k}`);
+          if (e) {
+            for (const a of e.adds) { const m = chunk.add(a); del(chunk); chunk = m; }
+            for (const s of e.subs) { const m = chunk.subtract(s); del(chunk); chunk = m; }
+          }
+          parts.push(toMeshDataCopy(chunk));
+        }
         del(chunk);
       }
     }
+  }
+  // Free the queued add/sub manifolds (chunk.add/subtract returns new manifolds; sources still need to be freed).
+  for (const e of cellEdits.values()) {
+    for (const a of e.adds) del(a);
+    for (const s of e.subs) del(s);
   }
   del(M);
 
@@ -253,7 +295,8 @@ export function splitForPrinting(module: any, mesh: MeshData, opts: SplitOptions
     layout,
     grid: counts,
     partCount: parts.length,
-    holeCount,
+    connectorCount,
+    holeCount: connectorCount,
     notes,
   };
 }

@@ -17,7 +17,7 @@ type PW = {
   getGeometryData: () => Geo;
   checkPrintability: (opts?: unknown) => { ok?: boolean; bedFit?: { fits: boolean }; checks?: { id: string; level: string }[]; error?: string };
   scaleModel: (opts: unknown) => Promise<{ dimensions?: [number, number, number]; error?: string }>;
-  splitForPrinting: (opts?: unknown) => Promise<{ partCount?: number; holeCount?: number; parts?: { count: number }; error?: string }>;
+  splitForPrinting: (opts?: unknown) => Promise<{ partCount?: number; holeCount?: number; connectorCount?: number; notes?: string[]; parts?: { count: number }; error?: string }>;
   splitAlongPlane: (opts: unknown) => Promise<{ partCount?: number; connectorCount?: number; parts?: { count: number }; error?: string }>;
   createSession: (name?: string) => Promise<unknown>;
   listParts: () => Promise<{ id: string; name: string }[]>;
@@ -86,6 +86,28 @@ test.describe('Print tools', () => {
     });
     expect(res.error).toBeUndefined();
     expect(res.partCount ?? 0).toBeGreaterThanOrEqual(2);
+  });
+
+  test('auto split honours the connector type (regression: type was being collapsed to dowel)', async ({ page }) => {
+    await openEditor(page);
+    const res = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW }).partwright;
+      const oversized = 'const { Manifold } = api; return Manifold.cube([400,400,80], true).translate([0,0,40]);';
+      await pw.run(oversized);
+      const dowel = await pw.splitForPrinting({ connector: { type: 'dowel', diameter: 6, count: 2 }, save: false });
+      await pw.run(oversized);
+      const dovetail = await pw.splitForPrinting({ connector: { type: 'dovetail', width: 16, count: 2 }, save: false });
+      await pw.run(oversized);
+      const screw = await pw.splitForPrinting({ connector: { type: 'screw', diameter: 4, count: 2 }, save: false });
+      return { dowel, dovetail, screw };
+    });
+    expect(res.dowel.error).toBeUndefined();
+    expect(res.dovetail.error).toBeUndefined();
+    expect(res.screw.error).toBeUndefined();
+    // The notes label each connector by its requested type — proves the type isn't being collapsed.
+    expect((res.dowel.notes ?? []).join(' ')).toMatch(/dowel/i);
+    expect((res.dovetail.notes ?? []).join(' ')).toMatch(/dovetail/i);
+    expect((res.screw.notes ?? []).join(' ')).toMatch(/screw/i);
   });
 
   test('splitAlongPlane cuts a model in two with a dovetail connector', async ({ page }) => {

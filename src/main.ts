@@ -3892,10 +3892,11 @@ async function main() {
           }
           if (o.connector !== undefined) {
             const c = assertObject(o.connector, 'splitForPrinting(opts).connector')!;
-            assertNoUnknownKeys(c, ['type', 'diameter', 'depth', 'clearance', 'count'], 'splitForPrinting(opts).connector');
-            if (c.type !== undefined) assertEnum(c.type, ['none', 'pin'], 'splitForPrinting(opts).connector.type');
+            assertNoUnknownKeys(c, ['type', 'diameter', 'depth', 'width', 'clearance', 'count'], 'splitForPrinting(opts).connector');
+            if (c.type !== undefined) assertEnum(c.type, ['none', 'dowel', 'peg', 'screw', 'dovetail', 'pin'], 'splitForPrinting(opts).connector.type');
             assertNumber(c.diameter, 'splitForPrinting(opts).connector.diameter', { optional: true, min: 0.1 });
             assertNumber(c.depth, 'splitForPrinting(opts).connector.depth', { optional: true, min: 0.1 });
+            assertNumber(c.width, 'splitForPrinting(opts).connector.width', { optional: true, min: 0.1 });
             assertNumber(c.clearance, 'splitForPrinting(opts).connector.clearance', { optional: true, min: 0 });
             assertNumber(c.count, 'splitForPrinting(opts).connector.count', { optional: true, min: 1, integer: true });
           }
@@ -6017,7 +6018,7 @@ async function main() {
     scaleToFit: () => partwrightAPI.scaleModel({ fit: {} }),
     scaleUniform: (factor) => partwrightAPI.scaleModel({ factor }),
     splitAuto: (c) => partwrightAPI.splitForPrinting({
-      connector: { type: c.type === 'none' ? 'none' : 'pin', diameter: c.size, depth: c.depth, count: c.count },
+      connector: { type: c.type, diameter: c.size, depth: c.depth, width: c.size, count: c.count },
     }),
     splitPlane: (c) => partwrightAPI.splitAlongPlane({
       plane: getSplitPlane(),
