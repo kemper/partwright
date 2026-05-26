@@ -229,14 +229,14 @@
       "name": "Pipe Tee Fitting",
       "file": "pipe_tee_fitting.partwright.json",
       "language": "scad",
-      "description": "A 3-way plumbing tee fitting with flared collars and connected interior cavity. Showcases BOSL2's tube() and rounded-end primitives."
+      "description": "A 3-way plumbing tee fitting with flared collars and a connected interior cavity. Built with BOSL2's xcyl()/zcyl() axis-aligned cylinders and cyl(chamfer1=) for the flared collar edges."
     },
     {
       "id": "modular-drawer-bin",
       "name": "Modular Drawer Bin",
       "file": "modular_drawer_bin.partwright.json",
       "language": "scad",
-      "description": "A stackable storage bin with two compartments, rounded corners, and stacking lugs. Built with BOSL2's cuboid(rounding=) and attach() — the SCAD-only verbs."
+      "description": "A stackable storage bin with two compartments, rounded corners, and stacking lugs. Built with BOSL2's cuboid(rounding=) for filleted edges, plus translate-and-anchor cyl() placement for the lugs."
     }
   ]
 }

@@ -183,10 +183,9 @@ src/
 
 Requires `Cross-Origin-Embedder-Policy` and `Cross-Origin-Opener-Policy` headers for SharedArrayBuffer / WASM threads (configured in `vite.config.ts`).
 
-## Deployment
+## Hosting details
 
-Hosted on [Cloudflare Pages](https://pages.cloudflare.com/) with the production custom domain [www.partwrightstudio.com](https://www.partwrightstudio.com), served from the `production` branch. The `main` and `staging` branches deploy as previews (see the table above).
-
+- Production custom domain: [www.partwrightstudio.com](https://www.partwrightstudio.com), served from the `production` branch.
 - Build: `npm run build` → `dist/`
 - SPA routing via `_redirects`, COEP/COOP/CSP headers via `_headers`
 - Set `SITE_URL` env var in Cloudflare Pages dashboard for absolute OG/canonical URLs (falls back to `CF_PAGES_URL`)

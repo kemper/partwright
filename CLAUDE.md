@@ -399,4 +399,4 @@ Only push fixes you're confident in — failures clearly caused by your own chan
 
 ## Examples
 
-Located in `examples/*.js`. Loaded via the toolbar dropdown.
+Located in `examples/*.{js,scad}`. Surfaced through the `/catalog` gallery (see `public/catalog/manifest.json`) and the command palette.
