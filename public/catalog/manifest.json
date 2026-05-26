@@ -209,6 +209,34 @@
       "file": "wind_turbine.partwright.json",
       "language": "manifold-js",
       "description": "A tapered tower with a nacelle, hub, and 3 swept blades — plus a service ladder up the tower face. Showcases placeOn for the nacelle and circularPattern with a non-Z axis for the rotor."
+    },
+    {
+      "id": "hex-bolt-and-nut",
+      "name": "Hex Bolt & Nut Set",
+      "file": "hex_bolt_and_nut.partwright.json",
+      "language": "scad",
+      "description": "M16x3 hex bolt, matching nut, and washer laid out side-by-side. Showcases BOSL2's screw() and nut() — real threaded geometry that manifold-js can't easily reproduce."
+    },
+    {
+      "id": "spur-gear-pair",
+      "name": "Spur Gear Pair",
+      "file": "spur_gear_pair.partwright.json",
+      "language": "scad",
+      "description": "Two meshing involute spur gears on a rounded base plate, with tooth offset so they interlock correctly. Built with BOSL2's spur_gear() and gear_dist()."
+    },
+    {
+      "id": "pipe-tee-fitting",
+      "name": "Pipe Tee Fitting",
+      "file": "pipe_tee_fitting.partwright.json",
+      "language": "scad",
+      "description": "A 3-way plumbing tee fitting with flared collars and connected interior cavity. Showcases BOSL2's tube() and rounded-end primitives."
+    },
+    {
+      "id": "modular-drawer-bin",
+      "name": "Modular Drawer Bin",
+      "file": "modular_drawer_bin.partwright.json",
+      "language": "scad",
+      "description": "A stackable storage bin with two compartments, rounded corners, and stacking lugs. Built with BOSL2's cuboid(rounding=) and attach() — the SCAD-only verbs."
     }
   ]
 }
