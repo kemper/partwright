@@ -7,7 +7,19 @@
 // layer heights at which to change filament — see heightBands.ts / swapGuide.ts.
 
 /** How an imported image is mapped onto relief heights. */
-export type ReliefImportMode = 'luminance' | 'quantized' | 'ai';
+export type ReliefImportMode = 'luminance' | 'quantized' | 'ai' | 'svg';
+
+/** What kind of geometry the colour pipeline produces. */
+export type TileOutputKind =
+  /** Cluster->height cliffs — classic HueForge stepped relief. */
+  | 'relief'
+  /** Flat tile with colour regions painted on the top — Bambu keychain style. */
+  | 'flat'
+  /** Flat tile cut to the image's subject silhouette (background removed). */
+  | 'silhouette';
+
+/** Outer profile of a flat tile (for output: 'flat'; silhouette uses the image). */
+export type TileShapeKind = 'rect' | 'rounded' | 'circle';
 
 /** Knobs shared by every import mode. Distances are in model units (mm). */
 export interface ReliefCommonOptions {
@@ -43,6 +55,20 @@ export interface QuantizedOptions {
   colorSpace: 'rgb' | 'lab';
   /** Floyd–Steinberg dithering when assigning pixels to clusters. */
   dither: boolean;
+  /** Output geometry kind — 'flat' makes a printable colour tile (default,
+   *  Bambu-keychain style); 'relief' keeps the original cluster->height cliffs;
+   *  'silhouette' cuts the flat tile to the image's subject outline. */
+  output: TileOutputKind;
+  /** Tile profile when output is 'flat'. */
+  shape: TileShapeKind;
+  /** Corner radius for 'rounded' shape, in mm. */
+  cornerRadiusMm: number;
+  /** Add a circular keychain hole. */
+  holeEnabled: boolean;
+  /** Hole diameter in mm. */
+  holeDiameterMm: number;
+  /** Hole centre distance from the top edge of the tile, in mm. */
+  holeOffsetMm: number;
 }
 
 export interface ReliefOptions {
@@ -63,7 +89,17 @@ export const DEFAULT_RELIEF_OPTIONS: ReliefOptions = {
     smoothing: 0,
   },
   luminance: { invert: false, gamma: 1, levels: 16 },
-  quantized: { clusters: 5, colorSpace: 'lab', dither: false },
+  quantized: {
+    clusters: 5,
+    colorSpace: 'lab',
+    dither: false,
+    output: 'flat',
+    shape: 'rect',
+    cornerRadiusMm: 4,
+    holeEnabled: false,
+    holeDiameterMm: 6,
+    holeOffsetMm: 6,
+  },
 };
 
 /** A regular grid of heights (and optionally per-cell colors) sampled from an
