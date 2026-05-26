@@ -62,6 +62,33 @@ function parseGitHubRepo(remoteUrl: string): string {
   return m ? m[1] : '';
 }
 
+// Refresh the models.dev catalog snapshot at the start of every production
+// build so the picker menus + cost meter ship with the latest data. Runs in
+// `build` only (not dev) so iterating on the dev server doesn't spam
+// models.dev on every restart — devs can refresh manually with
+// `npm run refresh-models` when they want the freshest data locally.
+//
+// The script is itself defensive: on any network failure it logs a warning
+// and exits 0, leaving the committed snapshot intact, so this hook can
+// never fail a build (CI / Cloudflare Pages stay green when models.dev is
+// down). Synchronous spawn keeps the build's task ordering simple.
+function catalogSnapshot(): Plugin {
+  return {
+    name: 'partwright-catalog-snapshot',
+    apply: 'build',
+    buildStart() {
+      try {
+        execSync('node scripts/refreshModelsSnapshot.mjs', { stdio: 'inherit' });
+      } catch (err) {
+        // The script soft-fails internally — anything reaching here is a
+        // crash (missing node, permissions). Don't break the build over it.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[partwright-catalog-snapshot] refresh script crashed: ${msg}`);
+      }
+    },
+  };
+}
+
 function resolveBuildInfo() {
   const git = (cmd: string): string => {
     try {
@@ -89,7 +116,7 @@ export default defineConfig({
   define: {
     __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
   },
-  plugins: [tailwindcss(), absoluteUrls(), markdownCharset()],
+  plugins: [tailwindcss(), absoluteUrls(), markdownCharset(), catalogSnapshot()],
   worker: {
     // ES module Workers support code-splitting and are required when
     // Worker files import other modules (agentWorker, engineWorker).

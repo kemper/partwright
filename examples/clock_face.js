@@ -29,8 +29,9 @@ const minHandL  = 40, minHandW  = 2.2, minHandT  = 1.2;
 const pinR = 2.4, pinH = 3.5;
 
 // --- Dial: a low cylinder centered at origin ---
-// Manifold.cylinder(h, rLo, rHi=rLo, segments). Smooth dial via default segments.
-const dial = Manifold.cylinder(dialH, dialR, dialR, 96);
+// Manifold.cylinder(h, rLo, rHi=rLo). Smooth dial inherits the user's
+// circular-segment preset (omit the explicit count).
+const dial = Manifold.cylinder(dialH, dialR, dialR);
 
 // --- Hour markers ---
 // Build ONE marker at the origin, sitting on top of the dial. The `radius`
@@ -85,7 +86,7 @@ const minuteHand = makeHand(minHandL, minHandW, minHandT)
 // --- Central pin: hides where the hands cross. ---
 // Centered on the dial via alignTo (x/y center). The pin's base is sunk into
 // the hand slab so it fuses with both hands volumetrically.
-let pin = Manifold.cylinder(pinH, pinR, pinR * 0.85, 48);
+let pin = Manifold.cylinder(pinH, pinR, pinR * 0.85);
 pin = api.alignTo(pin, dial, { x: 'center', y: 'center' })
         .translate([0, 0, dialTop - sink]);   // base inside the hand slab
 

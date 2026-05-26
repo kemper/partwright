@@ -2,8 +2,6 @@
 // boolean subtraction for crenellations and the hollow interior.
 const { Manifold, CrossSection } = api;
 
-const segments = 48; // smooth circular geometry
-
 // ---------------------------------------------------------------
 // 1. BODY via revolve of a 2D profile
 //    revolve() rotates around the Y axis, remapping so result is Z-up.
@@ -37,7 +35,7 @@ const profile = [
 ];
 
 const outerCS = CrossSection.ofPolygons([profile]);
-const body = Manifold.revolve(outerCS, segments);
+const body = Manifold.revolve(outerCS);
 
 // ---------------------------------------------------------------
 // 2. HOLLOW INTERIOR
@@ -56,7 +54,7 @@ const interiorProfile = [
 ];
 
 const interiorCS = CrossSection.ofPolygons([interiorProfile]);
-const interior = Manifold.revolve(interiorCS, segments);
+const interior = Manifold.revolve(interiorCS);
 
 const hollowBody = body.subtract(interior);
 

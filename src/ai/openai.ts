@@ -39,15 +39,22 @@ import type {
 } from './types';
 import type { ToolDefinition } from './tools';
 import { readSseStream } from './sse';
+import { getCapabilities } from './catalog';
 
 const CHAT_URL = 'https://api.openai.com/v1/chat/completions';
 const RESPONSES_URL = 'https://api.openai.com/v1/responses';
 
 /** OpenAI reasoning models (gpt-5 family + the o-series) accept a reasoning
- *  request; the 4o/4.1 and legacy chat models reject it. This same sniff
- *  also routes the request: reasoning models go to the Responses API,
- *  everything else to Chat Completions. */
+ *  request and need to go to /v1/responses; chat / 4o / 4.1 / legacy models
+ *  reject reasoning and must stay on /v1/chat/completions. We read the
+ *  catalog's `reasoning` capability first so newly-released model families
+ *  keep routing correctly without code changes; the regex fallback covers
+ *  ids the snapshot hasn't ingested yet (brand-new releases, user-typed
+ *  dated snapshots). The same sniff gates whether to send a reasoning_effort
+ *  field at all — see reasoningEffort(). */
 function isReasoningModel(model: string): boolean {
+  const caps = getCapabilities('openai', model);
+  if (caps) return caps.reasoning;
   return /^(gpt-5|o1|o3|o4)/i.test(model);
 }
 
