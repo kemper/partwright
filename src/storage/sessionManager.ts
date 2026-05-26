@@ -1159,14 +1159,18 @@ export async function getSessionContext(): Promise<SessionContext | null> {
 
 // === Cleanup ===
 
-/** Delete a session if it has no versions and no notes (used for auto-created empty sessions) */
+/** Delete a session if it has no versions, no notes, and no AI chat
+ *  messages (used for auto-created empty sessions). Chat-only sessions
+ *  ARE content — `dbDeleteSession` cascade-deletes chats via the
+ *  sessionId index, so omitting the chat check here would silently wipe
+ *  a user's transcript on the next "new session" / navigation away. */
 export async function deleteIfEmpty(sessionId: string): Promise<boolean> {
-  // Empty = no saved versions in any part and no notes. The auto-created part
-  // that every session carries doesn't count as content.
   const count = await getSessionVersionCount(sessionId);
   if (count > 0) return false;
   const notes = await dbListNotes(sessionId);
   if (notes.length > 0) return false;
+  const chat = await dbListMessages(sessionId);
+  if (chat.length > 0) return false;
   await dbDeleteSession(sessionId);
   if (currentState.session?.id === sessionId) {
     currentState = { session: null, parts: [], currentPart: null, currentVersion: null, versionCount: 0 };
