@@ -14,6 +14,7 @@ import {
 import { onChange as onColorRegionsChange } from '../color/regions';
 import { onChange as onAnnotationStrokesChange } from '../annotations/annotations';
 import { showToast } from './toast';
+import { languageBadge } from './languageBadge';
 
 export interface SessionBarCallbacks {
   onSaveVersion: () => Promise<{ code: string; geometryData: Record<string, unknown> | null; thumbnail: Blob | null }>;
@@ -110,15 +111,8 @@ function render(state: SessionState) {
 
   // Language badge — JS (manifold-js, default), SCAD (OpenSCAD), or BREP
   // (replicad / OpenCASCADE). Colour-coded to match the toolbar toggle.
-  const langLabel =
-    state.session.language === 'scad' ? 'SCAD' :
-    state.session.language === 'replicad' ? 'BREP' :
-    'JS';
-  const langColor =
-    state.session.language === 'scad' ? 'text-amber-400 border-amber-400/30' :
-    state.session.language === 'replicad' ? 'text-emerald-400 border-emerald-400/30' :
-    'text-blue-400 border-blue-400/30';
-  const langBadge = el('span', `text-[10px] font-semibold border rounded px-1 ${langColor}`, langLabel);
+  const badge = languageBadge(state.session.language);
+  const langBadge = el('span', `text-[10px] font-semibold border rounded px-1 ${badge.classes}`, badge.label);
   barEl.appendChild(langBadge);
 
   // Separator

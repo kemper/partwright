@@ -20,6 +20,10 @@ export interface ToolbarCallbacks {
   onExportSTL: () => void;
   onExportOBJ: () => void;
   onExport3MF: () => void;
+  /** BREP-only — silently hidden from the menu when the active language is
+   *  not 'replicad'. Toolbar pings `getActiveLanguage` at menu-open time to
+   *  decide visibility. */
+  onExportSTEP: () => void;
   onExportSessionJSON: () => void;
   onExportRawCode: () => void;
   onImportFile: (file: File) => void | Promise<void>;
@@ -394,10 +398,25 @@ export function createToolbar(
     callbacks.onExportGLB();
   });
 
+  // STEP — BREP-only; the menu show/hide is gated below in the open-menu
+  // handler so the option only appears in 'replicad' sessions where there's
+  // an actual BREP shape on the heap. (In manifold-js sessions with
+  // `api.BREP.*` mixed in, the BREP source is forgotten at toManifold time —
+  // STEP wouldn't have anything to export.)
+  const stepOpt = createDescribedItem(
+    'STEP',
+    'Exact B-rep for mechanical-CAD interop (SolidWorks, Fusion, FreeCAD). BREP sessions only.',
+  );
+  stepOpt.addEventListener('click', () => {
+    dropdown.classList.add('hidden');
+    callbacks.onExportSTEP();
+  });
+
   dropdown.appendChild(threemfOpt);
   dropdown.appendChild(objOpt);
   dropdown.appendChild(stlOpt);
   dropdown.appendChild(glbOpt);
+  dropdown.appendChild(stepOpt);
 
   // Section: project / source — for sharing between users or working with the code directly
   dropdown.appendChild(createDivider());
@@ -499,6 +518,10 @@ export function createToolbar(
   btnExport.addEventListener('click', () => {
     // Refresh relative timestamps each time the dropdown opens.
     renderRecent();
+    // STEP is BREP-only — show/hide based on the language toggle's current
+    // state. Putting this on open (rather than wiring a setter) keeps the
+    // menu logic local; a language switch closes the menu first anyway.
+    stepOpt.classList.toggle('hidden', _currentLang !== 'replicad');
     dropdown.classList.toggle('hidden');
   });
 

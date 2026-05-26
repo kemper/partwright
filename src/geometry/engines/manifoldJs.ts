@@ -4,7 +4,7 @@ import { createCurvesNamespace } from '../curves';
 import { createMeshOpsNamespace } from '../meshOps';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
-import { getBrepNamespace } from '../brepRuntime';
+import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept } from '../brepRuntime';
 
 /** Marker the sandbox attaches to render-only proxies (see `renderMesh` below).
  *  The engine looks for it on the user-returned object to decide whether the
@@ -341,6 +341,15 @@ export const manifoldJsEngine: Engine = {
       // main.ts deletes it after querying volume/bbox).
       restoreMethods(savedMethods);
       disposeAllExcept(allocated, result);
+      // BREP shapes don't pass through Manifold.* / CrossSection.* method
+      // wrapping (they're created by `BREP.box(...).fillet(...)` chains
+      // against a separate namespace), so they accumulate in their own list.
+      // Drain it here so the editor's auto-run keystroke loop doesn't leak
+      // OCCT shapes on every keystroke. The user's `result` is also spared in
+      // case they returned a BrepShape directly without going through
+      // BREP.toManifold (uncommon — the manifold-js engine rejects non-
+      // Manifold returns above — but defensive).
+      disposeBrepAllocationsExcept(consumeBrepAllocations(), result);
     }
   },
 

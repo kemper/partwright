@@ -1928,6 +1928,32 @@ async function main() {
     onExportSTL: actionExportSTL,
     onExportOBJ: actionExportOBJ,
     onExport3MF: actionExport3MF,
+    onExportSTEP: async () => {
+      // Inlined rather than calling partwrightAPI.exportSTEP because that
+      // const is defined further down main() — using it here would land in
+      // the TDZ on toolbar-build (and TS would flag a "used before
+      // declaration" anyway). The underlying worker round-trip is the same.
+      try {
+        const blob = await exportLastBrepAsSTEP();
+        if (!blob) {
+          showToast('No BREP shape available. Run a model in BREP mode first.', { variant: 'warn' });
+          return;
+        }
+        const state = getState();
+        const base = state.session?.name ?? 'model';
+        const versionLabel = state.currentVersion?.label;
+        const name = `${base}${versionLabel ? '_' + versionLabel : ''}.step`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showToast(`Exported ${name}`, { variant: 'success' });
+      } catch (e) {
+        showToast(`STEP export failed: ${e instanceof Error ? e.message : String(e)}`, { variant: 'warn' });
+      }
+    },
     onExportSessionJSON: async () => {
       if (!getState().session) {
         alert('No active session to export. Save a version first.');

@@ -156,15 +156,15 @@ self.onmessage = async (event: MessageEvent) => {
       }
 
       // Only the extracted mesh data crosses the thread boundary, so the live
-      // result Manifold is no longer needed. Free it (manifold-js path only —
-      // the SCAD and replicad engines own their own result lifecycle) so
-      // repeated executions, including the editor's per-edit auto-run, don't
-      // leak one Manifold each.
-      if (effectiveLang === 'manifold-js') {
-        const live = (result as { manifold?: { delete?: () => void } } | undefined)?.manifold;
-        if (live && typeof live.delete === 'function') {
-          try { live.delete(); } catch { /* already freed */ }
-        }
+      // result Manifold is no longer needed. Free it regardless of engine —
+      // every path that builds a Manifold (manifold-js, SCAD's STL round-trip,
+      // replicad's BREP→mesh→Manifold) pins one on the worker's WASM heap
+      // otherwise, and the editor's per-edit auto-run would leak one per
+      // keystroke. The BREP-specific lastShape lifecycle is unrelated and
+      // lives inside the replicad engine.
+      const live = (result as { manifold?: { delete?: () => void } } | undefined)?.manifold;
+      if (live && typeof live.delete === 'function') {
+        try { live.delete(); } catch { /* already freed */ }
       }
     } catch (err) {
       self.postMessage({

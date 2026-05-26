@@ -1,7 +1,8 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
-import { ensureBrepLoaded, getBrepNamespace, type BrepShape } from '../brepRuntime';
+import { ensureBrepLoaded, getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, type BrepShape } from '../brepRuntime';
 import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
+import { getActiveImports } from '../../import/importedMesh';
 
 // === replicad engine — Phase A of the BREP integration ===
 //
@@ -112,47 +113,79 @@ export async function runReplicadAsync(jsCode: string): Promise<MeshResult> {
     };
   }
 
-  // Minimal sandbox API for BREP sessions — `BREP` is the modelling surface,
-  // `Manifold` is exposed so users can convert/compose, `CrossSection` falls
-  // through for sketches. Curves namespace and imports are intentionally
-  // omitted: they're mesh-native and would be confusing under "BREP language".
+  // BREP sessions get the modelling surface, plus Manifold + CrossSection for
+  // convert/compose. `imports` is exposed for parity with manifold-js — a
+  // session that imports an STL into a BREP part should be able to reach
+  // `api.imports[i]` from its script the same way mesh sessions can. Curves
+  // are still omitted (mesh-native; confusing under "BREP language").
+  const imports = getActiveImports().map(m => ({
+    numProp: m.numProp,
+    vertProperties: m.vertProperties,
+    triVerts: m.triVerts,
+  }));
+
   const api = {
     BREP,
     Manifold,
     CrossSection: manifoldModule.CrossSection,
+    imports,
   };
 
+  // Same per-run BREP allocation drain pattern as the manifold-js engine —
+  // see brepRuntime's resource note. We snapshot the list before the user's
+  // code runs (in case anything was queued earlier) and drain again after.
+  consumeBrepAllocations();
   let shape: BrepShape | null = null;
+  let userScriptError: { error: string; diagnostics?: ReturnType<typeof runtimeDiagnostic> } | null = null;
   try {
     const fn = new Function('api', `"use strict";\n${jsCode}`);
     const result = fn(api) as unknown;
     if (!result || typeof result !== 'object' || !('_shape' in result)) {
       const error = 'BREP code must `return` a BREP shape (from api.BREP.box/cylinder/sphere/etc., optionally piped through .fillet/.chamfer/.fuse/.cut/.intersect).';
-      return {
-        mesh: null,
-        manifold: null,
+      userScriptError = {
         error,
         diagnostics: runtimeDiagnostic(error, 'Add a final `return` that returns a BREP shape.', 'JavaScript'),
       };
+    } else {
+      shape = result as BrepShape;
     }
-    shape = result as BrepShape;
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     const isSyntaxError = e instanceof SyntaxError;
-    return {
-      mesh: null,
-      manifold: null,
+    userScriptError = {
       error: msg,
       diagnostics: isSyntaxError ? javaScriptSyntaxDiagnostics(jsCode, msg, e) : runtimeDiagnostic(msg, undefined, 'JavaScript'),
     };
   }
+
+  if (userScriptError || !shape) {
+    // The script failed before producing a shape — free every BREP shape it
+    // allocated along the way (e.g. `BREP.box(...).fillet(...)` chains whose
+    // final step threw).
+    disposeBrepAllocationsExcept(consumeBrepAllocations(), null);
+    return {
+      mesh: null,
+      manifold: null,
+      error: userScriptError?.error ?? 'BREP code did not produce a shape.',
+      diagnostics: userScriptError?.diagnostics,
+    };
+  }
+
+  // From here `shape` is non-null — TS doesn't infer this through the
+  // userScriptError branch but the guard above makes it true.
+  const liveShape: BrepShape = shape;
 
   // Tessellate + Manifold round-trip. If Manifold rejects the mesh (e.g.
   // because OCCT produced a non-watertight tessellation at the chosen
   // tolerance), we still return the raw mesh so the user sees something
   // rather than a black viewport.
   try {
-    const brepMesh = shape.toMesh();
+    // Free every intermediate the script allocated, sparing the returned shape
+    // (which becomes lastShape below). Doing this BEFORE tessellation means a
+    // tessellation error frees the right set — the catch block below assumes
+    // only `shape` and the lastShape replacement are still live.
+    disposeBrepAllocationsExcept(consumeBrepAllocations(), liveShape);
+    const brepMesh = liveShape.toMesh();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let manifold: any = null;
     try {
@@ -167,7 +200,7 @@ export async function runReplicadAsync(jsCode: string): Promise<MeshResult> {
 
     // Replace the previously-retained shape so STEP export can find this one.
     disposeLast();
-    lastShape = shape;
+    lastShape = liveShape;
 
     if (manifold) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -200,7 +233,7 @@ export async function runReplicadAsync(jsCode: string): Promise<MeshResult> {
     };
   } catch (e: unknown) {
     // Tessellation failure — free the shape so we don't leak it.
-    try { shape.delete(); } catch { /* already freed */ }
+    try { liveShape.delete(); } catch { /* already freed */ }
     const msg = e instanceof Error ? e.message : String(e);
     return {
       mesh: null,

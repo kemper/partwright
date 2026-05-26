@@ -1,5 +1,15 @@
 // BREP runtime — wraps replicad (OpenCASCADE.js WASM) behind a thin namespace
-// that mirrors Partwright's existing api.* style. Two ways it's consumed:
+// that mirrors Partwright's existing api.* style.
+//
+// Resource note: OCCT shapes live on the WASM heap and must be `.delete()`d
+// by hand. To match manifold-3d's per-run cleanup in the manifold-js sandbox,
+// every BrepShape we hand to user code is appended to a module-level
+// allocation list — see `pushBrepAllocation` / `consumeBrepAllocations`. The
+// manifold-js engine drains that list in its `finally` block (freeing
+// everything except the returned value) so the editor's auto-run keystroke
+// loop doesn't leak shapes the same way it would leak Manifolds.
+//
+// Two ways the runtime is consumed:
 //
 //   1. Phase C — exposed as `api.BREP` inside manifold-js sandboxes so the AI
 //      can do `const filleted = api.BREP.box([10,10,10]).fillet(2); return
@@ -12,7 +22,7 @@
 //      session's representation and survives across runs for STEP export and
 //      future BREP-only features.
 //
-// The OpenCASCADE WASM is heavy (~30 MB). We lazy-import the wrapper so that
+// The OpenCASCADE WASM is heavy (~10 MB). We lazy-import the wrapper so that
 // users who never touch BREP don't pay the download. `ensureBrepLoaded()` is
 // called from the engine Worker only when the user's code mentions `BREP` (or
 // when the session's active language is `replicad`).
@@ -26,6 +36,34 @@ type ManifoldModule = any;
 
 let replicadModule: ReplicadModule | null = null;
 let initPromise: Promise<void> | null = null;
+
+// Per-run allocation list — see the resource note at the top of the file. The
+// list is module-level (not bound to a specific run) because the BREP namespace
+// itself is a singleton; the engine drains and resets it between runs.
+let brepAllocations: BrepShape[] = [];
+
+function pushBrepAllocation(s: BrepShape): void {
+  brepAllocations.push(s);
+}
+
+/** Take and clear the current BREP allocation list. The engine calls this in
+ *  its `finally` block to free every shape created during the run, except the
+ *  one the user returned (which the caller spares manually). */
+export function consumeBrepAllocations(): BrepShape[] {
+  const out = brepAllocations;
+  brepAllocations = [];
+  return out;
+}
+
+/** Free every BREP shape produced during the run, sparing `keep`. Mirrors
+ *  `disposeAllExcept` in manifoldJs.ts; centralised here so the engine and
+ *  any tests can share one implementation. */
+export function disposeBrepAllocationsExcept(allocations: BrepShape[], keep: unknown): void {
+  for (const s of allocations) {
+    if (s === keep) continue;
+    try { s.delete(); } catch { /* already freed by user code */ }
+  }
+}
 
 /** Idempotent, cached. Resolves once OpenCASCADE.js is initialised and
  *  `replicad.setOC` has been called. */
@@ -111,6 +149,15 @@ export interface BrepShape {
 
 function wrap(shape: AnyShape): BrepShape {
   if (!replicadModule) throw new Error('BREP runtime not loaded — call ensureBrepLoaded() first.');
+  const w: BrepShape = wrapInner(shape);
+  // Track every shape we hand out so the engine can free it at run end —
+  // see the resource note at the top of the file. The returned value is
+  // spared by the engine if user code returns it.
+  pushBrepAllocation(w);
+  return w;
+}
+
+function wrapInner(shape: AnyShape): BrepShape {
   const w: BrepShape = {
     _shape: shape,
     fillet(radius: number) {
@@ -202,6 +249,16 @@ function toMeshData(shape: AnyShape, opts?: { tolerance?: number; angularToleran
  *  triangle indices to point at the canonical copy. Returns a `BrepMesh`
  *  whose vertex/triangle counts reflect the welded shape — the input arrays
  *  are not mutated. */
+/** Exported for unit testing only — see `tests/unit/brepRuntime.test.ts`.
+ *  Production callers should reach for `toMeshData` (which wraps this) via a
+ *  `BrepShape.toMesh()` call. */
+export function _weldDuplicateVerticesForTests(
+  rawVertices: number[],
+  rawTriangles: number[],
+): BrepMesh {
+  return weldDuplicateVertices(rawVertices, rawTriangles);
+}
+
 function weldDuplicateVertices(rawVertices: number[], rawTriangles: number[]): BrepMesh {
   // Tolerance chosen empirically: tight enough that distinct features don't
   // collapse, loose enough to catch float-roundoff between adjacent BREP

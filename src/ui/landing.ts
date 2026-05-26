@@ -11,6 +11,7 @@
 import { listSessions, type Session } from '../storage/sessionManager';
 import { getSessionLatestVersion, getSessionVersionCount } from '../storage/db';
 import { partwrightMarkSvg } from './brand';
+import { languageBadge } from './languageBadge';
 import { showUninstallModal } from './uninstallModal';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
 import type { ExportedSession } from '../storage/sessionManager';
@@ -623,11 +624,10 @@ function createSessionTile(
   const meta = document.createElement('div');
   meta.className = 'text-xs text-zinc-500 mt-1 flex justify-between';
 
-  const langLabel = session.language === 'scad' ? 'SCAD' : 'JS';
-  const langColor = session.language === 'scad' ? 'text-amber-400 border-amber-400/30' : 'text-blue-400 border-blue-400/30';
+  const badge = languageBadge(session.language);
   const langBadge = document.createElement('span');
-  langBadge.className = `text-[10px] font-semibold border rounded px-1 ${langColor}`;
-  langBadge.textContent = langLabel;
+  langBadge.className = `text-[10px] font-semibold border rounded px-1 ${badge.classes}`;
+  langBadge.textContent = badge.label;
 
   const versions = document.createElement('span');
   versions.textContent = `${versionCount} version${versionCount !== 1 ? 's' : ''}`;
