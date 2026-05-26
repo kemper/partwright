@@ -56,6 +56,25 @@ test.describe('Relief Studio', () => {
     expect(Array.isArray(result.guide.bands)).toBe(true);
   });
 
+  // Regression: the import dropdown was 18rem wide anchored right-edge to the
+  // button, so on a 375px viewport it slid off the left edge of the screen.
+  // Mobile uses a viewport-edge fixed-position layout instead.
+  test('import dropdown stays within the viewport on mobile (375px)', async ({ page }) => {
+    // Boot at the default viewport (the status "Ready" indicator is truncated
+    // and not Playwright-visible at 375px, breaking waitForEngine); resize to
+    // mobile after the engine is up. CSS responsive classes still apply.
+    await page.goto('/editor');
+    await waitForEngine(page);
+    await page.setViewportSize({ width: 375, height: 800 });
+    await page.locator('#btn-import').click();
+    const box = await page.locator('#import-dropdown').boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(375);
+    // The relief entry must still be reachable inside it.
+    await expect(page.getByText('Image → Relief (HueForge)…')).toBeVisible();
+  });
+
   test('toolbar exposes the relief entry points', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
