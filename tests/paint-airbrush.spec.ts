@@ -151,7 +151,9 @@ test.describe('geodesic airbrush', () => {
       fire('mousedown', cx, cy);
       for (let dx = 6; dx <= 24; dx += 6) fire('mousemove', cx + dx, cy);
       fire('mouseup', cx + 24, cy);
-      await new Promise(res => requestAnimationFrame(() => res(null)));
+      // The interactive brush commits through the async (worker-backed) paint
+      // pipeline; wait for the subdivision job to settle.
+      await pw.waitForPaint();
       return { before, after: pw.getMesh().numTri, regions: pw.listRegions().length };
     });
     expect(out.regions).toBe(1);
