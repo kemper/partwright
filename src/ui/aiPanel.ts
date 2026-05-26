@@ -11,6 +11,7 @@ import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
+import { getLimits } from '../ai/catalog';
 import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
 import { showAiSettingsModal } from './aiSettingsModal';
@@ -26,7 +27,7 @@ import { getState, setSessionAiPreference } from '../storage/sessionManager';
 import { onTabSync, publishTabSync } from '../storage/tabSync';
 import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
-import { activeModel, SPEND_CAP_USD, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Provider, type TurnOutcomeReason } from '../ai/types';
+import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { errorLog } from '../diagnostics/errorLog';
 
 interface PanelState {
@@ -95,10 +96,13 @@ function effectiveSystemPromptChars(): number {
 }
 
 /** Token limit for the active provider/model — drives the % full bar
- *  on the cost meter and the auto-compaction thresholds. For local
- *  models we use the runtime-resolved WASM ceiling (fetched from the
- *  model's mlc-chat-config.json) when available, clamped by any user
- *  override, and falling back to the curated per-model default. */
+ *  on the cost meter and the auto-compaction thresholds. Hosted providers
+ *  read from the models.dev snapshot so Haiku's 200k, GPT-5's 400k, and
+ *  Gemini's 1M get the right number without us hand-maintaining a table.
+ *  Custom / out-of-catalog ids fall back to 200k (the smallest current
+ *  hosted-model window, conservative for the % bar). For local models we
+ *  use the runtime-resolved WASM ceiling (fetched from the model's
+ *  mlc-chat-config.json) when available, clamped by any user override. */
 function contextLimitFor(settings: AiSettings): number {
   if (settings.toggles.provider === 'local') {
     if (settings.toggles.localModel) {
@@ -115,8 +119,9 @@ function contextLimitFor(settings: AiSettings): number {
     }
     return settings.localContext.windowSizeOverride ?? 8192;
   }
-  if (settings.toggles.anthropicModel === 'claude-haiku-4-5') return 200_000;
-  return 1_000_000;
+  const model = activeModel(settings.toggles);
+  const limits = model ? getLimits(settings.toggles.provider, String(model)) : null;
+  return limits?.context ?? 200_000;
 }
 
 /** Compute the next sequence ordinal for a compaction summary so it sorts
@@ -379,7 +384,7 @@ async function applySessionAiPreference(): Promise<void> {
   if (cur.toggles.provider === provider && activeModel(cur.toggles) === pref.model) return;
   let next = setProvider(cur, provider);
   switch (provider) {
-    case 'anthropic': next = setAnthropicModel(next, pref.model as AnthropicModelId); break;
+    case 'anthropic': next = setAnthropicModel(next, pref.model); break;
     case 'openai': next = setOpenaiModel(next, pref.model); break;
     case 'gemini': next = setGeminiModel(next, pref.model); break;
     case 'local': next = setLocalModel(next, pref.model); break;
@@ -855,7 +860,7 @@ function renderModelPicker(): void {
       options: ANTHROPIC_MODEL_OPTIONS,
       current: settings.toggles.anthropicModel,
       title: 'Anthropic model (hosted).',
-      setModel: (id) => setAnthropicModel(loadSettings(), id as AnthropicModelId),
+      setModel: (id) => setAnthropicModel(loadSettings(), id),
     },
     openai: {
       options: OPENAI_MODEL_OPTIONS,
