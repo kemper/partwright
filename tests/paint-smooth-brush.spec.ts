@@ -44,12 +44,13 @@ test.describe('smooth paintbrush', () => {
     await expect(detailSlider).toHaveAttribute('max', '1024');
     await expect(detailSlider).toHaveAttribute('min', '2');
 
-    // Defaults: smooth on, divisor 256.
+    // Defaults: smooth on, divisor 64 (the exact-outline clip keeps edges crisp
+    // at a far lower segment count than the old 256).
     const cfg = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (window as any).partwright.getBrushSmooth();
     });
-    expect(cfg).toMatchObject({ smooth: true, divisor: 256 });
+    expect(cfg).toMatchObject({ smooth: true, divisor: 64 });
 
     // Turning smoothing off hides the detail slider.
     await smoothBtn.dispatchEvent('click');
@@ -142,6 +143,95 @@ test.describe('smooth paintbrush', () => {
     expect(out.regions).toBe(1);
   });
 
+  test('slab surface mode keeps paint on the picked surface (no bleed-through)', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      // A thin plate: top face at z=1, bottom at z=-1 (2 units thick). A radius-4
+      // brush is a 3D ball big enough to punch through to the bottom face — the
+      // old behavior painted both. The slab constraint gates by depth instead, so
+      // a shallow depth paints only the top while a depth past the plate reaches
+      // the back face too (the extra triangles prove the gate is what stops it).
+      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 2], true);`);
+      const spray = (depth: number) => {
+        pw.clearColors();
+        return pw.paintStroke({ points: [[0, 0, 1]], radius: 4, maxEdge: 0.5, surface: 'slab', depth, color: [1, 0, 0] }).triangles;
+      };
+      const thin = spray(0.5); // hugs the top face
+      const deep = spray(5);   // depth exceeds the 2-thick plate → also paints the back face
+      return { thin, deep };
+    });
+    expect(out.thin).toBeGreaterThan(0);        // the top surface was painted
+    expect(out.deep).toBeGreaterThan(out.thin); // a deep slab reaches the back face; the shallow one doesn't
+  });
+
+  test('geodesic surface mode (the default) never bleeds through a wall', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 2], true);`);
+      // Geodesic flood-fills along the connected surface, so the back face (a
+      // disconnected wall within the 3D radius) stays clean with no depth knob.
+      pw.clearColors();
+      const geo = pw.paintStroke({ points: [[0, 0, 1]], radius: 4, maxEdge: 0.5, surface: 'geodesic', color: [0, 1, 0] }).triangles;
+      // A deep slab DOES punch through to the back face — geodesic paints fewer.
+      pw.clearColors();
+      const slabDeep = pw.paintStroke({ points: [[0, 0, 1]], radius: 4, maxEdge: 0.5, surface: 'slab', depth: 5, color: [0, 1, 0] }).triangles;
+      return { geo, slabDeep, surface: pw.getBrushSurface().surface };
+    });
+    expect(out.surface).toBe('geodesic');        // new painting defaults to geodesic
+    expect(out.geo).toBeGreaterThan(0);          // the top surface was painted
+    expect(out.slabDeep).toBeGreaterThan(out.geo); // geodesic stayed on the top; the deep slab reached the back
+  });
+
+  test('slab is an extruded prism: depth reaches through to the back face', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      // Thin plate (2 thick): top z=1, bottom z=-1. A shallow prism hugs the top;
+      // a deep one extrudes the cross-section through to the back face. We measure
+      // the painted region's z-extent (its bbox), not triangle count.
+      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 2], true);`);
+      const sprayMinZ = (depth: number) => {
+        pw.clearColors();
+        pw.paintStroke({ points: [[0, 0, 1]], radius: 6, surface: 'slab', depth, shape: 'square', color: [1, 0, 0] });
+        return pw.listRegions()[0].bbox.min[2];
+      };
+      return { shallowMinZ: sprayMinZ(0.5), deepMinZ: sprayMinZ(5) };
+    });
+    expect(out.shallowMinZ).toBeGreaterThan(0);  // stayed on the top face
+    expect(out.deepMinZ).toBeLessThan(0);        // reached through to the back face
+  });
+
+  test('slab matches geodesic footprint on a flat face (corners reached)', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run(`const { Manifold } = api; return Manifold.cube([60, 60, 4], true);`);
+      const paintBox = (shape: string, surface: string) => {
+        pw.clearColors();
+        pw.paintStroke({ points: [[0, 0, 2]], radius: 8, surface, depth: 1, shape, color: [1, 0, 0] });
+        return pw.listRegions()[0].bbox;
+      };
+      return {
+        slabSquare: paintBox('square', 'slab'),
+        geoSquare: paintBox('square', 'geodesic'),
+        slabCircle: paintBox('circle', 'slab'),
+      };
+    });
+    // The square reaches its full ±8 extent (corners painted, not clipped to a
+    // disc), and the slab prism covers the same footprint as the geodesic one.
+    expect(out.slabSquare.max[0]).toBeGreaterThan(7);
+    expect(out.slabSquare.max[0]).toBeCloseTo(out.geoSquare.max[0], 1);
+    expect(out.slabSquare.min[1]).toBeCloseTo(out.geoSquare.min[1], 1);
+    // A circle of the same radius reaches ±8 in-plane too (round, not square).
+    expect(out.slabCircle.max[0]).toBeGreaterThan(7);
+  });
+
   test('many strokes stay fast and bounded (no O(strokes^2) replay)', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(async () => {
@@ -226,7 +316,7 @@ test.describe('smooth paintbrush', () => {
     expect(out.offModel.error).toBeTruthy(); // nothing within the footprint
   });
 
-  test('paintStroke resolution defaults to 256, is settable, and maxEdge overrides', async ({ page }) => {
+  test('paintStroke resolution defaults to 64, is settable, and maxEdge overrides', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -242,10 +332,10 @@ test.describe('smooth paintbrush', () => {
       const abs = pw.paintStroke({ points: [[0, 0, 2]], radius: 8, maxEdge: 0.5, color: [1, 0, 0] });
       return { def, defTri, coarse, coarseTri, abs };
     });
-    expect(out.def.resolution).toBe(256);          // default
-    expect(out.def.maxEdge).toBeCloseTo(8 / 256, 5);
+    expect(out.def.resolution).toBe(64);           // default
+    expect(out.def.maxEdge).toBeCloseTo(8 / 64, 5);
     expect(out.coarse.resolution).toBe(32);        // settable
-    expect(out.defTri).toBeGreaterThan(out.coarseTri); // 256 is finer than 32
+    expect(out.defTri).toBeGreaterThan(out.coarseTri); // 64 is finer than 32
     expect(out.abs.maxEdge).toBe(0.5);             // maxEdge override wins
   });
 

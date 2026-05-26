@@ -18,6 +18,16 @@ import {
   isBrushSmooth,
   setBrushSmoothDivisor,
   getBrushSmoothDivisor,
+  setBrushPaintDepth,
+  getBrushPaintDepth,
+  setBrushSurface,
+  getBrushSurface,
+  setBrushSpray,
+  isBrushSpray,
+  setBrushSprayStrength,
+  getBrushSprayStrength,
+  setBrushSpraySoftness,
+  getBrushSpraySoftness,
   SMOOTH_DIVISOR_MIN,
   SMOOTH_DIVISOR_MAX,
   setShapeSmooth,
@@ -515,6 +525,175 @@ function createBrushControls(): HTMLElement {
   help.className = 'text-[10px] text-zinc-500 mt-1';
   help.textContent = 'Single triangle \u2190\u2014\u2014\u2192 Wider brush';
   wrap.appendChild(help);
+
+  // Surface mode \u2014 geodesic (default) flood-fills paint along the connected
+  // surface so it never bleeds through a wall (no depth needed); slab keeps a
+  // thin shell within Paint depth of the picked surface.
+  const surfaceLabel = document.createElement('div');
+  surfaceLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+  surfaceLabel.textContent = 'Surface';
+  wrap.appendChild(surfaceLabel);
+
+  const surfaceRow = document.createElement('div');
+  surfaceRow.className = 'grid grid-cols-2 gap-1';
+  const surfaceButtons: Partial<Record<'geodesic' | 'slab', HTMLButtonElement>> = {};
+  // Reassigned once their elements exist; called on every mode change.
+  let syncDepthVisibility = (): void => {};
+  // Reflect the active surface on the buttons, and grey out Slab while spraying
+  // (a spray is geodesic-only \u2014 it can't punch through a wall).
+  const refreshSurfaceButtons = (): void => {
+    const spraying = isBrushSpray();
+    for (const [k, b] of Object.entries(surfaceButtons)) {
+      if (!b) continue;
+      b.className = axisButtonClass(k === getBrushSurface());
+      if (k === 'slab') {
+        b.disabled = spraying;
+        if (spraying) b.classList.add('opacity-40', 'cursor-not-allowed');
+      }
+    }
+  };
+  for (const [mode, labelText, tip] of [
+    ['geodesic', 'Geodesic', 'Paint follows the connected surface and never bleeds through walls \u2014 no depth needed. Recommended.'],
+    ['slab', 'Slab', 'Paint a thin shell within Paint depth of the surface. Use the depth knob to control how far through a wall paint reaches.'],
+  ] as const) {
+    const btn = document.createElement('button');
+    btn.textContent = labelText;
+    btn.title = tip;
+    btn.className = axisButtonClass(mode === getBrushSurface());
+    btn.addEventListener('click', () => {
+      if (mode === 'slab' && isBrushSpray()) return; // disabled while spraying
+      setBrushSurface(mode);
+      refreshSurfaceButtons();
+      syncDepthVisibility();
+    });
+    surfaceRow.appendChild(btn);
+    surfaceButtons[mode] = btn;
+  }
+  wrap.appendChild(surfaceRow);
+
+  // Paint depth (slab mode only) \u2014 how far through the surface a stroke reaches.
+  const depthWrap = document.createElement('div');
+  depthWrap.id = 'brush-depth-wrap';
+
+  const depthLabel = document.createElement('div');
+  depthLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+  depthLabel.textContent = 'Paint depth';
+  depthWrap.appendChild(depthLabel);
+
+  const depthRow = document.createElement('div');
+  depthRow.className = 'flex items-center gap-2';
+
+  const depthSlider = document.createElement('input');
+  depthSlider.id = 'brush-depth-slider';
+  depthSlider.type = 'range';
+  depthSlider.min = '0';
+  depthSlider.max = '200';
+  depthSlider.step = '1';
+  depthSlider.value = String(Math.round(Math.min(getBrushPaintDepth(), 20) * 10));
+  depthSlider.className = 'flex-1 accent-blue-500 min-w-0';
+  depthSlider.title = 'How far through the surface paint reaches. 0 = auto (half the brush size). Lower values stop paint bleeding through thin/hollow walls.';
+
+  const depthInput = document.createElement('input');
+  depthInput.type = 'number';
+  depthInput.min = '0';
+  // No max: type past the slider for thicker walls.
+  depthInput.step = '0.1';
+  depthInput.value = getBrushPaintDepth().toFixed(1);
+  depthInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  depthInput.title = 'Paint depth (0 = auto = half the brush size)';
+
+  const depthUnit = document.createElement('span');
+  depthUnit.className = 'text-[10px] text-zinc-500';
+  depthUnit.textContent = 'u';
+
+  depthSlider.addEventListener('input', () => {
+    const d = parseInt(depthSlider.value, 10) / 10;
+    setBrushPaintDepth(d);
+    depthInput.value = d.toFixed(1);
+  });
+  const applyDepth = (): void => {
+    const raw = parseFloat(depthInput.value);
+    if (!Number.isFinite(raw) || raw < 0) { depthInput.value = getBrushPaintDepth().toFixed(1); return; }
+    setBrushPaintDepth(raw);
+    depthSlider.value = String(Math.round(Math.min(raw, 20) * 10));
+    depthInput.value = raw.toFixed(1);
+  };
+  depthInput.addEventListener('change', applyDepth);
+  depthInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyDepth(); depthInput.blur(); } });
+
+  depthRow.appendChild(depthSlider);
+  depthRow.appendChild(depthInput);
+  depthRow.appendChild(depthUnit);
+  depthWrap.appendChild(depthRow);
+
+  const depthHelp = document.createElement('div');
+  depthHelp.className = 'text-[10px] text-zinc-500 mt-1';
+  depthHelp.textContent = 'Surface only \u2190\u2014\u2014\u2192 Through thicker walls \u00b7 0 = auto';
+  depthWrap.appendChild(depthHelp);
+  wrap.appendChild(depthWrap);
+
+  syncDepthVisibility = (): void => {
+    depthWrap.classList.toggle('hidden', getBrushSurface() !== 'slab');
+  };
+  syncDepthVisibility();
+
+  // Spray (airbrush) — soft geodesic speckle instead of a solid fill. Forces
+  // geodesic (a spray can't punch through a wall) and reveals strength/softness.
+  const sprayLabel = document.createElement('div');
+  sprayLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+  sprayLabel.textContent = 'Spray (airbrush)';
+  wrap.appendChild(sprayLabel);
+
+  const sprayToggle = document.createElement('button');
+  sprayToggle.id = 'brush-spray-toggle';
+  sprayToggle.title = 'Airbrush: paint a soft speckle that fades out at the edges instead of a solid fill. Always follows the surface (geodesic).';
+  wrap.appendChild(sprayToggle);
+
+  // Strength + softness — shown only while spraying. 0..1 shown as a percent.
+  const sprayWrap = document.createElement('div');
+  sprayWrap.id = 'brush-spray-wrap';
+  const pctControl = (labelText: string, id: string, get: () => number, set: (v: number) => void, tip: string): void => {
+    const lab = document.createElement('div');
+    lab.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+    lab.textContent = labelText;
+    sprayWrap.appendChild(lab);
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-2';
+    const slider = document.createElement('input');
+    slider.id = id;
+    slider.type = 'range'; slider.min = '0'; slider.max = '100'; slider.step = '1';
+    slider.value = String(Math.round(get() * 100));
+    slider.className = 'flex-1 accent-blue-500 min-w-0';
+    slider.title = tip;
+    const val = document.createElement('span');
+    val.className = 'text-[10px] text-zinc-400 tabular-nums w-9 text-right';
+    val.textContent = `${Math.round(get() * 100)}%`;
+    slider.addEventListener('input', () => {
+      const v = parseInt(slider.value, 10) / 100;
+      set(v);
+      val.textContent = `${Math.round(v * 100)}%`;
+    });
+    row.appendChild(slider);
+    row.appendChild(val);
+    sprayWrap.appendChild(row);
+  };
+  pctControl('Strength', 'brush-spray-strength', getBrushSprayStrength, setBrushSprayStrength, 'How dense the speckle is (core coverage). Lower = lighter spackle.');
+  pctControl('Softness', 'brush-spray-softness', getBrushSpraySoftness, setBrushSpraySoftness, 'How wide the feathered, fading edge is.');
+  wrap.appendChild(sprayWrap);
+
+  const syncSpray = (): void => {
+    const on = isBrushSpray();
+    sprayToggle.textContent = on ? '◉ Spray: On' : '○ Spray: Off';
+    sprayToggle.className = on
+      ? 'w-full px-2 py-1 rounded text-[11px] bg-blue-500/30 text-blue-200 border border-blue-500/50 transition-colors'
+      : 'w-full px-2 py-1 rounded text-[11px] bg-zinc-700/60 text-zinc-300 border border-zinc-600/50 hover:bg-zinc-700 transition-colors';
+    sprayWrap.classList.toggle('hidden', !on);
+    if (on && getBrushSurface() !== 'geodesic') setBrushSurface('geodesic'); // spray is geodesic-only
+    refreshSurfaceButtons();
+    syncDepthVisibility();
+  };
+  sprayToggle.addEventListener('click', () => { setBrushSpray(!isBrushSpray()); syncSpray(); });
+  syncSpray();
 
   // Brush shape selector
   const shapeLabel = document.createElement('div');
