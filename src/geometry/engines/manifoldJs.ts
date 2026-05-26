@@ -205,7 +205,7 @@ export const manifoldJsEngine: Engine = {
       // Alignment + patterns:
       alignTo: meshOpsNamespace.alignTo,
       placeOn: meshOpsNamespace.placeOn,
-      mirrorAcross: meshOpsNamespace.mirror,
+      mirrorAcross: meshOpsNamespace.mirrorAcross,
       mirrorCopy: meshOpsNamespace.mirrorCopy,
       linearPattern: meshOpsNamespace.linearPattern,
       circularPattern: meshOpsNamespace.circularPattern,

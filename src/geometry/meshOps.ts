@@ -128,8 +128,9 @@ function rotateAroundAxis(shape: any, axis: Vec3, angleDeg: number, center: Vec3
     return s;
   }
   // General axis: build a Rodrigues rotation matrix and feed it to .transform().
-  // manifold-3d's transform takes a column-major 4x3 matrix laid out as
-  // [r00,r10,r20, r01,r11,r21, r02,r12,r22, tx,ty,tz].
+  // manifold-3d's transform takes a 4x4 mat (16 floats, column-major; the
+  // bottom row is ignored but still expected by the binding — matches the
+  // pattern used in src/geometry/curves.ts:594-599).
   const c = Math.cos(angleDeg * Math.PI / 180);
   const s = Math.sin(angleDeg * Math.PI / 180);
   const t = 1 - c;
@@ -149,12 +150,13 @@ function rotateAroundAxis(shape: any, axis: Vec3, angleDeg: number, center: Vec3
     ty = center[1] - (r10 * center[0] + r11 * center[1] + r12 * center[2]);
     tz = center[2] - (r20 * center[0] + r21 * center[1] + r22 * center[2]);
   }
-  // Column-major: column 0 first, then column 1, ...
+  // 4x4 column-major: column 0, column 1, column 2, column 3 (translation +
+  // homogeneous 1). Matches src/geometry/curves.ts:revolveAxis.
   const mat = [
-    r00, r10, r20,
-    r01, r11, r21,
-    r02, r12, r22,
-    tx, ty, tz,
+    r00, r10, r20, 0,
+    r01, r11, r21, 0,
+    r02, r12, r22, 0,
+    tx,  ty,  tz,  1,
   ];
   return shape.transform(mat);
 }
@@ -344,9 +346,13 @@ export function createMeshOpsNamespace(module: any) {
     return shape.translate([dx, dy, dz]);
   }
 
-  function mirror(shape: any, plane: unknown): any {
-    need(isManifold(shape), 'mirror(shape, plane): shape must be a Manifold');
-    const normal = parsePlaneNormal(plane, 'mirror');
+  // Exposed as `api.mirrorAcross` (not `api.mirror`) to avoid colliding with
+  // the Manifold instance method `.mirror(normal)` that user code already uses.
+  // The function's error messages match the user-facing name so a stack trace
+  // points at the same identifier the caller wrote.
+  function mirrorAcross(shape: any, plane: unknown): any {
+    need(isManifold(shape), 'mirrorAcross(shape, plane): shape must be a Manifold');
+    const normal = parsePlaneNormal(plane, 'mirrorAcross');
     return shape.mirror(normal);
   }
 
@@ -407,23 +413,35 @@ export function createMeshOpsNamespace(module: any) {
     if (center !== undefined) need(isVec3(center), 'circularPattern.center must be a [x,y,z] vector');
     if (opts.radius !== undefined) need(isFiniteNum(opts.radius), 'circularPattern.radius must be a number');
 
-    // Apply the radius shortcut. The default orientation pushes "outward" from
-    // the rotation center along the in-plane axis that's NOT the rotation axis:
-    //   axis=z → push along +X (the canonical "12 o'clock" position pre-rotation)
-    //   axis=y → push along +X (so blades fan in the XZ plane, like a turbine)
-    //   axis=x → push along +Y
-    //   general → push along the canonical "out" direction
-    //              (whichever world axis has the smallest |dot| with the rotation axis)
+    // Apply the radius shortcut. We want the push to be genuinely perpendicular
+    // to the rotation axis, so the N copies form a planar ring (not a helix).
+    //
+    // For axis-aligned rotations the picks are obvious:
+    //   axis=z → push +X (canonical "12 o'clock" pre-rotation)
+    //   axis=y → push +X (so e.g. turbine blades fan in the XZ plane)
+    //   axis=x → push +Y
+    // For a general axis (e.g. [1,1,1]/√3) we pick the world axis least aligned
+    // with `axis` and then Gram-Schmidt out the axial component — that
+    // guarantees `push · axis = 0` regardless of how diagonal `axis` is.
     let positioned = shape;
     if (opts.radius !== undefined && opts.radius !== 0) {
       const r = opts.radius;
-      let push: Vec3;
       const ax = Math.abs(axis[0]), ay = Math.abs(axis[1]), az = Math.abs(axis[2]);
-      // Pick the world axis least aligned with the rotation axis, so the radial
-      // direction is genuinely orthogonal to the axis of rotation.
-      if (ax <= ay && ax <= az) push = [r, 0, 0];
-      else if (ay <= az) push = [0, r, 0];
-      else push = [0, 0, r];
+      let candidate: Vec3;
+      if (ax <= ay && ax <= az) candidate = [1, 0, 0];
+      else if (ay <= az) candidate = [0, 1, 0];
+      else candidate = [0, 0, 1];
+      // Project out the axial component: p_perp = c - (c · a) * a
+      const cdot = candidate[0] * axis[0] + candidate[1] * axis[1] + candidate[2] * axis[2];
+      const perp: Vec3 = [
+        candidate[0] - cdot * axis[0],
+        candidate[1] - cdot * axis[1],
+        candidate[2] - cdot * axis[2],
+      ];
+      const len = Math.hypot(perp[0], perp[1], perp[2]);
+      // Shouldn't be near zero given the "least aligned" pick, but guard anyway.
+      need(len > 1e-9, 'circularPattern.radius: could not derive a perpendicular push direction from axis');
+      const push: Vec3 = [r * perp[0] / len, r * perp[1] / len, r * perp[2] / len];
       positioned = positioned.translate(push);
     }
 
@@ -563,11 +581,12 @@ export function createMeshOpsNamespace(module: any) {
   function heal(m: any, opts: HealOpts = {}): any {
     need(isManifold(m), 'heal(m, opts?): m must be a Manifold');
     if (opts.tolerance !== undefined) need(isFiniteNum(opts.tolerance) && opts.tolerance >= 0, 'heal.tolerance must be >= 0');
-    // .simplify(tol) in manifold-3d collapses edges shorter than `tol` and re-runs
-    // the boolean-cleanup pass. Passing 0 means "don't collapse anything based on
-    // length, just re-run the cleanup" — the lightest-touch heal, which is what
-    // we want for fixing STL imports / failed-boolean residue without destroying
-    // detail. Callers can pass an explicit tolerance for an aggressive pass.
+    // .simplify(tol) in manifold-3d collapses edges shorter than `tol` and
+    // re-runs the boolean-cleanup pass. Per manifold-3d's docs, "if not given
+    // or is less than the current tolerance, the current tolerance is used" —
+    // so passing 0 (the default here) falls back to whatever epsilon the
+    // manifold already carries, giving the lightest-touch heal possible.
+    // Callers can pass a larger explicit tolerance for an aggressive pass.
     const tol = opts.tolerance ?? 0;
     const cleaned = m.simplify(tol);
     const status = typeof cleaned.status === 'function' ? cleaned.status() : 0;
@@ -588,7 +607,7 @@ export function createMeshOpsNamespace(module: any) {
     // alignment
     alignTo,
     placeOn,
-    mirror,
+    mirrorAcross,
     mirrorCopy,
     // patterns
     linearPattern,

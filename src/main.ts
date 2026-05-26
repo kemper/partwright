@@ -3303,11 +3303,16 @@ async function main() {
       const eps = sx * 1e-5;
       const mod = getModule();
       if (!mod) return null;
-      const probe = mod.Manifold.cube([eps, eps, eps], true).translate(p);
+      // Capture each Manifold allocation separately so we can .delete() all of
+      // them. `Manifold.cube(...).translate(...)` allocates two — the un-named
+      // intermediate would otherwise leak the cube's WASM heap memory.
+      const cube = mod.Manifold.cube([eps, eps, eps], true);
+      const probe = cube.translate(p);
       const inter = probe.intersect(currentManifold);
       const inside = !inter.isEmpty();
       try { inter.delete?.(); } catch { /* ignore */ }
       try { probe.delete?.(); } catch { /* ignore */ }
+      try { cube.delete?.(); } catch { /* ignore */ }
       return inside;
     },
 
@@ -3322,19 +3327,28 @@ async function main() {
         if (o.tolerance !== undefined) assertNumber(o.tolerance, 'healCurrent(opts).tolerance', { min: 0 });
       }
       if (!currentManifold || currentManifold.isEmpty?.()) return null;
+      // decompose() returns an array of fresh Manifolds — we must .delete()
+      // each piece after counting, otherwise this leaks O(components) of WASM
+      // heap on every healCurrent call.
+      const beforePieces = currentManifold.decompose();
       const before = {
         volume: currentManifold.volume(),
         tri: currentManifold.numTri(),
-        components: currentManifold.decompose().length,
+        components: beforePieces.length,
       };
-      // Default tolerance 0 = re-run cleanup without length-based edge collapsing.
-      // Manifold-3d's binding rejects no-arg .simplify().
+      for (const p of beforePieces) { try { p.delete?.(); } catch { /* ignore */ } }
+      // Per manifold-3d's docs, simplify(tol) with tol less than the manifold's
+      // stored tolerance falls back to the stored value — so 0 (the default
+      // here) is the lightest-touch heal. Pass a positive value to collapse
+      // edges aggressively. (The binding rejects no-arg .simplify().)
       const cleaned = currentManifold.simplify(opts?.tolerance ?? 0);
+      const afterPieces = cleaned.decompose();
       const after = {
         volume: cleaned.volume(),
         tri: cleaned.numTri(),
-        components: cleaned.decompose().length,
+        components: afterPieces.length,
       };
+      for (const p of afterPieces) { try { p.delete?.(); } catch { /* ignore */ } }
       // Apply the healed manifold as the new current geometry, so the
       // viewport reflects the cleanup. The mesh extraction path mirrors
       // applyLiveGeometry's flow.

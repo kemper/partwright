@@ -233,19 +233,51 @@ test.describe('meshOps sandbox helpers', () => {
     expect(errMessage).toMatch(/\[1\] vol=27\.00/);
   });
 
-  test('circularPattern with a non-axis-aligned axis produces a valid manifold', async ({ page }) => {
-    const res = await page.evaluate(async () => {
-      const pw = (window as unknown as { partwright: { runAndSave: (code: string, label?: string) => Promise<{ geometry: { isManifold: boolean; triangleCount: number } }> } }).partwright;
+  test('circularPattern with a non-axis-aligned axis produces a geometrically-correct rotation', async ({ page }) => {
+    // The previous version only checked "didn't crash". This one verifies the
+    // Rodrigues rotation matrix actually rotates the input into the expected
+    // positions — a regression here would silently produce wrong geometry,
+    // which `isManifold` won't catch. The trick: rotating an asymmetric
+    // off-axis blob N times around an axis through the origin must produce a
+    // bbox that's symmetric about that axis. We check that explicitly.
+    const errMessage = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: { runIsolated: (c: string) => Promise<{ geometryData: { error?: string } }> } }).partwright;
       const code = `
         const { Manifold } = api;
-        // Rotate around [1,1,1]. Exercises the general-axis Rodrigues path.
-        const blob = Manifold.sphere(3, 16).translate([6, 0, 0]);
-        return api.circularPattern(blob, 5, { axis: [1, 1, 1] });
+        function check(cond, msg) { if (!cond) throw new Error('ROT FAIL: ' + msg); }
+
+        // 1. Axis-aligned Z rotation: 4 copies of a box at +X should produce a
+        //    bbox centered at origin with size 2R in X and Y, equal.
+        const box = Manifold.cube([2, 2, 2], true).translate([10, 0, 0]);
+        const ring = api.circularPattern(box, 4, { axis: 'z' });
+        const rb = api.bbox(ring);
+        check(Math.abs(rb.center[0]) < 0.1, 'Z-axis ring center X near 0 (got ' + rb.center[0] + ')');
+        check(Math.abs(rb.center[1]) < 0.1, 'Z-axis ring center Y near 0 (got ' + rb.center[1] + ')');
+        check(Math.abs(rb.size[0] - rb.size[1]) < 0.1, 'Z-axis ring symmetric in X and Y (got ' + rb.size[0] + ' vs ' + rb.size[1] + ')');
+
+        // 2. Y-axis rotation of the same +X box: 4 copies should form a ring
+        //    in the XZ plane, centered at origin, size in X == size in Z.
+        const ringY = api.circularPattern(box, 4, { axis: 'y' });
+        const rby = api.bbox(ringY);
+        check(Math.abs(rby.center[0]) < 0.1, 'Y-axis ring center X near 0 (got ' + rby.center[0] + ')');
+        check(Math.abs(rby.center[2]) < 0.1, 'Y-axis ring center Z near 0 (got ' + rby.center[2] + ')');
+        check(Math.abs(rby.size[0] - rby.size[2]) < 0.1, 'Y-axis ring symmetric in X and Z (got ' + rby.size[0] + ' vs ' + rby.size[2] + ')');
+
+        // 3. Arbitrary axis [1,1,1]/sqrt(3): 3 copies of a box at +X should be
+        //    invariant under 120° rotation about [1,1,1]. The unioned bbox must
+        //    be symmetric under (x,y,z)→(y,z,x), i.e. size[0]≈size[1]≈size[2].
+        const ringD = api.circularPattern(box, 3, { axis: [1, 1, 1] });
+        const rbd = api.bbox(ringD);
+        const s0 = rbd.size[0], s1 = rbd.size[1], s2 = rbd.size[2];
+        check(Math.abs(s0 - s1) < 0.5, 'diag axis ring size[0] ≈ size[1] (got ' + s0 + ' vs ' + s1 + ')');
+        check(Math.abs(s1 - s2) < 0.5, 'diag axis ring size[1] ≈ size[2] (got ' + s1 + ' vs ' + s2 + ')');
+
+        return box;
       `;
-      return await pw.runAndSave(code, 'circular-arbitrary-axis');
+      const res = await pw.runIsolated(code);
+      return res.geometryData.error ?? null;
     });
-    expect(res.geometry.isManifold).toBe(true);
-    expect(res.geometry.triangleCount).toBeGreaterThan(0);
+    expect(errMessage, errMessage ?? 'all rotations produced symmetric bboxes').toBeNull();
   });
 });
 
