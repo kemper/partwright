@@ -73,10 +73,6 @@ export function SettingsModalBody(props: {
   const settings = settingsSignal.value;
   const activeProvider = settings.toggles.provider;
 
-  // Pull on-disk settings into the signal each time the modal opens — a
-  // vanilla-TS code path may have mutated them while we were closed.
-  useEffect(() => { resyncSettings(); }, []);
-
   const tabSpecs: TabSpec<Provider>[] = TABS.map(t => ({
     id: t.id,
     label: t.label,
@@ -93,6 +89,8 @@ export function SettingsModalBody(props: {
           : <HostedTab provider={tab.value} cb={cb} close={close} switchTab={t => { tab.value = t; }} />}
       </div>
       <Divider />
+      <ApiTimeoutSection cb={cb} />
+      <Divider />
       <AutoCompactSection cb={cb} />
     </>
   );
@@ -106,12 +104,16 @@ export function SettingsModalFooter(props: { close: () => void }) {
 
 function EnableRow(props: { viewedTab: Provider; cb: AiSettingsCallbacks }) {
   const { viewedTab, cb } = props;
+  // null = "haven't checked yet" (e.g. just switched tabs and the
+  // async getKey hasn't resolved). The button stays disabled in that
+  // interim state so we never momentarily render an enabled Enable for
+  // a provider whose key status is unknown.
   const hasKey = useSignal<boolean | null>(null);
 
   useEffect(() => {
-    // Re-read on viewed-tab change OR key-version bump.
-    let cancelled = false;
     if (viewedTab === 'local') { hasKey.value = true; return; }
+    let cancelled = false;
+    hasKey.value = null;
     void getKey(viewedTab).then(k => { if (!cancelled) hasKey.value = !!k; });
     return () => { cancelled = true; };
   }, [viewedTab, keyVersion.value]);
@@ -121,13 +123,14 @@ function EnableRow(props: { viewedTab: Provider; cb: AiSettingsCallbacks }) {
   const label = providerLabel(viewedTab);
   const ready = hasKey.value === true;
 
+  // For local, `hasKey` is forced true above, so the "Connect your … key"
+  // branch never fires for local; that's why there's no local-specific
+  // copy here.
   const subtitle = isActive
     ? 'Chat turns are sent to this provider.'
     : ready
       ? `Viewing settings only — click Enable to send chat turns through ${label}.`
-      : viewedTab === 'local'
-        ? `Pick a local model below to enable it.`
-        : `Connect your ${label} key below to enable it.`;
+      : `Connect your ${label} key below to enable it.`;
 
   return (
     <div class={'flex items-center justify-between gap-3 rounded border px-3 py-2 ' + (
@@ -147,9 +150,7 @@ function EnableRow(props: { viewedTab: Provider; cb: AiSettingsCallbacks }) {
           disabled={!ready}
           title={ready
             ? `Switch the active provider to ${label}. You can switch back any time.`
-            : viewedTab === 'local'
-              ? `Pick a local model first.`
-              : `Connect your ${label} key before enabling it.`}
+            : `Connect your ${label} key before enabling it.`}
           onClick={() => {
             setSettings(setProvider(loadSettings(), viewedTab));
             cb.onChange();
@@ -303,6 +304,11 @@ function KeyEntryForm(props: {
     const err = await validateAndStoreKey(provider, value.value);
     validating.value = false;
     if (err) { error.value = err; return; }
+    // validateAndStoreKey calls saveSettings() directly to promote the
+    // just-connected provider to active — pull that change into the
+    // signal so EnableRow's "isActive" + the TabBar's Active pill
+    // both update without waiting for the next modal open.
+    resyncSettings();
     cb.onChange();
     bumpKeyVersion();
   }
@@ -334,6 +340,7 @@ function KeyEntryForm(props: {
       <PrimaryButton
         label={validating.value ? 'Validating…' : connectButtonLabel(provider)}
         disabled={validating.value}
+        variant="column"
         onClick={() => { void attempt(); }}
       />
       <div class="text-[11px] text-zinc-400 leading-snug">
@@ -372,7 +379,7 @@ function AnthropicModelSection(props: { cb: AiSettingsCallbacks }) {
             onClick={() => { setSettings(setAnthropicModel(loadSettings(), opt.id as AnthropicModelId)); cb.onChange(); }}
           />
         ))}
-        {!inList && current && <Pill active={true} label={`${current} (custom)`} onClick={() => {}} />}
+        {!inList && current && <Pill key="custom" active={true} label={`${current} (custom)`} onClick={() => {}} />}
       </div>
       <LoadModelsRow provider="anthropic" onLoaded={live => { options.value = live; }} />
     </Section>
@@ -410,7 +417,7 @@ function HostedModelSection(props: { provider: CloudPairProvider; cb: AiSettings
             onClick={() => { setSettings(setModel(loadSettings(), opt.id)); cb.onChange(); }}
           />
         ))}
-        {!inList && current && <Pill active={true} label={`${current} (custom)`} onClick={() => {}} />}
+        {!inList && current && <Pill key="custom" active={true} label={`${current} (custom)`} onClick={() => {}} />}
       </div>
       <LoadModelsRow provider={provider} onLoaded={live => { options.value = live; }} />
       <div class="flex items-center gap-2">
@@ -423,6 +430,7 @@ function HostedModelSection(props: { provider: CloudPairProvider; cb: AiSettings
         />
         <SecondaryButton
           label="Use id"
+          size="sm"
           onClick={() => {
             const id = customId.value.trim();
             if (!id) return;
@@ -474,7 +482,7 @@ function LoadModelsRow(props: {
 
   return (
     <div class="flex items-center gap-2">
-      <SecondaryButton label="Load models from your key" disabled={busy.value} onClick={() => { void loadModels(); }} />
+      <SecondaryButton label="Load models from your key" size="sm" disabled={busy.value} onClick={() => { void loadModels(); }} />
       <span class="text-[10px] text-zinc-500">{status.value}</span>
     </div>
   );
@@ -497,8 +505,8 @@ function LocalTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
 
 /** Hosts the existing vanilla-TS renderLocalPicker inside a Preact ref —
  *  the cohabitation seam. Picking a local model flips the active provider
- *  via the picker's own onChange, which we mirror into the signal so the
- *  EnableRow above flips to "active" without a manual rerender call. */
+ *  via the picker's own onChange; `resyncSettings()` pulls that write off
+ *  disk into the signal so EnableRow's `isActive` flips immediately. */
 function LocalPickerEmbed(props: { cb: AiSettingsCallbacks }) {
   const { cb } = props;
   const ref = useRef<HTMLDivElement>(null);
@@ -509,7 +517,6 @@ function LocalPickerEmbed(props: { cb: AiSettingsCallbacks }) {
       onChange: () => {
         cb.onChange();
         resyncSettings();
-        bumpKeyVersion();
       },
     }, { embedded: true });
   }, []);
@@ -586,8 +593,22 @@ function LocalContextSection(props: { cb: AiSettingsCallbacks }) {
       <div class="text-[10px] text-zinc-500">
         Changing these unloads the GPU engine; the next message rebuilds it (cached weights survive — just a fast reload).
       </div>
+    </Section>
+  );
+}
+
+/** Request-timeout control. The stall watchdog (aiPanel getStallThresholdMs)
+ *  aborts and auto-retries a turn after this many seconds with no streamed
+ *  token — for every provider, cloud or local. Lives outside the per-provider
+ *  tabs because it applies to all of them; folding it into the Local tab
+ *  hides it from cloud users (which was a previous bug). */
+function ApiTimeoutSection(props: { cb: AiSettingsCallbacks }) {
+  const { cb } = props;
+  const settings = settingsSignal.value;
+  return (
+    <Section label="Request timeout">
       <label class="flex items-center gap-2 text-xs text-zinc-300">
-        <span>Stall timeout:</span>
+        <span>Timeout:</span>
         <input
           type="number"
           min={5}
@@ -598,13 +619,13 @@ function LocalContextSection(props: { cb: AiSettingsCallbacks }) {
           onChange={e => {
             const raw = (e.currentTarget as HTMLInputElement).value;
             const v = parseInt(raw, 10);
-            const next = Number.isFinite(v) && v >= 5 ? v : 35;
+            const next = Number.isFinite(v) && v >= 5 ? v : 60;
             setSettings(setLocalContext(loadSettings(), { stallTimeoutSec: next }));
             cb.onChange();
           }}
         />
         <span class="text-[10px] text-zinc-500">
-          seconds · gap between tokens before auto-retry fires. Raise to 120+ for large models on slow hardware.
+          seconds without a streamed token before the request aborts and auto-retries. Applies to every provider; raise to 120+ for large local models on slow hardware.
         </span>
       </label>
     </Section>
@@ -660,6 +681,7 @@ function SystemPromptSection(props: { provider: Provider; close: () => void; cb:
       <div class="text-[11px] text-zinc-400 leading-snug" dangerouslySetInnerHTML={{ __html: html }} />
       <SecondaryButton
         label={override !== null ? 'Edit / reset prompt' : 'View / edit prompt'}
+        selfStart={true}
         onClick={() => {
           close();
           void showSystemPromptModal(provider, { onChange: cb.onChange });

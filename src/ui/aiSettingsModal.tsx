@@ -7,6 +7,7 @@
 import { signal } from '@preact/signals';
 import { loadSettings } from '../ai/settings';
 import { mountPreactModal } from './preact/mount';
+import { resyncSettings } from './preact/settingsStore';
 import {
   SettingsModalBody,
   SettingsModalFooter,
@@ -21,6 +22,10 @@ export async function showAiSettingsModal(
   cb: AiSettingsCallbacks,
   opts: AiSettingsOptions = {},
 ): Promise<void> {
+  // Pull on-disk settings into the signal BEFORE first render so vanilla-TS
+  // writes that happened while the modal was closed are reflected in the
+  // very first paint (not a tick later after the on-mount effect fires).
+  resyncSettings();
   const initialTab: Provider = opts.initialTab ?? loadSettings().toggles.provider;
   const tab = signal<Provider>(initialTab);
 
