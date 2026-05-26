@@ -108,11 +108,12 @@ describe('per-model accessors', () => {
   });
 
   test('OpenAI reasoning capability is data-driven, not regex-driven', () => {
-    // gpt-5 family is reasoning-capable; gpt-5-chat-latest is the chat-only
-    // variant with reasoning explicitly false in the upstream TOML.
+    // gpt-5 family is reasoning-capable. The capability flag is what
+    // isReasoningModel() reads to decide between /v1/responses (reasoning)
+    // and /v1/chat/completions (non-reasoning), so a least one current
+    // gpt-5* model must be marked reasoning=true.
     const opts = getModelOptions('openai');
     const reasoners = opts.filter((o) => getCapabilities('openai', o.id)?.reasoning === true);
-    // Be conservative: just assert at least one of the gpt-5 family is reasoning-capable.
     const gpt5Reasoner = reasoners.find((o) => /^gpt-5(\.\d+)?$/i.test(o.id));
     expect(gpt5Reasoner, 'expected at least one gpt-5* model with reasoning=true').toBeTruthy();
   });
@@ -191,6 +192,31 @@ describe('turnCostUsd', () => {
       cacheReadInputTokens: 1_000_000,
     });
     expect(cost).toBeCloseTo(price.cacheRead, 6);
+  });
+});
+
+describe('turnCostUsd tier selection', () => {
+  test('a heavy cache-read load does NOT push the turn into a higher tier', () => {
+    // Gemini 3 Pro Preview is the canonical tiered model: base $2 / $12 below
+    // 200k, tier $4 / $18 above. A turn with 100k fresh input + 250k cache
+    // reads must price the fresh portion at the *base* rate ($2/M = $0.20),
+    // not the tier rate. Cache-replay tokens are billed at cache_read
+    // independently of the input tier.
+    const opts = getModelOptions('gemini');
+    const tieredOpt = opts.find((o) => o.id === 'gemini-3-pro-preview');
+    if (!tieredOpt) return; // tolerate snapshots that don't include this preview
+    const pricing = getPricing('gemini', tieredOpt.id)!;
+    if (!pricing.tiers || pricing.tiers.length === 0) return;
+    const cost = turnCostUsd('gemini', tieredOpt.id, {
+      inputTokens: 100_000,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 250_000,
+    });
+    // Base input rate × 100k fresh + cache_read × 250k.
+    const baseInput = pricing.input * 100_000 / 1_000_000;
+    const cacheRead = (pricing.cacheRead ?? pricing.input * 0.1) * 250_000 / 1_000_000;
+    expect(cost).toBeCloseTo(baseInput + cacheRead, 6);
   });
 });
 

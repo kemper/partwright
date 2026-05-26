@@ -237,26 +237,6 @@
             "text"
           ]
         },
-        "experimental": {
-          "modes": {
-            "fast": {
-              "cost": {
-                "input": 30,
-                "output": 150,
-                "cache_read": 3,
-                "cache_write": 37.5
-              },
-              "provider": {
-                "body": {
-                  "speed": "fast"
-                },
-                "headers": {
-                  "anthropic-beta": "fast-mode-2026-02-01"
-                }
-              }
-            }
-          }
-        },
         "id": "claude-opus-4-6"
       },
       "claude-opus-4-7": {
@@ -289,26 +269,6 @@
           "output": [
             "text"
           ]
-        },
-        "experimental": {
-          "modes": {
-            "fast": {
-              "cost": {
-                "input": 30,
-                "output": 150,
-                "cache_read": 3,
-                "cache_write": 37.5
-              },
-              "provider": {
-                "body": {
-                  "speed": "fast"
-                },
-                "headers": {
-                  "anthropic-beta": "fast-mode-2026-02-01"
-                }
-              }
-            }
-          }
         },
         "id": "claude-opus-4-7"
       },
@@ -979,22 +939,6 @@
             "text"
           ]
         },
-        "experimental": {
-          "modes": {
-            "fast": {
-              "cost": {
-                "input": 1.5,
-                "output": 9,
-                "cache_read": 0.15
-              },
-              "provider": {
-                "body": {
-                  "service_tier": "priority"
-                }
-              }
-            }
-          }
-        },
         "id": "gpt-5.4-mini"
       },
       "gpt-5.4-nano": {
@@ -1113,22 +1057,6 @@
             "text"
           ]
         },
-        "experimental": {
-          "modes": {
-            "fast": {
-              "cost": {
-                "input": 5,
-                "output": 30,
-                "cache_read": 0.5
-              },
-              "provider": {
-                "body": {
-                  "service_tier": "priority"
-                }
-              }
-            }
-          }
-        },
         "id": "gpt-5.4"
       },
       "gpt-5.5-pro": {
@@ -1214,22 +1142,6 @@
           "output": [
             "text"
           ]
-        },
-        "experimental": {
-          "modes": {
-            "fast": {
-              "cost": {
-                "input": 12.5,
-                "output": 75,
-                "cache_read": 1.25
-              },
-              "provider": {
-                "body": {
-                  "service_tier": "priority"
-                }
-              }
-            }
-          }
         },
         "id": "gpt-5.5"
       },

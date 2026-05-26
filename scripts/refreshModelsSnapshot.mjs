@@ -76,6 +76,14 @@ async function main() {
     console.log(`[catalog] snapshot unchanged (${countModels(filtered)} models across ${Object.keys(filtered).length} providers)`);
     return;
   }
+  // On Cloudflare Pages the working tree is ephemeral — writing here just
+  // produces a "dirty" git status the developer never sees. Skip the write
+  // (the committed snapshot ships in the bundle either way) so the deploy
+  // log is quieter.
+  if (process.env.CF_PAGES) {
+    console.log(`[catalog] would have updated ${OUT_PATH} but CF_PAGES is set — skipping write (ephemeral build env)`);
+    return;
+  }
   await writeFile(OUT_PATH, json, 'utf8');
   console.log(`[catalog] wrote ${OUT_PATH} (${countModels(filtered)} models across ${Object.keys(filtered).length} providers)`);
 }
@@ -88,14 +96,16 @@ function countModels(catalog) {
 
 function filterCatalog(raw, cutoff) {
   const out = {};
+  let skippedShape = 0;
   for (const providerId of PROVIDERS) {
     const prov = raw[providerId];
     if (!prov) continue;
     const models = {};
     for (const [modelId, model] of Object.entries(prov.models ?? {})) {
+      if (!looksLikeValidModel(model)) { skippedShape++; continue; }
       if (!isChatToolModel(model)) continue;
       if (!withinWindow(model.release_date, cutoff)) continue;
-      models[modelId] = model;
+      models[modelId] = stripUnusedFields(model);
     }
     if (Object.keys(models).length === 0) continue;
     out[providerId] = {
@@ -106,6 +116,9 @@ function filterCatalog(raw, cutoff) {
       npm: prov.npm,
       models,
     };
+  }
+  if (skippedShape > 0) {
+    console.warn(`[catalog] skipped ${skippedShape} entr(ies) failing required-field shape check`);
   }
   return out;
 }
@@ -124,6 +137,34 @@ function isChatToolModel(m) {
   const outMods = m.modalities?.output;
   if (Array.isArray(outMods) && !outMods.includes('text')) return false;
   return true;
+}
+
+// Drop upstream fields catalog.ts doesn't consume — keeps the bundled JSON
+// lean. `experimental.modes.*` is the biggest offender (alternative pricing
+// for opt-in fast/priority/flex tiers we don't route to).
+function stripUnusedFields(m) {
+  if (m && typeof m === 'object' && 'experimental' in m) {
+    const { experimental: _unused, ...rest } = m;
+    return rest;
+  }
+  return m;
+}
+
+// Cheap structural sanity check — required fields per the upstream schema
+// (packages/core/src/schema.ts). Catches a TOML-parser regression or an
+// upstream schema drift loudly during the refresh rather than after the
+// JSON has already been written.
+function looksLikeValidModel(m) {
+  return (
+    m && typeof m === 'object' &&
+    typeof m.name === 'string' && m.name.length > 0 &&
+    typeof m.release_date === 'string' && /^\d{4}-\d{2}(-\d{2})?$/.test(m.release_date) &&
+    typeof m.attachment === 'boolean' &&
+    typeof m.reasoning === 'boolean' &&
+    typeof m.tool_call === 'boolean' &&
+    m.modalities && Array.isArray(m.modalities.input) && Array.isArray(m.modalities.output) &&
+    m.limit && typeof m.limit.context === 'number' && typeof m.limit.output === 'number'
+  );
 }
 
 function withinWindow(releaseDate, cutoff) {

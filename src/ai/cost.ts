@@ -48,10 +48,15 @@ function pricingFor(provider: string, model: string): CatalogPricing | null {
 export function turnCostUsd(provider: string, model: string, usage: TurnUsage): number {
   const p = pricingFor(provider, model);
   if (!p) return 0;
-  // Pick the tier whose threshold this turn's total input crosses. Most
-  // models have no tiers and the helper returns the base rates.
-  const totalInput = usage.inputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens;
-  const rate = pricingTierFor(p, totalInput);
+  // Pick the pricing tier from the *non-cache-replay* portion of this turn:
+  // fresh prompt tokens plus any cache-creation (the first time a prefix is
+  // sent to be cached, those are billed as fresh tokens too). Cache-read
+  // tokens are the cheap-replay portion and are billed at the cache_read
+  // rate independently of tier — including them in the threshold sum would
+  // push long-cached OpenAI sessions (gpt-5.5 has a 272k tier) into the
+  // higher bracket even when the fresh prompt is small.
+  const tieredInput = usage.inputTokens + usage.cacheCreationInputTokens;
+  const rate = pricingTierFor(p, tieredInput);
   const inputCost = (usage.inputTokens * rate.input) / 1_000_000;
   const outputCost = (usage.outputTokens * rate.output) / 1_000_000;
   // Prefer the catalog's explicit cache rates; fall back to the historical
