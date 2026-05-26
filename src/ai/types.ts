@@ -100,9 +100,10 @@ export interface ChatToggles {
   thinking: 'off' | 'low' | 'medium' | 'high';
   /** Which backend the chat is talking to right now. */
   provider: Provider;
-  /** Anthropic model for cloud chats. Always present so the user can switch
-   *  back to Anthropic without re-picking a model. */
-  anthropicModel: AnthropicModelId;
+  /** Anthropic model for cloud chats. Plain string so dated snapshots
+   *  (claude-opus-4-1-20250805, ...) and any catalog id beyond the curated
+   *  starter tiers fit too — same shape as openaiModel/geminiModel. */
+  anthropicModel: string;
   /** WebLLM model for local chats. Stored as a plain string so user-added
    *  custom model ids (which aren't in the curated `LocalModelId` union)
    *  fit too. Present from the first time the user picks one in the
