@@ -90,7 +90,7 @@ test.describe('Relief Studio', () => {
     await page.getByText('Image → Relief (HueForge)…').click();
     await expect(page.getByText('Image → Relief (HueForge)', { exact: true })).toBeVisible();
 
-    const input = page.locator('input[type="file"][accept="image/*"]');
+    const input = page.locator('input[type="file"][accept*="image"]');
     await input.setInputFiles({ name: 'grad.png', mimeType: 'image/png', buffer });
 
     // The wizard must react to the chosen image: live preview stat + an enabled
@@ -147,5 +147,111 @@ test.describe('Relief Studio', () => {
     expect(res.count).toBeGreaterThanOrEqual(3);
     expect(res.minLum).toBeLessThan(0.2);   // a near-black cluster (eyes/mouth) survived
     expect(res.maxLum).toBeGreaterThan(0.8); // a near-white cluster (background) survived
+  });
+
+  // The new "flat tile" output is the default for color-quantized — colours
+  // become regions on a flat tile (Bambu-keychain style) instead of the noisy
+  // cluster->height cliffs of the old relief mode.
+  test('flat tile output produces a flat colour tile (uniform top z)', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const res = await page.evaluate(async () => {
+      const c = document.createElement('canvas');
+      c.width = 200; c.height = 200;
+      const x = c.getContext('2d')!;
+      x.fillStyle = 'white'; x.fillRect(0, 0, 200, 200);
+      x.fillStyle = '#3aa9e8'; x.beginPath(); x.arc(100, 100, 70, 0, 7); x.fill();
+      x.fillStyle = '#000000'; x.beginPath(); x.ellipse(80, 80, 8, 14, 0, 0, 7); x.fill();
+      x.beginPath(); x.ellipse(120, 80, 8, 14, 0, 0, 7); x.fill();
+      const src = c.toDataURL('image/png');
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      const created = await pw.importImageAsRelief({
+        src, mode: 'quantized',
+        options: { resolution: 100, maxHeight: 1, baseThickness: 1 },
+        quantized: { output: 'flat', shape: 'rect' },
+      }) as { sessionId?: string; error?: string };
+      const geo = pw.getGeometryData() as { boundingBox: { z: [number, number] }; isManifold: boolean; triangleCount: number };
+      return { created, zRange: geo.boundingBox.z, isManifold: geo.isManifold, triangleCount: geo.triangleCount };
+    });
+    expect(res.created.error).toBeFalsy();
+    expect(res.created.sessionId).toBeTruthy();
+    // The tile is a flat slab — z spans exactly [0, base+maxHeight] = [0, 2].
+    expect(res.zRange[0]).toBeCloseTo(0, 2);
+    expect(res.zRange[1]).toBeCloseTo(2, 2);
+    expect(res.triangleCount).toBeGreaterThan(0);
+  });
+
+  // Silhouette tile cuts the tile to the image subject (background removed).
+  // We assert the tile's lateral bounds shrink below the full image extent,
+  // since most of the canvas is background and gets cut away.
+  test('silhouette tile excludes background cells', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const res = await page.evaluate(async () => {
+      const c = document.createElement('canvas');
+      c.width = 200; c.height = 200;
+      const x = c.getContext('2d')!;
+      x.fillStyle = 'white'; x.fillRect(0, 0, 200, 200);
+      // Small subject in the middle, far from the borders.
+      x.fillStyle = 'red'; x.beginPath(); x.arc(100, 100, 40, 0, 7); x.fill();
+      const src = c.toDataURL('image/png');
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      const flat = await pw.importImageAsRelief({
+        src, mode: 'quantized',
+        options: { widthMm: 100, resolution: 100, maxHeight: 1, baseThickness: 1 },
+        quantized: { output: 'flat', shape: 'rect' },
+      }) as { sessionId?: string };
+      const flatGeo = pw.getGeometryData() as { triangleCount: number };
+      const flatTris = flatGeo.triangleCount;
+      const silhouette = await pw.importImageAsRelief({
+        src, mode: 'quantized',
+        options: { widthMm: 100, resolution: 100, maxHeight: 1, baseThickness: 1 },
+        quantized: { output: 'silhouette' },
+      }) as { sessionId?: string };
+      const silGeo = pw.getGeometryData() as { triangleCount: number; boundingBox: { x: [number, number]; y: [number, number] } };
+      void flat; void silhouette;
+      return { flatTris, silhouetteTris: silGeo.triangleCount, silBboxX: silGeo.boundingBox.x, silBboxY: silGeo.boundingBox.y };
+    });
+    // Silhouette has many fewer triangles than the full flat tile — most of the
+    // canvas is bg and got cut.
+    expect(res.silhouetteTris).toBeLessThan(res.flatTris * 0.5);
+    // The silhouette stays inside the original tile bounds.
+    expect(res.silBboxX[0]).toBeGreaterThanOrEqual(-50.01);
+    expect(res.silBboxX[1]).toBeLessThanOrEqual(50.01);
+  });
+
+  // SVG import — each <path fill> becomes its own crisp seed region (no
+  // k-means clustering, so colours and boundaries are exact).
+  test('SVG import yields one region per fill colour', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const res = await page.evaluate(async () => {
+      const svgText = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
+        <rect x="0" y="0" width="100" height="100" fill="white"/>
+        <circle cx="50" cy="50" r="30" fill="red"/>
+        <rect x="20" y="20" width="20" height="20" fill="blue"/>
+      </svg>`;
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      const created = await pw.importSvgAsRelief({
+        svgText,
+        options: { widthMm: 50, resolution: 120 },
+        quantized: { output: 'silhouette' },
+      }) as { sessionId?: string; error?: string };
+      const regions = pw.listRegions() as Array<{ color: [number, number, number] }>;
+      // Cluster by basic "is dark / has red dominant / has blue dominant" so we
+      // confirm the three distinct fills made it through colour-matching.
+      const hasRed = regions.some(r => r.color[0] > 0.6 && r.color[1] < 0.4 && r.color[2] < 0.4);
+      const hasBlue = regions.some(r => r.color[2] > 0.6 && r.color[0] < 0.4 && r.color[1] < 0.4);
+      const hasWhite = regions.some(r => r.color[0] > 0.8 && r.color[1] > 0.8 && r.color[2] > 0.8);
+      return { created, regions: regions.length, hasRed, hasBlue, hasWhite };
+    });
+    expect(res.created.error).toBeFalsy();
+    expect(res.regions).toBeGreaterThanOrEqual(3);
+    expect(res.hasRed).toBe(true);
+    expect(res.hasBlue).toBe(true);
+    expect(res.hasWhite).toBe(true);
   });
 });

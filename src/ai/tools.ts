@@ -904,12 +904,12 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'importImageAsRelief',
-    description: 'Generate a HueForge-style relief (heightmap) Part from an image. Creates a new session whose geometry is a stepped relief built from the image; paint its surface afterward with the normal paint tools (AMS-friendly). `src` is a data: or http(s) image URL. `mode`: "luminance" (brightness→height, default), "quantized" (cluster colors into height bands and pre-seed color regions), or "ai" (treated as luminance). `options` overrides common knobs. After creation, paint, then read getReliefSwapGuide() for the single-nozzle swap plan.',
+    description: 'Generate a colour-printable Part from a raster image. By default produces a FLAT colour tile (Bambu-keychain style — paint regions on a thin tile, AMS-friendly). Pass quantized.output="silhouette" to cut the tile to the image\'s subject outline (background removed), or quantized.output="relief" for the classic HueForge stepped-height relief. Pass mode="luminance" for a tonal embossment with no colour clusters. `src` is a data: or http(s) image URL. After creation, paint, then read getReliefSwapGuide() for the single-nozzle swap plan if relevant.',
     input_schema: {
       type: 'object',
       properties: {
         src: { type: 'string', description: 'Image data: URL or http(s) URL.' },
-        mode: { type: 'string', enum: ['luminance', 'quantized', 'ai'], description: 'Image→height mapping. Default luminance.' },
+        mode: { type: 'string', enum: ['luminance', 'quantized', 'ai'], description: 'Image→geometry mapping. "luminance" is a heightmap relief. "quantized" produces a coloured tile (see quantized.output). Default quantized.' },
         options: {
           type: 'object',
           description: 'Common relief knobs to override.',
@@ -922,8 +922,57 @@ const ALL_TOOLS: ToolDefinition[] = [
             smoothing: { type: 'number' },
           },
         },
+        quantized: {
+          type: 'object',
+          description: 'Quantized-mode + tile overrides. Only used when mode is "quantized" (or "ai").',
+          properties: {
+            clusters: { type: 'integer', description: 'Number of colour clusters (2..12). Default 5.' },
+            colorSpace: { type: 'string', enum: ['rgb', 'lab'], description: 'Clustering colour space. Lab is perceptual (default).' },
+            dither: { type: 'boolean', description: 'Floyd–Steinberg dithering at cluster boundaries.' },
+            output: { type: 'string', enum: ['flat', 'silhouette', 'relief'], description: '"flat" (default) = flat colour tile (keychain). "silhouette" = flat tile cut to the image subject (background removed). "relief" = stepped HueForge height cliffs (legacy).' },
+            shape: { type: 'string', enum: ['rect', 'rounded', 'circle'], description: 'Tile outline for flat mode. Default "rect".' },
+            cornerRadiusMm: { type: 'number', description: 'Corner radius for "rounded" shape, mm.' },
+            holeEnabled: { type: 'boolean', description: 'Add a circular keychain hole.' },
+            holeDiameterMm: { type: 'number' },
+            holeOffsetMm: { type: 'number', description: 'Hole centre distance from the top edge of the tile, mm.' },
+          },
+        },
       },
       required: ['src'],
+    },
+  },
+  {
+    name: 'importSvgAsRelief',
+    description: 'Generate a multi-colour tile Part from raw SVG text. Each `<path fill>` becomes one seed colour region with CRISP boundaries — no k-means clustering, so the SVG\'s exact colours and shapes are preserved. Vastly better than importImageAsRelief for vector logos, icons, and illustrations. Tile geometry knobs (output/shape/hole) work the same as importImageAsRelief; default output is "silhouette" so the tile takes the SVG\'s overall outline.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        svgText: { type: 'string', description: 'Raw SVG source text (including the <svg>...</svg> root).' },
+        options: {
+          type: 'object',
+          properties: {
+            widthMm: { type: 'number' },
+            layerHeight: { type: 'number' },
+            baseThickness: { type: 'number' },
+            maxHeight: { type: 'number' },
+            resolution: { type: 'integer', description: 'Max grid columns (<=256). Higher = crisper.' },
+            smoothing: { type: 'number' },
+          },
+        },
+        quantized: {
+          type: 'object',
+          description: 'Tile overrides (the SVG path doesn\'t cluster — fields like clusters/dither are ignored here).',
+          properties: {
+            output: { type: 'string', enum: ['flat', 'silhouette'], description: 'Default "silhouette" — uses the SVG outline as the tile shape.' },
+            shape: { type: 'string', enum: ['rect', 'rounded', 'circle'] },
+            cornerRadiusMm: { type: 'number' },
+            holeEnabled: { type: 'boolean' },
+            holeDiameterMm: { type: 'number' },
+            holeOffsetMm: { type: 'number' },
+          },
+        },
+      },
+      required: ['svgText'],
     },
   },
   {
@@ -984,6 +1033,7 @@ const ALWAYS_AVAILABLE = new Set([
   'sliceAtZVisual',
   'paintInCylinder',
   'importImageAsRelief',
+  'importSvgAsRelief',
   'getReliefSwapGuide',
   'setReliefPreviewMode',
 ]);
@@ -1406,6 +1456,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.paintInCylinder(input);
     case 'importImageAsRelief':
       return api.importImageAsRelief(input);
+    case 'importSvgAsRelief':
+      return api.importSvgAsRelief(input);
     case 'getReliefSwapGuide':
       return api.getReliefSwapGuide();
     case 'setReliefPreviewMode':

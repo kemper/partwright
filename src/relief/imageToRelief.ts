@@ -14,6 +14,8 @@ import type {
   GenerateReliefResult,
 } from './types';
 import { DEFAULT_RELIEF_OPTIONS } from './types';
+import { buildTileMesh, type TileOptions, type TileShape } from './tileMesh';
+import { parseSvgToTile } from '../import/parsers/svg';
 
 const LUMA_R = 0.2126;
 const LUMA_G = 0.7152;
@@ -570,42 +572,171 @@ function isEdgeManifold(triVerts: Uint32Array, numTri: number): boolean {
  */
 export function generateRelief(image: ImageData, opts: ReliefOptions = DEFAULT_RELIEF_OPTIONS): GenerateReliefResult {
   const grid = sampleImageToGrid(image, opts);
-  const mesh = buildReliefMesh(grid, opts);
 
+  // Tile outputs (flat / silhouette) skip the heightmap relief mesh and build
+  // a flat tile of constant thickness instead, painting colour clusters onto
+  // its top face — the Bambu-keychain workflow. Only applies to quantized
+  // mode (luminance is always a heightmap).
+  if (opts.mode === 'quantized' && grid.colors && opts.quantized.output !== 'relief') {
+    return buildQuantizedTile(grid, opts);
+  }
+
+  const mesh = buildReliefMesh(grid, opts);
   if (opts.mode !== 'quantized' || !grid.colors) {
     return { mesh, grid };
   }
+  const seedRegions = seedRegionsFromReliefGrid(grid);
+  return { mesh, grid, seedRegions };
+}
 
-  // Group cells by their representative color, then translate each cell to its
-  // two top triangle ids via gridTriangleIndexForCell.
-  const colors = grid.colors;
+/** Build the flat colour-tile result for quantized mode with output !== 'relief'. */
+function buildQuantizedTile(grid: HeightGrid, opts: ReliefOptions): GenerateReliefResult {
+  const colors = grid.colors!;
+  const W = grid.width, H = grid.height;
+  const heightMm = opts.common.widthMm * H / W;
+  const tileOpts: TileOptions = {
+    widthMm: opts.common.widthMm,
+    thickness: opts.common.baseThickness + opts.common.maxHeight,
+    hole: opts.quantized.holeEnabled
+      ? {
+          cxMm: 0,
+          cyMm: heightMm / 2 - opts.quantized.holeOffsetMm,
+          diameterMm: opts.quantized.holeDiameterMm,
+        }
+      : undefined,
+  };
+  const shape: TileShape = opts.quantized.output === 'silhouette'
+    ? { kind: 'mask', mask: detectBackgroundMask(colors, W, H) }
+    : opts.quantized.shape === 'rounded'
+      ? { kind: 'rounded', cornerRadiusMm: opts.quantized.cornerRadiusMm }
+      : opts.quantized.shape === 'circle'
+        ? { kind: 'circle' }
+        : { kind: 'rect' };
+  const { mesh, cellTriIds } = buildTileMesh(W, H, tileOpts, shape);
+  const seedRegions = seedRegionsFromCellGrid(colors, cellTriIds, W, H);
+  return { mesh, grid, seedRegions };
+}
+
+/** Stepped-relief variant: each cell owns the two top triangles emitted by
+ *  buildReliefMesh in cell-major order (see gridTriangleIndexForCell). */
+function seedRegionsFromReliefGrid(grid: HeightGrid): SeedRegion[] {
+  const colors = grid.colors!;
   const byColor = new Map<number, { color: [number, number, number]; triangleIds: number[] }>();
   for (let y = 0; y < grid.height - 1; y++) {
     for (let x = 0; x < grid.width - 1; x++) {
       const cell = y * grid.width + x;
-      const r = colors[cell * 3];
-      const g = colors[cell * 3 + 1];
-      const b = colors[cell * 3 + 2];
+      const r = colors[cell * 3], g = colors[cell * 3 + 1], b = colors[cell * 3 + 2];
       const key = (r << 16) | (g << 8) | b;
       let bucket = byColor.get(key);
-      if (!bucket) {
-        bucket = { color: [r / 255, g / 255, b / 255], triangleIds: [] };
-        byColor.set(key, bucket);
-      }
+      if (!bucket) { bucket = { color: [r / 255, g / 255, b / 255], triangleIds: [] }; byColor.set(key, bucket); }
       const [t0, t1] = gridTriangleIndexForCell(grid, x, y);
       bucket.triangleIds.push(t0, t1);
     }
   }
+  return mapBucketsToRegions(byColor);
+}
 
+/** Tile variant: cellTriIds carries -1 for excluded cells (shape/hole/edge),
+ *  so only included cells contribute. */
+function seedRegionsFromCellGrid(colors: Uint8Array, cellTriIds: Int32Array, W: number, H: number): SeedRegion[] {
+  const byColor = new Map<number, { color: [number, number, number]; triangleIds: number[] }>();
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const cell = y * W + x;
+      const t0 = cellTriIds[cell * 2];
+      if (t0 < 0) continue;
+      const r = colors[cell * 3], g = colors[cell * 3 + 1], b = colors[cell * 3 + 2];
+      const key = (r << 16) | (g << 8) | b;
+      let bucket = byColor.get(key);
+      if (!bucket) { bucket = { color: [r / 255, g / 255, b / 255], triangleIds: [] }; byColor.set(key, bucket); }
+      bucket.triangleIds.push(t0, cellTriIds[cell * 2 + 1]);
+    }
+  }
+  return mapBucketsToRegions(byColor);
+}
+
+function mapBucketsToRegions(byColor: Map<number, { color: [number, number, number]; triangleIds: number[] }>): SeedRegion[] {
   const seedRegions: SeedRegion[] = [];
   let i = 0;
   for (const bucket of byColor.values()) {
-    seedRegions.push({
-      color: bucket.color,
-      triangleIds: bucket.triangleIds,
-      name: `Region ${++i}`,
-    });
+    seedRegions.push({ color: bucket.color, triangleIds: bucket.triangleIds, name: `Region ${++i}` });
   }
+  return seedRegions;
+}
 
+/** Approximate background detection: the dominant exact colour on the image
+ *  border is treated as background. Returns a per-cell mask where 1 = subject
+ *  (keep) and 0 = background (cut from the tile silhouette). Works well for
+ *  the common case of a subject on a roughly-uniform-colour backdrop. */
+function detectBackgroundMask(colors: Uint8Array, w: number, h: number): Uint8Array {
+  const keyOf = (cell: number) =>
+    (colors[cell * 3] << 16) | (colors[cell * 3 + 1] << 8) | colors[cell * 3 + 2];
+  const counts = new Map<number, number>();
+  const bump = (cell: number) => counts.set(keyOf(cell), (counts.get(keyOf(cell)) ?? 0) + 1);
+  for (let x = 0; x < w; x++) { bump(x); bump((h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { bump(y * w); bump(y * w + (w - 1)); }
+  let bgKey = -1, bgCount = 0;
+  for (const [k, n] of counts) { if (n > bgCount) { bgCount = n; bgKey = k; } }
+  const mask = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) mask[i] = keyOf(i) === bgKey ? 0 : 1;
+  return mask;
+}
+
+/** Build a tile from raw SVG text. Each unique fill colour becomes one seed
+ *  region with crisp boundaries (no clustering — the SVG already has discrete
+ *  fills). Honours opts.quantized.output/shape/hole for the tile geometry:
+ *  silhouette uses the union of all fills, flat/relief use the explicit shape. */
+export async function generateReliefFromSvg(svgText: string, opts: ReliefOptions): Promise<GenerateReliefResult> {
+  const resolution = Math.max(8, Math.min(256, Math.floor(opts.common.resolution)));
+  const parsed = await parseSvgToTile(svgText, resolution);
+  const W = parsed.width, H = parsed.height;
+  const thickness = opts.common.baseThickness + opts.common.maxHeight;
+  const heightMm = opts.common.widthMm * H / Math.max(1, W);
+
+  // Compose a flat colours grid by painting fills in SVG document order
+  // (later fills cover earlier where masks overlap).
+  const colorsBytes = new Uint8Array(W * H * 3);
+  for (const fill of parsed.fills) {
+    const r = Math.round(fill.color[0] * 255);
+    const g = Math.round(fill.color[1] * 255);
+    const b = Math.round(fill.color[2] * 255);
+    const mask = fill.mask;
+    for (let i = 0; i < W * H; i++) {
+      if (mask[i]) { colorsBytes[i * 3] = r; colorsBytes[i * 3 + 1] = g; colorsBytes[i * 3 + 2] = b; }
+    }
+  }
+  const heights = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) heights[i] = parsed.unionMask[i] ? thickness : 0;
+  const grid: HeightGrid = { width: W, height: H, heights, colors: colorsBytes };
+
+  // Tile shape: 'silhouette' uses the SVG's union mask (an SVG-shaped tile);
+  // otherwise honour the explicit rect/rounded/circle pick.
+  const tileOpts: TileOptions = {
+    widthMm: opts.common.widthMm,
+    thickness,
+    hole: opts.quantized.holeEnabled
+      ? { cxMm: 0, cyMm: heightMm / 2 - opts.quantized.holeOffsetMm, diameterMm: opts.quantized.holeDiameterMm }
+      : undefined,
+  };
+  const shape: TileShape = opts.quantized.output === 'silhouette'
+    ? { kind: 'mask', mask: parsed.unionMask }
+    : opts.quantized.shape === 'rounded'
+      ? { kind: 'rounded', cornerRadiusMm: opts.quantized.cornerRadiusMm }
+      : opts.quantized.shape === 'circle'
+        ? { kind: 'circle' }
+        : { kind: 'rect' };
+  const { mesh, cellTriIds } = buildTileMesh(W, H, tileOpts, shape);
+
+  // Seed regions directly from each parsed fill mask — crisp, no clustering.
+  const seedRegions: SeedRegion[] = parsed.fills.map((fill, idx) => {
+    const triangleIds: number[] = [];
+    for (let i = 0; i < W * H; i++) {
+      if (!fill.mask[i]) continue;
+      const t0 = cellTriIds[i * 2];
+      if (t0 < 0) continue;
+      triangleIds.push(t0, cellTriIds[i * 2 + 1]);
+    }
+    return { color: fill.color, triangleIds, name: `Fill ${idx + 1}` };
+  }).filter(r => r.triangleIds.length > 0);
   return { mesh, grid, seedRegions };
 }

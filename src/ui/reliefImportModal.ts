@@ -4,7 +4,7 @@
 // generation itself is the host's job — this modal only resolves options and
 // hands back the source ImageData via onCreate.
 
-import type { ReliefOptions, ReliefImportMode } from '../relief/types';
+import type { ReliefOptions, ReliefImportMode, TileOutputKind, TileShapeKind } from '../relief/types';
 import { DEFAULT_RELIEF_OPTIONS } from '../relief/types';
 import { sampleImageToGrid } from '../relief/imageToRelief';
 import { createModalShell } from './modalShell';
@@ -16,6 +16,9 @@ export interface ReliefImportModalOptions {
   onAiAssist?: (image: ImageData, opts: ReliefOptions) => Promise<Partial<ReliefOptions> & { note?: string }>;
   // Called on Create with the chosen image + resolved options + a base name.
   onCreate: (image: ImageData, opts: ReliefOptions, sourceName: string) => void | Promise<void>;
+  // Called on Create when the chosen file is an SVG — the host parses it and
+  // builds a multi-colour tile directly from the per-fill paths.
+  onCreateSvg?: (svgText: string, opts: ReliefOptions, sourceName: string) => void | Promise<void>;
 }
 
 const PREVIEW_PX = 220;
@@ -43,6 +46,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
 
   const opts: ReliefOptions = structuredClone(DEFAULT_RELIEF_OPTIONS);
   let image: ImageData | null = null;
+  let svgText: string | null = null;
   let baseName = 'relief';
   let creating = false;
   let previewTimer: number | undefined;
@@ -72,7 +76,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
 
   const fileInput = document.createElement('input');
   fileInput.type = 'file';
-  fileInput.accept = 'image/*';
+  fileInput.accept = 'image/*,.svg,image/svg+xml';
   fileInput.className = 'hidden';
 
   const pickBtn = document.createElement('button');
@@ -151,7 +155,26 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   ]);
   checkboxControl(quantizedSection.grid, 'Dither', () => opts.quantized.dither, v => (opts.quantized.dither = v));
 
-  knobs.append(commonSection.root, luminanceSection.root, quantizedSection.root);
+  // Tile knobs — visible for 'quantized' mode and for SVG imports. The Output
+  // picker switches between the stepped HueForge relief, a flat colour tile
+  // (Bambu-keychain style), and a tile cut to the image's subject silhouette.
+  const tileSection = makeSection('Tile output');
+  selectControl<TileOutputKind>(tileSection.grid, 'Output', () => opts.quantized.output, v => { opts.quantized.output = v; syncMode(); }, [
+    { value: 'flat', label: 'Flat tile' },
+    { value: 'silhouette', label: 'Silhouette tile' },
+    { value: 'relief', label: 'Stepped relief' },
+  ]);
+  selectControl<TileShapeKind>(tileSection.grid, 'Shape', () => opts.quantized.shape, v => (opts.quantized.shape = v), [
+    { value: 'rect', label: 'Rectangle' },
+    { value: 'rounded', label: 'Rounded' },
+    { value: 'circle', label: 'Circle' },
+  ]);
+  sliderControl(tileSection.grid, 'Corner radius', 'mm', () => opts.quantized.cornerRadiusMm, v => (opts.quantized.cornerRadiusMm = v), { min: 0, max: 20, step: 0.5 });
+  checkboxControl(tileSection.grid, 'Keychain hole', () => opts.quantized.holeEnabled, v => (opts.quantized.holeEnabled = v));
+  sliderControl(tileSection.grid, 'Hole diameter', 'mm', () => opts.quantized.holeDiameterMm, v => (opts.quantized.holeDiameterMm = v), { min: 2, max: 15, step: 0.5 });
+  sliderControl(tileSection.grid, 'Hole offset from edge', 'mm', () => opts.quantized.holeOffsetMm, v => (opts.quantized.holeOffsetMm = v), { min: 2, max: 40, step: 0.5 });
+
+  knobs.append(commonSection.root, luminanceSection.root, quantizedSection.root, tileSection.root);
   shell.body.append(aiNote, knobs);
 
   // --- Live preview --------------------------------------------------------
@@ -196,10 +219,45 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   shell.footer.append(cancelBtn, createBtn);
 
   // --- File handling -------------------------------------------------------
-  fileInput.addEventListener('change', () => {
+  fileInput.addEventListener('change', async () => {
     const file = fileInput.files?.[0];
     if (!file) return;
     baseName = file.name.replace(/\.[^.]+$/, '') || 'relief';
+
+    // SVG branch: keep the raw text (no clustering needed — each <path fill>
+    // becomes its own colour region) and render the SVG to the thumbnail.
+    const isSvg = file.type === 'image/svg+xml' || /\.svg$/i.test(file.name);
+    if (isSvg) {
+      try { svgText = await file.text(); }
+      catch { svgText = null; image = null; sourceLabel.textContent = 'Could not read SVG'; syncEnabled(); return; }
+      image = null;
+      const blob = new Blob([svgText], { type: 'image/svg+xml' });
+      const svgUrl = URL.createObjectURL(blob);
+      const svgLoader = new Image();
+      svgLoader.addEventListener('load', () => {
+        const off = document.createElement('canvas');
+        off.width = Math.max(1, svgLoader.naturalWidth || 200);
+        off.height = Math.max(1, svgLoader.naturalHeight || 200);
+        const ctx = off.getContext('2d');
+        if (ctx) ctx.drawImage(svgLoader, 0, 0, off.width, off.height);
+        URL.revokeObjectURL(svgUrl);
+        thumb.classList.remove('hidden');
+        thumb.src = off.toDataURL('image/png');
+        sourceLabel.textContent = `${baseName} — SVG ${off.width}×${off.height}`;
+        renderPreview();
+        syncMode();
+        syncEnabled();
+      });
+      svgLoader.addEventListener('error', () => {
+        URL.revokeObjectURL(svgUrl);
+        sourceLabel.textContent = 'Could not render SVG';
+        syncEnabled();
+      });
+      svgLoader.src = svgUrl;
+      return;
+    }
+
+    svgText = null;
     const url = URL.createObjectURL(file);
     const loader = new Image();
     loader.addEventListener('load', () => {
@@ -222,6 +280,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
       thumb.src = off.toDataURL('image/png');
       sourceLabel.textContent = `${baseName} — ${off.width}×${off.height}`;
       renderPreview();
+      syncMode();
       syncEnabled();
     });
     loader.addEventListener('error', () => {
@@ -260,14 +319,19 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
 
   // --- Create flow ---------------------------------------------------------
   async function runCreate(): Promise<void> {
-    if (!image || creating) return;
+    if ((!image && !svgText) || creating) return;
     creating = true;
     createBtn.disabled = true;
     createBtn.classList.add('opacity-60', 'cursor-default');
     const original = createBtn.textContent;
     createBtn.textContent = 'Generating…';
     try {
-      await options.onCreate(image, opts, baseName);
+      if (svgText) {
+        if (!options.onCreateSvg) throw new Error('SVG imports are not enabled in this build');
+        await options.onCreateSvg(svgText, opts, baseName);
+      } else if (image) {
+        await options.onCreate(image, opts, baseName);
+      }
       shell.close();
     } catch (err) {
       creating = false;
@@ -286,6 +350,15 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   }
 
   function renderPreview(): void {
+    if (svgText) {
+      // SVG mode: the source is shown in the thumbnail and each <path fill>
+      // becomes its own crisp region — there's no luminance/cluster grid to
+      // preview here, so collapse the canvas and update the stat caption.
+      canvas.width = 1; canvas.height = 1;
+      canvas.style.width = '1px'; canvas.style.height = '1px';
+      stat.textContent = `SVG · per-fill rasterisation at ${Math.floor(opts.common.resolution)} cols`;
+      return;
+    }
     if (!image) return;
     const grid = sampleImageToGrid(image, opts);
     const w = grid.width;
@@ -334,25 +407,31 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
 
   // --- UI sync helpers -----------------------------------------------------
   function syncMode(): void {
+    const isSvg = svgText !== null;
     for (const [id, btn] of modeButtons) {
       const active = id === opts.mode;
-      btn.classList.toggle('bg-blue-600', active);
-      btn.classList.toggle('text-white', active);
-      btn.classList.toggle('bg-zinc-800', !active && !btn.disabled);
-      btn.classList.toggle('text-zinc-300', !active && !btn.disabled);
+      btn.classList.toggle('bg-blue-600', active && !isSvg);
+      btn.classList.toggle('text-white', active && !isSvg);
+      btn.classList.toggle('bg-zinc-800', (!active || isSvg) && !btn.disabled);
+      btn.classList.toggle('text-zinc-300', (!active || isSvg) && !btn.disabled);
+      // SVG imports have a fixed pipeline (per-fill regions) — mode tabs don't
+      // apply, so dim them and ignore clicks while an SVG is loaded.
+      btn.classList.toggle('opacity-40', isSvg && !btn.disabled);
+      btn.classList.toggle('pointer-events-none', isSvg);
     }
-    // Luminance knobs serve both luminance and ai modes.
-    const showLum = opts.mode === 'luminance' || opts.mode === 'ai';
+    const showLum = !isSvg && (opts.mode === 'luminance' || opts.mode === 'ai');
     luminanceSection.root.classList.toggle('hidden', !showLum);
-    quantizedSection.root.classList.toggle('hidden', opts.mode !== 'quantized');
+    quantizedSection.root.classList.toggle('hidden', isSvg || opts.mode !== 'quantized');
+    tileSection.root.classList.toggle('hidden', !isSvg && opts.mode !== 'quantized');
   }
 
   function syncEnabled(): void {
-    const ready = image !== null;
+    const ready = image !== null || svgText !== null;
     createBtn.disabled = !ready || creating;
     createBtn.classList.toggle('opacity-60', !ready);
     createBtn.classList.toggle('cursor-default', !ready);
-    if (aiBtn) aiBtn.disabled = !ready;
+    // AI assist tunes raster-clustering knobs; it has nothing to say about SVG.
+    if (aiBtn) aiBtn.disabled = !ready || svgText !== null;
   }
 
   // --- Initial paint -------------------------------------------------------

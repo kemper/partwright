@@ -1,31 +1,50 @@
-# HueForge-style reliefs (Relief Studio)
+# Reliefs, colour tiles, and SVG imports (Relief Studio)
 
-A **relief** is a heightmap mesh generated from an image: at each XY the model
-has a height, built as a stepped solid quantized to the print layer height. You
-paint its surface with the normal paint tools — free per-region color, which is
-exactly what an AMS / multi-material printer reproduces. For single-nozzle
-printers, the app derives an advisory **swap guide** (which layer heights to
-change filament at); it does not export swap instructions.
+The relief importer has three output kinds for raster images, plus a dedicated
+SVG path. All produce a Part you can paint on (AMS-friendly), and for the
+heightmap-based variants you also get an advisory single-nozzle swap guide.
 
-## Make a relief from an image
+| Output | What it is | Best for |
+|---|---|---|
+| **Luminance relief** | Smooth tonal heightmap (brightness→height) | Portraits, photos, lithophanes |
+| **Quantized → flat tile** (default for colour) | Flat colour-painted tile (Bambu-keychain style) | Logos, characters, badges |
+| **Quantized → silhouette tile** | Flat tile cut to the image's subject outline | Stickers, character keychains |
+| **Quantized → stepped relief** | Each cluster gets its own height (HueForge-classic) | Posters where colour layering matters |
+| **SVG import** | Per-`<path fill>` regions on a flat tile | Vector logos and icons (crispest result) |
+
+## Make a Part from a raster image
 
 ```js
 // src is a data: or http(s) image URL (e.g. an attached reference image's src).
 await partwright.importImageAsRelief({
   src: 'data:image/png;base64,...',
-  mode: 'luminance',            // 'luminance' (default) | 'quantized' | 'ai'
+  mode: 'quantized',
   options: { widthMm: 100, layerHeight: 0.08, baseThickness: 0.6, maxHeight: 3, resolution: 200 },
+  quantized: {
+    clusters: 5,
+    output: 'flat',              // 'flat' (default) | 'silhouette' | 'relief'
+    shape: 'rounded',            // 'rect' | 'rounded' | 'circle' (flat only)
+    cornerRadiusMm: 4,
+    holeEnabled: true, holeDiameterMm: 5, holeOffsetMm: 6,
+  },
 })
-// -> { sessionId } (a new session whose geometry is the relief), or { error }
+// -> { sessionId } (a new session whose geometry is the tile/relief), or { error }
 ```
 
-- **luminance** — brightness → height (tonal relief). Best for photos/portraits.
-- **quantized** — clusters the image colors into height bands AND pre-seeds a
-  color region per cluster, so the relief starts already painted.
-- **ai** — currently mapped to luminance for geometry.
-
-The relief is a normal Manifold Part (`return Manifold.ofMesh(api.imports[0])`),
-so all geometry/paint/slice tools work on it.
+- `mode: 'luminance'` — smooth brightness-driven heightmap relief; ignores
+  `quantized.*` (no clusters).
+- `mode: 'quantized'` — clusters the image colours into K regions (k-means with
+  k-means++ seeding; Lab space by default). The colour regions are pre-painted
+  on the resulting Part.
+- The `quantized.output` switch decides the geometry kind. Default `'flat'` is
+  the Bambu-keychain style (flat tile + colour decals). `'silhouette'` cuts
+  the tile to the image's subject (background removed via edge-colour
+  detection). `'relief'` is the classic HueForge stepped-height cliffs and is
+  rarely what you want for character/illustration art.
+- For watertight/manifold guarantees: luminance reliefs come in as a real
+  Manifold (booleans/slice work). Tile + quantized-relief Parts come in as
+  render-only meshes (the colour-region triangle ids would scramble through
+  `Manifold.ofMesh`'s internal reorder) — paint/export still work.
 
 ## Paint it
 
@@ -61,6 +80,23 @@ partwright.getReliefSwapGuide()
 `warnings` entry means a layer mixes colors at the same height — only an AMS can
 reproduce that; constrain the paint there to Z-slabs if single-nozzle output
 matters.
+
+## Make a Part from an SVG
+
+Vector input — each `<path fill>` becomes one seed region with crisp boundaries
+(no clustering, exact colours, no anti-alias edge noise). Default `output` is
+`'silhouette'` so the tile takes the SVG's overall outline.
+
+```js
+await partwright.importSvgAsRelief({
+  svgText: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">...</svg>',
+  options: { widthMm: 60, layerHeight: 0.2, baseThickness: 1, maxHeight: 0.8, resolution: 200 },
+  quantized: { output: 'silhouette', holeEnabled: true, holeDiameterMm: 5, holeOffsetMm: 5 },
+})
+```
+
+Strokes, gradients (treated as their representative colour), masks, and
+clip-paths are ignored. Resolution caps at 256 columns.
 
 ## Imported HueForge STLs
 

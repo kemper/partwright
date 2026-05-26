@@ -76,8 +76,8 @@ import { showImportPreview, summarizeSessionImport } from './ui/importPreview';
 import { parseSTL } from './import/parsers/stl';
 import { generateImportCode } from './import/codegen';
 import { setActiveImports, type ImportedMesh } from './import/importedMesh';
-import { generateRelief } from './relief/imageToRelief';
-import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type ReliefCommonOptions, type SeedRegion, type PreviewMode } from './relief/types';
+import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
+import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type ReliefCommonOptions, type SeedRegion, type PreviewMode, type GenerateReliefResult } from './relief/types';
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
 import { setReliefSettings, getReliefSettings, updateReliefSettings, isReliefSession, getPreviewModeFor } from './relief/reliefSettings';
 import { listFilaments, hexToRgb } from './relief/filaments';
@@ -1043,10 +1043,12 @@ async function main() {
     };
   }
 
-  async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string): Promise<{ sessionId: string }> {
-    const opts: ReliefOptions = { ...options, common: clampReliefCommon(options.common) };
-    const result = generateRelief(image, opts);
-    if (result.mesh.numTri === 0) throw new Error('Image too small to build a relief — use a larger image.');
+  // Shared finalisation step: package a generated relief result as an
+  // ImportedMesh, persist the relief settings, and open the studio. Used by
+  // both the raster (createReliefFromImageData) and SVG (createReliefFromSvgText)
+  // entry points so the post-generation flow stays in lockstep.
+  async function commitGeneratedRelief(result: GenerateReliefResult, opts: ReliefOptions, sourceName: string): Promise<{ sessionId: string }> {
+    if (result.mesh.numTri === 0) throw new Error('Source too small to build a relief — use a larger image or SVG.');
     const mesh: ImportedMesh = {
       id: generateId(),
       filename: `${sourceName}.relief`,
@@ -1057,11 +1059,12 @@ async function main() {
       numTri: result.mesh.numTri,
       numProp: result.mesh.numProp,
     };
-    // Quantized mode pre-computes seedRegion triangle ids in the input mesh's
-    // order; Manifold.ofMesh reorders triangles internally, which would scramble
-    // that mapping. Bring those imports in as render-only (api.renderMesh
-    // preserves ids). Luminance imports have no pre-computed ids, so they keep
-    // the real Manifold (and stay manifold:true) for downstream booleans/slice.
+    // Quantized + SVG modes pre-compute seedRegion triangle ids in the input
+    // mesh's order; Manifold.ofMesh reorders triangles internally, which would
+    // scramble that mapping. Bring those imports in as render-only
+    // (api.renderMesh preserves ids). Luminance imports have no pre-computed
+    // ids, so they keep the real Manifold (and stay manifold:true) for
+    // downstream booleans/slice.
     const hasSeeds = !!(result.seedRegions && result.seedRegions.length > 0);
     const useManifold = result.mesh.watertight && !hasSeeds;
     const { sessionId } = await importMeshPayload(mesh, sourceName, {
@@ -1077,6 +1080,18 @@ async function main() {
     });
     showReliefStudio();
     return { sessionId };
+  }
+
+  async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string): Promise<{ sessionId: string }> {
+    const opts: ReliefOptions = { ...options, common: clampReliefCommon(options.common) };
+    const result = generateRelief(image, opts);
+    return commitGeneratedRelief(result, opts, sourceName);
+  }
+
+  async function createReliefFromSvgText(svgText: string, options: ReliefOptions, sourceName: string): Promise<{ sessionId: string }> {
+    const opts: ReliefOptions = { ...options, common: clampReliefCommon(options.common), mode: 'svg' };
+    const result = await generateReliefFromSvg(svgText, opts);
+    return commitGeneratedRelief(result, opts, sourceName);
   }
 
   // Seed color regions from an imported HueForge's existing Z plateaus so the
@@ -1140,6 +1155,13 @@ async function main() {
           await createReliefFromImageData(image, opts, name || 'relief');
         } catch (e) {
           alert(`Could not create relief: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      },
+      onCreateSvg: async (svgText, opts, name) => {
+        try {
+          await createReliefFromSvgText(svgText, opts, name || 'relief');
+        } catch (e) {
+          alert(`Could not import SVG: ${e instanceof Error ? e.message : String(e)}`);
         }
       },
     });
@@ -3053,8 +3075,8 @@ async function main() {
      *  Replaces all currently attached images. If a session is active, also persists
      *  to IndexedDB. Returns the canonical list with assigned ids. */
     /** Generate a HueForge-style relief Part from an image (data: or http(s) URL). */
-    async importImageAsRelief(args: { src: string; mode?: ReliefImportMode; options?: Partial<ReliefCommonOptions> }): Promise<{ sessionId: string } | { error: string }> {
-      if (!args || typeof args !== 'object') return { error: 'importImageAsRelief: expected an object { src, mode?, options? }' };
+    async importImageAsRelief(args: { src: string; mode?: ReliefImportMode; options?: Partial<ReliefCommonOptions>; quantized?: Record<string, unknown> }): Promise<{ sessionId: string } | { error: string }> {
+      if (!args || typeof args !== 'object') return { error: 'importImageAsRelief: expected an object { src, mode?, options?, quantized? }' };
       const src = (args as { src?: unknown }).src;
       if (typeof src !== 'string' || src.length === 0) return { error: 'importImageAsRelief: src must be a non-empty data: or http(s) URL string' };
       try {
@@ -3064,9 +3086,28 @@ async function main() {
         if (mode === 'luminance' || mode === 'quantized' || mode === 'ai') opts.mode = mode;
         const o = (args as { options?: unknown }).options;
         if (o && typeof o === 'object') opts.common = { ...opts.common, ...(o as Partial<ReliefCommonOptions>) };
+        const q = (args as { quantized?: unknown }).quantized;
+        if (q && typeof q === 'object') opts.quantized = { ...opts.quantized, ...(q as Record<string, unknown>) } as typeof opts.quantized;
         return await createReliefFromImageData(image, opts, 'relief');
       } catch (e) {
         return { error: `importImageAsRelief failed: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    },
+    /** Generate a multi-colour tile from raw SVG text. Each `<path fill>` becomes
+     *  one seed region with crisp boundaries (no clustering). */
+    async importSvgAsRelief(args: { svgText: string; options?: Partial<ReliefCommonOptions>; quantized?: Record<string, unknown> }): Promise<{ sessionId: string } | { error: string }> {
+      if (!args || typeof args !== 'object') return { error: 'importSvgAsRelief: expected an object { svgText, options?, quantized? }' };
+      const svgText = (args as { svgText?: unknown }).svgText;
+      if (typeof svgText !== 'string' || svgText.length === 0) return { error: 'importSvgAsRelief: svgText must be a non-empty SVG string' };
+      try {
+        const opts: ReliefOptions = structuredClone(DEFAULT_RELIEF_OPTIONS);
+        const o = (args as { options?: unknown }).options;
+        if (o && typeof o === 'object') opts.common = { ...opts.common, ...(o as Partial<ReliefCommonOptions>) };
+        const q = (args as { quantized?: unknown }).quantized;
+        if (q && typeof q === 'object') opts.quantized = { ...opts.quantized, ...(q as Record<string, unknown>) } as typeof opts.quantized;
+        return await createReliefFromSvgText(svgText, opts, 'svg');
+      } catch (e) {
+        return { error: `importSvgAsRelief failed: ${e instanceof Error ? e.message : String(e)}` };
       }
     },
     /** The advisory single-nozzle filament-swap guide for the current relief. */
