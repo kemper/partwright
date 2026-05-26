@@ -250,7 +250,7 @@ function buildPanel(): HTMLElement {
 
   const hint = document.createElement('div');
   hint.className = 'text-[10px] text-zinc-500 leading-tight mt-2';
-  hint.textContent = 'Inserted code targets the active language (JS / SCAD) and renders immediately.';
+  hint.textContent = 'New shapes join the scene as a union — use the ops above (or Build) to combine, move, or remove them.';
   p.appendChild(hint);
 
   // Paint the selection strip and the disabled-state of the quick actions.
@@ -544,11 +544,15 @@ function applyPrimitive(spec: PrimitiveSpec, lang: InsertLanguage): void {
   if (lang === 'scad') {
     cb.setCode(appendScadStatement(code, snippet));
   } else {
-    const result = addJsDeclaration(code, snippet, spec.name, 'ifSimple');
+    // Primitive inserts are additive by default: if the return is a part
+    // chain we extend it with `.add(<newName>)` so adding a second shape
+    // doesn't hide the first. A hand-written / complex return is left alone
+    // (returnSet=false) and the user gets a hint.
+    const result = addJsDeclaration(code, snippet, spec.name, 'addOrReplace');
     cb.setCode(result.code);
     if (!result.returnSet) {
       cb.showToast(
-        `Added "${spec.name}". It isn't shown yet — combine it with an operation or change your return.`,
+        `Added "${spec.name}". Your existing return is custom — combine it with an operation or edit the code to include "${spec.name}".`,
         { variant: 'neutral' },
       );
     }
@@ -1059,7 +1063,7 @@ function startBuildSession(): void {
   bar.className =
     'fixed left-1/2 -translate-x-1/2 bottom-6 z-50 flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-800/95 border border-zinc-600 shadow-xl text-xs text-zinc-100';
   const msg = document.createElement('span');
-  msg.textContent = 'Build mode — click a shape, then drag to move it.';
+  msg.textContent = 'Build mode — drag a shape to slide it, or click to grab its arrows.';
   bar.appendChild(msg);
   const doneBtn = document.createElement('button');
   doneBtn.className = BUTTON_PRIMARY + ' !py-1';
@@ -1081,37 +1085,61 @@ function startBuildSession(): void {
     setGizmoLock(false);
   };
 
+  /** Persist a position delta for a named part: rewrite the code's translate,
+   *  bump the in-memory spec, and shift the registry bbox. Shared by the
+   *  gizmo's drop handler and the freehand body-drag below. No-op for sub-
+   *  epsilon deltas so a stray click doesn't churn the editor. */
+  const writeMoveDelta = (name: string, delta: Vec3): boolean => {
+    if (!cb) return false;
+    if (Math.abs(delta[0]) < 1e-5 && Math.abs(delta[1]) < 1e-5 && Math.abs(delta[2]) < 1e-5) return false;
+    const lang = cb.getLanguage();
+    let newCode: string;
+    if (lang === 'scad') {
+      const part = scanParts(cb.getCode(), 'scad').find(p => p.name === name);
+      if (!part?.range) {
+        cb.showToast('Could not locate that part in the SCAD code.', { variant: 'warn' });
+        return false;
+      }
+      newCode = setPartTranslateDeltaScad(cb.getCode(), part.range, delta);
+    } else {
+      newCode = setPartTranslateDeltaJs(cb.getCode(), name, delta);
+    }
+    cb.setCode(newCode);
+    const spec = specByName.get(name);
+    if (spec) {
+      const p = spec.position ?? [0, 0, 0];
+      spec.position = [p[0] + delta[0], p[1] + delta[1], p[2] + delta[2]];
+    }
+    const entry = registry.get(name);
+    if (entry) registry.set(name, translateEntry(entry, delta));
+    return true;
+  };
+
   const commitMove = (): void => {
-    if (!cb || !selectedMesh || !baseline || !selectedName) return;
+    if (!selectedMesh || !baseline || !selectedName) return;
     const delta: Vec3 = [
       selectedMesh.position.x - baseline.x,
       selectedMesh.position.y - baseline.y,
       selectedMesh.position.z - baseline.z,
     ];
-    if (Math.abs(delta[0]) < 1e-5 && Math.abs(delta[1]) < 1e-5 && Math.abs(delta[2]) < 1e-5) return;
-
-    const lang = cb.getLanguage();
-    let newCode: string;
-    if (lang === 'scad') {
-      const part = scanParts(cb.getCode(), 'scad').find(p => p.name === selectedName);
-      if (!part?.range) {
-        cb.showToast('Could not locate that part in the SCAD code.', { variant: 'warn' });
-        return;
-      }
-      newCode = setPartTranslateDeltaScad(cb.getCode(), part.range, delta);
-    } else {
-      newCode = setPartTranslateDeltaJs(cb.getCode(), selectedName, delta);
+    if (writeMoveDelta(selectedName, delta)) {
+      baseline = selectedMesh.position.clone();
     }
-    cb.setCode(newCode);
+  };
 
-    const spec = specByName.get(selectedName);
-    if (spec) {
-      const p = spec.position ?? [0, 0, 0];
-      spec.position = [p[0] + delta[0], p[1] + delta[1], p[2] + delta[2]];
-    }
-    const entry = registry.get(selectedName);
-    if (entry) registry.set(selectedName, translateEntry(entry, delta));
-    baseline = selectedMesh.position.clone();
+  /** Cast the pointer ray from the camera onto the horizontal plane Z=z and
+   *  return the world-space hit. Used by the body-drag to slide a proxy
+   *  freehand along its current Z while keeping the cursor under the spot
+   *  where the user grabbed it. */
+  const projectToPlaneZ = (clientX: number, clientY: number, z: number): THREE.Vector3 | null => {
+    const rect = canvas.getBoundingClientRect();
+    const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+    const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2(ndcX, ndcY), camera);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -z);
+    const hit = new THREE.Vector3();
+    return ray.ray.intersectPlane(plane, hit) ? hit : null;
   };
 
   const selectPart = (name: string): void => {
@@ -1140,7 +1168,7 @@ function startBuildSession(): void {
       setGizmoLock(e.value !== null || gizmo!.dragging);
     });
 
-    msg.textContent = `Selected "${name}" — drag to move. Click another shape to switch.`;
+    msg.textContent = `Selected "${name}" — drag the body or the arrows to move. Click another shape to switch.`;
   };
 
   const raycastProxy = (clientX: number, clientY: number): string | null => {
@@ -1153,16 +1181,110 @@ function startBuildSession(): void {
     return hits.length > 0 ? hits[0].object.name || null : null;
   };
 
+  // Freehand body-drag: pointerdown on a proxy starts a drag that, once the
+  // pointer moves past a small threshold, slides the proxy across the Z=
+  // currentZ plane so the grabbed point stays under the cursor (Tinkercad-
+  // style "drag the body, not the arrows"). A pointerdown that doesn't move
+  // far enough is treated as a click → select.
   let downX = 0;
   let downY = 0;
-  const onDown = (e: PointerEvent): void => { downX = e.clientX; downY = e.clientY; };
+  let bodyDrag: {
+    name: string;
+    mesh: THREE.Mesh;
+    baseline: THREE.Vector3;
+    offset: THREE.Vector2; // (worldHit - mesh.position) at pointerdown
+    planeZ: number;
+    active: boolean;
+  } | null = null;
+
+  const onDown = (e: PointerEvent): void => {
+    downX = e.clientX; downY = e.clientY;
+    // Let the gizmo handle its own axis/plane drag if one is already in
+    // flight. We don't check `gizmo.axis` (hover state) because raycastProxy
+    // below filters to proxy hits only — a pointerdown on a gizmo arrow
+    // misses the proxy, so body-drag never engages and the gizmo takes the
+    // event natively.
+    if (gizmo?.dragging) return;
+    const name = raycastProxy(e.clientX, e.clientY);
+    if (!name) return;
+    const mesh = proxyByName.get(name);
+    if (!mesh) return;
+    const worldPt = projectToPlaneZ(e.clientX, e.clientY, mesh.position.z);
+    if (!worldPt) return;
+    bodyDrag = {
+      name,
+      mesh,
+      baseline: mesh.position.clone(),
+      offset: new THREE.Vector2(worldPt.x - mesh.position.x, worldPt.y - mesh.position.y),
+      planeZ: mesh.position.z,
+      active: false,
+    };
+    canvas.setPointerCapture(e.pointerId);
+  };
+
+  const onMove = (e: PointerEvent): void => {
+    if (!bodyDrag) return;
+    if (!bodyDrag.active) {
+      // Wait for the pointer to move past the threshold before treating it
+      // as a drag — otherwise a steady-handed click becomes a phantom move.
+      if (Math.abs(e.clientX - downX) <= 4 && Math.abs(e.clientY - downY) <= 4) return;
+      bodyDrag.active = true;
+      setGizmoLock(true); // suppress orbit-camera so the drag isn't a fight
+      // Make the dragged part the selection (gizmo follows it). selectPart
+      // resets `baseline` to the mesh's current position, but we want our
+      // pre-drag baseline so the eventual write-back captures the full delta.
+      if (selectedName !== bodyDrag.name) {
+        selectPart(bodyDrag.name);
+        baseline = bodyDrag.baseline.clone();
+      }
+    }
+    const worldPt = projectToPlaneZ(e.clientX, e.clientY, bodyDrag.planeZ);
+    if (!worldPt) return;
+    bodyDrag.mesh.position.set(
+      worldPt.x - bodyDrag.offset.x,
+      worldPt.y - bodyDrag.offset.y,
+      bodyDrag.planeZ,
+    );
+  };
+
   const onUp = (e: PointerEvent): void => {
-    if (gizmo && (gizmo.dragging || gizmo.axis !== null)) return;
+    // The gizmo's `axis` field is just hover state — `pointermove` parks it
+    // on 'X' when the cursor sweeps over an arrow during a body-drag, but the
+    // actual drag is ours and must commit. Only defer to the gizmo when an
+    // actual gizmo drag is in flight (its own pointer capture is active).
+    if (gizmo?.dragging) return;
+    if (bodyDrag) {
+      if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+      if (bodyDrag.active) {
+        // Commit the freehand move.
+        const delta: Vec3 = [
+          bodyDrag.mesh.position.x - bodyDrag.baseline.x,
+          bodyDrag.mesh.position.y - bodyDrag.baseline.y,
+          bodyDrag.mesh.position.z - bodyDrag.baseline.z,
+        ];
+        if (writeMoveDelta(bodyDrag.name, delta)) {
+          // Keep the gizmo in sync with the dropped position so the next
+          // gizmo drag computes the correct delta.
+          if (selectedMesh === bodyDrag.mesh) baseline = bodyDrag.mesh.position.clone();
+        }
+        setGizmoLock(false);
+      } else {
+        // No real movement — treat as a click → select.
+        selectPart(bodyDrag.name);
+      }
+      bodyDrag = null;
+      return;
+    }
+    // Pointer never went over a proxy at pointerdown: bare click on empty
+    // space below the threshold doesn't do anything (orbit-camera already
+    // handled drags above).
     if (Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4) return;
     const name = raycastProxy(e.clientX, e.clientY);
     if (name) selectPart(name);
   };
+
   canvas.addEventListener('pointerdown', onDown);
+  canvas.addEventListener('pointermove', onMove);
   canvas.addEventListener('pointerup', onUp);
 
   const endSession = (): void => {
@@ -1174,9 +1296,11 @@ function startBuildSession(): void {
     buildGroup.parent?.remove(buildGroup);
     meshGroup.visible = prevVisible;
     canvas.removeEventListener('pointerdown', onDown);
+    canvas.removeEventListener('pointermove', onMove);
     canvas.removeEventListener('pointerup', onUp);
     document.removeEventListener('keydown', onKey);
     bar.remove();
+    bodyDrag = null;
     buildCleanup = null;
     cb?.run(); // refresh the merged result now that we're back
   };

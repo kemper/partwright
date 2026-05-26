@@ -21,6 +21,15 @@ export function isSimpleReturnExpr(expr: string): boolean {
   );
 }
 
+/** True when the return expression is the shape the additive-insert flow
+ *  produces: a bare identifier (the very first inserted part) OR a chain of
+ *  `.add(identifier)` calls on a bare identifier (the union of every
+ *  palette-inserted part so far). When this matches we *extend* the chain
+ *  instead of overwriting it, so adding a second shape doesn't hide the first. */
+export function isAdditiveReturnExpr(expr: string): boolean {
+  return /^[A-Za-z_$][\w$]*(?:\s*\.\s*add\s*\(\s*[A-Za-z_$][\w$]*\s*\))*$/.test(expr.trim());
+}
+
 /** Ensure `Manifold` is destructured from `api` (the house style every
  *  example uses). No-op when it already is, or when code reads `api.Manifold`
  *  directly. */
@@ -67,18 +76,33 @@ function findLastReturn(code: string): ReturnMatch | null {
   return last;
 }
 
-export type ReturnMode = 'force' | 'ifSimple' | 'none';
+export type ReturnMode = 'force' | 'ifSimple' | 'addOrReplace' | 'none';
 
 export interface AddDeclarationResult {
   code: string;
-  /** Whether the visible `return` now points at `resultName`. When false the
-   *  caller should tell the user the part was added but isn't shown yet. */
+  /** Whether the visible `return` now points at `resultName` (either replaced
+   *  outright or extended with a `.add(resultName)` so it's part of the union).
+   *  When false the caller should tell the user the part was added but isn't
+   *  shown yet. */
   returnSet: boolean;
 }
 
 /** Insert a `const <resultName> = …;` declaration and (optionally) repoint the
  *  trailing `return` at it. The declaration lands just before the return line,
- *  or at end-of-file when there is no return. */
+ *  or at end-of-file when there is no return.
+ *
+ *  Modes:
+ *  - `force` — always replace the return with `return <resultName>;`. Used by
+ *    operations (union/subtract/intersect) whose result subsumes the operands.
+ *  - `addOrReplace` — the additive flow for primitive insertion. If the return
+ *    is already a part chain (`a` or `a.add(b)`), append `.add(<resultName>)`
+ *    so the new shape joins the existing scene. If the return is a single
+ *    constructor call (e.g. the default `Manifold.cube(...)`), replace it so
+ *    the first inserted shape doesn't double up with the placeholder.
+ *  - `ifSimple` — legacy: replace whenever the return is "simple" (constructor
+ *    call OR bare identifier). Kept for back-compat but no longer used by the
+ *    palette.
+ *  - `none` — never repoint the return. */
 export function addJsDeclaration(
   code: string,
   declLine: string,
@@ -103,12 +127,24 @@ export function addJsDeclaration(
   const before = withDestructure.slice(0, lineStart);
   const after = withDestructure.slice(lineStart);
 
-  const shouldSet = mode === 'force' || (mode === 'ifSimple' && isSimpleReturnExpr(ret.expr));
-  const newAfter = shouldSet
-    ? after.replace(/return\s+[^;]+;/, `return ${resultName};`)
-    : after;
+  const isAdditive = mode === 'addOrReplace' && isAdditiveReturnExpr(ret.expr);
+  const shouldReplace =
+    !isAdditive && (
+      mode === 'force'
+      || (mode === 'ifSimple' && isSimpleReturnExpr(ret.expr))
+      || (mode === 'addOrReplace' && isSimpleReturnExpr(ret.expr))
+    );
 
-  return { code: `${before}${declLine}\n${newAfter}`, returnSet: shouldSet };
+  let newAfter: string;
+  if (isAdditive) {
+    newAfter = after.replace(/return\s+([^;]+?)\s*;/, `return $1.add(${resultName});`);
+  } else if (shouldReplace) {
+    newAfter = after.replace(/return\s+[^;]+;/, `return ${resultName};`);
+  } else {
+    newAfter = after;
+  }
+
+  return { code: `${before}${declLine}\n${newAfter}`, returnSet: isAdditive || shouldReplace };
 }
 
 /** Append a top-level OpenSCAD statement. */

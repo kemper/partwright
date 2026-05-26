@@ -23,6 +23,7 @@ import {
   ensureManifoldDestructure,
   ensureCrossSectionDestructure,
   isSimpleReturnExpr,
+  isAdditiveReturnExpr,
   appendScadStatement,
   replaceScadRanges,
   setPartTranslateDeltaJs,
@@ -705,5 +706,67 @@ test.describe('addJsDeclaration + CrossSection auto-destructure', () => {
     const decl = 'const ball = Manifold.sphere(3);';
     const out = addJsDeclaration(code, decl, 'ball', 'force');
     expect(out.code).not.toContain('CrossSection');
+  });
+});
+
+test.describe('isAdditiveReturnExpr', () => {
+  test('matches a bare identifier', () => {
+    expect(isAdditiveReturnExpr('box')).toBe(true);
+    expect(isAdditiveReturnExpr('  ball ')).toBe(true);
+  });
+  test('matches a chain of .add(identifier) calls', () => {
+    expect(isAdditiveReturnExpr('box.add(ball)')).toBe(true);
+    expect(isAdditiveReturnExpr('a.add(b).add(c)')).toBe(true);
+    expect(isAdditiveReturnExpr('a . add ( b )')).toBe(true);
+  });
+  test('rejects constructor calls and unrelated chains', () => {
+    expect(isAdditiveReturnExpr('Manifold.cube([1,1,1], true)')).toBe(false);
+    expect(isAdditiveReturnExpr('box.subtract(ball)')).toBe(false);
+    expect(isAdditiveReturnExpr('a.add(b.translate([1,0,0]))')).toBe(false);
+  });
+});
+
+test.describe('addJsDeclaration — addOrReplace (additive primitive insert)', () => {
+  test('first insert replaces the constructor-call return', () => {
+    const code = 'const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
+    const out = addJsDeclaration(code, 'const wedge = Manifold.cube([1,1,1], true);', 'wedge', 'addOrReplace');
+    expect(out.code).toMatch(/return\s+wedge;/);
+    expect(out.code).not.toMatch(/Manifold\.cube\(\[10/);
+    expect(out.returnSet).toBe(true);
+  });
+
+  test('second insert extends a bare-identifier return into a union chain', () => {
+    const code = [
+      'const { Manifold } = api;',
+      'const wedge = Manifold.cube([2,2,2], true);',
+      'return wedge;',
+    ].join('\n');
+    const out = addJsDeclaration(code, 'const cyl = Manifold.cylinder(5, 2);', 'cyl', 'addOrReplace');
+    expect(out.code).toContain('const cyl = Manifold.cylinder(5, 2);');
+    expect(out.code).toMatch(/return\s+wedge\.add\(cyl\);/);
+    expect(out.returnSet).toBe(true);
+  });
+
+  test('third insert extends an existing union chain', () => {
+    const code = [
+      'const a = Manifold.cube([1,1,1], true);',
+      'const b = Manifold.sphere(1);',
+      'return a.add(b);',
+    ].join('\n');
+    const out = addJsDeclaration(code, 'const c = Manifold.cylinder(2, 1);', 'c', 'addOrReplace');
+    expect(out.code).toMatch(/return\s+a\.add\(b\)\.add\(c\);/);
+    expect(out.returnSet).toBe(true);
+  });
+
+  test('a custom return (subtract / hand-edited) is left untouched', () => {
+    const code = [
+      'const a = Manifold.cube([1,1,1], true);',
+      'const b = Manifold.sphere(1);',
+      'return a.subtract(b);',
+    ].join('\n');
+    const out = addJsDeclaration(code, 'const c = Manifold.cylinder(2, 1);', 'c', 'addOrReplace');
+    expect(out.code).toContain('const c =');
+    expect(out.code).toMatch(/return\s+a\.subtract\(b\);/);
+    expect(out.returnSet).toBe(false);
   });
 });

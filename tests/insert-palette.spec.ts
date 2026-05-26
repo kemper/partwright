@@ -170,6 +170,70 @@ test.describe('Insert palette', () => {
     expect(code).toMatch(/const\s*\{[^}]*\bCrossSection\b[^}]*\}\s*=\s*api\b/);
   });
 
+  test('subsequent shape inserts extend the return into a union (additive default)', async ({ page }) => {
+    await gotoEditor(page);
+    // Pin a deterministic starter so the assertions don't depend on which
+    // catalog template the landing flow happens to load.
+    await page.evaluate(() => (window as unknown as { partwright: { setCode(c: string): void; run(): void } })
+      .partwright.setCode('const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);'));
+    await page.evaluate(() => (window as unknown as { partwright: { run(): void } }).partwright.run());
+
+    await page.locator('#btn-insert').click();
+
+    // First insert: the default constructor-call return gets *replaced* by
+    // the new part, so the placeholder cube doesn't double up.
+    await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(() => getCode(page)).toMatch(/return\s+box\s*;/);
+
+    // Second insert: the bare-identifier return is *extended* into
+    // `box.add(ball);` so both shapes stay visible without manual Union.
+    await page.locator(palette).getByRole('button', { name: 'Sphere' }).click();
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(() => getCode(page)).toMatch(/return\s+box\.add\(ball\);/);
+
+    // Third insert: the chain grows by another `.add(...)`.
+    await page.locator(palette).getByRole('button', { name: 'Cylinder' }).click();
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(() => getCode(page)).toMatch(/return\s+box\.add\(ball\)\.add\(cyl\);/);
+
+    // The geometry still renders cleanly (the engine accepted the union chain).
+    const geo = await getGeo(page);
+    expect(geo.status).not.toBe('error');
+  });
+
+  test('Build mode freehand body-drag rewrites the part translate', async ({ page }) => {
+    await gotoEditor(page);
+    await page.locator('#btn-insert').click();
+
+    // Insert a centered cube so the proxy renders at the canvas center.
+    await page.locator(palette).getByRole('button', { name: 'Cube' }).click();
+    await page.getByRole('button', { name: 'Insert', exact: true }).click();
+    await expect.poll(() => getCode(page)).toContain('const box');
+
+    // Enter Build mode.
+    await page.locator(palette).getByRole('button', { name: 'Build' }).click();
+    await expect(page.getByText(/Build mode/i)).toBeVisible();
+
+    // Drag the proxy body (not the gizmo arrows) — start at canvas center,
+    // move a couple of hundred pixels away. Pointermove past the 4px threshold
+    // engages the freehand drag; pointerup commits the translate.
+    const box = await page.locator('canvas').first().boundingBox();
+    if (!box) throw new Error('canvas missing');
+    const startX = box.x + box.width / 2;
+    const startY = box.y + box.height / 2;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(startX + 150, startY + 50, { steps: 10 });
+    await page.mouse.up();
+
+    // The cube declaration should now carry a non-zero .translate(...).
+    await expect.poll(() => getCode(page)).toMatch(/Manifold\.cube\([^)]+\)\.translate\(\[/);
+
+    // Exit cleanly.
+    await page.getByRole('button', { name: 'Done', exact: true }).click();
+  });
+
   test('selection strip renders when picking parts via Select mode', async ({ page }) => {
     await gotoEditor(page);
     await page.locator('#btn-insert').click();
