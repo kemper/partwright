@@ -2802,10 +2802,19 @@ async function main() {
       };
     },
 
-    /** Build a session export (.partwright.json). Returns the parsed JSON object directly. */
-    async exportSessionData(sessionId?: string) {
+    /** Build a session export (.partwright.json). Returns the parsed JSON object directly.
+     *  Pass `options.includeThumbnails: true` to embed the per-version
+     *  thumbnail PNG data URLs — needed when generating catalog entries. */
+    async exportSessionData(sessionId?: string, options?: { includeThumbnails?: boolean; includeAnnotations?: boolean; includeNotes?: boolean }) {
       assertString(sessionId, 'exportSessionData(sessionId)', { optional: true, allowEmpty: false });
-      const built = await buildSessionJSON(sessionId);
+      if (options !== undefined) {
+        const o = assertObject(options, 'exportSessionData(_, options)')!;
+        assertNoUnknownKeys(o, ['includeThumbnails', 'includeAnnotations', 'includeNotes'], 'exportSessionData(_, options)');
+        if (o.includeThumbnails !== undefined) assertBoolean(o.includeThumbnails, 'exportSessionData.options.includeThumbnails');
+        if (o.includeAnnotations !== undefined) assertBoolean(o.includeAnnotations, 'exportSessionData.options.includeAnnotations');
+        if (o.includeNotes !== undefined) assertBoolean(o.includeNotes, 'exportSessionData.options.includeNotes');
+      }
+      const built = await buildSessionJSON(sessionId, options);
       if (!built) return { error: 'No active session to export' };
       registerExportFromBuilt(built, 'Session JSON');
       return {
