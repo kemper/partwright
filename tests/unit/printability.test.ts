@@ -2,10 +2,10 @@
 // the scale transform. These run in Node (no browser); the modules are kept
 // dependency-free (only a type import) precisely so they can be tested directly.
 
-import { test, expect } from 'playwright/test';
-import { analyzePrintability, computeCenterOfMass } from '../src/geometry/printability';
-import { resolveScale, scaleModelMesh } from '../src/geometry/transform';
-import type { MeshData } from '../src/geometry/types';
+import { test, expect, describe } from 'vitest';
+import { analyzePrintability, computeCenterOfMass } from '../../src/geometry/printability';
+import { resolveScale, scaleModelMesh } from '../../src/geometry/transform';
+import type { MeshData } from '../../src/geometry/types';
 
 /** A correctly-wound (outward normals) axis-aligned cube of `size`, centred in
  *  XY and resting on z=0 (z spans 0..size). */
@@ -34,7 +34,7 @@ function makeCube(size: number): MeshData {
 
 const BED: [number, number, number] = [256, 256, 256];
 
-test.describe('resolveScale', () => {
+describe('resolveScale', () => {
   test('uniform factor', () => {
     const r = resolveScale([10, 10, 10], { factor: 2 });
     expect('vector' in r && r.vector).toEqual([2, 2, 2]);
@@ -65,7 +65,7 @@ test.describe('resolveScale', () => {
   });
 });
 
-test.describe('scaleModelMesh', () => {
+describe('scaleModelMesh', () => {
   test('uniform scale doubles every dimension', () => {
     const res = scaleModelMesh(makeCube(10), { factor: 2 });
     expect('dimensions' in res && res.dimensions).toEqual([20, 20, 20]);
@@ -82,7 +82,7 @@ test.describe('scaleModelMesh', () => {
   });
 });
 
-test.describe('computeCenterOfMass', () => {
+describe('computeCenterOfMass', () => {
   test('a cube has its centre of mass at the geometric centre', () => {
     const mp = computeCenterOfMass(makeCube(10));
     expect(mp).not.toBeNull();
@@ -95,7 +95,7 @@ test.describe('computeCenterOfMass', () => {
   });
 });
 
-test.describe('analyzePrintability', () => {
+describe('analyzePrintability', () => {
   test('a small cube on the bed passes the key checks', () => {
     const r = analyzePrintability(makeCube(20), { bed: BED, nozzleWidth: 0.4, overhangAngleDeg: 45, isManifold: true });
     expect(r.ok).toBe(true);
