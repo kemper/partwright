@@ -40,9 +40,14 @@ function downsample(
   const src = image.data;
   const rgb = new Float32Array(cols * rows * 3);
 
+  // Canvas Y points down; world Y points up. Read the SOURCE rows in reverse
+  // so that grid row 0 corresponds to the BOTTOM of the image — buildReliefMesh
+  // then places grid Y=0 at world -Y, so a top-view render shows the image
+  // right-side-up (otherwise a smiley imports as a frown).
   for (let cy = 0; cy < rows; cy++) {
-    const y0 = Math.floor((cy * srcH) / rows);
-    const y1 = Math.max(y0 + 1, Math.floor(((cy + 1) * srcH) / rows));
+    const fcy = rows - 1 - cy;
+    const y0 = Math.floor((fcy * srcH) / rows);
+    const y1 = Math.max(y0 + 1, Math.floor(((fcy + 1) * srcH) / rows));
     for (let cx = 0; cx < cols; cx++) {
       const x0 = Math.floor((cx * srcW) / cols);
       const x1 = Math.max(x0 + 1, Math.floor(((cx + 1) * srcW) / cols));

@@ -1057,8 +1057,15 @@ async function main() {
       numTri: result.mesh.numTri,
       numProp: result.mesh.numProp,
     };
+    // Quantized mode pre-computes seedRegion triangle ids in the input mesh's
+    // order; Manifold.ofMesh reorders triangles internally, which would scramble
+    // that mapping. Bring those imports in as render-only (api.renderMesh
+    // preserves ids). Luminance imports have no pre-computed ids, so they keep
+    // the real Manifold (and stay manifold:true) for downstream booleans/slice.
+    const hasSeeds = !!(result.seedRegions && result.seedRegions.length > 0);
+    const useManifold = result.mesh.watertight && !hasSeeds;
     const { sessionId } = await importMeshPayload(mesh, sourceName, {
-      manifold: result.mesh.watertight,
+      manifold: useManifold,
       seedRegions: result.seedRegions,
     });
     setReliefSettings(sessionId, {
