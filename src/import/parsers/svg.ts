@@ -126,7 +126,10 @@ function resolveFillRGB(raw: string): [number, number, number] | null {
 }
 
 /** Read the fill from an element, honoring inline `style="fill:..."` over the
- *  `fill` attribute, and defaulting to "black" when neither is set. */
+ *  `fill` attribute. An element with NO explicit fill but a non-none `stroke`
+ *  is treated as no-fill (otherwise outline-only icon sets register a phantom
+ *  black region covering just the stroke pixels). Plain elements with neither
+ *  fill nor stroke default to "black" per SVG. */
 function readFill(el: Element): string {
   const style = el.getAttribute('style');
   if (style) {
@@ -135,6 +138,10 @@ function readFill(el: Element): string {
   }
   const attr = el.getAttribute('fill');
   if (attr !== null) return attr.trim();
+  const strokeAttr = el.getAttribute('stroke');
+  const styleStroke = style ? /(?:^|;)\s*stroke\s*:\s*([^;]+)/i.exec(style) : null;
+  const strokeVal = styleStroke ? styleStroke[1].trim() : strokeAttr;
+  if (strokeVal && strokeVal.toLowerCase() !== 'none') return 'none';
   return 'black';
 }
 
@@ -152,7 +159,14 @@ function collectUniqueFills(doc: Document): Array<{ source: string; rgb: [number
     let rgb = resolveFillRGB(source);
     // Gradient and other url() references can't be resolved without rendering;
     // assign mid-grey as a representative so the path still produces a region.
-    if (!rgb) rgb = [128, 128, 128];
+    // Surface a console warning so a user sees why their gradient SVG imports
+    // imperfectly (the colour-match mask only catches mid-grey pixels).
+    if (!rgb) {
+      if (/^url\(/i.test(source)) {
+        console.warn(`SVG import: gradient/url() fill ${source} is not resolved — using mid-grey. Flatten gradients to solid fills for crisp regions.`);
+      }
+      rgb = [128, 128, 128];
+    }
     const key = `${rgb[0]},${rgb[1]},${rgb[2]}`;
     if (seen.has(key)) continue;
     seen.add(key);

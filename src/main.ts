@@ -1031,6 +1031,24 @@ async function main() {
   // Clamp the common knobs to sane physical/perf bounds. The wizard enforces
   // these via input attributes, but the programmatic (AI/console) path bypasses
   // the UI, so guard here against OOM (huge resolution) and degenerate values.
+  // Clamp the quantized + tile knobs to safe bounds. The wizard enforces these
+  // via input min/max, but the programmatic (AI/console) path bypasses the UI,
+  // so guard against an OOM hang (e.g. clusters=1e6) and degenerate tile sizes.
+  function clampReliefQuantized(q: ReliefOptions['quantized']): ReliefOptions['quantized'] {
+    const num = (v: number, def: number) => (Number.isFinite(v) ? v : def);
+    return {
+      clusters: Math.max(2, Math.min(12, Math.floor(num(q.clusters, 5)))),
+      colorSpace: q.colorSpace === 'rgb' ? 'rgb' : 'lab',
+      dither: !!q.dither,
+      output: q.output === 'relief' || q.output === 'silhouette' ? q.output : 'flat',
+      shape: q.shape === 'rounded' || q.shape === 'circle' ? q.shape : 'rect',
+      cornerRadiusMm: Math.max(0, Math.min(50, num(q.cornerRadiusMm, 4))),
+      holeEnabled: !!q.holeEnabled,
+      holeDiameterMm: Math.max(0.5, Math.min(50, num(q.holeDiameterMm, 6))),
+      holeOffsetMm: Math.max(0, Math.min(200, num(q.holeOffsetMm, 6))),
+    };
+  }
+
   function clampReliefCommon(c: ReliefCommonOptions): ReliefCommonOptions {
     const num = (v: number, def: number) => (Number.isFinite(v) ? v : def);
     return {
@@ -1083,13 +1101,22 @@ async function main() {
   }
 
   async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string): Promise<{ sessionId: string }> {
-    const opts: ReliefOptions = { ...options, common: clampReliefCommon(options.common) };
+    const opts: ReliefOptions = {
+      ...options,
+      common: clampReliefCommon(options.common),
+      quantized: clampReliefQuantized(options.quantized),
+    };
     const result = generateRelief(image, opts);
     return commitGeneratedRelief(result, opts, sourceName);
   }
 
   async function createReliefFromSvgText(svgText: string, options: ReliefOptions, sourceName: string): Promise<{ sessionId: string }> {
-    const opts: ReliefOptions = { ...options, common: clampReliefCommon(options.common), mode: 'svg' };
+    const opts: ReliefOptions = {
+      ...options,
+      common: clampReliefCommon(options.common),
+      quantized: clampReliefQuantized(options.quantized),
+      mode: 'svg',
+    };
     const result = await generateReliefFromSvg(svgText, opts);
     return commitGeneratedRelief(result, opts, sourceName);
   }

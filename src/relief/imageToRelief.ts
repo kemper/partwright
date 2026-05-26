@@ -667,8 +667,13 @@ function mapBucketsToRegions(byColor: Map<number, { color: [number, number, numb
 /** Approximate background detection: the dominant exact colour on the image
  *  border is treated as background. Returns a per-cell mask where 1 = subject
  *  (keep) and 0 = background (cut from the tile silhouette). Works well for
- *  the common case of a subject on a roughly-uniform-colour backdrop. */
+ *  the common case of a subject on a roughly-uniform-colour backdrop.
+ *
+ *  When no border colour clearly dominates (busy photo edges, no single bg),
+ *  falls back to keeping every cell — better to ship the full tile than to
+ *  silently cut into the subject. */
 function detectBackgroundMask(colors: Uint8Array, w: number, h: number): Uint8Array {
+  const total = w * h;
   const keyOf = (cell: number) =>
     (colors[cell * 3] << 16) | (colors[cell * 3 + 1] << 8) | colors[cell * 3 + 2];
   const counts = new Map<number, number>();
@@ -677,8 +682,18 @@ function detectBackgroundMask(colors: Uint8Array, w: number, h: number): Uint8Ar
   for (let y = 0; y < h; y++) { bump(y * w); bump(y * w + (w - 1)); }
   let bgKey = -1, bgCount = 0;
   for (const [k, n] of counts) { if (n > bgCount) { bgCount = n; bgKey = k; } }
-  const mask = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) mask[i] = keyOf(i) === bgKey ? 0 : 1;
+  const borderTotal = Math.max(1, 2 * (w + h) - 4);
+  // Dominance threshold: the leading border colour must cover >=35% of the
+  // border to be treated as background. Below that, the image probably has no
+  // clean backdrop (a photo with subject touching an edge, or a busy collage)
+  // and silhouette-cutting it would lop into the subject — keep the full tile.
+  if (bgCount / borderTotal < 0.35) {
+    const full = new Uint8Array(total);
+    full.fill(1);
+    return full;
+  }
+  const mask = new Uint8Array(total);
+  for (let i = 0; i < total; i++) mask[i] = keyOf(i) === bgKey ? 0 : 1;
   return mask;
 }
 

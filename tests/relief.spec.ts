@@ -222,6 +222,43 @@ test.describe('Relief Studio', () => {
     expect(res.silBboxX[1]).toBeLessThanOrEqual(50.01);
   });
 
+  // Regression: detectBackgroundMask used to pick whatever the leading border
+  // colour was, even when no colour dominated — silhouette mode would then cut
+  // huge chunks of subject out of photos with busy edges. The fix bails to a
+  // full-tile mask below a 35% dominance threshold.
+  test('silhouette degrades gracefully when no clear background', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    const res = await page.evaluate(async () => {
+      const c = document.createElement('canvas');
+      c.width = 200; c.height = 200;
+      const x = c.getContext('2d')!;
+      // Border has 4 distinct colours each covering 1/4 — no single dominant bg.
+      x.fillStyle = 'red'; x.fillRect(0, 0, 100, 100);
+      x.fillStyle = 'green'; x.fillRect(100, 0, 100, 100);
+      x.fillStyle = 'blue'; x.fillRect(0, 100, 100, 100);
+      x.fillStyle = 'yellow'; x.fillRect(100, 100, 100, 100);
+      const src = c.toDataURL('image/png');
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      const flat = await pw.importImageAsRelief({
+        src, mode: 'quantized',
+        options: { widthMm: 100, resolution: 100, maxHeight: 1, baseThickness: 1 },
+        quantized: { output: 'flat', shape: 'rect' },
+      }) as { sessionId?: string };
+      const flatTris = (pw.getGeometryData() as { triangleCount: number }).triangleCount;
+      const sil = await pw.importImageAsRelief({
+        src, mode: 'quantized',
+        options: { widthMm: 100, resolution: 100, maxHeight: 1, baseThickness: 1 },
+        quantized: { output: 'silhouette' },
+      }) as { sessionId?: string };
+      const silTris = (pw.getGeometryData() as { triangleCount: number }).triangleCount;
+      void flat; void sil;
+      return { flatTris, silTris };
+    });
+    // No background-cut should occur — silhouette ≈ flat (within rounding).
+    expect(res.silTris).toBeGreaterThan(res.flatTris * 0.95);
+  });
+
   // SVG import — each <path fill> becomes its own crisp seed region (no
   // k-means clustering, so colours and boundaries are exact).
   test('SVG import yields one region per fill colour', async ({ page }) => {

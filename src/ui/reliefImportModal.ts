@@ -219,7 +219,13 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   shell.footer.append(cancelBtn, createBtn);
 
   // --- File handling -------------------------------------------------------
+  // Increments on every file pick so stale async load callbacks (e.g. a slow
+  // SVG render that finishes after the user already moved on to a PNG) abort
+  // before writing their state into the modal.
+  let loadToken = 0;
   fileInput.addEventListener('change', async () => {
+    const myToken = ++loadToken;
+    const stale = () => myToken !== loadToken;
     const file = fileInput.files?.[0];
     if (!file) return;
     baseName = file.name.replace(/\.[^.]+$/, '') || 'relief';
@@ -228,13 +234,17 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     // becomes its own colour region) and render the SVG to the thumbnail.
     const isSvg = file.type === 'image/svg+xml' || /\.svg$/i.test(file.name);
     if (isSvg) {
-      try { svgText = await file.text(); }
-      catch { svgText = null; image = null; sourceLabel.textContent = 'Could not read SVG'; syncEnabled(); return; }
+      let text: string;
+      try { text = await file.text(); }
+      catch { if (!stale()) { svgText = null; image = null; sourceLabel.textContent = 'Could not read SVG'; syncEnabled(); } return; }
+      if (stale()) return;
+      svgText = text;
       image = null;
       const blob = new Blob([svgText], { type: 'image/svg+xml' });
       const svgUrl = URL.createObjectURL(blob);
       const svgLoader = new Image();
       svgLoader.addEventListener('load', () => {
+        if (stale()) { URL.revokeObjectURL(svgUrl); return; }
         const off = document.createElement('canvas');
         off.width = Math.max(1, svgLoader.naturalWidth || 200);
         off.height = Math.max(1, svgLoader.naturalHeight || 200);
@@ -250,6 +260,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
       });
       svgLoader.addEventListener('error', () => {
         URL.revokeObjectURL(svgUrl);
+        if (stale()) return;
         sourceLabel.textContent = 'Could not render SVG';
         syncEnabled();
       });
@@ -261,6 +272,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     const url = URL.createObjectURL(file);
     const loader = new Image();
     loader.addEventListener('load', () => {
+      if (stale()) { URL.revokeObjectURL(url); return; }
       const off = document.createElement('canvas');
       off.width = loader.naturalWidth;
       off.height = loader.naturalHeight;
@@ -274,9 +286,8 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
         }
       }
       URL.revokeObjectURL(url);
-      thumb.src = ''; // will be replaced by a data URL thumbnail below
+      thumb.src = '';
       thumb.classList.remove('hidden');
-      // Reuse the offscreen canvas for a tiny thumbnail (no extra blob URL).
       thumb.src = off.toDataURL('image/png');
       sourceLabel.textContent = `${baseName} — ${off.width}×${off.height}`;
       renderPreview();
@@ -285,6 +296,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     });
     loader.addEventListener('error', () => {
       URL.revokeObjectURL(url);
+      if (stale()) return;
       image = null;
       sourceLabel.textContent = 'Could not read image';
       syncEnabled();
