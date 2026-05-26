@@ -22,7 +22,7 @@
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, type Language } from './geometry/engine';
+import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, simplifyInWorker, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setOnMeshUpdate, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
@@ -97,7 +97,6 @@ import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, type SimplifyHandlers } from './ui/simplifyUI';
-import { simplifyToTriangleBudget, type SimplifyResult } from './geometry/simplify';
 import { updatePaintMesh, setOnRegionPainted, isActive as isPaintActive } from './color/paintMode';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu } from './annotations/annotateUI';
 import { isActive as isSelectActive, getSelectedId as getSelectedAnnotationId } from './annotations/selectMode';
@@ -124,7 +123,7 @@ import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions,
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
-import { startPaintProgress, endPaintProgress, __setPaintProgressDelayForTests } from './ui/paintProgress';
+import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editorLock';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
@@ -238,6 +237,10 @@ let suspendReconcile = false;
 let asyncReconcileInFlight = false;
 let asyncReconcileDirty = false;
 let paintAbort: AbortController | null = null;
+/** Id of the in-flight progress-modal job for the active worker call (paint
+ *  subdivision). Tracked so a stale endProgress from a superseded job can't
+ *  dismiss the new modal. */
+let paintProgressId: number | null = null;
 /** Monotonic generation tag for paint state. Incremented every time the sync
  *  agent-API path (`withSyncReconcile`) mutates the region store while an
  *  async worker job is in flight, so the worker's continuation can detect
@@ -686,7 +689,10 @@ function resetPaintWorkerState(): void {
   asyncReconcileDirty = false;
   paintAbort = null;
   terminateSubdivisionWorker();
-  endPaintProgress();
+  if (paintProgressId !== null) {
+    endProgress(paintProgressId);
+    paintProgressId = null;
+  }
   if (paintIdleDeferred) {
     const d = paintIdleDeferred;
     paintIdleDeferred = null;
@@ -985,7 +991,16 @@ async function appendStrokeRefineAsync(
   paintAbort = new AbortController();
   const abort = paintAbort;
   const myGen = paintGeneration;
-  startPaintProgress({ onCancel: () => abort.abort() });
+  const progressId = startProgress({
+    title: 'Painting',
+    message: 'Refining mesh under the stroke…',
+    onCancel: () => abort.abort(),
+    // The subdivision pipeline is one big buildRefinedMesh call with
+    // variable pass count — no natural fraction to report. The animated
+    // indeterminate stripe still telegraphs "something's happening."
+    indeterminate: true,
+  });
+  paintProgressId = progressId;
 
   try {
     const { mesh, childToParent, brushStrokeTriangles } = await refineInWorker({
@@ -1030,7 +1045,8 @@ async function appendStrokeRefineAsync(
     paintedColorRefresh();
     syncLockState();
   } finally {
-    endPaintProgress();
+    endProgress(progressId);
+    if (paintProgressId === progressId) paintProgressId = null;
     paintAbort = null;
   }
 }
@@ -1053,7 +1069,13 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
   paintAbort = new AbortController();
   const abort = paintAbort;
   const myGen = paintGeneration;
-  startPaintProgress({ onCancel: () => abort.abort() });
+  const progressId = startProgress({
+    title: 'Painting',
+    message: 'Rebuilding refined mesh…',
+    onCancel: () => abort.abort(),
+    indeterminate: true,
+  });
+  paintProgressId = progressId;
 
   try {
     const { mesh, childToParent, brushStrokeTriangles } = await refineInWorker({
@@ -1083,7 +1105,8 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
     paintedColorRefresh();
     syncLockState();
   } finally {
-    endPaintProgress();
+    endProgress(progressId);
+    if (paintProgressId === progressId) paintProgressId = null;
     paintAbort = null;
   }
 }
@@ -1098,8 +1121,8 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
  *      pending-promise unwind clean up.
  *
  *  `appendStrokeRefineAsync` / `rebuildPaintedGeometryAsync`'s finally has
- *  already cleared `paintAbort` and called `endPaintProgress` by the time
- *  we get here. */
+ *  already cleared `paintAbort` and dismissed the progress modal by the
+ *  time we get here. */
 function handlePaintCancel(): void {
   if (pendingInternalAbort) {
     pendingInternalAbort = false;
@@ -2639,7 +2662,7 @@ async function main() {
       };
     },
 
-    async apply(targetTriangles, onProgress) {
+    async apply(targetTriangles, onProgress, signal) {
       const baseline = simplifyBaselineMesh;
       if (!baseline) return null;
       // Dragging the target back to (or above) full detail is just a restore —
@@ -2649,26 +2672,25 @@ async function main() {
         await onProgress(1);
         return { triangleCount: baseline.numTri };
       }
-      const mod = getModule();
-      if (!mod) return null;
       const bbox = bboxFromMesh(baseline);
       const diag = bbox
         ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
         : 0;
       if (!(diag > 0)) return null;
 
-      const baseManifold = mod.Manifold.ofMesh(baseline);
-      let result: SimplifyResult | null = null;
-      try {
-        result = await simplifyToTriangleBudget(baseManifold, targetTriangles, diag * 0.5, onProgress);
-      } finally {
-        if (baseManifold && typeof baseManifold.delete === 'function') {
-          try { baseManifold.delete(); } catch { /* already deleted */ }
-        }
-      }
-      // The search yields to the event loop between iterations, so a code run can
-      // replace the geometry mid-flight. If the baseline moved, our result is
-      // stale — drop it rather than clobber the freshly-run mesh.
+      // Run the binary-search reduction off the main thread so a heavy mesh
+      // doesn't freeze the viewport. The worker reports progress per
+      // iteration and honors `signal` for Cancel.
+      const result = await simplifyInWorker(
+        baseline,
+        targetTriangles,
+        diag * 0.5,
+        (fraction) => { void onProgress(fraction); },
+        signal,
+      );
+      // The search yields to the event loop, so a code run can replace the
+      // geometry mid-flight. If the baseline moved, our result is stale —
+      // drop it rather than clobber the freshly-run mesh.
       if (simplifyBaselineMesh !== baseline) return null;
       if (!result) {
         applyLiveGeometry(baseline);
@@ -5816,16 +5838,13 @@ async function main() {
       return paintIdlePromise();
     },
 
-    /** Test-only knob: how long the paint progress badge waits before
-     *  appearing (default 250ms). Tests that exercise the Cancel button set
-     *  this to 0 so the badge shows synchronously and the test doesn't
-     *  depend on the worker taking >250ms. Returns the previous value. The
-     *  underscore prefix flags it as a non-public extension point — kept
-     *  unconditionally exported because Vite's `import.meta.env.DEV` gate
-     *  would force the test bundle to differ from the production one, and
-     *  the cost of a single ~30-line knob isn't worth the divergence. */
-    __setPaintProgressDelay(ms: number): number {
-      return __setPaintProgressDelayForTests(ms);
+    /** Test-only knob: how long the progress modal waits before appearing
+     *  (default 250ms). Tests that exercise the Cancel button set this to 0
+     *  so the modal shows synchronously and the test doesn't depend on the
+     *  worker taking >250ms. Returns the previous value. Same modal covers
+     *  paint and simplify, so both feature tests use this. */
+    __setProgressModalDelay(ms: number): number {
+      return __setProgressModalDelayForTests(ms);
     },
 
     /** Undo the most recent paint operation. The removed region goes onto

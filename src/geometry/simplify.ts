@@ -79,8 +79,13 @@ export type SimplifyProgress = (fraction: number) => void | Promise<void>;
  *  after the final bake, letting the caller drive a progress bar and yield to
  *  the browser between iterations.
  *
- *  Returns null when no reduction is needed (target ≥ current triangle count)
- *  or possible, signalling the caller to keep the original mesh. The input
+ *  `shouldCancel` (optional) is checked at the same iteration boundaries. When
+ *  it returns true, the search bails out and returns null — used by the
+ *  worker-side cancel button (terminate isn't an option there since the engine
+ *  worker is shared with the code-execution path).
+ *
+ *  Returns null when no reduction is needed (target ≥ current triangle count),
+ *  no reduction is possible, or the caller requested cancellation. The input
  *  manifold is borrowed, never deleted; every intermediate manifold allocated
  *  during the search is released here. */
 export async function simplifyToTriangleBudget(
@@ -88,6 +93,7 @@ export async function simplifyToTriangleBudget(
   targetTriangles: number,
   maxTolerance: number,
   onProgress?: SimplifyProgress,
+  shouldCancel?: () => boolean,
 ): Promise<SimplifyResult | null> {
   const baseTri = manifold.numTri();
   const target = Math.max(MIN_VALID_TRIANGLES, Math.floor(targetTriangles));
@@ -137,6 +143,7 @@ export async function simplifyToTriangleBudget(
     }
 
     if (onProgress) await onProgress((i + 1) / totalSteps);
+    if (shouldCancel && shouldCancel()) return null;
   }
 
   const tolerance = bestTol >= 0 ? bestTol : fewestValidTol;

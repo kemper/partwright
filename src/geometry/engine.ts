@@ -1,4 +1,4 @@
-import type { MeshResult } from './types';
+import type { MeshData, MeshResult } from './types';
 import type { Engine, Language, ValidateResult } from './engines/types';
 import { DEFAULT_LANGUAGE, isLanguage } from './engines/types';
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
@@ -85,14 +85,21 @@ let callIdCounter = 0;
 
 const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void }>();
 const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => void; reject: (e: Error) => void }>();
+const pendingSimplifies  = new Map<string, {
+  resolve: (r: SimplifyWorkerResult | null) => void;
+  reject: (e: Error) => void;
+  onProgress: (fraction: number) => void;
+}>();
 
 const EXECUTE_TIMEOUT_MS = 60_000;
 
 function rejectAllPending(err: Error): void {
   for (const p of pendingExecutions.values()) p.reject(err);
   for (const p of pendingValidations.values()) p.reject(err);
+  for (const p of pendingSimplifies.values()) p.reject(err);
   pendingExecutions.clear();
   pendingValidations.clear();
+  pendingSimplifies.clear();
 }
 
 /** Terminate an unresponsive Worker and reject everything in flight so the next
@@ -170,6 +177,36 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     return;
   }
 
+  if (msg.type === 'simplify_progress') {
+    const callId = msg.callId as string;
+    const pending = pendingSimplifies.get(callId);
+    if (!pending) return;
+    pending.onProgress(msg.fraction as number);
+    return;
+  }
+
+  if (msg.type === 'simplify_result') {
+    const callId = msg.callId as string;
+    const pending = pendingSimplifies.get(callId);
+    if (!pending) return;
+    pendingSimplifies.delete(callId);
+    const error = msg.error as string | null;
+    if (error) {
+      pending.reject(new Error(error));
+      return;
+    }
+    if (msg.cancelled || !msg.mesh) {
+      pending.resolve(null);
+      return;
+    }
+    pending.resolve({
+      mesh: msg.mesh as MeshData,
+      triangleCount: msg.triangleCount as number,
+      tolerance: msg.tolerance as number,
+    });
+    return;
+  }
+
   if (msg.type === 'error') {
     const callId = msg.callId as string | null;
     const err = new Error(msg.message as string);
@@ -178,6 +215,8 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingExecutions.delete(callId ?? '');
       pendingValidations.get(callId)?.reject(err);
       pendingValidations.delete(callId ?? '');
+      pendingSimplifies.get(callId)?.reject(err);
+      pendingSimplifies.delete(callId ?? '');
     }
   }
 }
@@ -273,4 +312,87 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
 
 export function isEngineReady(lang: Language): boolean {
   return engines[lang].isReady();
+}
+
+// ── Simplify Worker client ──────────────────────────────────────────────────
+
+export interface SimplifyWorkerResult {
+  mesh: MeshData;
+  triangleCount: number;
+  tolerance: number;
+}
+
+export class SimplifyAbortError extends Error {
+  constructor(message = 'simplify aborted') {
+    super(message);
+    this.name = 'AbortError';
+  }
+}
+
+/** Run the mesh-budget simplify search inside the geometry Worker so a
+ *  heavy reduction (binary search × Manifold.simplify calls) doesn't freeze
+ *  the main thread. Resolves to null when no reduction was needed/possible
+ *  or the caller aborted; rejects with a real Error only on a worker fault.
+ *
+ *  `onProgress(fraction)` fires with values in [0,1] between binary-search
+ *  iterations — wire it to the progress modal. `signal.abort()` posts a
+ *  `simplify_cancel` to the worker; the simplify loop checks the flag
+ *  between iterations and bails out (latency ≈ one iteration). */
+export async function simplifyInWorker(
+  mesh: MeshData,
+  targetTriangles: number,
+  maxTolerance: number,
+  onProgress: (fraction: number) => void,
+  signal?: AbortSignal,
+): Promise<SimplifyWorkerResult | null> {
+  if (signal?.aborted) throw new SimplifyAbortError();
+  initEngineWorker();
+  await workerReady;
+  const callId = `simplify-${++callIdCounter}`;
+
+  return new Promise<SimplifyWorkerResult | null>((resolve, reject) => {
+    let abortListener: (() => void) | null = null;
+    pendingSimplifies.set(callId, {
+      resolve: (r) => {
+        if (signal && abortListener) signal.removeEventListener('abort', abortListener);
+        resolve(r);
+      },
+      reject: (e) => {
+        if (signal && abortListener) signal.removeEventListener('abort', abortListener);
+        reject(e);
+      },
+      onProgress,
+    });
+    if (signal) {
+      abortListener = () => {
+        // Post the cancel hint; the worker's simplify loop checks it at the
+        // next iteration boundary and resolves the pending promise with
+        // cancelled=true (which surfaces as `null` here, not a reject — the
+        // caller treats the cancel like a no-op reduction).
+        engineWorker?.postMessage({ type: 'simplify_cancel', callId });
+        // Eagerly reject with AbortError so the caller can distinguish
+        // user-cancel from "no reduction possible" — we still clean up the
+        // worker-side flag via the eventual simplify_result that arrives.
+        const pending = pendingSimplifies.get(callId);
+        if (pending) {
+          pendingSimplifies.delete(callId);
+          pending.reject(new SimplifyAbortError());
+        }
+      };
+      signal.addEventListener('abort', abortListener, { once: true });
+    }
+    // Send a copy of the mesh so the main thread can keep using its own.
+    const meshCopy: MeshData = {
+      vertProperties: mesh.vertProperties.slice(),
+      triVerts: mesh.triVerts.slice(),
+      numVert: mesh.numVert,
+      numTri: mesh.numTri,
+      numProp: mesh.numProp,
+    };
+    const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
+    engineWorker!.postMessage(
+      { type: 'simplify', callId, mesh: meshCopy, targetTriangles, maxTolerance },
+      transfer,
+    );
+  });
 }

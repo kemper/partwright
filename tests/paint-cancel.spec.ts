@@ -42,7 +42,7 @@ test.describe('paint cancellation + waitForPaint', () => {
     // Force the badge to appear immediately so we don't race the worker.
     await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (window as any).partwright.__setPaintProgressDelay(0);
+      (window as any).partwright.__setProgressModalDelay(0);
     });
 
     await page.locator('#paint-toggle').dispatchEvent('click');
@@ -63,17 +63,17 @@ test.describe('paint cancellation + waitForPaint', () => {
     });
 
     // With delay=0, the badge is visible as soon as the worker job is dispatched.
-    const badge = page.locator('#paint-progress');
-    const cancel = page.locator('[data-testid="paint-progress-cancel"]');
+    const modal = page.locator('#progress-modal');
+    const cancel = page.locator('[data-testid="progress-modal-cancel"]');
     await expect(cancel).toBeVisible({ timeout: 5000 });
-    await expect(badge).toBeVisible();
+    await expect(modal).toBeVisible();
 
     // Let the worker finish naturally; the badge should disappear and the
     // region count should hit 1 (the stroke landed).
     await page.evaluate(() =>
       (window as unknown as { partwright: { waitForPaint(): Promise<void> } }).partwright.waitForPaint()
     );
-    await expect(badge).toBeHidden();
+    await expect(modal).toBeHidden();
     const regions = await page.evaluate(() =>
       (window as unknown as { partwright: { listRegions(): unknown[] } }).partwright.listRegions().length
     );
@@ -89,7 +89,7 @@ test.describe('paint cancellation + waitForPaint', () => {
     await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
-      pw.__setPaintProgressDelay(0);
+      pw.__setProgressModalDelay(0);
       await pw.run(`const { Manifold } = api; return Manifold.cube([60, 60, 60], true);`);
       pw.setBrushSize(8);
       pw.setBrushSmoothDivisor(512);
@@ -147,7 +147,7 @@ test.describe('paint cancellation + waitForPaint', () => {
     await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
-      pw.__setPaintProgressDelay(0);
+      pw.__setProgressModalDelay(0);
       await pw.run(`const { Manifold } = api; return Manifold.cube([60, 60, 60], true);`);
       pw.setBrushSize(8);
       pw.setBrushSmoothDivisor(512); // fine subdivision = heavy work
@@ -177,7 +177,7 @@ test.describe('paint cancellation + waitForPaint', () => {
     // Cancel before the worker finishes. With a 60x60x60 cube at divisor 512
     // there's plenty of work; even if the worker has finished by the time we
     // click, the test still validates the no-op-cancel path (region stays).
-    const cancel = page.locator('[data-testid="paint-progress-cancel"]');
+    const cancel = page.locator('[data-testid="progress-modal-cancel"]');
     await expect(cancel).toBeVisible({ timeout: 5000 });
     // Dispatch directly: Playwright's auto-wait .click() can fail if the worker
     // finishes between toBeVisible and the click action retries (badge hides).
