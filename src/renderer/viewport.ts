@@ -293,6 +293,15 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
       center.y - maxDim * 1.2,
       center.z + maxDim * 1.2,
     );
+    // Adapt the clip planes to the model size. With a fixed far plane a large
+    // model (e.g. scaled to ~890mm) auto-frames the camera far enough away that
+    // the geometry falls beyond the frustum and disappears; a fixed near plane
+    // would z-fight on tiny models. Scale both with the model's largest dim.
+    if (maxDim > 0) {
+      camera.near = Math.max(0.05, maxDim * 0.005);
+      camera.far = Math.max(1000, maxDim * 50);
+      camera.updateProjectionMatrix();
+    }
     controls.update();
 
     // Update clip plane position if clipping
