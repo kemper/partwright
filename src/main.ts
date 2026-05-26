@@ -2802,10 +2802,19 @@ async function main() {
       };
     },
 
-    /** Build a session export (.partwright.json). Returns the parsed JSON object directly. */
-    async exportSessionData(sessionId?: string) {
+    /** Build a session export (.partwright.json). Returns the parsed JSON object directly.
+     *  Pass `options.includeThumbnails: true` to embed the per-version
+     *  thumbnail PNG data URLs — needed when generating catalog entries. */
+    async exportSessionData(sessionId?: string, options?: { includeThumbnails?: boolean; includeAnnotations?: boolean; includeNotes?: boolean }) {
       assertString(sessionId, 'exportSessionData(sessionId)', { optional: true, allowEmpty: false });
-      const built = await buildSessionJSON(sessionId);
+      if (options !== undefined) {
+        const o = assertObject(options, 'exportSessionData(_, options)')!;
+        assertNoUnknownKeys(o, ['includeThumbnails', 'includeAnnotations', 'includeNotes'], 'exportSessionData(_, options)');
+        if (o.includeThumbnails !== undefined) assertBoolean(o.includeThumbnails, 'exportSessionData.options.includeThumbnails');
+        if (o.includeAnnotations !== undefined) assertBoolean(o.includeAnnotations, 'exportSessionData.options.includeAnnotations');
+        if (o.includeNotes !== undefined) assertBoolean(o.includeNotes, 'exportSessionData.options.includeNotes');
+      }
+      const built = await buildSessionJSON(sessionId, options);
       if (!built) return { error: 'No active session to export' };
       registerExportFromBuilt(built, 'Session JSON');
       return {
@@ -3179,6 +3188,197 @@ async function main() {
       if (!s) return null;
       const svg = renderSliceSVG(s.polygons as [number, number][][], s.boundingBox);
       return { svg, area: s.area, contours: s.polygons.length };
+    },
+
+    /** Slice the currently loaded model with an axis-aligned plane and return
+     *  the cross-section as an SVG data URL. Useful when the agent needs to
+     *  see internal structure (cavities, walls, supports) without exporting.
+     *
+     *  - `axis`: 'x' | 'y' | 'z' (default 'z')
+     *  - `offset`: where along the axis to cut. If omitted, defaults to the
+     *    midpoint of the model's bounding box along that axis.
+     *  - `size`: pixel size of the rendered SVG (default 400). The result is
+     *    a data URL the agent can drop straight into setImages or display.
+     *
+     *  Works for any engine (manifold-js or SCAD) — it operates on the rendered
+     *  manifold, not the source code. */
+    renderSection(options?: { axis?: 'x' | 'y' | 'z'; offset?: number; size?: number }):
+      { dataUrl: string; svg: string; axis: 'x' | 'y' | 'z'; offset: number; area: number; contours: number } | null {
+      let axis: 'x' | 'y' | 'z' = 'z';
+      let offset: number | undefined;
+      let size = 400;
+      if (options !== undefined) {
+        const o = assertObject(options, 'renderSection(options)')!;
+        assertNoUnknownKeys(o, ['axis', 'offset', 'size'], 'renderSection(options)');
+        if (o.axis !== undefined) {
+          assertEnum(o.axis, ['x', 'y', 'z'] as const, 'renderSection(options).axis');
+          axis = o.axis as 'x' | 'y' | 'z';
+        }
+        if (o.offset !== undefined) assertNumber(o.offset, 'renderSection(options).offset');
+        if (o.size !== undefined) assertNumber(o.size, 'renderSection(options).size', { min: 16, max: 4096, integer: true });
+        offset = o.offset as number | undefined;
+        size = (o.size as number | undefined) ?? size;
+      }
+      if (!currentManifold) return null;
+
+      // manifold-3d only exposes .slice(z) for the Z plane. For X/Y we rotate
+      // the manifold so that axis points along Z, slice, then label the result
+      // with the original axis and the un-rotated offset.
+      const bb = currentManifold.boundingBox();
+      const axisIdx = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
+      const lo = bb.min[axisIdx];
+      const hi = bb.max[axisIdx];
+      const actualOffset = offset ?? (lo + hi) / 2;
+
+      let sliceTarget = currentManifold;
+      let zHeight = actualOffset;
+      let unrotate = false;
+      if (axis === 'x') {
+        // Rotate +X to +Z (rotation around Y by -90°).
+        sliceTarget = currentManifold.rotate([0, -90, 0]);
+        zHeight = actualOffset;
+        unrotate = true;
+      } else if (axis === 'y') {
+        // Rotate +Y to +Z (rotation around X by 90°).
+        sliceTarget = currentManifold.rotate([90, 0, 0]);
+        zHeight = actualOffset;
+        unrotate = true;
+      }
+
+      const result = sliceAtZ(sliceTarget, zHeight);
+      if (unrotate && typeof sliceTarget.delete === 'function') {
+        try { sliceTarget.delete(); } catch { /* already gone */ }
+      }
+      if (!result) return null;
+
+      const svg = renderSliceSVG(result.polygons as [number, number][][], result.boundingBox, size);
+      const dataUrl = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+      return {
+        dataUrl,
+        svg,
+        axis,
+        offset: actualOffset,
+        area: result.area,
+        contours: result.polygons.length,
+      };
+    },
+
+    /** Per-connected-component bounding boxes and volumes for the current
+     *  model. Sorted largest-volume first, so [0] is the main body and
+     *  [1+] are satellite pieces (often the result of a leaked boolean).
+     *
+     *  Works for any engine — operates on the rendered manifold. */
+    componentBounds(): Array<{ index: number; volume: number; triangleCount: number; vertexCount: number; bbox: { min: [number, number, number]; max: [number, number, number]; size: [number, number, number]; center: [number, number, number] } }> | null {
+      if (!currentManifold) return null;
+      if (currentManifold.isEmpty?.()) return [];
+      const pieces = currentManifold.decompose();
+      const out = pieces.map((p: { boundingBox: () => { min: number[]; max: number[] }; volume: () => number; numTri: () => number; numVert: () => number; delete?: () => void }, i: number) => {
+        const bb = p.boundingBox();
+        const min: [number, number, number] = [bb.min[0], bb.min[1], bb.min[2]];
+        const max: [number, number, number] = [bb.max[0], bb.max[1], bb.max[2]];
+        const info = {
+          index: i,
+          volume: p.volume(),
+          triangleCount: p.numTri(),
+          vertexCount: p.numVert(),
+          bbox: {
+            min, max,
+            size: [max[0] - min[0], max[1] - min[1], max[2] - min[2]] as [number, number, number],
+            center: [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2] as [number, number, number],
+          },
+        };
+        try { p.delete?.(); } catch { /* ignore */ }
+        return info;
+      });
+      out.sort((a: { volume: number }, b: { volume: number }) => b.volume - a.volume);
+      for (let i = 0; i < out.length; i++) out[i].index = i;
+      return out;
+    },
+
+    /** Is the given point inside the currently loaded solid? Uses a tiny
+     *  probe cube — robust for points well inside or well outside, may be
+     *  ambiguous within ~1e-5 of the surface. Works for any engine. */
+    pointInside(point: [number, number, number]): boolean | null {
+      const arr = assertArray(point, 'pointInside(point)') as unknown[];
+      if (arr.length !== 3) throw new ValidationError('pointInside(point): point must be a [x,y,z] vector');
+      for (let i = 0; i < 3; i++) assertNumber(arr[i], `pointInside(point)[${i}]`);
+      if (!currentManifold || currentManifold.isEmpty?.()) return null;
+      const p = arr as [number, number, number];
+      const bb = currentManifold.boundingBox();
+      if (p[0] < bb.min[0] || p[0] > bb.max[0]) return false;
+      if (p[1] < bb.min[1] || p[1] > bb.max[1]) return false;
+      if (p[2] < bb.min[2] || p[2] > bb.max[2]) return false;
+      const sx = Math.max(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2], 1);
+      const eps = sx * 1e-5;
+      const mod = getModule();
+      if (!mod) return null;
+      // Capture each Manifold allocation separately so we can .delete() all of
+      // them. `Manifold.cube(...).translate(...)` allocates two — the un-named
+      // intermediate would otherwise leak the cube's WASM heap memory.
+      const cube = mod.Manifold.cube([eps, eps, eps], true);
+      const probe = cube.translate(p);
+      const inter = probe.intersect(currentManifold);
+      const inside = !inter.isEmpty();
+      try { inter.delete?.(); } catch { /* ignore */ }
+      try { probe.delete?.(); } catch { /* ignore */ }
+      try { cube.delete?.(); } catch { /* ignore */ }
+      return inside;
+    },
+
+    /** Heal the current model: run a simplify pass (collapse near-degenerate
+     *  edges, re-run the boolean-cleanup pipeline) and return whether the
+     *  result is now a clean manifold. Useful after STL import or whenever
+     *  a boolean produced unexpected components. Works for any engine. */
+    healCurrent(opts?: { tolerance?: number }): { ok: boolean; volumeDelta: number; triangleDelta: number; componentCountBefore: number; componentCountAfter: number } | null {
+      if (opts !== undefined) {
+        const o = assertObject(opts, 'healCurrent(opts)')!;
+        assertNoUnknownKeys(o, ['tolerance'], 'healCurrent(opts)');
+        if (o.tolerance !== undefined) assertNumber(o.tolerance, 'healCurrent(opts).tolerance', { min: 0 });
+      }
+      if (!currentManifold || currentManifold.isEmpty?.()) return null;
+      // decompose() returns an array of fresh Manifolds — we must .delete()
+      // each piece after counting, otherwise this leaks O(components) of WASM
+      // heap on every healCurrent call.
+      const beforePieces = currentManifold.decompose();
+      const before = {
+        volume: currentManifold.volume(),
+        tri: currentManifold.numTri(),
+        components: beforePieces.length,
+      };
+      for (const p of beforePieces) { try { p.delete?.(); } catch { /* ignore */ } }
+      // Per manifold-3d's docs, simplify(tol) with tol less than the manifold's
+      // stored tolerance falls back to the stored value — so 0 (the default
+      // here) is the lightest-touch heal. Pass a positive value to collapse
+      // edges aggressively. (The binding rejects no-arg .simplify().)
+      const cleaned = currentManifold.simplify(opts?.tolerance ?? 0);
+      const afterPieces = cleaned.decompose();
+      const after = {
+        volume: cleaned.volume(),
+        tri: cleaned.numTri(),
+        components: afterPieces.length,
+      };
+      for (const p of afterPieces) { try { p.delete?.(); } catch { /* ignore */ } }
+      // Apply the healed manifold as the new current geometry, so the
+      // viewport reflects the cleanup. The mesh extraction path mirrors
+      // applyLiveGeometry's flow.
+      const mesh = cleaned.getMesh();
+      const meshData: MeshData = {
+        vertProperties: mesh.vertProperties,
+        triVerts: mesh.triVerts,
+        numVert: mesh.numVert,
+        numTri: mesh.numTri,
+        numProp: mesh.numProp,
+      };
+      applyLiveGeometry(meshData);
+      const status = typeof cleaned.status === 'function' ? cleaned.status() : 0;
+      try { cleaned.delete?.(); } catch { /* applyLiveGeometry rebuilt currentManifold */ }
+      return {
+        ok: !status || status === 0 || status === 'NoError',
+        volumeDelta: after.volume - before.volume,
+        triangleDelta: after.tri - before.tri,
+        componentCountBefore: before.components,
+        componentCountAfter: after.components,
+      };
     },
 
     // === Images API ===
@@ -6125,6 +6325,10 @@ async function main() {
         // Inspection
         'sliceAtZ':        { signature: 'sliceAtZ(z) -- Cross-section at height -> {polygons, svg, area}', docs: '/ai.md#console-api--windowpartwright' },
         'getBoundingBox':  { signature: 'getBoundingBox() -- -> {min, max}', docs: '/ai.md#console-api--windowpartwright' },
+        'renderSection':   { signature: 'renderSection({axis?, offset?, size?}) -- Slice current model on any axis -> {dataUrl, svg, axis, offset, area, contours}. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
+        'componentBounds': { signature: 'componentBounds() -- Per-connected-component info: [{index, volume, triangleCount, bbox}], largest first. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
+        'pointInside':     { signature: 'pointInside([x,y,z]) -- Is this point inside the current solid? -> boolean | null. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
+        'healCurrent':     { signature: 'healCurrent({tolerance?}) -- Simplify + apply: collapses near-degenerate edges, re-runs cleanup -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Engine-agnostic.', docs: '/ai.md#console-api--windowpartwright' },
         'renderView':      { signature: 'renderView({elevation?, azimuth?, ortho?, size?, edges?: "none"|"crease"|"wireframe"}) -- Render from any angle -> data URL (default/cap size follows spending mode; edges default "crease")', docs: '/ai.md#visual-verification' },
         'renderViews':     { signature: 'await renderViews({views?: "tri"|"all", size?, edges?: "none"|"crease"|"wireframe"}) -- 3- or 4-angle labeled composite -> data URL. Use for verification when one angle could hide errors.', docs: '/ai.md#visual-verification' },
         // Spending mode (AI budget)

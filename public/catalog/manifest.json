@@ -174,6 +174,69 @@
       "file": "retro_rocket.partwright.json",
       "language": "manifold-js",
       "description": "Classic retro rocket with ogive nose cone, fins, porthole window, and thrust nozzle."
+    },
+    {
+      "id": "spiral-staircase",
+      "name": "Spiral Staircase",
+      "file": "spiral_staircase.partwright.json",
+      "language": "manifold-js",
+      "description": "A 16-step helical staircase around a central column, topped by a circular platform and balusters. Built with the spiralPattern helper for the steps and railing posts."
+    },
+    {
+      "id": "geodesic-lantern",
+      "name": "Geodesic Lantern",
+      "file": "geodesic_lantern.partwright.json",
+      "language": "manifold-js",
+      "description": "A faceted dome lantern with two rings of cylindrical window cutouts and a small spire finial. Showcases circularPattern, placeOn, and the expectUnion safety net."
+    },
+    {
+      "id": "clock-face",
+      "name": "Wall Clock Face",
+      "file": "clock_face.partwright.json",
+      "language": "manifold-js",
+      "description": "100mm-diameter clock face with 12 hour markers, 60 minute ticks, and tapered hour + minute hands posed at 10:10. Built with the circularPattern radius shortcut."
+    },
+    {
+      "id": "honeycomb-planter",
+      "name": "Honeycomb Planter",
+      "file": "honeycomb_planter.partwright.json",
+      "language": "manifold-js",
+      "description": "A cylindrical planter pot with a staggered honeycomb pattern carved through its wall. Built with nested linearPattern + circularPattern and the expectUnion connectivity check."
+    },
+    {
+      "id": "wind-turbine",
+      "name": "Wind Turbine",
+      "file": "wind_turbine.partwright.json",
+      "language": "manifold-js",
+      "description": "A tapered tower with a nacelle, hub, and 3 swept blades — plus a service ladder up the tower face. Showcases placeOn for the nacelle and circularPattern with a non-Z axis for the rotor."
+    },
+    {
+      "id": "hex-bolt-and-nut",
+      "name": "Hex Bolt & Nut Set",
+      "file": "hex_bolt_and_nut.partwright.json",
+      "language": "scad",
+      "description": "M16x3 hex bolt, matching nut, and washer laid out side-by-side. Showcases BOSL2's screw() and nut() — real threaded geometry that manifold-js can't easily reproduce."
+    },
+    {
+      "id": "spur-gear-pair",
+      "name": "Spur Gear Pair",
+      "file": "spur_gear_pair.partwright.json",
+      "language": "scad",
+      "description": "Two meshing involute spur gears on a rounded base plate, with tooth offset so they interlock correctly. Built with BOSL2's spur_gear() and gear_dist()."
+    },
+    {
+      "id": "pipe-tee-fitting",
+      "name": "Pipe Tee Fitting",
+      "file": "pipe_tee_fitting.partwright.json",
+      "language": "scad",
+      "description": "A 3-way plumbing tee fitting with flared collars and connected interior cavity. Showcases BOSL2's tube() and rounded-end primitives."
+    },
+    {
+      "id": "modular-drawer-bin",
+      "name": "Modular Drawer Bin",
+      "file": "modular_drawer_bin.partwright.json",
+      "language": "scad",
+      "description": "A stackable storage bin with two compartments, rounded corners, and stacking lugs. Built with BOSL2's cuboid(rounding=) and attach() — the SCAD-only verbs."
     }
   ]
 }
