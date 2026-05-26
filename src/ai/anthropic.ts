@@ -459,7 +459,15 @@ function assistantBlocksToApi(
     }
   }
   for (const b of blocks) {
-    if (b.type === 'text' && b.text.length > 0) out.push({ type: 'text', text: b.text });
+    if (b.type === 'text' && b.text.length > 0) {
+      out.push({ type: 'text', text: b.text });
+    } else if (b.type === 'review' && b.text.length > 0) {
+      // Cross-provider review lands in the transcript as an assistant turn.
+      // Surface it to the primary model on the next turn so it sees the
+      // reviewer's feedback in-band — matches the user-side serializer's
+      // `[Review from .../...] ...` prefix.
+      out.push({ type: 'text', text: `[Review from ${b.provider}/${b.model}]\n${b.text}` });
+    }
   }
   for (const tc of toolCalls) {
     out.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input });
