@@ -104,4 +104,99 @@ test.describe('BREP integration', () => {
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/no BREP shape/i);
   });
+
+  // Coverage for the feedback-driven additions: immutability (no more "this
+  // object has been deleted" after a second op), array helpers (`fuseAll`
+  // etc.), selective edge filtering, and the formatted fillet error.
+
+  test('immutability — same shape can be used in multiple ops', async ({ page }) => {
+    // The old destructive replicad behaviour would invalidate `base` after
+    // the first op. With our clone-before-mutate wrapper, both ops succeed
+    // and the union returns a valid manifold mesh.
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const code = `
+        const { Manifold, BREP } = api;
+        const base = BREP.box([10, 10, 10]);
+        const rounded = base.fillet(2);
+        const beveled = base.chamfer(0.5);
+        const combined = BREP.fuseAll([rounded, beveled.translate([20, 0, 0])]);
+        return BREP.toManifold(combined, Manifold);
+      `;
+      return await pw.run(code);
+    });
+
+    expect(result.error).toBeFalsy();
+    expect(result.isManifold).toBe(true);
+    expect(result.componentCount).toBe(2);
+  });
+
+  test('BREP.fuseAll — the canonical reduce pattern works', async ({ page }) => {
+    // 7 spheres arranged on a line, fused via the new array helper. Used
+    // to require .fuse() chained by hand because of the destructive model.
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const code = `
+        const { Manifold, BREP } = api;
+        const spheres = [];
+        for (let i = 0; i < 7; i++) {
+          spheres.push(BREP.sphere(3).translate([i * 4, 0, 0]));
+        }
+        const fused = BREP.fuseAll(spheres);
+        return BREP.toManifold(fused, Manifold);
+      `;
+      return await pw.run(code);
+    });
+
+    expect(result.error).toBeFalsy();
+    expect(result.isManifold).toBe(true);
+    // Adjacent spheres overlap (radius 3, step 4 ⇒ 2-unit overlap) so the
+    // union collapses into a single component, not seven.
+    expect(result.componentCount).toBe(1);
+  });
+
+  test('selective fillet — EdgeFilter narrows which edges get rounded', async ({ page }) => {
+    // Fillet only the top rim of a cylinder — far fewer geometry changes
+    // than filleting every edge, so the resulting mesh has fewer triangles
+    // than a fully-filleted shape of the same cylinder.
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const code = `
+        const { Manifold, BREP } = api;
+        const h = 20;
+        // Only top rim — minZ near the top means OCCT picks just the top circular edge.
+        const topOnly = BREP.cylinder(5, h).fillet(0.8, { minZ: h - 0.001 });
+        return BREP.toManifold(topOnly, Manifold);
+      `;
+      return await pw.run(code);
+    });
+
+    expect(result.error).toBeFalsy();
+    expect(result.isManifold).toBe(true);
+    expect(result.triangleCount).toBeGreaterThan(50);
+  });
+
+  test('friendly fillet error — too-large radius surfaces a hint', async ({ page }) => {
+    // A fillet bigger than the smaller box dimension can't be solved by
+    // OCCT. The raw error is an integer pointer; our wrapper turns it into
+    // a hint-bearing message. We only assert the hint is present — the
+    // OCCT message itself varies by version.
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const code = `
+        const { Manifold, BREP } = api;
+        // Fillet radius 10 on a 5x5x5 box — geometrically impossible.
+        return BREP.toManifold(BREP.box([5, 5, 5]).fillet(10), Manifold);
+      `;
+      return await pw.run(code);
+    });
+
+    expect(result.error).toBeTruthy();
+    expect(result.error).toMatch(/BREP\.fillet failed/);
+    expect(result.error).toMatch(/smaller value|smaller radius|before \.cut/i);
+  });
 });

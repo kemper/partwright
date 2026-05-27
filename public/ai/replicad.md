@@ -46,14 +46,20 @@ BREP.box([w, d, h]);    // centred at origin
 BREP.cylinder(r, h);    // base on XY, height along +Z
 BREP.sphere(r);
 
-// Operations (return a new shape; originals are immutable like Manifold)
-shape.fillet(radius);                     // round all edges
-shape.chamfer(distance);                  // bevel all edges
-shape.fuse(other);                        // boolean union
-shape.cut(other);                         // boolean subtract (this - other)
-shape.intersect(other);                   // boolean intersect
+// Operations (return a new shape; the original is immutable, like Manifold).
+// Inputs are NOT consumed — you can reuse the same shape in multiple ops.
+shape.fillet(radius, filter?);                  // round edges (filter = selective)
+shape.chamfer(distance, filter?);               // bevel edges (filter = selective)
+shape.fuse(other);                              // boolean union
+shape.cut(other);                               // boolean subtract (this - other)
+shape.intersect(other);                         // boolean intersect
 shape.translate([x, y, z]);
-shape.rotate(degrees, [ax, ay, az]);      // optional 3rd arg: origin
+shape.rotate(degrees, [ax, ay, az]);            // optional 3rd arg: origin
+
+// Array helpers — reach for these instead of `.reduce()` for N-way ops.
+BREP.fuseAll([a, b, c, ...]);                   // union of every shape
+BREP.cutAll([body, hole1, hole2, ...]);         // body - hole1 - hole2 - ...
+BREP.intersectAll([a, b, c, ...]);              // a ∩ b ∩ c ∩ ...
 ```
 
 All operations chain. Fillets/chamfers can stack:
@@ -61,6 +67,78 @@ All operations chain. Fillets/chamfers can stack:
 ```js
 return BREP.box([20, 20, 10]).fillet(2).chamfer(0.5);
 ```
+
+### Immutability (important — different from raw replicad)
+
+Partwright's BREP wrapper is **value-style**: ops return a new shape and the
+input stays usable. You can reuse a shape across multiple ops:
+
+```js
+const base = BREP.box([10, 10, 10]);
+const rounded = base.fillet(2);     // base is still alive
+const beveled = base.chamfer(0.5);  // base is still alive
+return BREP.fuseAll([rounded, beveled.translate([20, 0, 0])]);
+```
+
+This means the standard reduce pattern works (though `BREP.fuseAll` reads
+clearer):
+
+```js
+const cylinders = [/* ...20 shapes... */];
+return cylinders.reduce((acc, s) => acc.fuse(s));   // ✓ safe — no consumption
+```
+
+### Selective edge filleting — the headline BREP feature
+
+`.fillet(r)` / `.chamfer(d)` accept an optional **`EdgeFilter`** as the second
+arg. Without it, every edge is rounded. With it, only the edges that match
+every named field are picked — that's the BREP advantage mesh kernels
+genuinely can't match.
+
+```js
+// Round only the top rim of a cylinder (Z near the top).
+const h = 20;
+return BREP.cylinder(5, h).fillet(0.8, { minZ: h - 0.001 });
+
+// Round only the edges near a single corner.
+return BREP.box([20, 20, 10]).fillet(2, { nearPoint: [10, 10, 5], withinDist: 1 });
+
+// Round all four vertical edges of a box, leave the top/bottom sharp.
+return BREP.box([10, 10, 20]).fillet(1, { inDirection: [0, 0, 1] });
+
+// Round only edges in the top-half of the bounding box, along the XY plane.
+return BREP.box([20, 20, 20]).fillet(1, { minZ: 10, parallelToPlane: 'XY' });
+```
+
+**Filter keys** (all optional; AND-combined when multiple are passed):
+
+| Key | What it picks |
+|---|---|
+| `minZ`, `maxZ`, `minX`, `maxX`, `minY`, `maxY` | Edges fully within the given axis range |
+| `nearPoint: [x,y,z]` + `withinDist: r` | Edges within `r` of the world-space point |
+| `parallelToPlane: 'XY' \| 'XZ' \| 'YZ'` | Edges parallel to a standard plane (catches "horizontal" / "vertical" rings) |
+| `inDirection: [dx,dy,dz]` | Edges whose direction matches this axis (e.g. `[0,0,1]` for vertical edges) |
+
+### Apply fillet BEFORE boolean cuts, when you can
+
+OCCT's fillet solver is sensitive to edge-graph complexity *after* boolean
+ops — it'll silently fail on a configuration that would have worked fine if
+filleted first. When you have a choice, fillet the primitive first, then
+cut:
+
+```js
+// ✓ Good: fillet the base, then cut the bore.
+const body = BREP.cylinder(10, 20).fillet(1, { maxZ: 0.001 });  // base rim
+return body.cut(BREP.cylinder(4, 21).translate([0, 0, -0.5]));
+
+// ✗ Risky: cut first, then fillet — OCCT's solver may fail on the
+// post-cut edge graph with an opaque "fillet failed" error.
+const body2 = BREP.cylinder(10, 20).cut(BREP.cylinder(4, 21).translate([0, 0, -0.5]));
+return body2.fillet(1, { maxZ: 0.001 });   // might throw
+```
+
+If a fillet fails, the error message names this rule and suggests a smaller
+radius — read it before retrying blindly.
 
 ## Workflow 1 — BREP inside a manifold-js session
 
