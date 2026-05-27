@@ -27,6 +27,8 @@ export interface ToolbarCallbacks {
   onImportInboxEntry: (entry: ImportInboxEntry) => void | Promise<void>;
   onLanguageSwitch: (lang: 'manifold-js' | 'scad') => void;
   onGoHome: () => void;
+  /** Toggle the AI chat drawer — drives the prominent "Use AI" button in the toolbar. */
+  onToggleAi: () => void;
 }
 
 /** Update the unseen-error badge count on the diagnostics rail button.
@@ -49,25 +51,34 @@ export type AiToolbarMode = 'disconnected' | 'cloud' | 'local';
  *  connected; Local = a local WebGPU model is configured; Disconnected =
  *  neither, so clicking opens the connect flow. */
 export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
-  // The AI control now lives in the activity rail (id `btn-ai`) as a labeled
-  // item with a small connection-status dot. Update the dot colour + title.
-  const dot = document.getElementById('ai-status-dot');
-  const btn = document.getElementById('btn-ai');
-  if (!dot || !btn) return;
+  // Two entry points share the same status: the activity-rail item (id
+  // `btn-ai`, label "AI") and the prominent toolbar button (id
+  // `btn-ai-toolbar`, label "Use AI"). Each has its own status-dot span; we
+  // sync title + dot colour on both so they always agree.
+  const railDot = document.getElementById('ai-status-dot');
+  const railBtn = document.getElementById('btn-ai');
+  const toolbarDot = document.getElementById('ai-toolbar-status-dot');
+  const toolbarBtn = document.getElementById('btn-ai-toolbar');
   // Tolerate the legacy boolean caller signature so an old import doesn't
   // crash at runtime.
   const actual: AiToolbarMode = typeof mode === 'boolean' ? (mode ? 'cloud' : 'disconnected') : mode;
   const base = 'w-1.5 h-1.5 rounded-full shrink-0 ';
+  let dotClass: string;
+  let title: string;
   if (actual === 'cloud') {
-    dot.className = base + 'bg-blue-400';
-    btn.title = 'AI chat — hosted Claude connected. Click to open.';
+    dotClass = base + 'bg-blue-400';
+    title = 'AI chat — hosted Claude connected. Click to open.';
   } else if (actual === 'local') {
-    dot.className = base + 'bg-emerald-400';
-    btn.title = 'AI chat — local WebGPU model. Click to open.';
+    dotClass = base + 'bg-emerald-400';
+    title = 'AI chat — local WebGPU model. Click to open.';
   } else {
-    dot.className = base + 'bg-zinc-500';
-    btn.title = 'AI chat — not connected. Click to connect an API key or local model.';
+    dotClass = base + 'bg-zinc-500';
+    title = 'AI chat — not connected. Click to connect an API key or local model.';
   }
+  if (railDot) railDot.className = dotClass;
+  if (railBtn) railBtn.title = title;
+  if (toolbarDot) toolbarDot.className = dotClass;
+  if (toolbarBtn) toolbarBtn.title = title;
 }
 
 /** File extensions accepted by the Import button and drag-and-drop. */
@@ -199,6 +210,29 @@ export function createToolbar(
   const spacer = document.createElement('div');
   spacer.className = 'flex-1';
   toolbar.appendChild(spacer);
+
+  // Use AI — primary entry point to the chat drawer. The activity rail also
+  // has a "✦ AI" item, but on mobile it lives in a horizontally-scrollable
+  // strip and is easy to miss; this toolbar button is always visible and
+  // styled with an indigo accent so it catches the eye while still fitting
+  // the zinc toolbar palette. Id is `btn-ai-toolbar` to avoid colliding with
+  // the rail's existing `#btn-ai` (which tests and the tour both reference).
+  const aiToolbarBtn = document.createElement('button');
+  aiToolbarBtn.id = 'btn-ai-toolbar';
+  const aiBase = 'flex items-center gap-1.5 px-3 py-1.5 md:px-2.5 md:py-1 rounded text-xs font-semibold transition-colors border ml-2';
+  const aiIdle = `${aiBase} bg-indigo-500/15 border-indigo-500/40 text-indigo-200 [@media(hover:hover)]:hover:bg-indigo-500/25 [@media(hover:hover)]:hover:text-indigo-100`;
+  const aiOpen = `${aiBase} bg-indigo-500/30 border-indigo-500/70 text-indigo-50 [@media(hover:hover)]:hover:bg-indigo-500/35`;
+  aiToolbarBtn.className = aiIdle;
+  aiToolbarBtn.title = 'AI chat — not connected. Click to connect an API key or local model.';
+  aiToolbarBtn.setAttribute('aria-label', 'Open AI chat panel');
+  aiToolbarBtn.innerHTML = '<span id="ai-toolbar-status-dot" class="w-1.5 h-1.5 rounded-full shrink-0 bg-zinc-500"></span><span class="text-sm leading-none" aria-hidden="true">✦</span><span>Use AI</span>';
+  aiToolbarBtn.addEventListener('click', callbacks.onToggleAi);
+  window.addEventListener('ai-panel-toggled', (e) => {
+    const open = !!(e as CustomEvent).detail?.open;
+    aiToolbarBtn.className = open ? aiOpen : aiIdle;
+    aiToolbarBtn.setAttribute('aria-pressed', String(open));
+  });
+  toolbar.appendChild(aiToolbarBtn);
 
   // Catalog — navigates to /catalog where premade sessions are browsed.
   // (Catalog moved to the activity rail's utility group \u2014 see createLayout.)
@@ -504,8 +538,6 @@ export function createToolbar(
   });
 
   toolbar.appendChild(exportWrapper);
-
-  // (The AI chat toggle lives in the activity rail — see createLayout.)
 
   // Dark mode toggle — text button, on by default, off when clicked
   const themeBtn = document.createElement('button');
