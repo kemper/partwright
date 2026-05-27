@@ -91,7 +91,17 @@ const pendingSimplifies  = new Map<string, {
   onProgress: (fraction: number) => void;
 }>();
 
-const EXECUTE_TIMEOUT_MS = 60_000;
+// Per-language hard-timeout for a single execute/validate call. The Worker
+// posts no result back if its WASM hangs, so without this the promise (and
+// the UI's "Running…" state) would wait forever. Manifold-js executes pure
+// JS over the WASM kernel and is rarely slow enough to need much headroom;
+// SCAD compiles BOSL2-style libraries from source per call, and complex
+// real-thread / gear-tooth math can comfortably push past a minute on a
+// slow CI runner — so it gets a much longer ceiling.
+const EXECUTE_TIMEOUT_MS: Record<Language, number> = {
+  'manifold-js': 60_000,
+  'scad':        180_000,
+};
 
 function rejectAllPending(err: Error): void {
   for (const p of pendingExecutions.values()) p.reject(err);
@@ -246,14 +256,15 @@ export async function executeCodeAsync(source: string, lang?: Language): Promise
     triVerts:       m.triVerts.slice(),
   }));
 
+  const timeoutMs = EXECUTE_TIMEOUT_MS[l];
   return new Promise<MeshResult>((resolve, reject) => {
     // A hung WASM evaluation never posts a result back. Without a timeout the
     // promise (and the UI's "Running…" state) would wait forever.
     const timer = setTimeout(() => {
       if (pendingExecutions.has(callId)) {
-        restartEngineWorker(`Geometry evaluation timed out after ${EXECUTE_TIMEOUT_MS / 1000}s (the model may be too complex)`);
+        restartEngineWorker(`Geometry evaluation timed out after ${timeoutMs / 1000}s (the model may be too complex)`);
       }
-    }, EXECUTE_TIMEOUT_MS);
+    }, timeoutMs);
     pendingExecutions.set(callId, {
       resolve: (r) => { clearTimeout(timer); resolve(r); },
       reject:  (e) => { clearTimeout(timer); reject(e); },
@@ -291,15 +302,16 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
     initEngineWorker();
     await workerReady;
     const callId = `val-${++callIdCounter}`;
+    const timeoutMs = EXECUTE_TIMEOUT_MS[l];
     return new Promise<ValidateResult>((resolve, reject) => {
       // A hung validate never posts a result back. Mirror executeCodeAsync's
       // timeout so a stuck OpenSCAD parse restarts the worker (which rejects all
       // pending validations) instead of leaving the promise unsettled forever.
       const timer = setTimeout(() => {
         if (pendingValidations.has(callId)) {
-          restartEngineWorker(`OpenSCAD validation timed out after ${EXECUTE_TIMEOUT_MS / 1000}s`);
+          restartEngineWorker(`OpenSCAD validation timed out after ${timeoutMs / 1000}s`);
         }
-      }, EXECUTE_TIMEOUT_MS);
+      }, timeoutMs);
       pendingValidations.set(callId, {
         resolve: (r) => { clearTimeout(timer); resolve(r); },
         reject:  (e) => { clearTimeout(timer); reject(e); },
