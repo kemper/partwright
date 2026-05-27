@@ -335,14 +335,19 @@ async function consumeResponsesStream(
       } else if (type === 'response.completed' || type === 'response.incomplete') {
         const response = payload.response ?? {};
         if (response.usage) {
+          // OpenAI's `input_tokens` is the TOTAL prompt token count and
+          // includes the cached portion (`input_tokens_details.cached_tokens`
+          // is a subset). Subtract it so `TurnUsage.inputTokens` consistently
+          // means "uncached input only" — matching Anthropic's split and
+          // letting cost.ts apply the cache-read discount without
+          // double-counting (cost = inputTokens·rate + cacheReadTokens·rate·0.1).
+          const totalIn = response.usage.input_tokens ?? 0;
+          const cached = response.usage.input_tokens_details?.cached_tokens ?? 0;
           usage = {
-            inputTokens: response.usage.input_tokens ?? 0,
+            inputTokens: Math.max(0, totalIn - cached),
             outputTokens: response.usage.output_tokens ?? 0,
             cacheCreationInputTokens: 0,
-            // Responses exposes cached prompt tokens via
-            // input_tokens_details.cached_tokens — treat as cache reads so
-            // cost.ts can discount them.
-            cacheReadInputTokens: response.usage.input_tokens_details?.cached_tokens ?? 0,
+            cacheReadInputTokens: cached,
           };
         }
         if (type === 'response.incomplete') {
@@ -576,13 +581,18 @@ async function consumeChatStream(
       try { payload = JSON.parse(event); } catch { continue; }
       // Usage frame comes at the end when stream_options.include_usage=true.
       if (payload.usage) {
+        // `prompt_tokens` is the TOTAL and includes cached
+        // (`prompt_tokens_details.cached_tokens` is a subset). Subtract so
+        // `TurnUsage.inputTokens` consistently means "uncached input only"
+        // across providers; cost.ts then applies the cache-read discount on
+        // the cached subset without double-counting.
+        const totalIn = payload.usage.prompt_tokens ?? 0;
+        const cached = payload.usage.prompt_tokens_details?.cached_tokens ?? 0;
         usage = {
-          inputTokens: payload.usage.prompt_tokens ?? 0,
+          inputTokens: Math.max(0, totalIn - cached),
           outputTokens: payload.usage.completion_tokens ?? 0,
           cacheCreationInputTokens: 0,
-          // OpenAI exposes cached tokens via prompt_tokens_details.cached_tokens
-          // — treat as cache reads so cost.ts can discount them.
-          cacheReadInputTokens: payload.usage.prompt_tokens_details?.cached_tokens ?? 0,
+          cacheReadInputTokens: cached,
         };
       }
       const choice = payload.choices?.[0];
@@ -755,7 +765,15 @@ function parseToolArgs(argsText: string): Record<string, unknown> {
 function collectAssistantText(blocks: ChatBlock[]): string {
   let text = '';
   for (const b of blocks) {
-    if (b.type === 'text') text += b.text;
+    if (b.type === 'text') {
+      text += b.text;
+    } else if (b.type === 'review' && b.text.length > 0) {
+      // Cross-provider reviews are persisted as assistant turns; surface them
+      // to the primary model on the next turn so it sees the reviewer's
+      // feedback. Matches the user-side `[Review from .../...] ...` format.
+      if (text.length > 0) text += '\n\n';
+      text += `[Review from ${b.provider}/${b.model}]\n${b.text}`;
+    }
   }
   return text;
 }
@@ -794,11 +812,15 @@ export async function summarize(
   }
   const data = await res.json();
   const text: string = data.choices?.[0]?.message?.content ?? '';
+  // See the streaming path: prompt_tokens includes cached, so split into
+  // uncached + cached for a consistent TurnUsage shape across providers.
+  const totalIn = data.usage?.prompt_tokens ?? 0;
+  const cached = data.usage?.prompt_tokens_details?.cached_tokens ?? 0;
   const usage: TurnUsage = {
-    inputTokens: data.usage?.prompt_tokens ?? 0,
+    inputTokens: Math.max(0, totalIn - cached),
     outputTokens: data.usage?.completion_tokens ?? 0,
     cacheCreationInputTokens: 0,
-    cacheReadInputTokens: data.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+    cacheReadInputTokens: cached,
   };
   return { text, usage };
 }

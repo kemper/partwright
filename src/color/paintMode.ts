@@ -578,7 +578,10 @@ function showBrushRing(point: [number, number, number], normal: [number, number,
   brushRingMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), nrm);
 
   // Slab mode also shows the depth as an extruded prism; geodesic doesn't.
-  if (brushSurface === 'slab') showBrushPrism(point, normal);
+  // Spray always commits as geodesic regardless of the brushSurface toggle
+  // (descriptor build forces it), so don't preview a depth prism the
+  // descriptor will silently throw away.
+  if (brushSurface === 'slab' && !brushSpray) showBrushPrism(point, normal);
   else clearBrushPrism();
 }
 

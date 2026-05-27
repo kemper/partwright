@@ -1400,10 +1400,17 @@ async function main() {
   const defaultCode = examples[defaultExampleKey]?.code ?? '// Write your manifold code here\nconst { Manifold } = api;\nreturn Manifold.cube([5,5,5], true);';
 
   // Shared validator for parsed session JSON. Returns null if shape is wrong.
+  // A chat- or notes-only export (a session used before any geometry was saved)
+  // is legitimate per importSession's contract — accept it when versions are
+  // absent as long as chat or notes are present.
   function validateSessionPayload(data: unknown): ExportedSession | null {
     if (!data || typeof data !== 'object') return null;
     const d = data as ExportedSession;
-    if ((!d.partwright && !d.mainifold) || !d.session || !Array.isArray(d.versions)) return null;
+    if ((!d.partwright && !d.mainifold) || !d.session) return null;
+    const hasVersions = Array.isArray(d.versions);
+    const hasChat = Array.isArray(d.chat) && d.chat.length > 0;
+    const hasNotes = Array.isArray(d.notes) && d.notes.length > 0;
+    if (!hasVersions && !hasChat && !hasNotes) return null;
     return d;
   }
 
@@ -1982,6 +1989,10 @@ async function main() {
   // fresh target must clear them here — otherwise the new (unpainted) session or
   // part inherits the previous one's regions and is born with a locked editor.
   function resetEditorToStarter(comment: string) {
+    // Drop any in-flight subdivision worker job before clearing regions, so a
+    // late continuation can't stamp triangle ids onto regions that no longer
+    // exist (or overwrite the freshly-loaded starter mesh).
+    resetPaintWorkerState();
     clearRegions();
     syncLockState();
     const freshCode = `// ${comment}\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);`;
@@ -2622,6 +2633,10 @@ async function main() {
   // refresh the viewport, paint-adjacency map, stats, and clip bounds. Mirrors
   // the tail of runCodeSync so exports / slicing / measurements stay correct.
   function applyLiveGeometry(mesh: MeshData): void {
+    // Bump the paint generation so any in-flight subdivision worker discards
+    // its result instead of stamping a refined mesh built from the OLD base
+    // over the new geometry.
+    resetPaintWorkerState();
     currentMeshData = mesh;
     paintBaseMesh = mesh;
     if (currentManifold && typeof currentManifold.delete === 'function') {
@@ -3233,7 +3248,7 @@ async function main() {
         try { payload = JSON.parse(payload); } catch { return { error: 'importSessionData(data): could not parse string as JSON' }; }
       }
       const validated = validateSessionPayload(payload);
-      if (!validated) return { error: 'importSessionData(data): payload missing partwright/mainifold brand, session, or versions[]' };
+      if (!validated) return { error: 'importSessionData(data): payload missing partwright/mainifold brand, session, or any of versions[]/chat[]/notes[]' };
       const result = await importSessionPayload(validated);
       return { sessionId: result.sessionId };
     },
@@ -4313,17 +4328,23 @@ async function main() {
         assertString(s.name, 'importSession(data).session.name', { allowEmpty: true });
         assertNumber(s.created, 'importSession(data).session.created');
         assertNumber(s.updated, 'importSession(data).session.updated');
-        const versions = assertArray(d.versions, 'importSession(data).versions');
-        for (let i = 0; i < versions.length; i++) {
-          const v = assertObject(versions[i], `importSession(data).versions[${i}]`)!;
-          assertNumber(v.index, `importSession(data).versions[${i}].index`, { integer: true });
-          assertString(v.code, `importSession(data).versions[${i}].code`, { allowEmpty: true });
-          assertString(v.label, `importSession(data).versions[${i}].label`, { allowEmpty: true });
-          assertNumber(v.timestamp, `importSession(data).versions[${i}].timestamp`);
-          if (v.notes !== undefined) assertString(v.notes, `importSession(data).versions[${i}].notes`, { allowEmpty: true });
-          // geometryData may be null or an object; don't over-specify shape (historical data varies)
-          if (v.geometryData !== null && v.geometryData !== undefined) {
-            assertObject(v.geometryData, `importSession(data).versions[${i}].geometryData`);
+        // `versions` is optional — chat- or notes-only exports omit it.
+        // sessionManager.importSession rejects payloads where versions,
+        // chat, and notes are ALL empty, so we don't need to re-check
+        // that here.
+        if (d.versions !== undefined) {
+          const versions = assertArray(d.versions, 'importSession(data).versions');
+          for (let i = 0; i < versions.length; i++) {
+            const v = assertObject(versions[i], `importSession(data).versions[${i}]`)!;
+            assertNumber(v.index, `importSession(data).versions[${i}].index`, { integer: true });
+            assertString(v.code, `importSession(data).versions[${i}].code`, { allowEmpty: true });
+            assertString(v.label, `importSession(data).versions[${i}].label`, { allowEmpty: true });
+            assertNumber(v.timestamp, `importSession(data).versions[${i}].timestamp`);
+            if (v.notes !== undefined) assertString(v.notes, `importSession(data).versions[${i}].notes`, { allowEmpty: true });
+            // geometryData may be null or an object; don't over-specify shape (historical data varies)
+            if (v.geometryData !== null && v.geometryData !== undefined) {
+              assertObject(v.geometryData, `importSession(data).versions[${i}].geometryData`);
+            }
           }
         }
         if (d.notes !== undefined) {
@@ -4376,17 +4397,19 @@ async function main() {
      *  the standard 4-iso composite; pass `view` to render a single
      *  named angle instead — useful when the feature you're verifying
      *  (a smile on a face, a logo on a flat panel) only reads from one
-     *  specific direction. Same shape `renderView` accepts. */
-    async runIsolated(code: string, view?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number }) {
+     *  specific direction. Same shape `renderView` accepts, including
+     *  `edges` ('none' | 'crease' | 'wireframe'). */
+    async runIsolated(code: string, view?: { elevation?: number; azimuth?: number; ortho?: boolean; size?: number; edges?: EdgeMode }) {
       const check = guard(() => {
         assertString(code, 'runIsolated(code)', { allowEmpty: false });
         if (view !== undefined) {
           const v = assertObject(view, 'runIsolated(code, view)')!;
-          assertNoUnknownKeys(v, ['elevation', 'azimuth', 'ortho', 'size'], 'runIsolated(code, view)');
+          assertNoUnknownKeys(v, ['elevation', 'azimuth', 'ortho', 'size', 'edges'], 'runIsolated(code, view)');
           assertNumber(v.elevation, 'runIsolated(code, view).elevation', { optional: true, min: -90, max: 90 });
           assertNumber(v.azimuth, 'runIsolated(code, view).azimuth', { optional: true });
           assertBoolean(v.ortho, 'runIsolated(code, view).ortho', { optional: true });
           assertNumber(v.size, 'runIsolated(code, view).size', { optional: true, min: 1, integer: true });
+          if (v.edges !== undefined) assertEnum(v.edges, EDGE_MODES, 'runIsolated(code, view).edges');
         }
         return true;
       });
@@ -5931,7 +5954,10 @@ async function main() {
         descriptor,
       );
       if (region.triangles.size === 0) {
-        removeRegion(region.id);
+        // Drop the empty region through the same sync path so the async
+        // reconcile listener doesn't kick a wasted worker rebuild against a
+        // stale lastStrokeList.
+        withSyncReconcile(() => removeRegion(region.id));
         return { error: 'paintStroke: no surface fell within the stroke footprint — check the points are on the model and the radius is large enough.' };
       }
       return {
@@ -6013,7 +6039,10 @@ async function main() {
         descriptor,
       );
       if (region.triangles.size === 0) {
-        removeRegion(region.id);
+        // Drop the empty region through the same sync path so the async
+        // reconcile listener doesn't kick a wasted worker rebuild against a
+        // stale lastStrokeList.
+        withSyncReconcile(() => removeRegion(region.id));
         return { error: 'paintAirbrush: no surface was sprayed — check the points are on the model, the radius is large enough, and strength > 0.' };
       }
       return {
@@ -7526,6 +7555,10 @@ async function main() {
       clearEditorDiagnostics();
       clearEditorErrorPanel(editorErrorPanel);
       pendingEditorError = null;
+      // Bump the paint generation so any in-flight subdivision worker — started
+      // against the previous base mesh — discards its result instead of stamping
+      // a refined mesh built from the OLD base over result.mesh.
+      resetPaintWorkerState();
       currentMeshData = result.mesh;
       // A fresh run is the new pristine base for any subsequent smooth-brush
       // subdivision; rehydrating a saved version rebuilds the refined mesh from

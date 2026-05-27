@@ -270,11 +270,18 @@ async function consumeGeminiStream(
         throw new Error(`Gemini ${code}${status ? ` ${status}` : ''}: ${msg}`);
       }
       if (payload.usageMetadata) {
+        // `promptTokenCount` is the TOTAL prompt token count and includes
+        // the cached portion (`cachedContentTokenCount` is a subset).
+        // Subtract so `TurnUsage.inputTokens` means "uncached input only"
+        // across providers; cost.ts applies the cache-read discount on the
+        // cached subset without double-counting.
+        const totalIn = payload.usageMetadata.promptTokenCount ?? 0;
+        const cached = payload.usageMetadata.cachedContentTokenCount ?? 0;
         usage = {
-          inputTokens: payload.usageMetadata.promptTokenCount ?? 0,
+          inputTokens: Math.max(0, totalIn - cached),
           outputTokens: payload.usageMetadata.candidatesTokenCount ?? 0,
           cacheCreationInputTokens: 0,
-          cacheReadInputTokens: payload.usageMetadata.cachedContentTokenCount ?? 0,
+          cacheReadInputTokens: cached,
         };
       }
       if (payload.promptFeedback?.blockReason) {
@@ -354,7 +361,13 @@ function buildGeminiContents(history: ChatMessage[]): GeminiContent[] {
     if (msg.role === 'assistant') {
       const parts: GeminiPart[] = [];
       for (const b of msg.blocks) {
-        if (b.type === 'text' && b.text.length > 0) parts.push({ text: b.text });
+        if (b.type === 'text' && b.text.length > 0) {
+          parts.push({ text: b.text });
+        } else if (b.type === 'review' && b.text.length > 0) {
+          // Cross-provider review lands as an assistant turn; surface it on
+          // the next turn so the primary model sees the reviewer's feedback.
+          parts.push({ text: `[Review from ${b.provider}/${b.model}]\n${b.text}` });
+        }
       }
       for (const tc of msg.toolCalls ?? []) {
         const fcPart: GeminiPart = { functionCall: { name: tc.name, args: tc.input ?? {} } };
@@ -498,11 +511,15 @@ export async function summarize(
   const data = await res.json();
   const parts: GeminiPart[] = data.candidates?.[0]?.content?.parts ?? [];
   const text = parts.filter(p => typeof p.text === 'string').map(p => p.text!).join('');
+  // See the streaming path: promptTokenCount includes cached, so split into
+  // uncached + cached for a consistent TurnUsage shape across providers.
+  const totalIn = data.usageMetadata?.promptTokenCount ?? 0;
+  const cached = data.usageMetadata?.cachedContentTokenCount ?? 0;
   const usage: TurnUsage = {
-    inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
+    inputTokens: Math.max(0, totalIn - cached),
     outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
     cacheCreationInputTokens: 0,
-    cacheReadInputTokens: data.usageMetadata?.cachedContentTokenCount ?? 0,
+    cacheReadInputTokens: cached,
   };
   return { text, usage };
 }
