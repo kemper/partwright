@@ -275,7 +275,7 @@ function ReviewFooter(props: {
       <button
         type="button"
         class="px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed"
-        disabled={state.value.running || (!state.value.context && !state.value.contextError) || !!state.value.contextError}
+        disabled={state.value.running || !!state.value.contextError}
         onClick={() => { void runIt(); }}
       >{state.value.running ? 'Sending...' : 'Run review'}</button>
     </>

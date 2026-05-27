@@ -28,8 +28,9 @@ function QualityBody(props: { state: Signal<QualityState>; noteVersion: Signal<n
 
   // Note text reads getDefaultCircularSegments() directly so saved changes
   // are reflected without us mirroring all of qualitySettings into a signal.
-  // Bumping noteVersion forces re-evaluation.
-  void noteVersion.value;
+  // The bare `noteVersion.value` read below isn't dead — it subscribes this
+  // component to noteVersion so bumping it re-evaluates the note.
+  noteVersion.value;
   const noteText = `Currently using ${getDefaultCircularSegments()} segments per full circle. Changes take effect on the next render.`;
 
   function pickPreset(id: typeof state.value.quality): void {
