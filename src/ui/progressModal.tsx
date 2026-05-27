@@ -8,6 +8,12 @@
 // progress + ultimately the final result without a flicker. Each
 // startProgress() call returns a job id; updateProgress / endProgress take
 // the id so a stale call from a superseded job can't clobber the active one.
+//
+// Internals are Preact now (signal drives the bar fill, the message, and
+// the Cancel button visibility). Public API unchanged.
+
+import { render } from 'preact';
+import { signal, type Signal } from '@preact/signals';
 
 const DEFAULT_SHOW_DELAY_MS = 250;
 let showDelayMs = DEFAULT_SHOW_DELAY_MS;
@@ -31,75 +37,19 @@ interface ProgressJob {
 
 let nextJobId = 1;
 let currentJob: ProgressJob | null = null;
-let modalRoot: HTMLDivElement | null = null;
-let modalCard: HTMLDivElement | null = null;
-let titleEl: HTMLDivElement | null = null;
-let messageEl: HTMLDivElement | null = null;
-let barFillEl: HTMLDivElement | null = null;
-let barTrackEl: HTMLDivElement | null = null;
-let cancelBtn: HTMLButtonElement | null = null;
 let showTimer: number | null = null;
-let visible = false;
 
-function ensureModal(): HTMLDivElement {
-  if (modalRoot) return modalRoot;
+const jobSignal: Signal<ProgressJob | null> = signal(null);
+const visibleSignal: Signal<boolean> = signal(false);
+let mountRoot: HTMLDivElement | null = null;
 
-  modalRoot = document.createElement('div');
-  modalRoot.id = 'progress-modal';
-  modalRoot.setAttribute('role', 'dialog');
-  modalRoot.setAttribute('aria-modal', 'true');
-  modalRoot.setAttribute('aria-labelledby', 'progress-modal-title');
-  modalRoot.style.cssText =
-    'position:fixed;inset:0;z-index:9999;display:none;' +
-    'align-items:center;justify-content:center;' +
-    'background:rgba(0,0,0,0.45);backdrop-filter:blur(2px);';
+function ensureMount(): void {
+  if (mountRoot) return;
+  mountRoot = document.createElement('div');
+  mountRoot.id = 'progress-modal-root';
+  document.body.appendChild(mountRoot);
 
-  modalCard = document.createElement('div');
-  modalCard.style.cssText =
-    'min-width:300px;max-width:420px;width:90%;' +
-    'background:#27272a;color:#e4e4e7;' +
-    'border:1px solid #52525b;border-radius:8px;' +
-    'padding:18px 20px;box-shadow:0 10px 30px rgba(0,0,0,0.55);';
-
-  titleEl = document.createElement('div');
-  titleEl.id = 'progress-modal-title';
-  titleEl.style.cssText = 'font-size:14px;font-weight:600;margin-bottom:12px;';
-  modalCard.appendChild(titleEl);
-
-  barTrackEl = document.createElement('div');
-  barTrackEl.style.cssText =
-    'height:6px;border-radius:3px;background:#3f3f46;overflow:hidden;margin-bottom:8px;';
-  barFillEl = document.createElement('div');
-  barFillEl.style.cssText =
-    'height:100%;background:#60a5fa;width:0%;' +
-    'transition:width 120ms ease-out;';
-  barTrackEl.appendChild(barFillEl);
-  modalCard.appendChild(barTrackEl);
-
-  messageEl = document.createElement('div');
-  messageEl.style.cssText = 'font-size:12px;color:#a1a1aa;margin-bottom:14px;';
-  modalCard.appendChild(messageEl);
-
-  const btnRow = document.createElement('div');
-  btnRow.style.cssText = 'display:flex;justify-content:flex-end;';
-
-  cancelBtn = document.createElement('button');
-  cancelBtn.type = 'button';
-  cancelBtn.textContent = 'Cancel';
-  cancelBtn.setAttribute('data-testid', 'progress-modal-cancel');
-  cancelBtn.style.cssText =
-    'background:#3f3f46;color:#f4f4f5;border:0;border-radius:4px;' +
-    'padding:6px 14px;font-size:13px;cursor:pointer;';
-  cancelBtn.addEventListener('click', () => {
-    const cb = currentJob?.onCancel;
-    if (cb) cb();
-  });
-  btnRow.appendChild(cancelBtn);
-  modalCard.appendChild(btnRow);
-
-  modalRoot.appendChild(modalCard);
-
-  // Indeterminate keyframes — one global block.
+  // Indeterminate keyframes — one global style block.
   if (!document.getElementById('progress-modal-style')) {
     const style = document.createElement('style');
     style.id = 'progress-modal-style';
@@ -111,36 +61,67 @@ function ensureModal(): HTMLDivElement {
     document.head.appendChild(style);
   }
 
-  document.body.appendChild(modalRoot);
-  return modalRoot;
+  render(<ProgressOverlay />, mountRoot);
 }
 
-function paintModal(): void {
-  if (!currentJob || !modalRoot) return;
-  ensureModal();
-  if (titleEl) titleEl.textContent = currentJob.title;
-  if (messageEl) {
-    messageEl.textContent = currentJob.message || (currentJob.fraction < 0 ? 'Working…' : `${Math.round(currentJob.fraction * 100)}%`);
+function ProgressOverlay() {
+  const job = jobSignal.value;
+  const visible = visibleSignal.value;
+  if (!job || !visible) {
+    return (
+      <div
+        id="progress-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="progress-modal-title"
+        style="position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.45);backdrop-filter:blur(2px);"
+      />
+    );
   }
-  if (barFillEl && barTrackEl) {
-    if (currentJob.fraction < 0) {
-      // Indeterminate: a moving stripe inside the track.
-      barFillEl.style.width = '25%';
-      barFillEl.style.animation = 'progress-modal-indeterminate 1.2s linear infinite';
-    } else {
-      barFillEl.style.animation = '';
-      barFillEl.style.width = `${Math.max(0, Math.min(100, Math.round(currentJob.fraction * 100)))}%`;
-    }
-  }
-  if (cancelBtn) cancelBtn.style.display = currentJob.onCancel ? 'inline-block' : 'none';
+
+  const indeterminate = job.fraction < 0;
+  const pct = Math.max(0, Math.min(100, Math.round(job.fraction * 100)));
+  const message = job.message || (indeterminate ? 'Working…' : `${pct}%`);
+  const fillStyle = indeterminate
+    ? 'height:100%;background:#60a5fa;width:25%;animation:progress-modal-indeterminate 1.2s linear infinite;'
+    : `height:100%;background:#60a5fa;width:${pct}%;transition:width 120ms ease-out;`;
+
+  return (
+    <div
+      id="progress-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="progress-modal-title"
+      style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.45);backdrop-filter:blur(2px);"
+    >
+      <div style="min-width:300px;max-width:420px;width:90%;background:#27272a;color:#e4e4e7;border:1px solid #52525b;border-radius:8px;padding:18px 20px;box-shadow:0 10px 30px rgba(0,0,0,0.55);">
+        <div id="progress-modal-title" style="font-size:14px;font-weight:600;margin-bottom:12px;">
+          {job.title}
+        </div>
+        <div style="height:6px;border-radius:3px;background:#3f3f46;overflow:hidden;margin-bottom:8px;">
+          <div style={fillStyle} />
+        </div>
+        <div style="font-size:12px;color:#a1a1aa;margin-bottom:14px;">{message}</div>
+        <div style="display:flex;justify-content:flex-end;">
+          {job.onCancel && (
+            <button
+              type="button"
+              data-testid="progress-modal-cancel"
+              style="background:#3f3f46;color:#f4f4f5;border:0;border-radius:4px;padding:6px 14px;font-size:13px;cursor:pointer;"
+              onClick={() => job.onCancel?.()}
+            >Cancel</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function showModalNow(): void {
   if (!currentJob) return;
-  ensureModal();
-  paintModal();
-  if (modalRoot) modalRoot.style.display = 'flex';
-  visible = true;
+  ensureMount();
+  jobSignal.value = { ...currentJob };
+  visibleSignal.value = true;
 }
 
 function hideModal(): void {
@@ -148,8 +129,7 @@ function hideModal(): void {
     clearTimeout(showTimer);
     showTimer = null;
   }
-  if (modalRoot) modalRoot.style.display = 'none';
-  visible = false;
+  visibleSignal.value = false;
 }
 
 /** Start a progress job. Returns a job id callers pass to update/end so a
@@ -190,14 +170,12 @@ export function startProgress(opts: {
   return id;
 }
 
-/** Update an in-flight job's progress. Ignored if `id` doesn't match the
- *  active job. `fraction` is clamped to [0,1]; pass -1 to keep the bar
- *  indeterminate. */
+/** Update an in-flight job's progress. Ignored if `id` doesn't match. */
 export function updateProgress(id: number, fraction: number, message?: string): void {
   if (!currentJob || currentJob.id !== id) return;
   currentJob.fraction = fraction;
   if (message !== undefined) currentJob.message = message;
-  if (visible) paintModal();
+  if (visibleSignal.value) jobSignal.value = { ...currentJob };
 }
 
 /** End a job. Ignored if `id` doesn't match — a superseding startProgress()
@@ -210,8 +188,7 @@ export function endProgress(id: number): void {
 }
 
 /** True when a progress job is in flight (badge may not be visible yet —
- *  it waits out the show delay). Used by panels to decide whether to render
- *  their controls as disabled on (re)open. */
+ *  it waits out the show delay). */
 export function isProgressActive(): boolean {
   return currentJob !== null;
 }
