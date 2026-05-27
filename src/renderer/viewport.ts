@@ -60,7 +60,11 @@ let clippingEnabled = false;
 let clipZ = 0;
 let modelBounds: { min: number; max: number } = { min: 0, max: 10 };
 
-// Back-face cap material — shows the cut face in a different color
+// Back-face cap material — shows the cut face in a different color. Used as a
+// TEMPLATE only: each cap mesh gets its own clone (capMaterial.clone()) so that
+// updateMesh's disposal loop, which disposes every child mesh's material, frees
+// the per-cap clone and never this shared singleton (disposing it would leave
+// the next cap rendering with a dead material).
 const capMaterial = new THREE.MeshPhongMaterial({
   color: 0xff6b6b,
   shininess: 20,
@@ -218,6 +222,13 @@ export function initViewport(container: HTMLElement): {
   return { scene, camera, renderer };
 }
 
+/** Fired after every mesh update with the displayed mesh, so the host can keep
+ *  a live readout (e.g. triangle count) in sync without hooking every call site. */
+let onMeshUpdate: ((mesh: MeshData) => void) | null = null;
+export function setOnMeshUpdate(fn: (mesh: MeshData) => void): void {
+  onMeshUpdate = fn;
+}
+
 export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boolean }): void {
   // Clear previous
   while (meshGroup.children.length > 0) {
@@ -254,7 +265,7 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
   // Back-face cap mesh (shows cut face when clipping)
   if (clippingEnabled) {
     const capGeometry = geometry.clone();
-    const capMesh = new THREE.Mesh(capGeometry, capMaterial);
+    const capMesh = new THREE.Mesh(capGeometry, capMaterial.clone());
     capMesh.name = 'clip-cap';
     meshGroup.add(capMesh);
   }
@@ -282,6 +293,15 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
       center.y - maxDim * 1.2,
       center.z + maxDim * 1.2,
     );
+    // Adapt the clip planes to the model size. With a fixed far plane a large
+    // model (e.g. scaled to ~890mm) auto-frames the camera far enough away that
+    // the geometry falls beyond the frustum and disappears; a fixed near plane
+    // would z-fight on tiny models. Scale both with the model's largest dim.
+    if (maxDim > 0) {
+      camera.near = Math.max(0.05, maxDim * 0.005);
+      camera.far = Math.max(1000, maxDim * 50);
+      camera.updateProjectionMatrix();
+    }
     controls.update();
 
     // Update clip plane position if clipping
@@ -289,6 +309,8 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
       updateClipPlaneVisual();
     }
   }
+
+  onMeshUpdate?.(meshData);
 }
 
 // === Clipping API ===
@@ -323,7 +345,7 @@ export function setClipping(enabled: boolean): void {
       const solidChild = meshGroup.children[0];
       if (solidChild instanceof THREE.Mesh) {
         const capGeometry = solidChild.geometry.clone();
-        const capMesh = new THREE.Mesh(capGeometry, capMaterial);
+        const capMesh = new THREE.Mesh(capGeometry, capMaterial.clone());
         capMesh.name = 'clip-cap';
         meshGroup.add(capMesh);
       }

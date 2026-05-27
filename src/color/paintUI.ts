@@ -18,8 +18,22 @@ import {
   isBrushSmooth,
   setBrushSmoothDivisor,
   getBrushSmoothDivisor,
+  setBrushPaintDepth,
+  getBrushPaintDepth,
+  setBrushSurface,
+  getBrushSurface,
+  setBrushSpray,
+  isBrushSpray,
+  setBrushSprayStrength,
+  getBrushSprayStrength,
+  setBrushSpraySoftness,
+  getBrushSpraySoftness,
   SMOOTH_DIVISOR_MIN,
   SMOOTH_DIVISOR_MAX,
+  setShapeSmooth,
+  isShapeSmooth,
+  setShapeSmoothResolution,
+  getShapeSmoothResolution,
   setSlabAxis,
   getSlabAxis,
   previewTriangles,
@@ -85,6 +99,9 @@ let bucketControls: HTMLElement | null = null;
 let brushControls: HTMLElement | null = null;
 let slabControls: HTMLElement | null = null;
 let boxControls: HTMLElement | null = null;
+// Shape-smoothing controls appear in both the slab and box panels but share one
+// state; re-sync each instance's display on tool switch so neither goes stale.
+const shapeSmoothSyncs: (() => void)[] = [];
 
 /** Initialize the paint UI inside the clip-controls overlay area. */
 export function initPaintUI(controlsContainer: HTMLElement): void {
@@ -108,7 +125,13 @@ export function initPaintUI(controlsContainer: HTMLElement): void {
   }
 
   pickerPanel = createPickerPanel();
-  controlsContainer.appendChild(pickerPanel);
+  // Anchor the panel to the positioned viewport pane (the toolbar's parent)
+  // rather than the small top-right toolbar box, so the mobile bottom-sheet
+  // layout measures against the full viewport. The viewport pane owns the
+  // wheel-forwarder, so wheel-to-zoom still passes through the panel whenever it
+  // isn't actively scrolling.
+  const overlayHost = controlsContainer.parentElement ?? controlsContainer;
+  overlayHost.appendChild(pickerPanel);
 
   onRegionsChange(() => {
     updateBadge();
@@ -164,15 +187,44 @@ function updateBadge(): void {
 function createPickerPanel(): HTMLElement {
   const panel = document.createElement('div');
   panel.id = 'paint-picker-panel';
-  panel.className = 'hidden absolute top-10 right-2 z-20 bg-zinc-800/95 backdrop-blur border border-zinc-600/60 rounded-lg p-2.5 shadow-xl';
-  panel.style.minWidth = '200px';
-  panel.style.maxWidth = '240px';
+  // Responsive shell. On mobile it's a bottom sheet docked to the viewport's
+  // bottom edge, so the model stays visible above it and it never covers the top
+  // toolbar (including the Paint toggle). On desktop it's a compact floating
+  // panel pinned top-right. Either way it's a flex column with a sticky header
+  // and footer around one scrollable middle, so the action row stays reachable
+  // no matter how long the region list grows.
+  panel.className = [
+    'hidden z-20 flex flex-col overflow-hidden bg-zinc-800/95 backdrop-blur border border-zinc-600/60 shadow-xl',
+    'absolute inset-x-2 bottom-2 top-auto max-h-[55%] rounded-xl',
+    'md:inset-x-auto md:bottom-auto md:left-auto md:right-2 md:top-12 md:w-60 md:max-h-[calc(100%-3.5rem)] md:rounded-lg',
+  ].join(' ');
+
+  // === Header (sticky): title + close affordance ===
+  const header = document.createElement('div');
+  header.className = 'shrink-0 flex items-center justify-between gap-2 px-2.5 py-2 border-b border-zinc-700/70';
+  const headerTitle = document.createElement('div');
+  headerTitle.className = 'text-[11px] text-zinc-300 font-medium';
+  headerTitle.textContent = '\uD83C\uDFA8 Paint';
+  header.appendChild(headerTitle);
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'shrink-0 -mr-1 w-7 h-7 flex items-center justify-center rounded text-base leading-none text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60 transition-colors';
+  closeBtn.title = 'Close paint menu';
+  closeBtn.setAttribute('aria-label', 'Close paint menu');
+  closeBtn.textContent = '\u2715';
+  closeBtn.addEventListener('click', () => { togglePaintMode(); });
+  header.appendChild(closeBtn);
+  panel.appendChild(header);
+
+  // === Scrollable content ===
+  const content = document.createElement('div');
+  content.className = 'flex-1 min-h-0 overflow-y-auto px-2.5 py-2.5';
+  panel.appendChild(content);
 
   // === Tool selector ===
   const toolTitle = document.createElement('div');
   toolTitle.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5 font-medium';
   toolTitle.textContent = 'Tool';
-  panel.appendChild(toolTitle);
+  content.appendChild(toolTitle);
 
   const toolRow = document.createElement('div');
   toolRow.className = 'grid grid-cols-2 gap-1 mb-2.5';
@@ -180,13 +232,13 @@ function createPickerPanel(): HTMLElement {
   toolRow.appendChild(createToolButton('brush', '\u{1F58C}\uFE0F Brush', 'Paint individual triangles (drag to paint)'));
   toolRow.appendChild(createToolButton('slab', '\u{1F9F1} Slab', 'Paint all faces inside an axis-aligned range'));
   toolRow.appendChild(createToolButton('box', '\u25C6 Shape', 'Paint everything inside a positionable, rotatable, scalable 3D shape (box, sphere, cylinder, or cone)'));
-  panel.appendChild(toolRow);
+  content.appendChild(toolRow);
 
   // === Color picker ===
   const title = document.createElement('div');
   title.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5 font-medium';
   title.textContent = 'Color';
-  panel.appendChild(title);
+  content.appendChild(title);
 
   const grid = document.createElement('div');
   grid.className = 'grid grid-cols-4 gap-1.5 mb-2';
@@ -204,7 +256,7 @@ function createPickerPanel(): HTMLElement {
   }
   const first = grid.children[0] as HTMLElement;
   if (first) first.classList.add('border-white/80', 'ring-1', 'ring-white/30');
-  panel.appendChild(grid);
+  content.appendChild(grid);
 
   const customRow = document.createElement('div');
   customRow.className = 'flex items-center gap-1.5';
@@ -231,41 +283,44 @@ function createPickerPanel(): HTMLElement {
 
   customRow.appendChild(colorInput);
   customRow.appendChild(customLabel);
-  panel.appendChild(customRow);
+  content.appendChild(customRow);
 
   // === Bucket tool controls (tolerance slider + number input) ===
   bucketControls = createBucketControls();
-  panel.appendChild(bucketControls);
+  content.appendChild(bucketControls);
 
   // === Brush tool controls (radius slider + number input) ===
   brushControls = createBrushControls();
-  panel.appendChild(brushControls);
+  content.appendChild(brushControls);
 
   // === Slab tool controls ===
   slabControls = createSlabControls();
-  panel.appendChild(slabControls);
+  content.appendChild(slabControls);
 
   // === Box tool controls ===
   boxControls = createBoxControls();
-  panel.appendChild(boxControls);
+  content.appendChild(boxControls);
 
   // === Region list ===
+  // Flows inside the single scroll area; the sticky footer keeps the actions
+  // reachable, so it no longer needs its own capped inner scrollbar.
   const regionList = document.createElement('div');
   regionList.id = 'paint-region-list';
-  regionList.className = 'mt-2 border-t border-zinc-700 pt-2 max-h-32 overflow-y-auto';
-  panel.appendChild(regionList);
+  regionList.className = 'mt-2 border-t border-zinc-700 pt-2';
+  content.appendChild(regionList);
 
   onRegionsChange(() => updateRegionList(regionList));
 
-  // === Action row ===
-  const actions = document.createElement('div');
-  actions.className = 'flex items-center gap-1.5 mt-2 pt-2 border-t border-zinc-700 flex-wrap';
+  // === Footer (sticky): region actions stay reachable no matter how far the
+  // scrollable content above is scrolled ===
+  const footer = document.createElement('div');
+  footer.className = 'shrink-0 flex items-center gap-1.5 px-2.5 py-2 border-t border-zinc-700 bg-zinc-800/95 flex-wrap';
 
   visibilityBtn = document.createElement('button');
   visibilityBtn.className = 'px-2 py-1 rounded text-[10px] bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600/60 transition-colors';
   visibilityBtn.title = 'Toggle all paint region visibility in viewport (exports keep colors regardless)';
   visibilityBtn.addEventListener('click', () => { setPaintVisible(!isPaintVisible()); });
-  actions.appendChild(visibilityBtn);
+  footer.appendChild(visibilityBtn);
 
   undoBtn = document.createElement('button');
   undoBtn.className = 'px-2 py-1 rounded text-[10px] bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600/60 transition-colors opacity-40 cursor-not-allowed';
@@ -273,7 +328,7 @@ function createPickerPanel(): HTMLElement {
   undoBtn.title = 'Remove the most recent paint region';
   undoBtn.disabled = true;
   undoBtn.addEventListener('click', () => { removeLastRegion(); });
-  actions.appendChild(undoBtn);
+  footer.appendChild(undoBtn);
 
   redoBtn = document.createElement('button');
   redoBtn.className = 'px-2 py-1 rounded text-[10px] bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600/60 transition-colors opacity-40 cursor-not-allowed';
@@ -281,7 +336,7 @@ function createPickerPanel(): HTMLElement {
   redoBtn.title = 'Restore the most recently undone paint region';
   redoBtn.disabled = true;
   redoBtn.addEventListener('click', () => { redoLastRegion(); });
-  actions.appendChild(redoBtn);
+  footer.appendChild(redoBtn);
 
   undoClearBtn = document.createElement('button');
   undoClearBtn.className = 'px-2 py-1 rounded text-[10px] bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600/60 transition-colors opacity-40 cursor-not-allowed';
@@ -289,16 +344,16 @@ function createPickerPanel(): HTMLElement {
   undoClearBtn.title = 'Restore all regions removed by the last Clear (only available until the next paint)';
   undoClearBtn.disabled = true;
   undoClearBtn.addEventListener('click', () => { undoClear(); });
-  actions.appendChild(undoClearBtn);
+  footer.appendChild(undoClearBtn);
 
   const clearBtn = document.createElement('button');
   clearBtn.className = 'px-2 py-1 rounded text-[10px] bg-red-700/60 text-red-200 hover:bg-red-600/60 transition-colors';
   clearBtn.textContent = 'Clear';
   clearBtn.title = 'Remove all paint regions';
   clearBtn.addEventListener('click', () => { clearRegions(); });
-  actions.appendChild(clearBtn);
+  footer.appendChild(clearBtn);
 
-  panel.appendChild(actions);
+  panel.appendChild(footer);
 
   return panel;
 }
@@ -332,6 +387,7 @@ function syncToolPanels(): void {
   if (brushControls) brushControls.classList.toggle('hidden', tool !== 'brush');
   if (slabControls) slabControls.classList.toggle('hidden', tool !== 'slab');
   if (boxControls) boxControls.classList.toggle('hidden', tool !== 'box');
+  for (const sync of shapeSmoothSyncs) sync();
 }
 
 function createBucketControls(): HTMLElement {
@@ -469,6 +525,175 @@ function createBrushControls(): HTMLElement {
   help.className = 'text-[10px] text-zinc-500 mt-1';
   help.textContent = 'Single triangle \u2190\u2014\u2014\u2192 Wider brush';
   wrap.appendChild(help);
+
+  // Surface mode \u2014 geodesic (default) flood-fills paint along the connected
+  // surface so it never bleeds through a wall (no depth needed); slab keeps a
+  // thin shell within Paint depth of the picked surface.
+  const surfaceLabel = document.createElement('div');
+  surfaceLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+  surfaceLabel.textContent = 'Surface';
+  wrap.appendChild(surfaceLabel);
+
+  const surfaceRow = document.createElement('div');
+  surfaceRow.className = 'grid grid-cols-2 gap-1';
+  const surfaceButtons: Partial<Record<'geodesic' | 'slab', HTMLButtonElement>> = {};
+  // Reassigned once their elements exist; called on every mode change.
+  let syncDepthVisibility = (): void => {};
+  // Reflect the active surface on the buttons, and grey out Slab while spraying
+  // (a spray is geodesic-only \u2014 it can't punch through a wall).
+  const refreshSurfaceButtons = (): void => {
+    const spraying = isBrushSpray();
+    for (const [k, b] of Object.entries(surfaceButtons)) {
+      if (!b) continue;
+      b.className = axisButtonClass(k === getBrushSurface());
+      if (k === 'slab') {
+        b.disabled = spraying;
+        if (spraying) b.classList.add('opacity-40', 'cursor-not-allowed');
+      }
+    }
+  };
+  for (const [mode, labelText, tip] of [
+    ['geodesic', 'Geodesic', 'Paint follows the connected surface and never bleeds through walls \u2014 no depth needed. Recommended.'],
+    ['slab', 'Slab', 'Paint a thin shell within Paint depth of the surface. Use the depth knob to control how far through a wall paint reaches.'],
+  ] as const) {
+    const btn = document.createElement('button');
+    btn.textContent = labelText;
+    btn.title = tip;
+    btn.className = axisButtonClass(mode === getBrushSurface());
+    btn.addEventListener('click', () => {
+      if (mode === 'slab' && isBrushSpray()) return; // disabled while spraying
+      setBrushSurface(mode);
+      refreshSurfaceButtons();
+      syncDepthVisibility();
+    });
+    surfaceRow.appendChild(btn);
+    surfaceButtons[mode] = btn;
+  }
+  wrap.appendChild(surfaceRow);
+
+  // Paint depth (slab mode only) \u2014 how far through the surface a stroke reaches.
+  const depthWrap = document.createElement('div');
+  depthWrap.id = 'brush-depth-wrap';
+
+  const depthLabel = document.createElement('div');
+  depthLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+  depthLabel.textContent = 'Paint depth';
+  depthWrap.appendChild(depthLabel);
+
+  const depthRow = document.createElement('div');
+  depthRow.className = 'flex items-center gap-2';
+
+  const depthSlider = document.createElement('input');
+  depthSlider.id = 'brush-depth-slider';
+  depthSlider.type = 'range';
+  depthSlider.min = '0';
+  depthSlider.max = '200';
+  depthSlider.step = '1';
+  depthSlider.value = String(Math.round(Math.min(getBrushPaintDepth(), 20) * 10));
+  depthSlider.className = 'flex-1 accent-blue-500 min-w-0';
+  depthSlider.title = 'How far through the surface paint reaches. 0 = auto (half the brush size). Lower values stop paint bleeding through thin/hollow walls.';
+
+  const depthInput = document.createElement('input');
+  depthInput.type = 'number';
+  depthInput.min = '0';
+  // No max: type past the slider for thicker walls.
+  depthInput.step = '0.1';
+  depthInput.value = getBrushPaintDepth().toFixed(1);
+  depthInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  depthInput.title = 'Paint depth (0 = auto = half the brush size)';
+
+  const depthUnit = document.createElement('span');
+  depthUnit.className = 'text-[10px] text-zinc-500';
+  depthUnit.textContent = 'u';
+
+  depthSlider.addEventListener('input', () => {
+    const d = parseInt(depthSlider.value, 10) / 10;
+    setBrushPaintDepth(d);
+    depthInput.value = d.toFixed(1);
+  });
+  const applyDepth = (): void => {
+    const raw = parseFloat(depthInput.value);
+    if (!Number.isFinite(raw) || raw < 0) { depthInput.value = getBrushPaintDepth().toFixed(1); return; }
+    setBrushPaintDepth(raw);
+    depthSlider.value = String(Math.round(Math.min(raw, 20) * 10));
+    depthInput.value = raw.toFixed(1);
+  };
+  depthInput.addEventListener('change', applyDepth);
+  depthInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyDepth(); depthInput.blur(); } });
+
+  depthRow.appendChild(depthSlider);
+  depthRow.appendChild(depthInput);
+  depthRow.appendChild(depthUnit);
+  depthWrap.appendChild(depthRow);
+
+  const depthHelp = document.createElement('div');
+  depthHelp.className = 'text-[10px] text-zinc-500 mt-1';
+  depthHelp.textContent = 'Surface only \u2190\u2014\u2014\u2192 Through thicker walls \u00b7 0 = auto';
+  depthWrap.appendChild(depthHelp);
+  wrap.appendChild(depthWrap);
+
+  syncDepthVisibility = (): void => {
+    depthWrap.classList.toggle('hidden', getBrushSurface() !== 'slab');
+  };
+  syncDepthVisibility();
+
+  // Spray (airbrush) — soft geodesic speckle instead of a solid fill. Forces
+  // geodesic (a spray can't punch through a wall) and reveals strength/softness.
+  const sprayLabel = document.createElement('div');
+  sprayLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+  sprayLabel.textContent = 'Spray (airbrush)';
+  wrap.appendChild(sprayLabel);
+
+  const sprayToggle = document.createElement('button');
+  sprayToggle.id = 'brush-spray-toggle';
+  sprayToggle.title = 'Airbrush: paint a soft speckle that fades out at the edges instead of a solid fill. Always follows the surface (geodesic).';
+  wrap.appendChild(sprayToggle);
+
+  // Strength + softness — shown only while spraying. 0..1 shown as a percent.
+  const sprayWrap = document.createElement('div');
+  sprayWrap.id = 'brush-spray-wrap';
+  const pctControl = (labelText: string, id: string, get: () => number, set: (v: number) => void, tip: string): void => {
+    const lab = document.createElement('div');
+    lab.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+    lab.textContent = labelText;
+    sprayWrap.appendChild(lab);
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-2';
+    const slider = document.createElement('input');
+    slider.id = id;
+    slider.type = 'range'; slider.min = '0'; slider.max = '100'; slider.step = '1';
+    slider.value = String(Math.round(get() * 100));
+    slider.className = 'flex-1 accent-blue-500 min-w-0';
+    slider.title = tip;
+    const val = document.createElement('span');
+    val.className = 'text-[10px] text-zinc-400 tabular-nums w-9 text-right';
+    val.textContent = `${Math.round(get() * 100)}%`;
+    slider.addEventListener('input', () => {
+      const v = parseInt(slider.value, 10) / 100;
+      set(v);
+      val.textContent = `${Math.round(v * 100)}%`;
+    });
+    row.appendChild(slider);
+    row.appendChild(val);
+    sprayWrap.appendChild(row);
+  };
+  pctControl('Strength', 'brush-spray-strength', getBrushSprayStrength, setBrushSprayStrength, 'How dense the speckle is (core coverage). Lower = lighter spackle.');
+  pctControl('Softness', 'brush-spray-softness', getBrushSpraySoftness, setBrushSpraySoftness, 'How wide the feathered, fading edge is.');
+  wrap.appendChild(sprayWrap);
+
+  const syncSpray = (): void => {
+    const on = isBrushSpray();
+    sprayToggle.textContent = on ? '◉ Spray: On' : '○ Spray: Off';
+    sprayToggle.className = on
+      ? 'w-full px-2 py-1 rounded text-[11px] bg-blue-500/30 text-blue-200 border border-blue-500/50 transition-colors'
+      : 'w-full px-2 py-1 rounded text-[11px] bg-zinc-700/60 text-zinc-300 border border-zinc-600/50 hover:bg-zinc-700 transition-colors';
+    sprayWrap.classList.toggle('hidden', !on);
+    if (on && getBrushSurface() !== 'geodesic') setBrushSurface('geodesic'); // spray is geodesic-only
+    refreshSurfaceButtons();
+    syncDepthVisibility();
+  };
+  sprayToggle.addEventListener('click', () => { setBrushSpray(!isBrushSpray()); syncSpray(); });
+  syncSpray();
 
   // Brush shape selector
   const shapeLabel = document.createElement('div');
@@ -626,6 +851,8 @@ function createSlabControls(): HTMLElement {
   hint.innerHTML = 'Hover the model to preview the slab plane.<br>Click and drag to extend the slab along the chosen axis. Release to paint.';
   wrap.appendChild(hint);
 
+  wrap.appendChild(createShapeSmoothControls());
+
   return wrap;
 }
 
@@ -634,6 +861,88 @@ function axisButtonClass(active: boolean): string {
     return 'px-2 py-1 rounded text-[11px] bg-blue-500/30 text-blue-200 border border-blue-500/50 transition-colors';
   }
   return 'px-2 py-1 rounded text-[11px] bg-zinc-700/40 text-zinc-300 hover:bg-zinc-600/60 border border-transparent transition-colors';
+}
+
+/** Edge-smoothing toggle + detail slider shared by the slab and shape tools.
+ *  Mirrors the brush's smoothing controls, but the detail is a resolution: the
+ *  target boundary edge length is the model's bbox diagonal ÷ this value. The
+ *  state is shared across both tools (see `setShapeSmooth` in paintMode). */
+function createShapeSmoothControls(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'mt-2 pt-2 border-t border-zinc-700';
+
+  const label = document.createElement('div');
+  label.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium';
+  label.textContent = 'Edge smoothing';
+
+  const toggle = document.createElement('button');
+  toggle.title = 'Subdivide the mesh near the painted region boundary so its edge is smooth instead of following triangle boundaries. Adds triangles near the edge.';
+
+  const fineRow = document.createElement('div');
+  fineRow.className = 'flex items-center gap-2 mt-1';
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = String(SMOOTH_DIVISOR_MIN);
+  slider.max = String(SMOOTH_DIVISOR_MAX);
+  slider.step = '1';
+  slider.value = String(getShapeSmoothResolution());
+  slider.className = 'flex-1 accent-blue-500 min-w-0';
+  slider.title = 'Smooth-edge detail: model bbox diagonal ÷ this = target triangle edge. Higher = smoother edge, more triangles.';
+
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = String(SMOOTH_DIVISOR_MIN);
+  input.max = String(SMOOTH_DIVISOR_MAX);
+  input.step = '1';
+  input.value = String(getShapeSmoothResolution());
+  input.className = 'w-16 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  input.title = `Detail (model size ÷ this = target edge). ${SMOOTH_DIVISOR_MIN}–${SMOOTH_DIVISOR_MAX}.`;
+
+  slider.addEventListener('input', () => {
+    setShapeSmoothResolution(parseInt(slider.value, 10));
+    input.value = String(getShapeSmoothResolution());
+    for (const sync of shapeSmoothSyncs) sync();
+  });
+  const apply = (): void => {
+    const raw = parseInt(input.value, 10);
+    if (!Number.isFinite(raw)) { input.value = String(getShapeSmoothResolution()); return; }
+    setShapeSmoothResolution(raw);
+    slider.value = String(getShapeSmoothResolution());
+    input.value = String(getShapeSmoothResolution());
+    for (const sync of shapeSmoothSyncs) sync();
+  };
+  input.addEventListener('change', apply);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { apply(); input.blur(); } });
+
+  fineRow.appendChild(slider);
+  fineRow.appendChild(input);
+
+  const help = document.createElement('div');
+  help.className = 'text-[10px] text-zinc-500 mt-1';
+  help.textContent = 'Smooth-edge detail · higher → smoother, more triangles';
+
+  const sync = (): void => {
+    const on = isShapeSmooth();
+    toggle.className = on
+      ? 'w-full px-2 py-1 rounded text-[10px] bg-blue-500/30 text-blue-200 border border-blue-500/50 transition-colors text-center'
+      : 'w-full px-2 py-1 rounded text-[10px] bg-zinc-700/40 text-zinc-300 hover:bg-zinc-600/60 border border-transparent transition-colors text-center';
+    toggle.textContent = on ? '◉ Smooth edges: On' : '○ Smooth edges: Off';
+    fineRow.classList.toggle('hidden', !on);
+    help.classList.toggle('hidden', !on);
+    slider.value = String(getShapeSmoothResolution());
+    input.value = String(getShapeSmoothResolution());
+  };
+  toggle.addEventListener('click', () => { setShapeSmooth(!isShapeSmooth()); for (const s of shapeSmoothSyncs) s(); });
+
+  wrap.appendChild(label);
+  wrap.appendChild(toggle);
+  wrap.appendChild(fineRow);
+  wrap.appendChild(help);
+  shapeSmoothSyncs.push(sync);
+  sync();
+
+  return wrap;
 }
 
 function createBoxControls(): HTMLElement {
@@ -754,6 +1063,7 @@ function createBoxControls(): HTMLElement {
   help.textContent = 'Drag the gizmo handles in the viewport, or edit values above. The shape fades after painting and brightens when you interact with it again.';
   actionRow.appendChild(help);
 
+  wrap.appendChild(createShapeSmoothControls());
   wrap.appendChild(actionRow);
 
   // Keep the numeric inputs in sync when the gizmo moves.

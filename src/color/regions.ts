@@ -17,8 +17,13 @@ export interface ColorRegion {
 
 export type RegionDescriptor =
   | { kind: 'coplanar'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; normalTolerance: number }
-  | { kind: 'slab'; normal: [number, number, number]; offset: number; thickness: number }
-  | { kind: 'box'; center: [number, number, number]; size: [number, number, number]; quaternion: [number, number, number, number]; shape?: ShapeType }
+  // Slab / oriented-shape descriptors carry optional smoothing: when `smooth`
+  // is set, the mesh is locally subdivided near the region's boundary until
+  // boundary triangles fall below `maxEdge`, so the painted edge follows the
+  // analytic boundary instead of the coarse base tessellation. Descriptors
+  // saved before smoothing existed simply omit both fields (no subdivision).
+  | { kind: 'slab'; normal: [number, number, number]; offset: number; thickness: number; smooth?: boolean; maxEdge?: number }
+  | { kind: 'box'; center: [number, number, number]; size: [number, number, number]; quaternion: [number, number, number, number]; shape?: ShapeType; smooth?: boolean; maxEdge?: number }
   | { kind: 'triangles'; ids: number[] }
   | { kind: 'byLabel'; label: string }
   | { kind: 'connectedFromSeed'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; maxDeviationDeg: number }
@@ -26,7 +31,12 @@ export type RegionDescriptor =
   // edge length. Resolving it locally refines the mesh under the stroke until
   // boundary triangles are below `maxEdge`, so the painted edge follows the
   // brush outline regardless of base-mesh coarseness. See src/color/subdivide.ts.
-  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number };
+  // `surface`/`depth` constrain the footprint to a thin shell on the picked
+  // surface (so paint doesn't bleed through thin/hollow walls); descriptors
+  // saved before this omit both and are read as `slab` with an auto depth.
+  // `spray` turns the stroke into a geodesic airbrush: a soft speckle whose
+  // coverage fades from the core out via a per-triangle dither (no hard edge).
+  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: 'geodesic' | 'slab'; depth?: number; spray?: { strength: number; softness: number; seed: number } };
 
 export interface SerializedColorRegion {
   id: number;
@@ -42,6 +52,11 @@ type ChangeListener = () => void;
 
 let regions: ColorRegion[] = [];
 let nextOrder = 1;
+// Monotonic, session-unique region id source. Deliberately never reset (not
+// even on clearRegions) so an id can't collide with a region still held in an
+// undo snapshot. Ids are runtime-only — the rehydrate path assigns fresh ones
+// via addRegion rather than restoring the serialized id.
+let nextRegionId = 1;
 let visible = true;
 const listeners: ChangeListener[] = [];
 const visibilityListeners: ChangeListener[] = [];
@@ -152,7 +167,7 @@ export function addRegion(
   triangles: Set<number>,
   visible: boolean = true,
 ): ColorRegion {
-  const id = Date.now() + Math.floor(Math.random() * 1000);
+  const id = nextRegionId++;
   const region: ColorRegion = {
     id,
     name,

@@ -1,6 +1,7 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
 import { createCurvesNamespace } from '../curves';
+import { createMeshOpsNamespace } from '../meshOps';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
 
@@ -35,10 +36,60 @@ function renderMesh(meshData: any) {
 let manifoldModule: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let curvesNamespace: any = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let meshOpsNamespace: any = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function getManifoldModule(): any {
   return manifoldModule;
+}
+
+// === Per-run WASM memory management ===
+//
+// manifold-3d objects live on the WASM heap and must be `.delete()`d by hand —
+// JS GC never frees them. User code such as
+// `Manifold.compose([Manifold.ofMesh(a), Manifold.ofMesh(b)])` allocates
+// intermediate Manifolds that would otherwise leak on every run; because the
+// editor auto-runs on each edit/undo, that heap growth eventually faults the
+// module ("memory access out of bounds" / "null function"). To contain it we
+// wrap the Manifold/CrossSection factory + instance methods for the duration of
+// one run, record every object they hand back, and delete them all (except the
+// value the user returned) once the result mesh has been extracted. The wrapping
+// is scoped to the run and restored afterwards so other callers that share the
+// same module on the main thread (stats, slicing, simplify) are unaffected.
+
+type SavedMethod = [target: Record<string, unknown>, name: string, fn: unknown];
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wrapMethodsForTracking(target: any, track: (v: unknown) => void, saved: SavedMethod[]): void {
+  if (!target) return;
+  for (const name of Object.getOwnPropertyNames(target)) {
+    if (name === 'constructor' || name === 'delete' || name === 'isDeleted') continue;
+    let orig: unknown;
+    try { orig = target[name]; } catch { continue; }
+    if (typeof orig !== 'function') continue;
+    try {
+      target[name] = function (this: unknown, ...args: unknown[]) {
+        const out = (orig as (...a: unknown[]) => unknown).apply(this, args);
+        track(out);
+        return out;
+      };
+      saved.push([target, name, orig]);
+    } catch { /* non-writable Embind member — skip (rare; just won't be tracked) */ }
+  }
+}
+
+function restoreMethods(saved: SavedMethod[]): void {
+  for (const [target, name, fn] of saved) {
+    try { target[name] = fn; } catch { /* ignore */ }
+  }
+}
+
+function disposeAllExcept(allocated: Array<{ delete?: () => void }>, keep: unknown): void {
+  for (const obj of allocated) {
+    if (obj === keep) continue;
+    try { obj.delete?.(); } catch { /* already freed by user code */ }
+  }
 }
 
 export const manifoldJsEngine: Engine = {
@@ -50,6 +101,7 @@ export const manifoldJsEngine: Engine = {
     manifoldModule = await Module.default();
     manifoldModule.setup();
     curvesNamespace = createCurvesNamespace(manifoldModule);
+    meshOpsNamespace = createMeshOpsNamespace(manifoldModule);
   },
 
   isReady() {
@@ -139,6 +191,31 @@ export const manifoldJsEngine: Engine = {
       Manifold,
       CrossSection,
       Curves: curvesNamespace,
+      meshOps: meshOpsNamespace,
+      // Flat aliases for the most-used meshOps verbs — agents reach for shorter
+      // names like `api.intersects(a,b)` and `api.placeOn(part, table)` much more
+      // often than they reach for the namespace, so we promote those to api.* too.
+      // Predicates:
+      intersects: meshOpsNamespace.intersects,
+      contains: meshOpsNamespace.contains,
+      pointInside: meshOpsNamespace.pointInside,
+      bbox: meshOpsNamespace.bbox,
+      componentBounds: meshOpsNamespace.componentBounds,
+      volumeDelta: meshOpsNamespace.volumeDelta,
+      // Alignment + patterns:
+      alignTo: meshOpsNamespace.alignTo,
+      placeOn: meshOpsNamespace.placeOn,
+      mirrorAcross: meshOpsNamespace.mirrorAcross,
+      mirrorCopy: meshOpsNamespace.mirrorCopy,
+      linearPattern: meshOpsNamespace.linearPattern,
+      circularPattern: meshOpsNamespace.circularPattern,
+      spiralPattern: meshOpsNamespace.spiralPattern,
+      // Robust booleans + heal:
+      expectUnion: meshOpsNamespace.expectUnion,
+      expectDifference: meshOpsNamespace.expectDifference,
+      expectComponents: meshOpsNamespace.expectComponents,
+      heal: meshOpsNamespace.heal,
+      // ----
       setMinCircularAngle,
       setMinCircularEdgeLength,
       setCircularSegments,
@@ -167,6 +244,26 @@ export const manifoldJsEngine: Engine = {
     }
 
     let result: InstanceType<typeof Manifold> | null = null;
+
+    // Track every Manifold/CrossSection the user's code creates so the
+    // intermediates can be freed afterwards (see the memory-management note
+    // above). Wrapping is installed now and reverted in `finally`.
+    const allocated: Array<{ delete?: () => void }> = [];
+    const savedMethods: SavedMethod[] = [];
+    const isTrackable = (v: unknown): boolean =>
+      v != null && typeof v === 'object' && (v instanceof Manifold || v instanceof CrossSection);
+    const track = (v: unknown): void => {
+      if (Array.isArray(v)) {
+        for (const e of v) if (isTrackable(e)) allocated.push(e as { delete?: () => void });
+      } else if (isTrackable(v)) {
+        allocated.push(v as { delete?: () => void });
+      }
+    };
+    wrapMethodsForTracking(Manifold, track, savedMethods);
+    wrapMethodsForTracking(Manifold.prototype, track, savedMethods);
+    wrapMethodsForTracking(CrossSection, track, savedMethods);
+    wrapMethodsForTracking(CrossSection.prototype, track, savedMethods);
+
     try {
       const fn = new Function('api', `"use strict";\n${jsCode}`);
       result = fn(api);
@@ -228,6 +325,13 @@ export const manifoldJsEngine: Engine = {
         error: msg,
         diagnostics: isSyntaxError ? javaScriptSyntaxDiagnostics(jsCode, msg, e) : runtimeDiagnostic(msg, hint, 'JavaScript'),
       };
+    } finally {
+      // Stop tracking, then free every intermediate the run created. The value
+      // the user returned (`result`) is spared — its lifecycle belongs to the
+      // caller (the worker frees it after extracting the mesh; the sync path in
+      // main.ts deletes it after querying volume/bbox).
+      restoreMethods(savedMethods);
+      disposeAllExcept(allocated, result);
     }
   },
 

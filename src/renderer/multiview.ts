@@ -1,8 +1,10 @@
 import * as THREE from 'three';
-import { createWhiteMaterial, createBlackWireframeMaterial } from './materials';
+import { createWhiteMaterial, createBlackWireframeMaterial, createCreaseEdgeMaterial } from './materials';
 import type { MeshData } from '../geometry/types';
 import { buildStrokesGroup, disposeStrokesGroup } from '../annotations/annotationOverlay';
 import { presetIndex } from '../storage/db';
+import { CREASE_ANGLE_DEG, resolveEdgeMode, type EdgeMode } from './edgeMode';
+export { EDGE_MODES, type EdgeMode } from './edgeMode';
 
 /** Composite-render angle sets accepted by `partwright.renderViews`.
  *  Single source of truth shared by the API surface (main.ts), the AI
@@ -142,10 +144,12 @@ function getOffscreenRenderer(size: number): THREE.WebGLRenderer {
   return offRenderer;
 }
 
-/** Dispose scene contents (meshes, geometries, materials) to prevent WebGL memory leaks */
+/** Dispose scene contents (meshes, lines, geometries, materials) to prevent
+ *  WebGL memory leaks. Covers both Mesh (solid + wireframe overlay) and Line
+ *  (crease-edge LineSegments) — both own a geometry and material. */
 function disposeScene(scene: THREE.Scene): void {
   scene.traverse((obj) => {
-    if (obj instanceof THREE.Mesh) {
+    if (obj instanceof THREE.Mesh || obj instanceof THREE.Line) {
       obj.geometry?.dispose();
       if (Array.isArray(obj.material)) {
         obj.material.forEach(m => m.dispose());
@@ -155,6 +159,21 @@ function disposeScene(scene: THREE.Scene): void {
     }
   });
   scene.clear();
+}
+
+/** Add the chosen edge overlay on top of a scene that already holds the
+ *  solid mesh. `wireframe` draws every triangle edge; `crease` draws only
+ *  feature edges (via EdgesGeometry past CREASE_ANGLE_DEG); `none` adds
+ *  nothing. The overlay shares the solid mesh's geometry for the wireframe
+ *  case, and builds a throwaway EdgesGeometry for the crease case —
+ *  disposeScene releases both. */
+function addEdgeOverlay(scene: THREE.Scene, geometry: THREE.BufferGeometry, mode: EdgeMode): void {
+  if (mode === 'wireframe') {
+    scene.add(new THREE.Mesh(geometry, createBlackWireframeMaterial()));
+  } else if (mode === 'crease') {
+    const edges = new THREE.EdgesGeometry(geometry, CREASE_ANGLE_DEG);
+    scene.add(new THREE.LineSegments(edges, createCreaseEdgeMaterial()));
+  }
 }
 
 export function renderCompositeCanvas(meshData: MeshData): HTMLCanvasElement {
@@ -172,9 +191,8 @@ export function renderCompositeCanvas(meshData: MeshData): HTMLCanvasElement {
   scene.add(dir);
 
   const solidMesh = new THREE.Mesh(geometry, createWhiteMaterial(hasColors));
-  const wireMesh = new THREE.Mesh(geometry, createBlackWireframeMaterial());
   scene.add(solidMesh);
-  scene.add(wireMesh);
+  addEdgeOverlay(scene, geometry, resolveEdgeMode(undefined, hasColors));
 
   const box = new THREE.Box3().setFromBufferAttribute(
     geometry.getAttribute('position') as THREE.BufferAttribute,
@@ -277,7 +295,7 @@ export function sortImagesByPreset(images: readonly AttachedImage[]): AttachedIm
 
 // === Scene construction for offscreen single-view renders ===
 
-function createElevationScene(geometry: THREE.BufferGeometry, bgColor: number): THREE.Scene {
+function createElevationScene(geometry: THREE.BufferGeometry, bgColor: number, edges?: EdgeMode): THREE.Scene {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(bgColor);
   const ambient = new THREE.AmbientLight(0xffffff, 0.7);
@@ -291,17 +309,13 @@ function createElevationScene(geometry: THREE.BufferGeometry, bgColor: number): 
   const hasColors = geometry.hasAttribute('color');
   const solidMesh = new THREE.Mesh(geometry, createWhiteMaterial(hasColors));
   scene.add(solidMesh);
-  // Wireframe overlay obscures vertex-color verification on dense
-  // organic meshes — at 320px tile size, the 30% black edges of tens
-  // of thousands of triangles compound into a dark mass that washes
-  // out painted regions. Skip the wireframe when the mesh carries
-  // per-triangle colors (the user is in a paint workflow and wants
-  // to read colors, not topology). Keep it for uncolored renders
-  // where topology IS the subject.
-  if (!hasColors) {
-    const wireMesh = new THREE.Mesh(geometry, createBlackWireframeMaterial());
-    scene.add(wireMesh);
-  }
+  // Edge-overlay default (resolveEdgeMode): uncolored meshes get crease
+  // edges — corners and silhouettes sharpen shape-reading without spraying
+  // facet noise over tessellated curves. A full wireframe would instead
+  // compound into a dark mass that washes out painted regions, so painted
+  // meshes default to none (read colors, not topology). An explicit `edges`
+  // mode overrides either way — catalog hero thumbnails pass 'none'.
+  addEdgeOverlay(scene, geometry, resolveEdgeMode(edges, hasColors));
   return scene;
 }
 
@@ -367,16 +381,17 @@ export function buildViewCamera(meshData: MeshData, options: {
   return camera;
 }
 
-export function renderSingleView(meshData: MeshData, options: {
+export function renderSingleViewCanvas(meshData: MeshData, options: {
   elevation?: number;
   azimuth?: number;
   ortho?: boolean;
   size?: number;
-} = {}): string {
+  edges?: EdgeMode;
+} = {}): HTMLCanvasElement {
   const viewSize = options.size ?? 500;
 
   const geometry = meshDataToGeometry(meshData);
-  const scene = createElevationScene(geometry, 0xffffff);
+  const scene = createElevationScene(geometry, 0xffffff, options.edges);
   const camera = buildViewCamera(meshData, options);
   const renderer = getOffscreenRenderer(viewSize);
 
@@ -397,7 +412,18 @@ export function renderSingleView(meshData: MeshData, options: {
   }
   disposeScene(scene);
   geometry.dispose();
-  return canvas.toDataURL('image/png');
+  return canvas;
+}
+
+/** Render a single named angle to a PNG data URL. */
+export function renderSingleView(meshData: MeshData, options: {
+  elevation?: number;
+  azimuth?: number;
+  ortho?: boolean;
+  size?: number;
+  edges?: EdgeMode;
+} = {}): string {
+  return renderSingleViewCanvas(meshData, options).toDataURL('image/png');
 }
 
 /** Render a cross-section at a given Z height as an SVG string */

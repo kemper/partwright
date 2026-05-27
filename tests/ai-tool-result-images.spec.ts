@@ -1,4 +1,5 @@
 import { test, expect } from 'playwright/test';
+import { openAiPanel, waitForChatSessionId, waitForEditorReady } from './helpers/aiPanel';
 
 // Coverage for surfacing tool-returned renderings (renderView / renderViews
 // snapshots) in the chat transcript. Two halves:
@@ -17,7 +18,7 @@ const TINY_PNG =
 test.describe('Tool-result renderings in the chat transcript', () => {
   test('chatLoop surfaces the renderViews image to the panel as the turn runs', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await waitForEditorReady(page);
 
     const captured = await page.evaluate(async ({ tinyPng }) => {
       const cl = await import('/src/ai/chatLoop.ts');
@@ -146,12 +147,14 @@ test.describe('Tool-result renderings in the chat transcript', () => {
   test('a persisted tool_result image renders inline in the transcript', async ({ page }) => {
     await page.goto('/editor');
     await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ } });
-    await page.waitForSelector('#ai-panel');
+    await waitForEditorReady(page);
+    // Seed under the bootstrapped session bucket (stable across the reload
+    // below). The session is created after WASM init, so wait for it first or
+    // the messages land in the global bucket and the reload restore drops them.
+    const sid = await waitForChatSessionId(page);
 
-    await page.evaluate(async ({ tinyPng }) => {
+    await page.evaluate(async ({ tinyPng, sid }) => {
       const db = await import('/src/ai/db.ts');
-      const sm = await import('/src/storage/sessionManager.ts');
-      const sid = sm.getState().session?.id ?? db.GLOBAL_CHAT_BUCKET;
       await db.putMessages([
         {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -174,16 +177,21 @@ test.describe('Tool-result renderings in the chat transcript', () => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ]);
-    }, { tinyPng: TINY_PNG });
+    }, { tinyPng: TINY_PNG, sid });
 
     await page.reload();
-    await page.waitForSelector('#ai-panel');
-    await page.locator('#btn-ai').dispatchEvent('click');
+    // After the reload, the AI panel attaches almost immediately but its
+    // transcript stays empty until the editor is past WASM init AND the
+    // session has reopened. Wait for "Ready" first so the seeded message has
+    // a chance to land before the visibility assertion, otherwise on a slow
+    // CI runner the default 5s expect timeout can lapse first.
+    await waitForEditorReady(page);
+    await openAiPanel(page);
 
     // The rendering shows as an <img> in the transcript, visible without the
     // user expanding anything (image-bearing tool results auto-expand).
     const rendering = page.locator(`#ai-panel img[src*="${TINY_PNG.slice(0, 24)}"]`);
-    await expect(rendering).toBeVisible();
+    await expect(rendering).toBeVisible({ timeout: 15_000 });
     // The result chip carrying it defaulted to open.
     const resultChip = page.locator('#ai-panel details', { hasText: 'Rendered views' });
     await expect(resultChip).toHaveAttribute('open', '');

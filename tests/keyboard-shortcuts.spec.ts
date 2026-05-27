@@ -82,6 +82,10 @@ test.describe('keyboard shortcuts', () => {
     await page.locator('#paint-toggle').dispatchEvent('click');
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
 
+    // Bucket is no longer the default tool, so its angle input starts hidden —
+    // reveal it first (a display:none input can't take focus).
+    await page.locator('#paint-picker-panel button:has-text("Bucket")').dispatchEvent('click');
+
     // Focus a numeric input inside the paint panel, then press undo. The handler
     // must defer to the field's native editing and leave paint regions intact.
     const angleInput = page.locator('#paint-picker-panel input[type="number"][title*="Bend angle"]');

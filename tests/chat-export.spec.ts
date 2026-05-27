@@ -1,5 +1,6 @@
 import { test, expect, type Page } from 'playwright/test';
 import { readFileSync } from 'fs';
+import { openAiPanel, waitForEditorReady } from './helpers/aiPanel';
 
 // Network-free coverage for the chat export feature:
 //   - the standalone "⬇ Chat" button in the AI panel header (Markdown), and
@@ -46,8 +47,8 @@ test.beforeEach(async ({ page }) => {
 test.describe('Chat export', () => {
   test('Export button on an empty chat warns and downloads nothing', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
-    await page.click('#btn-ai');
+    await waitForEditorReady(page);
+    await openAiPanel(page);
     const panel = page.locator('#ai-panel');
 
     let downloaded = false;
@@ -60,13 +61,13 @@ test.describe('Chat export', () => {
 
   test('Export button downloads a Markdown transcript of the conversation', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await waitForEditorReady(page);
     const id = await createSession(page, 'Export Test');
     await seedChat(page, id);
 
     await page.goto(`/editor?session=${id}`);
-    await page.waitForSelector('#ai-panel');
-    await page.click('#btn-ai');
+    await waitForEditorReady(page);
+    await openAiPanel(page);
     const panel = page.locator('#ai-panel');
     await expect(panel).toContainText('Design a widget bracket');
 
@@ -85,8 +86,16 @@ test.describe('Chat export', () => {
 
   test('session export embeds chat and import restores it under the new session', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await waitForEditorReady(page);
     const id = await createSession(page, 'Roundtrip');
+    // A session must carry at least one version to be importable — importSession
+    // rejects version-less files. Save a baseline version into the new (active)
+    // session before seeding the chat, mirroring a real, worked-on session.
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: { runAndSave(code: string, label?: string): Promise<unknown> } }).partwright;
+      await pw.runAndSave('const { Manifold } = api; return Manifold.cube([10, 10, 10], true);', 'v1');
+    });
     await seedChat(page, id);
 
     // Exported payload carries the chat with volatile fields stripped.
@@ -162,7 +171,7 @@ async function seedSplit(page: Page, fromId: string, toId: string): Promise<void
 test.describe('Chat history recovery', () => {
   test('mergeChatHistory reunites a conversation split across two sessions', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#ai-panel');
+    await waitForEditorReady(page);
     const a = await createSession(page, 'First half');
     const b = await createSession(page, 'Second half');
     await seedSplit(page, a, b);

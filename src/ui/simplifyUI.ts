@@ -1,13 +1,22 @@
 // Simplify mode UI — a viewport-overlay button (next to Measure) that opens a
 // popup panel for reducing the model's triangle count. The user drags a slider
 // or types an exact "max triangles" value, then clicks Apply to run the
-// reduction; a progress bar tracks the (potentially slow) search on heavy
-// models. An optional "Save as version" bakes the reduced mesh into a new saved
-// version.
+// reduction; the shared progress modal (with a Cancel button) tracks the
+// search on heavy models. An optional "Save as version" bakes the reduced mesh
+// into a new saved version.
+//
+// Opening the panel auto-enables the viewport's mesh-edges (wireframe) overlay
+// so the user can see what they're reducing, and restores the previous setting
+// on close. The apply runs in the geometry Worker; closing the panel doesn't
+// cancel it, and reopening shows the in-flight state — the progress modal
+// stays visible the whole time.
 //
 // This module is intentionally a leaf: it never imports the other overlay tools
 // (paint / annotate / measure). Those modules call forceDeactivate() here when
 // they open, and opening Simplify closes them via the injected handlers.open().
+
+import { startProgress, updateProgress, endProgress } from './progressModal';
+import { isWireframeVisible, setWireframeVisible } from '../renderer/viewport';
 
 export interface SimplifyOpenInfo {
   baseTriangles: number;
@@ -31,9 +40,15 @@ export interface SimplifyHandlers {
    *  overlay tools so panels don't stack. */
   open(userInitiated: boolean): { ok: true; info: SimplifyOpenInfo } | { ok: false; reason: string };
   /** Simplify the baseline down to at most `targetTriangles` and show it live,
-   *  reporting progress via `onProgress`. Returns the achieved triangle count,
-   *  or null if nothing changed. */
-  apply(targetTriangles: number, onProgress: SimplifyProgress): Promise<{ triangleCount: number } | null>;
+   *  reporting progress via `onProgress`. The optional `signal` lets the
+   *  caller (the modal's Cancel button) interrupt the worker. Returns the
+   *  achieved triangle count, null if nothing changed, or throws an AbortError
+   *  when cancelled. */
+  apply(
+    targetTriangles: number,
+    onProgress: SimplifyProgress,
+    signal?: AbortSignal,
+  ): Promise<{ triangleCount: number } | null>;
   /** Restore the un-simplified baseline mesh to the viewport. */
   reset(): void;
   /** Bake the mesh currently on screen into a new saved version. */
@@ -54,10 +69,6 @@ let controlsEl: HTMLElement | null = null;
 let applyBtn: HTMLButtonElement | null = null;
 let resetBtn: HTMLButtonElement | null = null;
 let saveBtn: HTMLButtonElement | null = null;
-let progressEl: HTMLElement | null = null;
-let progressBarEl: HTMLElement | null = null;
-let progressLabelEl: HTMLElement | null = null;
-
 let handlers: SimplifyHandlers | null = null;
 let info: SimplifyOpenInfo | null = null;
 // The target reflected in the live mesh (Apply is a no-op until it changes).
@@ -66,6 +77,14 @@ let appliedTarget = 0;
 // state) — set every time the applied result changes.
 let appliedCount = 0;
 let applying = false;
+/** AbortController for the in-flight apply. Lives across panel close/reopen
+ *  so the modal's Cancel button reaches the right worker job even after the
+ *  panel itself was dismissed. Cleared in the apply's finally. */
+let applyAbort: AbortController | null = null;
+/** The viewport wireframe state captured when the panel opened. Restored on
+ *  close so users who had edges off get them back; users who had them on see
+ *  no visible change. */
+let prevWireframeVisible: boolean | null = null;
 
 export function initSimplifyUI(controlsContainer: HTMLElement, h: SimplifyHandlers): void {
   handlers = h;
@@ -118,16 +137,26 @@ function openPanel(): void {
   if (!handlers || !panel) return;
   panel.classList.remove('hidden');
   if (simplifyBtn) simplifyBtn.className = BTN_ACTIVE;
+  // Force mesh-edges on while simplifying so the user can SEE what they're
+  // reducing — restored on close. Stored once per open cycle so a mid-session
+  // toggle inside the panel isn't lost.
+  if (prevWireframeVisible === null) {
+    prevWireframeVisible = isWireframeVisible();
+    if (!prevWireframeVisible) setWireframeVisible(true);
+  }
   refresh(true);
 }
 
 /** (Re)read the current model as the baseline and populate the controls. Used
  *  on open and again after a successful save (the baked mesh becomes the new
- *  baseline). */
+ *  baseline).
+ *
+ *  Survives an in-flight apply: if we reopen mid-apply (the modal is still
+ *  showing the progress bar), we mirror the locked state in the panel —
+ *  controls disabled, status line says "Working…" — so reopening doesn't make
+ *  the user think the work was lost. */
 function refresh(userInitiated: boolean): void {
   if (!handlers) return;
-  // A refresh under a finished apply: clear any leftover progress chrome.
-  showProgress(false);
   const res = handlers.open(userInitiated);
   if (!res.ok) {
     info = null;
@@ -152,16 +181,28 @@ function refresh(userInitiated: boolean): void {
     numberInput.max = String(base);
     numberInput.value = String(info.currentTriangles);
   }
-  appliedTarget = info.currentTriangles;
+  // If a previous apply is still running (we closed and reopened mid-flight),
+  // keep `appliedTarget` whatever it was — overwriting it would make the
+  // Apply button enable while the worker is mid-search. The applying flag
+  // already locks the controls; just mirror the in-flight message.
+  if (!applying) appliedTarget = info.currentTriangles;
   if (originalEl) originalEl.textContent = `Original: ${base.toLocaleString()} triangles`;
-  if (statusEl) statusEl.textContent = '';
+  if (statusEl) statusEl.textContent = applying ? 'Working… (progress shown in the modal)' : '';
   showResult(info.currentTriangles);
-  updateApplyEnabled();
+  if (applying) setControlsDisabled(true);
+  else updateApplyEnabled();
 }
 
 function closePanel(): void {
   panel?.classList.add('hidden');
   if (simplifyBtn) simplifyBtn.className = BTN_INACTIVE;
+  // Restore the wireframe overlay to whatever it was before we opened. A still-
+  // running apply doesn't get cancelled (the modal stays up) — the user can
+  // reopen and the post-state will be reflected via refresh().
+  if (prevWireframeVisible !== null) {
+    setWireframeVisible(prevWireframeVisible);
+    prevWireframeVisible = null;
+  }
 }
 
 function showUnavailable(reason: string): void {
@@ -224,54 +265,53 @@ function setControlsDisabled(disabled: boolean): void {
   }
 }
 
-function showProgress(show: boolean): void {
-  if (!progressEl) return;
-  progressEl.classList.toggle('hidden', !show);
-  if (show) setProgress(0);
-}
-
-function setProgress(fraction: number): void {
-  const pct = Math.max(0, Math.min(100, Math.round(fraction * 100)));
-  if (progressBarEl) progressBarEl.style.width = `${pct}%`;
-  if (progressLabelEl) progressLabelEl.textContent = `Simplifying… ${pct}%`;
-}
-
-/** Resolve after the browser has had a chance to paint. The progress bar is
- *  updated just before this runs; a single rAF fires *before* paint, so the
- *  nested rAF resolves only after that frame has actually been drawn — letting
- *  the bar advance visibly between the blocking simplify iterations. */
-function yieldForPaint(): Promise<void> {
-  return new Promise((resolve) => {
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    } else {
-      setTimeout(resolve, 0);
-    }
-  });
-}
-
 async function runApply(): Promise<void> {
   if (!handlers || !info || applying) return;
   const target = currentTarget();
   if (target === appliedTarget) return;
+  const baseline = info;
 
   applying = true;
+  applyAbort = new AbortController();
+  const abort = applyAbort;
   setControlsDisabled(true);
-  showProgress(true);
   if (statusEl) statusEl.textContent = '';
 
+  // The modal is global — it survives the simplify panel closing, so the user
+  // can dismiss the panel mid-apply and still see / cancel the work.
+  const progressId = startProgress({
+    title: 'Simplifying mesh',
+    message: 'Searching for the gentlest tolerance…',
+    onCancel: () => abort.abort(),
+  });
+
   try {
-    const r = await handlers.apply(target, (fraction) => {
-      setProgress(fraction);
-      return yieldForPaint();
-    });
+    const r = await handlers.apply(
+      target,
+      (fraction) => {
+        const pct = Math.max(0, Math.min(100, Math.round(fraction * 100)));
+        updateProgress(progressId, fraction, `Simplifying… ${pct}%`);
+      },
+      abort.signal,
+    );
     appliedTarget = target;
-    showResult(r ? r.triangleCount : info.baseTriangles);
+    showResult(r ? r.triangleCount : baseline.baseTriangles);
+    if (statusEl) statusEl.textContent = '';
   } catch (e) {
-    if (statusEl) statusEl.textContent = `Simplify failed: ${(e as Error).message}`;
+    // AbortError is the cancel path; surface it as a clean status line
+    // (not a "failed:" — the user asked for this).
+    const err = e as Error;
+    if (err?.name === 'AbortError') {
+      if (statusEl) statusEl.textContent = 'Cancelled.';
+    } else {
+      if (statusEl) statusEl.textContent = `Simplify failed: ${err.message}`;
+    }
   } finally {
     applying = false;
-    showProgress(false);
+    applyAbort = null;
+    endProgress(progressId);
+    // If the panel was closed mid-apply, controls are already hidden — just
+    // re-derive enabled state so a reopen reflects the fresh post-state.
     setControlsDisabled(false);
   }
 }
@@ -354,23 +394,9 @@ function buildPanel(): HTMLElement {
   applyBtn.addEventListener('click', () => { void runApply(); });
   controlsEl.appendChild(applyBtn);
 
-  // Progress bar shown only while an apply is in flight.
-  progressEl = document.createElement('div');
-  progressEl.id = 'simplify-progress';
-  progressEl.className = 'hidden mb-2';
-  const track = document.createElement('div');
-  track.className = 'h-1.5 rounded-full bg-zinc-700/70 overflow-hidden';
-  progressBarEl = document.createElement('div');
-  progressBarEl.id = 'simplify-progress-bar';
-  progressBarEl.className = 'h-full bg-blue-400';
-  progressBarEl.style.width = '0%';
-  track.appendChild(progressBarEl);
-  progressEl.appendChild(track);
-  progressLabelEl = document.createElement('div');
-  progressLabelEl.className = 'text-[10px] text-zinc-400 mt-1';
-  progressLabelEl.textContent = 'Simplifying…';
-  progressEl.appendChild(progressLabelEl);
-  controlsEl.appendChild(progressEl);
+  // Progress bar + Cancel are shown in the shared modal (src/ui/progressModal.ts),
+  // not in this panel — that way closing the panel mid-apply doesn't hide
+  // the work, and the same UI covers both paint and simplify.
 
   resultEl = document.createElement('div');
   resultEl.id = 'simplify-result';

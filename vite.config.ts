@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin, type Connect } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
+import { execSync } from 'node:child_process';
 
 // Set charset=utf-8 on .md and .txt files served from public/ during dev.
 // Prevents em-dashes and other UTF-8 chars from rendering as mojibake.
@@ -51,9 +52,71 @@ function absoluteUrls(): Plugin {
   };
 }
 
+// Build/version metadata surfaced by the in-app About dialog so a given deploy
+// can be traced back to an exact commit/branch — handy for Cloudflare branch &
+// PR preview deploys, which otherwise look identical. Cloudflare sets CF_PAGES_*
+// at build time; we fall back to local git so `npm run dev` and laptop builds
+// show real values too.
+function parseGitHubRepo(remoteUrl: string): string {
+  const m = remoteUrl.match(/github\.com[:/]+([\w.-]+\/[\w.-]+?)(?:\.git)?$/i);
+  return m ? m[1] : '';
+}
+
+// Refresh the models.dev catalog snapshot at the start of every production
+// build so the picker menus + cost meter ship with the latest data. Runs in
+// `build` only (not dev) so iterating on the dev server doesn't spam
+// models.dev on every restart — devs can refresh manually with
+// `npm run refresh-models` when they want the freshest data locally.
+//
+// The script is itself defensive: on any network failure it logs a warning
+// and exits 0, leaving the committed snapshot intact, so this hook can
+// never fail a build (CI / Cloudflare Pages stay green when models.dev is
+// down). Synchronous spawn keeps the build's task ordering simple.
+function catalogSnapshot(): Plugin {
+  return {
+    name: 'partwright-catalog-snapshot',
+    apply: 'build',
+    buildStart() {
+      try {
+        execSync('node scripts/refreshModelsSnapshot.mjs', { stdio: 'inherit' });
+      } catch (err) {
+        // The script soft-fails internally — anything reaching here is a
+        // crash (missing node, permissions). Don't break the build over it.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[partwright-catalog-snapshot] refresh script crashed: ${msg}`);
+      }
+    },
+  };
+}
+
+function resolveBuildInfo() {
+  const git = (cmd: string): string => {
+    try {
+      return execSync(cmd, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    } catch {
+      return '';
+    }
+  };
+  const onCloudflare = !!process.env.CF_PAGES;
+  const commit = process.env.CF_PAGES_COMMIT_SHA || git('git rev-parse HEAD') || 'unknown';
+  const branch = process.env.CF_PAGES_BRANCH || git('git rev-parse --abbrev-ref HEAD') || 'unknown';
+  const repo =
+    process.env.GITHUB_REPOSITORY ||
+    parseGitHubRepo(git('git config --get remote.origin.url')) ||
+    'kemper/mainifold';
+  // "dirty" only means something for a local working tree; a fresh CI / CF
+  // clone is always clean, so skip the (possibly slow) status call there.
+  const dirty = !onCloudflare && git('git status --porcelain') !== '';
+  return { commit, branch, buildTime: new Date().toISOString(), repo, dirty };
+}
+
 export default defineConfig({
   base: '/',
-  plugins: [tailwindcss(), absoluteUrls(), markdownCharset()],
+  // Replaced verbatim wherever `__BUILD_INFO__` appears (see src/buildInfo.ts).
+  define: {
+    __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
+  },
+  plugins: [tailwindcss(), absoluteUrls(), markdownCharset(), catalogSnapshot()],
   worker: {
     // ES module Workers support code-splitting and are required when
     // Worker files import other modules (agentWorker, engineWorker).

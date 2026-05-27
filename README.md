@@ -147,20 +147,19 @@ The toolbar dropdown includes built-in examples:
 
 ## Deployment
 
-The app deploys via [Cloudflare Pages](https://pages.cloudflare.com/) with branch-based environments:
+The app deploys via [Cloudflare Pages](https://pages.cloudflare.com/). Three branches form a quality-gate pipeline:
 
-| Branch | Environment | URL |
-|--------|-------------|-----|
-| `staging` | Preview | Cloudflare Pages preview URL |
-| `main` | Production | `www.partwrightstudio.com` |
+| Branch | Environment | URL | What it is |
+|--------|-------------|-----|------------|
+| `main` | Preview | `main.mainifold.pages.dev` | bleeding edge — deploys on every push, **before** the e2e gate |
+| `staging` | Preview | `staging.mainifold.pages.dev` | last commit that **passed** build + unit + e2e (known-good) |
+| `production` | Production | `www.partwrightstudio.com` | released; protected, requires PR review |
 
 **Workflow:**
 
-1. Develop on a feature branch
-2. Merge to `staging` — auto-deploys for verification
-3. Once validated, PR from `staging` → `main` for production release
-
-`main` is protected and requires PR review. A GitHub Action automatically syncs `main` back into `staging` after every production deploy, so staging never falls behind.
+1. Open a feature branch off `main` and PR it into `main`. The push deploys the main preview immediately (pre-test, so it may be red).
+2. On every push to `main`, a GitHub Action ([`staging-gate.yml`](.github/workflows/staging-gate.yml)) runs the build, unit tests, and e2e tests. Only if all pass does it fast-forward `staging` to that commit — which Cloudflare deploys to the known-good staging preview. A red gate leaves `staging` on the last good commit.
+3. Once validated on the staging preview, PR from `staging` → `production` to release. PRs into `main` also get a fast pre-merge check (build + unit) via [`pr-checks.yml`](.github/workflows/pr-checks.yml).
 
 ## Architecture
 
@@ -184,10 +183,9 @@ src/
 
 Requires `Cross-Origin-Embedder-Policy` and `Cross-Origin-Opener-Policy` headers for SharedArrayBuffer / WASM threads (configured in `vite.config.ts`).
 
-## Deployment
+## Hosting details
 
-Hosted on [Cloudflare Pages](https://pages.cloudflare.com/) with the production custom domain [www.partwrightstudio.com](https://www.partwrightstudio.com). Builds automatically from the `main` branch.
-
+- Production custom domain: [www.partwrightstudio.com](https://www.partwrightstudio.com), served from the `production` branch.
 - Build: `npm run build` → `dist/`
 - SPA routing via `_redirects`, COEP/COOP/CSP headers via `_headers`
 - Set `SITE_URL` env var in Cloudflare Pages dashboard for absolute OG/canonical URLs (falls back to `CF_PAGES_URL`)

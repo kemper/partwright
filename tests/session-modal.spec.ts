@@ -14,8 +14,14 @@ type PW = {
 };
 
 function waitForApi(page: Page) {
+  // Require crossOriginIsolated too: it only flips true on the page *after* the
+  // one-time COI service-worker reload (coi-serviceworker.js), so this gates the
+  // following createSession / IndexedDB-seed evaluates until the reload that
+  // would otherwise destroy their execution context is behind us.
   return page.waitForFunction(
-    () => !!(window as unknown as { partwright?: { createSession?: unknown } }).partwright?.createSession,
+    () =>
+      (window as unknown as { crossOriginIsolated: boolean }).crossOriginIsolated === true &&
+      !!(window as unknown as { partwright?: { createSession?: unknown } }).partwright?.createSession,
   );
 }
 
@@ -51,7 +57,7 @@ test.describe('Session modal', () => {
     // The modal's New Session button prompts for a name — accept it.
     page.on('dialog', (d) => d.accept('Fresh Session'));
 
-    await page.locator('#session-bar button', { hasText: 'Sessions' }).click();
+    await page.locator('#btn-sessions').click();
     await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
     await page.locator('button', { hasText: '+ New Session' }).click();
 
@@ -106,7 +112,7 @@ test.describe('Session modal', () => {
       db.close();
     }, withThumb);
 
-    await page.locator('#session-bar button', { hasText: 'Sessions' }).click();
+    await page.locator('#btn-sessions').click();
     await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
 
     // The seeded session shows its thumbnail as an <img>; the version-less one

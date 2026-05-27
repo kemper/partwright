@@ -73,7 +73,15 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Handle, tube, propeller (profile along 3D path) | `Curves.sweep(profile, pathPoints)` | BOSL2 `path_sweep(profile, path)` |
 | Revolve around an arbitrary axis | `Curves.revolveAxis(profile, [ax,ay,az])` | `rotate([...]) rotate_extrude() polygon()` |
 | Round/chamfer all sharp edges of a solid | `Curves.fillet(solid, {angle: 60})` | BOSL2 `cuboid(rounding=...)`, `round3d(...)` |
-| Ring/linear/mirror copies | `Curves.ringCopy / linearCopy / mirrorCopy` | BOSL2 `ring_copies()`, `xcopies()`, `mirror_copy()` |
+| Ring/linear/mirror copies | `api.circularPattern / linearPattern / mirrorCopy` (or `Curves.ringCopy / linearCopy / mirrorCopy`) | BOSL2 `ring_copies()`, `xcopies()`, `mirror_copy()` |
+| Place A on top of B (no mental trig) | `api.placeOn(a, b, {gap?, at?})` | BOSL2 attachments: `attach(TOP, BOTTOM)` |
+| Align A's edge/face to B (per axis) | `api.alignTo(a, b, {x?, y?, z?})` (min/max/center) | BOSL2 `position()`/`anchor()` |
+| Do two shapes overlap? Volume change? | `api.intersects(a, b)`, `api.volumeDelta(a, b)` | (no equivalent; render and check stats) |
+| Is a point inside the solid? | `api.pointInside(m, [x,y,z])` | (no equivalent) |
+| Did my boolean give the expected component count? | `api.expectUnion(parts, {expectComponents})` | (no equivalent — check stats `componentCount` after run) |
+| Per-piece bbox + volume (find leaked components) | `api.componentBounds(m)` or window `partwright.componentBounds()` | `partwright.componentBounds()` (window API, works for SCAD too) |
+| Repair a non-manifold mesh after a failing boolean / STL import | `api.heal(m)` (or window `partwright.healCurrent()`) | `partwright.healCurrent()` (window API) |
+| Cross-section image (any axis, for debugging cavities) | `partwright.renderSection({axis, offset?, size?})` | `partwright.renderSection(...)` — same window API |
 | Threaded rod / bolt / nut | (write a helix manually) | BOSL2 `threaded_rod()`, `screw()`, `nut()` |
 | Spur / bevel / worm gear | (sample involute manually) | BOSL2 `spur_gear()`, `bevel_gear()`, `worm_gear()` |
 | Implicit surface (gyroid, metaball, SDF blend) | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) |
@@ -201,9 +209,13 @@ await partwright.runAndAssert(code, assertions) // -> {passed, failures?, stats}
 await partwright.runAndExplain(code)     // -> {stats, components[], hints[]} (debug disconnects)
 await partwright.modifyAndTest(patchFn, assertions?) // Modify current code + test in isolation
 partwright.query({sliceAt?, decompose?, boundingBox?}) // Multi-query current geometry in one call
-partwright.renderView({elevation?, azimuth?, ortho?, size?})  // Render ONE angle -> data URL
-await partwright.renderViews({views?: 'auto'|'tri'|'all'|'box', angles?, size?})  // multi-angle labeled composite -> data URL; 'auto' (default) picks angles by aspect ratio; 'box' = all 6 faces (the all-faces final check); pass `angles` for a custom set; prefer for verification
+partwright.renderView({elevation?, azimuth?, ortho?, size?, edges?})  // Render ONE angle -> data URL. edges: 'none'|'crease'|'wireframe' (default 'crease' uncolored / 'none' painted)
+await partwright.renderViews({views?: 'auto'|'tri'|'all'|'box', angles?, size?, edges?})  // multi-angle labeled composite -> data URL; 'auto' (default) picks angles by aspect ratio; 'box' = all 6 faces (the all-faces final check); pass `angles` for a custom set; `edges` sets the overlay on every tile; prefer for verification
 partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}
+partwright.renderSection({axis?, offset?, size?})  // Slice on any axis -> {dataUrl, svg, axis, offset, area, contours}. axis: 'x'|'y'|'z' (default 'z'). offset defaults to bbox midpoint along axis. Engine-agnostic (works for SCAD too).
+partwright.componentBounds()             // -> [{index, volume, triangleCount, bbox: {min,max,size,center}}], largest first. Use to find leaked / satellite pieces after a boolean.
+partwright.pointInside([x,y,z])          // -> boolean (or null if no geometry). Tiny-probe-cube method; ambiguous within ~1e-5 of the surface.
+partwright.healCurrent({tolerance?})     // -> {ok, volumeDelta, triangleDelta, componentCountBefore, componentCountAfter}. Runs .simplify() on the current model and applies the result. Engine-agnostic.
 partwright.isRunning()                   // -> boolean (is code executing?)
 
 // Spending mode (AI budget) -- respect what the user set; see #spending-mode
@@ -268,9 +280,9 @@ partwright.paintNearestRegion({point, color, searchRadius?, name?})       // sna
 partwright.paintNear({point, radius, normalCone?, color, name?})          // sphere selector
 partwright.paintStroke({points, radius, resolution?, maxEdge?, shape?, color, name?}) // SMOOTH brush: subdivides mesh for a rounded painted edge (see note below)
 partwright.paintInBox({box, normalCone?, color, name?})                   // AABB selector
-partwright.paintInOrientedBox({box: {center, size, quaternion?}, color})  // rotated box selector (same as UI Box tool)
+partwright.paintInOrientedBox({box: {center, size, quaternion?}, color, smooth?, resolution?, maxEdge?})  // rotated box selector (same as UI Box tool); SMOOTH edges by default
 partwright.paintFaces({triangleIds, color, name?})                        // explicit triangle ids
-partwright.paintSlab({axis|normal, offset, thickness, color, name?})      // planar range
+partwright.paintSlab({axis|normal, offset, thickness, color, name?, smooth?, resolution?, maxEdge?})  // planar range; SMOOTH edges by default
 partwright.paintByLabel({label, color, name?})                            // by api.label() name (manifold-js only)
 partwright.paintByLabels([{label, color, name?}, ...])                    // batch sibling
 partwright.paintComponent({index, color, name?, topOnly?})                // by listComponents() index
@@ -378,6 +390,90 @@ CrossSection: square, circle, ofPolygons (CCW outer, CW holes),
               compose, union, difference, intersection, hull
 Curves: arc, bezier, naca4, polyline, loft, sweep, revolveAxis,
         fillet, chamfer, ringCopy, linearCopy, mirrorCopy   (see /ai/curves.md)
+meshOps (flat on api): intersects, contains, pointInside, bbox,
+                       componentBounds, volumeDelta,
+                       alignTo, placeOn, mirrorAcross, mirrorCopy,
+                       linearPattern, circularPattern, spiralPattern,
+                       expectUnion, expectDifference, expectComponents,
+                       heal                                     (see below)
+```
+
+### Mesh-operations helpers (`api.meshOps`, also flat as `api.*`)
+
+These are agent-leverage helpers: tasks you'd otherwise solve with mental trig (placement), boolean-fails-silently bugs (expectUnion), or "is this point inside?" introspection guesses.
+
+**Predicates — return plain values, never mutate inputs.** Use them to validate your own work before declaring a build done.
+
+```
+api.intersects(a, b)             // true if a∩b has any volume (bbox fast-reject)
+api.contains(outer, inner)       // true if inner ⊂ outer
+api.pointInside(m, [x,y,z])      // true if point is inside the solid
+api.bbox(m)                      // { min, max, size, center } — the missing accessor
+api.componentBounds(m)           // [{ index, volume, triangleCount, bbox }], largest first
+api.volumeDelta(a, b)            // b.volume() - a.volume()
+```
+
+**Alignment + patterns — return a Manifold, lazy/chainable.** These eat the mental-trig category of bug ("I rotated 60° times 6 but accidentally went CW"; "the lid should sit on the box top but I added the box height to the wrong axis").
+
+```
+api.alignTo(shape, target, {x?, y?, z?})
+   // axes are 'min'|'max'|'center' (also left/right/top/bottom/front/back).
+   // target: a Manifold | 'origin' | { min:[x,y,z], max:[x,y,z] } literal.
+
+api.placeOn(shape, target, {at?, gap?})
+   // shape's minZ → target's maxZ.
+   // at: 'center' (default — match target's XY center)
+   //     'preserve' — keep shape's own XY (skip re-centering)
+   //     [x, y]    — match a specific point
+   // gap: 0 leaves a touching seam (boolean treats as 2 pieces);
+   //      negative (e.g. -0.5) overlaps volumetrically — what you usually want.
+
+api.mirrorAcross(shape, plane)            // plane: 'x'|'y'|'z' or a normal vector
+api.mirrorCopy(shape, plane)              // shape unioned with its mirror — symmetric parts
+api.linearPattern(shape, count, step)     // step: number (X) or [x,y,z] vector
+
+api.circularPattern(shape, count, {axis?, angle?, center?, radius?})
+   // axis: 'z' default; angle: 360 default = full ring.
+   // ENDPOINT CONVENTION:
+   //   angle === ±360 → N copies at 360/N (no duplicate at seam).
+   //   any other angle → endpoints INCLUSIVE: first copy at 0°, last at angle°
+   //                     (step = angle/(count-1)).
+   // radius: shortcut — pushes shape outward by `radius` BEFORE rotating
+   //   (so you write `circularPattern(stud, 8, {radius: 25})` instead of
+   //   pre-translating the stud yourself).
+
+api.spiralPattern(shape, count, {anglePerCopy, risePerCopy, axis?, center?})
+   // The "staircase / screw / spring" case — each copy gets both a rotation
+   // AND an axial translation. Steps + helical fins + threaded rod profile
+   // all fall under this one.
+```
+
+**Robust booleans + heal — catch silent failures.** `expectUnion` is the one to reach for when an agent has hit "I expected one piece, got three" — it tells you *immediately* instead of after the next render, and the error message includes a bbox/volume dump of each component so you can see which piece floated free.
+
+```
+api.expectUnion(parts, {expectComponents: 1})   // union + component-count check
+api.expectDifference(a, b, {expectNonEmpty: true})
+api.expectComponents(m, n)                      // standalone "is m exactly n pieces?" predicate
+api.heal(m, {tolerance?})                       // .simplify() + status check, for STL imports / suspect booleans
+```
+
+Examples:
+
+```js
+const { Manifold } = api;
+// Lid sitting on a box, centered, with 0.5mm gap so they don't fuse:
+const box = Manifold.cube([40, 20, 10], true);
+const lid = Manifold.cube([40, 20, 2], true);
+return api.expectUnion([box, api.placeOn(lid, box, { gap: 0.5 })], { expectComponents: 2 });
+
+// 6 legs around a table column, with a runtime check that they actually merged:
+const column = Manifold.cylinder(20, 2, 2);
+const leg = Manifold.cube([2, 6, 18], true).translate([0, 5, 9]); // pre-positioned
+return api.expectUnion([column, api.circularPattern(leg, 6)], { expectComponents: 1 });
+
+// Did the boolean carve too much? Did it carve anything?
+const after = body.subtract(carveout);
+if (api.volumeDelta(body, after) === 0) throw new Error("subtract did nothing");
 ```
 
 ### Manifold instance methods
@@ -387,7 +483,7 @@ Booleans:   .add(other)  .subtract(other)  .intersect(other)  .hull()
 Transforms: .translate([x,y,z])  .rotate([rx,ry,rz]) (degrees, applied X->Y->Z)
             .scale(s) or .scale([x,y,z])  .mirror([nx,ny,nz]) (plane normal)
             .warp(fn)  .transform(mat4)
-Mesh ops:   .refine(n)  .simplify()  .smoothOut(minSharpAngle?, minSmoothness?)
+Mesh ops:   .refine(n)  .simplify(tolerance)  .smoothOut(minSharpAngle?, minSmoothness?)
             .calculateNormals(idx, angle?)
 Queries:    .volume()  .surfaceArea()  .genus()  .numVert()  .numTri()  .isEmpty()
             .boundingBox()  .status() (0=valid)  .decompose()
@@ -445,6 +541,30 @@ difference() {
 include <BOSL2/std.scad>
 cuboid([40, 30, 20], rounding=3);     // all edges filleted
 ```
+
+### Mesh-operations equivalents in SCAD
+
+The `api.*` mesh-ops helpers (intersects, placeOn, circularPattern, expectUnion…) are sandbox helpers exclusive to manifold-js. SCAD has native equivalents — most of them in BOSL2:
+
+| `api.*` helper (manifold-js) | SCAD / BOSL2 equivalent |
+|---|---|
+| `api.placeOn(a, b)` (place A on top of B) | BOSL2 `attach(TOP, BOTTOM)` on attachable parents (`cuboid(... ){ attach(...) cuboid(...); }`) |
+| `api.alignTo(a, b, {...})` | BOSL2 `position(<anchor>)` + `anchor=<anchor>` on attachable shapes |
+| `api.linearPattern(s, n, step)` | BOSL2 `xcopies(spacing, n=)`, `ycopies(...)`, `zcopies(...)` |
+| `api.circularPattern(s, n)` | BOSL2 `ring_copies(n=N, r=R)` (or `rot_copies(rots=[...])`) |
+| `api.mirrorCopy(s, plane)` | BOSL2 `mirror_copy([nx,ny,nz])` |
+| `api.expectUnion(parts, {expectComponents})` | No language-level equivalent — read `componentCount` off `getGeometryData()` after running and assert in JS test harness |
+
+The **introspection helpers** (cross-section image, per-piece bbox, point-in-solid, healing) work the same regardless of engine — they're on `window.partwright`:
+
+```js
+partwright.renderSection({ axis: 'z', offset: 5 })   // SVG data URL of the slice
+partwright.componentBounds()                          // per-piece bbox/volume for the current model
+partwright.pointInside([0, 0, 5])                     // true / false
+partwright.healCurrent()                              // simplify + rebuild current geometry
+```
+
+These are engine-agnostic — call them after a SCAD render to debug cavities, find leaked components, or clean up a problematic boolean result.
 
 ## Common pitfalls for boolean operations
 
@@ -513,6 +633,8 @@ partwright.paintStroke({ points: [a.point, b.point], radius: 3, resolution: 256,
 ```
 
 `resolution` is the smoothness detail (target triangle edge = radius / resolution; higher = smoother + more triangles), default **256**, range 2–1024. For absolute control pass `maxEdge` instead (target edge in mesh units, e.g. `maxEdge: 0.1` for crisp 0.1-unit edges) — it overrides resolution. A single point stamps a rounded dot.
+
+`paintSlab` and `paintInOrientedBox` share the same subdivision pipeline: their analytic boundary (slab planes / box faces) is **smoothed by default**, so a slab band or box patch gets a clean edge across coarse faces and reconstructs deterministically on reload. Same knobs — `smooth` (default true), `resolution` (model bbox diagonal / resolution, default 256), and `maxEdge` (absolute override). Pass `smooth: false` for the old blocky behavior. The id-baking selectors (`paintInBox`, `paintNear`, `paintInCylinder`, `paintFaces`, …) can't be smoothed — they lock onto existing triangles; refine the model mesh first if you need a finer edge from them.
 
 ## Common gotchas
 
@@ -877,6 +999,26 @@ const s = partwright.sliceAtZVisual(10);  // returns {svg, area, contours}
    - Made something hollow? Slice at mid-height -- should show wall ring, not solid fill.
    - Anything asymmetric front-to-back or left-to-right? Use `views: "box"` -- the back and left
      faces are invisible to every other preset.
+
+### Edge overlay (`edges`)
+
+Both `renderView` and `renderViews` take an `edges` option controlling what is drawn
+on top of the shaded surface:
+
+- **`'crease'`** (default for uncolored models) -- only feature edges: corners and the
+  silhouette. Sharpens shape-reading without spraying facet noise across tessellated
+  curves. This is what you want almost always.
+- **`'none'`** -- plain shaded surface, no overlay. Default for painted models, since an
+  overlay competes with the colors you're checking. Use it on uncolored models too when you
+  want the cleanest read of form and surface.
+- **`'wireframe'`** -- every triangle edge (full topology). Reach for this only to inspect
+  tessellation density or debug a failed boolean (stray edges, non-manifold artifacts); on a
+  dense mesh it compounds into a dark mass, so it's the wrong default for shape verification.
+
+```js
+await partwright.renderViews({ views: "box", edges: "none" })       // cleanest shape read
+partwright.renderView({ elevation: 30, azimuth: 315, edges: "wireframe" })  // inspect topology
+```
 
 ### Render tiers
 

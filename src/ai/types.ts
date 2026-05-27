@@ -17,6 +17,7 @@ export type AnthropicModelId = 'claude-haiku-4-5' | 'claude-sonnet-4-6' | 'claud
  *  string on ChatToggles so custom ids the user types in the settings
  *  modal still fit. */
 export type OpenaiModelId =
+  | 'gpt-5.5'
   | 'gpt-5'
   | 'gpt-5-mini'
   | 'gpt-5-nano'
@@ -77,8 +78,9 @@ export interface ChatToggles {
   autoRetry: 0 | 1 | 3;
   /** Maximum number of agent-loop iterations (tool round-trips) per user
    *  turn. The agent stops with a "stopped at cap" banner if it would
-   *  exceed this. 'low'=4, 'medium'=16, 'high'=64, 'infinity'=unlimited. */
-  maxIterations: 'low' | 'medium' | 'high' | 'infinity';
+   *  exceed this. 'low'=4, 'medium'=16, 'high'=32, 'ultra'=64,
+   *  'infinity'=unlimited. */
+  maxIterations: 'low' | 'medium' | 'high' | 'ultra' | 'infinity';
   /** Hard cap on total USD spent in this session. Sums input + output +
    *  cache read/write across every iteration of every turn so far.
    *  Enforced two ways: the active turn stops with a "stopped at spend
@@ -98,9 +100,10 @@ export interface ChatToggles {
   thinking: 'off' | 'low' | 'medium' | 'high';
   /** Which backend the chat is talking to right now. */
   provider: Provider;
-  /** Anthropic model for cloud chats. Always present so the user can switch
-   *  back to Anthropic without re-picking a model. */
-  anthropicModel: AnthropicModelId;
+  /** Anthropic model for cloud chats. Plain string so dated snapshots
+   *  (claude-opus-4-1-20250805, ...) and any catalog id beyond the curated
+   *  starter tiers fit too — same shape as openaiModel/geminiModel. */
+  anthropicModel: string;
   /** WebLLM model for local chats. Stored as a plain string so user-added
    *  custom model ids (which aren't in the curated `LocalModelId` union)
    *  fit too. Present from the first time the user picks one in the
@@ -119,8 +122,9 @@ export interface ChatToggles {
  *  pick it up automatically. */
 export const MAX_ITERATIONS: Record<ChatToggles['maxIterations'], { value: number; label: string; promptLabel: string; hint: string }> = {
   low:      { value: 4,  label: 'Low (4)',  promptLabel: '4',         hint: 'Short turns. Useful when the model wanders.' },
-  medium:   { value: 16, label: 'Med (16)', promptLabel: '16',        hint: 'Default. Comfortable for most paint workflows.' },
-  high:     { value: 64, label: 'High (64)', promptLabel: '64',       hint: 'Long autonomous runs. Watch the cost meter.' },
+  medium:   { value: 16, label: 'Med (16)', promptLabel: '16',        hint: 'Comfortable for most paint workflows.' },
+  high:     { value: 32, label: 'High (32)', promptLabel: '32',       hint: 'Default. Headroom for multi-step builds and verification.' },
+  ultra:    { value: 64, label: 'Ultra (64)', promptLabel: '64',      hint: 'Long autonomous runs. Watch the cost meter.' },
   infinity: { value: Number.POSITIVE_INFINITY, label: '∞', promptLabel: 'unlimited', hint: 'Unlimited. Only stops on completion / error / your Stop click.' },
 };
 
@@ -221,10 +225,17 @@ export interface ChatMessage {
   /** When the user hit Stop mid-stream and we preserved the partial. */
   aborted?: boolean;
   /** Marks a synthetic assistant message representing a turn that errored
-   *  out (e.g. the model crashed or hit the iteration cap). Rendered with
-   *  a red border so it stands out from a normal reply, and offers a
-   *  Retry button next to it. Not persisted to IndexedDB. */
+   *  out (e.g. the model crashed, a provider 4xx/5xx). Rendered with a red
+   *  border so it stands out from a normal reply, and offers a Retry button
+   *  that re-sends the last user message. Not persisted to IndexedDB. */
   errored?: boolean;
+  /** Marks a synthetic assistant message representing a turn that auto-stopped
+   *  early but is resumable — it hit the iteration cap, the session spend cap,
+   *  a max_tokens truncation, a refusal, or ended without a final message.
+   *  Rendered as a distinct amber notice with a "Keep going" button that
+   *  continues the agent loop from the existing history (no new user prompt).
+   *  Not persisted to IndexedDB. */
+  stopNotice?: { reason: TurnOutcomeReason; detail?: string; iterations: number };
   /** Wall-clock milliseconds for this single model request/response cycle. */
   durationMs?: number;
   /** Cumulative model time in milliseconds across all API calls since the

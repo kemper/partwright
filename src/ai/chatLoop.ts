@@ -181,18 +181,26 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
 
   const seqStart = nextSeq(history);
 
-  const userMsg: ChatMessage = {
-    id: generateId(),
-    sessionId,
-    role: 'user',
-    blocks: userBlocks,
-    createdAt: Date.now(),
-    seq: seqStart,
-  };
-  await putMessages([userMsg]);
-  callbacks.onUserPersisted?.(userMsg);
+  // Resume ("Keep going") calls runTurn with no userBlocks — it continues
+  // the existing history rather than starting a new user turn. Skip the
+  // persisted-message + history-append work in that case so an empty user
+  // record doesn't accumulate in IndexedDB on every resume and doesn't
+  // appear as `[user]\n` noise in later compaction summaries.
+  let userMsg: ChatMessage | null = null;
+  if (userBlocks.length > 0) {
+    userMsg = {
+      id: generateId(),
+      sessionId,
+      role: 'user',
+      blocks: userBlocks,
+      createdAt: Date.now(),
+      seq: seqStart,
+    };
+    await putMessages([userMsg]);
+    callbacks.onUserPersisted?.(userMsg);
+  }
 
-  let workingHistory: ChatMessage[] = [...history, userMsg];
+  let workingHistory: ChatMessage[] = userMsg ? [...history, userMsg] : [...history];
   let totalCostUsd = 0;
   let totalToolCalls = 0;
   let turnApiTimeMs = 0;
@@ -289,15 +297,15 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
         }, streamCallbacks, signal);
       } else {
         if (!toggles.localModel) throw new Error('No local model is selected. Open AI settings → Local model.');
-        // Local provider doesn't accept AbortSignal yet — the user's Stop
-        // click takes effect at the next iteration / tool boundary.
+        // Stop interrupts the in-flight local generation via the signal (WebLLM
+        // interruptGenerate), not just at the next iteration / tool boundary.
         result = await streamLocalTurn({
           modelId: toggles.localModel,
           systemPrompt,
           systemSuffix: toggleSuffix(toggles),
           history: workingHistory,
           tools,
-        }, streamCallbacks);
+        }, streamCallbacks, signal);
       }
     } catch (err) {
       // Surface the error to the caller; runTurn returns normally and the

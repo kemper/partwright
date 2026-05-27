@@ -196,7 +196,7 @@ export function createHelpPage(
         '<li><strong class="text-zinc-300">Claude Sonnet</strong> (default) — balanced cost and capability for most tasks.</li>' +
         '<li><strong class="text-zinc-300">Claude Opus</strong> — most capable; reach for it on complex multi-step geometry.</li>' +
         '</ul><br>' +
-        '<strong class="text-zinc-300">Toggles & guardrails:</strong> At the bottom of the panel are switches for auto-rendering snapshots, allowing the model to run code, allowing it to save versions, allowing it to paint, how many tool errors to silently retry, a per-turn iteration cap (4 / 16 / 64 / ∞), and a per-turn spend cap ($0.10 / $0.50 / $2 / $10 / ∞). Use presets — <em>Minimal</em>, <em>Standard</em>, <em>Full</em> — to flip whole bundles at once.<br><br>' +
+        '<strong class="text-zinc-300">Toggles & guardrails:</strong> At the bottom of the panel are switches for auto-rendering snapshots, allowing the model to run code, allowing it to save versions, allowing it to paint, how many tool errors to silently retry, a per-turn iteration cap (4 / 16 / 32 / 64 / ∞), and a per-turn spend cap ($0.10 / $0.50 / $2 / $10 / ∞). Use presets — <em>Minimal</em>, <em>Standard</em>, <em>Full</em> — to flip whole bundles at once.<br><br>' +
         '<strong class="text-zinc-300">Costs & history:</strong> The panel shows a live cost meter. The ⚙ icon opens settings with lifetime token usage, estimated spend, when the key was added, and buttons to replace or disconnect it. Chat history is saved per session in IndexedDB; use <strong class="text-zinc-300">Compact</strong> to summarize older turns and free up context when conversations get long.',
     },
     {

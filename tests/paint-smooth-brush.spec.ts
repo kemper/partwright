@@ -1,12 +1,13 @@
 // Smooth paintbrush: subdivides the mesh under a brush stroke so the painted
 // region's edge is rounded instead of following the existing tessellation.
 //
-// Covers the UI controls (smooth toggle + fineness selector), the
+// Covers the UI controls (smooth toggle + detail slider), the
 // window.partwright config + paintStroke API, and the core invariants:
 //   - a stroke grows the triangle count (subdivision happened)
-//   - the refined mesh stays watertight (every edge shared by exactly 2 tris)
-//   - finer subdivision yields more triangles
+//   - refinement is rim-only (lean), with intentional hairline T-junctions
+//   - finer detail yields more triangles
 //   - clearing the stroke restores the original tessellation
+//   - a stroke overlapping another region resolves the same live and on reload
 //
 // Uses dispatchEvent('click') to dodge the first-run onboarding backdrop, and
 // drives painting through paintStroke (same code path as the UI smooth brush)
@@ -31,23 +32,25 @@ test.describe('smooth paintbrush', () => {
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
 
     // Brush is the default tool, so the smooth toggle shows immediately and
-    // smoothing is on by default.
-    const smoothBtn = page.locator('#paint-picker-panel button:has-text("Smooth edges")');
+    // smoothing is on by default. Scope to the brush's own toggle (the slab and
+    // shape panels carry their own "Smooth edges" toggles too).
+    const smoothBtn = page.locator('#paint-picker-panel button[title*="under the brush"]');
     await expect(smoothBtn).toBeVisible();
     await expect(smoothBtn).toContainText('On');
 
     // The detail control is a typeable slider (range 2..1024), visible while on.
-    const detailSlider = page.locator('#paint-picker-panel input[type="range"][title*="Smooth-edge detail"]');
+    const detailSlider = page.locator('#paint-picker-panel input[type="range"][title*="brush radius"]');
     await expect(detailSlider).toBeVisible();
     await expect(detailSlider).toHaveAttribute('max', '1024');
     await expect(detailSlider).toHaveAttribute('min', '2');
 
-    // Defaults: smooth on, divisor 256.
+    // Defaults: smooth on, divisor 64 (the exact-outline clip keeps edges crisp
+    // at a far lower segment count than the old 256).
     const cfg = await page.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (window as any).partwright.getBrushSmooth();
     });
-    expect(cfg).toMatchObject({ smooth: true, divisor: 256 });
+    expect(cfg).toMatchObject({ smooth: true, divisor: 64 });
 
     // Turning smoothing off hides the detail slider.
     await smoothBtn.dispatchEvent('click');
@@ -71,6 +74,9 @@ test.describe('smooth paintbrush', () => {
     await page.locator('#paint-toggle').dispatchEvent('click');
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
     await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
+    // Let the viewport auto-frame the new mesh so the centre ray reliably hits
+    // it (otherwise a synthetic mousedown can miss before the camera settles).
+    await page.waitForTimeout(150);
 
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -85,7 +91,10 @@ test.describe('smooth paintbrush', () => {
       fire('mousedown', cx, cy);
       for (let dx = 6; dx <= 30; dx += 6) fire('mousemove', cx + dx, cy);
       fire('mouseup', cx + 30, cy);
-      await new Promise(res => requestAnimationFrame(() => res(null)));
+      // The interactive brush commits through the async (worker-backed) paint
+      // pipeline; wait for the subdivision job to settle before reading mesh
+      // state — otherwise the refined triangle count hasn't landed yet.
+      await pw.waitForPaint();
       return { before, after: pw.getMesh().numTri, regions: pw.listRegions().length };
     });
 
@@ -135,6 +144,95 @@ test.describe('smooth paintbrush', () => {
     // hundred triangles, not the thousands a graded interior would add.
     expect(out.afterTri).toBeLessThan(1500);
     expect(out.regions).toBe(1);
+  });
+
+  test('slab surface mode keeps paint on the picked surface (no bleed-through)', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      // A thin plate: top face at z=1, bottom at z=-1 (2 units thick). A radius-4
+      // brush is a 3D ball big enough to punch through to the bottom face — the
+      // old behavior painted both. The slab constraint gates by depth instead, so
+      // a shallow depth paints only the top while a depth past the plate reaches
+      // the back face too (the extra triangles prove the gate is what stops it).
+      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 2], true);`);
+      const spray = (depth: number) => {
+        pw.clearColors();
+        return pw.paintStroke({ points: [[0, 0, 1]], radius: 4, maxEdge: 0.5, surface: 'slab', depth, color: [1, 0, 0] }).triangles;
+      };
+      const thin = spray(0.5); // hugs the top face
+      const deep = spray(5);   // depth exceeds the 2-thick plate → also paints the back face
+      return { thin, deep };
+    });
+    expect(out.thin).toBeGreaterThan(0);        // the top surface was painted
+    expect(out.deep).toBeGreaterThan(out.thin); // a deep slab reaches the back face; the shallow one doesn't
+  });
+
+  test('geodesic surface mode (the default) never bleeds through a wall', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 2], true);`);
+      // Geodesic flood-fills along the connected surface, so the back face (a
+      // disconnected wall within the 3D radius) stays clean with no depth knob.
+      pw.clearColors();
+      const geo = pw.paintStroke({ points: [[0, 0, 1]], radius: 4, maxEdge: 0.5, surface: 'geodesic', color: [0, 1, 0] }).triangles;
+      // A deep slab DOES punch through to the back face — geodesic paints fewer.
+      pw.clearColors();
+      const slabDeep = pw.paintStroke({ points: [[0, 0, 1]], radius: 4, maxEdge: 0.5, surface: 'slab', depth: 5, color: [0, 1, 0] }).triangles;
+      return { geo, slabDeep, surface: pw.getBrushSurface().surface };
+    });
+    expect(out.surface).toBe('geodesic');        // new painting defaults to geodesic
+    expect(out.geo).toBeGreaterThan(0);          // the top surface was painted
+    expect(out.slabDeep).toBeGreaterThan(out.geo); // geodesic stayed on the top; the deep slab reached the back
+  });
+
+  test('slab is an extruded prism: depth reaches through to the back face', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      // Thin plate (2 thick): top z=1, bottom z=-1. A shallow prism hugs the top;
+      // a deep one extrudes the cross-section through to the back face. We measure
+      // the painted region's z-extent (its bbox), not triangle count.
+      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 2], true);`);
+      const sprayMinZ = (depth: number) => {
+        pw.clearColors();
+        pw.paintStroke({ points: [[0, 0, 1]], radius: 6, surface: 'slab', depth, shape: 'square', color: [1, 0, 0] });
+        return pw.listRegions()[0].bbox.min[2];
+      };
+      return { shallowMinZ: sprayMinZ(0.5), deepMinZ: sprayMinZ(5) };
+    });
+    expect(out.shallowMinZ).toBeGreaterThan(0);  // stayed on the top face
+    expect(out.deepMinZ).toBeLessThan(0);        // reached through to the back face
+  });
+
+  test('slab matches geodesic footprint on a flat face (corners reached)', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run(`const { Manifold } = api; return Manifold.cube([60, 60, 4], true);`);
+      const paintBox = (shape: string, surface: string) => {
+        pw.clearColors();
+        pw.paintStroke({ points: [[0, 0, 2]], radius: 8, surface, depth: 1, shape, color: [1, 0, 0] });
+        return pw.listRegions()[0].bbox;
+      };
+      return {
+        slabSquare: paintBox('square', 'slab'),
+        geoSquare: paintBox('square', 'geodesic'),
+        slabCircle: paintBox('circle', 'slab'),
+      };
+    });
+    // The square reaches its full ±8 extent (corners painted, not clipped to a
+    // disc), and the slab prism covers the same footprint as the geodesic one.
+    expect(out.slabSquare.max[0]).toBeGreaterThan(7);
+    expect(out.slabSquare.max[0]).toBeCloseTo(out.geoSquare.max[0], 1);
+    expect(out.slabSquare.min[1]).toBeCloseTo(out.geoSquare.min[1], 1);
+    // A circle of the same radius reaches ±8 in-plane too (round, not square).
+    expect(out.slabCircle.max[0]).toBeGreaterThan(7);
   });
 
   test('many strokes stay fast and bounded (no O(strokes^2) replay)', async ({ page }) => {
@@ -221,7 +319,7 @@ test.describe('smooth paintbrush', () => {
     expect(out.offModel.error).toBeTruthy(); // nothing within the footprint
   });
 
-  test('paintStroke resolution defaults to 256, is settable, and maxEdge overrides', async ({ page }) => {
+  test('paintStroke resolution defaults to 64, is settable, and maxEdge overrides', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -237,11 +335,56 @@ test.describe('smooth paintbrush', () => {
       const abs = pw.paintStroke({ points: [[0, 0, 2]], radius: 8, maxEdge: 0.5, color: [1, 0, 0] });
       return { def, defTri, coarse, coarseTri, abs };
     });
-    expect(out.def.resolution).toBe(256);          // default
-    expect(out.def.maxEdge).toBeCloseTo(8 / 256, 5);
+    expect(out.def.resolution).toBe(64);           // default
+    expect(out.def.maxEdge).toBeCloseTo(8 / 64, 5);
     expect(out.coarse.resolution).toBe(32);        // settable
-    expect(out.defTri).toBeGreaterThan(out.coarseTri); // 256 is finer than 32
+    expect(out.defTri).toBeGreaterThan(out.coarseTri); // 64 is finer than 32
     expect(out.abs.maxEdge).toBe(0.5);             // maxEdge override wins
+  });
+
+  test('triangle-count readout updates on run, paint, and clear (no hard cap)', async ({ page }) => {
+    await openEditor(page); // runs a 10mm cube (12 triangles)
+    const counter = page.locator('#triangle-count');
+    await expect(counter).toBeVisible();
+    const num = async () => parseInt((await counter.textContent() ?? '').replace(/[^0-9]/g, ''), 10);
+    const base = await num();
+    expect(base).toBe(12);
+
+    await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).partwright.paintStroke({ points: [[0, 0, 5]], radius: 2, resolution: 64, color: [1, 0, 0] });
+    });
+    await expect.poll(num).toBeGreaterThan(base); // count rose with the stroke
+
+    await page.evaluate(() => (window as unknown as { partwright: { clearColors(): void } }).partwright.clearColors());
+    await expect.poll(num).toBe(base); // back to base after clear
+  });
+
+  test('a region overlapping a smooth stroke resolves the same live and on reload', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.createSession('overlap-determinism');
+      await pw.run(`const { Manifold } = api; return Manifold.cube([40, 40, 6], true);`);
+      // A box region over the top half, then a smooth stroke straddling its edge
+      // (subdivides triangles the box's centroid test treats as in/out).
+      const boxRegion = pw.paintInBox({ box: { min: [-20, -20, 2.9], max: [20, 20, 3.1] }, color: [0, 0, 1], name: 'Top' });
+      pw.paintStroke({ points: [[0, 0, 3]], radius: 8, resolution: 64, color: [1, 0, 0] });
+      const liveBoxTris = pw.listRegions().find((r: { id: number }) => r.id === boxRegion.id).triangles;
+      const liveMeshTris = pw.getMesh().numTri;
+
+      const sv = await pw.runAndSave(pw.getCode(), 'overlap-v');
+      await pw.run(`const { Manifold } = api; return Manifold.cube([40, 40, 6], true);`);
+      await pw.loadVersion({ index: sv.version.index });
+      const reloaded = pw.listRegions();
+      const reloadBox = reloaded.find((r: { name: string }) => r.name === 'Top');
+      return { liveBoxTris, liveMeshTris, reloadBoxTris: reloadBox?.triangles ?? -1, reloadMeshTris: pw.getMesh().numTri };
+    });
+
+    // Incremental (live) append must match the full re-resolve on reload.
+    expect(out.reloadMeshTris).toBe(out.liveMeshTris);
+    expect(out.reloadBoxTris).toBe(out.liveBoxTris);
   });
 
   test('a smooth stroke survives save + reload', async ({ page }) => {
@@ -256,8 +399,11 @@ test.describe('smooth paintbrush', () => {
       const paintedColored = pw.listRegions()[0].triangles;
 
       const sv = await pw.runAndSave(pw.getCode(), 'smooth-v');
-      // Re-run the bare code so the refined mesh is gone, then reload the version:
-      // loadVersion re-runs the code and replays the stroke descriptor.
+      // Re-run the same code. A refining region that persists across the re-run
+      // deterministically rebuilds the refined mesh — it does NOT reset to the
+      // coarse base, otherwise the region's refined-mesh triangle indices would
+      // be stamped onto coarse triangles ("shattered shards"). loadVersion then
+      // independently reconstructs the same refined mesh from the descriptor.
       await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 4], true);`);
       const baseTri = pw.getMesh().numTri;
       await pw.loadVersion({ index: sv.version.index });
@@ -271,10 +417,147 @@ test.describe('smooth paintbrush', () => {
       };
     });
 
-    expect(out.baseTri).toBe(12);                         // bare cube, no refinement
     expect(out.paintedTri).toBeGreaterThan(12);
+    expect(out.baseTri).toBe(out.paintedTri);             // re-run rebuilds the refined mesh deterministically
     expect(out.reloadedTri).toBe(out.paintedTri);         // refined mesh reconstructed deterministically
     expect(out.reloadedColored).toBe(out.paintedColored); // same painted triangle set
     expect(out.reloadedRegions).toBe(1);
+  });
+});
+
+// Slab and oriented-shape painting reuse the same rim-subdivision pipeline as the
+// brush: their analytic boundary is smoothed by subdividing the coarse triangles
+// it crosses. Smoothing is on by default and controllable (UI toggle/slider; API
+// smooth/resolution/maxEdge params).
+test.describe('smooth slab & shape painting', () => {
+  test('paintSlab smooths its edges by default and smooth:false keeps the base mesh', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const base = pw.getMesh().numTri; // 10mm cube: 12 triangles
+      // Slab z ∈ [0,5] covers the top face + upper walls (so the coarse centroid
+      // test finds something), and its lower edge z=0 crosses the wall triangles.
+      const smooth = pw.paintSlab({ axis: 'z', offset: 0, thickness: 5, color: [0, 0.6, 1] });
+      const smoothTri = pw.getMesh().numTri;
+      pw.clearColors();
+      const cleared = pw.getMesh().numTri;
+      const blocky = pw.paintSlab({ axis: 'z', offset: 0, thickness: 5, color: [0, 0.6, 1], smooth: false });
+      const blockyTri = pw.getMesh().numTri;
+      return { base, smooth, smoothTri, cleared, blocky, blockyTri };
+    });
+
+    expect(out.smooth.error).toBeFalsy();
+    expect(out.smooth.smooth).toBe(true);
+    expect(out.smooth.maxEdge).toBeGreaterThan(0);
+    expect(out.smoothTri).toBeGreaterThan(out.base);  // boundary subdivided
+    expect(out.cleared).toBe(out.base);               // clear restores the base mesh
+    expect(out.blocky.smooth).toBe(false);
+    expect(out.blockyTri).toBe(out.base);             // smooth:false leaves tessellation untouched
+  });
+
+  test('slab resolution controls smoothness (finer → more triangles)', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run(`const { Manifold } = api; return Manifold.cube([60, 60, 60], true);`);
+      pw.paintSlab({ axis: 'z', offset: 0, thickness: 20, color: [1, 0, 0], resolution: 16 });
+      const coarse = pw.getMesh().numTri;
+      pw.clearColors();
+      pw.paintSlab({ axis: 'z', offset: 0, thickness: 20, color: [1, 0, 0], resolution: 128 });
+      const fine = pw.getMesh().numTri;
+      return { coarse, fine };
+    });
+    expect(out.fine).toBeGreaterThan(out.coarse);
+  });
+
+  test('paintInOrientedBox smooths by default; smooth:false keeps the base mesh', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const base = pw.getMesh().numTri;
+      // A box that pokes through the top face (z=5) — its faces cut across the
+      // two big top-face triangles, so smoothing has coarse triangles to refine.
+      const smooth = pw.paintInOrientedBox({ box: { center: [0, 0, 5], size: [6, 6, 6] }, color: [0.2, 0.9, 0.4] });
+      const smoothTri = pw.getMesh().numTri;
+      pw.clearColors();
+      const blocky = pw.paintInOrientedBox({ box: { center: [0, 0, 5], size: [6, 6, 6] }, color: [0.2, 0.9, 0.4], smooth: false });
+      const blockyTri = pw.getMesh().numTri;
+      return { base, smooth, smoothTri, blocky, blockyTri };
+    });
+
+    expect(out.smooth.error).toBeFalsy();
+    expect(out.smooth.smooth).toBe(true);
+    expect(out.smoothTri).toBeGreaterThan(out.base);
+    expect(out.blocky.smooth).toBe(false);
+    expect(out.blockyTri).toBe(out.base);
+  });
+
+  test('a smooth slab resolves the same live and on reload (determinism)', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.createSession('smooth-slab-persist');
+      await pw.run(`const { Manifold } = api; return Manifold.cube([30, 30, 30], true);`);
+      const region = pw.paintSlab({ axis: 'z', offset: 0, thickness: 10, color: [1, 0.4, 0], resolution: 48 });
+      const liveTri = pw.getMesh().numTri;
+      const liveColored = pw.listRegions().find((r: { id: number }) => r.id === region.id).triangles;
+
+      const sv = await pw.runAndSave(pw.getCode(), 'slab-v');
+      // Re-run the same code: the persisting smooth-slab region rebuilds the
+      // refined mesh deterministically (matching the brush path) rather than
+      // leaving the coarse base with stale refined indices.
+      await pw.run(`const { Manifold } = api; return Manifold.cube([30, 30, 30], true);`);
+      const baseTri = pw.getMesh().numTri;
+      await pw.loadVersion({ index: sv.version.index });
+      const reloaded = pw.listRegions()[0];
+      return { liveTri, liveColored, baseTri, reloadTri: pw.getMesh().numTri, reloadColored: reloaded?.triangles ?? -1 };
+    });
+
+    expect(out.liveTri).toBeGreaterThan(12);         // smoothing subdivided
+    expect(out.baseTri).toBe(out.liveTri);           // re-run rebuilds the refined mesh deterministically
+    expect(out.reloadTri).toBe(out.liveTri);         // refined mesh reconstructed deterministically
+    expect(out.reloadColored).toBe(out.liveColored); // same painted set
+  });
+
+  test('a stroke appended over a smooth slab matches a full reload (determinism)', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.createSession('slab-then-stroke');
+      await pw.run(`const { Manifold } = api; return Manifold.cube([30, 30, 30], true);`);
+      // Smooth slab first (full rebuild), then a stroke straddling its band
+      // (incremental append onto the slab-refined mesh).
+      const slab = pw.paintSlab({ axis: 'z', offset: 0, thickness: 10, color: [0, 0.5, 1], resolution: 48 });
+      pw.paintStroke({ points: [[15, 0, 5]], radius: 6, resolution: 48, color: [1, 0, 0] });
+      const liveMeshTris = pw.getMesh().numTri;
+      const liveSlabTris = pw.listRegions().find((r: { id: number }) => r.id === slab.id).triangles;
+
+      const sv = await pw.runAndSave(pw.getCode(), 'slab-stroke-v');
+      await pw.run(`const { Manifold } = api; return Manifold.cube([30, 30, 30], true);`);
+      await pw.loadVersion({ index: sv.version.index });
+      const reloadSlab = pw.listRegions().find((r: { name: string }) => r.name === slab.name);
+      return { liveMeshTris, liveSlabTris, reloadMeshTris: pw.getMesh().numTri, reloadSlabTris: reloadSlab?.triangles ?? -1 };
+    });
+
+    expect(out.reloadMeshTris).toBe(out.liveMeshTris);   // incremental append == full reload
+    expect(out.reloadSlabTris).toBe(out.liveSlabTris);
+  });
+
+  test('the slab and shape panels show an edge-smoothing toggle, on by default', async ({ page }) => {
+    await openEditor(page);
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+
+    for (const tool of ['Slab', 'Shape']) {
+      await page.locator(`#paint-picker-panel button:has-text("${tool}")`).first().dispatchEvent('click');
+      const smoothBtn = page.locator('#paint-picker-panel button:visible:has-text("Smooth edges")');
+      await expect(smoothBtn).toBeVisible();
+      await expect(smoothBtn).toContainText('On');
+    }
   });
 });

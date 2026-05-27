@@ -212,6 +212,20 @@ export function setValue(code: string): void {
   editorView.dispatch({
     changes: { from: 0, to: editorView.state.doc.length, insert: formatted },
   });
+  // Programmatic setValue (partwright.run, version load, etc.) signals an
+  // explicit caller-managed run, so cancel the debounced auto-run that the
+  // docChanged listener just scheduled. Without this, every programmatic
+  // value-set triggers an extra run 300 ms later that re-runs the code and
+  // (via updateMesh's auto-frame) snaps the camera back — wiping any zoom /
+  // orbit the user did in the meantime.
+  if (debounceTimer !== null) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+  if (idleTimer !== null) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
 }
 
 function applyFormat(code: string, lang: EditorLanguage): string {

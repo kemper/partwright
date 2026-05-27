@@ -388,24 +388,34 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     const data = out.data;
     const maxH = opts.common.maxHeight > 0 ? opts.common.maxHeight : 1;
 
+    // The grid is built bottom-row-first (downsample flips Y so the 3D mesh
+    // renders right-side-up). The 2D preview canvas writes row 0 at the top,
+    // so we read from grid row (h-1-py) when filling canvas row py to undo
+    // that flip — otherwise the preview shows the image upside-down.
     if (opts.mode === 'quantized' && grid.colors) {
       const colors = grid.colors;
-      for (let i = 0; i < w * h; i++) {
-        const o = i * 4;
-        const c = i * 3;
-        data[o] = colors[c];
-        data[o + 1] = colors[c + 1];
-        data[o + 2] = colors[c + 2];
-        data[o + 3] = 255;
+      for (let py = 0; py < h; py++) {
+        const sy = h - 1 - py;
+        for (let px = 0; px < w; px++) {
+          const src = (sy * w + px) * 3;
+          const dst = (py * w + px) * 4;
+          data[dst] = colors[src];
+          data[dst + 1] = colors[src + 1];
+          data[dst + 2] = colors[src + 2];
+          data[dst + 3] = 255;
+        }
       }
     } else {
-      for (let i = 0; i < w * h; i++) {
-        const g = Math.max(0, Math.min(255, Math.round((grid.heights[i] / maxH) * 255)));
-        const o = i * 4;
-        data[o] = g;
-        data[o + 1] = g;
-        data[o + 2] = g;
-        data[o + 3] = 255;
+      for (let py = 0; py < h; py++) {
+        const sy = h - 1 - py;
+        for (let px = 0; px < w; px++) {
+          const g = Math.max(0, Math.min(255, Math.round((grid.heights[sy * w + px] / maxH) * 255)));
+          const dst = (py * w + px) * 4;
+          data[dst] = g;
+          data[dst + 1] = g;
+          data[dst + 2] = g;
+          data[dst + 3] = 255;
+        }
       }
     }
     ctx.putImageData(out, 0, 0);

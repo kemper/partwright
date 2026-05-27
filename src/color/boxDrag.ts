@@ -11,7 +11,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import type { MeshData } from '../geometry/types';
 import { getScene, getCamera, getRenderer, setGizmoLock } from '../renderer/viewport';
 import { addRegion, getRegions } from './regions';
-import { getColor, getCurrentMesh } from './paintMode';
+import { getColor, getCurrentMesh, shapeSmoothDescriptorFields } from './paintMode';
 import { findShapeTriangles, type OrientedBox, type ShapeType } from './boxPaint';
 import { meshBounds } from './slabPaint';
 
@@ -304,11 +304,12 @@ export function commitBox(): number {
   if (triangles.size === 0) return 0;
 
   const existingCount = getRegions().length;
+  const { smooth, maxEdge } = shapeSmoothDescriptorFields(mesh);
   addRegion(
     `${shapeLabel(shapeType)} ${existingCount + 1}`,
     [...getColor()] as [number, number, number],
     'slab',
-    { kind: 'box', center: box.center, size: box.size, quaternion: box.quaternion, shape: shapeType },
+    { kind: 'box', center: box.center, size: box.size, quaternion: box.quaternion, shape: shapeType, smooth, maxEdge },
     triangles,
   );
 

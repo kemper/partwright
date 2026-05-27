@@ -32,6 +32,27 @@ function shouldExcludeFromExport(obj: THREE.Object3D): boolean {
   return false;
 }
 
+/** Throws if any mesh that will be exported carries a non-finite (NaN/Infinity)
+ *  vertex coordinate. GLB builds from the live Three.js scene rather than a
+ *  MeshData, so it can't reuse assertFiniteMesh — but it needs the same guard so
+ *  every export path (menu button AND window.partwright.exportGLB/exportGLBData)
+ *  fails loudly instead of writing garbage floats. Run after excluded objects
+ *  are hidden so only the geometry GLTFExporter will actually serialize is
+ *  checked (the exporter skips invisible objects by default). */
+function assertFiniteExportableScene(scene: THREE.Object3D): void {
+  scene.traverse(obj => {
+    if (!obj.visible || !(obj instanceof THREE.Mesh) || shouldExcludeFromExport(obj)) return;
+    const pos = (obj.geometry as THREE.BufferGeometry).attributes?.position;
+    if (!pos) return;
+    const arr = pos.array;
+    for (let i = 0; i < arr.length; i++) {
+      if (!Number.isFinite(arr[i])) {
+        throw new Error(`Cannot export: mesh "${obj.name || 'model'}" has a non-finite (NaN/Infinity) coordinate. Check the geometry before exporting.`);
+      }
+    }
+  });
+}
+
 /** Build the GLB blob for the current scene without triggering a download. */
 export async function buildGLB(customName?: string): Promise<BuiltExport> {
   const scene = getScene();
@@ -46,6 +67,7 @@ export async function buildGLB(customName?: string): Promise<BuiltExport> {
   });
 
   try {
+    assertFiniteExportableScene(scene);
     const result = await exporter.parseAsync(scene, { binary: true });
     const mimeType = 'model/gltf-binary';
     const blob = new Blob([result as ArrayBuffer], { type: mimeType });

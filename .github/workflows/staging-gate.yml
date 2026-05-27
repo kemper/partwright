@@ -1,0 +1,78 @@
+name: Gate main → staging
+
+# Quality gate. Every push to main deploys immediately to the main preview
+# (main.mainifold.pages.dev) via Cloudflare's native git integration — that
+# preview is intentionally pre-test. This workflow is what gives `staging` its
+# meaning: it builds, unit-tests, and e2e-tests the pushed commit, and only if
+# everything passes does it fast-forward `staging` to match. A red build or
+# test leaves staging parked on the last known-good commit.
+#
+# The e2e suite is CPU-bound (each test boots WASM in its own browser page), so
+# it runs SERIALLY within a runner (playwright.config.ts pins workers: 1) and
+# is parallelized across runners by sharding instead — contention-free, and the
+# wall-clock cost still drops ~3x.
+
+on:
+  push:
+    branches: [main]
+
+# Serialize promotions so two rapid pushes to main can't race the staging push.
+concurrency:
+  group: staging-gate
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build (type-check + vite build)
+        run: npm run build
+      - name: Unit tests
+        run: npm run test:unit
+
+  e2e:
+    needs: build-unit
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: E2E tests (shard ${{ matrix.shard }}/3)
+        run: npx playwright test --shard=${{ matrix.shard }}/3
+
+  promote:
+    needs: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Reached only when build + unit + every e2e shard pass. Promotes the
+      # green commit to staging, which Cloudflare deploys to the known-good
+      # staging preview.
+      - name: Promote to staging
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin staging
+          git checkout -B staging origin/staging
+          git merge --ff-only "$GITHUB_SHA" || git merge --no-edit "$GITHUB_SHA"
+          git push origin staging

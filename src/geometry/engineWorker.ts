@@ -8,21 +8,33 @@
 //   { type: 'init' }
 //   { type: 'execute',  callId, code, lang?, imports? }
 //   { type: 'validate', callId, code, lang? }
+//   { type: 'simplify', callId, mesh, targetTriangles, maxTolerance }
+//   { type: 'simplify_cancel', callId }
 //
 // Protocol — Worker → Main:
 //   { type: 'ready' }
 //   { type: 'execute_result',  callId, mesh, error, diagnostics, labelMapEntries }
 //   { type: 'validate_result', callId, result }
-//   { type: 'error',           callId, message }
+//   { type: 'simplify_progress', callId, fraction }
+//   { type: 'simplify_result',   callId, mesh, triangleCount, tolerance, cancelled, error }
+//   { type: 'error',             callId, message }
 //
 // Mesh typed arrays are transferred (zero-copy) to the main thread.
 // labelMap (Map<string, Set<number>>) is serialised as [string, number[]][].
 
-import { manifoldJsEngine } from './engines/manifoldJs';
+import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
 import { runScadAsync, openscadEngine } from './engines/openscad';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { setCircularSegmentsOverride } from './qualitySettings';
 import type { Language } from './engines/types';
+import { simplifyToTriangleBudget } from './simplify';
+import type { MeshData } from './types';
+
+/** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
+ *  yields to the event loop between iterations, so a `simplify_cancel`
+ *  message has a chance to land and flip this flag — the loop checks it on
+ *  each iteration boundary and bails out cleanly. */
+const simplifyCancelFlags = new Map<string, boolean>();
 
 let manifoldReady = false;
 
@@ -123,6 +135,17 @@ self.onmessage = async (event: MessageEvent) => {
           labelMapEntries: null,
         });
       }
+
+      // Only the extracted mesh data crosses the thread boundary, so the live
+      // result Manifold is no longer needed. Free it (manifold-js path only —
+      // the SCAD engine owns its own result) so repeated executions, including
+      // the editor's per-edit auto-run, don't leak one Manifold each.
+      if (effectiveLang === 'manifold-js') {
+        const live = (result as { manifold?: { delete?: () => void } } | undefined)?.manifold;
+        if (live && typeof live.delete === 'function') {
+          try { live.delete(); } catch { /* already freed */ }
+        }
+      }
     } catch (err) {
       self.postMessage({
         type: 'error',
@@ -133,6 +156,89 @@ self.onmessage = async (event: MessageEvent) => {
       // Always reset so a subsequent execution doesn't inherit this run's value.
       setCircularSegmentsOverride(null);
     }
+    return;
+  }
+
+  // ── simplify ───────────────────────────────────────────────────────────
+  if (msg.type === 'simplify') {
+    const { callId, mesh, targetTriangles, maxTolerance } = msg as unknown as {
+      callId: string;
+      mesh: MeshData;
+      targetTriangles: number;
+      maxTolerance: number;
+    };
+    if (!manifoldReady) {
+      self.postMessage({
+        type: 'simplify_result', callId, mesh: null, triangleCount: 0, tolerance: 0,
+        cancelled: false, error: 'Geometry engine not initialised — try again after loading completes.',
+      });
+      return;
+    }
+    simplifyCancelFlags.set(callId, false);
+    const mod = getManifoldModule();
+    let baseManifold: { delete?: () => void } | null = null;
+    try {
+      baseManifold = mod.Manifold.ofMesh(mesh);
+      const result = await simplifyToTriangleBudget(
+        baseManifold as unknown as Parameters<typeof simplifyToTriangleBudget>[0],
+        targetTriangles,
+        maxTolerance,
+        (fraction) => {
+          self.postMessage({ type: 'simplify_progress', callId, fraction });
+          // Loop yields to the event loop between iterations so a queued
+          // 'simplify_cancel' message can flip the flag — checked here so the
+          // search bails before doing more work.
+          return new Promise<void>(r => setTimeout(r, 0));
+        },
+        () => simplifyCancelFlags.get(callId) === true,
+      );
+      const cancelled = simplifyCancelFlags.get(callId) === true;
+      simplifyCancelFlags.delete(callId);
+      if (cancelled) {
+        self.postMessage({
+          type: 'simplify_result', callId, mesh: null, triangleCount: 0, tolerance: 0,
+          cancelled: true, error: null,
+        });
+      } else if (result) {
+        const transfer: Transferable[] = [
+          result.mesh.vertProperties.buffer,
+          result.mesh.triVerts.buffer,
+        ];
+        if (result.mesh.mergeFromVert) transfer.push(result.mesh.mergeFromVert.buffer);
+        if (result.mesh.mergeToVert)   transfer.push(result.mesh.mergeToVert.buffer);
+        if (result.mesh.runIndex)      transfer.push(result.mesh.runIndex.buffer);
+        if (result.mesh.runOriginalID) transfer.push(result.mesh.runOriginalID.buffer);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (self as any).postMessage({
+          type: 'simplify_result', callId,
+          mesh: result.mesh, triangleCount: result.triangleCount, tolerance: result.tolerance,
+          cancelled: false, error: null,
+        }, transfer);
+      } else {
+        // null result: target ≥ current triangle count, or no reduction possible.
+        self.postMessage({
+          type: 'simplify_result', callId,
+          mesh: null, triangleCount: 0, tolerance: 0, cancelled: false, error: null,
+        });
+      }
+    } catch (err) {
+      simplifyCancelFlags.delete(callId);
+      self.postMessage({
+        type: 'simplify_result', callId, mesh: null, triangleCount: 0, tolerance: 0,
+        cancelled: false, error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      if (baseManifold && typeof baseManifold.delete === 'function') {
+        try { baseManifold.delete(); } catch { /* already freed */ }
+      }
+    }
+    return;
+  }
+
+  // ── simplify_cancel ─────────────────────────────────────────────────────
+  if (msg.type === 'simplify_cancel') {
+    const { callId } = msg as unknown as { callId: string };
+    if (simplifyCancelFlags.has(callId)) simplifyCancelFlags.set(callId, true);
     return;
   }
 

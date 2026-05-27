@@ -5,13 +5,17 @@
 import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPEND_CAP_USD, THINKING_LEVELS, type AnthropicModelId, type ChatToggles, type GeminiModelId, type ModelId, type OpenaiModelId, type Preset, type Provider } from './types';
 import type { LocalModelId } from './localModels';
 import { LOCAL_MODELS } from './localModels';
+import { getKey } from './db';
+import { getModelOptions, type ModelOption } from './catalog';
 
 const STORAGE_KEY = 'partwright-ai-settings-v1';
 
 export interface AiSettings {
   preset: Preset;
   toggles: ChatToggles;
-  /** When `false`, the chat drawer starts collapsed on page load. */
+  /** Whether the chat drawer is shown. Defaults to open on a first visit so
+   *  the AI surface is discoverable; persists the user's choice thereafter, so
+   *  once they close it it stays closed on reload. */
   drawerOpen: boolean;
   /** Default for new sessions before the user has touched the toggle bar. */
   autoCompactMode: 'off' | 'conservative' | 'standard' | 'aggressive';
@@ -69,8 +73,9 @@ export interface LocalContextSettings {
    *  but the model loses long-range coherence. */
   sliding: boolean;
   /** Seconds without a new token before the stall watchdog fires and
-   *  auto-retries the request. Default 35. Increase for slow models on
-   *  modest hardware (e.g. a large quant on CPU-assisted inference). */
+   *  auto-retries the request. Default 60. Applies to every provider
+   *  (cloud and local); increase for slow models on modest hardware
+   *  (e.g. a large quant on CPU-assisted inference). */
   stallTimeoutSec: number;
 }
 
@@ -97,7 +102,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     // can flip the Paint pill on, or pick the Full preset.
     scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: true },
     autoRetry: 1,
-    maxIterations: 'medium',
+    maxIterations: 'high',
     maxSpend: 'medium',
     thinking: 'high',
     anthropicModel: 'claude-sonnet-4-6',
@@ -106,7 +111,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     vision: { views: true, resolution: 'high', angles: 'all' },
     scope: { runCode: true, saveVersions: true, paintFaces: true, sessionNotes: true },
     autoRetry: 3,
-    maxIterations: 'high',
+    maxIterations: 'ultra',
     maxSpend: 'high',
     thinking: 'high',
     anthropicModel: 'claude-opus-4-7',
@@ -124,11 +129,11 @@ const DEFAULT_TOGGLES: ChatToggles = {
 const DEFAULT_SETTINGS: AiSettings = {
   preset: 'standard',
   toggles: DEFAULT_TOGGLES,
-  drawerOpen: false,
+  drawerOpen: true,
   autoCompactMode: 'off',
   systemPromptOverrides: { anthropic: null, local: null, openai: null, gemini: null },
   customLocalModels: [],
-  localContext: { windowSizeOverride: null, sliding: false, stallTimeoutSec: 35 },
+  localContext: { windowSizeOverride: null, sliding: false, stallTimeoutSec: 60 },
   aiPanelWidth: 420,
 };
 
@@ -201,6 +206,21 @@ export function reloadSettingsFromStorage(): AiSettings {
   const next = loadSettings();
   for (const fn of listeners) fn(next);
   return next;
+}
+
+/** Which AI connection the toolbar chip / "Connect AI" flow should reflect:
+ *  a configured local WebGPU model, any stored hosted key ('cloud'), or
+ *  nothing yet ('disconnected'). Shared by the toolbar chip and the panel's
+ *  auto-open-settings-on-connect behaviour so the two never drift. */
+export async function aiConnectionMode(): Promise<'disconnected' | 'cloud' | 'local'> {
+  const settings = loadSettings();
+  if (settings.toggles.provider === 'local' && settings.toggles.localModel) return 'local';
+  const [anthropic, openai, gemini] = await Promise.all([
+    getKey('anthropic'),
+    getKey('openai'),
+    getKey('gemini'),
+  ]);
+  return (anthropic || openai || gemini) ? 'cloud' : 'disconnected';
 }
 
 export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
@@ -291,9 +311,11 @@ export function getSpendingSummary(): {
   };
 }
 
-/** Set the Anthropic-side model. Used when the user picks Haiku/Sonnet/Opus
- *  from the header dropdown while on the Anthropic provider. */
-export function setAnthropicModel(settings: AiSettings, model: AnthropicModelId): AiSettings {
+/** Set the Anthropic-side model. Used when the user picks a Claude tier from
+ *  the header dropdown while on the Anthropic provider. Takes a plain string
+ *  so dated snapshots (claude-opus-4-1-20250805, etc.) and any catalog id
+ *  beyond the curated starter tiers still fit. */
+export function setAnthropicModel(settings: AiSettings, model: string): AiSettings {
   return {
     ...settings,
     preset: 'custom',
@@ -450,7 +472,7 @@ function normalizeLocalContext(raw: Partial<LocalContextSettings> | undefined): 
   return {
     windowSizeOverride: typeof override === 'number' && override > 0 ? Math.floor(override) : null,
     sliding: raw?.sliding === true,
-    stallTimeoutSec: typeof timeout === 'number' && timeout >= 5 ? Math.floor(timeout) : 35,
+    stallTimeoutSec: typeof timeout === 'number' && timeout >= 5 ? Math.floor(timeout) : 60,
   };
 }
 
@@ -540,41 +562,52 @@ export const VERIFY_ANGLE_OPTIONS: { id: ChatToggles['vision']['angles']; label:
   { id: 'all', label: '4 views', hint: 'Front + right + top + iso (4 images per check). Most thorough, most tokens.' },
 ];
 
-export const ANTHROPIC_MODEL_OPTIONS: { id: AnthropicModelId; label: string }[] = [
+// Curated fallback menus used when the build-time models.dev snapshot is
+// empty for a provider (rare — would mean the refresh failed AND the
+// committed snapshot was wiped). These mirror the most common current
+// defaults so the UI always has something usable to render. The real menus
+// come from the catalog and are rebuilt below.
+
+const ANTHROPIC_FALLBACK_OPTIONS: ModelOption[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
   { id: 'claude-opus-4-7', label: 'Opus 4.7' },
 ];
 
-/** Curated OpenAI model menu shown in the panel header dropdown. The user
- *  can also type a custom id in the settings modal (e.g. a dated
- *  snapshot) and have it stick across provider switches. */
-export const OPENAI_MODEL_OPTIONS: { id: string; label: string }[] = [
+const OPENAI_FALLBACK_OPTIONS: ModelOption[] = [
+  { id: 'gpt-5.5', label: 'GPT-5.5' },
   { id: 'gpt-5', label: 'GPT-5' },
   { id: 'gpt-5-mini', label: 'GPT-5 mini' },
   { id: 'gpt-5-nano', label: 'GPT-5 nano' },
-  { id: 'o3', label: 'o3 (reasoning)' },
-  { id: 'gpt-4.1', label: 'GPT-4.1' },
-  { id: 'gpt-4o', label: 'GPT-4o' },
-  { id: 'gpt-4o-mini', label: 'GPT-4o mini' },
 ];
 
-/** Curated Gemini starter menu — the general-purpose chat+tools models
- *  best suited to driving CAD design, picked from the live model list.
- *  Deliberately excludes image-gen (Nano Banana), music (Lyria), TTS,
- *  robotics, and Gemma families — they don't do tool-driven modeling.
- *  The "-latest" aliases auto-update so they don't go stale; the pinned
- *  previews give a fixed target. The Gemini tab's "Load models from your
- *  key" button still surfaces the full lineup (incl. Nano Banana) for
- *  anyone who wants to experiment, and the custom-id input covers the
- *  rest. */
-export const GEMINI_MODEL_OPTIONS: { id: string; label: string }[] = [
+const GEMINI_FALLBACK_OPTIONS: ModelOption[] = [
   { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview' },
-  { id: 'gemini-pro-latest', label: 'Gemini Pro (latest)' },
   { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },
   { id: 'gemini-flash-latest', label: 'Gemini Flash (latest)' },
   { id: 'gemini-flash-lite-latest', label: 'Gemini Flash-Lite (latest)' },
 ];
+
+function pickOptions(provider: Provider, fallback: ModelOption[]): ModelOption[] {
+  const fromCatalog = getModelOptions(provider);
+  return fromCatalog.length > 0 ? fromCatalog : fallback;
+}
+
+/** Anthropic models surfaced in the picker. Sourced from the models.dev
+ *  snapshot (filtered to the last year of releases), with the curated
+ *  fallback above used only if the snapshot is empty. */
+export const ANTHROPIC_MODEL_OPTIONS: ModelOption[] = pickOptions('anthropic', ANTHROPIC_FALLBACK_OPTIONS);
+
+/** OpenAI models surfaced in the picker. Catalog-sourced; the user can also
+ *  type a custom id in the settings modal (a dated snapshot, a model the
+ *  catalog hasn't ingested yet) and have it stick across provider switches. */
+export const OPENAI_MODEL_OPTIONS: ModelOption[] = pickOptions('openai', OPENAI_FALLBACK_OPTIONS);
+
+/** Gemini models surfaced in the picker. Catalog-sourced (filtered to the
+ *  last year of releases). The Gemini tab's "Load models from your key"
+ *  button still surfaces the user's full live lineup (incl. older models,
+ *  Nano Banana, previews) for anyone who wants to experiment. */
+export const GEMINI_MODEL_OPTIONS: ModelOption[] = pickOptions('gemini', GEMINI_FALLBACK_OPTIONS);
 
 /** Human-readable name for a provider — for chat-bubble badges, modal
  *  headings, and the diagnostics view. */

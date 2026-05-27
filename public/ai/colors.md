@@ -277,15 +277,34 @@ const b = await partwright.probePixel({ pixel: [160, 110], view: { elevation: 30
 partwright.paintStroke({
   points: [a.point, b.point],   // ordered surface points; a single point stamps a rounded dot
   radius: 3,                     // mesh units, > 0
-  resolution: 256,               // smoothness: target edge = radius / resolution. Higher = smoother + more triangles. Default 256, range 2–1024
+  resolution: 64,                // curve segments: target edge = radius / resolution. Edge is clipped exact, so this only smooths curves. Default 64, range 2–1024
   // maxEdge: 0.1,               // OR: absolute target edge length (mesh units); overrides resolution
   shape: 'circle',               // circle | square | diamond
+  // surface: 'geodesic',        // 'geodesic' (default) | 'slab' — see below
+  // depth: 0,                   // slab only: how far through the wall paint reaches (0 = auto = ½ radius)
   color: [0.9, 0.2, 0.2],
 });
 // -> { id, name, triangles, resolution, maxEdge, meshTriangleCount } or { error }
 ```
 
-The refinement keeps subdividing the boundary triangles until they fall below the target edge, so it adapts to coarse meshes (a flat plate that's two giant triangles still gets a clean circle). Use `resolution` for the normal smoothness knob; reach for the absolute `maxEdge` override when you need exact edge sizing (e.g. `maxEdge: 0.1` for a crisp ring on a 10-unit part).
+The painted edge is **clipped to the exact outline** (the mesh is cut along the brush's analytic boundary), so a square gets dead-straight edges and a circle a clean curve — even on a coarse mesh, and watertight. Because the edge is exact, `resolution` only controls how many segments a *curve* is approximated with (straight square/diamond edges are crisp at any setting and stay nearly free — a slab square paints in ~10 triangles). Default `resolution` is **64** (plenty smooth with the clip); raise it for very large curves, or use the absolute `maxEdge` override for explicit sizing.
+
+**The brush is a *surface* tool, not a 3D ball.** `surface: 'geodesic'` (the default) flood-fills the footprint along the *connected* surface from the stroke, so paint follows curves and wraps over edges but never bleeds through to the opposite wall of a thin or hollow part — no tuning needed. `surface: 'slab'` instead keeps a thin shell within `depth` (mesh units) of the picked surface along its normal; raise `depth` to deliberately reach through a wall, lower it to hug the surface (`0` = auto = half the radius). Sessions saved before this feature load as `slab`. The interactive brush exposes the same controls — `getBrushSurface()` / `setBrushSurface('geodesic'|'slab')` and `setBrushDepth(u)`.
+
+**Airbrush — soft speckle (`paintAirbrush`).** Sprays a geodesic soft-edged region whose boundary fades out via a stochastic per-triangle **dither**, not colour blending — every triangle stays one printable colour. Coverage = `strength` (0..1, core density; default 0.4 for a light spackle) fading to 0 across the outer `softness` (0..1) band; `seed` makes the speckle reproducible. It's always surface-following (never bleeds through a wall) and works with any `shape` (circle/square/diamond spackle). It's a mode of the interactive brush too — the brush panel's **Spray** toggle (Slab is disabled while spraying, since a spray is geodesic-only).
+
+```js
+partwright.paintAirbrush({
+  points: [a.point, b.point],   // surface points (probePixel)
+  radius: 4,                     // mesh units
+  strength: 0.4,                 // 0..1 core density (light spackle default)
+  softness: 0.5,                 // 0..1 feathered-edge width
+  seed: 1,                       // deterministic dither
+  shape: 'circle',               // circle | square | diamond
+  color: [0.9, 0.2, 0.2],
+});
+// -> { id, name, triangles, strength, softness, seed, meshTriangleCount } or { error }
+```
 
 **Paint by visual reasoning (organic / character meshes).** When bounding boxes won't separate the features (a hand from a sleeve at the same Z; an ear from a head), use `probePixel` + `paintConnected`. `probePixel` translates a pixel position in a rendered view back to an exact surface point + normal + triangleId — essentially clicking in your own perception. `paintConnected` then flood-fills from that seed, gated by deviation from the SEED normal, so it stays on the feature without bleeding to side faces with different orientations.
 
@@ -354,6 +373,11 @@ partwright.paintSlab({
   thickness: 5,
   color: [1, 0.4, 0],
   name: "Bottom 5mm",
+  // Smoothing is ON by default: the two slab edges are subdivided so the band
+  // has clean straight edges even across coarse faces. Tune or disable it:
+  // resolution: 256,  // target edge = model bbox diagonal / resolution (2–1024)
+  // maxEdge: 0.1,     // OR absolute target edge length (overrides resolution)
+  // smooth: false,    // keep the raw blocky tessellation
 });
 
 // Tilted/oblique slab — pass an arbitrary normal vector. Doesn't need to be
@@ -365,7 +389,18 @@ partwright.paintSlab({
   thickness: 8,
   color: [0.8, 0, 0.5],
 });
+
+// Oriented shape: paint inside a rotated box (same selector as the UI Box tool).
+// Edge smoothing is ON by default here too (subdivides the mesh near the box
+// faces). smooth / resolution / maxEdge work exactly as for paintSlab.
+partwright.paintInOrientedBox({
+  box: { center: [10, 0, 5], size: [8, 4, 2], quaternion: [0, 0, 0.3827, 0.9239] },
+  color: [0.2, 0.7, 0.9],
+  // smooth: false, resolution: 256, maxEdge: ...
+});
 ```
+
+**Smoothing applies to the analytic shape tools.** `paintSlab` and `paintInOrientedBox` persist a *re-resolvable* descriptor (the slab plane / oriented box), so their boundary can be subdivided for a clean edge and reconstructed deterministically on reload — smoothing is on by default, exactly like `paintStroke`. The id-baking selectors (`paintInBox`, `paintNear`, `paintInCylinder`, `paintFaces`, `paintConnected`, …) lock onto the existing tessellation, so they cannot be smoothed; refine the mesh first (`.refine(n)` in the model code) if you need a finer edge from those.
 
 **Verifying paint before you commit it.** `paintPreview` accepts the same selectors as `paintInBox` / `paintNear` / `paintFaces`, *without* adding a region. Default: count-only (free sanity check). Pass `withImage: true` to also get a thumbnail with the candidate triangles tinted bright yellow on top of any existing paint.
 

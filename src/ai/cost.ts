@@ -1,91 +1,71 @@
-// USD cost calculation. Pricing comes from each provider's public list
-// prices (mid-2026 cache). Prices in $ per million tokens. Cache reads
-// are billed at ~10% of input, cache writes (5-min TTL) at ~125% of
-// input — Anthropic only; OpenAI shows cached tokens in usage but
-// auto-applies the discount on their end. Gemini has no surfaced cache
-// metric in the streaming endpoint we use.
+// USD cost calculation. Pricing flows from the models.dev snapshot via
+// src/ai/catalog.ts, which is refreshed at build time so we never have to
+// chase price changes by hand. For ids the snapshot doesn't carry — custom
+// dated snapshots the user types in, or models too new to have been ingested
+// yet — we fall back to FALLBACK_PRICING so the cost meter still tracks
+// something rather than reading $0 and lying.
+//
+// Cache costs use the catalog's explicit `cache_read` / `cache_write` rates
+// when present; otherwise we estimate at the historical Anthropic ratios
+// (10% / 125% of input) since that's the only provider that meters cache
+// separately for the cost meter. OpenAI applies its cache discount server-
+// side, and Gemini's streaming endpoint surfaces no cache metric at all.
+//
+// Tiered pricing (Gemini's >200k context bracket) is picked per-turn based
+// on the actual input-token count for the turn — see pricingTierFor().
 //
 // Local-provider turns are free at the API level (the user paid for the
 // download + electricity), so all local cost functions return 0. The cost
 // meter still tracks total tokens so users can compare model verbosity.
 
 import type { TurnUsage } from './types';
-
-interface ModelPricing {
-  /** USD per 1M input tokens (uncached). */
-  input: number;
-  /** USD per 1M output tokens. */
-  output: number;
-}
-
-const ANTHROPIC_PRICING: Record<string, ModelPricing> = {
-  'claude-haiku-4-5': { input: 1.0, output: 5.0 },
-  'claude-sonnet-4-6': { input: 3.0, output: 15.0 },
-  'claude-opus-4-7': { input: 5.0, output: 25.0 },
-};
-
-const OPENAI_PRICING: Record<string, ModelPricing> = {
-  'gpt-5':         { input: 5.00, output: 25.00 },
-  'gpt-5-mini':    { input: 0.50, output:  2.00 },
-  'gpt-5-nano':    { input: 0.10, output:  0.40 },
-  'o3':            { input: 2.00, output:  8.00 },
-  'gpt-4.1':       { input: 2.00, output:  8.00 },
-  'gpt-4o':        { input: 2.50, output: 10.00 },
-  'gpt-4o-mini':   { input: 0.15, output:  0.60 },
-};
-
-// Approximate per-tier pricing. Preview/`-latest` ids don't publish
-// stable rates, so these are best-effort by tier (pro / flash / lite);
-// the cost meter is explicitly "estimated" and any id we don't list
-// falls back to FALLBACK_PRICING.
-const GEMINI_PRICING: Record<string, ModelPricing> = {
-  // Pro tier
-  'gemini-3.1-pro-preview': { input: 2.00, output: 12.00 },
-  'gemini-3-pro-preview':   { input: 2.00, output: 12.00 },
-  'gemini-pro-latest':      { input: 2.00, output: 12.00 },
-  'gemini-2.5-pro':         { input: 1.25, output: 10.00 },
-  // Flash (balanced) tier
-  'gemini-3.5-flash':       { input: 0.40, output:  3.00 },
-  'gemini-3-flash-preview': { input: 0.40, output:  3.00 },
-  'gemini-flash-latest':    { input: 0.40, output:  3.00 },
-  'gemini-2.5-flash':       { input: 0.30, output:  2.50 },
-  // Flash-Lite (cheap/fast) tier
-  'gemini-flash-lite-latest':  { input: 0.10, output: 0.40 },
-  'gemini-3.1-flash-lite':     { input: 0.10, output: 0.40 },
-  'gemini-2.5-flash-lite':     { input: 0.10, output: 0.40 },
-};
+import type { Provider } from './types';
+import { getPricing, pricingTierFor, type CatalogPricing } from './catalog';
 
 const CACHE_READ_MULTIPLIER = 0.1;
 const CACHE_WRITE_MULTIPLIER = 1.25;
 
-/** Conservative fallback for custom model ids we don't have an entry for.
- *  Picked to be in the median tier (Sonnet-ish) so the cost meter
- *  doesn't lie by reading "$0" when the user has typed in a new dated
- *  snapshot we haven't curated yet. */
-const FALLBACK_PRICING: ModelPricing = { input: 3.0, output: 15.0 };
+/** Conservative fallback for custom model ids the snapshot doesn't carry.
+ *  Picked to be in the median tier (Sonnet-ish) so the cost meter doesn't
+ *  lie by reading "$0" when the user has typed in a new dated snapshot. */
+const FALLBACK_PRICING: CatalogPricing = { input: 3.0, output: 15.0 };
 
-/** Where pricing lives keyed by provider. Local has no pricing —
- *  cost = 0 regardless. */
-const PROVIDER_PRICING: Record<string, Record<string, ModelPricing>> = {
-  anthropic: ANTHROPIC_PRICING,
-  openai: OPENAI_PRICING,
-  gemini: GEMINI_PRICING,
-};
-
-function pricingFor(provider: string, model: string): ModelPricing | null {
+function pricingFor(provider: string, model: string): CatalogPricing | null {
   if (provider === 'local') return null;
-  const table = PROVIDER_PRICING[provider];
-  if (!table) return null;
-  return table[model] ?? FALLBACK_PRICING;
+  // The catalog is keyed by our internal Provider type; cast through string
+  // because the call sites pass `provider` as a raw string (the same way
+  // the rest of the cost meter does).
+  const fromCatalog = getPricing(provider as Provider, model);
+  if (fromCatalog) return fromCatalog;
+  // Hosted provider but unknown id — use the median fallback rather than
+  // reporting $0, so the cost meter is conservative on novel snapshots.
+  if (provider === 'anthropic' || provider === 'openai' || provider === 'gemini') {
+    return FALLBACK_PRICING;
+  }
+  return null;
 }
 
 export function turnCostUsd(provider: string, model: string, usage: TurnUsage): number {
   const p = pricingFor(provider, model);
   if (!p) return 0;
-  const inputCost = (usage.inputTokens * p.input) / 1_000_000;
-  const cacheReadCost = (usage.cacheReadInputTokens * p.input * CACHE_READ_MULTIPLIER) / 1_000_000;
-  const cacheWriteCost = (usage.cacheCreationInputTokens * p.input * CACHE_WRITE_MULTIPLIER) / 1_000_000;
-  const outputCost = (usage.outputTokens * p.output) / 1_000_000;
+  // Pick the pricing tier from the *non-cache-replay* portion of this turn:
+  // fresh prompt tokens plus any cache-creation (the first time a prefix is
+  // sent to be cached, those are billed as fresh tokens too). Cache-read
+  // tokens are the cheap-replay portion and are billed at the cache_read
+  // rate independently of tier — including them in the threshold sum would
+  // push long-cached OpenAI sessions (gpt-5.5 has a 272k tier) into the
+  // higher bracket even when the fresh prompt is small.
+  const tieredInput = usage.inputTokens + usage.cacheCreationInputTokens;
+  const rate = pricingTierFor(p, tieredInput);
+  const inputCost = (usage.inputTokens * rate.input) / 1_000_000;
+  const outputCost = (usage.outputTokens * rate.output) / 1_000_000;
+  // Prefer the catalog's explicit cache rates; fall back to the historical
+  // Anthropic multipliers when the catalog doesn't surface them (older
+  // entries, or providers that don't price cache separately).
+  const cacheReadRate = rate.cacheRead ?? rate.input * CACHE_READ_MULTIPLIER;
+  const cacheWriteRate = rate.cacheWrite ?? rate.input * CACHE_WRITE_MULTIPLIER;
+  const cacheReadCost = (usage.cacheReadInputTokens * cacheReadRate) / 1_000_000;
+  const cacheWriteCost = (usage.cacheCreationInputTokens * cacheWriteRate) / 1_000_000;
   return inputCost + cacheReadCost + cacheWriteCost + outputCost;
 }
 

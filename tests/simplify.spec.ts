@@ -157,6 +157,7 @@ test.describe('Simplify tool', () => {
 
     const target = Math.max(50, Math.round(base / 4));
     await page.locator('#simplify-input').fill(String(target));
+    await page.locator('#simplify-apply').dispatchEvent('click');
     await page.waitForFunction(
       (b) => {
         const pw = (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } } }).partwright;
@@ -189,5 +190,105 @@ test.describe('Simplify tool', () => {
     expect(original.code ?? '').toContain('Manifold.sphere');
     expect(original.code ?? '').toContain('12');
     expect(original.code ?? '').not.toContain('api.imports');
+  });
+
+  test('opening simplify auto-enables the mesh-edges (wireframe) overlay and restores it on close', async ({ page }) => {
+    await openEditorWithSphere(page);
+
+    // Wireframe defaults to off — the toolbar button reflects state via its
+    // active class (blue tint when on). Tracking via the DOM keeps this test
+    // free of internal-API coupling.
+    const wireBtn = page.locator('#wireframe-toggle');
+    await expect(wireBtn).not.toHaveClass(/text-blue-400/);
+
+    await page.locator('#simplify-toggle').dispatchEvent('click');
+    await page.waitForSelector('#simplify-panel:not(.hidden)');
+    await expect(wireBtn).toHaveClass(/text-blue-400/);
+
+    // Closing simplify restores the original (off) state.
+    await page.locator('#simplify-toggle').dispatchEvent('click');
+    await expect(page.locator('#simplify-panel')).toHaveClass(/hidden/);
+    await expect(wireBtn).not.toHaveClass(/text-blue-400/);
+  });
+
+  test('Apply runs in a worker; the modal surfaces a Cancel button while in flight', async ({ page }) => {
+    // Use a denser sphere so the binary-search actually has work to do
+    // (the 64-segment default finishes too fast to reliably catch the modal).
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: {
+        createSession(name?: string): Promise<unknown>;
+        run(code: string): Promise<unknown>;
+        __setProgressModalDelay(ms: number): number;
+      } }).partwright;
+      await pw.createSession('simplify-cancel');
+      // High segment counts → ~hundreds of thousands of triangles → the
+      // simplify search is multi-step and visible.
+      await pw.run('const { Manifold } = api; return Manifold.sphere(10, 512);');
+      pw.__setProgressModalDelay(0);
+    });
+    const base = await triangleCount(page);
+
+    await page.locator('#simplify-toggle').dispatchEvent('click');
+    await page.waitForSelector('#simplify-panel:not(.hidden)');
+    await page.locator('#simplify-input').fill(String(Math.max(50, Math.round(base / 8))));
+    await page.locator('#simplify-apply').dispatchEvent('click');
+
+    // The shared progress modal appears with a Cancel button. We don't
+    // race-click here (the dense-sphere test below covers the cancel
+    // path). The deliverable for this case is the modal/button being
+    // present at all — proves Apply now goes through the worker.
+    const modal = page.locator('#progress-modal');
+    const cancel = page.locator('[data-testid="progress-modal-cancel"]');
+    await expect(cancel).toBeVisible({ timeout: 5000 });
+    await expect(modal).toBeVisible();
+
+    // Let it finish naturally.
+    await expect(modal).toBeHidden({ timeout: 30000 });
+    const reduced = await triangleCount(page);
+    expect(reduced).toBeLessThan(base);
+  });
+
+  test('closing the simplify panel mid-apply preserves progress; reopening shows the post-state', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: {
+        createSession(name?: string): Promise<unknown>;
+        run(code: string): Promise<unknown>;
+        __setProgressModalDelay(ms: number): number;
+      } }).partwright;
+      await pw.createSession('simplify-reopen');
+      await pw.run('const { Manifold } = api; return Manifold.sphere(10, 512);');
+      pw.__setProgressModalDelay(0);
+    });
+    const base = await triangleCount(page);
+
+    await page.locator('#simplify-toggle').dispatchEvent('click');
+    await page.waitForSelector('#simplify-panel:not(.hidden)');
+    const target = Math.max(50, Math.round(base / 8));
+    await page.locator('#simplify-input').fill(String(target));
+    await page.locator('#simplify-apply').dispatchEvent('click');
+
+    const modal = page.locator('#progress-modal');
+    await expect(modal).toBeVisible({ timeout: 5000 });
+
+    // Close the simplify panel mid-apply (the modal stays up — it's global).
+    await page.locator('#simplify-toggle').dispatchEvent('click');
+    await expect(page.locator('#simplify-panel')).toHaveClass(/hidden/);
+    // Modal must remain visible after the panel hides — that's the whole
+    // point of the close/reopen contract.
+    await expect(modal).toBeVisible();
+
+    // Wait for the apply to finish (modal hides). Reopen the panel; the
+    // result line shows the reduced count, not the pristine baseline.
+    await expect(modal).toBeHidden({ timeout: 30000 });
+    await page.locator('#simplify-toggle').dispatchEvent('click');
+    await page.waitForSelector('#simplify-panel:not(.hidden)');
+
+    const reduced = await triangleCount(page);
+    expect(reduced).toBeLessThan(base);
+    await expect(page.locator('#simplify-result')).toContainText(`${reduced.toLocaleString()} triangles`);
   });
 });

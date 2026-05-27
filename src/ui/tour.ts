@@ -81,10 +81,10 @@ const STEPS: TourStep[] = [
     placement: 'bottom',
   },
   {
-    target: '[data-tab="Gallery"]',
-    title: 'Compare Versions',
+    target: '[data-tab="Versions"]',
+    title: 'Versions',
     description:
-      'View saved versions and notes side-by-side in the Gallery to track your design evolution. AI agents generate a gallery URL so you can review all iterations at a glance.',
+      'Every save is a version with a thumbnail. Open the Versions workspace to compare iterations, rename them, or roll back — AI agents can deep-link here to review the whole history at a glance.',
     placement: 'bottom',
   },
   {
