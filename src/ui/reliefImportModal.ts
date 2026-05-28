@@ -4,14 +4,18 @@
 // generation itself is the host's job — this modal only resolves options and
 // hands back the source ImageData via onCreate.
 
-import type { ReliefOptions, ReliefImportMode, TileOutputKind, TileShapeKind } from '../relief/types';
+import type { ReliefOptions, ReliefImportMode, TileOutputKind, TileShapeKind, HeightGrid } from '../relief/types';
 import { DEFAULT_RELIEF_OPTIONS } from '../relief/types';
-import { sampleImageToGrid } from '../relief/imageToRelief';
+import { sampleImageToGrid, detectBackgroundMask } from '../relief/imageToRelief';
+import { registerImport } from '../import/importInbox';
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 
 export interface ReliefImportModalOptions {
   aiAvailable: boolean;
+  // Pre-load this file as if the user picked it (used by Recent Imports
+  // re-clicks so the wizard reopens with the previous source).
+  initialFile?: File;
   // Called when the user clicks "AI assist"; returns option overrides to merge.
   onAiAssist?: (image: ImageData, opts: ReliefOptions) => Promise<Partial<ReliefOptions> & { note?: string }>;
   // Called on Create with the chosen image + resolved options + a base name.
@@ -23,7 +27,7 @@ export interface ReliefImportModalOptions {
 
 const PREVIEW_PX = 220;
 const DEBOUNCE_MS = 120;
-const MAX_RESOLUTION = 256;
+const MAX_RESOLUTION = 512;
 
 interface ModeDef {
   id: ReliefImportMode;
@@ -50,6 +54,9 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   const opts: ReliefOptions = structuredClone(DEFAULT_RELIEF_OPTIONS);
   let image: ImageData | null = null;
   let svgText: string | null = null;
+  // The currently-picked source File, captured so we can register it with the
+  // recent-imports inbox after a successful Create, and re-open from there.
+  let pickedFile: File | null = null;
   let baseName = 'relief';
   let creating = false;
   let previewTimer: number | undefined;
@@ -229,15 +236,15 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   // SVG render that finishes after the user already moved on to a PNG) abort
   // before writing their state into the modal.
   let loadToken = 0;
-  fileInput.addEventListener('change', async () => {
+
+  // Load logic factored out so both the file-input change handler and
+  // `options.initialFile` (a recent-imports re-click) drive the same code path.
+  async function loadFile(file: File): Promise<void> {
     const myToken = ++loadToken;
-    const stale = () => myToken !== loadToken;
-    const file = fileInput.files?.[0];
-    if (!file) return;
+    const stale = (): boolean => myToken !== loadToken;
+    pickedFile = file;
     baseName = file.name.replace(/\.[^.]+$/, '') || 'relief';
 
-    // SVG branch: keep the raw text (no clustering needed — each <path fill>
-    // becomes its own colour region) and render the SVG to the thumbnail.
     const isSvg = file.type === 'image/svg+xml' || /\.svg$/i.test(file.name);
     if (isSvg) {
       let text: string;
@@ -308,7 +315,14 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
       syncEnabled();
     });
     loader.src = url;
+  }
+
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files?.[0];
+    if (file) void loadFile(file);
   });
+
+  if (options.initialFile) void loadFile(options.initialFile);
 
   // --- AI assist flow ------------------------------------------------------
   async function runAiAssist(): Promise<void> {
@@ -349,6 +363,12 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
         await options.onCreateSvg(svgText, opts, baseName);
       } else if (image) {
         await options.onCreate(image, opts, baseName);
+      }
+      // Record the source file in the recent-imports inbox so a subsequent
+      // visit to the Import dropdown can re-open the wizard with this file.
+      if (pickedFile) {
+        try { registerImport(pickedFile, pickedFile.name, svgText ? 'SVG' : 'IMAGE'); }
+        catch { /* best-effort, recents are nice-to-have */ }
       }
       shell.close();
     } catch (err) {
@@ -424,14 +444,102 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
         }
       }
     }
+    // Overlay the final tile shape: cells outside the silhouette/shape or
+    // inside the keychain hole get muted so the user previews what they'll
+    // actually print (rounded corners, circles, the hole, silhouette cut).
+    const keep = computePreviewKeepMask(grid, opts);
+    if (keep) {
+      for (let py = 0; py < h; py++) {
+        const sy = h - 1 - py;
+        for (let px = 0; px < w; px++) {
+          if (keep[sy * w + px] === 0) {
+            const dst = (py * w + px) * 4;
+            // Cut areas — knock to a dark neutral so the shape pops.
+            data[dst] = 18; data[dst + 1] = 18; data[dst + 2] = 22; data[dst + 3] = 255;
+          }
+        }
+      }
+    }
     ctx.putImageData(out, 0, 0);
 
     const detail = opts.mode === 'quantized'
       ? `${opts.quantized.clusters} clusters`
       : `${opts.luminance.levels} levels`;
-    // This is a sampled source map — the actual rounded corners, keychain hole,
-    // and silhouette cut don't appear here; the stat caption flags that.
-    stat.textContent = `Source map · ${w}×${h} · ${detail}`;
+    // Caption: this is a SAMPLED preview — the geometry will look identical at
+    // the chosen resolution, but real corner/silhouette/hole cuts are now
+    // overlaid here too.
+    stat.textContent = `Preview · ${w}×${h} · ${detail}`;
+  }
+
+  // Returns a per-cell mask (1 = keep, 0 = cut) reflecting the tile's shape,
+  // silhouette, and hole choices. Returns null when nothing is cut (no overlay
+  // needed and we save the per-cell pass). Bottom-row-first to match the grid.
+  function computePreviewKeepMask(grid: HeightGrid, o: ReliefOptions): Uint8Array | null {
+    const w = grid.width, h = grid.height;
+    const isQ = o.mode === 'quantized';
+    const out = isQ ? o.quantized.output : 'relief';
+    const shape = isQ ? o.quantized.shape : 'rect';
+    const hasShape = isQ && out === 'flat' && (shape === 'rounded' || shape === 'circle');
+    const hasSilhouette = isQ && out === 'silhouette' && !!grid.colors;
+    const hasHole = isQ && o.quantized.holeEnabled;
+    if (!hasShape && !hasSilhouette && !hasHole) return null;
+
+    const widthMm = o.common.widthMm;
+    const heightMm = widthMm * (h / w);
+    const halfW = widthMm / 2;
+    const halfH = heightMm / 2;
+    const dx = w > 1 ? widthMm / (w - 1) : 0;
+    const dy = h > 1 ? heightMm / (h - 1) : 0;
+
+    const mask = new Uint8Array(w * h);
+    if (hasSilhouette && grid.colors) {
+      mask.set(detectBackgroundMask(grid.colors, w, h));
+    } else {
+      mask.fill(1);
+    }
+
+    if (hasShape) {
+      const r = shape === 'circle'
+        ? Math.min(halfW, halfH)
+        : Math.min(Math.max(0, o.quantized.cornerRadiusMm), Math.min(halfW, halfH));
+      for (let y = 0; y < h; y++) {
+        const cy = -halfH + (y + 0.5) * dy;
+        for (let x = 0; x < w; x++) {
+          if (mask[y * w + x] === 0) continue;
+          const cx = -halfW + (x + 0.5) * dx;
+          let inside: boolean;
+          if (shape === 'circle') {
+            inside = cx * cx + cy * cy <= r * r;
+          } else {
+            const ax = Math.abs(cx), ay = Math.abs(cy);
+            if (ax > halfW || ay > halfH) inside = false;
+            else {
+              const ix = Math.max(0, ax - (halfW - r));
+              const iy = Math.max(0, ay - (halfH - r));
+              inside = ix * ix + iy * iy <= r * r;
+            }
+          }
+          if (!inside) mask[y * w + x] = 0;
+        }
+      }
+    }
+
+    if (hasHole) {
+      // Match tileMesh: hole sits on the centreline X=0, offset down from the
+      // model's top edge (heightMm/2 - holeOffsetMm).
+      const cxHole = 0;
+      const cyHole = halfH - o.quantized.holeOffsetMm;
+      const rHole = o.quantized.holeDiameterMm / 2;
+      for (let y = 0; y < h; y++) {
+        const cy = -halfH + (y + 0.5) * dy - cyHole;
+        for (let x = 0; x < w; x++) {
+          if (mask[y * w + x] === 0) continue;
+          const cx = -halfW + (x + 0.5) * dx - cxHole;
+          if (cx * cx + cy * cy <= rHole * rHole) mask[y * w + x] = 0;
+        }
+      }
+    }
+    return mask;
   }
 
   // --- UI sync helpers -----------------------------------------------------
@@ -547,9 +655,19 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     set: (v: number) => void,
     range: { min: number; max: number; step: number; int?: boolean },
   ): void {
-    const { wrap, valueEl } = fieldWrap(label, unit);
+    // Slider for dragged exploration, plus a typeable number input for exact
+    // entry. Two-way bound and clamped to the slider's range.
+    const { wrap, labelRow, valueEl } = fieldWrap(label, unit);
+    valueEl.remove();
     const fmt = (v: number) => (range.int ? String(Math.round(v)) : v.toFixed(2));
-    valueEl.textContent = fmt(get());
+    const numEl = document.createElement('input');
+    numEl.type = 'number';
+    numEl.min = String(range.min);
+    numEl.max = String(range.max);
+    numEl.step = String(range.step);
+    numEl.value = fmt(get());
+    numEl.className = 'w-16 px-1.5 py-0.5 text-[11px] bg-zinc-900 border border-zinc-700/60 rounded text-zinc-200 text-right tabular-nums focus:outline-none focus:border-blue-500';
+    labelRow.appendChild(numEl);
     const input = document.createElement('input');
     input.type = 'range';
     input.min = String(range.min);
@@ -557,15 +675,29 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     input.step = String(range.step);
     input.value = String(get());
     input.className = 'w-full accent-blue-500 cursor-pointer';
-    input.addEventListener('input', () => {
+    const onSlider = (): void => {
       const v = range.int ? Math.round(Number(input.value)) : Number(input.value);
       set(v);
-      valueEl.textContent = fmt(v);
+      numEl.value = fmt(v);
       schedulePreview();
-    });
+    };
+    const onNumber = (): void => {
+      let v = Number(numEl.value);
+      if (!Number.isFinite(v)) { numEl.value = fmt(get()); return; }
+      if (range.int) v = Math.round(v);
+      v = Math.max(range.min, Math.min(range.max, v));
+      set(v);
+      input.value = String(v);
+      numEl.value = fmt(v);
+      schedulePreview();
+    };
+    input.addEventListener('input', onSlider);
+    numEl.addEventListener('change', onNumber);
+    numEl.addEventListener('blur', onNumber);
+    numEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') { onNumber(); numEl.blur(); } });
     controlRefreshers.push(() => {
       input.value = String(get());
-      valueEl.textContent = fmt(get());
+      numEl.value = fmt(get());
     });
     wrap.appendChild(input);
     parent.appendChild(wrap);

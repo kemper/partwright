@@ -672,7 +672,7 @@ function mapBucketsToRegions(byColor: Map<number, { color: [number, number, numb
  *  When no border colour clearly dominates (busy photo edges, no single bg),
  *  falls back to keeping every cell — better to ship the full tile than to
  *  silently cut into the subject. */
-function detectBackgroundMask(colors: Uint8Array, w: number, h: number): Uint8Array {
+export function detectBackgroundMask(colors: Uint8Array, w: number, h: number): Uint8Array {
   const total = w * h;
   const keyOf = (cell: number) =>
     (colors[cell * 3] << 16) | (colors[cell * 3 + 1] << 8) | colors[cell * 3 + 2];

@@ -116,7 +116,7 @@ test.describe('Relief Studio', () => {
 
     // The wizard must react to the chosen image: live preview stat + an enabled
     // Create button. (Both were absent when the modal crashed mid-build.)
-    await expect(page.locator('canvas.rounded + div')).toContainText('Source map', { timeout: 5000 });
+    await expect(page.locator('canvas.rounded + div')).toContainText('Preview', { timeout: 5000 });
     // Default mode + output is now quantized → flat tile, so the CTA reads "Create tile".
     const createBtn = page.getByRole('button', { name: 'Create tile' });
     await expect(createBtn).toBeEnabled();

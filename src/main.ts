@@ -1585,7 +1585,7 @@ async function main() {
       layerHeight: Math.max(0.02, Math.min(2, num(c.layerHeight, 0.08))),
       baseThickness: Math.max(0, Math.min(50, num(c.baseThickness, 0.6))),
       maxHeight: Math.max(0.1, Math.min(100, num(c.maxHeight, 3))),
-      resolution: Math.max(8, Math.min(256, Math.floor(num(c.resolution, 200)))),
+      resolution: Math.max(8, Math.min(512, Math.floor(num(c.resolution, 200)))),
       smoothing: Math.max(0, Math.min(20, num(c.smoothing, 0))),
     };
   }
@@ -1709,9 +1709,10 @@ async function main() {
     return { mode: 'luminance', luminance: { ...opts.luminance, levels, invert }, note: `Tonal image — suggested Luminance relief with ${levels} levels${invert ? ' (inverted)' : ''}.` };
   }
 
-  function openReliefImportFlow(): void {
+  function openReliefImportFlow(initialFile?: File): void {
     openReliefImportModal({
       aiAvailable: true,
+      initialFile,
       onAiAssist: async (image, opts) => suggestReliefOptions(image, opts),
       onCreate: async (image, opts, name) => {
         try {
@@ -2143,6 +2144,14 @@ async function main() {
         const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
         const parsed = await parseSTLFile(file);
         if (parsed) await placeImportedMesh(parsed, entry.filename);
+        return;
+      }
+      // Image / SVG re-imports re-open the Relief Studio wizard with the
+      // original file pre-loaded — the user keeps their previous tweaks fresh
+      // but gets to adjust knobs before re-generating.
+      if (entry.source === 'IMAGE' || entry.source === 'SVG') {
+        const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
+        openReliefImportFlow(file);
         return;
       }
       const cur = getState();
