@@ -1633,6 +1633,7 @@ async function main() {
       chamferMm: Math.max(0, Math.min(5, num(q.chamferMm, 0))),
       holes,
       paintingMode: q.paintingMode === 'multi-color' ? 'multi-color' : 'single-nozzle',
+      invertHeights: !!q.invertHeights,
       manualBackground: q.manualBackground,
     };
   }

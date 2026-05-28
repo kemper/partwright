@@ -411,6 +411,12 @@ function sampleQuantized(rgb: Float32Array, w: number, h: number, opts: ReliefOp
   const palette: Array<[number, number, number]> = [];
   for (let c = 0; c < kk; c++) palette.push([clamp255(repRGB[c * 3]), clamp255(repRGB[c * 3 + 1]), clamp255(repRGB[c * 3 + 2])]);
   const order = palette.map((_, i) => i).sort((a, b) => luminance255(palette[a][0], palette[a][1], palette[a][2]) - luminance255(palette[b][0], palette[b][1], palette[b][2]));
+  // `invertHeights` flips the cluster → height map so DARKER colours land
+  // TALLER. Useful when an image's background is the lightest cluster: with
+  // the default (bright = tall) the background protrudes above the subject
+  // and occludes it from a top-down view, exactly the bug we're working
+  // around here.
+  if (opts.quantized.invertHeights) order.reverse();
   const lh = layerHeight > 0 ? layerHeight : 0;
   const clusterHeight = new Float32Array(kk);
   for (let s = 0; s < kk; s++) {

@@ -229,6 +229,11 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     { value: 'single-nozzle', label: 'Single-nozzle (Z-banded)' },
     { value: 'multi-color', label: 'Multi-colour (AMS)' },
   ]);
+  // "Invert heights" — flips the cluster→height map so DARKER colours are
+  // TALLER. For figure-on-light-background images (the common case), the
+  // default (bright = tall) makes the background occlude the figure from a
+  // top-down view; turning this on raises the subject instead.
+  const invertHeightsRow = checkboxControl(tileSection.grid, 'Invert (dark = tall)', () => opts.quantized.invertHeights, v => (opts.quantized.invertHeights = v));
   // Inline hint: single-nozzle prints need one Z-band per cluster. If
   // maxHeight < (clusters - 1) × layerHeight, two clusters land in the same
   // band and the slicer has to swap mid-layer. Surface the required
@@ -1019,6 +1024,9 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     // tiles paint their top 1:1 from the cluster map, so the choice is moot.
     const showPaintingMode = !isSvg && opts.mode === 'quantized' && opts.quantized.output === 'relief';
     paintingModeRow.classList.toggle('hidden', !showPaintingMode);
+    // Same gating for the invert-heights toggle — it only changes the
+    // cluster→Z mapping for stepped reliefs.
+    invertHeightsRow.classList.toggle('hidden', !showPaintingMode);
     // Layer-fit hint — visible only when single-nozzle stepped relief would
     // pile two clusters into one Z-band given the current settings. syncEnabled
     // is what actually toggles createBtn.disabled; here we just paint the
@@ -1217,7 +1225,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     label: string,
     get: () => boolean,
     set: (v: boolean) => void,
-  ): void {
+  ): HTMLElement {
     const row = document.createElement('label');
     row.className = 'flex items-center gap-2 cursor-pointer self-end h-full';
     const input = document.createElement('input');
@@ -1234,6 +1242,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     text.textContent = label;
     row.append(input, text);
     parent.appendChild(row);
+    return row;
   }
 
   function selectControl<T extends string>(

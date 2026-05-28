@@ -118,6 +118,11 @@ export interface QuantizedOptions {
    *  AMS-friendly) or per-Z-layer regions (single-nozzle, slicer-faithful).
    *  Ignored for `output: 'flat'` and `output: 'silhouette'`. */
   paintingMode: PaintingMode;
+  /** When true, flips the cluster→height assignment so DARKER colours land
+   *  TALLER. Useful for the common case of a dark subject on a light
+   *  background, where the default ("bright = tall") buries the subject
+   *  inside a taller background. */
+  invertHeights: boolean;
   /** All circular keychain holes on the tile. Each is centred at (cxMm, cyMm)
    *  in model coords. Empty = no holes. */
   holes: TileHole[];
@@ -168,6 +173,7 @@ export const DEFAULT_RELIEF_OPTIONS: ReliefOptions = {
     chamferMm: 0,
     holes: [],
     paintingMode: 'single-nozzle',
+    invertHeights: false,
   },
   preprocess: { brightness: 0, contrast: 0, saturation: 0, levelsLow: 0, levelsHigh: 255 },
 };
