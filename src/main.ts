@@ -1580,6 +1580,26 @@ async function main() {
 
   function clampReliefQuantized(q: ReliefOptions['quantized']): ReliefOptions['quantized'] {
     const num = (v: number, def: number) => (Number.isFinite(v) ? v : def);
+    const widthGuess = 200; // generous clamp range; real bounds enforced by tile mesh
+    const clampHole = (h: { cxMm?: number; cyMm?: number; diameterMm?: number }) => ({
+      cxMm: num(h.cxMm ?? 0, 0),
+      cyMm: num(h.cyMm ?? 0, 0),
+      diameterMm: Math.max(0.5, Math.min(widthGuess, num(h.diameterMm ?? 6, 6))),
+    });
+    // Migrate the legacy single-hole knobs to holes[] when no explicit array is
+    // present — keeps saved presets and old API callers working.
+    let holes: ReliefOptions['quantized']['holes'] = Array.isArray(q.holes)
+      ? q.holes.map(clampHole)
+      : [];
+    if (holes.length === 0 && q.holeEnabled) {
+      const widthMm = 100;
+      const heightMm = widthMm; // unknown aspect at clamp time; cyMm in mm anyway
+      holes = [clampHole({
+        cxMm: 0,
+        cyMm: heightMm / 2 - num(q.holeOffsetMm ?? 6, 6),
+        diameterMm: num(q.holeDiameterMm ?? 6, 6),
+      })];
+    }
     return {
       clusters: Math.max(2, Math.min(12, Math.floor(num(q.clusters, 5)))),
       colorSpace: q.colorSpace === 'rgb' ? 'rgb' : 'lab',
@@ -1587,9 +1607,9 @@ async function main() {
       output: q.output === 'relief' || q.output === 'silhouette' ? q.output : 'flat',
       shape: q.shape === 'rounded' || q.shape === 'circle' ? q.shape : 'rect',
       cornerRadiusMm: Math.max(0, Math.min(50, num(q.cornerRadiusMm, 4))),
-      holeEnabled: !!q.holeEnabled,
-      holeDiameterMm: Math.max(0.5, Math.min(50, num(q.holeDiameterMm, 6))),
-      holeOffsetMm: Math.max(0, Math.min(200, num(q.holeOffsetMm, 6))),
+      chamferMm: Math.max(0, Math.min(5, num(q.chamferMm, 0))),
+      holes,
+      manualBackground: q.manualBackground,
     };
   }
 

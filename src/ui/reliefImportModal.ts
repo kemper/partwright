@@ -214,11 +214,98 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     { value: 'circle', label: 'Circle' },
   ]);
   sliderControl(tileSection.grid, 'Corner radius', 'mm', () => opts.quantized.cornerRadiusMm, v => (opts.quantized.cornerRadiusMm = v), { min: 0, max: 20, step: 0.5 });
-  checkboxControl(tileSection.grid, 'Keychain hole', () => opts.quantized.holeEnabled, v => (opts.quantized.holeEnabled = v));
-  sliderControl(tileSection.grid, 'Hole diameter', 'mm', () => opts.quantized.holeDiameterMm, v => (opts.quantized.holeDiameterMm = v), { min: 2, max: 15, step: 0.5 });
-  sliderControl(tileSection.grid, 'Hole offset from edge', 'mm', () => opts.quantized.holeOffsetMm, v => (opts.quantized.holeOffsetMm = v), { min: 2, max: 40, step: 0.5 });
+  sliderControl(tileSection.grid, 'Top-edge chamfer', 'mm', () => opts.quantized.chamferMm, v => (opts.quantized.chamferMm = v), { min: 0, max: 2, step: 0.05 });
 
-  knobs.append(imageSection.root, commonSection.root, luminanceSection.root, quantizedSection.root, tileSection.root);
+  // Holes editor — one row per hole with diameter + position inputs. Click
+  // the preview canvas to drop a new hole at that point; "+ Add hole" drops
+  // one centred near the top edge.
+  const holesSection = document.createElement('div');
+  holesSection.className = 'flex flex-col gap-2';
+  const holesHeading = document.createElement('div');
+  holesHeading.className = 'text-[11px] font-semibold uppercase tracking-wide text-zinc-500';
+  holesHeading.textContent = 'Holes';
+  const holesList = document.createElement('div');
+  holesList.className = 'flex flex-col gap-1.5';
+  const holesActionsRow = document.createElement('div');
+  holesActionsRow.className = 'flex items-center justify-between gap-2 pt-1';
+  const holesHint = document.createElement('span');
+  holesHint.className = 'text-[10px] text-zinc-500';
+  holesHint.textContent = 'Tip: click the preview to drop a hole.';
+  const addHoleBtn = document.createElement('button');
+  addHoleBtn.type = 'button';
+  addHoleBtn.className = 'px-2 py-1 rounded text-[11px] bg-zinc-700/60 hover:bg-zinc-600/60 text-zinc-200 transition-colors';
+  addHoleBtn.textContent = '+ Add hole';
+  addHoleBtn.addEventListener('click', () => {
+    const widthMm = opts.common.widthMm;
+    const heightMm = widthMm; // best-effort default Y until preview-click adjusts it
+    opts.quantized.holes = [...opts.quantized.holes, { cxMm: 0, cyMm: heightMm / 2 - 6, diameterMm: 6 }];
+    renderHoles();
+    schedulePreview();
+  });
+  holesActionsRow.append(holesHint, addHoleBtn);
+  holesSection.append(holesHeading, holesList, holesActionsRow);
+
+  function renderHoles(): void {
+    holesList.replaceChildren();
+    if (opts.quantized.holes.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'text-[11px] text-zinc-500';
+      empty.textContent = 'No holes — the tile is solid. Click the preview, or "+ Add hole".';
+      holesList.appendChild(empty);
+      return;
+    }
+    opts.quantized.holes.forEach((h, i) => {
+      const row = document.createElement('div');
+      row.className = 'flex items-center gap-1.5';
+      const label = document.createElement('span');
+      label.className = 'text-[10px] text-zinc-500 w-6 shrink-0 font-mono';
+      label.textContent = `#${i + 1}`;
+      row.appendChild(label);
+      const mk = (get: () => number, set: (v: number) => void): HTMLInputElement => {
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.step = '0.5';
+        input.value = get().toFixed(1);
+        input.className = 'w-14 px-1.5 py-1 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+        input.addEventListener('input', () => {
+          const v = parseFloat(input.value);
+          if (Number.isFinite(v)) { set(v); schedulePreview(); }
+        });
+        return input;
+      };
+      const dia = mk(() => h.diameterMm, v => (h.diameterMm = Math.max(0.5, v)));
+      dia.title = 'Diameter (mm)';
+      const cx = mk(() => h.cxMm, v => (h.cxMm = v));
+      cx.title = 'X centre (mm, 0 = middle)';
+      const cy = mk(() => h.cyMm, v => (h.cyMm = v));
+      cy.title = 'Y centre (mm, +Y = top)';
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'w-6 h-6 flex items-center justify-center rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-700/60 text-base leading-none';
+      rm.textContent = '×';
+      rm.title = 'Remove this hole';
+      rm.addEventListener('click', () => {
+        opts.quantized.holes = opts.quantized.holes.filter((_, idx) => idx !== i);
+        renderHoles();
+        schedulePreview();
+      });
+      const dLabel = document.createElement('span');
+      dLabel.className = 'text-[10px] text-zinc-500';
+      dLabel.textContent = 'Ø';
+      const xLabel = document.createElement('span');
+      xLabel.className = 'text-[10px] text-zinc-500 ml-1';
+      xLabel.textContent = 'x';
+      const yLabel = document.createElement('span');
+      yLabel.className = 'text-[10px] text-zinc-500 ml-1';
+      yLabel.textContent = 'y';
+      row.append(dLabel, dia, xLabel, cx, yLabel, cy, rm);
+      holesList.appendChild(row);
+    });
+  }
+  renderHoles();
+  controlRefreshers.push(renderHoles);
+
+  knobs.append(imageSection.root, commonSection.root, luminanceSection.root, quantizedSection.root, tileSection.root, holesSection);
   shell.body.append(aiNote, knobs);
 
   // --- Live preview --------------------------------------------------------
@@ -235,6 +322,35 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
 
   previewWrap.append(canvas, stat);
   shell.body.appendChild(previewWrap);
+
+  // Click the preview to drop a hole at that point. The canvas drew the tile
+  // centred at (halfW, halfH), so reverse that to get model-space (cxMm, cyMm).
+  // Holes only make sense for tile outputs (flat/silhouette) — relief mode has
+  // no fixed perimeter to cut into.
+  canvas.addEventListener('click', (e) => {
+    const isTile = svgText !== null || (opts.mode === 'quantized' && opts.quantized.output !== 'relief');
+    if (!isTile) return;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const fx = (e.clientX - rect.left) / rect.width;
+    // Canvas Y grows downward; the preview drew row 0 at the BOTTOM (the
+    // downsampler flips for 3D coords), so display Y also grows downward
+    // from the tile's top. Reverse it: top of canvas → +cyMm at +halfH.
+    const fy = (e.clientY - rect.top) / rect.height;
+    const widthMm = opts.common.widthMm;
+    const halfW = widthMm / 2;
+    // Use the source image aspect to guess heightMm (the geometry uses the
+    // same aspect via grid H/W). Falls back to square when there's no image.
+    const aspect = image ? image.height / Math.max(1, image.width)
+      : svgText ? 1 : 1;
+    const heightMm = widthMm * aspect;
+    const halfH = heightMm / 2;
+    const cxMm = -halfW + fx * widthMm;
+    const cyMm = halfH - fy * heightMm;
+    opts.quantized.holes = [...opts.quantized.holes, { cxMm, cyMm, diameterMm: 6 }];
+    renderHoles();
+    schedulePreview();
+  });
 
   // --- AI assist button (in the body, above the footer) --------------------
   let aiBtn: HTMLButtonElement | undefined;
@@ -555,7 +671,8 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     const shape = isQ ? o.quantized.shape : 'rect';
     const hasShape = isQ && out === 'flat' && (shape === 'rounded' || shape === 'circle');
     const hasSilhouette = isQ && out === 'silhouette' && !!grid.colors;
-    const hasHole = isQ && o.quantized.holeEnabled;
+    const holes = isQ ? o.quantized.holes : [];
+    const hasHole = holes.length > 0;
     if (!hasShape && !hasSilhouette && !hasHole) return null;
 
     const widthMm = o.common.widthMm;
@@ -599,17 +716,14 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
       }
     }
 
-    if (hasHole) {
-      // Match tileMesh: hole sits on the centreline X=0, offset down from the
-      // model's top edge (heightMm/2 - holeOffsetMm).
-      const cxHole = 0;
-      const cyHole = halfH - o.quantized.holeOffsetMm;
-      const rHole = o.quantized.holeDiameterMm / 2;
+    for (const hole of holes) {
+      const rHole = hole.diameterMm / 2;
+      if (rHole <= 0) continue;
       for (let y = 0; y < h; y++) {
-        const cy = -halfH + (y + 0.5) * dy - cyHole;
+        const cy = -halfH + (y + 0.5) * dy - hole.cyMm;
         for (let x = 0; x < w; x++) {
           if (mask[y * w + x] === 0) continue;
-          const cx = -halfW + (x + 0.5) * dx - cxHole;
+          const cx = -halfW + (x + 0.5) * dx - hole.cxMm;
           if (cx * cx + cy * cy <= rHole * rHole) mask[y * w + x] = 0;
         }
       }
@@ -645,6 +759,11 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     const mb = opts.quantized.manualBackground;
     bgPickWrap.classList.toggle('hidden', !mb || !silhouettePickable);
     if (mb) bgPickSwatch.style.backgroundColor = `rgb(${mb[0]}, ${mb[1]}, ${mb[2]})`;
+
+    // Preview canvas: clickable to drop a hole in tile modes only.
+    const tilePickable = isSvg || (opts.mode === 'quantized' && opts.quantized.output !== 'relief');
+    canvas.style.cursor = tilePickable ? 'crosshair' : 'default';
+    canvas.title = tilePickable ? 'Click to drop a keychain hole' : '';
   }
 
   // Primary CTA label tracks the actual thing we're about to create — "Create
@@ -844,12 +963,26 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   }
 }
 
-// Deep-merge an AI-returned partial into the working options. Only the three
+// Deep-merge an AI-returned partial into the working options. Only the four
 // known nested groups are merged; the stray `note` field is ignored here.
 function mergeOptions(target: ReliefOptions, patch: Partial<ReliefOptions> & { note?: string }): void {
   if (patch.mode) target.mode = patch.mode;
   if (patch.common) Object.assign(target.common, patch.common);
   if (patch.luminance) Object.assign(target.luminance, patch.luminance);
-  if (patch.quantized) Object.assign(target.quantized, patch.quantized);
+  if (patch.quantized) {
+    Object.assign(target.quantized, patch.quantized);
+    // Old saved presets carry `holeEnabled` + offset/diameter instead of holes[].
+    // If the merge brought legacy fields in but no holes array, materialise the
+    // single hole from them so the wizard reopens with the same cut-out.
+    if ((!Array.isArray(patch.quantized.holes) || patch.quantized.holes.length === 0) && patch.quantized.holeEnabled) {
+      const widthMm = target.common.widthMm;
+      const heightMm = widthMm; // aspect unknown at merge time; cyMm is mm
+      target.quantized.holes = [{
+        cxMm: 0,
+        cyMm: heightMm / 2 - (patch.quantized.holeOffsetMm ?? 6),
+        diameterMm: patch.quantized.holeDiameterMm ?? 6,
+      }];
+    }
+  }
   if (patch.preprocess) Object.assign(target.preprocess, patch.preprocess);
 }

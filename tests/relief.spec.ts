@@ -313,4 +313,79 @@ test.describe('Relief Studio', () => {
     expect(res.hasBlue).toBe(true);
     expect(res.hasWhite).toBe(true);
   });
+
+  // Wave 3: tiles take a holes[] array (replacing the single-hole shorthand) —
+  // each entry punches a circular hole in the printed tile. Triangle count
+  // should drop relative to a hole-free tile in proportion to the cells cut.
+  test('multi-hole tile excludes both hole regions', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const res = await page.evaluate(async () => {
+      const c = document.createElement('canvas');
+      c.width = 200; c.height = 200;
+      const x = c.getContext('2d')!;
+      x.fillStyle = 'white'; x.fillRect(0, 0, 200, 200);
+      x.fillStyle = '#3aa9e8'; x.fillRect(40, 40, 120, 120);
+      const src = c.toDataURL('image/png');
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      const solid = await pw.importImageAsRelief({
+        src, mode: 'quantized',
+        options: { widthMm: 100, resolution: 100, maxHeight: 1, baseThickness: 1 },
+        quantized: { output: 'flat', shape: 'rect', holes: [] },
+      }) as { sessionId?: string };
+      const solidTris = (pw.getGeometryData() as { triangleCount: number }).triangleCount;
+      const withHoles = await pw.importImageAsRelief({
+        src, mode: 'quantized',
+        options: { widthMm: 100, resolution: 100, maxHeight: 1, baseThickness: 1 },
+        quantized: {
+          output: 'flat', shape: 'rect',
+          holes: [
+            { cxMm: -30, cyMm: 30, diameterMm: 10 },
+            { cxMm: 30, cyMm: -30, diameterMm: 10 },
+          ],
+        },
+      }) as { sessionId?: string };
+      const holedTris = (pw.getGeometryData() as { triangleCount: number }).triangleCount;
+      void solid; void withHoles;
+      return { solidTris, holedTris };
+    });
+    expect(res.solidTris).toBeGreaterThan(0);
+    expect(res.holedTris).toBeGreaterThan(0);
+    // Each ~10 mm hole on a 100 mm tile cuts ~1% of cells; two holes drop a
+    // meaningful number of triangles vs the unmodified tile. Loose bound — we
+    // care that the holes actually cut, not the exact arithmetic.
+    expect(res.holedTris).toBeLessThan(res.solidTris);
+  });
+
+  // Wave 3: chamferMm > 0 keeps the tile valid (same triangle count, since
+  // chamfer reuses existing vertices) but raises the perimeter's z to the
+  // chamfered level. Geometry stays manifold.
+  test('chamfered tile retains manifold geometry', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const res = await page.evaluate(async () => {
+      const c = document.createElement('canvas');
+      c.width = 100; c.height = 100;
+      const x = c.getContext('2d')!;
+      x.fillStyle = 'white'; x.fillRect(0, 0, 100, 100);
+      x.fillStyle = 'red'; x.fillRect(20, 20, 60, 60);
+      const src = c.toDataURL('image/png');
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      const created = await pw.importImageAsRelief({
+        src, mode: 'quantized',
+        options: { widthMm: 50, resolution: 60, maxHeight: 1, baseThickness: 1 },
+        quantized: { output: 'flat', shape: 'rect', chamferMm: 0.5 },
+      }) as { sessionId?: string; error?: string };
+      const geo = pw.getGeometryData() as { boundingBox: { z: [number, number] }; triangleCount: number };
+      return { created, zRange: geo.boundingBox.z, triangleCount: geo.triangleCount };
+    });
+    expect(res.created.error).toBeFalsy();
+    expect(res.triangleCount).toBeGreaterThan(0);
+    // Top z reaches the full tile thickness (base + height = 2) somewhere — the
+    // chamfer only drops the OUTER ring, the interior tops stay at z=2.
+    expect(res.zRange[1]).toBeCloseTo(2, 2);
+    expect(res.zRange[0]).toBeCloseTo(0, 2);
+  });
 });

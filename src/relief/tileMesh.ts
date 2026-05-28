@@ -1,4 +1,4 @@
-import type { ReliefMesh } from './types';
+import type { ReliefMesh, TileHole } from './types';
 
 export type TileShape =
   | { kind: 'rect' }
@@ -9,7 +9,11 @@ export type TileShape =
 export interface TileOptions {
   widthMm: number;
   thickness: number;
-  hole?: { cxMm: number; cyMm: number; diameterMm: number };
+  /** Zero or more circular cut-outs. */
+  holes?: TileHole[];
+  /** Top-edge bevel depth in mm. 0 = sharp corner; >0 lowers boundary vertices
+   *  on the top surface to (thickness - chamferMm) for a soft beveled lip. */
+  chamferMm?: number;
 }
 
 export interface TileMeshResult {
@@ -28,10 +32,6 @@ function buildCellMask(W: number, H: number, opts: TileOptions, shape: TileShape
   const halfH = heightMm / 2;
   const dx = widthMm / (W - 1);
   const dy = heightMm / (H - 1);
-
-  // Hole exclusion test (squared-radius compare, centroid in model coords).
-  const hole = opts.hole;
-  const holeR2 = hole ? (hole.diameterMm / 2) * (hole.diameterMm / 2) : 0;
 
   if (shape.kind === 'mask') {
     if (shape.mask.length !== count) return mask;
@@ -66,7 +66,10 @@ function buildCellMask(W: number, H: number, opts: TileOptions, shape: TileShape
     }
   }
 
-  if (hole && holeR2 > 0) {
+  const holes = opts.holes ?? [];
+  for (const hole of holes) {
+    const holeR2 = (hole.diameterMm / 2) * (hole.diameterMm / 2);
+    if (holeR2 <= 0) continue;
     for (let y = 0; y < H; y++) {
       const cy = -halfH + (y + 0.5) * dy - hole.cyMm;
       for (let x = 0; x < W; x++) {
@@ -145,6 +148,28 @@ export function buildTileMesh(
   const dx = widthMm / (W - 1);
   const dy = heightMm / (H - 1);
   const topZ = opts.thickness;
+  const chamferMm = Math.max(0, Math.min(topZ * 0.5, opts.chamferMm ?? 0));
+  const chamferZ = topZ - chamferMm;
+
+  // A grid vertex (vx, vy) borders up to 4 cells (vx-1, vy-1), (vx, vy-1),
+  // (vx-1, vy), (vx, vy). A vertex is "boundary" when at least one of those
+  // cells is included AND at least one is excluded (or off-grid). Boundary
+  // top-surface vertices drop to chamferZ so the perimeter cells slope inward,
+  // giving a soft chamfered top lip without any extra geometry.
+  const wantChamfer = chamferMm > 0;
+  const isCellIncluded = (cx: number, cy: number): boolean => {
+    if (cx < 0 || cy < 0 || cx >= W - 1 || cy >= H - 1) return false;
+    return mask[cy * W + cx] === 1;
+  };
+  const isBoundaryVertex = (vx: number, vy: number): boolean => {
+    const a = isCellIncluded(vx - 1, vy - 1);
+    const b = isCellIncluded(vx, vy - 1);
+    const c = isCellIncluded(vx - 1, vy);
+    const d = isCellIncluded(vx, vy);
+    const anyIn = a || b || c || d;
+    const anyOut = !a || !b || !c || !d;
+    return anyIn && anyOut;
+  };
 
   const numVert = 2 * W * H;
   const vertProperties = new Float32Array(numVert * 3);
@@ -155,9 +180,10 @@ export function buildTileMesh(
       const px = -halfW + x * dx;
       const py = -halfH + y * dy;
       const t = cell * 3;
+      const tz = wantChamfer && isBoundaryVertex(x, y) ? chamferZ : topZ;
       vertProperties[t] = px;
       vertProperties[t + 1] = py;
-      vertProperties[t + 2] = topZ;
+      vertProperties[t + 2] = tz;
       const b = topBase + cell * 3;
       vertProperties[b] = px;
       vertProperties[b + 1] = py;
@@ -171,10 +197,7 @@ export function buildTileMesh(
   // Count walls: for each included quad-cell, check 4 edges. An edge is a wall when
   // the neighbour is excluded or off-grid. 2 wall tris per wall edge.
   let wallEdges = 0;
-  const isIncluded = (x: number, y: number): boolean => {
-    if (x < 0 || y < 0 || x >= W - 1 || y >= H - 1) return false;
-    return mask[y * W + x] === 1;
-  };
+  const isIncluded = isCellIncluded;
   for (let y = 0; y < H - 1; y++) {
     for (let x = 0; x < W - 1; x++) {
       if (!isIncluded(x, y)) continue;

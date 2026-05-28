@@ -62,6 +62,14 @@ export interface LuminanceOptions {
   levels: number;
 }
 
+/** A single circular keychain hole on a flat tile. Coordinates are model-space
+ *  mm with (0, 0) at the tile centre, +Y up (the tile's top edge). */
+export interface TileHole {
+  cxMm: number;
+  cyMm: number;
+  diameterMm: number;
+}
+
 /** Color-quantized specific knobs. */
 export interface QuantizedOptions {
   /** Number of color clusters. */
@@ -78,12 +86,18 @@ export interface QuantizedOptions {
   shape: TileShapeKind;
   /** Corner radius for 'rounded' shape, in mm. */
   cornerRadiusMm: number;
-  /** Add a circular keychain hole. */
-  holeEnabled: boolean;
-  /** Hole diameter in mm. */
-  holeDiameterMm: number;
-  /** Hole centre distance from the top edge of the tile, in mm. */
-  holeOffsetMm: number;
+  /** Top-edge chamfer (round-over) depth in mm. 0 disables. The chamfer drops
+   *  the outermost ring of top-surface vertices to topZ - chamferMm, giving the
+   *  perimeter a soft beveled lip rather than a sharp corner. */
+  chamferMm: number;
+  /** All circular keychain holes on the tile. Each is centred at (cxMm, cyMm)
+   *  in model coords. Empty = no holes. */
+  holes: TileHole[];
+  /** Legacy single-hole knobs. New code uses `holes[]`; clampReliefQuantized
+   *  migrates these on read so old saved presets still work. */
+  holeEnabled?: boolean;
+  holeDiameterMm?: number;
+  holeOffsetMm?: number;
   /** When set in silhouette mode, treat this colour (0..255 RGB) as the
    *  background instead of auto-detecting from the image's border colours.
    *  The user picks it by clicking the source thumbnail. */
@@ -120,9 +134,8 @@ export const DEFAULT_RELIEF_OPTIONS: ReliefOptions = {
     output: 'flat',
     shape: 'rect',
     cornerRadiusMm: 4,
-    holeEnabled: false,
-    holeDiameterMm: 6,
-    holeOffsetMm: 6,
+    chamferMm: 0,
+    holes: [],
   },
   preprocess: { brightness: 0, contrast: 0, saturation: 0, levelsLow: 0, levelsHigh: 255 },
 };

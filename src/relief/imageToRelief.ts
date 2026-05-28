@@ -640,17 +640,11 @@ export function generateRelief(image: ImageData, opts: ReliefOptions = DEFAULT_R
 function buildQuantizedTile(grid: HeightGrid, opts: ReliefOptions): GenerateReliefResult {
   const colors = grid.colors!;
   const W = grid.width, H = grid.height;
-  const heightMm = opts.common.widthMm * H / W;
   const tileOpts: TileOptions = {
     widthMm: opts.common.widthMm,
     thickness: opts.common.baseThickness + opts.common.maxHeight,
-    hole: opts.quantized.holeEnabled
-      ? {
-          cxMm: 0,
-          cyMm: heightMm / 2 - opts.quantized.holeOffsetMm,
-          diameterMm: opts.quantized.holeDiameterMm,
-        }
-      : undefined,
+    holes: opts.quantized.holes,
+    chamferMm: opts.quantized.chamferMm,
   };
   const shape: TileShape = opts.quantized.output === 'silhouette'
     ? {
@@ -775,7 +769,6 @@ export async function generateReliefFromSvg(svgText: string, opts: ReliefOptions
   const parsed = await parseSvgToTile(svgText, resolution);
   const W = parsed.width, H = parsed.height;
   const thickness = opts.common.baseThickness + opts.common.maxHeight;
-  const heightMm = opts.common.widthMm * H / Math.max(1, W);
 
   // Compose a flat colours grid by painting fills in SVG document order
   // (later fills cover earlier where masks overlap).
@@ -798,9 +791,8 @@ export async function generateReliefFromSvg(svgText: string, opts: ReliefOptions
   const tileOpts: TileOptions = {
     widthMm: opts.common.widthMm,
     thickness,
-    hole: opts.quantized.holeEnabled
-      ? { cxMm: 0, cyMm: heightMm / 2 - opts.quantized.holeOffsetMm, diameterMm: opts.quantized.holeDiameterMm }
-      : undefined,
+    holes: opts.quantized.holes,
+    chamferMm: opts.quantized.chamferMm,
   };
   const shape: TileShape = opts.quantized.output === 'silhouette'
     ? { kind: 'mask', mask: parsed.unionMask }
