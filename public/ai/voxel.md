@@ -61,7 +61,7 @@ are **integers** in the range −1024…1023 on each axis. 1 voxel = 1 world uni
 | `v.cylinder([cx,cy,cz], radius, height, color, axis?)` | Fill a solid cylinder; base centered on the point, extends `height` along `axis` (`'x'`/`'y'`/`'z'`, default `'z'`). |
 | `v.line([x0,y0,z0], [x1,y1,z1], color)` | Draw a 1-voxel-thick line (3D Bresenham). |
 | `v.translate([dx,dy,dz])` | Shift every voxel by an integer offset. |
-| `v.mirror('x' \| 'y' \| 'z')` | Add a mirrored copy across that axis's 0-plane (great for symmetric models). |
+| `v.mirror('x' \| 'y' \| 'z')` | Add a mirrored copy across that axis's 0-plane (great for symmetric models; the mirrored copy wins where it overlaps an existing voxel). |
 | `v.hollow(thickness?)` | Remove interior voxels, leaving a shell of the given wall thickness (default 1). |
 | `v.size` | Number of occupied voxels. |
 | `v.bounds()` → `{min,max} \| null` | Inclusive extents, or null when empty. |
@@ -119,6 +119,12 @@ return voxels().fillBox([-4,-4,0],[4,4,8], '#6cf').smooth({ iterations: 4, detai
 Smoothing only moves vertices — topology is unchanged — so per-voxel colors are
 preserved and the result stays a watertight manifold (exports/paint still work).
 Call `.blocky()` to switch back to hard faces (the default).
+
+**Smoothing wants features at least 2 voxels thick.** A `λ` pass pulls each
+vertex toward its neighbours, so smoothing a 1-voxel-thick wall or a
+`hollow(1)` shell can draw opposite faces together and self-intersect (the mesh
+is still a valid manifold and won't error, but it can look pinched). Thicken the
+feature (`hollow(2)`, ≥2-voxel walls) or use fewer `iterations` if you see it.
 
 > For a fully organic surface from an implicit field, manifold-js's
 > `Manifold.levelSet` or the `api.sdf` engine are better suited; `.smooth()` is

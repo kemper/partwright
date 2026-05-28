@@ -140,4 +140,21 @@ test.describe('voxel engine', () => {
     expect(result.isManifold).toBe(true);
     expect(result.triangleCount).toBeGreaterThan(0);
   });
+
+  test('hollow + smooth (thin shell) still produces a valid manifold', async ({ page }) => {
+    // Smoothing preserves topology, so even a 1-voxel-thick shell stays a
+    // topological manifold (it can self-intersect geometrically — documented —
+    // but it must not error or crash the run).
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      return await pw.run(`
+        const { voxels } = api;
+        return voxels().fillBox([0,0,0],[7,7,7],'#88aaff').hollow(1).smooth();
+      `);
+    });
+    expect(result.error).toBeFalsy();
+    expect(result.isManifold).toBe(true);
+  });
 });
