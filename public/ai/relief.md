@@ -7,9 +7,9 @@ heightmap-based variants you also get an advisory single-nozzle swap guide.
 | Output | What it is | Best for |
 |---|---|---|
 | **Luminance relief** | Smooth tonal heightmap (brightness→height) | Portraits, photos, lithophanes |
-| **Quantized → flat tile** (default for colour) | Flat colour-painted tile (Bambu-keychain style) | Logos, characters, badges |
+| **Quantized → flat tile** (default for colour) | Flat colour-painted tile (keychain-style) | Logos, characters, badges |
 | **Quantized → silhouette tile** | Flat tile cut to the image's subject outline | Stickers, character keychains |
-| **Quantized → stepped relief** | Each cluster gets its own height (HueForge-classic) | Posters where colour layering matters |
+| **Quantized → stepped relief** | Each cluster gets its own Z height | Posters where colour layering matters |
 | **SVG import** | Per-`<path fill>` regions on a flat tile | Vector logos and icons (crispest result) |
 
 ## Make a Part from a raster image
@@ -29,6 +29,9 @@ await partwright.importImageAsRelief({
     holes: [                     // any number of circular cut-outs (mm)
       { cxMm: 0, cyMm: 44, diameterMm: 5 },
     ],
+    // 'relief' only: 'single-nozzle' (default) groups triangles by Z-band
+    // (slicer-faithful); 'multi-color' groups by cluster (AMS-friendly).
+    paintingMode: 'single-nozzle',
   },
 })
 // -> { sessionId } (a new session whose geometry is the tile/relief), or { error }
@@ -40,10 +43,16 @@ await partwright.importImageAsRelief({
   k-means++ seeding; Lab space by default). The colour regions are pre-painted
   on the resulting Part.
 - The `quantized.output` switch decides the geometry kind. Default `'flat'` is
-  the Bambu-keychain style (flat tile + colour decals). `'silhouette'` cuts
-  the tile to the image's subject (background removed via edge-colour
-  detection). `'relief'` is the classic HueForge stepped-height cliffs and is
-  rarely what you want for character/illustration art.
+  the keychain-style flat tile + colour decals. `'silhouette'` cuts the tile
+  to the image's subject (background removed via edge-colour detection).
+  `'relief'` is a stepped-height heightmap where each cluster gets its own Z
+  layer — useful for layered prints but rarely what you want for
+  character/illustration art.
+- For `'relief'` only, `quantized.paintingMode` selects how the mesh gets
+  painted: `'single-nozzle'` (default) puts every triangle in a Z-band so any
+  printed layer is one colour (matches a real filament-swap print, no
+  XY-stripe artefacts on side walls); `'multi-color'` puts each cluster in
+  its own region so an AMS can swap mid-XY.
 - For watertight/manifold guarantees: luminance reliefs come in as a real
   Manifold (booleans/slice work). Tile + quantized-relief Parts come in as
   render-only meshes (the colour-region triangle ids would scramble through
@@ -68,7 +77,7 @@ partwright.setReliefPreviewMode('single-nozzle') // 'flat' | 'ams' | 'single-noz
 `single-nozzle` simulates light through the translucent layer stack (filament
 transmission distance), so it differs from flat paint. The preview is baked into
 the per-triangle colors, so `renderView` / `renderViews` show it — set it before
-rendering to self-check a HueForge against the reference image.
+rendering to self-check a stepped-relief print against the reference image.
 
 ## Read the swap guide
 
@@ -101,7 +110,7 @@ await partwright.importSvgAsRelief({
 Strokes, gradients (treated as their representative colour), masks, and
 clip-paths are ignored. Resolution caps at 256 columns.
 
-## Imported HueForge STLs
+## Imported stepped-relief STLs
 
 Import the `.stl` normally, then in the Relief Studio panel use **Detect levels**
 to seed a color region per existing Z plateau (or, programmatically, paint Z

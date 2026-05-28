@@ -1,4 +1,4 @@
-// Optically-honest preview for HueForge-style reliefs. Bakes a composited
+// Optically-honest preview for stepped-relief prints. Bakes a composited
 // color per triangle into the existing per-triangle color buffer so both the
 // live viewport and the offscreen AI renderer pick it up for free.
 

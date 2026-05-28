@@ -1,8 +1,8 @@
-// Wizard modal that turns an imported image into a HueForge-style relief
-// (heightmap). The user picks an image, chooses a mapping mode, tunes the
-// knobs, watches a live grayscale/colored preview, and clicks Create. Mesh
-// generation itself is the host's job — this modal only resolves options and
-// hands back the source ImageData via onCreate.
+// Wizard modal that turns an imported image into a printable colour tile,
+// keychain, or stepped relief. The user picks an image, chooses a mapping
+// mode, tunes the knobs, watches a live grayscale/colored preview, and clicks
+// Create. Mesh generation itself is the host's job — this modal only resolves
+// options and hands back the source ImageData via onCreate.
 
 import type { ReliefOptions, ReliefImportMode, TileOutputKind, TileShapeKind, HeightGrid, ReliefMesh, SeedRegion } from '../relief/types';
 import { DEFAULT_RELIEF_OPTIONS } from '../relief/types';
@@ -85,7 +85,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
 
   const shell = createModalShell({
     title: 'Make a part from an image',
-    maxWidth: 'xl',
+    maxWidth: '2xl',
     scrollable: true,
     onClose: () => {
       if (previewTimer !== undefined) window.clearTimeout(previewTimer);
@@ -208,13 +208,13 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   checkboxControl(quantizedSection.grid, 'Dither', () => opts.quantized.dither, v => (opts.quantized.dither = v));
 
   // Tile knobs — visible for 'quantized' mode and for SVG imports. The Output
-  // picker switches between the stepped HueForge relief, a flat colour tile
-  // (Bambu-keychain style), and a tile cut to the image's subject silhouette.
+  // picker switches between a stepped relief, a flat colour tile (keychain
+  // style), and a tile cut to the image's subject silhouette.
   const tileSection = makeSection('Tile output');
   selectControl<TileOutputKind>(tileSection.grid, 'Output', () => opts.quantized.output, v => { opts.quantized.output = v; syncMode(); }, [
     { value: 'flat', label: 'Flat tile (keychain)' },
     { value: 'silhouette', label: 'Cut to subject' },
-    { value: 'relief', label: 'Stepped relief (HueForge)' },
+    { value: 'relief', label: 'Stepped relief' },
   ]);
   selectControl<TileShapeKind>(tileSection.grid, 'Shape', () => opts.quantized.shape, v => (opts.quantized.shape = v), [
     { value: 'rect', label: 'Rectangle' },
@@ -223,6 +223,12 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   ]);
   sliderControl(tileSection.grid, 'Corner radius', 'mm', () => opts.quantized.cornerRadiusMm, v => (opts.quantized.cornerRadiusMm = v), { min: 0, max: 20, step: 0.5 });
   sliderControl(tileSection.grid, 'Top-edge chamfer', 'mm', () => opts.quantized.chamferMm, v => (opts.quantized.chamferMm = v), { min: 0, max: 2, step: 0.05 });
+  // Stepped-relief painting mode — single-nozzle (Z-banded, slicer-faithful)
+  // vs multi-color (per-cluster, AMS-friendly). Hidden when output != 'relief'.
+  const paintingModeRow = selectControl<'single-nozzle' | 'multi-color'>(tileSection.grid, 'Painting mode', () => opts.quantized.paintingMode, v => (opts.quantized.paintingMode = v), [
+    { value: 'single-nozzle', label: 'Single-nozzle (Z-banded)' },
+    { value: 'multi-color', label: 'Multi-colour (AMS)' },
+  ]);
 
   // Holes editor — one row per hole with diameter + position inputs. Click
   // the preview canvas to drop a new hole at that point; "+ Add hole" drops
@@ -314,14 +320,198 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   controlRefreshers.push(renderHoles);
 
   knobs.append(imageSection.root, commonSection.root, luminanceSection.root, quantizedSection.root, tileSection.root, holesSection);
-  shell.body.append(aiNote, knobs);
+
+  // Two-column shell on md+ so the preview stays visible while the user
+  // scrolls the knobs. On mobile the columns stack — same flow as before.
+  const gridWrap = document.createElement('div');
+  gridWrap.className = 'flex flex-col md:grid md:grid-cols-[1fr_minmax(0,260px)] md:gap-5 md:items-start';
+
+  const gridLeft = document.createElement('div');
+  gridLeft.className = 'flex flex-col gap-3 min-w-0';
+  gridLeft.append(aiNote, knobs);
+
+  const gridRight = document.createElement('div');
+  // Sticky top so the preview hovers in view while the user scrolls the knob
+  // column — falls back to a static block on mobile (no md: prefix).
+  gridRight.className = 'flex flex-col gap-2 md:sticky md:top-0';
+
+  gridWrap.append(gridLeft, gridRight);
+  shell.body.appendChild(gridWrap);
+
+  // --- Crop editor (in the right column, above the previews) --------------
+  // Drag the rectangle to move, drag handles to resize. When shape is
+  // 'circle', the crop aspect locks to 1:1 so the inscribed circle fills the
+  // crop. Crop is stored on opts.crop as normalised 0..1 box.
+  const cropEditor = document.createElement('div');
+  cropEditor.className = 'hidden flex flex-col items-center gap-1';
+  const cropHeading = document.createElement('div');
+  cropHeading.className = 'text-[10px] text-zinc-500 font-mono self-start';
+  cropHeading.textContent = 'Crop · drag corners to resize';
+  const cropContainer = document.createElement('div');
+  cropContainer.className = 'relative select-none touch-none rounded border border-zinc-700 overflow-hidden bg-zinc-900';
+  cropContainer.style.maxWidth = '200px';
+  cropContainer.style.width = '200px';
+  const cropImg = document.createElement('img');
+  cropImg.className = 'block w-full h-auto pointer-events-none';
+  cropImg.draggable = false;
+  cropContainer.appendChild(cropImg);
+  // 4 dim panels around the crop rectangle. Each absolutely-positioned to
+  // shade the part of the image that's being cropped away.
+  const dimTop = document.createElement('div');
+  const dimRight = document.createElement('div');
+  const dimBottom = document.createElement('div');
+  const dimLeft = document.createElement('div');
+  for (const d of [dimTop, dimRight, dimBottom, dimLeft]) {
+    d.className = 'absolute bg-black/55 pointer-events-none';
+    cropContainer.appendChild(d);
+  }
+  const cropRect = document.createElement('div');
+  cropRect.className = 'absolute border-2 border-white/90 cursor-move shadow-[0_0_0_1px_rgba(0,0,0,0.4)]';
+  cropContainer.appendChild(cropRect);
+  // 8 handles: 4 corners + 4 edges. Each is a small box positioned over the
+  // crop rect's perimeter; the handle's data-edge identifies which sides it
+  // controls when dragged.
+  type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+  const handles: Partial<Record<Edge, HTMLElement>> = {};
+  const handleStyle = 'absolute w-3 h-3 -mt-1.5 -ml-1.5 rounded-sm bg-white/95 border border-zinc-700';
+  const edgeCursor: Record<Edge, string> = { n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize', ne: 'nesw-resize', sw: 'nesw-resize', nw: 'nwse-resize', se: 'nwse-resize' };
+  for (const e of ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as Edge[]) {
+    const h = document.createElement('div');
+    h.className = handleStyle;
+    h.style.cursor = edgeCursor[e];
+    h.dataset.edge = e;
+    handles[e] = h;
+    cropRect.appendChild(h);
+  }
+  cropEditor.append(cropHeading, cropContainer);
+  gridRight.appendChild(cropEditor);
+
+  // Default crop covers the whole image (no crop). Stored as normalised
+  // 0..1 over the *natural* image dimensions, so it survives resolution
+  // changes.
+  function ensureCrop(): { left: number; top: number; right: number; bottom: number } {
+    if (!opts.crop) opts.crop = { left: 0, top: 0, right: 1, bottom: 1 };
+    return opts.crop;
+  }
+  function clampCrop(c: { left: number; top: number; right: number; bottom: number }, lockAspect: number | null): void {
+    const minSize = 0.05; // never let crop shrink below 5% of an edge
+    c.left = Math.max(0, Math.min(1 - minSize, c.left));
+    c.top = Math.max(0, Math.min(1 - minSize, c.top));
+    c.right = Math.max(c.left + minSize, Math.min(1, c.right));
+    c.bottom = Math.max(c.top + minSize, Math.min(1, c.bottom));
+    if (lockAspect) {
+      // Aspect lock is in image pixels (natural width / natural height). Crop
+      // normalised box uses fractions, so apply the natural-aspect ratio when
+      // adjusting box height to box width.
+      const naturalAspect = image ? image.width / image.height : 1;
+      const targetHFrac = ((c.right - c.left) * naturalAspect) / lockAspect;
+      // Try keeping the centre y the same as the user dragged; clamp if it
+      // would push past 0..1.
+      const cy = (c.top + c.bottom) / 2;
+      let top = cy - targetHFrac / 2;
+      let bot = cy + targetHFrac / 2;
+      if (top < 0) { top = 0; bot = targetHFrac; }
+      if (bot > 1) { bot = 1; top = 1 - targetHFrac; }
+      c.top = Math.max(0, top);
+      c.bottom = Math.min(1, bot);
+    }
+  }
+  function lockAspectForShape(): number | null {
+    // For circle, we want the crop to be a 1:1 box (in image pixels) so the
+    // inscribed circle covers the whole crop. Other shapes leave aspect free.
+    if (opts.mode === 'quantized' && opts.quantized.output === 'flat' && opts.quantized.shape === 'circle') return 1;
+    return null;
+  }
+  function renderCrop(): void {
+    if (!image) { cropEditor.classList.add('hidden'); return; }
+    if (svgText) { cropEditor.classList.add('hidden'); return; }
+    cropEditor.classList.remove('hidden');
+    const c = ensureCrop();
+    const lpct = c.left * 100;
+    const tpct = c.top * 100;
+    const wpct = (c.right - c.left) * 100;
+    const hpct = (c.bottom - c.top) * 100;
+    cropRect.style.left = `${lpct}%`;
+    cropRect.style.top = `${tpct}%`;
+    cropRect.style.width = `${wpct}%`;
+    cropRect.style.height = `${hpct}%`;
+    dimTop.style.left = '0'; dimTop.style.top = '0'; dimTop.style.width = '100%'; dimTop.style.height = `${tpct}%`;
+    dimBottom.style.left = '0'; dimBottom.style.top = `${tpct + hpct}%`; dimBottom.style.width = '100%'; dimBottom.style.height = `${100 - (tpct + hpct)}%`;
+    dimLeft.style.left = '0'; dimLeft.style.top = `${tpct}%`; dimLeft.style.width = `${lpct}%`; dimLeft.style.height = `${hpct}%`;
+    dimRight.style.left = `${lpct + wpct}%`; dimRight.style.top = `${tpct}%`; dimRight.style.width = `${100 - (lpct + wpct)}%`; dimRight.style.height = `${hpct}%`;
+    // Position handles at corners + edge midpoints.
+    if (handles.nw) { handles.nw.style.left = '0%'; handles.nw.style.top = '0%'; }
+    if (handles.ne) { handles.ne.style.left = '100%'; handles.ne.style.top = '0%'; }
+    if (handles.sw) { handles.sw.style.left = '0%'; handles.sw.style.top = '100%'; }
+    if (handles.se) { handles.se.style.left = '100%'; handles.se.style.top = '100%'; }
+    if (handles.n) { handles.n.style.left = '50%'; handles.n.style.top = '0%'; }
+    if (handles.s) { handles.s.style.left = '50%'; handles.s.style.top = '100%'; }
+    if (handles.w) { handles.w.style.left = '0%'; handles.w.style.top = '50%'; }
+    if (handles.e) { handles.e.style.left = '100%'; handles.e.style.top = '50%'; }
+  }
+  // Pointer-events drag on crop rect (move) and handles (resize). Working in
+  // normalised crop space keeps the geometry tidy.
+  let dragMode: { kind: 'move' | 'resize'; edge?: Edge; startX: number; startY: number; orig: { left: number; top: number; right: number; bottom: number } } | null = null;
+  function startDrag(e: PointerEvent, kind: 'move' | 'resize', edge?: Edge): void {
+    e.preventDefault();
+    e.stopPropagation();
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    dragMode = { kind, edge, startX: e.clientX, startY: e.clientY, orig: { ...ensureCrop() } };
+  }
+  function moveDrag(e: PointerEvent): void {
+    if (!dragMode) return;
+    const rect = cropContainer.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const dxN = (e.clientX - dragMode.startX) / rect.width;
+    const dyN = (e.clientY - dragMode.startY) / rect.height;
+    const c = ensureCrop();
+    const o = dragMode.orig;
+    if (dragMode.kind === 'move') {
+      const w = o.right - o.left;
+      const h = o.bottom - o.top;
+      c.left = o.left + dxN;
+      c.top = o.top + dyN;
+      c.right = c.left + w;
+      c.bottom = c.top + h;
+      // Move-clamp without aspect lock — moving never resizes.
+      if (c.left < 0) { c.right -= c.left; c.left = 0; }
+      if (c.top < 0) { c.bottom -= c.top; c.top = 0; }
+      if (c.right > 1) { c.left -= (c.right - 1); c.right = 1; }
+      if (c.bottom > 1) { c.top -= (c.bottom - 1); c.bottom = 1; }
+    } else if (dragMode.edge) {
+      const edge = dragMode.edge;
+      if (edge.includes('n')) c.top = o.top + dyN;
+      if (edge.includes('s')) c.bottom = o.bottom + dyN;
+      if (edge.includes('w')) c.left = o.left + dxN;
+      if (edge.includes('e')) c.right = o.right + dxN;
+      clampCrop(c, lockAspectForShape());
+    }
+    renderCrop();
+    schedulePreview();
+  }
+  function endDrag(e: PointerEvent): void {
+    if (!dragMode) return;
+    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+    dragMode = null;
+  }
+  cropRect.addEventListener('pointerdown', (e) => {
+    const target = e.target as HTMLElement;
+    const edge = target.dataset.edge as Edge | undefined;
+    if (edge) startDrag(e, 'resize', edge);
+    else startDrag(e, 'move');
+  });
+  cropRect.addEventListener('pointermove', moveDrag);
+  cropRect.addEventListener('pointerup', endDrag);
+  cropRect.addEventListener('pointercancel', endDrag);
 
   // --- Live preview --------------------------------------------------------
   const previewWrap = document.createElement('div');
-  previewWrap.className = 'flex flex-col items-center gap-2 border-t border-zinc-700 pt-3';
+  previewWrap.className = 'flex flex-col items-center gap-2 border-t border-zinc-700 pt-3 md:border-0 md:pt-0';
 
   const previewRow = document.createElement('div');
-  previewRow.className = 'flex items-start gap-3 flex-wrap justify-center';
+  // Stack the 2D + 3D previews vertically inside the narrow right column so
+  // both stay readable without resizing.
+  previewRow.className = 'flex flex-col items-center gap-2';
 
   const canvas = document.createElement('canvas');
   canvas.className = 'rounded border border-zinc-700 bg-zinc-900 max-w-full';
@@ -332,11 +522,11 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   const preview3DWrap = document.createElement('div');
   preview3DWrap.className = 'flex flex-col items-center gap-1';
   const preview3D = document.createElement('canvas');
-  preview3D.width = 220;
-  preview3D.height = 220;
+  preview3D.width = 200;
+  preview3D.height = 200;
   preview3D.className = 'rounded border border-zinc-700 bg-zinc-900';
-  preview3D.style.width = '220px';
-  preview3D.style.height = '220px';
+  preview3D.style.width = '200px';
+  preview3D.style.height = '200px';
   const preview3DCaption = document.createElement('div');
   preview3DCaption.className = 'text-[10px] text-zinc-500 font-mono';
   preview3DCaption.textContent = '3D preview';
@@ -349,7 +539,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   stat.textContent = 'Load an image to preview.';
 
   previewWrap.append(previewRow, stat);
-  shell.body.appendChild(previewWrap);
+  gridRight.appendChild(previewWrap);
 
   // --- 3D preview state ---------------------------------------------------
   const three = init3DPreview(preview3D);
@@ -506,7 +696,14 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
       URL.revokeObjectURL(url);
       thumb.src = '';
       thumb.classList.remove('hidden');
-      thumb.src = off.toDataURL('image/png');
+      const thumbSrc = off.toDataURL('image/png');
+      thumb.src = thumbSrc;
+      cropImg.src = thumbSrc;
+      // Reset crop to the full image when a new source is picked. We don't
+      // know the user's intent for the new picture, so a fresh import starts
+      // uncropped.
+      if (!options.initialOptions?.crop) opts.crop = { left: 0, top: 0, right: 1, bottom: 1 };
+      renderCrop();
       sourceLabel.textContent = `${baseName} — ${off.width}×${off.height}`;
       renderPreview();
       syncMode();
@@ -809,6 +1006,10 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     luminanceSection.root.classList.toggle('hidden', !showLum);
     quantizedSection.root.classList.toggle('hidden', isSvg || opts.mode !== 'quantized');
     tileSection.root.classList.toggle('hidden', !isSvg && opts.mode !== 'quantized');
+    // Painting mode picker only applies to stepped reliefs. Flat / silhouette
+    // tiles paint their top 1:1 from the cluster map, so the choice is moot.
+    const showPaintingMode = !isSvg && opts.mode === 'quantized' && opts.quantized.output === 'relief';
+    paintingModeRow.classList.toggle('hidden', !showPaintingMode);
     createBtn.textContent = currentCtaLabel();
 
     // Silhouette mode: the thumb becomes click-to-pick background. Cursor
@@ -819,6 +1020,13 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     const mb = opts.quantized.manualBackground;
     bgPickWrap.classList.toggle('hidden', !mb || !silhouettePickable);
     if (mb) bgPickSwatch.style.backgroundColor = `rgb(${mb[0]}, ${mb[1]}, ${mb[2]})`;
+
+    // Crop editor: only for raster imports (SVGs are already vector-clean) and
+    // hidden until an image is loaded. Aspect lock to 1:1 for circle shape so
+    // the inscribed circle fills the crop region.
+    const lockAspect = lockAspectForShape();
+    if (lockAspect && image && opts.crop) clampCrop(opts.crop, lockAspect);
+    renderCrop();
 
     // Preview canvas: clickable to drop a hole in tile modes only.
     const tilePickable = isSvg || (opts.mode === 'quantized' && opts.quantized.output !== 'relief');
@@ -1002,7 +1210,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     get: () => T,
     set: (v: T) => void,
     choices: Array<{ value: T; label: string }>,
-  ): void {
+  ): HTMLElement {
     const { wrap } = fieldWrap(label, '');
     const select = document.createElement('select');
     select.className = 'w-full px-2 py-1 rounded bg-zinc-900 border border-zinc-700 text-xs text-zinc-100 focus:outline-none focus:border-blue-500';
@@ -1020,6 +1228,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     controlRefreshers.push(() => { select.value = get(); });
     wrap.appendChild(select);
     parent.appendChild(wrap);
+    return wrap;
   }
 }
 

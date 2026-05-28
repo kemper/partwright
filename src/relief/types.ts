@@ -1,4 +1,5 @@
-// Shared types for the Relief Studio (HueForge-style) feature.
+// Shared types for the Relief Studio (image → printable colour tile / stepped
+// relief).
 //
 // A "relief" is a heightmap mesh generated from a 2D image (or an imported
 // stepped STL). The user paints its surface freely (reusing the existing
@@ -11,12 +12,35 @@ export type ReliefImportMode = 'luminance' | 'quantized' | 'ai' | 'svg';
 
 /** What kind of geometry the colour pipeline produces. */
 export type TileOutputKind =
-  /** Cluster->height cliffs — classic HueForge stepped relief. */
+  /** Cluster->height cliffs — stepped relief (lithophane-adjacent). */
   | 'relief'
-  /** Flat tile with colour regions painted on the top — Bambu keychain style. */
+  /** Flat tile with colour regions painted on the top — keychain style. */
   | 'flat'
   /** Flat tile cut to the image's subject silhouette (background removed). */
   | 'silhouette';
+
+/** How a stepped-relief output assigns colour to the mesh. Only relevant for
+ *  `output: 'relief'`; flat/silhouette tiles paint the top surface 1:1 from
+ *  the cluster map. */
+export type PaintingMode =
+  /** Per-cluster regions — each cluster owns its top + side walls. AMS-friendly
+   *  (a multi-material printer can switch filament across XY). */
+  | 'multi-color'
+  /** Z-banded regions — every triangle is grouped by the Z-layer containing its
+   *  centroid, so a single horizontal slice of the print is one colour.
+   *  Matches what a single-nozzle filament-swap print actually deposits. */
+  | 'single-nozzle';
+
+/** Optional crop applied to the source image before sampling. Coordinates are
+ *  normalised 0..1 over the source's natural width/height so the crop is
+ *  resolution-independent. Default is the full image (left=0, top=0, right=1,
+ *  bottom=1). */
+export interface CropRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
 
 /** Outer profile of a flat tile (for output: 'flat'; silhouette uses the image). */
 export type TileShapeKind = 'rect' | 'rounded' | 'circle';
@@ -90,6 +114,10 @@ export interface QuantizedOptions {
    *  the outermost ring of top-surface vertices to topZ - chamferMm, giving the
    *  perimeter a soft beveled lip rather than a sharp corner. */
   chamferMm: number;
+  /** How `output: 'relief'` paints the mesh — per-cluster regions (multi-color,
+   *  AMS-friendly) or per-Z-layer regions (single-nozzle, slicer-faithful).
+   *  Ignored for `output: 'flat'` and `output: 'silhouette'`. */
+  paintingMode: PaintingMode;
   /** All circular keychain holes on the tile. Each is centred at (cxMm, cyMm)
    *  in model coords. Empty = no holes. */
   holes: TileHole[];
@@ -111,6 +139,9 @@ export interface ReliefOptions {
   quantized: QuantizedOptions;
   /** Image-level corrections applied before sampling for clustering/luminance. */
   preprocess: PreprocessOptions;
+  /** Optional crop applied to the source image before any other processing.
+   *  When undefined or covering the full image (0,0,1,1), no crop occurs. */
+  crop?: CropRect;
 }
 
 export const DEFAULT_RELIEF_OPTIONS: ReliefOptions = {
@@ -136,6 +167,7 @@ export const DEFAULT_RELIEF_OPTIONS: ReliefOptions = {
     cornerRadiusMm: 4,
     chamferMm: 0,
     holes: [],
+    paintingMode: 'single-nozzle',
   },
   preprocess: { brightness: 0, contrast: 0, saturation: 0, levelsLow: 0, levelsHigh: 255 },
 };

@@ -1,4 +1,4 @@
-// HueForge-style relief (heightmap) mesh generation.
+// Image → printable colour-tile / stepped-relief mesh generation.
 //
 // A relief is built directly from a regular grid of heights, NOT by unioning
 // per-pixel boxes (which would be O(cells) boolean ops and far too slow). The
@@ -73,13 +73,21 @@ function luminance255(r: number, g: number, b: number): number {
 
 /** Box/average downsample of an RGBA ImageData into per-cell mean RGB stored as
  *  Float32 (one [r,g,b] triple per cell, components 0..255). Columns are capped
- *  at `resolution`; rows scale to preserve aspect. */
+ *  at `resolution`; rows scale to preserve aspect. When a crop is provided
+ *  (image-pixel coords, top-down), only that rectangle is sampled. */
 function downsample(
   image: ImageData,
   resolution: number,
+  cropPx?: { left: number; top: number; right: number; bottom: number },
 ): { width: number; height: number; rgb: Float32Array } {
-  const srcW = image.width;
-  const srcH = image.height;
+  const imgW = image.width;
+  const imgH = image.height;
+  const cl = cropPx ? Math.max(0, Math.min(imgW - 1, Math.floor(cropPx.left))) : 0;
+  const ct = cropPx ? Math.max(0, Math.min(imgH - 1, Math.floor(cropPx.top))) : 0;
+  const cr = cropPx ? Math.max(cl + 1, Math.min(imgW, Math.floor(cropPx.right))) : imgW;
+  const cb = cropPx ? Math.max(ct + 1, Math.min(imgH, Math.floor(cropPx.bottom))) : imgH;
+  const srcW = cr - cl;
+  const srcH = cb - ct;
   const cols = Math.max(1, Math.min(resolution, srcW));
   // Preserve aspect: rows track the same px/cell scale as columns.
   const scale = cols / srcW;
@@ -94,17 +102,17 @@ function downsample(
   // right-side-up (otherwise a smiley imports as a frown).
   for (let cy = 0; cy < rows; cy++) {
     const fcy = rows - 1 - cy;
-    const y0 = Math.floor((fcy * srcH) / rows);
-    const y1 = Math.max(y0 + 1, Math.floor(((fcy + 1) * srcH) / rows));
+    const y0 = ct + Math.floor((fcy * srcH) / rows);
+    const y1 = Math.max(y0 + 1, ct + Math.floor(((fcy + 1) * srcH) / rows));
     for (let cx = 0; cx < cols; cx++) {
-      const x0 = Math.floor((cx * srcW) / cols);
-      const x1 = Math.max(x0 + 1, Math.floor(((cx + 1) * srcW) / cols));
+      const x0 = cl + Math.floor((cx * srcW) / cols);
+      const x1 = Math.max(x0 + 1, cl + Math.floor(((cx + 1) * srcW) / cols));
       let sr = 0;
       let sg = 0;
       let sb = 0;
       let n = 0;
       for (let sy = y0; sy < y1; sy++) {
-        let p = (sy * srcW + x0) * 4;
+        let p = (sy * imgW + x0) * 4;
         for (let sx = x0; sx < x1; sx++) {
           sr += src[p];
           sg += src[p + 1];
@@ -122,6 +130,21 @@ function downsample(
   }
 
   return { width: cols, height: rows, rgb };
+}
+
+/** Resolve a normalised crop (0..1) to image pixels, or null if it covers the
+ *  full image (cheap fast path). */
+function cropToPixels(image: ImageData, crop: ReliefOptions['crop']): { left: number; top: number; right: number; bottom: number } | null {
+  if (!crop) return null;
+  const fullW = Math.abs(crop.right - crop.left) >= 0.999 && crop.left <= 0.001;
+  const fullH = Math.abs(crop.bottom - crop.top) >= 0.999 && crop.top <= 0.001;
+  if (fullW && fullH) return null;
+  return {
+    left: crop.left * image.width,
+    top: crop.top * image.height,
+    right: crop.right * image.width,
+    bottom: crop.bottom * image.height,
+  };
 }
 
 /** Separable box blur (radius `r` cells) over an interleaved RGB Float32 grid.
@@ -213,7 +236,7 @@ function quantizeHeight(h: number, levels: Float32Array, maxHeight: number): num
  */
 export function sampleImageToGrid(image: ImageData, opts: ReliefOptions): HeightGrid {
   const { resolution, smoothing, maxHeight, layerHeight } = opts.common;
-  const ds = downsample(image, resolution);
+  const ds = downsample(image, resolution, cropToPixels(image, opts.crop) ?? undefined);
   preprocessRgb(ds.rgb, ds.width, ds.height, opts.preprocess);
   const rgb = blurRGB(ds.rgb, ds.width, ds.height, smoothing);
   const w = ds.width;
@@ -632,7 +655,9 @@ export function generateRelief(image: ImageData, opts: ReliefOptions = DEFAULT_R
   if (opts.mode !== 'quantized' || !grid.colors) {
     return { mesh, grid };
   }
-  const seedRegions = seedRegionsFromReliefGrid(grid);
+  const seedRegions = opts.quantized.paintingMode === 'multi-color'
+    ? seedRegionsFromReliefGrid(grid)
+    : seedRegionsByZBand(mesh, grid, opts);
   return { mesh, grid, seedRegions };
 }
 
@@ -680,6 +705,80 @@ function seedRegionsFromReliefGrid(grid: HeightGrid): SeedRegion[] {
     }
   }
   return mapBucketsToRegions(byColor);
+}
+
+/** Single-nozzle variant: every triangle's centroid Z decides which Z-band it
+ *  belongs to, and each band's dominant cluster colour wins the whole band.
+ *  This matches what a real swap print produces — at any printed layer the
+ *  whole XY plane is one filament — so previews and slicer output agree. */
+function seedRegionsByZBand(mesh: ReliefMesh, grid: HeightGrid, opts: ReliefOptions): SeedRegion[] {
+  const colors = grid.colors!;
+  const base = opts.common.baseThickness;
+  const maxH = opts.common.maxHeight;
+  const totalZ = base + maxH;
+  const lh = opts.common.layerHeight > 0 ? opts.common.layerHeight : 0.1;
+  const bandCount = Math.max(1, Math.ceil(totalZ / lh));
+
+  // Build cluster summaries from the grid: a unique colour appears at each
+  // cluster's height. Walk the grid once, tallying area-per-colour and the
+  // top Z each colour reaches.
+  type Cluster = { color: [number, number, number]; topZ: number; area: number };
+  const clusters = new Map<number, Cluster>();
+  for (let y = 0; y < grid.height; y++) {
+    for (let x = 0; x < grid.width; x++) {
+      const i = y * grid.width + x;
+      const r = colors[i * 3], g = colors[i * 3 + 1], b = colors[i * 3 + 2];
+      const key = (r << 16) | (g << 8) | b;
+      const cellZ = base + grid.heights[i];
+      let c = clusters.get(key);
+      if (!c) { c = { color: [r / 255, g / 255, b / 255], topZ: cellZ, area: 0 }; clusters.set(key, c); }
+      if (cellZ > c.topZ) c.topZ = cellZ;
+      c.area++;
+    }
+  }
+  // For each Z-band, the print's filament is the LOWEST-topZ cluster still
+  // capping at or above the band — i.e. the cluster the printer just finished
+  // depositing. That's the colour deposited on every print layer in the band.
+  const bandColor: [number, number, number][] = [];
+  const sortedClusters = Array.from(clusters.values()).sort((a, b) => a.topZ - b.topZ);
+  for (let b = 0; b < bandCount; b++) {
+    const bandTopZ = (b + 1) * lh;
+    let winner: Cluster | null = null;
+    for (const c of sortedClusters) {
+      if (c.topZ + 1e-6 >= bandTopZ) { winner = c; break; }
+    }
+    if (!winner) winner = sortedClusters[sortedClusters.length - 1] ?? { color: [0.7, 0.7, 0.7], topZ: totalZ, area: 0 };
+    bandColor.push(winner.color);
+  }
+
+  // Triangle → band by centroid Z over the actual mesh.
+  const tris = mesh.numTri;
+  const verts = mesh.vertProperties;
+  const idx = mesh.triVerts;
+  const buckets: { color: [number, number, number]; triangleIds: number[] }[] =
+    bandColor.map(c => ({ color: c, triangleIds: [] }));
+  for (let t = 0; t < tris; t++) {
+    const a = idx[t * 3], b = idx[t * 3 + 1], c = idx[t * 3 + 2];
+    const z = (verts[a * 3 + 2] + verts[b * 3 + 2] + verts[c * 3 + 2]) / 3;
+    let band = Math.floor(z / lh);
+    if (band < 0) band = 0;
+    if (band >= bandCount) band = bandCount - 1;
+    buckets[band].triangleIds.push(t);
+  }
+
+  // Collapse identical-colour neighbouring bands into single regions so the
+  // paint UI lists "Layer 0.6–1.2 mm" once, not once per layer.
+  const merged: { color: [number, number, number]; triangleIds: number[] }[] = [];
+  for (const bucket of buckets) {
+    if (bucket.triangleIds.length === 0) continue;
+    const prev = merged[merged.length - 1];
+    if (prev && prev.color[0] === bucket.color[0] && prev.color[1] === bucket.color[1] && prev.color[2] === bucket.color[2]) {
+      prev.triangleIds.push(...bucket.triangleIds);
+    } else {
+      merged.push({ color: bucket.color, triangleIds: [...bucket.triangleIds] });
+    }
+  }
+  return merged.map((m, i) => ({ color: m.color, triangleIds: m.triangleIds, name: `Layer ${i + 1}` }));
 }
 
 /** Tile variant: cellTriIds carries -1 for excluded cells (shape/hole/edge),

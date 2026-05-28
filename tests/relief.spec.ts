@@ -1,4 +1,4 @@
-// Relief Studio (HueForge-style) smoke coverage: generating a relief from an
+// Relief Studio (image → tile / stepped relief) smoke coverage: generating a relief from an
 // in-page image via the console API, the optical preview + swap guide round
 // trip, and the toolbar entry points. No external network or files (a gradient
 // canvas stands in for an imported image).
@@ -356,6 +356,70 @@ test.describe('Relief Studio', () => {
     // meaningful number of triangles vs the unmodified tile. Loose bound — we
     // care that the holes actually cut, not the exact arithmetic.
     expect(res.holedTris).toBeLessThan(res.solidTris);
+  });
+
+  // Wave 5: stepped relief with single-nozzle painting groups triangles by
+  // Z-band so every horizontal slice of the print is one colour. This is the
+  // fix for the screenshot the user shared, where slanted side walls leaked
+  // a cluster colour across multiple Z layers.
+  test('stepped relief, single-nozzle painting bands regions by Z', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const res = await page.evaluate(async () => {
+      const c = document.createElement('canvas');
+      c.width = 80; c.height = 80;
+      const x = c.getContext('2d')!;
+      // Three distinct vertical stripes — red / green / blue. Each cluster
+      // will land at its own Z height in stepped-relief mode.
+      x.fillStyle = '#c02020'; x.fillRect(0, 0, 27, 80);
+      x.fillStyle = '#20c020'; x.fillRect(27, 0, 27, 80);
+      x.fillStyle = '#2020c0'; x.fillRect(54, 0, 26, 80);
+      const src = c.toDataURL('image/png');
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      await pw.importImageAsRelief({
+        src, mode: 'quantized',
+        options: { widthMm: 30, resolution: 60, maxHeight: 1.5, baseThickness: 0.4, layerHeight: 0.1 },
+        quantized: { output: 'relief', paintingMode: 'single-nozzle' },
+      }) as { sessionId?: string };
+      const regions = pw.listRegions() as Array<{ color: [number, number, number] }>;
+      return { regionCount: regions.length, regions };
+    });
+    // Three-stripe input → at least one region per Z-band the clusters land
+    // in. The exact count depends on the layer height + clamping but should be
+    // > 1 (proves bands actually separated) and <= clusterCount + 1 buffer.
+    expect(res.regionCount).toBeGreaterThan(1);
+  });
+
+  // Wave 5: crop trims the source image before clustering. A cropped half of
+  // a two-colour image should produce a tile whose regions match only the
+  // surviving colour (the other colour was cropped away).
+  test('crop restricts the cluster regions to the kept area', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    const res = await page.evaluate(async () => {
+      const c = document.createElement('canvas');
+      c.width = 120; c.height = 80;
+      const x = c.getContext('2d')!;
+      x.fillStyle = '#ff0000'; x.fillRect(0, 0, 60, 80);     // left half red
+      x.fillStyle = '#0000ff'; x.fillRect(60, 0, 60, 80);    // right half blue
+      const src = c.toDataURL('image/png');
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      // Crop to the LEFT half only — the resulting tile should be red-dominant.
+      await pw.importImageAsRelief({
+        src, mode: 'quantized',
+        options: { widthMm: 30, resolution: 60, maxHeight: 1, baseThickness: 0.6 },
+        quantized: { output: 'flat', clusters: 3 },
+        crop: { left: 0, top: 0, right: 0.5, bottom: 1 },
+      }) as { sessionId?: string };
+      const regions = pw.listRegions() as Array<{ color: [number, number, number]; triangleCount?: number }>;
+      const hasRed = regions.some(r => r.color[0] > 0.55 && r.color[1] < 0.35 && r.color[2] < 0.35);
+      const hasBlue = regions.some(r => r.color[2] > 0.55 && r.color[0] < 0.35 && r.color[1] < 0.35);
+      return { hasRed, hasBlue, count: regions.length };
+    });
+    expect(res.hasRed).toBe(true);
+    // The blue half was cropped out — its cluster should no longer be present.
+    expect(res.hasBlue).toBe(false);
   });
 
   // Wave 3: chamferMm > 0 keeps the tile valid (same triangle count, since

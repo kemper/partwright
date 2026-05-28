@@ -923,7 +923,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'importImageAsRelief',
-    description: 'Generate a colour-printable Part from a raster image. By default produces a FLAT colour tile (Bambu-keychain style — paint regions on a thin tile, AMS-friendly). Pass quantized.output="silhouette" to cut the tile to the image\'s subject outline (background removed), or quantized.output="relief" for the classic HueForge stepped-height relief. Pass mode="luminance" for a tonal embossment with no colour clusters. `src` is a data: or http(s) image URL. After creation, paint, then read getReliefSwapGuide() for the single-nozzle swap plan if relevant.',
+    description: 'Generate a colour-printable Part from a raster image. By default produces a FLAT colour tile (keychain-style — paint regions on a thin tile, AMS-friendly). Pass quantized.output="silhouette" to cut the tile to the image\'s subject outline (background removed), or quantized.output="relief" for a stepped-height relief (each cluster gets its own Z layer). Pass mode="luminance" for a tonal embossment with no colour clusters. `src` is a data: or http(s) image URL. After creation, paint, then read getReliefSwapGuide() for the single-nozzle swap plan if relevant.',
     input_schema: {
       type: 'object',
       properties: {
@@ -948,7 +948,8 @@ const ALL_TOOLS: ToolDefinition[] = [
             clusters: { type: 'integer', description: 'Number of colour clusters (2..12). Default 5.' },
             colorSpace: { type: 'string', enum: ['rgb', 'lab'], description: 'Clustering colour space. Lab is perceptual (default).' },
             dither: { type: 'boolean', description: 'Floyd–Steinberg dithering at cluster boundaries.' },
-            output: { type: 'string', enum: ['flat', 'silhouette', 'relief'], description: '"flat" (default) = flat colour tile (keychain). "silhouette" = flat tile cut to the image subject (background removed). "relief" = stepped HueForge height cliffs (legacy).' },
+            output: { type: 'string', enum: ['flat', 'silhouette', 'relief'], description: '"flat" (default) = flat colour tile (keychain). "silhouette" = flat tile cut to the image subject (background removed). "relief" = stepped relief — each cluster gets its own Z layer.' },
+            paintingMode: { type: 'string', enum: ['multi-color', 'single-nozzle'], description: 'Stepped-relief painting mode: "multi-color" (default) puts each cluster in its own region (AMS-friendly), "single-nozzle" puts every triangle in a Z-band so any printed layer is one colour (matches a real swap print).' },
             shape: { type: 'string', enum: ['rect', 'rounded', 'circle'], description: 'Tile outline for flat mode. Default "rect".' },
             cornerRadiusMm: { type: 'number', description: 'Corner radius for "rounded" shape, mm.' },
             chamferMm: { type: 'number', description: 'Top-edge chamfer / bevel depth, mm. 0 = sharp. Up to ~2 mm.' },
@@ -1022,7 +1023,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'setReliefPreviewMode',
-    description: 'Switch the relief optical preview: "flat" (raw paint), "ams" (glossy filament look), or "single-nozzle" (simulates light through the translucent layer stack — what a single-nozzle swap print would look like). Affects what renderView/renderViews show, so set "single-nozzle" before rendering to self-check a HueForge.',
+    description: 'Switch the relief optical preview: "flat" (raw paint), "ams" (glossy filament look), or "single-nozzle" (simulates light through the translucent layer stack — what a single-nozzle swap print would look like). Affects what renderView/renderViews show, so set "single-nozzle" before rendering to self-check a stepped-relief print.',
     input_schema: {
       type: 'object',
       properties: { mode: { type: 'string', enum: ['flat', 'ams', 'single-nozzle'] } },

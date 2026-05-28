@@ -25,7 +25,7 @@ export interface ToolbarCallbacks {
   onImportFile: (file: File) => void | Promise<void>;
   /** Re-import a blob already held in the inbox (e.g. recent-imports re-click). */
   onImportInboxEntry: (entry: ImportInboxEntry) => void | Promise<void>;
-  /** Open the image→relief (HueForge) import wizard. */
+  /** Open the image → keychain / tile / stepped-relief import wizard. */
   onCreateRelief: () => void;
   /** Toggle the Relief Studio overlay panel. */
   onToggleReliefStudio: () => void;
@@ -282,7 +282,7 @@ export function createToolbar(
   importDropdown.appendChild(createSectionHeader('Create'));
   const reliefOpt = createDescribedItem(
     'Image → keychain / tile / relief…',
-    'Turn an image (or SVG) into a printable colour tile, keychain, sticker, or HueForge-style relief.',
+    'Turn an image (or SVG) into a printable colour tile, keychain, sticker, or stepped relief.',
   );
   reliefOpt.addEventListener('click', () => {
     importDropdown.classList.add('hidden');

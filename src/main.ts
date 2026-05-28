@@ -1488,7 +1488,7 @@ async function main() {
     return { sessionId: session.id };
   }
 
-  // === Relief Studio (HueForge-style) ===
+  // === Relief Studio (image → printable colour tile / stepped relief) ===
   let reliefStudio: ReliefStudioHandle | null = null;
   // True only while the editor pane was collapsed by THIS module's show-studio
   // call, so the close path can restore symmetrically without clobbering a
@@ -1526,12 +1526,17 @@ async function main() {
       studioCollapsedEditor = true;
     }
     reliefStudio.show();
+    reliefStudio.setChipVisible(false);
     reliefStudio.refresh();
   }
 
   function closeReliefStudio(): void {
     if (!reliefStudio) return;
     reliefStudio.hide();
+    // Surface the "Edit colours" chip so users can find their way back to the
+    // palette without remembering the toolbar button.
+    const sid = getState().session?.id ?? null;
+    reliefStudio.setChipVisible(isReliefSession(sid));
     if (studioCollapsedEditor) { expandEditor(); studioCollapsedEditor = false; }
   }
 
@@ -1556,7 +1561,13 @@ async function main() {
     if (!reliefStudio) return;
     const sid = getState().session?.id ?? null;
     if (isReliefSession(sid)) showReliefStudio();
-    else if (reliefStudio.isOpen()) closeReliefStudio();
+    else {
+      // Non-relief session — hide the panel AND the re-open chip; the chip
+      // is only meaningful for image-derived sessions.
+      if (reliefStudio.isOpen()) reliefStudio.hide();
+      reliefStudio.setChipVisible(false);
+      if (studioCollapsedEditor) { expandEditor(); studioCollapsedEditor = false; }
+    }
   }
 
   // Clamp the common knobs to sane physical/perf bounds. The wizard enforces
@@ -1611,6 +1622,7 @@ async function main() {
       cornerRadiusMm: Math.max(0, Math.min(50, num(q.cornerRadiusMm, 4))),
       chamferMm: Math.max(0, Math.min(5, num(q.chamferMm, 0))),
       holes,
+      paintingMode: q.paintingMode === 'multi-color' ? 'multi-color' : 'single-nozzle',
       manualBackground: q.manualBackground,
     };
   }
@@ -1689,7 +1701,7 @@ async function main() {
     return commitGeneratedRelief(result, opts, sourceName);
   }
 
-  // Seed color regions from an imported HueForge's existing Z plateaus so the
+  // Seed color regions from an imported stepped-relief STL's existing Z plateaus so the
   // user can recolor each printed layer band. Reuses the slab selector.
   function detectReliefLevels(): void {
     if (!currentMeshData) return;
@@ -4176,9 +4188,9 @@ async function main() {
      *  strip; any other string is also valid. Multiple items may share a label.
      *  Replaces all currently attached images. If a session is active, also persists
      *  to IndexedDB. Returns the canonical list with assigned ids. */
-    /** Generate a HueForge-style relief Part from an image (data: or http(s) URL). */
-    async importImageAsRelief(args: { src: string; mode?: ReliefImportMode; options?: Partial<ReliefCommonOptions>; quantized?: Record<string, unknown>; preprocess?: Record<string, unknown> }): Promise<{ sessionId: string } | { error: string }> {
-      if (!args || typeof args !== 'object') return { error: 'importImageAsRelief: expected an object { src, mode?, options?, quantized? }' };
+    /** Generate a colour tile / stepped-relief Part from an image (data: or http(s) URL). */
+    async importImageAsRelief(args: { src: string; mode?: ReliefImportMode; options?: Partial<ReliefCommonOptions>; quantized?: Record<string, unknown>; preprocess?: Record<string, unknown>; crop?: { left: number; top: number; right: number; bottom: number } }): Promise<{ sessionId: string } | { error: string }> {
+      if (!args || typeof args !== 'object') return { error: 'importImageAsRelief: expected an object { src, mode?, options?, quantized?, crop? }' };
       const src = (args as { src?: unknown }).src;
       if (typeof src !== 'string' || src.length === 0) return { error: 'importImageAsRelief: src must be a non-empty data: or http(s) URL string' };
       try {
@@ -4192,6 +4204,8 @@ async function main() {
         if (q && typeof q === 'object') opts.quantized = { ...opts.quantized, ...(q as Record<string, unknown>) } as typeof opts.quantized;
         const pp = (args as { preprocess?: unknown }).preprocess;
         if (pp && typeof pp === 'object') opts.preprocess = { ...opts.preprocess, ...(pp as Record<string, unknown>) } as typeof opts.preprocess;
+        const crop = (args as { crop?: unknown }).crop;
+        if (crop && typeof crop === 'object') opts.crop = crop as ReliefOptions['crop'];
         return await createReliefFromImageData(image, opts, 'relief');
       } catch (e) {
         return { error: `importImageAsRelief failed: ${e instanceof Error ? e.message : String(e)}` };

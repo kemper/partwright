@@ -1,7 +1,10 @@
-// Relief Studio — a tool-palette overlay over the 3D viewport for HueForge-style
-// work: pick reference filaments, switch the optical preview mode, set layer
+// Relief Studio — a tool-palette overlay over the 3D viewport for image-derived
+// parts: edit the colour palette, switch the optical preview mode, set layer
 // height, and read the single-nozzle swap guide. Painting itself happens via the
 // existing paint tools; this panel is the surrounding controls + guide readout.
+// The "stepped relief" knobs (preview mode, swap guide, layer height) are
+// gated behind an "advanced" toggle since most users want only the colour
+// palette for keychain-style imports.
 
 import type { PreviewMode, SwapGuide } from '../relief/types';
 import { listFilaments, addFilament, removeFilament, updateFilament, reorderFilaments, hexToRgb } from '../relief/filaments';
@@ -23,6 +26,10 @@ export interface ReliefStudioHandle {
   toggle(): void;
   isOpen(): boolean;
   refresh(): void;
+  /** Show or hide the small "Edit colours" chip that re-opens the studio
+   *  after the user has closed it. The host decides when to surface it (only
+   *  when the active session is image-derived). */
+  setChipVisible(visible: boolean): void;
 }
 
 const PREVIEW_MODES: { mode: PreviewMode; label: string; caption: string }[] = [
@@ -76,6 +83,21 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
   const body = document.createElement('div');
   body.className = 'flex flex-col gap-4 px-3 py-3 overflow-y-auto min-h-0';
   panel.appendChild(body);
+
+  // --- Advanced toggle: most users only want the colour palette, so the
+  //     stepped-relief knobs (preview mode, layer height, swap guide) are
+  //     hidden behind this checkbox. Default off keeps the panel uncluttered.
+  let showAdvanced = false;
+  const advRow = document.createElement('label');
+  advRow.className = 'flex items-center gap-2 text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200 self-end';
+  const advBox = document.createElement('input');
+  advBox.type = 'checkbox';
+  advBox.className = 'w-3.5 h-3.5 rounded border-zinc-600 bg-zinc-800';
+  advRow.appendChild(advBox);
+  const advLabel = document.createElement('span');
+  advLabel.textContent = 'Stepped-relief options';
+  advRow.appendChild(advLabel);
+  body.appendChild(advRow);
 
   // --- Preview mode (segmented) ---
   const previewSection = document.createElement('div');
@@ -155,7 +177,39 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
   guideSection.appendChild(guideBody);
   body.appendChild(guideSection);
 
+  function applyAdvancedVisibility(): void {
+    previewSection.classList.toggle('hidden', !showAdvanced);
+    layerSection.classList.toggle('hidden', !showAdvanced);
+    guideSection.classList.toggle('hidden', !showAdvanced);
+  }
+  advBox.addEventListener('change', () => {
+    showAdvanced = advBox.checked;
+    applyAdvancedVisibility();
+  });
+  applyAdvancedVisibility();
+
   host.appendChild(panel);
+
+  // "Edit colours" chip — a small viewport overlay button that re-opens the
+  // studio after the user has closed it. Sits in the same corner as the
+  // panel; visible only when the host opts in (relief sessions).
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className =
+    'hidden absolute top-2 left-2 z-10 px-2.5 py-1.5 rounded-lg text-xs font-medium ' +
+    'bg-zinc-800/90 backdrop-blur text-zinc-100 border border-zinc-600/50 shadow ' +
+    'hover:bg-zinc-700/90 transition-colors flex items-center gap-1.5';
+  chip.title = 'Edit colours · open the Relief Studio';
+  const chipSwatch = document.createElement('span');
+  chipSwatch.className = 'inline-block w-3 h-3 rounded-sm bg-gradient-to-br from-rose-400 via-amber-400 to-sky-500 border border-black/30';
+  const chipLabel = document.createElement('span');
+  chipLabel.textContent = 'Edit colours';
+  chip.append(chipSwatch, chipLabel);
+  chip.addEventListener('click', () => {
+    chip.classList.add('hidden');
+    handle.show();
+  });
+  host.appendChild(chip);
 
   function renderPreview(): void {
     const active = deps.getPreviewMode();
@@ -291,7 +345,7 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
     const detectBtn = document.createElement('button');
     detectBtn.className = 'px-2 py-1.5 rounded text-[11px] bg-zinc-700/60 text-zinc-200 hover:bg-zinc-600/60 transition-colors';
     detectBtn.textContent = 'Detect levels';
-    detectBtn.title = "Seed color regions from an imported HueForge's existing height steps";
+    detectBtn.title = 'Seed color regions from an imported stepped-relief STL\'s existing height plateaus';
     detectBtn.addEventListener('click', () => {
       deps.detectLevels();
       handle.refresh();
@@ -423,6 +477,7 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
   const handle: ReliefStudioHandle = {
     show() {
       panel.classList.remove('hidden');
+      chip.classList.add('hidden');
       handle.refresh();
     },
     hide() {
@@ -440,6 +495,12 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
       renderLayer();
       renderFilaments();
       renderGuide();
+    },
+    setChipVisible(visible: boolean) {
+      // Don't show the chip while the full panel is open — only one or the
+      // other should ever be visible.
+      const shouldShow = visible && panel.classList.contains('hidden');
+      chip.classList.toggle('hidden', !shouldShow);
     },
   };
 
