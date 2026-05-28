@@ -95,9 +95,12 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
 
   const statusBar = document.createElement('span');
   statusBar.id = 'status-indicator';
-  statusBar.className = 'text-xs text-emerald-400 font-mono shrink-0';
+  // Lives on rightPane (appended below) as an always-visible overlay so engine
+  // status stays on screen even when the code pane is collapsed — otherwise
+  // tests and users lose the Ready/Loading signal whenever the AI drawer hides
+  // the editor header.
+  statusBar.className = 'absolute top-2 left-2 z-20 text-xs text-emerald-400 font-mono bg-zinc-900/70 px-2 py-0.5 rounded border border-zinc-700 pointer-events-none';
   statusBar.textContent = 'Ready';
-  editorHeader.appendChild(statusBar);
 
   const collapseEditorBtn = document.createElement('button');
   collapseEditorBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
@@ -159,6 +162,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // === Right (or bottom on mobile): viewport + tab panes ===
   const rightPane = document.createElement('div');
   rightPane.className = 'flex-1 flex flex-col min-w-0 min-h-0 relative';
+  rightPane.appendChild(statusBar);
 
   const tabInteractive = createRailItem('Interactive', '3D View', '\ud83e\uddca', true);
   tabInteractive.title = 'Live 3D viewport \u2014 orbit, zoom, and inspect';
