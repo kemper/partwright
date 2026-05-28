@@ -20,12 +20,15 @@ import {
 } from './subdivide';
 import { slabRefineRegion } from './slabPaint';
 import { shapeRefineRegion } from './boxPaint';
+import { cylinderRefineRegion } from './cylinderPaint';
 
 /** True when a descriptor drives mesh subdivision — see the same predicate in
  *  main.ts for the user-facing notion. */
 export function descriptorRefines(d: RegionDescriptor): boolean {
   if (d.kind === 'brushStroke') return true;
-  if (d.kind === 'slab' || d.kind === 'box') return !!d.smooth && (d.maxEdge ?? 0) > 0;
+  if (d.kind === 'slab' || d.kind === 'box' || d.kind === 'cylinder') {
+    return !!d.smooth && (d.maxEdge ?? 0) > 0;
+  }
   return false;
 }
 
@@ -76,6 +79,8 @@ export function collectRefineRegions(
       regions.push(slabRefineRegion(d.normal, d.offset, d.thickness, d.maxEdge!));
     } else if (d.kind === 'box' && descriptorRefines(d)) {
       regions.push(shapeRefineRegion(d.shape ?? 'box', { center: d.center, size: d.size, quaternion: d.quaternion }, d.maxEdge!));
+    } else if (d.kind === 'cylinder' && descriptorRefines(d)) {
+      regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!));
     }
   }
   return regions;

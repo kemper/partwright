@@ -128,6 +128,7 @@ import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editor
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
+import { cylinderRefineRegion, findCylinderTriangles } from './color/cylinderPaint';
 import { computeFaceGroups } from './color/faceGroups';
 import {
   getSessionIdFromURL,
@@ -498,7 +499,9 @@ function applyVersionAnnotations(version: Version | null | undefined): void {
  *  nothing, preserving their original blocky edges. */
 function descriptorRefines(d: RegionDescriptor): boolean {
   if (d.kind === 'brushStroke') return true;
-  if (d.kind === 'slab' || d.kind === 'box') return !!d.smooth && (d.maxEdge ?? 0) > 0;
+  if (d.kind === 'slab' || d.kind === 'box' || d.kind === 'cylinder') {
+    return !!d.smooth && (d.maxEdge ?? 0) > 0;
+  }
   return false;
 }
 
@@ -514,6 +517,8 @@ function collectRefineRegions(descriptors: RegionDescriptor[]): RefineRegion[] {
       regions.push(slabRefineRegion(d.normal, d.offset, d.thickness, d.maxEdge!));
     } else if (d.kind === 'box' && descriptorRefines(d)) {
       regions.push(shapeRefineRegion(d.shape ?? 'box', { center: d.center, size: d.size, quaternion: d.quaternion }, d.maxEdge!));
+    } else if (d.kind === 'cylinder' && descriptorRefines(d)) {
+      regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!));
     }
   }
   return regions;
@@ -597,6 +602,13 @@ function resolveDescriptorTriangles(
       const { center, size, quaternion, shape } = descriptor;
       return findShapeTriangles(mesh, shape ?? 'box', { center, size, quaternion });
     }
+    case 'cylinder': {
+      // Same triangle collector `paintInCylinder` uses for the live call —
+      // re-resolves the shell against the (possibly subdivided) current mesh
+      // so smoothing-driven refinement carries forward across re-runs.
+      const { center, rMin, rMax, zMin, zMax, normalCone, coverageMode, maxTriangleArea } = descriptor;
+      return findCylinderTriangles(mesh, center, rMin, rMax, zMin, zMax, normalCone, coverageMode ?? 'centroid', maxTriangleArea);
+    }
     case 'byLabel': {
       // Labels are runtime state — manifold-3d assigns fresh originalIDs on
       // every run, so we re-resolve by name from the labelMap the engine just
@@ -607,14 +619,22 @@ function resolveDescriptorTriangles(
     }
     case 'connectedFromSeed': {
       if (!adjacency) return new Set<number>();
-      const { seedPoint, seedNormal, maxDeviationDeg } = descriptor;
+      const { seedPoint, seedNormal, maxDeviationDeg, clampMin, clampMax } = descriptor;
       // Find the closest triangle to the seed point — robust across re-runs
       // because triangle indices are unstable but world-space points are not.
       // Then BFS-flood gated by deviation from the stored seed normal.
       const nearest = findNearestTriangle(seedPoint, mesh, adjacency);
       if (nearest.triIndex < 0) return new Set<number>();
       const cos = Math.cos(maxDeviationDeg * Math.PI / 180);
-      let triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos);
+      // Restore the original clamp predicate so re-resolution after a
+      // geometry edit walks the same bounded region the user painted.
+      const predicate = (clampMin || clampMax)
+        ? (cx: number, cy: number, cz: number) =>
+            cx >= (clampMin?.[0] ?? -Infinity) && cx <= (clampMax?.[0] ?? Infinity) &&
+            cy >= (clampMin?.[1] ?? -Infinity) && cy <= (clampMax?.[1] ?? Infinity) &&
+            cz >= (clampMin?.[2] ?? -Infinity) && cz <= (clampMax?.[2] ?? Infinity)
+        : undefined;
+      let triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos, predicate);
       const sNorm = adjacency.normals;
       const dotSeed = sNorm[nearest.triIndex * 3] * seedNormal[0]
                     + sNorm[nearest.triIndex * 3 + 1] * seedNormal[1]
@@ -4021,6 +4041,41 @@ return BREP.box([20, 20, 10]).fillet(2);`;
       return saveCurrentVersion(label);
     },
 
+    /** Commit the current state, routing between `runAndSave` and
+     *  `saveVersion` automatically based on whether the code changed:
+     *
+     *  - `commitWithColors({code, label?, assertions?})` — code provided
+     *    AND differs from the editor: full run + save (carries colors via
+     *    the descriptor re-resolution pipeline, same as runAndSave).
+     *  - `commitWithColors({code, label?})` — code provided but matches
+     *    the editor: snapshot the in-memory state (geometry + colors)
+     *    without re-running. Equivalent to `saveVersion`.
+     *  - `commitWithColors({label?})` — code omitted: same as `saveVersion`.
+     *
+     *  Use this when you're an agent and the runAndSave-vs-saveVersion
+     *  decision feels brittle — calling `runAndSave` for a color-only
+     *  change wastes the WASM re-run; calling `saveVersion` when you
+     *  meant to update geometry silently snapshots stale colors. This
+     *  routes for you. */
+    async commitWithColors(opts: { code?: string; label?: string; assertions?: GeometryAssertions } = {}) {
+      const o = opts ?? {};
+      assertString(o.code, 'commitWithColors(opts).code', { optional: true });
+      assertString(o.label, 'commitWithColors(opts).label', { optional: true });
+      if (o.assertions !== undefined) validateAssertionsShape(o.assertions, 'commitWithColors(opts).assertions');
+      // If no code is given, or the code matches what's in the editor, just
+      // snapshot. The current-code check is intentionally string-equality —
+      // whitespace-equivalent reformatting will still re-run, but that's
+      // safer than skipping a meaningful change because of a hash collision.
+      const editorCode = getValue();
+      const shouldRun = typeof o.code === 'string' && o.code !== editorCode;
+      if (!shouldRun) {
+        const snapshot = await saveCurrentVersion(o.label);
+        return { routed: 'snapshot' as const, ...snapshot };
+      }
+      const run = await partwrightAPI.runAndSave(o.code as string, o.label, o.assertions);
+      return { routed: 'run' as const, ...run };
+    },
+
     /** List all versions in the current session */
     async listVersions() {
       const versions = await listCurrentVersions();
@@ -4807,12 +4862,23 @@ return BREP.box([20, 20, 10]).fillet(2);`;
       return measureDistance(p1, p2);
     },
 
-    /** General ray query — cast from origin in direction, return all hits */
-    probeRay(origin: [number, number, number], direction: [number, number, number]): GeneralRayResult | null {
+    /** General ray query — cast from origin in direction, return hits along
+     *  the ray. Defaults to FRONT-FACE hits only (the outer-surface hits a
+     *  closed solid presents to an outside observer), so `hits[0]` is the
+     *  nearest exterior surface — which is almost always what you want for
+     *  "find the surface I'm aiming at". Pass `{ allHits: true }` to opt
+     *  into the full entry/exit soup (`DoubleSide`), useful for thickness
+     *  / through-piece queries. */
+    probeRay(
+      origin: [number, number, number],
+      direction: [number, number, number],
+      opts?: { allHits?: boolean },
+    ): GeneralRayResult | null {
       assertNumberTuple(origin, 3, 'probeRay(origin)');
       assertNumberTuple(direction, 3, 'probeRay(direction)');
+      assertBoolean(opts?.allHits, 'probeRay(opts).allHits', { optional: true });
       if (!currentMeshData) return null;
-      return probeRay(currentMeshData, origin, direction);
+      return probeRay(currentMeshData, origin, direction, opts);
     },
 
     /** Click in your perception. Translates a pixel in a rendered image
@@ -4909,6 +4975,19 @@ return BREP.box([20, 20, 10]).fillet(2);`;
       maxDeviationDeg?: number;
       color: [number, number, number];
       name?: string;
+      /** Spatial clamp — the flood-fill won't walk into triangles whose
+       *  centroid falls outside this AABB. Essential when painting one
+       *  feature of a `BREP.fuseAll` / `Manifold.union` result: the
+       *  topology is one big connected mesh and `maxDeviationDeg` alone
+       *  can't stop the walk from bleeding across the join between (say)
+       *  a dome and the collar beneath it. Either field can be omitted to
+       *  leave that side unbounded. */
+      withinBox?: { min?: [number, number, number]; max?: [number, number, number] };
+      /** Convenience shortcuts for axis-aligned ranges — equivalent to
+       *  `withinBox: { min: [-∞,-∞,zMin], max: [∞,∞,zMax] }`. Combine with
+       *  withinBox for tighter constraints (AND'd together). */
+      zMin?: number;
+      zMax?: number;
     }) {
       if (!opts || typeof opts !== 'object') return { error: 'paintConnected requires { seed: {point, normal?}, color }' };
       if (!opts.seed || typeof opts.seed !== 'object') return { error: 'paintConnected.seed must be { point: [x,y,z], normal?: [nx,ny,nz] }' };
@@ -4929,6 +5008,30 @@ return BREP.box([20, 20, 10]).fillet(2);`;
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'paintConnected.color must be [r,g,b] in 0..1' };
       if (!currentMeshData) return { error: 'No geometry loaded' };
 
+      // Resolve the clamp into a single AABB the BFS predicate can use. Both
+      // sides default to ±Infinity so an empty `withinBox` plus a `zMax` works.
+      const huge = Infinity;
+      const boxMin: [number, number, number] = [
+        opts.withinBox?.min?.[0] ?? -huge,
+        opts.withinBox?.min?.[1] ?? -huge,
+        Math.max(opts.withinBox?.min?.[2] ?? -huge, opts.zMin ?? -huge),
+      ];
+      const boxMax: [number, number, number] = [
+        opts.withinBox?.max?.[0] ?? huge,
+        opts.withinBox?.max?.[1] ?? huge,
+        Math.min(opts.withinBox?.max?.[2] ?? huge, opts.zMax ?? huge),
+      ];
+      const hasClamp = (
+        Number.isFinite(boxMin[0]) || Number.isFinite(boxMin[1]) || Number.isFinite(boxMin[2]) ||
+        Number.isFinite(boxMax[0]) || Number.isFinite(boxMax[1]) || Number.isFinite(boxMax[2])
+      );
+      const centroidPredicate = hasClamp
+        ? (cx: number, cy: number, cz: number) =>
+            cx >= boxMin[0] && cx <= boxMax[0] &&
+            cy >= boxMin[1] && cy <= boxMax[1] &&
+            cz >= boxMin[2] && cz <= boxMax[2]
+        : undefined;
+
       const mesh = currentMeshData;
       const adjacency = buildAdjacency(mesh);
       const nearest = findNearestTriangle(opts.seed.point, mesh, adjacency);
@@ -4941,15 +5044,32 @@ return BREP.box([20, 20, 10]).fillet(2);`;
       // rehydration finds the same triangle on re-load.
       const seedPoint: [number, number, number] = nearest.closest;
       const cos = Math.cos(maxDev * Math.PI / 180);
-      const triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos);
-      if (triangles.size === 0) return { error: `paintConnected: seed triangle ${nearest.triIndex} has no neighbors meeting the deviation threshold` };
+      const triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos, centroidPredicate);
+      if (triangles.size === 0) {
+        if (centroidPredicate) {
+          return { error: `paintConnected: seed triangle ${nearest.triIndex} either fails the withinBox/zMin/zMax clamp or has no neighbors meeting both the deviation threshold and the clamp. Widen the clamp or pick a seed inside it.` };
+        }
+        return { error: `paintConnected: seed triangle ${nearest.triIndex} has no neighbors meeting the deviation threshold` };
+      }
 
       const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
       const region = addRegion(
         regionName,
         opts.color as [number, number, number],
         'paintbrush',
-        { kind: 'connectedFromSeed', seedPoint, seedNormal, maxDeviationDeg: maxDev },
+        // Persist the clamp on the descriptor so a re-resolve (e.g. after a
+        // code edit that re-tessellates) walks the same way. Old descriptors
+        // without clamp fields keep working — they decode as undefined.
+        {
+          kind: 'connectedFromSeed',
+          seedPoint,
+          seedNormal,
+          maxDeviationDeg: maxDev,
+          ...(hasClamp ? {
+            clampMin: boxMin,
+            clampMax: boxMax,
+          } : {}),
+        },
         triangles,
       );
       const colored = applyTriColorsIfVisible(mesh);
@@ -5566,30 +5686,83 @@ return BREP.box([20, 20, 10]).fillet(2);`;
       topOnly?: boolean;
       coverageMode?: CoverageMode;
       maxTriangleArea?: number;
+      /** Smooth the painted boundary by subdividing the base mesh along the
+       *  cylinder wall(s) until boundary triangles fall below `maxEdge`.
+       *  Defaults to `true` — the painted edge follows the analytic
+       *  cylinder rather than the coarse base tessellation, which matters
+       *  most for radial-fan meshes (sphere/cylinder/revolve outputs)
+       *  where a single base triangle can span 10°+ of arc. Pass
+       *  `smooth: false` for the previous fast-but-jaggy behaviour. */
+      smooth?: boolean;
+      /** Either `resolution` (model bbox diagonal / resolution; default 256)
+       *  or an explicit absolute `maxEdge` controls how aggressively we
+       *  subdivide. Mirrors the `paintSlab` knobs. */
+      resolution?: number;
+      maxEdge?: number;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintInCylinder requires { rMin, rMax, zMin, zMax, color }' };
       if (typeof opts.rMin !== 'number' || typeof opts.rMax !== 'number') return { error: 'rMin and rMax must be numbers' };
       if (typeof opts.zMin !== 'number' || typeof opts.zMax !== 'number') return { error: 'zMin and zMax must be numbers' };
+      if (opts.rMin < 0 || opts.rMax <= opts.rMin) return { error: 'paintInCylinder requires rMin >= 0 and rMax > rMin' };
+      if (opts.zMax <= opts.zMin) return { error: 'paintInCylinder requires zMax > zMin' };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] in 0..1' };
       const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
       const coneErr = validateNormalCone(cone);
       if (coneErr) return { error: coneErr };
       const areaErr = validateMaxTriangleArea(opts.maxTriangleArea);
       if (areaErr) return { error: areaErr };
+      const smoothErr = validateSmoothParams(opts);
+      if (smoothErr) return { error: smoothErr };
+
+      const center = opts.center ?? [0, 0];
+      const coverageMode = opts.coverageMode;
+      const { smooth, maxEdge } = resolveShapeSmoothFields(opts);
+
+      // First pass: find triangles that match the cylinder selector on the
+      // CURRENT mesh. If we're going to subdivide, the post-refine resolver
+      // (see RegionDescriptor 'cylinder' case) will re-collect against the
+      // refined mesh — but we still need a non-empty seed set so addRegion
+      // doesn't reject the call with "0 triangles".
       const triangles = collectTrianglesByCylinder(
         currentMeshData,
-        opts.center ?? [0, 0],
+        center,
         opts.rMin, opts.rMax,
         opts.zMin, opts.zMax,
         cone,
-        opts.coverageMode,
+        coverageMode,
         opts.maxTriangleArea,
       );
       if (triangles.size === 0) {
         return { error: `paintInCylinder: no triangles in cylindrical shell (rMin=${opts.rMin}, rMax=${opts.rMax}, z=${opts.zMin}..${opts.zMax})${cone ? ' with normalCone filter' : ''}. Try widening the shell, checking the center, or calling paintPreview with a box first to locate the geometry.` };
       }
-      return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
+
+      const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
+      // withSyncReconcile mirrors the paintSlab pattern: smoothing routes
+      // refinement through the async listener, but the agent-facing API
+      // wants a fully-populated region back synchronously.
+      const region = withSyncReconcile(() => addRegion(
+        regionName,
+        opts.color as [number, number, number],
+        'paintbrush',
+        {
+          kind: 'cylinder',
+          center,
+          rMin: opts.rMin,
+          rMax: opts.rMax,
+          zMin: opts.zMin,
+          zMax: opts.zMax,
+          ...(cone ? { normalCone: cone } : {}),
+          ...(coverageMode ? { coverageMode } : {}),
+          ...(opts.maxTriangleArea !== undefined ? { maxTriangleArea: opts.maxTriangleArea } : {}),
+          smooth,
+          maxEdge,
+        },
+        triangles,
+      ));
+      scheduleColorRefresh();
+      syncLockState();
+      return { id: region.id, name: region.name, triangles: region.triangles.size, smooth, maxEdge };
     },
 
     /** Render a preview of the current model with a candidate region tinted
