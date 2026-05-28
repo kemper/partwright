@@ -38,6 +38,7 @@ import {
   setSlabAxis,
   getSlabAxis,
   previewTriangles,
+  getCurrentMesh as getPaintMesh,
   type PaintTool,
   type BrushShape,
 } from './paintMode';
@@ -1217,8 +1218,23 @@ function updateActiveSwatch(grid: HTMLElement, activeSwatch: HTMLElement): void 
   activeSwatch.classList.add('border-white/80', 'ring-1', 'ring-white/30');
 }
 
+// Active hover-release closure for the labels list. Releasing it inside
+// `updateLabelList` before `innerHTML = ''` matters: if a fresh run fires
+// `setPaintLabels` while the user's pointer is over a row, the row DOM is
+// destroyed before its `mouseleave` handler can run, and the THREE highlight
+// mesh would otherwise stay parented to the viewport until the next preview.
+let activeLabelHoverRelease: (() => void) | null = null;
+
+function releaseLabelHover(): void {
+  if (activeLabelHoverRelease) {
+    activeLabelHoverRelease();
+    activeLabelHoverRelease = null;
+  }
+}
+
 function updateLabelList(container: HTMLElement): void {
   const labels = getPaintLabels();
+  releaseLabelHover();
   container.innerHTML = '';
 
   const header = document.createElement('div');
@@ -1265,25 +1281,30 @@ function createLabelRow(label: LabelInfo, alreadyPainted: boolean): HTMLElement 
     ? `Paint label "${label.name}" again with the current color`
     : `Paint label "${label.name}" with the current color`;
 
-  // Hover-to-highlight: render a 40%-opacity overlay over the label's triangles
-  // in the current paint color. The user can preview which region a click will
-  // paint before committing. Teardown on mouseleave so nothing sticks if the
-  // user moves away without clicking.
-  let releaseHover: (() => void) | null = null;
+  // Hover-to-highlight: render a 40%-opacity overlay over the label's
+  // triangles in the current paint color so the user can preview which
+  // region a click will paint. Skip the preview entirely when the active
+  // paint mesh has been refined past the label's index range — labels are
+  // built against the run's base mesh, and `paintByLabel`'s commit path
+  // remaps to refined ids via `parentToChildren`, but `previewTriangles`
+  // doesn't, so indexing raw base ids into a refined mesh would highlight
+  // the wrong triangles. Bounds-check via the pre-computed `maxTriId`.
   row.addEventListener('mouseenter', () => {
     if (label.triangles.size === 0) return;
-    releaseHover = previewTriangles(label.triangles, getColor());
+    const mesh = getPaintMesh();
+    if (!mesh || label.maxTriId >= mesh.numTri) return;
+    releaseLabelHover();
+    activeLabelHoverRelease = previewTriangles(label.triangles, getColor());
   });
-  row.addEventListener('mouseleave', () => {
-    if (releaseHover) { releaseHover(); releaseHover = null; }
-  });
+  row.addEventListener('mouseleave', releaseLabelHover);
 
   row.addEventListener('click', () => {
     if (label.triangles.size === 0) return;
-    if (releaseHover) { releaseHover(); releaseHover = null; }
+    releaseLabelHover();
     // Clone the triangle set so later region edits don't mutate the label
     // snapshot. byLabel descriptor matches what partwright.paintByLabel emits,
-    // so re-hydration on session reload goes through the same resolve path.
+    // so re-hydration on session reload goes through the same resolve path
+    // — including refined-mesh remapping via `parentToChildren`.
     addRegion(
       label.name,
       [...getColor()] as [number, number, number],
