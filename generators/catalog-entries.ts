@@ -4,11 +4,16 @@
 // writes the result into public/catalog/. Also patches public/catalog/
 // manifest.json with the new entries.
 //
-// Run with: npx playwright test tests/generate-catalog-entries.spec.ts
+// Lives outside `tests/` so the default `npm run test:e2e` (which uses
+// playwright.config.ts → testDir: './tests') never picks it up.
+// Silently regenerating the catalog on every test run would leave the
+// working tree dirty after each run and confuse follow-up sessions.
+// It still uses the Playwright runner — that's where Page / fixtures /
+// the dev-server lifecycle come from — but loads via a dedicated
+// playwright.generators.config.ts.
 //
-// This is a *generator* — its job is to produce static catalog files
-// committed into the repo, not to assert behaviour. Run it once when
-// adding/updating gallery items; the generated files are the artifact.
+// Run with:
+//   npm run generate:catalog
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
