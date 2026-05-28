@@ -300,6 +300,20 @@
       "file": "pendant_lamp.partwright.json",
       "language": "replicad",
       "description": "A 5-arm pendant chandelier with brass arms, glass bulbs, central canopy, and a decorative finial — showcasing BREP.circularPattern + paint."
+    },
+    {
+      "id": "wall-clock",
+      "name": "Wall Clock",
+      "file": "wall_clock.partwright.json",
+      "language": "replicad",
+      "description": "A classic round analog wall clock with chamfered bezel, painted hour markers, hour + minute hands, and a center spindle — showcasing circularPattern + paint."
+    },
+    {
+      "id": "vintage-camera",
+      "name": "Vintage Camera",
+      "file": "vintage_camera.partwright.json",
+      "language": "replicad",
+      "description": "A vintage rangefinder camera with a tapered lens barrel, viewfinder, shutter button, and film advance — colorful BREP showcase with paint."
     }
   ]
 }
