@@ -4,6 +4,7 @@ import { createCurvesNamespace } from '../curves';
 import { createMeshOpsNamespace } from '../meshOps';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
+import { createSdfNamespace } from '../sdf';
 
 /** Marker the sandbox attaches to render-only proxies (see `renderMesh` below).
  *  The engine looks for it on the user-returned object to decide whether the
@@ -187,11 +188,17 @@ export const manifoldJsEngine: Engine = {
       triVerts: m.triVerts,
     }));
 
+    // SDF namespace is constructed per-run because it needs to close over
+    // the run's `label` function (so labelled SDF subtrees register with
+    // the same labelRegistry as `api.label`-tagged Manifold parts).
+    const sdfNamespace = createSdfNamespace(Manifold, label);
+
     const api = {
       Manifold,
       CrossSection,
       Curves: curvesNamespace,
       meshOps: meshOpsNamespace,
+      sdf: sdfNamespace,
       // Flat aliases for the most-used meshOps verbs — agents reach for shorter
       // names like `api.intersects(a,b)` and `api.placeOn(part, table)` much more
       // often than they reach for the namespace, so we promote those to api.* too.
