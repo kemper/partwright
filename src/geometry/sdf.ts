@@ -656,7 +656,14 @@ function opSmoothSubtract(a: SdfNode, b: SdfNode, k: number): SdfNode {
     // outward near the blend, same as smoothUnion. Expand by k*0.5
     // so the mesh bbox doesn't crop a lid into the blend region.
     bounds: bbExpand(a._bounds, k * 0.5),
-    children: [a, b],
+    // Only the first child is exposed to the partitioner — same as
+    // sharp opSubtract. The B side is a carving tool whose surface
+    // contribution is the soft "bite", not paintable real estate, so
+    // labels on B can never resolve. Exposing only [a] lets the A-side
+    // label propagate up through the smooth subtract (the result IS
+    // A's surface, with a softened pocket), matching sharp-subtract
+    // semantics and avoiding the silent label-drop trap.
+    children: [a],
     partitionable: false,
   });
 }

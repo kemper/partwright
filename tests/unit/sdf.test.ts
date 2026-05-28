@@ -413,13 +413,29 @@ describe('sdf label partitioning (paint-by-label)', () => {
     expect(parts[0].labelName).toBe('eye');
   });
 
-  it('label does NOT propagate through smooth booleans (ambiguous)', () => {
-    // Smooth union of two labelled spheres — neither label wins.
-    // (Tested elsewhere via the explicit "outer label" pattern.)
-    const tree = opSmoothUnion(primSphere(5).label('a'), primSphere(5).translate([4, 0, 0]).label('b'), 1);
+  it('label does NOT propagate through smoothUnion / smoothIntersect (ambiguous)', () => {
+    // smoothUnion of two labelled spheres — neither label wins. Both
+    // sides contribute surface, so "which label paints which triangle"
+    // is undefined; the partitioner refuses to guess. To paint, label
+    // the outer expression. smoothIntersect is the same — both
+    // surfaces are mixed at the blend.
+    const su = opSmoothUnion(primSphere(5).label('a'), primSphere(5).translate([4, 0, 0]).label('b'), 1);
+    const si = __testables__.opSmoothIntersect(primSphere(5).label('a'), primSphere(5).translate([4, 0, 0]).label('b'), 1);
+    expect(partitionByLabel(su)).toHaveLength(1);
+    expect(partitionByLabel(su)[0].labelName).toBeUndefined();
+    expect(partitionByLabel(si)).toHaveLength(1);
+    expect(partitionByLabel(si)[0].labelName).toBeUndefined();
+  });
+
+  it('label DOES propagate through smoothSubtract (A-side surface survives)', () => {
+    // smoothSubtract is one-sided: the result is A's surface with a
+    // softened bite removed. Labels on A should still paint the
+    // result — same semantics as sharp subtract, no asymmetry to
+    // surprise users. B's labels are dropped (its surface is gone).
+    const tree = __testables__.opSmoothSubtract(primSphere(5).label('shell'), primSphere(3).label('hole'), 1);
     const parts = partitionByLabel(tree);
     expect(parts).toHaveLength(1);
-    expect(parts[0].labelName).toBeUndefined();
+    expect(parts[0].labelName).toBe('shell');
   });
 
   it('label propagates through a chain of transforms', () => {
