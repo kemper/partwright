@@ -82,6 +82,10 @@ export interface Version {
   label: string;
   timestamp: number;
   notes?: string;
+  /** Modeling language this version was authored in. Missing = fall back to
+   *  the owning session's `language` (then to 'manifold-js'). Versions can mix
+   *  languages within a single session — navigating to one swaps the engine. */
+  language?: 'manifold-js' | 'scad';
   /** Snapshot of annotations (freehand strokes + pinned text labels) at the time
    *  this version was saved. Shape matches `SerializedAnnotation[]` from the
    *  annotations module — kept as `unknown[]` here to preserve db-layer isolation. */
@@ -90,6 +94,25 @@ export interface Version {
    *  sandbox as `api.imports[i]` so user code can call `Manifold.ofMesh(...)`.
    *  Kept as `unknown[]` here to preserve db-layer isolation. */
   importedMeshes?: unknown[];
+}
+
+/** Editor working buffer scoped to (session, language). One per language per
+ *  session: switching the toolbar's language toggle stashes the previous
+ *  language's code here and restores the target language's. Persisted so a
+ *  reload doesn't lose in-progress work in either language. Cascade-deleted
+ *  with the session. */
+export interface SessionDraft {
+  /** Composite key: `${sessionId}:${language}`. Lets the cascade delete on
+   *  session removal walk a simple `sessionId` index. */
+  id: string;
+  sessionId: string;
+  language: 'manifold-js' | 'scad';
+  code: string;
+  updatedAt: number;
+}
+
+function draftId(sessionId: string, language: 'manifold-js' | 'scad'): string {
+  return `${sessionId}:${language}`;
 }
 
 export interface SessionNote {
@@ -103,7 +126,7 @@ const DB_NAME = 'partwright';
 const LEGACY_DB_NAME = 'mainifold';
 const LEGACY_MIGRATION_KEY = 'partwright-migrated-mainifold-db';
 const PARTS_MIGRATION_KEY = 'partwright-migrated-parts';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 
 /** Opens the partwright IndexedDB. Exposed so the AI subsystem can attach
  *  its own stores (`aiKeys`, `aiChats`) without duplicating the connection. */
@@ -173,6 +196,14 @@ function openDB(): Promise<IDBDatabase> {
         if (versionStore.indexNames.contains('sessionId_index')) {
           versionStore.deleteIndex('sessionId_index');
         }
+      }
+      // v6: per-language editor draft store. One row per (session, language)
+      // holds the working buffer for that language, so flipping the toolbar
+      // toggle between manifold-js and SCAD preserves both drafts and doesn't
+      // wipe the previous editor contents.
+      if (!db.objectStoreNames.contains('drafts')) {
+        const store = db.createObjectStore('drafts', { keyPath: 'id' });
+        store.createIndex('sessionId', 'sessionId', { unique: false });
       }
     };
     req.onsuccess = () => {
@@ -506,11 +537,16 @@ export async function updateSession(id: string, updates: Partial<Pick<Session, '
 
 export async function deleteSession(id: string): Promise<void> {
   const db = await openDB();
-  const txn = db.transaction(['sessions', 'versions', 'notes', 'parts', 'aiChats'], 'readwrite');
+  // `drafts` only exists from v6 — guard so older deployments don't trip a
+  // NotFoundError when the upgrade hasn't run yet.
+  const stores = ['sessions', 'versions', 'notes', 'parts', 'aiChats'];
+  if (db.objectStoreNames.contains('drafts')) stores.push('drafts');
+  const txn = db.transaction(stores, 'readwrite');
   txn.objectStore('sessions').delete(id);
-  // Delete all versions, notes, parts, and AI chat messages belonging to this
-  // session. Chats are keyed by id but indexed by sessionId, so they're swept
-  // here too — otherwise the transcript is orphaned in IndexedDB forever.
+  // Delete all versions, notes, parts, AI chat messages, and editor drafts
+  // belonging to this session. Chats are keyed by id but indexed by sessionId,
+  // so they're swept here too — otherwise the transcript is orphaned in
+  // IndexedDB forever.
   const deleteByIndex = (storeName: string) => {
     const idx = txn.objectStore(storeName).index('sessionId');
     const req = idx.openCursor(IDBKeyRange.only(id));
@@ -527,12 +563,14 @@ export async function deleteSession(id: string): Promise<void> {
       req.onerror = () => reject(req.error);
     });
   };
-  await Promise.all([
+  const cascades: Promise<void>[] = [
     deleteByIndex('versions'),
     deleteByIndex('notes'),
     deleteByIndex('parts'),
     deleteByIndex('aiChats'),
-  ]);
+  ];
+  if (db.objectStoreNames.contains('drafts')) cascades.push(deleteByIndex('drafts'));
+  await Promise.all(cascades);
   // Wait for the entire transaction to commit
   await txComplete(txn);
 }
@@ -645,6 +683,10 @@ export async function saveVersion(
   annotations?: unknown[],
   /** External meshes imported into this version (opaque to the db layer). */
   importedMeshes?: unknown[],
+  /** Modeling language the version was authored in. Stored on the version so
+   *  navigating between versions can swap the engine independently of the
+   *  session's default language. */
+  language?: 'manifold-js' | 'scad',
 ): Promise<Version> {
   // Compute the next index and write the version inside ONE readwrite
   // transaction. IndexedDB serializes overlapping readwrite transactions on
@@ -678,6 +720,7 @@ export async function saveVersion(
         label: label || `v${nextIndex}`,
         timestamp: timestamp ?? Date.now(),
         ...(notes ? { notes } : {}),
+        ...(language ? { language } : {}),
         ...(annotations && annotations.length > 0 ? { annotations } : {}),
         ...(importedMeshes && importedMeshes.length > 0 ? { importedMeshes } : {}),
       };
@@ -828,7 +871,9 @@ export async function updateNote(id: string, text: string): Promise<void> {
 
 export async function clearAllData(): Promise<void> {
   const db = await openDB();
-  const txn = db.transaction(['sessions', 'versions', 'notes', 'parts', 'aiChats'], 'readwrite');
+  const stores = ['sessions', 'versions', 'notes', 'parts', 'aiChats'];
+  if (db.objectStoreNames.contains('drafts')) stores.push('drafts');
+  const txn = db.transaction(stores, 'readwrite');
   txn.objectStore('sessions').clear();
   txn.objectStore('versions').clear();
   txn.objectStore('notes').clear();
@@ -837,5 +882,38 @@ export async function clearAllData(): Promise<void> {
   // global recent-image cache (aiAttachments) are not session data and are
   // left for the Uninstall modal's per-category wipe.
   txn.objectStore('aiChats').clear();
+  if (db.objectStoreNames.contains('drafts')) txn.objectStore('drafts').clear();
   await txComplete(txn);
+}
+
+// === Editor drafts (per session, per language) ===
+
+export async function getDraft(sessionId: string, language: 'manifold-js' | 'scad'): Promise<SessionDraft | null> {
+  const store = await tx('drafts', 'readonly');
+  return reqToPromise(store.get(draftId(sessionId, language))) as Promise<SessionDraft | null>;
+}
+
+export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad', code: string): Promise<void> {
+  const store = await tx('drafts', 'readwrite');
+  const row: SessionDraft = {
+    id: draftId(sessionId, language),
+    sessionId,
+    language,
+    code,
+    updatedAt: Date.now(),
+  };
+  store.put(row);
+  await txComplete(store.transaction);
+}
+
+export async function deleteDraft(sessionId: string, language: 'manifold-js' | 'scad'): Promise<void> {
+  const store = await tx('drafts', 'readwrite');
+  store.delete(draftId(sessionId, language));
+  await txComplete(store.transaction);
+}
+
+export async function listDrafts(sessionId: string): Promise<SessionDraft[]> {
+  const store = await tx('drafts', 'readonly');
+  const index = store.index('sessionId');
+  return reqToPromise(index.getAll(IDBKeyRange.only(sessionId))) as Promise<SessionDraft[]>;
 }

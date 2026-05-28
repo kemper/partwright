@@ -139,7 +139,9 @@ import {
   listSessions,
   deleteSession,
   renameSession,
-  setSessionLanguage,
+  readDraft,
+  writeDraft,
+  effectiveVersionLanguage,
   saveVersion,
   navigateVersion,
   loadVersion as loadVersionFromStore,
@@ -1959,23 +1961,11 @@ async function main() {
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad') => {
       if (lang === getActiveLanguage()) return;
-      // If current session has work, ask before switching
-      const curState = getState();
-      if (curState.session && curState.versionCount > 0) {
-        const msg = lang === 'scad'
-          ? 'Your current JS session will be kept. Start new OpenSCAD session?'
-          : 'Your current SCAD session will be kept. Start new JavaScript session?';
-        const ok = await showInlineConfirm(editorUI, msg);
-        if (!ok) return;
-      }
-      await switchLanguage(lang);
-      // Create a fresh session in the new language (empty previous session auto-deleted)
-      await createSession(undefined, lang);
-      const defaultScad = '// OpenSCAD\ncube([10, 10, 10], center=true);';
-      const defaultJs = 'const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
-      const code = lang === 'scad' ? defaultScad : defaultJs;
-      setValue(code);
-      runCode(code);
+      // Stash the current language's editor buffer as a draft on the active
+      // session, then swap engines and restore (or seed) the other language's
+      // draft. Versions in this session aren't touched — they remember the
+      // language they were authored in.
+      await switchLanguageWithDrafts(lang);
     },
   });
 
@@ -2029,15 +2019,15 @@ async function main() {
       geometryData: enrichGeometryDataWithColors(getGeometryDataObj()),
       thumbnail: await captureThumbnail(),
     }),
-    onLoadVersion: async (code: string) => {
-      setValue(code);
-      const applied = await runCodeSync(code);
-      if (!applied) return;
-      const loadedVersion = getState().currentVersion;
-      if (loadedVersion) {
-        rehydrateColorRegions(loadedVersion.geometryData);
-      }
-      applyVersionAnnotations(loadedVersion);
+    onLoadVersion: async (_code: string) => {
+      // The session bar's prev/next/version-dropdown handlers update
+      // currentVersion before firing this; route through loadVersionIntoEditor
+      // so cross-language navigation swaps the engine and stashes the
+      // previous language's draft. The `code` argument is redundant once we
+      // read the version from state — kept on the callback to avoid churning
+      // the SessionBarCallbacks signature.
+      const v = getState().currentVersion;
+      if (v) await loadVersionIntoEditor(v);
     },
     onNewSession: startNewSessionInEditor,
   });
@@ -2172,17 +2162,12 @@ async function main() {
     { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); } },
   ]);
 
-  // Init gallery
-  createGalleryView(galleryContainer, async (code: string) => {
-    setValue(code);
-    const applied = await runCodeSync(code);
-    if (!applied) return;
-    // Rehydrate color regions and annotations from the loaded version
-    const loadedVersion = getState().currentVersion;
-    if (loadedVersion) {
-      rehydrateColorRegions(loadedVersion.geometryData);
-    }
-    applyVersionAnnotations(loadedVersion);
+  // Init gallery — `loadVersion` (in gallery.ts) has already updated state to
+  // point at the clicked version by the time this fires, so route through
+  // loadVersionIntoEditor for the engine swap + draft stash + rehydration.
+  createGalleryView(galleryContainer, async (_code: string) => {
+    const v = getState().currentVersion;
+    if (v) await loadVersionIntoEditor(v);
     switchTab('interactive');
   });
 
@@ -2232,10 +2217,16 @@ async function main() {
   // Init session list
   initSessionList(
     async (code: string) => {
-      // Restore language from the newly opened session
-      const sessionLang = getState().session?.language ?? 'manifold-js';
-      if (sessionLang !== getActiveLanguage()) {
-        await switchLanguage(sessionLang);
+      // Restore the engine to the loaded version's language. The opened
+      // session's current-version pointer was just refreshed by openSession,
+      // so currentVersion.language (with session-level fallback) is the
+      // right signal here — not session.language alone, which would miss
+      // mixed-language sessions where the active version uses the other
+      // engine.
+      const st = getState();
+      const versionLang = effectiveVersionLanguage(st.currentVersion, st.session);
+      if (versionLang !== getActiveLanguage()) {
+        await switchLanguage(versionLang);
       }
       setValue(code);
       runCode(code);
@@ -2306,9 +2297,18 @@ async function main() {
   }
 
   async function loadVersionIntoEditor(version: Version) {
-    const sessionLang = getState().session?.language ?? 'manifold-js';
-    if (sessionLang !== getActiveLanguage()) {
-      await switchLanguage(sessionLang);
+    // Each version remembers the language it was authored in (per-version
+    // since schema 1.8); fall back to the session-level hint, then to the
+    // engine default. Lets a single session hold mixed JS + SCAD versions
+    // and switch the engine as you click between them. When crossing a
+    // language boundary we stash the current editor buffer as a draft for
+    // the previous language first, so navigate ↔ toggle round-trips don't
+    // silently drop work-in-progress in the language we're leaving.
+    const versionLang = effectiveVersionLanguage(version, getState().session);
+    if (versionLang !== getActiveLanguage()) {
+      const sid = getState().session?.id;
+      if (sid) await writeDraft(sid, getActiveLanguage(), getValue());
+      await switchLanguage(versionLang);
     }
     setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
     setValue(version.code);
@@ -2975,13 +2975,19 @@ async function main() {
     }
   });
 
-  // === Language switching helper ===
-  async function switchLanguage(lang: Language) {
+  // === Language switching helpers ===
+
+  /** Low-level: swap the engine and the editor's display language, leaving
+   *  the editor contents alone. Used by version navigation (where the new
+   *  contents are provided by the caller) and as a primitive for the
+   *  draft-swap path below. Does NOT touch session.language — that's still a
+   *  "default for new sessions / fallback for pre-1.8 versions" hint and is
+   *  only updated on session creation or by an explicit AI/console call. */
+  async function applyEngineLanguage(lang: Language) {
+    if (lang === getActiveLanguage()) return;
     setActiveLanguage(lang);
     setEditorLanguage(lang);
     setToolbarLanguage(lang);
-    // Update the editor title (shows the active part name, or the filename
-    // fallback when no part is open).
     syncEditorTitle(getState());
     setStatus(statusBar, 'running', lang === 'scad' ? 'Loading OpenSCAD...' : 'Switching...');
     try {
@@ -2992,13 +2998,53 @@ async function main() {
       errorLog.capture({ level: 'error', source: 'engine', message: msg });
       throw e;
     }
-    // Persist the language to the active session so reopening it loads in the
-    // correct mode. Without this, sessions created before a language switch
-    // keep their stale language field and reload in the wrong engine, parsing
-    // SCAD code as JS (or vice versa).
-    const sid = getState().session?.id;
-    if (sid) await setSessionLanguage(sid, lang);
     setStatus(statusBar, 'ready', 'Ready');
+  }
+
+  const DRAFT_STUB_JS = '// JavaScript\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
+  const DRAFT_STUB_SCAD = '// OpenSCAD\ncube([10, 10, 10], center=true);';
+
+  /** Toolbar / AI language toggle: stash the current editor buffer as a draft
+   *  on the active session, swap engines, then restore the target language's
+   *  draft (seeded with a stub if none has been stashed yet). Versions are not
+   *  touched — they keep the language they were authored in. Auto-creates a
+   *  session first when none is open, so a sessionless toggle (rare — usually
+   *  there's an auto-created session on first edit) doesn't silently drop the
+   *  current editor buffer with no place to stash it. */
+  async function switchLanguageWithDrafts(lang: Language) {
+    if (lang === getActiveLanguage()) return;
+    const prevLang = getActiveLanguage();
+    const currentCode = getValue();
+    if (!getState().session) {
+      // No session means no draft store to stash into. Mirror the auto-create
+      // behavior used elsewhere in the editor so the user's in-progress code
+      // doesn't vanish. The new session is tagged with the PREVIOUS language
+      // (the one the current code is in) so its session-level fallback hint
+      // stays meaningful for the buffer being stashed.
+      await createSession(undefined, prevLang);
+    }
+    const sid = getState().session?.id;
+    if (sid) {
+      // Persist the previous language's working buffer so flipping back
+      // restores it exactly. Both languages stay live in IDB until the
+      // session is deleted.
+      await writeDraft(sid, prevLang, currentCode);
+    }
+    await applyEngineLanguage(lang);
+    let nextCode: string | null = null;
+    if (sid) nextCode = await readDraft(sid, lang);
+    if (nextCode === null) {
+      nextCode = lang === 'scad' ? DRAFT_STUB_SCAD : DRAFT_STUB_JS;
+    }
+    setValue(nextCode);
+    runCode(nextCode);
+  }
+
+  /** Pre-existing call sites that just need the engine swapped (version
+   *  navigation, programmatic openSession, import flows). Kept as a small
+   *  alias so the diff against the old name stays minimal. */
+  async function switchLanguage(lang: Language) {
+    await applyEngineLanguage(lang);
   }
 
   // === Execution state ===
@@ -3342,10 +3388,14 @@ async function main() {
       return getActiveLanguage();
     },
 
-    /** Switch active engine language. Lazy-inits SCAD on first switch. */
+    /** Swap the active engine. The current editor buffer is stashed as a draft
+     *  on the active session, and the target language's draft is restored (or
+     *  a stub if you've never written in it on this session). Versions in the
+     *  session are not touched — they keep the language they were authored in
+     *  and re-load you into that engine when you navigate to them. */
     async setActiveLanguage(lang: Language): Promise<void> {
       assertEnum(lang, ['manifold-js', 'scad'], 'setActiveLanguage(lang)');
-      await switchLanguage(lang);
+      await switchLanguageWithDrafts(lang);
     },
 
     // === Clipping API ===
@@ -3858,8 +3908,9 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       const version = await openSession(id);
       if (version) {
-        // Restore language from session
-        const lang = getState().session?.language ?? 'manifold-js';
+        // Restore engine to the loaded version's language (per-version since
+        // schema 1.8, with session-level fallback for older data).
+        const lang = effectiveVersionLanguage(version, getState().session);
         if (lang !== getActiveLanguage()) {
           await switchLanguage(lang);
         }
@@ -3993,6 +4044,13 @@ async function main() {
         const kind = parsed.kind;
         return { error: `No version found with ${kind} "${parsed.value}" in the active session. Use listVersions() to see valid ${kind}s.` };
       }
+      // Each version remembers the language it was authored in (since schema
+      // 1.8). Swap the engine before re-running so a JS version loaded while
+      // SCAD is active doesn't hit a parse error in the wrong engine.
+      const versionLang = effectiveVersionLanguage(version, getState().session);
+      if (versionLang !== getActiveLanguage()) {
+        await switchLanguage(versionLang);
+      }
       setValue(version.code);
       await runCodeSync(version.code);
       rehydrateColorRegions(version.geometryData);
@@ -4119,6 +4177,14 @@ async function main() {
       const parent = await peekVersion(parsed.value);
       if (!parent) {
         return { error: `No version found with ${parsed.kind} "${parsed.value}" in the active session. Use listVersions() to see valid ${parsed.kind}s.` };
+      }
+
+      // Fork into the parent's language. If the active engine is the other
+      // one (e.g. user toggled to SCAD then forked a JS version), swap first
+      // so the isolated execution doesn't hit a parse error.
+      const parentLang = effectiveVersionLanguage(parent, getState().session);
+      if (parentLang !== getActiveLanguage()) {
+        await switchLanguage(parentLang);
       }
 
       let newCode: string;

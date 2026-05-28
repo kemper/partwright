@@ -74,6 +74,7 @@ export async function refreshVersions(): Promise<void> {
   grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(220px, 1fr))';
 
   const canDelete = versions.length > 1;
+  const session = getState().session;
   for (const version of versions) {
     const controls: VersionTileControl[] = [
       { label: '✎', title: 'Rename this version', onClick: (v) => void performRename(v) },
@@ -87,6 +88,7 @@ export async function refreshVersions(): Promise<void> {
       });
     }
     grid.appendChild(createVersionTile(version, {
+      session,
       active: version.id === currentId,
       onClick: (v) => void cbs?.onOpenVersion(v),
       controls,

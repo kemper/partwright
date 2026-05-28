@@ -21,7 +21,7 @@ const STEPS: TourStep[] = [
     target: '#lang-toggle',
     title: 'Language Toggle',
     description:
-      'Switch between JavaScript and OpenSCAD. JS is the default with fast iteration. SCAD uses standard OpenSCAD syntax. Switching creates a new session.',
+      'Switch between JavaScript and OpenSCAD. Your draft in each language is preserved when you flip, and saved versions remember the engine they were authored in.',
     placement: 'bottom',
   },
   {

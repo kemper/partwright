@@ -49,7 +49,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'setActiveLanguage',
-    description: 'Switch the editor between "manifold-js" and "scad". Switching DISCARDS the current editor contents and resets to a stub — only do this when the user asked for the switch, or when the new request is much better expressed in the other language. Do NOT switch back and forth speculatively.',
+    description: 'Switch the editor between "manifold-js" and "scad". Your in-progress code in the previous language is stashed as a per-session draft and restored when you switch back, so flipping is cheap and non-destructive — saved versions in this session are untouched and remember the language they were authored in. Use when the user asks, or when the new request maps obviously better to the other engine; still avoid unnecessary back-and-forth since each switch costs a tool round-trip.',
     input_schema: {
       type: 'object',
       properties: {

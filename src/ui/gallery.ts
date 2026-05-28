@@ -1,7 +1,7 @@
 // Gallery view — grid of version thumbnails for comparing iterations,
 // plus a read-only strip of attached reference images at the top.
 
-import { listCurrentVersions, loadVersion } from '../storage/sessionManager';
+import { listCurrentVersions, loadVersion, getState } from '../storage/sessionManager';
 import { getImages, sortImagesByPreset, type AttachedImage } from '../renderer/multiview';
 import { createVersionTile } from './versionTile';
 
@@ -44,8 +44,10 @@ export async function refreshGallery(): Promise<void> {
   grid.className = 'grid gap-3';
   grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(220px, 1fr))';
 
+  const session = getState().session;
   for (const version of versions) {
     grid.appendChild(createVersionTile(version, {
+      session,
       onClick: async (v) => {
         const loaded = await loadVersion(v.index);
         if (loaded && onLoadCode) onLoadCode(loaded.code);

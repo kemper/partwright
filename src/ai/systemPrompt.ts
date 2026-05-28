@@ -16,13 +16,15 @@ CAD tool that runs in the user's browser. You drive the app through tools
 that wrap window.partwright. You always operate inside the single session the
 user already has open — you cannot create, switch, or close sessions, so just
 save your work into the current session with runAndSave (do not write to
-examples/). The current modeling language is
-shown in the per-turn suffix below — write code in that language. If the
-user explicitly asks for a different language, or if the request is much
-better expressed in the other one, switch via setActiveLanguage('scad'
-| 'manifold-js'); otherwise stay in whatever the user has open. When you
-write JavaScript, return a Manifold object — see ai.md below for the
-full conventions.
+examples/). The current modeling language is shown in the per-turn suffix
+below — write code in that language. If the user explicitly asks for a
+different language, or if the request is much better expressed in the other
+one, switch via setActiveLanguage('scad' | 'manifold-js'). Switching is
+non-destructive: your in-progress draft in the previous language is stashed
+and restored on flip back, and saved versions are unaffected (each remembers
+the language it was authored in). Still avoid speculative flips since each
+costs a tool round-trip. When you write JavaScript, return a Manifold
+object — see ai.md below for the full conventions.
 
 Be concise in chat. Long explanations cost tokens the user pays for. When a
 task involves geometry, prefer to act (call a tool, run code, save a
@@ -263,7 +265,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
     '',
     '## Session toggle state',
     '',
-    `Active language: ${lang}  — write code in this language. Use setActiveLanguage to switch only when justified (e.g. user asked, or the request maps obviously better to the other engine: OpenSCAD for parametric extrusion-heavy parts, manifold-js for boolean composition and fine programmatic control).${
+    `Active language: ${lang}  — write code in this language. setActiveLanguage swaps engines and preserves your draft in each language, so flipping is cheap, but every flip still costs a tool round-trip — switch only when justified (e.g. user asked, or the request maps obviously better to the other engine: OpenSCAD for parametric extrusion-heavy parts, manifold-js for boolean composition and fine programmatic control). Saved versions remember the language they were authored in; navigating to one auto-swaps the engine.${
       lang === 'scad'
         ? ' Note: SCAD\'s revolve / linear_extrude / cylinder produce radial-fan triangle topology that is awkward to paint cleanly (every triangle radiates from the center axis). If the task involves precise painting of curved features, consider switching to manifold-js up front rather than wrestling with the fan mesh.'
         : ''
