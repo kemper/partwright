@@ -16,11 +16,18 @@ import {
 
 const {
   primSphere,
+  primEllipsoid,
   primBox,
+  primRoundedBox,
   primCylinder,
+  primRoundedCylinder,
   primTorus,
   primCapsule,
   primGyroid,
+  primSchwarzP,
+  primDiamond,
+  primLidinoid,
+  primGradedGyroid,
   opUnion,
   opSubtract,
   opIntersect,
@@ -32,6 +39,9 @@ const {
   opShell,
   opRound,
   opTwist,
+  opTaper,
+  opPolarArray,
+  opRepeat,
   defaultEdgeLength,
   expandedMeshBounds,
 } = __testables__;
@@ -508,5 +518,222 @@ describe('sdf type guard', () => {
     expect(primSphere(1) instanceof SdfNode).toBe(true);
     expect(primBox(1) instanceof SdfNode).toBe(true);
     expect(primSphere(1).translate(1, 0, 0) instanceof SdfNode).toBe(true);
+  });
+});
+
+// === New primitives & combinators (follow-up: ellipsoid, TPMS family,
+// roundedCylinder, taper, polarArray, mirrorPair, repeat, offset twist) ===
+
+describe('sdf ellipsoid', () => {
+  const e = primEllipsoid(4, 2, 8);
+  it('returns ~0 on each semi-axis tip', () => {
+    expect(e.evaluate(4, 0, 0)).toBeCloseTo(0, 6);
+    expect(e.evaluate(0, 2, 0)).toBeCloseTo(0, 6);
+    expect(e.evaluate(0, 0, 8)).toBeCloseTo(0, 6);
+  });
+  it('is negative at the centre, positive well outside', () => {
+    expect(e.evaluate(0, 0, 0)).toBeLessThan(0);
+    expect(e.evaluate(10, 0, 0)).toBeGreaterThan(0);
+  });
+  it('has bounds equal to the semi-axes', () => {
+    expect(e.bounds().min).toEqual([-4, -2, -8]);
+    expect(e.bounds().max).toEqual([4, 2, 8]);
+  });
+  it('rejects non-positive radii', () => {
+    expect(() => primEllipsoid(0, 1, 1)).toThrow();
+    expect(() => primEllipsoid(1, -1, 1)).toThrow();
+  });
+});
+
+describe('sdf roundedBox (outer size preserved)', () => {
+  it('keeps the OUTER dimensions — does not inflate by radius', () => {
+    const rb = primRoundedBox([10, 10, 10], 2);
+    // Outer half-extent is 5 on each axis (NOT 5 + radius). The face
+    // centre at x=5 sits on the surface; the rounding lives at the edges.
+    expect(rb.evaluate(5, 0, 0)).toBeCloseTo(0, 6);
+    expect(rb.bounds().max).toEqual([5, 5, 5]);
+    expect(rb.bounds().min).toEqual([-5, -5, -5]);
+  });
+  it('radius 0 is a plain box', () => {
+    const rb = primRoundedBox([4, 4, 4], 0);
+    expect(rb.evaluate(2, 0, 0)).toBeCloseTo(0, APPROX);
+  });
+  it('rejects radius >= half the smallest dimension', () => {
+    expect(() => primRoundedBox([10, 4, 10], 2)).toThrow(); // 2*2 >= 4
+  });
+});
+
+describe('sdf roundedCylinder (outer dims preserved)', () => {
+  it('keeps the OUTER radius and height', () => {
+    const rc = primRoundedCylinder(5, 20, 1);
+    // Side wall at radius 5, end cap at z = 10 (height/2).
+    expect(rc.evaluate(5, 0, 0)).toBeCloseTo(0, 6);
+    expect(rc.bounds().max).toEqual([5, 5, 10]);
+    expect(rc.bounds().min).toEqual([-5, -5, -10]);
+  });
+  it('edgeRadius 0 is a plain cylinder', () => {
+    const rc = primRoundedCylinder(3, 10, 0);
+    expect(rc.evaluate(3, 0, 0)).toBeCloseTo(0, APPROX);
+  });
+  it('rejects edgeRadius >= radius or >= height/2', () => {
+    expect(() => primRoundedCylinder(2, 20, 2)).toThrow(); // er >= radius
+    expect(() => primRoundedCylinder(10, 4, 2)).toThrow(); // 2*er >= height
+  });
+});
+
+describe('sdf TPMS family', () => {
+  it('schwarzP crosses zero where cos sum is zero', () => {
+    const p = primSchwarzP(10, 0);
+    // cos(0)+cos(0)+cos(0) = 3 ≠ 0 at origin → interior of a wall.
+    // At a quarter-period on one axis cos goes to 0.
+    expect(typeof p.evaluate(0, 0, 0)).toBe('number');
+    expect(p.bounds().min[0]).toBe(-Infinity);
+  });
+  it('diamond and lidinoid produce finite values and infinite bounds', () => {
+    const d = primDiamond(8, 0.5);
+    const l = primLidinoid(8, 0.5);
+    expect(Number.isFinite(d.evaluate(1, 2, 3))).toBe(true);
+    expect(Number.isFinite(l.evaluate(1, 2, 3))).toBe(true);
+    expect(d.bounds().max[0]).toBe(Infinity);
+    expect(l.bounds().max[0]).toBe(Infinity);
+  });
+  it('thickness widens the solid shell (more-negative field at the surface)', () => {
+    const thin = primGyroid(10, 0.1);
+    const thick = primGyroid(10, 1.0);
+    // At a gyroid zero-crossing (origin), |g|-t = -t, so thicker → more
+    // negative (deeper inside the wall).
+    expect(thick.evaluate(0, 0, 0)).toBeLessThan(thin.evaluate(0, 0, 0));
+  });
+  it('all TPMS reject negative thickness / non-positive cellSize', () => {
+    expect(() => primSchwarzP(0, 1)).toThrow();
+    expect(() => primDiamond(8, -1)).toThrow();
+  });
+});
+
+describe('sdf gradedGyroid', () => {
+  it('thicker where the gradient fn returns a larger thickness', () => {
+    // thickness ramps with z: thin at z=0, thick at z=10.
+    const g = primGradedGyroid(10, (_x, _y, z) => 0.1 + 0.1 * z);
+    // At a gyroid zero-crossing the field is -(thickness)/k. Compare two
+    // crossing points at different heights: deeper (more negative) higher up.
+    // Origin (z=0): thickness 0.1. Point (0,0,10) is also a crossing
+    // (gyroid is periodic with cell 10 → 2π). thickness there = 1.1.
+    expect(g.evaluate(0, 0, 10)).toBeLessThan(g.evaluate(0, 0, 0));
+  });
+  it('non-number thicknessFn result falls back to a bare surface (no NaN)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const g = primGradedGyroid(10, (() => undefined) as any);
+    expect(Number.isFinite(g.evaluate(1, 1, 1))).toBe(true);
+  });
+  it('rejects a non-function thicknessFn', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => primGradedGyroid(10, 0.5 as any)).toThrow();
+  });
+});
+
+describe('sdf taper', () => {
+  it('does not change the cross-section at the origin (scale = 1 there)', () => {
+    const t = opTaper(primBox([4, 4, 20]), 0.1, 'z');
+    // At z=0, scale is 1, so the field equals the box field exactly.
+    expect(t.evaluate(2, 0, 0)).toBeCloseTo(0, 6);
+  });
+  it('widens toward +axis for positive rate', () => {
+    // rate 0.25 → at z=4 the scale is 1 + 0.25*4 = 2, so the +X face that
+    // was at x=2 is now at x=4. A point at x=3, z=4 is INSIDE now.
+    const t = opTaper(primBox([4, 4, 20]), 0.25, 'z');
+    expect(t.evaluate(3, 0, 4)).toBeLessThan(0);
+    // The same point in the untapered box is outside.
+    expect(primBox([4, 4, 20]).evaluate(3, 0, 4)).toBeGreaterThan(0);
+  });
+  it('expands perpendicular bounds by the max scale factor', () => {
+    const t = opTaper(primBox([4, 4, 20]), 0.25, 'z');
+    // z range is [-10, 10]; scale at z=10 is 1+2.5 = 3.5 → half-extent 2*3.5 = 7.
+    expect(t.bounds().max[0]).toBeCloseTo(7, 6);
+    expect(t.bounds().max[2]).toBe(10); // axis extent unchanged
+  });
+});
+
+describe('sdf polarArray', () => {
+  it('full ring of N copies all merge into one anonymous region', () => {
+    const arm = primCapsule([3, 0, 0], [8, 0, 0], 1);
+    const ring = opPolarArray(arm, 6, {});
+    // No labels → the whole union is one region.
+    expect(partitionByLabel(ring)).toHaveLength(1);
+    // (8,0,0) is the first arm's far ENDPOINT CENTRE — 1 unit inside the
+    // r=1 capsule, so field ≈ -1. The cap SURFACE is at x=9 (≈0).
+    expect(ring.evaluate(8, 0, 0)).toBeCloseTo(-1, 6);
+    expect(ring.evaluate(9, 0, 0)).toBeCloseTo(0, 6);
+  });
+  it('rotates copies — a copy lands at 90° for a 4-fold ring', () => {
+    const arm = primCapsule([3, 0, 0], [8, 0, 0], 1);
+    const ring = opPolarArray(arm, 4, {});
+    // 4-fold full ring → copies at 0, 90, 180, 270. The 90° copy puts the
+    // arm along +Y, so (0, 8, 0) is its endpoint centre (1 inside → -1).
+    expect(ring.evaluate(0, 8, 0)).toBeCloseTo(-1, 6);
+    // The un-arrayed single arm points along +X only, so +Y would be far
+    // outside — proves the copy actually rotated.
+    expect(arm.evaluate(0, 8, 0)).toBeGreaterThan(0);
+  });
+  it('radius pushes copies outward before rotating', () => {
+    const blob = primSphere(1);
+    const ring = opPolarArray(blob, 8, { radius: 10 });
+    // Each blob centre sits 10 from the axis. At (10,0,0) we're at a
+    // blob centre → field ~ -1 (inside, radius 1).
+    expect(ring.evaluate(10, 0, 0)).toBeCloseTo(-1, 6);
+  });
+  it('rejects count < 1 or non-integer', () => {
+    expect(() => opPolarArray(primSphere(1), 0, {})).toThrow();
+    expect(() => opPolarArray(primSphere(1), 2.5, {})).toThrow();
+  });
+});
+
+describe('sdf mirrorPair', () => {
+  it('unions a node with its mirror across the axis', () => {
+    const off = primSphere(2).translate(5, 0, 0);
+    const pair = off.mirrorPair('x');
+    // Original centre at +5 and mirror centre at -5 both inside.
+    expect(pair.evaluate(5, 0, 0)).toBeCloseTo(-2, 6);
+    expect(pair.evaluate(-5, 0, 0)).toBeCloseTo(-2, 6);
+  });
+});
+
+describe('sdf repeat', () => {
+  it('tiles the field with the given period (origin cell unchanged)', () => {
+    const r = opRepeat(primSphere(1), [10, 0, 0]);
+    // Sphere repeats every 10 on X. Centre of the cell at x=10 is another
+    // sphere centre → field ~ -1.
+    expect(r.evaluate(10, 0, 0)).toBeCloseTo(-1, 6);
+    expect(r.evaluate(0, 0, 0)).toBeCloseTo(-1, 6);
+  });
+  it('is infinite on repeated axes, finite on non-repeated ones', () => {
+    const r = opRepeat(primSphere(1), [10, 0, 0]);
+    expect(r.bounds().min[0]).toBe(-Infinity);
+    expect(r.bounds().max[0]).toBe(Infinity);
+    expect(r.bounds().min[1]).toBe(-1); // Y not repeated → sphere extent
+    expect(r.bounds().max[1]).toBe(1);
+  });
+  it('rejects a negative period', () => {
+    expect(() => primSphere(1).repeat([10, -1, 0])).toThrow();
+  });
+});
+
+describe('sdf twist with offset axis', () => {
+  it('an offset twist axis leaves points ON that axis unchanged', () => {
+    // Twist around the vertical line x=5, y=0. A point on that line at any
+    // height maps back to itself, so the field equals the untwisted field.
+    const box = primBox([4, 2, 20]).translate(5, 0, 0); // centred on the twist axis
+    const twisted = opTwist(box, 45, 'z', [5, 0]);
+    // The twist axis passes through the box centre (5,0); centre field is
+    // the box interior, unchanged by the twist.
+    expect(twisted.evaluate(5, 0, 0)).toBeCloseTo(box.evaluate(5, 0, 0), 6);
+  });
+  it('offset center enlarges the perpendicular bounds (measured from center)', () => {
+    const box = primBox([4, 4, 20]);
+    const centered = opTwist(box, 90, 'z', [0, 0]);
+    const offset = opTwist(box, 90, 'z', [10, 0]);
+    // Sweeping around a far-off axis traces a bigger disc.
+    const cW = centered.bounds().max[0] - centered.bounds().min[0];
+    const oW = offset.bounds().max[0] - offset.bounds().min[0];
+    expect(oW).toBeGreaterThan(cW);
   });
 });

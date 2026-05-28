@@ -397,9 +397,11 @@ CrossSection: square, circle, ofPolygons (CCW outer, CW holes),
               compose, union, difference, intersection, hull
 Curves: arc, bezier, naca4, polyline, loft, sweep, revolveAxis,
         fillet, chamfer, ringCopy, linearCopy, mirrorCopy   (see /ai/curves.md)
-sdf: sphere, box, roundedBox, cylinder, torus, capsule, gyroid,
+sdf: sphere, ellipsoid, box, roundedBox, cylinder, roundedCylinder,
+     torus, capsule, gyroid/schwarzP/diamond/lidinoid/gradedGyroid (TPMS),
      union/subtract/intersect, smoothUnion/Subtract/Intersect,
-     .translate/.rotate/.scale/.mirror, .shell/.round/.twist/.bend,
+     .translate/.rotate/.scale/.mirror, .shell/.round/.twist/.bend/.taper,
+     .polarArray/.mirrorPair/.repeat,
      .label(name), .build({edgeLength?, bounds?})        (see /ai/sdf.md)
 meshOps (flat on api): intersects, contains, pointInside, bbox,
                        componentBounds, volumeDelta,

@@ -59,6 +59,14 @@ const newEntries: SdfEntry[] = [
     name: 'SDF + Manifold Mechanical Part',
     description: 'A mechanical part that mixes smooth-blended SDF features (grip, fillets) with crisp Manifold CSG (mounting plate, drilled holes) — shows how the two engines compose.',
   },
+  {
+    exampleFile: 'sdf_bloom.js',
+    paintFile: 'sdf_bloom.paint.json',
+    catalogFile: 'sdf_bloom.partwright.json',
+    id: 'sdf-bloom',
+    name: 'SDF Bloom',
+    description: 'A stylised flower showcasing the SDF combinators — ellipsoid petals fanned out with polarArray (no hand-written coordinates), a flattened pollen centre, and a taper-narrowed stem. Three painted regions.',
+  },
 ];
 
 interface PaintManifest {

@@ -26,6 +26,7 @@ import {
   assertNumberTuple,
   assertObject,
   assertString,
+  assertFunction,
   assertNoUnknownKeys,
   ValidationError,
 } from '../validation/apiValidation';
@@ -218,16 +219,60 @@ export class SdfNode {
     return opRound(this, r as number);
   }
 
-  twist(degreesPerUnit: number, axis: 'x' | 'y' | 'z' = 'z'): SdfNode {
+  twist(degreesPerUnit: number, axis: 'x' | 'y' | 'z' = 'z', center?: [number, number]): SdfNode {
     assertNumber(degreesPerUnit, 'twist(degreesPerUnit)');
     const a = assertEnum(axis, ['x', 'y', 'z'] as const, 'twist(axis)');
-    return opTwist(this, degreesPerUnit as number, a);
+    // center is the [u, v] offset of the twist axis in the plane
+    // perpendicular to `axis` (e.g. [x, y] for a z-twist). Defaults to
+    // the origin. Lets you spiral around an off-centre line.
+    const c = center === undefined ? [0, 0] as [number, number]
+      : assertNumberTuple(center, 2, 'twist(center)') as [number, number];
+    return opTwist(this, degreesPerUnit as number, a, c);
   }
 
   bend(degreesPerUnit: number, axis: 'x' | 'y' | 'z' = 'x'): SdfNode {
     assertNumber(degreesPerUnit, 'bend(degreesPerUnit)');
     const a = assertEnum(axis, ['x', 'y', 'z'] as const, 'bend(axis)');
     return opBend(this, degreesPerUnit as number, a);
+  }
+
+  /** Taper the cross-section perpendicular to `axis` linearly along it.
+   *  `rate` is the fractional size change per unit (positive widens
+   *  toward +axis, negative narrows); the scale is 1 at the origin. */
+  taper(rate: number, axis: 'x' | 'y' | 'z' = 'z'): SdfNode {
+    assertNumber(rate, 'taper(rate)');
+    const a = assertEnum(axis, ['x', 'y', 'z'] as const, 'taper(axis)');
+    return opTaper(this, rate as number, a);
+  }
+
+  // ---- Combinators ----------------------------------------------------
+
+  /** Union of `count` copies of this node rotated evenly around `axis`.
+   *  `angle` is the total sweep in degrees (360 default = full ring with
+   *  no duplicate at the seam; any other angle places endpoints
+   *  inclusively). `radius` pushes each copy outward (along the first
+   *  perpendicular axis) before rotating. */
+  polarArray(count: number, opts: PolarArrayOptions = {}): SdfNode {
+    return opPolarArray(this, count, opts);
+  }
+
+  /** Union of this node with its mirror image across `axis` — the quick
+   *  way to make a symmetric part from one half. */
+  mirrorPair(axis: 'x' | 'y' | 'z'): SdfNode {
+    const a = assertEnum(axis, ['x', 'y', 'z'] as const, 'mirrorPair(axis)');
+    return opUnion(this, opMirror(this, a));
+  }
+
+  /** Tile this node infinitely on a grid. `periods` is [px, py, pz];
+   *  a 0 on any axis disables repetition there. The result is unbounded
+   *  on every repeated axis, so you MUST intersect it with a finite
+   *  shape or pass explicit `bounds` to `.build()`. */
+  repeat(periods: Vec3): SdfNode {
+    const p = assertNumberTuple(periods, 3, 'repeat(periods)') as Vec3;
+    for (let i = 0; i < 3; i++) {
+      if (p[i] < 0) throw new ValidationError('repeat(periods): each period must be >= 0 (0 disables that axis).');
+    }
+    return opRepeat(this, p);
   }
 
   // ---- Labelling ------------------------------------------------------
@@ -483,12 +528,74 @@ function primBox(size: Vec3 | number): SdfNode {
   );
 }
 
-/** Box with rounded edges. `radius` is the round-over; clamped to half
- *  the smallest dimension. */
+/** Box with rounded edges. `radius` is the round-over. The OUTER size
+ *  stays `size` — we shrink the core box by 2*radius on each axis and
+ *  round it back out, so `roundedBox([10,10,10], 2)` is a 10×10×10 box
+ *  with 2-unit rounded edges (NOT 14×14×14). radius must be < half the
+ *  smallest dimension. */
 function primRoundedBox(size: Vec3 | number, radius: number): SdfNode {
   assertNumber(radius, 'roundedBox(radius)', { min: 0 });
-  // Build using box + round modifier — keeps one source of truth.
-  return primBox(size).round(radius);
+  const r = radius as number;
+  // Resolve size to a tuple so we can shrink it.
+  let sx: number, sy: number, sz: number;
+  if (typeof size === 'number') {
+    assertNumber(size, 'roundedBox(size)', { min: 1e-6 });
+    sx = sy = sz = size;
+  } else {
+    const tup = assertNumberTuple(size, 3, 'roundedBox(size)');
+    [sx, sy, sz] = tup;
+  }
+  if (r === 0) return primBox([sx, sy, sz]);
+  const minDim = Math.min(sx, sy, sz);
+  if (2 * r >= minDim) {
+    throw new ValidationError(`roundedBox(size, radius): radius (${r}) must be < half the smallest dimension (${minDim / 2}).`);
+  }
+  return primBox([sx - 2 * r, sy - 2 * r, sz - 2 * r]).round(r);
+}
+
+/** Cylinder with rounded top/bottom edges. Like `roundedBox`, the OUTER
+ *  radius and height stay as given — the core is shrunk and rounded back
+ *  out, so `roundedCylinder(5, 20, 1)` has radius 5 and height 20 with a
+ *  1-unit edge fillet (NOT radius 6 / height 22 the way `.round(1)` on a
+ *  plain cylinder would give). edgeRadius must be < radius and < height/2. */
+function primRoundedCylinder(radius: number, height: number, edgeRadius: number): SdfNode {
+  assertNumber(radius, 'roundedCylinder(radius)', { min: 1e-6 });
+  assertNumber(height, 'roundedCylinder(height)', { min: 1e-6 });
+  assertNumber(edgeRadius, 'roundedCylinder(edgeRadius)', { min: 0 });
+  const er = edgeRadius as number;
+  if (er === 0) return primCylinder(radius, height);
+  if (er >= (radius as number)) {
+    throw new ValidationError(`roundedCylinder(radius, height, edgeRadius): edgeRadius (${er}) must be < radius (${radius}).`);
+  }
+  if (2 * er >= (height as number)) {
+    throw new ValidationError(`roundedCylinder(radius, height, edgeRadius): edgeRadius (${er}) must be < half the height (${(height as number) / 2}).`);
+  }
+  return primCylinder((radius as number) - er, (height as number) - 2 * er).round(er);
+}
+
+/** Ellipsoid centered at the origin with semi-axes rx, ry, rz. Uses
+ *  Inigo Quilez's bounded distance approximation — exact on the surface,
+ *  slightly off in magnitude inside/outside (which marching tetrahedra
+ *  tolerates). This recovers the "squashed sphere" that uniform `.scale()`
+ *  intentionally can't produce. */
+function primEllipsoid(rx: number, ry: number, rz: number): SdfNode {
+  assertNumber(rx, 'ellipsoid(rx)', { min: 1e-6 });
+  assertNumber(ry, 'ellipsoid(ry)', { min: 1e-6 });
+  assertNumber(rz, 'ellipsoid(rz)', { min: 1e-6 });
+  const ax = rx as number, ay = ry as number, az = rz as number;
+  const minR = Math.min(ax, ay, az);
+  return leafNode(
+    'ellipsoid',
+    (x, y, z) => {
+      const k0 = Math.sqrt((x / ax) ** 2 + (y / ay) ** 2 + (z / az) ** 2);
+      const k1 = Math.sqrt((x / (ax * ax)) ** 2 + (y / (ay * ay)) ** 2 + (z / (az * az)) ** 2);
+      // At the exact centre both are 0 (0/0) — the deepest interior
+      // point, so just report the most-negative distance there.
+      if (k1 < 1e-12) return -minR;
+      return (k0 * (k0 - 1)) / k1;
+    },
+    { min: [-ax, -ay, -az], max: [ax, ay, az] },
+  );
 }
 
 /** Cylinder of radius `r` and height `h`, centered at the origin and
@@ -557,29 +664,96 @@ function primCapsule(a: Vec3, b: Vec3, radius: number): SdfNode {
   );
 }
 
-/** Gyroid TPMS — an infinite triply-periodic surface. `cellSize` controls
- *  the period; `thickness` controls the shell width (0 = bare surface,
- *  positive = solid shell of that thickness). Unbounded — you MUST also
- *  intersect with a finite shape or pass explicit `bounds` to .build(). */
-function primGyroid(cellSize: number, thickness: number): SdfNode {
-  assertNumber(cellSize, 'gyroid(cellSize)', { min: 1e-6 });
-  assertNumber(thickness, 'gyroid(thickness)', { min: 0 });
+const INFINITE_BOUNDS: Box = {
+  min: [-Infinity, -Infinity, -Infinity],
+  max: [Infinity, Infinity, Infinity],
+};
+
+/** Shared builder for triply-periodic minimal surfaces (TPMS). `field`
+ *  receives the cell-scaled coordinates (kx, ky, kz) and returns the
+ *  implicit value whose zero-set is the surface; we wrap it as a shell
+ *  of `thickness` (|field| - t) and divide by k to roughly normalize the
+ *  gradient. All TPMS are infinite — caller must intersect with a finite
+ *  shape or pass explicit `bounds` to .build(). */
+function tpmsNode(
+  kind: string,
+  cellSize: number,
+  thickness: number,
+  field: (kx: number, ky: number, kz: number) => number,
+): SdfNode {
+  assertNumber(cellSize, `${kind}(cellSize)`, { min: 1e-6 });
+  assertNumber(thickness, `${kind}(thickness)`, { min: 0 });
   const k = (2 * Math.PI) / (cellSize as number);
   const t = thickness as number;
   return new SdfNode({
-    kind: 'gyroid',
+    kind,
+    eval: (x, y, z) => (Math.abs(field(k * x, k * y, k * z)) - t) / k,
+    bounds: INFINITE_BOUNDS,
+    children: [],
+    partitionable: false,
+  });
+}
+
+/** Gyroid TPMS — the famous one. `cellSize` is the period; `thickness`
+ *  is the shell width (0 = bare surface). Infinite — intersect or pass
+ *  bounds. */
+function primGyroid(cellSize: number, thickness: number): SdfNode {
+  return tpmsNode('gyroid', cellSize, thickness, (x, y, z) =>
+    Math.sin(x) * Math.cos(y) + Math.sin(y) * Math.cos(z) + Math.sin(z) * Math.cos(x));
+}
+
+/** Schwarz Primitive (P) TPMS — a rounded-cubic cell lattice, blockier
+ *  than the gyroid. Same (cellSize, thickness) contract; infinite. */
+function primSchwarzP(cellSize: number, thickness: number): SdfNode {
+  return tpmsNode('schwarzP', cellSize, thickness, (x, y, z) =>
+    Math.cos(x) + Math.cos(y) + Math.cos(z));
+}
+
+/** Schwarz Diamond (D) TPMS — interpenetrating diamond channels, the
+ *  "scaffold" look. Same (cellSize, thickness) contract; infinite. */
+function primDiamond(cellSize: number, thickness: number): SdfNode {
+  return tpmsNode('diamond', cellSize, thickness, (x, y, z) => {
+    const sx = Math.sin(x), cx = Math.cos(x);
+    const sy = Math.sin(y), cy = Math.cos(y);
+    const sz = Math.sin(z), cz = Math.cos(z);
+    return sx * sy * sz + sx * cy * cz + cx * sy * cz + cx * cy * sz;
+  });
+}
+
+/** Lidinoid TPMS — a higher-genus surface with a woven appearance. Uses
+ *  double-frequency terms. Same (cellSize, thickness) contract; infinite. */
+function primLidinoid(cellSize: number, thickness: number): SdfNode {
+  return tpmsNode('lidinoid', cellSize, thickness, (x, y, z) => {
+    const s2x = Math.sin(2 * x), s2y = Math.sin(2 * y), s2z = Math.sin(2 * z);
+    const c2x = Math.cos(2 * x), c2y = Math.cos(2 * y), c2z = Math.cos(2 * z);
+    const sx = Math.sin(x), sy = Math.sin(y), sz = Math.sin(z);
+    const cx = Math.cos(x), cy = Math.cos(y), cz = Math.cos(z);
+    return 0.5 * (s2x * cy * sz + s2y * cz * sx + s2z * cx * sy)
+      - 0.5 * (c2x * c2y + c2y * c2z + c2z * c2x) + 0.15;
+  });
+}
+
+/** Gyroid whose wall thickness varies through space. `thicknessFn(x,y,z)`
+ *  returns the local wall thickness at each point — e.g. thin at the top,
+ *  thick at the base (bone-like density grading). Called millions of
+ *  times during meshing, so keep it cheap. Infinite — intersect or pass
+ *  bounds. */
+function primGradedGyroid(cellSize: number, thicknessFn: (x: number, y: number, z: number) => number): SdfNode {
+  assertNumber(cellSize, 'gradedGyroid(cellSize)', { min: 1e-6 });
+  assertFunction(thicknessFn, 'gradedGyroid(thicknessFn)');
+  const k = (2 * Math.PI) / (cellSize as number);
+  return new SdfNode({
+    kind: 'gradedGyroid',
     eval: (x, y, z) => {
-      const sx = Math.sin(k * x), cx = Math.cos(k * x);
-      const sy = Math.sin(k * y), cy = Math.cos(k * y);
-      const sz = Math.sin(k * z), cz = Math.cos(k * z);
-      const g = sx * cy + sy * cz + sz * cx;
-      // |g| - t gives a shell of thickness t around the zero-surface.
-      // Divide by k so the gradient is roughly normalized — keeps the
-      // marching tetrahedra from over- or under-sampling the surface.
-      return (Math.abs(g) - t) / k;
+      const kx = k * x, ky = k * y, kz = k * z;
+      const g = Math.sin(kx) * Math.cos(ky) + Math.sin(ky) * Math.cos(kz) + Math.sin(kz) * Math.cos(kx);
+      const t = thicknessFn(x, y, z);
+      // Guard against a user fn that returns a non-number — fall back to
+      // a bare surface (t=0) rather than poisoning the mesh with NaN.
+      const tt = typeof t === 'number' && Number.isFinite(t) ? Math.max(t, 0) : 0;
+      return (Math.abs(g) - tt) / k;
     },
-    // Effectively unbounded — caller must intersect or pass bounds.
-    bounds: { min: [-Infinity, -Infinity, -Infinity], max: [Infinity, Infinity, Infinity] },
+    bounds: INFINITE_BOUNDS,
     children: [],
     partitionable: false,
   });
@@ -799,50 +973,58 @@ function opRound(child: SdfNode, r: number): SdfNode {
   });
 }
 
-function opTwist(child: SdfNode, degPerUnit: number, axis: 'x' | 'y' | 'z'): SdfNode {
-  // Twist the cross-section by `rate` radians per unit along `axis`.
-  // Note: this is not a true SDF — the swept geometry is correct, but
-  // the field is a Lipschitz approximation. Marching tetrahedra still
-  // produces a watertight mesh.
+function opTwist(child: SdfNode, degPerUnit: number, axis: 'x' | 'y' | 'z', center: [number, number] = [0, 0]): SdfNode {
+  // Twist the cross-section by `rate` radians per unit along `axis`,
+  // around a line offset by `center` (the [u, v] coords in the plane
+  // perpendicular to `axis`). Note: this is not a true SDF — the swept
+  // geometry is correct, but the field is a Lipschitz approximation.
+  // Marching tetrahedra still produces a watertight mesh.
   const rate = degPerUnit * DEG;
+  const [cu, cv] = center;
   let evalFn: EvalFn;
   if (axis === 'z') {
     evalFn = (x, y, z) => {
+      const px = x - cu, py = y - cv;
       const a = z * rate;
       const c = Math.cos(a), s = Math.sin(a);
-      return child._eval(c * x + s * y, -s * x + c * y, z);
+      return child._eval(c * px + s * py + cu, -s * px + c * py + cv, z);
     };
   } else if (axis === 'y') {
     evalFn = (x, y, z) => {
+      const px = x - cu, pz = z - cv;
       const a = y * rate;
       const c = Math.cos(a), s = Math.sin(a);
-      return child._eval(c * x + s * z, y, -s * x + c * z);
+      return child._eval(c * px + s * pz + cu, y, -s * px + c * pz + cv);
     };
   } else {
     evalFn = (x, y, z) => {
+      const py = y - cu, pz = z - cv;
       const a = x * rate;
       const c = Math.cos(a), s = Math.sin(a);
-      return child._eval(x, c * y + s * z, -s * y + c * z);
+      return child._eval(x, c * py + s * pz + cu, -s * py + c * pz + cv);
     };
   }
-  // After twist, the swept volume fits in a bounding cylinder whose
-  // radius is the worst-case distance from the axis. Use a conservative
-  // expansion: the bbox diagonal projected onto the twist plane.
+  // After twist, the swept volume is a disc of radius = the farthest
+  // in-plane bbox corner FROM THE CENTRE (so an offset axis enlarges the
+  // sweep). Measure from `center` and recentre the perpendicular bounds
+  // on it. Reduces to the origin-centred case when center is [0, 0].
   const b = child._bounds;
-  const sweep = (() => {
-    if (axis === 'z') return Math.hypot(Math.max(Math.abs(b.min[0]), Math.abs(b.max[0])),
-                                        Math.max(Math.abs(b.min[1]), Math.abs(b.max[1])));
-    if (axis === 'y') return Math.hypot(Math.max(Math.abs(b.min[0]), Math.abs(b.max[0])),
-                                        Math.max(Math.abs(b.min[2]), Math.abs(b.max[2])));
-    return Math.hypot(Math.max(Math.abs(b.min[1]), Math.abs(b.max[1])),
-                      Math.max(Math.abs(b.min[2]), Math.abs(b.max[2])));
-  })();
-  // Use sweep as the bound for the twisted axes. The axis-of-twist
-  // direction keeps its original extent.
+  const inPlaneSweep = (u0: number, u1: number, v0: number, v1: number): number => {
+    const du = Math.max(Math.abs(u0 - cu), Math.abs(u1 - cu));
+    const dv = Math.max(Math.abs(v0 - cv), Math.abs(v1 - cv));
+    return Math.hypot(du, dv);
+  };
   let bounds: Box;
-  if (axis === 'z') bounds = { min: [-sweep, -sweep, b.min[2]], max: [sweep, sweep, b.max[2]] };
-  else if (axis === 'y') bounds = { min: [-sweep, b.min[1], -sweep], max: [sweep, b.max[1], sweep] };
-  else bounds = { min: [b.min[0], -sweep, -sweep], max: [b.max[0], sweep, sweep] };
+  if (axis === 'z') {
+    const r = inPlaneSweep(b.min[0], b.max[0], b.min[1], b.max[1]);
+    bounds = { min: [cu - r, cv - r, b.min[2]], max: [cu + r, cv + r, b.max[2]] };
+  } else if (axis === 'y') {
+    const r = inPlaneSweep(b.min[0], b.max[0], b.min[2], b.max[2]);
+    bounds = { min: [cu - r, b.min[1], cv - r], max: [cu + r, b.max[1], cv + r] };
+  } else {
+    const r = inPlaneSweep(b.min[1], b.max[1], b.min[2], b.max[2]);
+    bounds = { min: [b.min[0], cu - r, cv - r], max: [b.max[0], cu + r, cv + r] };
+  }
   return new SdfNode({ kind: 'twist', eval: evalFn, bounds, children: [child], partitionable: false });
 }
 
@@ -889,16 +1071,132 @@ function opBend(child: SdfNode, degPerUnit: number, axis: 'x' | 'y' | 'z'): SdfN
   });
 }
 
+function opTaper(child: SdfNode, rate: number, axis: 'x' | 'y' | 'z'): SdfNode {
+  // Scale the cross-section perpendicular to `axis` by s = 1 + rate*a,
+  // where `a` is the coordinate along the axis. Like twist/bend, this is
+  // a Lipschitz approximation, not a true SDF; we multiply by min(s, 1)
+  // to keep the field from OVER-estimating distance in the widened
+  // region (under-estimating is the safe direction for marching).
+  const MIN_S = 1e-3; // floor so a steep taper can't invert the cross-section
+  let evalFn: EvalFn;
+  if (axis === 'z') {
+    evalFn = (x, y, z) => {
+      let s = 1 + rate * z;
+      if (s < MIN_S) s = MIN_S;
+      return child._eval(x / s, y / s, z) * Math.min(s, 1);
+    };
+  } else if (axis === 'y') {
+    evalFn = (x, y, z) => {
+      let s = 1 + rate * y;
+      if (s < MIN_S) s = MIN_S;
+      return child._eval(x / s, y, z / s) * Math.min(s, 1);
+    };
+  } else {
+    evalFn = (x, y, z) => {
+      let s = 1 + rate * x;
+      if (s < MIN_S) s = MIN_S;
+      return child._eval(x, y / s, z / s) * Math.min(s, 1);
+    };
+  }
+  // The cross-section grows by up to smax = max scale over the axis
+  // range; expand the perpendicular bounds by that factor.
+  const b = child._bounds;
+  const axisIdx = axis === 'x' ? 0 : axis === 'y' ? 1 : 2;
+  const sLo = 1 + rate * b.min[axisIdx];
+  const sHi = 1 + rate * b.max[axisIdx];
+  const smax = Math.max(Math.abs(sLo), Math.abs(sHi), 1);
+  const min: Vec3 = [...b.min] as Vec3;
+  const max: Vec3 = [...b.max] as Vec3;
+  for (let i = 0; i < 3; i++) {
+    if (i === axisIdx) continue;
+    min[i] = b.min[i] * smax;
+    max[i] = b.max[i] * smax;
+  }
+  return new SdfNode({ kind: 'taper', eval: evalFn, bounds: { min, max }, children: [child], partitionable: false });
+}
+
+export interface PolarArrayOptions {
+  axis?: 'x' | 'y' | 'z';
+  /** Total sweep in degrees. 360 (default) = full ring, no seam dup. */
+  angle?: number;
+  /** Push each copy outward (along the first perpendicular axis) by this
+   *  much before rotating. */
+  radius?: number;
+}
+
+const POLAR_FIELDS = ['axis', 'angle', 'radius'] as const;
+
+function opPolarArray(child: SdfNode, count: number, opts: PolarArrayOptions): SdfNode {
+  assertNumber(count, 'polarArray(count)', { min: 1, integer: true });
+  const o = assertObject(opts, 'polarArray(opts)') ?? {};
+  assertNoUnknownKeys(o as Record<string, unknown>, POLAR_FIELDS, 'polarArray(opts)');
+  const axis = o.axis === undefined ? 'z' : assertEnum(o.axis, ['x', 'y', 'z'] as const, 'polarArray(axis)');
+  const angle = o.angle === undefined ? 360 : assertNumber(o.angle, 'polarArray(angle)') as number;
+  const radius = o.radius === undefined ? 0 : assertNumber(o.radius, 'polarArray(radius)', { min: 0 }) as number;
+  const n = count as number;
+
+  // Optionally push the source copy out along the first axis
+  // perpendicular to the rotation axis (matches meshOps.circularPattern).
+  let seed = child;
+  if (radius > 0) {
+    const push: Vec3 = axis === 'z' ? [radius, 0, 0] : axis === 'x' ? [0, radius, 0] : [0, 0, radius];
+    seed = opTranslate(child, push);
+  }
+  // Full-circle: N copies at 360/N (no duplicate at the seam). Partial:
+  // endpoints inclusive, step = angle/(N-1).
+  const full = Math.abs(angle) === 360;
+  const step = full ? angle / n : (n > 1 ? angle / (n - 1) : 0);
+  const rotVec = (deg: number): Vec3 => axis === 'z' ? [0, 0, deg] : axis === 'x' ? [deg, 0, 0] : [0, deg, 0];
+
+  let acc: SdfNode = opRotate(seed, rotVec(0));
+  for (let i = 1; i < n; i++) {
+    acc = opUnion(acc, opRotate(seed, rotVec(i * step)));
+  }
+  return acc;
+}
+
+function opRepeat(child: SdfNode, periods: Vec3): SdfNode {
+  const [px, py, pz] = periods;
+  // Centred modulo: maps each cell onto one around the origin. A period
+  // of 0 means "don't repeat on this axis".
+  const pmod = (v: number, p: number): number => (p > 0 ? v - p * Math.round(v / p) : v);
+  const b = child._bounds;
+  // Repeated axes become infinite; non-repeated keep the child's extent.
+  const min: Vec3 = [
+    px > 0 ? -Infinity : b.min[0],
+    py > 0 ? -Infinity : b.min[1],
+    pz > 0 ? -Infinity : b.min[2],
+  ];
+  const max: Vec3 = [
+    px > 0 ? Infinity : b.max[0],
+    py > 0 ? Infinity : b.max[1],
+    pz > 0 ? Infinity : b.max[2],
+  ];
+  return new SdfNode({
+    kind: 'repeat',
+    eval: (x, y, z) => child._eval(pmod(x, px), pmod(y, py), pmod(z, pz)),
+    bounds: { min, max },
+    children: [child],
+    partitionable: false,
+  });
+}
+
 // --- Public namespace factory ------------------------------------------
 
 export interface SdfNamespace {
   sphere(radius: number): SdfNode;
+  ellipsoid(rx: number, ry: number, rz: number): SdfNode;
   box(size: Vec3 | number): SdfNode;
   roundedBox(size: Vec3 | number, radius: number): SdfNode;
   cylinder(radius: number, height: number): SdfNode;
+  roundedCylinder(radius: number, height: number, edgeRadius: number): SdfNode;
   torus(majorRadius: number, minorRadius: number): SdfNode;
   capsule(a: Vec3, b: Vec3, radius: number): SdfNode;
   gyroid(cellSize: number, thickness: number): SdfNode;
+  schwarzP(cellSize: number, thickness: number): SdfNode;
+  diamond(cellSize: number, thickness: number): SdfNode;
+  lidinoid(cellSize: number, thickness: number): SdfNode;
+  gradedGyroid(cellSize: number, thicknessFn: (x: number, y: number, z: number) => number): SdfNode;
   union(...nodes: SdfNode[]): SdfNode;
   smoothUnion(a: SdfNode, b: SdfNode, k: number): SdfNode;
   smoothSubtract(a: SdfNode, b: SdfNode, k: number): SdfNode;
@@ -938,12 +1236,18 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
 
   return {
     sphere: (radius) => bound(primSphere(radius)),
+    ellipsoid: (rx, ry, rz) => bound(primEllipsoid(rx, ry, rz)),
     box: (size) => bound(primBox(size)),
     roundedBox: (size, radius) => bound(primRoundedBox(size, radius)),
     cylinder: (radius, height) => bound(primCylinder(radius, height)),
+    roundedCylinder: (radius, height, edgeRadius) => bound(primRoundedCylinder(radius, height, edgeRadius)),
     torus: (R, r) => bound(primTorus(R, r)),
     capsule: (a, b, radius) => bound(primCapsule(a, b, radius)),
     gyroid: (cellSize, thickness) => bound(primGyroid(cellSize, thickness)),
+    schwarzP: (cellSize, thickness) => bound(primSchwarzP(cellSize, thickness)),
+    diamond: (cellSize, thickness) => bound(primDiamond(cellSize, thickness)),
+    lidinoid: (cellSize, thickness) => bound(primLidinoid(cellSize, thickness)),
+    gradedGyroid: (cellSize, thicknessFn) => bound(primGradedGyroid(cellSize, thicknessFn)),
     union: (...nodes) => {
       if (nodes.length === 0) throw new ValidationError('api.sdf.union(): need at least one SDF node.');
       let acc = assertSdfNode(nodes[0], 'union(nodes[0])');
@@ -964,12 +1268,18 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
 /** @internal Exposed for unit tests (vitest). Not part of the runtime API. */
 export const __testables__ = {
   primSphere,
+  primEllipsoid,
   primBox,
   primRoundedBox,
   primCylinder,
+  primRoundedCylinder,
   primTorus,
   primCapsule,
   primGyroid,
+  primSchwarzP,
+  primDiamond,
+  primLidinoid,
+  primGradedGyroid,
   opUnion,
   opSubtract,
   opIntersect,
@@ -984,6 +1294,9 @@ export const __testables__ = {
   opRound,
   opTwist,
   opBend,
+  opTaper,
+  opPolarArray,
+  opRepeat,
   partitionByLabel,
   defaultEdgeLength,
   expandedMeshBounds,

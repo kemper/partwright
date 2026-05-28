@@ -35,14 +35,31 @@ All primitives are centered at the origin and use the standard SDF convention.
 
 ```js
 api.sdf.sphere(radius)                  // ball of given radius
+api.sdf.ellipsoid(rx, ry, rz)           // per-axis radii — the "squashed sphere" .scale() can't make
 api.sdf.box([x, y, z])                  // full extents — spans [-x/2, x/2] etc.
 api.sdf.box(size)                       // scalar form: equal-sided cube
-api.sdf.roundedBox([x,y,z], r)          // box with all edges rounded by r
+api.sdf.roundedBox([x,y,z], r)          // box with rounded edges — OUTER size stays [x,y,z] (r < half min dim)
 api.sdf.cylinder(radius, height)        // Z-aligned, spans [-h/2, h/2]
+api.sdf.roundedCylinder(radius, height, edgeR)  // rounded top/bottom edges — OUTER radius+height preserved
 api.sdf.torus(majorR, minorR)           // ring in XY plane
 api.sdf.capsule([x1,y1,z1], [x2,y2,z2], radius)   // hemisphere-capped rod
-api.sdf.gyroid(cellSize, thickness)     // INFINITE — see "Bounds for unbounded shapes" below
 ```
+
+### TPMS lattices (all infinite — see "Bounds for unbounded shapes")
+
+Triply-periodic minimal surfaces. All take `(cellSize, thickness)` — `cellSize` is the period, `thickness` the wall width (0 = a bare zero-thickness surface). They're mathematically infinite, so you **must** intersect with a finite shape or pass explicit `bounds` to `.build()`.
+
+```js
+api.sdf.gyroid(cellSize, thickness)     // the famous one — smooth, isotropic
+api.sdf.schwarzP(cellSize, thickness)   // blockier rounded-cubic cells
+api.sdf.diamond(cellSize, thickness)    // interpenetrating diamond channels (scaffold look)
+api.sdf.lidinoid(cellSize, thickness)   // woven, higher-genus
+
+// Spatially-varying wall thickness (bone-like density grading):
+api.sdf.gradedGyroid(cellSize, (x, y, z) => /* thickness here */)
+```
+
+`gradedGyroid`'s thickness function is called once per mesh sample (millions of times) — keep it to cheap arithmetic.
 
 ## Boolean operations (sharp)
 
@@ -80,24 +97,39 @@ node.scale(s)             // UNIFORM only — non-uniform scale breaks SDFs
 node.mirror('x' | 'y' | 'z')
 ```
 
-Non-uniform scale (`scale([2, 1, 1])`) is intentionally not supported — it stretches the distance metric, breaking marching tetrahedra. If you really need a stretched shape, model it stretched (e.g. `sdf.box([20, 10, 10])`) instead of scaling.
+Non-uniform scale (`scale([2, 1, 1])`) is intentionally not supported — it stretches the distance metric, breaking marching tetrahedra. For a squashed/stretched sphere use `sdf.ellipsoid(rx, ry, rz)`; for a stretched box just give `sdf.box([20, 10, 10])` the dimensions you want.
 
 ## Modifiers
 
 ```js
 node.shell(thickness)            // solid shell of given thickness around the original surface (|f| - t/2)
 node.round(r)                    // grow by r everywhere, rounding sharp edges
-node.twist(degPerUnit, axis?)    // twist around 'z' (default) — useful for spirals
+node.twist(degPerUnit, axis?, center?)  // twist around 'z' (default); center=[u,v] offsets the twist line
 node.bend(degPerUnit, axis?)     // bend perpendicular to 'x' (default)
+node.taper(rate, axis?)          // linearly scale the cross-section along 'z' (default)
 ```
 
-Twist and bend warp space — the resulting field is a Lipschitz *approximation* of the true SDF, but marching tetrahedra still produces a clean watertight mesh.
+Twist, bend, and taper warp space — the resulting field is a Lipschitz *approximation* of the true SDF, but marching tetrahedra still produces a clean watertight mesh.
 
-**`.round(r)` grows the whole shape by `r`.** It's literally `f - r`, which offsets the iso-surface outward by `r` in every direction — so `cylinder(2, 10).round(0.5)` produces a shape with radius 2.5 AND height 11, not "the same cylinder with rounded edges". When you want crisper control, model the smaller primitive and accept the inflation, or stack a `.round()` on a deliberately under-sized primitive.
+**`.round(r)` grows the whole shape by `r`.** It's literally `f - r`, which offsets the iso-surface outward by `r` in every direction — so `cylinder(2, 10).round(0.5)` produces a shape with radius 2.5 AND height 11, not "the same cylinder with rounded edges". When you want the rounding WITHOUT the inflation, reach for `sdf.roundedBox` / `sdf.roundedCylinder`, which preserve the outer dimensions for you.
 
-**For `.twist()` on a primitive with corners** (cube, box, roundedBox), give the corners a small `.round(...)` or use `roundedBox(...)` first. The marched edges of a sharp-cornered primitive can chatter visibly along the helix at high twist rates; pre-rounding eliminates this without needing finer `edgeLength`.
+**For `.twist()` on a primitive with corners** (cube, box, roundedBox), give the corners a small `.round(...)` or use `roundedBox(...)` first. The marched edges of a sharp-cornered primitive can chatter visibly along the helix at high twist rates; pre-rounding eliminates this without needing finer `edgeLength`. The optional `center` arg, e.g. `.twist(9, 'z', [10, 0])`, spirals the shape around an off-centre vertical line instead of its own axis — useful for asymmetric spirals.
 
 **For `.bend(degPerUnit, axis)`**: `axis` names the *input axis sampled* to compute the rotation amount — NOT the rotation axis. The rotation happens in the plane perpendicular to `axis`. So `bend(45, 'x')` reads the X coordinate of each point and rotates it in the XY plane (around Z) by `x * 45°`.
+
+**For `.taper(rate, axis)`**: the cross-section perpendicular to `axis` scales by `1 + rate*coord` — scale is 1 at the origin, so positive `rate` widens toward +axis and negative narrows it. `sdf.box([10,10,40]).taper(-0.02, 'z')` makes an obelisk that shrinks ~2% per unit of height.
+
+## Combinators
+
+```js
+node.polarArray(count, { axis?, angle?, radius? })  // ring of rotated copies, unioned
+node.mirrorPair('x' | 'y' | 'z')                    // node ∪ its mirror — symmetric parts in one call
+node.repeat([px, py, pz])                           // infinite grid tiling (0 = no repeat on that axis)
+```
+
+- **`polarArray`** mirrors the Manifold-side `circularPattern`: `axis` defaults to `'z'`, `angle` defaults to 360 (full ring, no duplicate at the seam; any other angle places endpoints inclusively), and `radius` pushes each copy outward along the first perpendicular axis before rotating. The whole array meshes as ONE region unless you label individual copies.
+- **`mirrorPair`** is just `node.union(node.mirror(axis))` — model one half, get the symmetric whole.
+- **`repeat`** is **infinite** on every axis with a non-zero period, exactly like the TPMS lattices — you must intersect it with a finite shape or pass explicit `bounds` to `.build()`. Use it for truss/peg arrays; use `gyroid`/`schwarzP`/etc. for smooth periodic surfaces.
 
 ## Building (lowering to a Manifold)
 
