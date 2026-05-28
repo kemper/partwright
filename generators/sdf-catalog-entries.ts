@@ -1,0 +1,162 @@
+// Builds .partwright.json catalog entries for the SDF showcase examples.
+// Sibling of generators/catalog-entries.ts — adds a paint-manifest step
+// (`examples/<name>.paint.json`) so the catalog tiles can ship pre-coloured.
+//
+// Lives outside `tests/` so the default `npm run test:e2e` doesn't pick
+// it up (same reason as catalog-entries.ts). Run with:
+//
+//   npx playwright test --config=playwright.generators.config.ts generators/sdf-catalog-entries.ts
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { test, type Page } from 'playwright/test';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const examplesDir = path.resolve(__dirname, '..', 'examples');
+const catalogDir = path.resolve(__dirname, '..', 'public', 'catalog');
+
+interface SdfEntry {
+  exampleFile: string;    // examples/sdf_*.js
+  paintFile: string;      // examples/sdf_*.paint.json
+  catalogFile: string;    // public/catalog/sdf_*.partwright.json
+  id: string;             // manifest id (kebab-case)
+  name: string;
+  description: string;
+}
+
+const newEntries: SdfEntry[] = [
+  {
+    exampleFile: 'sdf_organic_creature.js',
+    paintFile: 'sdf_organic_creature.paint.json',
+    catalogFile: 'sdf_organic_creature.partwright.json',
+    id: 'sdf-organic-creature',
+    name: 'SDF Organic Creature',
+    description: 'A smooth-blended creature built entirely from SDF primitives — showcases smoothUnion for organic body welds and paint-by-label colourisation of an SDF model.',
+  },
+  {
+    exampleFile: 'sdf_gyroid_chamber.js',
+    paintFile: 'sdf_gyroid_chamber.paint.json',
+    catalogFile: 'sdf_gyroid_chamber.partwright.json',
+    id: 'sdf-gyroid-chamber',
+    name: 'SDF Gyroid Chamber',
+    description: 'A triply-periodic gyroid lattice clipped inside a solid frame — the SDF way to do 3D-printable infill in one expression.',
+  },
+  {
+    exampleFile: 'sdf_twisted_vessel.js',
+    paintFile: 'sdf_twisted_vessel.paint.json',
+    catalogFile: 'sdf_twisted_vessel.partwright.json',
+    id: 'sdf-twisted-vessel',
+    name: 'SDF Twisted Vessel',
+    description: 'A spiralled body produced by the SDF `.twist()` domain warp on a non-radially-symmetric profile, joined to a base with smoothUnion.',
+  },
+  {
+    exampleFile: 'sdf_mixed_mechanical.js',
+    paintFile: 'sdf_mixed_mechanical.paint.json',
+    catalogFile: 'sdf_mixed_mechanical.partwright.json',
+    id: 'sdf-mixed-mechanical',
+    name: 'SDF + Manifold Mechanical Part',
+    description: 'A mechanical part that mixes smooth-blended SDF features (grip, fillets) with crisp Manifold CSG (mounting plate, drilled holes) — shows how the two engines compose.',
+  },
+];
+
+interface PaintManifest {
+  regions: Array<{ label: string; color: [number, number, number]; name?: string }>;
+}
+
+async function waitForEngine(page: Page): Promise<void> {
+  await page.waitForSelector('text=Ready', { timeout: 30_000 });
+  await page.waitForFunction(
+    () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
+    { timeout: 30_000 },
+  );
+}
+
+test.describe.serial('generate sdf catalog entries', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+  });
+
+  for (const entry of newEntries) {
+    test(`build ${entry.catalogFile}`, async ({ page }) => {
+      const code = fs.readFileSync(path.join(examplesDir, entry.exampleFile), 'utf8');
+      const paint: PaintManifest = JSON.parse(
+        fs.readFileSync(path.join(examplesDir, entry.paintFile), 'utf8'),
+      );
+
+      await page.goto('/editor');
+      await waitForEngine(page);
+
+      const payload = await page.evaluate(async ({ code, name, paint }) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const pw = (window as any).partwright;
+        await pw.createSession(name);
+
+        // 1. Initial save — runs the SDF code, validates, captures base
+        // geometryData. Skip the maxComponents:1 assertion (gyroid often
+        // has many disconnected lattice components, and a labelled-union
+        // can too).
+        const run = await pw.runAndSave(code, 'v1', { isManifold: true });
+        if (run.failures && run.failures.length > 0) {
+          throw new Error('runAndSave assertions failed: ' + run.failures.join('; '));
+        }
+        if (run.geometry?.status === 'error') {
+          throw new Error('runAndSave geometry error: ' + run.geometry.error);
+        }
+
+        // 2. Paint each labelled region. If any region fails to resolve,
+        // collect the error so we can fix the example or paint manifest
+        // — don't silently ship a half-coloured tile.
+        const paintFailures: string[] = [];
+        for (const region of paint.regions) {
+          const r = await pw.paintByLabel({
+            label: region.label,
+            color: region.color,
+            ...(region.name ? { name: region.name } : {}),
+          });
+          if (r?.error) paintFailures.push(`${region.label}: ${r.error}`);
+        }
+        if (paintFailures.length > 0) {
+          throw new Error('paintByLabel failures: ' + paintFailures.join('; '));
+        }
+
+        // 3. Re-save so the colorRegions land in the version's
+        // geometryData and survive the export. The code is unchanged, but
+        // the colour-region set differs from v1, so saveVersion creates
+        // a fresh "v1 colored" version.
+        const colored = await pw.runAndSave(code, 'v1 colored');
+        if (colored.geometry?.status === 'error') {
+          throw new Error('coloured runAndSave error: ' + colored.geometry.error);
+        }
+
+        // Let captureThumbnail's async write land before exporting.
+        await new Promise(r => setTimeout(r, 400));
+        const exported = await pw.exportSessionData(undefined, { includeThumbnails: true });
+        if (exported.error) throw new Error('exportSessionData: ' + exported.error);
+        return exported.data;
+      }, { code, name: entry.name, paint });
+
+      const outPath = path.join(catalogDir, entry.catalogFile);
+      fs.writeFileSync(outPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+    });
+  }
+
+  test('patch manifest.json', async () => {
+    const manifestPath = path.join(catalogDir, 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+      entries: Array<{ id: string; name: string; file: string; language: string; description: string }>;
+    };
+    for (const entry of newEntries) {
+      if (manifest.entries.some(e => e.id === entry.id)) continue;
+      manifest.entries.push({
+        id: entry.id,
+        name: entry.name,
+        file: entry.catalogFile,
+        language: 'manifold-js',
+        description: entry.description,
+      });
+    }
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+  });
+});
