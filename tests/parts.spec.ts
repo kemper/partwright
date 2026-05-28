@@ -37,8 +37,16 @@ const cubeAt = (s: number, x: number, marker: string) =>
 
 test.describe('Multi-part sessions', () => {
   // Suppress the first-visit guided tour so its backdrop doesn't intercept clicks.
+  // Also force the code pane visible: the app now defaults it collapsed when
+  // the AI drawer auto-opens, which would zero out the editor pane and hide
+  // #editor-title and #editor-lock-overlay that these tests assert on.
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
+    await page.addInitScript(() => {
+      localStorage.setItem('partwright-tour-completed', '1');
+      try {
+        localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false }));
+      } catch { /* ignore */ }
+    });
   });
 
   test('parts carry independent code and version history', async ({ page }) => {

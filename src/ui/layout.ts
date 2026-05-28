@@ -1,6 +1,7 @@
 import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
 import { showQualitySettingsModal } from './qualitySettingsModal';
 import { showAboutModal } from './aboutModal';
+import { loadSettings, saveSettings } from '../ai/settings';
 
 export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data';
 
@@ -353,7 +354,12 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // Tracks the most recently activated tab so breakpoint or mobile-pane
   // changes can recompose visibility without re-running tab DOM toggling.
   let _currentTab: TabName = 'interactive';
-  let editorCollapsed = false;
+  // Default the code pane closed when the AI drawer is opening too — two big
+  // surfaces fighting for the same screen on a first visit pushes the viewport
+  // into a sliver. The user's explicit Hide/Show choice (persisted below)
+  // takes precedence on every subsequent load.
+  const aiSettings = loadSettings();
+  let editorCollapsed = aiSettings.editorCollapsed ?? aiSettings.drawerOpen;
   const mqDesktop = window.matchMedia('(min-width: 768px)');
 
   // Composes desktop/mobile pane visibility from the active tab and (on mobile)
@@ -387,10 +393,29 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     window.dispatchEvent(new Event('resize'));
   }
 
+  function rememberEditorCollapsed(collapsed: boolean): void {
+    saveSettings({ ...loadSettings(), editorCollapsed: collapsed });
+  }
+
   collapseEditorBtn.addEventListener('click', () => {
     if (editorCollapsed) expandEditor(); else collapseEditor();
+    rememberEditorCollapsed(editorCollapsed);
   });
-  expandEditorBtn.addEventListener('click', expandEditor);
+  expandEditorBtn.addEventListener('click', () => {
+    expandEditor();
+    rememberEditorCollapsed(false);
+  });
+
+  // Apply the resolved initial collapsed state to the DOM before the first
+  // syncPaneVisibility() runs below — otherwise the "if (!editorCollapsed)…
+  // width = 40%" branch would expand it on the first paint and clobber the
+  // resolved default.
+  if (editorCollapsed) {
+    editorGroup.style.width = '0';
+    editorGroup.style.overflow = 'hidden';
+    expandEditorBtn.classList.remove('hidden');
+    splitter.classList.add('hidden');
+  }
 
   // === Parts rail collapse ===
   // Mirrors the editor collapse: hide the rail to reclaim width, leaving a small
