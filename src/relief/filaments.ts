@@ -107,6 +107,40 @@ export function restoreDefaultFilament(id: string): void {
   if (hidden.includes(id)) writeHidden(hidden.filter(s => s !== id));
 }
 
+/** Apply a partial update to a colour. Default colours are promoted to user
+ *  entries (keeping the same id), so their listFilaments slot is replaced by
+ *  the edited version on next render. */
+export function updateFilament(id: string, patch: Partial<Omit<Filament, 'id'>>): void {
+  const user = readUser();
+  const userIdx = user.findIndex(f => f.id === id);
+  if (userIdx >= 0) {
+    user[userIdx] = { ...user[userIdx], ...patch };
+    writeUser(user);
+    return;
+  }
+  const def = DEFAULT_FILAMENTS.find(f => f.id === id);
+  if (def) writeUser([...user, { ...def, ...patch }]);
+}
+
+/** Reorder the visible palette by promoting every default to a user entry in
+ *  the requested order, replacing the user list. Hides any unlisted defaults.
+ *  Called by the studio's up/down reorder controls. */
+export function reorderFilaments(orderedIds: string[]): void {
+  const all = listFilaments();
+  const byId = new Map(all.map(f => [f.id, f]));
+  const next: Filament[] = [];
+  for (const id of orderedIds) {
+    const f = byId.get(id);
+    if (f) next.push(f);
+  }
+  writeUser(next);
+  // Hide any defaults not present in the new order so they don't re-prepend.
+  const presentDefaults = new Set(next.map(f => f.id));
+  const defaultIds = DEFAULT_FILAMENTS.map(f => f.id);
+  const newHidden = defaultIds.filter(id => !presentDefaults.has(id));
+  writeHidden(newHidden);
+}
+
 export function hexToRgb(hex: string): [number, number, number] {
   let h = hex.trim().replace(/^#/, '');
   if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];

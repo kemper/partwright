@@ -4,7 +4,7 @@
 // existing paint tools; this panel is the surrounding controls + guide readout.
 
 import type { PreviewMode, SwapGuide } from '../relief/types';
-import { listFilaments, addFilament, removeFilament, hexToRgb } from '../relief/filaments';
+import { listFilaments, addFilament, removeFilament, updateFilament, reorderFilaments, hexToRgb } from '../relief/filaments';
 import { swapGuideToText, rgbToHex } from '../relief/swapGuide';
 
 export interface ReliefStudioDeps {
@@ -135,12 +135,12 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
   layerSection.appendChild(layerRow);
   body.appendChild(layerSection);
 
-  // --- Filament palette ---
+  // --- Colour palette ---
   const filSection = document.createElement('div');
-  filSection.appendChild(sectionLabel('Filament palette'));
+  filSection.appendChild(sectionLabel('Colour palette'));
   const filHint = document.createElement('div');
   filHint.className = 'text-[10px] text-zinc-500 mb-1.5 leading-snug';
-  filHint.textContent = 'TD = transmission distance, how far light passes through (mm). Larger = more translucent. Used by the Single-nozzle preview.';
+  filHint.textContent = 'Click a swatch to recolour, click the name to rename, or use the arrows to reorder. Removed colours can be re-added with the picker below.';
   filSection.appendChild(filHint);
   const filList = document.createElement('div');
   filList.className = 'flex flex-col gap-1';
@@ -178,25 +178,99 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
     if (filaments.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'text-[11px] text-zinc-500';
-      empty.textContent = 'No filaments yet.';
+      empty.textContent = 'No colours yet — add one with the picker below.';
       filList.appendChild(empty);
       return;
     }
-    for (const f of filaments) {
+    filaments.forEach((f, i) => {
       const row = document.createElement('div');
-      row.className = 'flex items-center gap-2 py-1 px-1 -mx-1 rounded hover:bg-zinc-700/40 transition-colors';
-      row.appendChild(makeSwatch(hexToRgb(f.hex)));
+      row.className = 'flex items-center gap-1.5 py-1 px-1 -mx-1 rounded hover:bg-zinc-700/40 transition-colors';
+
+      // Click-to-edit swatch. Uses a native colour picker hidden inside the
+      // swatch element so the swatch itself is the affordance.
+      const swatchBtn = document.createElement('button');
+      swatchBtn.type = 'button';
+      swatchBtn.className = 'w-4 h-4 rounded-sm shrink-0 border border-black/30 cursor-pointer p-0 relative';
+      swatchBtn.style.backgroundColor = rgbToCSS(hexToRgb(f.hex));
+      swatchBtn.title = `Click to change colour (${f.hex})`;
+      const swatchPicker = document.createElement('input');
+      swatchPicker.type = 'color';
+      swatchPicker.value = f.hex;
+      swatchPicker.className = 'absolute opacity-0 w-0 h-0 pointer-events-none';
+      swatchPicker.tabIndex = -1;
+      swatchPicker.addEventListener('input', () => {
+        updateFilament(f.id, { hex: swatchPicker.value });
+        handle.refresh();
+      });
+      swatchBtn.appendChild(swatchPicker);
+      swatchBtn.addEventListener('click', () => swatchPicker.click());
+      row.appendChild(swatchBtn);
+
+      // Click-to-rename: name span swaps to an input on click; commits on
+      // blur/Enter and reverts on Escape.
       const name = document.createElement('span');
-      name.className = 'text-[11px] text-zinc-300 flex-1 truncate';
+      name.className = 'text-[11px] text-zinc-300 flex-1 truncate cursor-text';
       name.textContent = f.name;
+      name.title = 'Click to rename';
+      name.addEventListener('click', () => {
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = f.name;
+        input.className = 'flex-1 min-w-0 px-1.5 py-0.5 text-[11px] bg-zinc-900 border border-zinc-600 rounded text-zinc-200';
+        const commit = (): void => {
+          const trimmed = input.value.trim();
+          if (trimmed && trimmed !== f.name) {
+            updateFilament(f.id, { name: trimmed });
+            handle.refresh();
+          } else {
+            renderFilaments();
+          }
+        };
+        input.addEventListener('blur', commit);
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { commit(); }
+          else if (e.key === 'Escape') { renderFilaments(); }
+        });
+        row.replaceChild(input, name);
+        input.focus();
+        input.select();
+      });
       row.appendChild(name);
-      const td = document.createElement('span');
-      td.className = 'text-[10px] text-zinc-500 tabular-nums shrink-0';
-      td.textContent = `TD ${f.td}mm`;
-      row.appendChild(td);
+
+      // Reorder buttons (up/down). Simpler than full drag-and-drop and still
+      // gives the user explicit control over palette order.
+      const upBtn = document.createElement('button');
+      upBtn.type = 'button';
+      upBtn.className = 'shrink-0 w-5 h-5 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700/60 text-[10px] disabled:opacity-30';
+      upBtn.textContent = '↑';
+      upBtn.title = 'Move up';
+      upBtn.disabled = i === 0;
+      upBtn.addEventListener('click', () => {
+        const ids = filaments.map(x => x.id);
+        [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]];
+        reorderFilaments(ids);
+        handle.refresh();
+      });
+      row.appendChild(upBtn);
+
+      const downBtn = document.createElement('button');
+      downBtn.type = 'button';
+      downBtn.className = 'shrink-0 w-5 h-5 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700/60 text-[10px] disabled:opacity-30';
+      downBtn.textContent = '↓';
+      downBtn.title = 'Move down';
+      downBtn.disabled = i === filaments.length - 1;
+      downBtn.addEventListener('click', () => {
+        const ids = filaments.map(x => x.id);
+        [ids[i + 1], ids[i]] = [ids[i], ids[i + 1]];
+        reorderFilaments(ids);
+        handle.refresh();
+      });
+      row.appendChild(downBtn);
+
       const rm = document.createElement('button');
+      rm.type = 'button';
       rm.className =
-        'shrink-0 w-8 h-8 flex items-center justify-center rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-700/60 transition-colors text-base leading-none';
+        'shrink-0 w-7 h-7 flex items-center justify-center rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-700/60 transition-colors text-base leading-none';
       rm.textContent = '×';
       rm.title = `Remove ${f.name}`;
       rm.addEventListener('click', () => {
@@ -205,7 +279,7 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
       });
       row.appendChild(rm);
       filList.appendChild(row);
-    }
+    });
   }
 
   function renderGuide(): void {
@@ -388,26 +462,18 @@ function buildAddFilamentForm(onAdded: () => void): HTMLElement {
   color.type = 'color';
   color.value = '#888888';
   color.className = 'shrink-0 w-8 h-8 rounded cursor-pointer border-0 p-0 bg-transparent';
-  color.title = 'Filament color';
+  color.title = 'Colour';
 
   const name = document.createElement('input');
   name.type = 'text';
   name.placeholder = 'Name';
   name.className = 'flex-1 min-w-0 px-2 py-1.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200';
-  name.title = 'Filament name';
-
-  const td = document.createElement('input');
-  td.type = 'number';
-  td.step = '0.1';
-  td.min = '0';
-  td.value = '1';
-  td.className = 'w-14 shrink-0 px-1.5 py-1.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
-  td.title = 'Transmission distance (mm) — how far light penetrates';
+  name.title = 'Colour name';
 
   const add = document.createElement('button');
   add.className = 'shrink-0 px-2 py-1.5 rounded text-[11px] bg-blue-500/30 text-blue-200 hover:bg-blue-500/50 border border-blue-500/50 transition-colors';
   add.textContent = '+ Add';
-  add.title = 'Add this filament to the palette';
+  add.title = 'Add this colour to the palette';
 
   const submit = (): void => {
     const trimmed = name.value.trim();
@@ -415,20 +481,16 @@ function buildAddFilamentForm(onAdded: () => void): HTMLElement {
       name.focus();
       return;
     }
-    const tdVal = parseFloat(td.value);
-    addFilament({ name: trimmed, hex: color.value, td: Number.isFinite(tdVal) && tdVal >= 0 ? tdVal : 1 });
+    addFilament({ name: trimmed, hex: color.value, td: 1 });
     name.value = '';
-    td.value = '1';
     color.value = '#888888';
     onAdded();
   };
   add.addEventListener('click', submit);
   name.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
-  td.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
 
   form.appendChild(color);
   form.appendChild(name);
-  form.appendChild(td);
   form.appendChild(add);
   return form;
 }

@@ -56,6 +56,7 @@ import {
   clearRegions,
   removeRegion,
   setRegionVisibility,
+  updateRegionColor,
 } from './regions';
 import { forceDeactivate as forceDeactivateAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/textMode';
@@ -1225,10 +1226,31 @@ function updateRegionList(container: HTMLElement): void {
       if (releaseHover) { releaseHover(); releaseHover = null; }
     });
 
-    const dot = document.createElement('span');
-    dot.className = 'w-3 h-3 rounded-sm shrink-0';
+    // Color swatch doubles as an edit affordance: clicking it opens a native
+    // colour picker that re-colours this region in place (via updateRegionColor).
+    const dot = document.createElement('button');
+    dot.type = 'button';
+    dot.className = 'w-3 h-3 rounded-sm shrink-0 border border-transparent hover:border-white/60 cursor-pointer p-0';
     dot.style.backgroundColor = rgbToCSS(region.color);
+    dot.title = `Click to change colour (${rgbToHex(region.color)})`;
     if (!region.visible) dot.classList.add('opacity-30');
+    const colorEditor = document.createElement('input');
+    colorEditor.type = 'color';
+    colorEditor.value = rgbToHex(region.color);
+    colorEditor.className = 'absolute opacity-0 w-0 h-0 pointer-events-none';
+    colorEditor.tabIndex = -1;
+    colorEditor.addEventListener('input', () => {
+      const hex = colorEditor.value;
+      const r = parseInt(hex.slice(1, 3), 16) / 255;
+      const g = parseInt(hex.slice(3, 5), 16) / 255;
+      const b = parseInt(hex.slice(5, 7), 16) / 255;
+      updateRegionColor(region.id, [r, g, b]);
+    });
+    dot.appendChild(colorEditor);
+    dot.addEventListener('click', (e) => {
+      e.stopPropagation();
+      colorEditor.click();
+    });
 
     const label = document.createElement('span');
     label.className = `text-[11px] truncate flex-1 ${region.visible ? 'text-zinc-400' : 'text-zinc-600 line-through'}`;
