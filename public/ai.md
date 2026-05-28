@@ -69,6 +69,7 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 |---|---|---|---|
 | Cube / sphere / cylinder | `Manifold.cube/sphere/cylinder(...)` | `cube()`, `sphere()`, `cylinder()` | `BREP.box([w,d,h])`, `BREP.sphere(r)`, `BREP.cylinder(r, h)` |
 | Boolean union / difference / intersection | `.add(o)`, `.subtract(o)`, `.intersect(o)` | `union(){...}`, `difference(){...}`, `intersection(){...}` | `.fuse(o)` / `.cut(o)` / `.intersect(o)`, or `BREP.fuseAll([a,b,c])` / `BREP.cutAll([body,…holes])` / `BREP.intersectAll([…])` for N-way |
+| Expose tweakable knobs (make it customizable) | `api.params({...})` at the top → live Parameters panel; `partwright.getParams()`/`setParams({...})` to drive | (manifold-js only) | (manifold-js only) |
 | 2D shape extruded to 3D | `cs.extrude(h, nDiv?, twist?, scaleTop?)` | `linear_extrude(h, twist=, slices=, scale=) polygon(...)` | (use manifold-js + BREP for one piece) |
 | Surface of revolution (vase, lens, bottle) | `cs.revolve(n?, degrees?)` | `rotate_extrude(angle=) polygon(...)` | (use manifold-js) |
 | Smooth curve from a few points | `Curves.bezier(controls)` -> `/ai/curves.md` | `bezier_curve()` (BOSL2) -> `/ai/bosl2.md` | (use manifold-js Curves) |
@@ -188,6 +189,8 @@ partwright.getGeometryData()   // Current stats (same as #geometry-data)
 partwright.validate(code)      // Check code without rendering -> {valid, error?}
 partwright.getCode()           // Read editor contents
 partwright.setCode(code)       // Set editor contents (no auto-run)
+partwright.getParams()         // Customizer schema + current values -> {schema, values}
+await partwright.setParams({k:v}) // Tweak declared api.params knobs and re-run -> {geometry, params}
 partwright.sliceAtZ(z)         // Cross-section -> {polygons, svg, boundingBox, area}
 partwright.getBoundingBox()    // -> {min:[x,y,z], max:[x,y,z]}
 partwright.getModule()         // Raw manifold-3d WASM module
@@ -378,9 +381,32 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 **Sandbox environment:** The `api` object provides:
 - `Manifold` and `CrossSection` -- the raw manifold-3d bindings
 - `Curves` -- helpers for smooth/organic shapes (loft, sweep, bezier, arc, naca4, polyline with fillet, arbitrary-axis revolve, fillet/chamfer, pattern arrays). See **[/ai/curves.md](/ai/curves.md)**.
+- `params` -- declare tweakable **Customizer** knobs that surface as sliders/toggles in the viewport (see below).
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
 Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.
+
+### Customizer parameters (`api.params`)
+
+Declare the model's tweakable dimensions/options at the top via `api.params(schema)`. It returns an object of resolved values; a **Parameters panel** appears in the viewport so the user (or you) can adjust them with sliders/toggles/dropdowns and the model re-runs live — Tinkercad-style customization without leaving code. This is the preferred way to make a model reusable: expose the few dimensions someone would actually want to change.
+
+```js
+const { Manifold } = api;
+const p = api.params({
+  width:   { type: 'number',  default: 30, min: 10, max: 120, step: 1, unit: 'mm' },
+  rows:    { type: 'int',     default: 2,  min: 1,  max: 6 },
+  rounded: { type: 'boolean', default: true, label: 'Rounded corners' },
+  style:   { type: 'select',  default: 'flat', options: ['flat', 'beveled', 'round'] },
+  title:   { type: 'text',    default: 'PARTS', maxLength: 12 },
+  accent:  { type: 'color',   default: '#3b82f6' },
+});
+// use p.width, p.rows, p.rounded, p.style, p.title, p.accent ...
+return Manifold.cube([p.width, p.width, p.rows * 10], true);
+```
+
+**Types:** `number` / `int` (slider; `min`,`max`,`step`,`unit`), `boolean` (toggle), `select` (dropdown; `options` = array of strings or `{value,label}`), `text` (`maxLength`), `color` (hex). Optional `label` and `help` on any. A malformed *schema* throws a clear `api.params: …` error; bad *values* are clamped or fall back to the default, never throwing — so the model always renders.
+
+**Driving it yourself:** `partwright.getParams()` returns `{ schema, values }` so you can see what knobs exist; `partwright.setParams({ width: 50, rows: 3 })` changes values and re-runs (the `getParams`/`setParams` tools do the same). Prefer `setParams` over rewriting code when you only need to change a declared dimension — it's cheaper and keeps the model intact. The chosen values persist with each saved version (so a version re-renders exactly as saved).
 
 ### Primitive origins and orientations
 

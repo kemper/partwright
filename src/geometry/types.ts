@@ -1,3 +1,5 @@
+import type { ParamSpec } from './params';
+
 export interface MeshData {
   vertProperties: Float32Array;
   triVerts: Uint32Array;
@@ -50,6 +52,11 @@ export interface MeshResult {
    *  paintByLabel("X") would fail" warning without forcing the caller to
    *  diff the labelMap themselves. Absent / undefined when nothing was lost. */
   lostLabels?: string[];
+  /** Customizer parameter schema captured from `api.params({...})` calls in the
+   *  model code this run. Plain serializable data — drives the Parameters panel
+   *  and tells callers which knobs (and value ranges) the model exposes. Absent
+   *  when the model declared no parameters. */
+  paramsSchema?: ParamSpec[];
 }
 
 export interface CrossSectionResult {

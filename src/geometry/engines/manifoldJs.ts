@@ -2,6 +2,7 @@ import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
 import { createCurvesNamespace } from '../curves';
 import { createMeshOpsNamespace } from '../meshOps';
+import { normalizeParamSchema, resolveParamValues, mergeParamSchemas, protectParamValues, type ParamSpec } from '../params';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels } from '../brepRuntime';
@@ -109,7 +110,7 @@ export const manifoldJsEngine: Engine = {
     return manifoldModule !== null;
   },
 
-  run(jsCode: string): MeshResult {
+  run(jsCode: string, paramOverrides?: Record<string, unknown>): MeshResult {
     if (!manifoldModule) {
       return { mesh: null, manifold: null, error: 'Engine not initialized' };
     }
@@ -195,9 +196,28 @@ export const manifoldJsEngine: Engine = {
     // (`sourceUsesBrep(code)`) is what triggers the load.
     const BREP = getBrepNamespace();
 
+    // Customizer parameters. `api.params(schema)` declares the model's tweakable
+    // knobs and returns their resolved values (the Customizer's overrides for
+    // this run, falling back to each declared default). We record every call's
+    // normalized schema so the caller can surface it to the Parameters panel; a
+    // malformed *schema* throws a clear `api.params: …` error (author bug),
+    // while bad *override values* degrade to defaults inside resolveParamValues.
+    const overrides = paramOverrides ?? {};
+    const capturedSchemas: ParamSpec[][] = [];
+    const params = (schema: unknown): Record<string, number | boolean | string> => {
+      const normalized = normalizeParamSchema(schema);
+      capturedSchemas.push(normalized);
+      // Guard the returned object so a typo'd read (p.widht) throws instead of
+      // silently injecting `undefined`/NaN into the geometry.
+      return protectParamValues(resolveParamValues(normalized, overrides));
+    };
+    const collectParamsSchema = (): ParamSpec[] | undefined =>
+      capturedSchemas.length > 0 ? mergeParamSchemas(capturedSchemas) : undefined;
+
     const api = {
       Manifold,
       CrossSection,
+      params,
       Curves: curvesNamespace,
       BREP,
       meshOps: meshOpsNamespace,
@@ -330,6 +350,7 @@ export const manifoldJsEngine: Engine = {
         manifold: renderOnly ? null : result,
         error: null,
         labelMap,
+        paramsSchema: collectParamsSchema(),
       };
     } catch (e: unknown) {
       let msg = e instanceof Error ? e.message : String(e);
@@ -355,6 +376,7 @@ export const manifoldJsEngine: Engine = {
         manifold: null,
         error: msg,
         diagnostics: isSyntaxError ? javaScriptSyntaxDiagnostics(jsCode, msg, e) : runtimeDiagnostic(msg, hint, 'JavaScript'),
+        paramsSchema: collectParamsSchema(),
       };
     } finally {
       // Stop tracking, then free every intermediate the run created. The value

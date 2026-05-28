@@ -55,7 +55,7 @@ function pickLang(lang?: Language): Language {
  *  thread. Use for cases that need the live Manifold object immediately
  *  (e.g. phantom/reference geometry that inspects volume/bbox inline).
  *  For all other code execution use executeCodeAsync(). */
-export function executeCode(source: string, lang?: Language): MeshResult {
+export function executeCode(source: string, lang?: Language, paramOverrides?: Record<string, unknown>): MeshResult {
   const l = pickLang(lang);
   if (l === 'scad' || l === 'replicad') {
     return {
@@ -72,7 +72,7 @@ export function executeCode(source: string, lang?: Language): MeshResult {
       error: `${engine.id} engine not initialized yet — try again after loading completes.`,
     };
   }
-  return engine.run(source);
+  return engine.run(source, paramOverrides);
 }
 
 // ── Geometry Worker client ──────────────────────────────────────────────────
@@ -193,6 +193,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
         ? new Map(labelMapEntries.map(([k, v]) => [k, new Set(v)]))
         : undefined,
       lostLabels: lostLabels && lostLabels.length > 0 ? lostLabels : undefined,
+      paramsSchema: (msg.paramsSchema as MeshResult['paramsSchema']) ?? undefined,
     };
     pending.resolve(result);
     return;
@@ -309,7 +310,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
 /** Async execution via the geometry Worker. Returns mesh data with
  *  manifold=null; callers that need the live Manifold should reconstruct
  *  it with getModule().Manifold.ofMesh(result.mesh). */
-export async function executeCodeAsync(source: string, lang?: Language): Promise<MeshResult> {
+export async function executeCodeAsync(source: string, lang?: Language, paramOverrides?: Record<string, unknown>): Promise<MeshResult> {
   const l = pickLang(lang);
 
   // Ensure the Worker is booted.
@@ -344,7 +345,7 @@ export async function executeCodeAsync(source: string, lang?: Language): Promise
       resolve: (r) => { clearTimeout(timer); resolve(r); },
       reject:  (e) => { clearTimeout(timer); reject(e); },
     });
-    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments() });
+    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null });
   });
 }
 

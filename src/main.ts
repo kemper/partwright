@@ -24,6 +24,8 @@ import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, simplifyInWorker, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
+import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
+import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setOnMeshUpdate, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
@@ -214,6 +216,32 @@ const scadExampleModules = import.meta.glob('../examples/*.scad', { query: '?raw
 export interface ExampleEntry {
   code: string;
   language: Language;
+}
+
+// Customizer state. `currentParamSchema` is the parameter schema the active
+// model declared via `api.params({...})` on its last run (null when it declared
+// none); `currentParamValues` holds the user's overrides (only keys differing
+// from defaults — pruned each run). `paramsPanel` is the viewport overlay that
+// renders the schema as widgets. All three are kept in sync by runCodeSync.
+let currentParamSchema: ParamSpec[] | null = null;
+let currentParamValues: Record<string, ParamValue> = {};
+let paramsPanel: ParamsPanelController | null = null;
+
+/** Reconcile the Customizer panel + override state with the parameter schema a
+ *  model declared on its latest run. Pass `undefined` when the model declared
+ *  none (hides the panel and clears overrides). */
+function syncParamsPanel(schema: ParamSpec[] | undefined): void {
+  if (schema && schema.length > 0) {
+    currentParamSchema = schema;
+    // Keep only overrides the model still declares (drops stale keys from a
+    // previously-run model) and store the minimal non-default set.
+    currentParamValues = pruneParamValues(schema, currentParamValues);
+    paramsPanel?.update(schema, resolveParamValues(schema, currentParamValues));
+  } else {
+    currentParamSchema = null;
+    currentParamValues = {};
+    paramsPanel?.update(undefined, {});
+  }
 }
 
 let currentMeshData: MeshData | null = null;
@@ -1262,7 +1290,7 @@ async function saveCurrentVersion(label?: string): Promise<
     return { error: 'This session is open and being edited in another tab. Use "Take over" in the viewer banner to edit here.' };
   }
   const thumbnail = await captureThumbnail();
-  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label);
+  const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues });
   if (version) return { id: version.id, index: version.index, label: version.label };
   return {
     skipped: true as const,
@@ -2430,6 +2458,11 @@ async function main() {
     }
     setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
     setValue(version.code);
+    // Restore this version's Customizer overrides so it re-runs (and renders)
+    // with the values it was saved at — keeping geometry consistent with the
+    // saved thumbnail/stats. runCodeSync prunes these against the model's
+    // declared schema, so stale keys from a previous model fall away.
+    currentParamValues = { ...(version.paramValues ?? {}) };
     const applied = await runCodeSync(version.code);
     // If a newer version-switch arrived while we were compiling, our result
     // was discarded — don't rehydrate colours or annotations for the wrong version.
@@ -2711,6 +2744,22 @@ async function main() {
   // Keep the live triangle-count readout (and high-complexity warning) in sync
   // with every displayed mesh — runs, paint strokes, simplify, clear.
   setOnMeshUpdate((mesh) => refreshTriangleCount(mesh.numTri));
+
+  // Customizer panel — a viewport overlay that surfaces the parameters a model
+  // declares via api.params({...}). Editing a widget records the override and
+  // re-runs (live preview); Reset clears all overrides back to model defaults.
+  // Hidden until a run reports a parameter schema.
+  paramsPanel = createParamsPanel({
+    onChange: (key, value) => {
+      currentParamValues = { ...currentParamValues, [key]: value };
+      runCode();
+    },
+    onReset: () => {
+      currentParamValues = {};
+      runCode();
+    },
+  });
+  viewportPane.appendChild(paramsPanel.element);
 
   // Init measure tool
   initMeasureTool(getCanvas(), getCamera(), getMeshGroup(), viewportPane);
@@ -3262,6 +3311,37 @@ async function main() {
     setCode(code: string): void {
       assertString(code, 'setCode(code)', { allowEmpty: true });
       setValue(code);
+    },
+
+    /** Read the Customizer parameter schema the current model declared (via
+     *  `api.params({...})`) plus the resolved current value of each. Returns
+     *  `{ schema: [], values: {} }` when the model declares no parameters. Use
+     *  this to discover which knobs exist (and their ranges) before tweaking. */
+    getParams(): { schema: ParamSpec[]; values: Record<string, ParamValue> } {
+      if (!currentParamSchema) return { schema: [], values: {} };
+      return { schema: currentParamSchema, values: resolveParamValues(currentParamSchema, currentParamValues) };
+    },
+
+    /** Set one or more Customizer parameter overrides and re-run the model —
+     *  the language-based equivalent of dragging the panel's sliders. Unknown
+     *  keys are ignored and out-of-range / wrong-type values are clamped or
+     *  fall back to the declared default (never throws on a bad value). Returns
+     *  the updated geometry data plus the resolved parameter values, or
+     *  `{ error }` if the model declares no parameters. */
+    async setParams(values: Record<string, unknown>) {
+      const check = guard(() => { assertObject(values, 'setParams(values)'); return true; });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!currentParamSchema) {
+        return { error: 'The current model declares no parameters. Add an api.params({...}) call to the model code (and run it) first.' };
+      }
+      currentParamValues = { ...currentParamValues, ...(values as Record<string, ParamValue>) };
+      const applied = await runCodeSync(getValue());
+      if (!applied) return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
+      const geometry = JSON.parse(geometryDataEl.textContent || '{}');
+      return {
+        geometry,
+        params: currentParamSchema ? resolveParamValues(currentParamSchema, currentParamValues) : {},
+      };
     },
 
     /** Slice current manifold at Z height. Returns cross-section data. */
@@ -4268,6 +4348,9 @@ async function main() {
         await switchLanguage(versionLang);
       }
       setValue(version.code);
+      // Restore this version's Customizer overrides before the re-run so it
+      // renders with the values it was saved at (matches loadVersionIntoEditor).
+      currentParamValues = { ...(version.paramValues ?? {}) };
       await runCodeSync(version.code);
       rehydrateColorRegions(version.geometryData);
       applyVersionAnnotations(version);
@@ -4343,7 +4426,7 @@ async function main() {
       }
 
       const thumbnail = await captureThumbnail();
-      const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes);
+      const version = await saveVersion(code, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues });
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
@@ -4462,7 +4545,7 @@ async function main() {
       const annotationsCarried = (parent.annotations?.length ?? 0) > 0;
 
       const thumbnail = await captureThumbnail();
-      const version = await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes);
+      const version = await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, assertions?.notes, { paramValues: currentParamValues });
 
       let diff = null;
       if (prevGeoData && prevGeoData.status === 'ok' && newGeoData.status === 'ok') {
@@ -7957,7 +8040,8 @@ async function main() {
     const myGen = ++_runGeneration;
     _running = true;
     const t0 = performance.now();
-    const result = await executeCodeAsync(src);
+    // Feed the Customizer's current overrides into the model's api.params(...).
+    const result = await executeCodeAsync(src, undefined, currentParamValues);
 
     // A newer runCodeSync was dispatched while we were awaiting the Worker.
     // Discard this result to prevent a stale version from overwriting the
@@ -7966,6 +8050,13 @@ async function main() {
 
     const elapsed = Math.round(performance.now() - t0);
     _running = false;
+
+    // Reconcile the Customizer with what the model declared this run. The
+    // schema rides on the result for both success and error, so the panel
+    // stays visible (and editable) even while the model is mid-error. Prune
+    // overrides to the keys the model still declares so values from a previous
+    // model don't linger, then reflect resolved values in the widgets.
+    syncParamsPanel(result.paramsSchema);
 
     if (result.error) {
       const diagnostics = result.diagnostics ?? [];

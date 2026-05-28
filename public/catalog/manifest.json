@@ -356,6 +356,27 @@
       "file": "coffee_mug.partwright.json",
       "language": "replicad",
       "description": "A white ceramic coffee mug with a colored rim band, painted coffee inside, and a curved torus handle — showcasing BREP's shell op + paint."
+    },
+    {
+      "id": "parametric-tray",
+      "name": "Parametric Storage Tray",
+      "file": "parametric_tray.partwright.json",
+      "language": "manifold-js",
+      "description": "Customizable rounded storage tray — adjust size, wall/floor thickness, corner style, and internal dividers via the Parameters panel."
+    },
+    {
+      "id": "parametric-knob",
+      "name": "Parametric Control Knob",
+      "file": "parametric_knob.partwright.json",
+      "language": "manifold-js",
+      "description": "Customizable control knob/dial — set diameter, height, grip count and style (knurled/fluted/smooth), center bore, and pointer via the Parameters panel."
+    },
+    {
+      "id": "parametric-vent-panel",
+      "name": "Parametric Vent Panel",
+      "file": "parametric_vent_panel.partwright.json",
+      "language": "manifold-js",
+      "description": "Customizable perforated honeycomb/vent panel — set size, thickness, cell size/shape (hex/square/round), wall, and an optional border frame via the Parameters panel."
     }
   ]
 }

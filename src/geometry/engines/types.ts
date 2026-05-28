@@ -35,8 +35,10 @@ export interface Engine {
   /** Is the engine initialized and ready? */
   isReady(): boolean;
   /** Run source code; return mesh + (optional) manifold handle or error.
-   * Requires init() to have completed — throws/errors if not ready. */
-  run(source: string): MeshResult;
+   * Requires init() to have completed — throws/errors if not ready.
+   * `paramOverrides` feeds the Customizer's tweaked values into the model's
+   * `api.params({...})` call (manifold-js only; other engines ignore it). */
+  run(source: string, paramOverrides?: Record<string, unknown>): MeshResult;
   /** Best-effort syntax/compile check. */
   validate(source: string): ValidateResult;
 }
