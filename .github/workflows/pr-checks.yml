@@ -1,20 +1,32 @@
 name: PR checks
 
-# Fast pre-merge feedback on PRs into main: type-check, production build, and
-# the unit tier. Deliberately NOT the e2e suite — the full e2e run is the
-# staging gate that fires after merge (see staging-gate.yml), keeping the main
-# preview a fast, pre-test deploy. This just stops type errors and obvious
-# breakage from reaching the main preview in the first place.
+# Pre-merge feedback on PRs into main: type-check, production build, unit
+# tests, and the full e2e suite. Build + unit gate the e2e matrix so we don't
+# burn shard minutes on a broken build.
+#
+# The e2e suite is CPU-bound (each test boots WASM in its own browser page),
+# so it runs SERIALLY within a runner (playwright.config.ts pins workers: 1)
+# and is parallelized across runners by sharding — contention-free, and the
+# wall-clock cost still drops ~3x.
+#
+# Agents driving a draft PR can subscribe to PR activity, wait for every
+# check here to go green, and then flip the PR to ready. The staging-gate
+# workflow re-runs the same suite after merge as the staging promotion gate.
 
 on:
   pull_request:
     branches: [main]
 
+# A new push to the PR branch supersedes an in-flight run for the same PR.
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
-  checks:
+  build-unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,3 +43,22 @@ jobs:
 
       - name: Unit tests
         run: npm run test:unit
+
+  e2e:
+    needs: build-unit
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: E2E tests (shard ${{ matrix.shard }}/3)
+        run: npx playwright test --shard=${{ matrix.shard }}/3

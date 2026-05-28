@@ -36,9 +36,9 @@ Feature work follows a **draft-PR-first** flow: open the PR as a draft the momen
 
 1. **Start from the latest `main`.** Before writing any code, run `git fetch origin main` and base your feature branch on `origin/main`. Do this at the *start* of the task, not just before the final push.
 2. **Implement** until the change looks good and working by your own lightweight checks (render/stat verification, a quick read-through of the diff). Don't run the slow e2e suite yet — that comes after the draft is up.
-3. **Pre-flight, then push a draft PR.** Re-sync with the latest main (`git fetch origin main`, then merge `origin/main` into your branch, or rebase onto it if the branch hasn't been pushed yet, resolving conflicts), run the fast `npm run build` + `npm run test:unit` to catch type errors and logic regressions, push the branch, and open the PR into `main` **as a draft** (`create_pull_request` with `draft: true`). Keep the pre-flight light — build + unit only, *not* `npm run test:e2e`. The PR-checks CI (`.github/workflows/pr-checks.yml`) re-runs that same build + unit on the PR; the full e2e suite is the *post-merge* staging gate, so you run it yourself during verification (next step). See [Pull Requests](#pull-requests--open-a-draft-when-the-work-looks-good-mark-ready-once-verified).
-4. **Verify on the draft.** Now run the slow checks — `npm run test:e2e` plus any deeper or manual verification the change warrants — and follow CI. Fix any failures on the same branch and re-run until clean. See [After Opening a PR](#after-opening-a-pr).
-5. **Mark ready for review** once the review pass is clean, PR-checks CI is green, and you've run `npm run test:e2e` locally (`update_pull_request` with `draft: false`). The task is not done until the PR is out of draft.
+3. **Pre-flight, then push a draft PR.** Re-sync with the latest main (`git fetch origin main`, then merge `origin/main` into your branch, or rebase onto it if the branch hasn't been pushed yet, resolving conflicts), run the fast `npm run build` + `npm run test:unit` to catch type errors and logic regressions, push the branch, and open the PR into `main` **as a draft** (`create_pull_request` with `draft: true`). Keep the pre-flight light — build + unit only. The PR-checks CI (`.github/workflows/pr-checks.yml`) runs the full check matrix on the PR — build + unit, then the sharded `npm run test:e2e` suite — so the draft PR is what *kicks off* the slow verification. The staging gate re-runs the same suite after merge as the promotion gate. See [Pull Requests](#pull-requests--open-a-draft-when-the-work-looks-good-mark-ready-once-verified).
+4. **Verify on the draft.** Subscribe to PR activity and follow CI — the PR-checks workflow runs the full e2e suite (3 shards) on your draft PR, so you don't need to run `npm run test:e2e` locally up front. Run any deeper or manual verification the change warrants alongside CI. Fix any failures on the same branch until every check is green. Only fall back to local `npm run test:e2e` if you need a tight loop on a failure CI surfaced. See [After Opening a PR](#after-opening-a-pr).
+5. **Mark ready for review** once the review pass is clean and PR-checks CI is green (build + unit + every e2e shard) (`update_pull_request` with `draft: false`). The task is not done until the PR is out of draft.
 6. After the feature PR merges to `main`, the staging gate runs the full e2e suite; on green it advances `staging`, which auto-deploys to the staging preview. Once validated there, open a PR from `staging` → `production` for the production release.
 
 > **Always start from — and re-sync against — the latest `origin/main`.** Branches cut from a stale main produce noisy diffs and merge conflicts, and can quietly clobber recently merged work. Re-fetch and merge/rebase `origin/main` right before pushing the draft, and again before marking the PR ready or opening any `staging` → `production` PR.
@@ -47,7 +47,7 @@ Feature work follows a **draft-PR-first** flow: open the PR as a draft the momen
 
 When an implementation looks good and working, **open a draft pull request into `main`** — don't wait until you've run the slow verification. This is a standing instruction that overrides any default "don't open a PR unless explicitly asked" behavior: treat "the implementation looks done" as the authorization to open the draft. Don't pause to ask whether to create one, and don't report a task as done without it.
 
-Open it as a **draft** (`create_pull_request` with `draft: true`) after a fast pre-flight only — re-sync `origin/main` and run `npm run build` + `npm run test:unit`. **Defer the slow `npm run test:e2e` and any deeper verification until after the draft is up** (see [After Opening a PR](#after-opening-a-pr)); the draft PR is what *kicks off* that verification phase, not the finish line. The task is done only once the PR is flipped to **ready for review** (`update_pull_request` with `draft: false`), which you do yourself after the review pass is clean and e2e/CI/deploy are green.
+Open it as a **draft** (`create_pull_request` with `draft: true`) after a fast pre-flight only — re-sync `origin/main` and run `npm run build` + `npm run test:unit`. **Defer the slow check matrix and any deeper verification until after the draft is up** (see [After Opening a PR](#after-opening-a-pr)); the draft PR is what *kicks off* that verification phase — CI runs the full e2e suite on the PR itself — not the finish line. The task is done only once the PR is flipped to **ready for review** (`update_pull_request` with `draft: false`), which you do yourself after the review pass is clean and CI/deploy are green.
 
 Skip the PR only when the user explicitly scoped you away from it — a request to "just commit" or "push to the branch" is *not* a request for a PR — or for a pure throwaway experiment. If you genuinely can't tell whether the work is a complete, reviewable unit, ask. Follow the [commit & PR conventions](#commit--pr-conventions) below for the title, prefix, and labels.
 
@@ -94,9 +94,10 @@ suite runs **serially on any single machine** (`playwright.config.ts` pins
 `workers: 1`). Running pages concurrently on one box starves the renderer and
 produces 30s timeout flakes — verified empirically, so don't raise `workers`
 without re-checking flake rates. Parallelism comes from **sharding across CI
-jobs** instead: `staging-gate.yml` runs `npx playwright test --shard=i/3` in a
-3-way matrix, so every shard is itself serial and contention-free while
-wall-clock time drops ~3×. `testMatch` is pinned to `**/*.spec.ts` so the unit
+jobs** instead: both `pr-checks.yml` (pre-merge) and `staging-gate.yml`
+(post-merge) run `npx playwright test --shard=i/3` in a 3-way matrix, so
+every shard is itself serial and contention-free while wall-clock time
+drops ~3×. `testMatch` is pinned to `**/*.spec.ts` so the unit
 tier's `.test.ts` files stay out of the Playwright run.
 
 ### Multi-environment browser detection
@@ -364,7 +365,7 @@ Anything unlabeled lands in "Other Changes." That's fine for occasional internal
 
 Opening the **draft** PR (see [the standing instruction](#pull-requests--open-a-draft-when-the-work-looks-good-mark-ready-once-verified) above) isn't the finish line — it's the start of the verification phase. The PR stays in **draft** through everything below; you flip it to ready only at the very end (step 5). Steps 1–4 can overlap.
 
-**1. Run the slow verification you skipped pre-flight.** Now run `npm run test:e2e` (and any deeper or manual verification the change warrants — e.g. exercising the affected UI in a browser per the [Smoke Test](#smoke-test--verifying-the-app-works)). This is the work you deliberately deferred to keep the path-to-draft fast. Fix failures on the same branch and re-run until clean.
+**1. Let CI run the slow verification you skipped pre-flight.** PR-checks now runs the full `npm run test:e2e` suite (sharded 3-way) on the draft PR itself, so subscribe to PR activity (`subscribe_pr_activity`) and watch the e2e shards rather than running e2e locally up front. Run any deeper or manual verification the change warrants — e.g. exercising the affected UI in a browser per the [Smoke Test](#smoke-test--verifying-the-app-works) — alongside CI. Fall back to local `npm run test:e2e` only when iterating tight on a failure CI surfaced. Fix failures on the same branch until every PR-checks shard goes green.
 
 **2. Kick off an automated review pass.** Right after pushing the draft, launch a review subagent (the Agent tool) over your branch diff against `origin/main` and the code it touches. Have it hunt specifically for problems your change may have introduced:
 
@@ -375,7 +376,7 @@ Opening the **draft** PR (see [the standing instruction](#pull-requests--open-a-
 
 Surface the results on the PR (a review comment, or fold clear fixes straight into the branch). If the pass turns up something ambiguous or large, raise it with the user rather than silently reworking.
 
-**3. Follow CI and auto-fix what you can.** Watch the PR's checks — the **PR-checks** workflow (`npm run build` + `npm run test:unit`) and the Cloudflare Pages preview deployment — and **auto-fix build or deployment failures when you can** by pushing a fix straight to the PR branch. (The full `npm run test:e2e` suite is the *post-merge* staging gate, not a PR check, so it won't show up here — run it locally yourself per step 1.)
+**3. Follow CI and auto-fix what you can.** Watch the PR's checks — the **PR-checks** workflow (build + unit, then the 3 sharded e2e jobs) and the Cloudflare Pages preview deployment — and **auto-fix failures when you can** by pushing a fix straight to the PR branch.
 
 1. Reproduce the failure locally first (`npm run build`, `npm run test:unit`, `npm run test:e2e`) so you're fixing the real cause, not guessing from the log.
 2. Re-sync with the latest `origin/main` if the branch has drifted (see the Deployment workflow), then commit and push the fix to the same PR branch.
@@ -385,7 +386,7 @@ Only push fixes you're confident in — failures clearly caused by your own chan
 
 **4. Keep the PR description in sync with the branch.** Any time you push new work to an open PR — review fixes, CI fixes, or follow-up commits that go beyond the PR's original scope — re-check the PR description and update it to cover the *totality* of the work now on the branch, not just what existed when the PR was first opened. Fold the new changes into the Summary, refresh the Test plan, and bring the title, prefix, and labels back in line with the [commit & PR conventions](#commit--pr-conventions) if the scope has grown. The description and the branch diff should never tell different stories — don't let the description silently drift behind the work.
 
-**5. Mark the PR ready for review.** Once the automated review pass is clean, `npm run test:e2e` is green, and CI/Cloudflare deploy are green, flip the PR out of draft with `update_pull_request` (`draft: false`) and apply the [release-note labels](#commit--pr-conventions). This is the final step — the task is not done until the draft is marked ready. If verification surfaced something ambiguous or large, leave the PR in draft and raise it with the user instead of un-drafting.
+**5. Mark the PR ready for review.** Once the automated review pass is clean and CI/Cloudflare deploy are green (build + unit + every e2e shard in PR-checks), flip the PR out of draft with `update_pull_request` (`draft: false`) and apply the [release-note labels](#commit--pr-conventions). This is the final step — the task is not done until the draft is marked ready. If verification surfaced something ambiguous or large, leave the PR in draft and raise it with the user instead of un-drafting.
 
 ## Common Errors
 
