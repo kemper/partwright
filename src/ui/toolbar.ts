@@ -30,6 +30,9 @@ export interface ToolbarCallbacks {
   /** Re-import a blob already held in the inbox (e.g. recent-imports re-click). */
   onImportInboxEntry: (entry: ImportInboxEntry) => void | Promise<void>;
   onLanguageSwitch: (lang: 'manifold-js' | 'scad' | 'replicad') => void;
+  /** "?" link next to the language toggle — opens a modal explaining
+   *  what each engine is best for. */
+  onLanguageHelp: () => void | Promise<void>;
   onGoHome: () => void;
 }
 
@@ -75,7 +78,7 @@ export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
 }
 
 /** File extensions accepted by the Import button and drag-and-drop. */
-export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl';
+export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp';
 
 let _autoRun = true;
 let _onAutoRunChange: ((on: boolean) => void) | null = null;
@@ -210,6 +213,19 @@ export function createToolbar(
   langGroup.appendChild(_langBtnScad);
   langGroup.appendChild(_langBtnBrep);
   toolbar.appendChild(langGroup);
+
+  // Help link next to the language toggle — "?" icon that opens a modal
+  // explaining what each engine is best for. Small footprint so it doesn't
+  // crowd the toolbar; the title attribute also reads as a hint if the user
+  // hovers without clicking.
+  const langHelpBtn = document.createElement('button');
+  langHelpBtn.type = 'button';
+  langHelpBtn.className = 'ml-1 w-5 h-5 rounded-full text-[10px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 border border-zinc-600 flex items-center justify-center transition-colors';
+  langHelpBtn.textContent = '?';
+  langHelpBtn.title = 'What language to pick?';
+  langHelpBtn.setAttribute('aria-label', 'Open language help');
+  langHelpBtn.addEventListener('click', () => { void callbacks.onLanguageHelp(); });
+  toolbar.appendChild(langHelpBtn);
 
   // Spacer
   const spacer = document.createElement('div');

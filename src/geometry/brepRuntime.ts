@@ -915,6 +915,59 @@ export type BrepLabelMap = Map<string, Set<number>>;
  *  the run ends. Module-level for the same reason as `brepAllocations`. */
 let pendingToManifoldLabels: BrepLabelMap[] = [];
 
+/** Imported BREP shapes the replicad engine should expose as `api.imports`
+ *  on the next run. Populated by the STEP import flow when the user picks
+ *  "BREP" as the import target. Persists across runs (cleared only when
+ *  the user explicitly drops them or starts a new session) since a typical
+ *  workflow is `return api.imports[0].fillet(2)` — repeated re-runs against
+ *  the same import.
+ *
+ *  Each entry pairs a friendly name (the source filename) with the parsed
+ *  shape, so the engine can mention it in error messages without leaking
+ *  raw replicad internals. */
+interface PendingBrepImport {
+  filename: string;
+  shape: BrepShape;
+}
+let pendingBrepImports: PendingBrepImport[] = [];
+
+/** Read a STEP / STP file blob and return a BrepShape ready for use inside
+ *  a replicad-language session (via `api.imports`) or for tessellation into
+ *  a manifold-js mesh. Lazy-loads OCCT — the first call pays the WASM
+ *  download. Returns the shape wrapped in our standard tracker so the engine
+ *  cleanup hooks free it like any other intermediate. */
+export async function parseStepBlob(blob: Blob): Promise<BrepShape> {
+  await ensureBrepLoaded();
+  if (!replicadModule) throw new Error('BREP runtime failed to load.');
+  // replicad's `importSTEP` opens the file with STEPControl_Reader, transfers
+  // roots, and returns a typed Shape — exactly what our wrapper expects.
+  const shape = await replicadModule.importSTEP(blob);
+  return wrap(shape);
+}
+
+/** Push an imported STEP shape so the replicad engine picks it up as
+ *  `api.imports[i]` on the next run. The shape is retained for the session;
+ *  call `clearPendingBrepImports` to drop it. */
+export function pushPendingBrepImport(filename: string, shape: BrepShape): void {
+  pendingBrepImports.push({ filename, shape });
+}
+
+/** Engine-side accessor: read the current pending import list (BrepShapes
+ *  the replicad sandbox should see as `api.imports`). Returns a stable
+ *  array reference until `clearPendingBrepImports` runs. */
+export function getPendingBrepImports(): ReadonlyArray<PendingBrepImport> {
+  return pendingBrepImports;
+}
+
+/** Drop all pending BREP imports. Called when the user opens a different
+ *  session or explicitly clears them. */
+export function clearPendingBrepImports(): void {
+  for (const { shape } of pendingBrepImports) {
+    try { shape.delete(); } catch { /* already freed */ }
+  }
+  pendingBrepImports = [];
+}
+
 /** Engine helper: take and clear the queued labelMaps from BREP.toManifold
  *  calls during the just-finished run. The manifold-js engine merges these
  *  into its own labelRegistry-derived map so `paintByLabel` finds them. */

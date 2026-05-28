@@ -22,7 +22,7 @@
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, simplifyInWorker, type Language } from './geometry/engine';
+import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, simplifyInWorker, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setOnMeshUpdate, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
@@ -75,6 +75,8 @@ import {
 } from './import/importInbox';
 import { showImportPreview, summarizeSessionImport } from './ui/importPreview';
 import { showImportTargetModal } from './ui/importTargetModal';
+import { showStepImportTargetModal } from './ui/stepImportTargetModal';
+import { showLanguageHelpModal } from './ui/languageHelpModal';
 import { showMergePartsModal } from './ui/mergePartsModal';
 import { parseSTL } from './import/parsers/stl';
 import { generateImportCode } from './import/codegen';
@@ -1499,15 +1501,15 @@ async function main() {
   async function handleImportFile(file: File, options: { skipPreActiveConfirm?: boolean } = {}): Promise<boolean> {
     const source = classifyImportSource(file.name);
     if (!source) {
-      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl`);
+      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl, .step / .stp`);
       return false;
     }
 
     // Raw code imports don't get a preview modal of their own — confirm before clobber.
     // JSON imports skip this confirm because the preview modal already serves as
-    // confirmation; STL imports skip it because the import-target modal lets the
-    // user choose a new part / current part / new session instead.
-    if (!options.skipPreActiveConfirm && source !== 'JSON' && source !== 'STL') {
+    // confirmation; STL and STEP imports skip it because their target modals let
+    // the user choose where the import should go.
+    if (!options.skipPreActiveConfirm && source !== 'JSON' && source !== 'STL' && source !== 'STEP') {
       const cur = getState();
       if (cur.session && cur.versionCount > 0) {
         const ok = await showInlineConfirm(
@@ -1534,6 +1536,8 @@ async function main() {
         if (parsed) {
           committed = await placeImportedMesh(parsed, file.name);
         }
+      } else if (source === 'STEP') {
+        committed = await handleStepImport(file);
       }
       if (committed) registerImport(file, file.name, source);
       return committed;
@@ -1548,6 +1552,64 @@ async function main() {
     /** True if Manifold.ofMesh() succeeded — supports boolean ops, paint, slicing.
      *  False if the user chose to import render-only after manifold construction failed. */
     isManifold: boolean;
+  }
+
+  /** Handle a `.step` / `.stp` import. The chooser modal asks the user
+   *  whether the file should land as exact BREP (default, recommended) or
+   *  as a tessellated manifold-js mesh. Each path then drives the same
+   *  downstream session-creation flow with a per-language starter so the
+   *  user can run the import immediately. Returns true iff a new session
+   *  was opened with the import in it. */
+  async function handleStepImport(file: File): Promise<boolean> {
+    const state = getState();
+    const hasWork = !!state.session && state.versionCount > 0;
+    const target = await showStepImportTargetModal({ filename: file.name, hasActiveSessionWithWork: hasWork });
+    if (target === null) return false;
+
+    const baseName = file.name.replace(/\.(step|stp)$/i, '');
+    if (target === 'brep') {
+      // Lazy-loads OCCT on the first call; subsequent imports are instant.
+      try {
+        await importSTEPToBrep(file, file.name);
+      } catch (e) {
+        alert(`Failed to parse STEP file: ${(e as Error).message}`);
+        return false;
+      }
+      // Switch the editor to the BREP language, open a fresh session named
+      // after the file, and seed the editor with the canonical "return the
+      // import" form so the user can iterate immediately. switchLanguage
+      // resets the editor to a stub starter; we overwrite that.
+      if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
+      await createSession(baseName, 'replicad');
+      const starter = `// Imported from ${file.name}\n// api.imports[0] is the BREP shape parsed from the STEP file.\nconst { BREP } = api;\nreturn api.imports[0];\n`;
+      setValue(starter);
+      runCode(starter);
+      return true;
+    }
+
+    // manifold-js path: parse + tessellate via the worker, then drop the
+    // mesh through the same path that STL imports use.
+    let mesh: MeshData;
+    try {
+      mesh = await importSTEPToMesh(file);
+    } catch (e) {
+      alert(`Failed to parse STEP file: ${(e as Error).message}`);
+      return false;
+    }
+    if (!mesh || mesh.numTri === 0) {
+      alert(`STEP file produced no geometry: ${file.name}`);
+      return false;
+    }
+    // Mirror STL flow: try to construct a Manifold from the tessellation so
+    // boolean / paint downstream tools work; fall back to render-only if
+    // the OCCT mesh isn't watertight.
+    const trial = tryConstructManifold(mesh);
+    const parsed: ParsedSTL = {
+      mesh: toImportedMesh(file.name, mesh),
+      isManifold: trial.ok,
+    };
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+    return placeImportedMesh(parsed, file.name);
   }
 
   /** Read an STL file, parse it, and verify Manifold.ofMesh() accepts the result.
@@ -1995,6 +2057,7 @@ async function main() {
     },
     onImportFile: async (file) => { await handleImportFile(file); },
     onImportInboxEntry: handleReimportInboxEntry,
+    onLanguageHelp: async () => { await showLanguageHelpModal(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad' | 'replicad') => {
       if (lang === getActiveLanguage()) return;
       // If current session has work, ask before switching

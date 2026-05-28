@@ -6,20 +6,26 @@
 //
 // Protocol — Main → Worker:
 //   { type: 'init' }
-//   { type: 'execute',         callId, code, lang?, imports? }
-//   { type: 'validate',        callId, code, lang? }
-//   { type: 'exportSTEP',      callId }
-//   { type: 'simplify',        callId, mesh, targetTriangles, maxTolerance }
-//   { type: 'simplify_cancel', callId }
+//   { type: 'execute',           callId, code, lang?, imports? }
+//   { type: 'validate',          callId, code, lang? }
+//   { type: 'exportSTEP',        callId }
+//   { type: 'importSTEPToBrep',  callId, bytes, filename }
+//   { type: 'importSTEPToMesh',  callId, bytes }
+//   { type: 'clearBrepImports',  callId }
+//   { type: 'simplify',          callId, mesh, targetTriangles, maxTolerance }
+//   { type: 'simplify_cancel',   callId }
 //
 // Protocol — Worker → Main:
 //   { type: 'ready' }
-//   { type: 'execute_result',     callId, mesh, error, diagnostics, labelMapEntries }
-//   { type: 'validate_result',    callId, result }
-//   { type: 'exportSTEP_result',  callId, blob, error }
-//   { type: 'simplify_progress',  callId, fraction }
-//   { type: 'simplify_result',    callId, mesh, triangleCount, tolerance, cancelled, error }
-//   { type: 'error',              callId, message }
+//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries }
+//   { type: 'validate_result',         callId, result }
+//   { type: 'exportSTEP_result',       callId, blob, error }
+//   { type: 'importSTEPToBrep_result', callId, filename, error }
+//   { type: 'importSTEPToMesh_result', callId, mesh, error }
+//   { type: 'clearBrepImports_result', callId, error }
+//   { type: 'simplify_progress',       callId, fraction }
+//   { type: 'simplify_result',         callId, mesh, triangleCount, tolerance, cancelled, error }
+//   { type: 'error',                   callId, message }
 //
 // Mesh typed arrays are transferred (zero-copy) to the main thread.
 // labelMap (Map<string, Set<number>>) is serialised as [string, number[]][].
@@ -27,7 +33,7 @@
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
 import { runScadAsync, openscadEngine } from './engines/openscad';
 import { runReplicadAsync, replicadEngine, getLastBrepShape } from './engines/replicad';
-import { ensureBrepLoaded, sourceUsesBrep } from './brepRuntime';
+import { ensureBrepLoaded, sourceUsesBrep, parseStepBlob, pushPendingBrepImport, clearPendingBrepImports } from './brepRuntime';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { setCircularSegmentsOverride } from './qualitySettings';
 import type { Language } from './engines/types';
@@ -322,6 +328,83 @@ self.onmessage = async (event: MessageEvent) => {
         type: 'exportSTEP_result',
         callId,
         blob: null,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
+  // ── importSTEPToBrep ────────────────────────────────────────────────────
+  // Parse a STEP file blob into a BrepShape and stash it on the worker's
+  // pending-BREP-imports list. The replicad-language engine exposes the
+  // list as `api.imports` on subsequent runs. Caller (the main thread)
+  // then switches the active language to 'replicad' and seeds the editor
+  // with `return api.imports[0];` so the user can immediately iterate.
+  if (msg.type === 'importSTEPToBrep') {
+    const { callId, bytes, filename } = msg as unknown as {
+      callId: string;
+      bytes: ArrayBuffer;
+      filename: string;
+    };
+    try {
+      const blob = new Blob([bytes]);
+      const shape = await parseStepBlob(blob);
+      pushPendingBrepImport(filename, shape);
+      self.postMessage({ type: 'importSTEPToBrep_result', callId, filename, error: null });
+    } catch (err) {
+      self.postMessage({
+        type: 'importSTEPToBrep_result',
+        callId,
+        filename,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
+  // ── importSTEPToMesh ────────────────────────────────────────────────────
+  // Same parser as above, but immediately tessellate the result so the
+  // main thread can land it through the existing ImportedMesh pipeline.
+  // The BrepShape itself is discarded — this path is for users who want
+  // to work with the import as mesh (paint, mesh-only ops). Tessellation
+  // is welded so manifold-3d's `Manifold.ofMesh` accepts it.
+  if (msg.type === 'importSTEPToMesh') {
+    const { callId, bytes } = msg as unknown as {
+      callId: string;
+      bytes: ArrayBuffer;
+    };
+    try {
+      const blob = new Blob([bytes]);
+      const shape = await parseStepBlob(blob);
+      const mesh = shape.toMesh();
+      try { shape.delete(); } catch { /* already freed */ }
+      // Transfer the typed-array buffers zero-copy back to the main thread.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (self as any).postMessage(
+        { type: 'importSTEPToMesh_result', callId, mesh, error: null },
+        [mesh.vertProperties.buffer, mesh.triVerts.buffer],
+      );
+    } catch (err) {
+      self.postMessage({
+        type: 'importSTEPToMesh_result',
+        callId,
+        mesh: null,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
+  // ── clearBrepImports ────────────────────────────────────────────────────
+  if (msg.type === 'clearBrepImports') {
+    const { callId } = msg as unknown as { callId: string };
+    try {
+      clearPendingBrepImports();
+      self.postMessage({ type: 'clearBrepImports_result', callId, error: null });
+    } catch (err) {
+      self.postMessage({
+        type: 'clearBrepImports_result',
+        callId,
         error: err instanceof Error ? err.message : String(err),
       });
     }

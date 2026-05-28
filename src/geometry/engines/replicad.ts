@@ -1,6 +1,6 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
-import { ensureBrepLoaded, getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, extractLabelMap, type BrepShape } from '../brepRuntime';
+import { ensureBrepLoaded, getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, extractLabelMap, getPendingBrepImports, type BrepShape } from '../brepRuntime';
 import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
 import { getActiveImports } from '../../import/importedMesh';
 
@@ -113,12 +113,17 @@ export async function runReplicadAsync(jsCode: string): Promise<MeshResult> {
     };
   }
 
-  // BREP sessions get the modelling surface, plus Manifold + CrossSection for
-  // convert/compose. `imports` is exposed for parity with manifold-js — a
-  // session that imports an STL into a BREP part should be able to reach
-  // `api.imports[i]` from its script the same way mesh sessions can. Curves
-  // are still omitted (mesh-native; confusing under "BREP language").
-  const imports = getActiveImports().map(m => ({
+  // BREP sessions get two parallel `imports`-like things:
+  //   - `api.imports[i]` — BrepShapes from STEP imports. These survive across
+  //     runs (the user iterates against `return api.imports[0].fillet(2)`).
+  //     This is the BREP-native import surface and the one most code reaches
+  //     for inside a replicad session.
+  //   - `api.meshImports[i]` — mesh data from STL imports (and any other
+  //     mesh-only sources). Kept under a separate name so the BREP-native
+  //     `api.imports` array isn't polluted with `{vertProperties, triVerts}`
+  //     objects the AI would have to special-case.
+  const brepImports = getPendingBrepImports().map(({ shape }) => shape);
+  const meshImports = getActiveImports().map(m => ({
     numProp: m.numProp,
     vertProperties: m.vertProperties,
     triVerts: m.triVerts,
@@ -128,7 +133,8 @@ export async function runReplicadAsync(jsCode: string): Promise<MeshResult> {
     BREP,
     Manifold,
     CrossSection: manifoldModule.CrossSection,
-    imports,
+    imports: brepImports,
+    meshImports,
   };
 
   // Same per-run BREP allocation drain pattern as the manifold-js engine —

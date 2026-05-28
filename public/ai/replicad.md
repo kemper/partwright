@@ -165,6 +165,24 @@ return BREP.box([20, 20, 20]).fillet(1, { minZ: 10, parallelToPlane: 'XY' });
 | `parallelToPlane: 'XY' \| 'XZ' \| 'YZ'` | Edges parallel to a standard plane (catches "horizontal" / "vertical" rings) |
 | `inDirection: [dx,dy,dz]` | Edges whose direction matches this axis (e.g. `[0,0,1]` for vertical edges) |
 
+### STEP file import
+
+Drag a `.step` / `.stp` file into the editor (or use Import → Choose file). A
+chooser asks whether to land it as **BREP (recommended)** or as a
+**manifold-js mesh**.
+
+- **BREP** lands the file as a `BrepShape` exposed at `api.imports[0]` inside
+  a fresh replicad-language session. Use it the same as any other shape —
+  fillet/chamfer/cut/fuse all work. The default starter is `return api.imports[0];` so you can iterate immediately.
+- **manifold-js** tessellates the STEP through OCCT and lands the mesh in
+  the regular `api.imports[0]` slot of a manifold-js session, the same way
+  STL imports work. Paint and mesh booleans apply. STEP-roundtrip is lost
+  at tessellation time.
+
+If you're given a STEP file as a reference and the user wants to refillet /
+re-machine / re-export it, pick BREP. Pick manifold-js only when the
+downstream work is mesh-specific (painting, vertex warps, etc.).
+
 ### Apply fillet BEFORE boolean cuts, when you can
 
 OCCT's fillet solver is sensitive to edge-graph complexity *after* boolean

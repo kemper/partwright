@@ -88,6 +88,9 @@ let callIdCounter = 0;
 const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void }>();
 const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => void; reject: (e: Error) => void }>();
 const pendingStepExports = new Map<string, { resolve: (blob: Blob | null) => void; reject: (e: Error) => void }>();
+const pendingStepBrepImports = new Map<string, { resolve: (filename: string) => void; reject: (e: Error) => void }>();
+const pendingStepMeshImports = new Map<string, { resolve: (mesh: MeshData) => void; reject: (e: Error) => void }>();
+const pendingClearBrepImports = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
 const pendingSimplifies  = new Map<string, {
   resolve: (r: SimplifyWorkerResult | null) => void;
   reject: (e: Error) => void;
@@ -100,10 +103,16 @@ function rejectAllPending(err: Error): void {
   for (const p of pendingExecutions.values()) p.reject(err);
   for (const p of pendingValidations.values()) p.reject(err);
   for (const p of pendingStepExports.values()) p.reject(err);
+  for (const p of pendingStepBrepImports.values()) p.reject(err);
+  for (const p of pendingStepMeshImports.values()) p.reject(err);
+  for (const p of pendingClearBrepImports.values()) p.reject(err);
   for (const p of pendingSimplifies.values()) p.reject(err);
   pendingExecutions.clear();
   pendingValidations.clear();
   pendingStepExports.clear();
+  pendingStepBrepImports.clear();
+  pendingStepMeshImports.clear();
+  pendingClearBrepImports.clear();
   pendingSimplifies.clear();
 }
 
@@ -196,6 +205,39 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     return;
   }
 
+  if (msg.type === 'importSTEPToBrep_result') {
+    const callId = msg.callId as string;
+    const pending = pendingStepBrepImports.get(callId);
+    if (!pending) return;
+    pendingStepBrepImports.delete(callId);
+    const error = msg.error as string | null;
+    if (error) { pending.reject(new Error(error)); return; }
+    pending.resolve(msg.filename as string);
+    return;
+  }
+
+  if (msg.type === 'importSTEPToMesh_result') {
+    const callId = msg.callId as string;
+    const pending = pendingStepMeshImports.get(callId);
+    if (!pending) return;
+    pendingStepMeshImports.delete(callId);
+    const error = msg.error as string | null;
+    if (error) { pending.reject(new Error(error)); return; }
+    pending.resolve(msg.mesh as MeshData);
+    return;
+  }
+
+  if (msg.type === 'clearBrepImports_result') {
+    const callId = msg.callId as string;
+    const pending = pendingClearBrepImports.get(callId);
+    if (!pending) return;
+    pendingClearBrepImports.delete(callId);
+    const error = msg.error as string | null;
+    if (error) { pending.reject(new Error(error)); return; }
+    pending.resolve();
+    return;
+  }
+
   if (msg.type === 'simplify_progress') {
     const callId = msg.callId as string;
     const pending = pendingSimplifies.get(callId);
@@ -236,6 +278,12 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingValidations.delete(callId ?? '');
       pendingStepExports.get(callId)?.reject(err);
       pendingStepExports.delete(callId ?? '');
+      pendingStepBrepImports.get(callId)?.reject(err);
+      pendingStepBrepImports.delete(callId ?? '');
+      pendingStepMeshImports.get(callId)?.reject(err);
+      pendingStepMeshImports.delete(callId ?? '');
+      pendingClearBrepImports.get(callId)?.reject(err);
+      pendingClearBrepImports.delete(callId ?? '');
       pendingSimplifies.get(callId)?.reject(err);
       pendingSimplifies.delete(callId ?? '');
     }
@@ -359,6 +407,73 @@ export async function exportLastBrepAsSTEP(): Promise<Blob | null> {
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
     engineWorker!.postMessage({ type: 'exportSTEP', callId });
+  });
+}
+
+/** Parse a STEP file and stash it on the worker's pending BREP import list.
+ *  Subsequent `replicad`-language runs will see it as `api.imports[0]`. The
+ *  blob is copied (zero-copy via transfer) into the worker; the main thread
+ *  doesn't hold the parsed shape itself. Resolves with the filename so the
+ *  caller can echo it in confirmation UI. */
+export async function importSTEPToBrep(blob: Blob, filename: string): Promise<string> {
+  initEngineWorker();
+  await workerReady;
+  const callId = `stepin-brep-${++callIdCounter}`;
+  const bytes = await blob.arrayBuffer();
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (pendingStepBrepImports.has(callId)) {
+        restartEngineWorker('STEP→BREP import timed out');
+      }
+    }, EXECUTE_TIMEOUT_MS);
+    pendingStepBrepImports.set(callId, {
+      resolve: (n) => { clearTimeout(timer); resolve(n); },
+      reject: (e) => { clearTimeout(timer); reject(e); },
+    });
+    engineWorker!.postMessage({ type: 'importSTEPToBrep', callId, bytes, filename }, [bytes]);
+  });
+}
+
+/** Parse a STEP file and tessellate it into a `MeshData` the caller can
+ *  feed through the normal STL-style import pipeline. The BREP source is
+ *  discarded — this path is for users who want the import as mesh (paint,
+ *  mesh-only ops). */
+export async function importSTEPToMesh(blob: Blob): Promise<MeshData> {
+  initEngineWorker();
+  await workerReady;
+  const callId = `stepin-mesh-${++callIdCounter}`;
+  const bytes = await blob.arrayBuffer();
+  return new Promise<MeshData>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (pendingStepMeshImports.has(callId)) {
+        restartEngineWorker('STEP→mesh import timed out');
+      }
+    }, EXECUTE_TIMEOUT_MS);
+    pendingStepMeshImports.set(callId, {
+      resolve: (m) => { clearTimeout(timer); resolve(m); },
+      reject: (e) => { clearTimeout(timer); reject(e); },
+    });
+    engineWorker!.postMessage({ type: 'importSTEPToMesh', callId, bytes }, [bytes]);
+  });
+}
+
+/** Drop any pending BREP imports. Called when the user opens a different
+ *  session or clears them explicitly. */
+export async function clearBrepImports(): Promise<void> {
+  initEngineWorker();
+  await workerReady;
+  const callId = `clearbrepin-${++callIdCounter}`;
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (pendingClearBrepImports.has(callId)) {
+        restartEngineWorker('clearBrepImports timed out');
+      }
+    }, EXECUTE_TIMEOUT_MS);
+    pendingClearBrepImports.set(callId, {
+      resolve: () => { clearTimeout(timer); resolve(); },
+      reject: (e) => { clearTimeout(timer); reject(e); },
+    });
+    engineWorker!.postMessage({ type: 'clearBrepImports', callId });
   });
 }
 
