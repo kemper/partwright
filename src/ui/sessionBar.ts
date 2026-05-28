@@ -9,6 +9,7 @@ import {
   navigateVersion,
   listCurrentVersions,
   renameSession,
+  effectiveVersionLanguage,
   type SessionState,
 } from '../storage/sessionManager';
 import { onChange as onColorRegionsChange } from '../color/regions';
@@ -108,9 +109,12 @@ function render(state: SessionState) {
   });
   barEl.appendChild(nameEl);
 
-  // Language badge
-  const langLabel = state.session.language === 'scad' ? 'SCAD' : 'JS';
-  const langColor = state.session.language === 'scad' ? 'text-amber-400 border-amber-400/30' : 'text-blue-400 border-blue-400/30';
+  // Language badge — reflects the CURRENT version's language (since schema
+  // 1.8 each version carries its own), falling back to the session's default
+  // for pre-1.8 versions and for fresh sessions with no current version.
+  const activeLang = effectiveVersionLanguage(state.currentVersion, state.session);
+  const langLabel = activeLang === 'scad' ? 'SCAD' : 'JS';
+  const langColor = activeLang === 'scad' ? 'text-amber-400 border-amber-400/30' : 'text-blue-400 border-blue-400/30';
   const langBadge = el('span', `text-[10px] font-semibold border rounded px-1 ${langColor}`, langLabel);
   barEl.appendChild(langBadge);
 
