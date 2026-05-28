@@ -42,6 +42,14 @@ export interface MeshResult {
    *  Resolved by walking `mesh.runOriginalID` + `runIndex`. Empty / absent
    *  when no labels were registered. */
   labelMap?: Map<string, Set<number>>;
+  /** Names that the user wrote `label("X")` for but didn't survive into
+   *  `labelMap`. Typical causes (SCAD): the label sat inside a `{ ... }`
+   *  block, so CGAL stripped provenance; a for-loop expanded one source
+   *  label into N anonymous AMF objects; the labelled component was rejected
+   *  as non-manifold. Surfaced so tools can show a "expected X but
+   *  paintByLabel("X") would fail" warning without forcing the caller to
+   *  diff the labelMap themselves. Absent / undefined when nothing was lost. */
+  lostLabels?: string[];
 }
 
 export interface CrossSectionResult {

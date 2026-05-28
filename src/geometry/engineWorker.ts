@@ -132,6 +132,7 @@ self.onmessage = async (event: MessageEvent) => {
       const labelMapEntries: [string, number[]][] | null = result.labelMap
         ? Array.from(result.labelMap.entries()).map(([k, v]) => [k, Array.from(v)])
         : null;
+      const lostLabels = result.lostLabels ?? null;
 
       const mesh = result.mesh;
       if (mesh) {
@@ -147,7 +148,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, lostLabels },
           transfer,
         );
       } else {
@@ -158,6 +159,7 @@ self.onmessage = async (event: MessageEvent) => {
           error: result.error,
           diagnostics: result.diagnostics ?? [],
           labelMapEntries: null,
+          lostLabels: null,
         });
       }
 

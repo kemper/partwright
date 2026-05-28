@@ -306,7 +306,7 @@ partwright.paintInBox({box, normalCone?, color, name?})                   // AAB
 partwright.paintInOrientedBox({box: {center, size, quaternion?}, color, smooth?, resolution?, maxEdge?})  // rotated box selector (same as UI Box tool); SMOOTH edges by default
 partwright.paintFaces({triangleIds, color, name?})                        // explicit triangle ids
 partwright.paintSlab({axis|normal, offset, thickness, color, name?, smooth?, resolution?, maxEdge?})  // planar range; SMOOTH edges by default
-partwright.paintByLabel({label, color, name?})                            // by api.label() name (manifold-js only)
+partwright.paintByLabel({label, color, name?})                            // by api.label() name (manifold-js) or top-level `label("name")` (SCAD)
 partwright.paintByLabels([{label, color, name?}, ...])                    // batch sibling
 partwright.paintComponent({index, color, name?, topOnly?})                // by listComponents() index
 partwright.paintPreview({...selector, withImage?, view?})                 // dry-run

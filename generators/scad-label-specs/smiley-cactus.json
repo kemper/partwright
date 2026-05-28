@@ -1,0 +1,22 @@
+{
+  "slug": "smiley-cactus",
+  "name": "Smiley Cactus",
+  "description": "A cheerful potted saguaro with two upraised arms, a pink flower bud on its crown, and two little black bead eyes — sitting in a flared terracotta pot with rim and soil.",
+  "scadCode": "module label(name) { children(); }\n\n$fn = 20;\n\n// Terracotta pot — flared truncated cone sitting on the build plate.\nlabel(\"pot\") cylinder(h = 14, r1 = 9, r2 = 11, $fn = 32);\n\n// Pot rim — a slightly wider thin disc capping the pot.\nlabel(\"rim\") translate([0, 0, 14]) cylinder(h = 1.6, r = 11.8, $fn = 32);\n\n// Soil — dark disc resting just inside the rim.\nlabel(\"soil\") translate([0, 0, 14.2]) cylinder(h = 0.4, r = 10.5, $fn = 32);\n\n// Cactus body — a stout vertical capsule (cylinder + dome on top).\nlabel(\"body\") translate([0, 0, 14.6]) union() {\n  cylinder(h = 22, r = 5, $fn = 24);\n  translate([0, 0, 22]) sphere(r = 5, $fn = 20);\n}\n\n// Right arm — short branch with a rounded tip.\nlabel(\"arm-r\") translate([3.6, 0, 24]) rotate([0, 50, 0]) union() {\n  cylinder(h = 8, r = 2.2, $fn = 18);\n  translate([0, 0, 8]) sphere(r = 2.2, $fn = 16);\n}\n\n// Left arm — mirror of the right, slightly higher and shorter.\nlabel(\"arm-l\") translate([-3.6, 0, 28]) rotate([0, -45, 0]) union() {\n  cylinder(h = 6.5, r = 2.0, $fn = 18);\n  translate([0, 0, 6.5]) sphere(r = 2.0, $fn = 16);\n}\n\n// Pink flower bud perched on top of the cactus.\nlabel(\"flower\") translate([0, 0, 32]) sphere(r = 1.8, $fn = 18);\n\n// Smiley eyes — two tiny black spheres on the front of the body.\nlabel(\"eyes\") union() {\n  translate([-1.8, -4.7, 22]) sphere(r = 0.55, $fn = 12);\n  translate([ 1.8, -4.7, 22]) sphere(r = 0.55, $fn = 12);\n}\n",
+  "paintCalls": [
+    { "label": "pot",    "color": [0.80, 0.40, 0.25] },
+    { "label": "rim",    "color": [0.72, 0.34, 0.20] },
+    { "label": "soil",   "color": [0.30, 0.20, 0.12] },
+    { "label": "body",   "color": [0.30, 0.62, 0.30] },
+    { "label": "arm-r",  "color": [0.30, 0.62, 0.30] },
+    { "label": "arm-l",  "color": [0.30, 0.62, 0.30] },
+    { "label": "flower", "color": [0.95, 0.55, 0.78] },
+    { "label": "eyes",   "color": [0.08, 0.08, 0.08] }
+  ],
+  "triangleCount": 1760,
+  "feedback": [
+    "Original whimsy subagent attempt timed out: a fairy mushroom house using hull-of-disks for the stem, difference() for the doorway, and intersection-with-slab for the cap — three CGAL-heavy ops + 7 labels — exceeded a 5-minute per-task ceiling. Replaced with an all-additive cactus that compiles in seconds. The label-aware path is fine; the underlying CGAL backend slows nonlinearly when many top-level statements use heavy CSG, which agents should be warned about up front: 'lazy-union splits, but each statement still runs through CGAL — keep individual statements light.'",
+    "Per-statement compile cost isn't surfaced anywhere. A timing breakdown per labelled region in `runScadAsync`'s return value would let agents see WHICH statement is slow and fix that one, rather than blanket-reducing $fn across the whole model.",
+    "The 'lazy-union splits top-level statements' optimization works, but the AMF round-trip seems to inflate triangle counts at high $fn (a single $fn=32 sphere went from ~1024 expected tris to ~9k in the labelled path's mesh output). Worth a closer look — possibly the merge-vector welding isn't happening on per-object meshes before compose."
+  ]
+}

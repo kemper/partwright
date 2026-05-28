@@ -239,6 +239,34 @@
       "description": "A stackable storage bin with two compartments, rounded corners, and stacking lugs. Built with BOSL2's cuboid(rounding=) for filleted edges, plus translate-and-anchor cyl() placement for the lugs."
     },
     {
+      "id": "rangefinder-camera",
+      "name": "Vintage Rangefinder Camera",
+      "file": "rangefinder_camera.partwright.json",
+      "language": "scad",
+      "description": "A classic 35mm rangefinder camera with a chrome top plate, leatherette body, a fixed lens with a dark recessed front element, twin viewfinder windows, a brass shutter release, and a wind-lever knob."
+    },
+    {
+      "id": "smiley-cactus",
+      "name": "Smiley Cactus",
+      "file": "smiley_cactus.partwright.json",
+      "language": "scad",
+      "description": "A cheerful potted saguaro with two upraised arms, a pink flower bud on its crown, and two little black bead eyes — sitting in a flared terracotta pot with rim and soil."
+    },
+    {
+      "id": "studio-microphone",
+      "name": "Studio Microphone",
+      "file": "studio_microphone.partwright.json",
+      "language": "scad",
+      "description": "Classic large-diaphragm studio condenser microphone cradled in a U-shaped shock-mount yoke on a weighted desktop stand, with a coiled cable looping back to the base."
+    },
+    {
+      "id": "vintage-biplane",
+      "name": "Vintage Biplane",
+      "file": "vintage_biplane.partwright.json",
+      "language": "scad",
+      "description": "A WW1-era biplane with stacked canvas wings, a tapered fuselage, a yellow engine cowling, a two-blade wooden propeller, and a swept tail fin."
+    },
+    {
       "id": "pipe-flange",
       "name": "Pipe Flange",
       "file": "pipe_flange.partwright.json",
