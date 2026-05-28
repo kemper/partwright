@@ -5,7 +5,7 @@
 
 const MAX_ENTRIES = 10;
 
-export type ImportSource = 'JSON' | 'JS' | 'SCAD' | 'STL';
+export type ImportSource = 'JSON' | 'JS' | 'SCAD' | 'STL' | 'STEP';
 
 export interface ImportInboxEntry {
   id: string;
@@ -71,5 +71,6 @@ export function classifyImportSource(filename: string): ImportSource | null {
   if (lower.endsWith('.scad')) return 'SCAD';
   if (lower.endsWith('.js')) return 'JS';
   if (lower.endsWith('.stl')) return 'STL';
+  if (lower.endsWith('.step') || lower.endsWith('.stp')) return 'STEP';
   return null;
 }

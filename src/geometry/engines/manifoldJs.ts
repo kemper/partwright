@@ -4,6 +4,7 @@ import { createCurvesNamespace } from '../curves';
 import { createMeshOpsNamespace } from '../meshOps';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
+import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels } from '../brepRuntime';
 
 /** Marker the sandbox attaches to render-only proxies (see `renderMesh` below).
  *  The engine looks for it on the user-returned object to decide whether the
@@ -187,10 +188,18 @@ export const manifoldJsEngine: Engine = {
       triVerts: m.triVerts,
     }));
 
+    // `BREP` is only present when the engine Worker has lazy-loaded
+    // OpenCASCADE.js — otherwise the namespace is undefined and the user
+    // sees a normal "BREP is not defined" ReferenceError if they touch it
+    // without the loader having run. The pre-scan in engineWorker.ts
+    // (`sourceUsesBrep(code)`) is what triggers the load.
+    const BREP = getBrepNamespace();
+
     const api = {
       Manifold,
       CrossSection,
       Curves: curvesNamespace,
+      BREP,
       meshOps: meshOpsNamespace,
       // Flat aliases for the most-used meshOps verbs — agents reach for shorter
       // names like `api.intersects(a,b)` and `api.placeOn(part, table)` much more
@@ -242,6 +251,20 @@ export const manifoldJsEngine: Engine = {
         diagnostics: runtimeDiagnostic(error, 'Remove the partwright.* call from the model code and invoke paint tools separately.', 'JavaScript'),
       };
     }
+    // Bare `exportSTEP(` — same misconception as `partwright.exportSTEP`
+    // but without the prefix the agent sometimes drops. Caught here too
+    // (in addition to the BREP engine) because a manifold-js sandbox might
+    // reach for BREP via `api.BREP` and then assume `exportSTEP` is on the
+    // namespace, when it's actually a top-level tool call.
+    if (/\bexportSTEP\s*\(/.test(jsCode)) {
+      const error = 'exportSTEP is a tool call (partwright.exportSTEP), not a sandbox API. Call it AFTER runAndSave returns — between tool calls — not from inside the model code. Note: STEP export only works in the replicad (BREP) language session, not from manifold-js.';
+      return {
+        mesh: null,
+        manifold: null,
+        error,
+        diagnostics: runtimeDiagnostic(error, 'Remove the exportSTEP() call from the model code; invoke partwright.exportSTEP() after the run completes (in a BREP session).', 'JavaScript'),
+      };
+    }
 
     let result: InstanceType<typeof Manifold> | null = null;
 
@@ -279,7 +302,15 @@ export const manifoldJsEngine: Engine = {
       }
 
       const mesh = result.getMesh();
-      const labelMap = resolveLabelMap(mesh, labelRegistry);
+      // Merge any BREP-side labels that flowed through `BREP.toManifold(...)`
+      // calls during this run. Each call queued a `Map<label, Set<triangleId>>`
+      // built against the welded BREP tessellation — the same mesh-data we
+      // then handed to `Manifold.ofMesh`. As long as the user didn't run
+      // further booleans on the resulting Manifold (which would remap
+      // triangle ids), the ids are still valid in the final mesh. If the
+      // same label name comes from both BREP and an `api.label` call, the
+      // triangle sets union — friendliest answer.
+      const labelMap = mergeLabelMaps(resolveLabelMap(mesh, labelRegistry), consumeBrepToManifoldLabels());
       // Render-only proxies (from `api.renderMesh`) carry the marker so we can
       // signal downstream "this isn't a real Manifold — skip volume/genus/slice".
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -332,6 +363,15 @@ export const manifoldJsEngine: Engine = {
       // main.ts deletes it after querying volume/bbox).
       restoreMethods(savedMethods);
       disposeAllExcept(allocated, result);
+      // BREP shapes don't pass through Manifold.* / CrossSection.* method
+      // wrapping (they're created by `BREP.box(...).fillet(...)` chains
+      // against a separate namespace), so they accumulate in their own list.
+      // Drain it here so the editor's auto-run keystroke loop doesn't leak
+      // OCCT shapes on every keystroke. The user's `result` is also spared in
+      // case they returned a BrepShape directly without going through
+      // BREP.toManifold (uncommon — the manifold-js engine rejects non-
+      // Manifold returns above — but defensive).
+      disposeBrepAllocationsExcept(consumeBrepAllocations(), result);
     }
   },
 
@@ -350,6 +390,30 @@ export const manifoldJsEngine: Engine = {
     }
   },
 };
+
+/** Union-merge any number of `Map<label, Set<triangleId>>` into a single
+ *  map. The primary use case is folding BREP `BREP.toManifold` labels in
+ *  alongside manifold-js `api.label` labels so `paintByLabel` sees both —
+ *  see the run() caller. Returns `undefined` only when every input was
+ *  undefined / empty (keeps the existing "no labels this run" sentinel). */
+function mergeLabelMaps(
+  primary: Map<string, Set<number>> | undefined,
+  extras: ReadonlyArray<Map<string, Set<number>>>,
+): Map<string, Set<number>> | undefined {
+  if (extras.length === 0) return primary;
+  const out: Map<string, Set<number>> = primary ?? new Map();
+  for (const m of extras) {
+    for (const [name, tris] of m) {
+      let set = out.get(name);
+      if (!set) {
+        set = new Set<number>();
+        out.set(name, set);
+      }
+      for (const t of tris) set.add(t);
+    }
+  }
+  return out.size === 0 ? undefined : out;
+}
 
 /** Walk the result mesh's `runOriginalID` + `runIndex` arrays and bucket
  *  triangles by the human-readable name registered for each id at

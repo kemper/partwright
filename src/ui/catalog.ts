@@ -4,6 +4,7 @@
 
 import type { ExportedSession } from '../storage/sessionManager';
 import { partwrightMarkSvg } from './brand';
+import { languageBadge } from './languageBadge';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
 
 export interface CatalogManifestEntry {
@@ -16,7 +17,7 @@ export interface CatalogManifestEntry {
   /** Path (relative to /catalog/) of the .partwright.json file. */
   file: string;
   /** Optional language hint for the badge before the JSON loads. */
-  language?: 'manifold-js' | 'scad';
+  language?: 'manifold-js' | 'scad' | 'replicad';
 }
 
 interface CatalogManifest {
@@ -192,11 +193,10 @@ function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLEleme
   const meta = document.createElement('div');
   meta.className = 'text-[10px] text-zinc-500 mt-1.5 flex items-center gap-2';
   const lang = loaded.payload?.session.language ?? loaded.manifest.language ?? 'manifold-js';
-  const langLabel = lang === 'scad' ? 'SCAD' : 'JS';
-  const langColor = lang === 'scad' ? 'text-amber-400 border-amber-400/30' : 'text-blue-400 border-blue-400/30';
+  const badge = languageBadge(lang);
   const langBadge = document.createElement('span');
-  langBadge.className = `font-semibold border rounded px-1 ${langColor}`;
-  langBadge.textContent = langLabel;
+  langBadge.className = `font-semibold border rounded px-1 ${badge.classes}`;
+  langBadge.textContent = badge.label;
   meta.appendChild(langBadge);
 
   if (loaded.error) {

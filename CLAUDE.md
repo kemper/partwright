@@ -232,12 +232,17 @@ Key rules:
 
 Static site, no backend. Vanilla TypeScript + Vite.
 
-- `src/geometry/engine.ts` — manifold-3d WASM init + code execution
+- `src/geometry/engine.ts` — Engine dispatcher + Worker client. Owns the `engines` registry (`manifold-js`, `scad`, `replicad`) and routes `executeCode*` calls to the right engine on the Worker side.
+- `src/geometry/engineWorker.ts` — The Worker. Lazy-inits each non-default engine on first use and dispatches `execute` / `validate` / `exportSTEP` messages.
+- `src/geometry/engines/manifoldJs.ts` — manifold-3d sandbox. Exposes `api = { Manifold, CrossSection, Curves, BREP, ... }` to user code. `BREP` is `null` until `ensureBrepLoaded()` runs in the Worker (triggered by `sourceUsesBrep(code)`).
+- `src/geometry/engines/openscad.ts` — OpenSCAD WASM via `openscad-wasm-prebuilt`, lazy-loaded on first SCAD session.
+- `src/geometry/engines/replicad.ts` — BREP/replicad engine for full BREP-language sessions. The returned BREP shape is retained in `lastShape` so `exportSTEP` can grab it. Imported STEP files appear in `api.imports[0]` as `BrepShape` (separate from `api.meshImports` for STL); the pending-imports list lives in `brepRuntime.ts` so it survives across runs.
+- `src/geometry/brepRuntime.ts` — Lazy loader + chainable `BrepShape` wrapper. The single source of truth for "is OCCT loaded?" and `getBrepNamespace()` — used by both the manifold-js sandbox (Phase C — `api.BREP.*`) and the replicad engine (Phase A — full BREP session). Also houses `parseStepBlob` and the pending-BREP-imports side-channel used by the STEP import flow.
 - `src/renderer/viewport.ts` — Three.js interactive viewport
 - `src/renderer/multiview.ts` — Offscreen multi-angle render API (`renderViews`/`renderView`/`renderCompositeCanvas` for thumbnails)
 - `src/editor/codeEditor.ts` — CodeMirror editor
 - `src/ui/layout.ts` — Split-pane layout
-- `src/ui/toolbar.ts` — Top toolbar
+- `src/ui/toolbar.ts` — Top toolbar (JS / SCAD / BREP language toggle)
 - `src/ui/commandPalette.ts` — Command palette (⌘K/Ctrl+K): action registry + searchable overlay
 - `src/ui/shortcutsOverlay.ts` — `?` keyboard cheat sheet (renders `shortcutDefs`)
 - `src/geometry/crossSection.ts` — Z-slice to SVG/polygons
@@ -248,6 +253,34 @@ Static site, no backend. Vanilla TypeScript + Vite.
 - `src/import/parsers/stl.ts` — STL import (binary + ASCII)
 - `src/import/codegen.ts` — Generates `Manifold.ofMesh(api.imports[i])` wrapper code
 - `src/import/importedMesh.ts` — Active-imports register exposed to the sandbox as `api.imports`
+
+### Modeling engines (three of them)
+
+Partwright supports three language/engine pairs. The mesh-side pipeline below the engine boundary (painting, render, ray-cast, export, queries) is engine-agnostic — anything new that lives there works across all three.
+
+| Language | Engine | Kernel | Unique features |
+|---|---|---|---|
+| `manifold-js` (default) | manifold-3d | mesh | `warp`, `levelSet`, `smoothOut`, `Curves` helpers, fast booleans on weird shapes |
+| `scad` | OpenSCAD via `openscad-wasm-prebuilt` | CSG | BOSL2 (`threaded_rod`, `spur_gear`, `cuboid(rounding=)`, …) |
+| `replicad` | OpenCASCADE via `replicad-opencascadejs` | BREP | True selective edge fillets/chamfers, STEP export, exact surfaces |
+
+**Two ways to reach BREP** — these are deliberately complementary, not competing:
+
+- **Phase C — `api.BREP.*` inside a manifold-js session.** The BREP namespace is exposed as a sandbox value whenever the user's code mentions `BREP` (detected by `sourceUsesBrep(code)` in `engineWorker.ts`). The Worker calls `ensureBrepLoaded()` before evaluation, and the loaded namespace flows into `api.BREP` via `getBrepNamespace()` inside `manifoldJs.ts`. BREP shapes inside this path get tessellated via `BREP.toManifold(shape, Manifold)` and the BREP source is discarded. Use this when one feature needs an exact fillet inside an otherwise mesh-native model. No STEP export from this path.
+- **Phase A — full `replicad`-language sessions.** Selected via `setActiveLanguage('replicad')` or the toolbar's BREP toggle. Code must `return` a `BrepShape` from `api.BREP.*`. The engine (`src/geometry/engines/replicad.ts`) tessellates the result for the viewport but *retains* the BREP shape in module-scoped `lastShape` so `partwright.exportSTEP()` (round-tripped through the Worker via the `exportSTEP` message) can serialize it.
+
+### Lazy WASM loading
+
+The user pays for a non-default engine only when they reach for it:
+
+- **manifold-3d** — eager-loaded on app boot (the round-trip `Manifold.ofMesh` is needed for SCAD/BREP output, paint persistence, and slicing).
+- **OpenSCAD** — `await import('openscad-wasm-prebuilt')` inside `openscadEngine.init()`. Triggered on first SCAD session open or first SCAD run in the Worker.
+- **OpenCASCADE / replicad** — `await import('replicad')` + `await import('replicad-opencascadejs/...')` inside `ensureBrepLoaded()` in `src/geometry/brepRuntime.ts`. Triggered (a) in any manifold-js run whose code mentions `BREP`, or (b) on first replicad-language session run.
+- **WebLLM** — `await import('@mlc-ai/web-llm')` inside `src/ai/local.ts`. Triggered on first local-model use.
+
+Each loader is idempotent and caches the resolved module. Vite splits each one into its own chunk (verify by inspecting `npm run build` output — the OCCT WASM lands as `replicad_single-*.wasm` (~10 MB) outside the main bundle).
+
+When adding a new lazy-loaded module, follow `brepRuntime.ts`'s pattern: one `ensureXLoaded()` promise that's cached after success and cleared on failure so the next call retries.
 
 ## Coordinate System
 

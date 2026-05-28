@@ -1,6 +1,6 @@
 # Partwright -- AI Agent Instructions
 
-Partwright is a browser-based parametric CAD tool with two modeling engines: **manifold-js** (default, JavaScript DSL with manifold-3d API + a `Curves` helper namespace) and **OpenSCAD** (SCAD language via WASM, with BOSL2 bundled). You write code that constructs 3D geometry, which renders live. All interaction is via the `window.partwright` programmatic API -- do not drive the app through clicks or keystrokes. `window.mainifold` remains available as a legacy alias for older prompts.
+Partwright is a browser-based parametric CAD tool with three modeling engines: **manifold-js** (default, JavaScript DSL with manifold-3d API + a `Curves` helper namespace), **OpenSCAD** (SCAD language via WASM, with BOSL2 bundled), and **BREP / replicad** (JavaScript with `api.BREP.*` — OpenCASCADE B-rep for exact fillets/chamfers and STEP export). You write code that constructs 3D geometry, which renders live. All interaction is via the `window.partwright` programmatic API -- do not drive the app through clicks or keystrokes. `window.mainifold` remains available as a legacy alias for older prompts.
 
 **Coordinate system:** Right-handed, Z-up. XY plane is the ground. Units are arbitrary.
 
@@ -35,22 +35,26 @@ Partwright is a browser-based parametric CAD tool with two modeling engines: **m
 
 ## Choosing an engine
 
-Partwright supports two modeling engines. Pick whichever is best for the task:
+Partwright supports three modeling engines. Pick whichever is best for the task:
 
-| | **manifold-js** (default) | **OpenSCAD** (SCAD) |
-|---|---|---|
-| Language | JavaScript | OpenSCAD `.scad` |
-| Best for | Algorithmic geometry, smooth curves (with `Curves` helpers), mesh-level operations (smooth/refine/SDF/warp) | Mechanical parts with rounding/chamfer/threads (with BOSL2), porting existing `.scad` files |
-| Code style | `return Manifold.cube([10,10,10], true);` | `cube([10,10,10], center=true);` |
-| Unique strengths | `Curves.loft`, `Curves.sweep`, `Curves.naca4`; `levelSet`, `warp`, `smoothOut` (mesh-level) | BOSL2's `cuboid(rounding=)`, `skin()`, `path_sweep()`, `threaded_rod()`, `spur_gear()` |
-| Limitations | Must learn the manifold-3d API | No `text()` (fonts not loaded), slower per-run (~100-300ms WASM init) |
+| | **manifold-js** (default) | **OpenSCAD** (SCAD) | **BREP / replicad** |
+|---|---|---|---|
+| Language | JavaScript | OpenSCAD `.scad` | JavaScript (`api.BREP.*`) |
+| Kernel | manifold-3d mesh | OpenSCAD CSG | OpenCASCADE B-rep |
+| Best for | Algorithmic geometry, smooth curves, mesh-level ops (`warp`/`levelSet`/`smoothOut`), painting | Mechanical parts with BOSL2 (threads, gears, attachables), porting existing `.scad` files | True edge fillets/chamfers, exact surfaces, STEP export, mechanical-CAD interop |
+| Code style | `return Manifold.cube([10,10,10], true);` | `cube([10,10,10], center=true);` | `return BREP.box([10,10,10]).fillet(2);` |
+| Unique strengths | `Curves.loft/sweep/naca4`; `levelSet`/`warp`/`smoothOut` (mesh-level) | BOSL2's `cuboid(rounding=)`, `skin()`, `path_sweep()`, `threaded_rod()`, `spur_gear()` | Exact `fillet()`/`chamfer()`, `.blobSTEP()` export, BREP shapes survive across runs |
+| Limitations | Must learn the manifold-3d API | No `text()` (fonts not loaded), slower per-run (~100-300ms WASM init) | No `warp`/`levelSet`; no `Curves` helpers; 10 MB WASM lazy-load on first use |
+
+**Crucial:** You can ALSO use the BREP namespace **inside a manifold-js session** without switching languages — `api.BREP.box(...).fillet(r)`, then `api.BREP.toManifold(shape, api.Manifold)` to drop back into the Manifold world. This is the right move for "one feature needs an exact fillet" without committing to a BREP-only session. Switch to the **replicad** language only when you need STEP export of the *combined* shape, or when the part is dominated by BREP operations. See `/ai/replicad.md` for the full BREP API.
 
 ### Switching engines
 
 ```js
-partwright.getActiveLanguage()        // -> 'manifold-js' or 'scad'
+partwright.getActiveLanguage()        // -> 'manifold-js' or 'scad' or 'replicad'
 await partwright.setActiveLanguage('scad')
 await partwright.setActiveLanguage('manifold-js')
+await partwright.setActiveLanguage('replicad')
 ```
 
 Switching is non-destructive. Your in-progress code in the previous language is stashed as a per-session draft and restored when you switch back — both languages stay live until the session is deleted. Saved versions are not touched; each version remembers the language it was authored in, and navigating to one auto-swaps the engine. A single session can hold mixed manifold-js + SCAD versions.
@@ -61,36 +65,53 @@ Selecting a SCAD example from the toolbar dropdown auto-switches to OpenSCAD mod
 
 Reach for the right tool the first time. If the table sends you to a subdoc, fetch it before writing code.
 
-| Want | manifold-js | OpenSCAD |
-|---|---|---|
-| Cube / sphere / cylinder | `Manifold.cube/sphere/cylinder(...)` | `cube()`, `sphere()`, `cylinder()` |
-| Boolean union / difference / intersection | `.add(o)`, `.subtract(o)`, `.intersect(o)` | `union(){...}`, `difference(){...}`, `intersection(){...}` |
-| 2D shape extruded to 3D | `cs.extrude(h, nDiv?, twist?, scaleTop?)` | `linear_extrude(h, twist=, slices=, scale=) polygon(...)` |
-| Surface of revolution (vase, lens, bottle) | `cs.revolve(n?, degrees?)` | `rotate_extrude(angle=) polygon(...)` |
-| Smooth curve from a few points | `Curves.bezier(controls)` -> `/ai/curves.md` | `bezier_curve()` (BOSL2) -> `/ai/bosl2.md` |
-| Arc between two points | `Curves.arc({from, to, radius})` | `arc()` (BOSL2) |
-| Airfoil cross-section | `Curves.naca4("2412")` | (write your own with BOSL2 paths) |
-| Polygon with rounded corners | `Curves.polyline(points, {fillet: r})` | BOSL2 `round_corners(...)` |
-| Wing, hull, fuselage (varying profile along axis) | `Curves.loft([profA, profB], [zA, zB])` -> `/ai/curves.md` | BOSL2 `skin([profiles], z=, slices=)` -> `/ai/bosl2.md` |
-| Handle, tube, propeller (profile along 3D path) | `Curves.sweep(profile, pathPoints)` | BOSL2 `path_sweep(profile, path)` |
-| Revolve around an arbitrary axis | `Curves.revolveAxis(profile, [ax,ay,az])` | `rotate([...]) rotate_extrude() polygon()` |
-| Round/chamfer all sharp edges of a solid | `Curves.fillet(solid, {angle: 60})` | BOSL2 `cuboid(rounding=...)`, `round3d(...)` |
-| Ring/linear/mirror copies | `api.circularPattern / linearPattern / mirrorCopy` (or `Curves.ringCopy / linearCopy / mirrorCopy`) | BOSL2 `ring_copies()`, `xcopies()`, `mirror_copy()` |
-| Place A on top of B (no mental trig) | `api.placeOn(a, b, {gap?, at?})` | BOSL2 attachments: `attach(TOP, BOTTOM)` |
-| Align A's edge/face to B (per axis) | `api.alignTo(a, b, {x?, y?, z?})` (min/max/center) | BOSL2 `position()`/`anchor()` |
-| Do two shapes overlap? Volume change? | `api.intersects(a, b)`, `api.volumeDelta(a, b)` | (no equivalent; render and check stats) |
-| Is a point inside the solid? | `api.pointInside(m, [x,y,z])` | (no equivalent) |
-| Did my boolean give the expected component count? | `api.expectUnion(parts, {expectComponents})` | (no equivalent — check stats `componentCount` after run) |
-| Per-piece bbox + volume (find leaked components) | `api.componentBounds(m)` or window `partwright.componentBounds()` | `partwright.componentBounds()` (window API, works for SCAD too) |
-| Repair a non-manifold mesh after a failing boolean / STL import | `api.heal(m)` (or window `partwright.healCurrent()`) | `partwright.healCurrent()` (window API) |
-| Cross-section image (any axis, for debugging cavities) | `partwright.renderSection({axis, offset?, size?})` | `partwright.renderSection(...)` — same window API |
-| Threaded rod / bolt / nut | (write a helix manually) | BOSL2 `threaded_rod()`, `screw()`, `nut()` |
-| Spur / bevel / worm gear | (sample involute manually) | BOSL2 `spur_gear()`, `bevel_gear()`, `worm_gear()` |
-| Implicit surface (gyroid, metaball, SDF blend) | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) |
-| Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) |
-| Arbitrary vertex warp (bend extrusion) | `.warp(fn)` | (not available) |
+| Want | manifold-js | OpenSCAD | BREP (`api.BREP.*`) |
+|---|---|---|---|
+| Cube / sphere / cylinder | `Manifold.cube/sphere/cylinder(...)` | `cube()`, `sphere()`, `cylinder()` | `BREP.box([w,d,h])`, `BREP.sphere(r)`, `BREP.cylinder(r, h)` |
+| Boolean union / difference / intersection | `.add(o)`, `.subtract(o)`, `.intersect(o)` | `union(){...}`, `difference(){...}`, `intersection(){...}` | `.fuse(o)` / `.cut(o)` / `.intersect(o)`, or `BREP.fuseAll([a,b,c])` / `BREP.cutAll([body,…holes])` / `BREP.intersectAll([…])` for N-way |
+| 2D shape extruded to 3D | `cs.extrude(h, nDiv?, twist?, scaleTop?)` | `linear_extrude(h, twist=, slices=, scale=) polygon(...)` | (use manifold-js + BREP for one piece) |
+| Surface of revolution (vase, lens, bottle) | `cs.revolve(n?, degrees?)` | `rotate_extrude(angle=) polygon(...)` | (use manifold-js) |
+| Smooth curve from a few points | `Curves.bezier(controls)` -> `/ai/curves.md` | `bezier_curve()` (BOSL2) -> `/ai/bosl2.md` | (use manifold-js Curves) |
+| Arc between two points | `Curves.arc({from, to, radius})` | `arc()` (BOSL2) | (use manifold-js Curves) |
+| Airfoil cross-section | `Curves.naca4("2412")` | (write your own with BOSL2 paths) | (use manifold-js Curves) |
+| Polygon with rounded corners | `Curves.polyline(points, {fillet: r})` | BOSL2 `round_corners(...)` | (use manifold-js Curves) |
+| Wing, hull, fuselage (varying profile along axis) | `Curves.loft([profA, profB], [zA, zB])` -> `/ai/curves.md` | BOSL2 `skin([profiles], z=, slices=)` -> `/ai/bosl2.md` | (use manifold-js Curves) |
+| Handle, tube, propeller (profile along 3D path) | `Curves.sweep(profile, pathPoints)` | BOSL2 `path_sweep(profile, path)` | (use manifold-js Curves) |
+| Revolve around an arbitrary axis | `Curves.revolveAxis(profile, [ax,ay,az])` | `rotate([...]) rotate_extrude() polygon()` | (use manifold-js Curves) |
+| Round/chamfer all sharp edges of a solid | `Curves.fillet(solid, {angle: 60})` (mesh-smoothing) | BOSL2 `cuboid(rounding=...)`, `round3d(...)` | **`.fillet(radius)` / `.chamfer(distance)` -> `/ai/replicad.md` (exact, BREP-true)** |
+| Round/chamfer ONLY specific edges (e.g. top rim only) | (not available) | BOSL2 `edge_profile()` (rough) | **`.fillet(r, {minZ, maxZ, nearPoint+withinDist, parallelToPlane, inDirection})` — selective, BREP-only. See `/ai/replicad.md` for the full EdgeFilter.** |
+| STEP export | (not available) | (not available) | **`partwright.exportSTEP()` after a BREP-language run -> `/ai/replicad.md`** |
+| STEP import (read a `.step` / `.stp` file as a CAD shape) | (use partwright.importFile UI, choose manifold-js — tessellates) | (not available) | **partwright.importFile UI, choose BREP — preserves exact surfaces. `api.imports[0]` in the replicad sandbox is the BrepShape.** |
+| Ring/linear/mirror copies | `api.circularPattern / linearPattern / mirrorCopy` (or `Curves.ringCopy / linearCopy / mirrorCopy`) | BOSL2 `ring_copies()`, `xcopies()`, `mirror_copy()` | (use manifold-js helpers) |
+| Place A on top of B (no mental trig) | `api.placeOn(a, b, {gap?, at?})` | BOSL2 attachments: `attach(TOP, BOTTOM)` | (use manifold-js — convert BREP→Manifold first) |
+| Align A's edge/face to B (per axis) | `api.alignTo(a, b, {x?, y?, z?})` (min/max/center) | BOSL2 `position()`/`anchor()` | (use manifold-js — convert BREP→Manifold first) |
+| Do two shapes overlap? Volume change? | `api.intersects(a, b)`, `api.volumeDelta(a, b)` | (no equivalent; render and check stats) | (use manifold-js — convert BREP→Manifold first) |
+| Is a point inside the solid? | `api.pointInside(m, [x,y,z])` | (no equivalent) | (use manifold-js — convert BREP→Manifold first) |
+| Did my boolean give the expected component count? | `api.expectUnion(parts, {expectComponents})` | (no equivalent — check stats `componentCount` after run) | (use manifold-js — convert BREP→Manifold first) |
+| Per-piece bbox + volume (find leaked components) | `api.componentBounds(m)` or window `partwright.componentBounds()` | `partwright.componentBounds()` (window API, works for SCAD too) | `partwright.componentBounds()` (window API — works on tessellated mesh) |
+| Repair a non-manifold mesh after a failing boolean / STL import | `api.heal(m)` (or window `partwright.healCurrent()`) | `partwright.healCurrent()` (window API) | `partwright.healCurrent()` (works on tessellated mesh) |
+| Cross-section image (any axis, for debugging cavities) | `partwright.renderSection({axis, offset?, size?})` | `partwright.renderSection(...)` — same window API | `partwright.renderSection(...)` — same window API |
+| Threaded rod / bolt / nut | (write a helix manually) | BOSL2 `threaded_rod()`, `screw()`, `nut()` | (coming; today use OpenSCAD/BOSL2) |
+| Spur / bevel / worm gear | (sample involute manually) | BOSL2 `spur_gear()`, `bevel_gear()`, `worm_gear()` | (coming; today use OpenSCAD/BOSL2) |
+| Implicit surface (gyroid, metaball, SDF blend) | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) | (mesh-only; not in BREP) |
+| Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) | (mesh-only; not in BREP) |
+| Arbitrary vertex warp (bend extrusion) | `.warp(fn)` | (not available) | (mesh-only; not in BREP) |
 
 **Rule of thumb:** if you find yourself writing a `for` loop to manually compute curve points, stop and check whether `Curves` (manifold-js) or BOSL2 (SCAD) already has the verb. AI-generated point-sampling math is brittle; the helpers are deterministic.
+
+**Cross-engine recipe:** Inside a manifold-js session, mix BREP for the feature that needs exactness and Manifold for everything else:
+
+```js
+const { Manifold, BREP } = api;
+const bracket = BREP.toManifold(
+  BREP.box([40, 20, 8]).fillet(2),    // exact fillet — BREP-true
+  Manifold
+);
+const hole = Manifold.cylinder(20, 3, 3).translate([0, 0, -5]);
+return bracket.subtract(hole);
+```
+
+No language switch needed. See `/ai/replicad.md` for the full BREP API and when to switch to a dedicated BREP session for STEP export.
 
 ## Topic index (subdocs)
 
@@ -100,6 +121,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 |---|---|
 | `curves` | Before writing manifold-js code with `Curves.loft/sweep/bezier/arc/naca4/polyline/fillet/...` (smooth curves, organic shapes, airfoils, lofted surfaces). |
 | `bosl2` | Before writing SCAD code that needs edge rounding (`cuboid(rounding=)`), threads (`screw`), gears (`spur_gear`), path-following (`path_sweep`), or attachables. |
+| `replicad` | Before using `api.BREP.*` inside a manifold-js session, or before switching to the replicad/BREP language. Covers exact fillets/chamfers, STEP export, and the manifold-js ↔ BREP boundary. |
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
 | `colors` | Before any paint operation — the picker decision tree, labelled construction, vision-driven painting, export behavior. |
 | `reference-images` | When the user attaches a photo or asks you to model from one — `setImages` shape, label conventions, the five-step photo-to-model loop. |
@@ -169,8 +191,8 @@ partwright.setCode(code)       // Set editor contents (no auto-run)
 partwright.sliceAtZ(z)         // Cross-section -> {polygons, svg, boundingBox, area}
 partwright.getBoundingBox()    // -> {min:[x,y,z], max:[x,y,z]}
 partwright.getModule()         // Raw manifold-3d WASM module
-partwright.getActiveLanguage() // -> 'manifold-js' or 'scad'
-await partwright.setActiveLanguage(lang) // Swap engine ('manifold-js' | 'scad'); stashes the prev draft, restores the other
+partwright.getActiveLanguage() // -> 'manifold-js' | 'scad' | 'replicad'
+await partwright.setActiveLanguage(lang) // Swap engine ('manifold-js' | 'scad' | 'replicad'); stashes the prev draft, restores the other
 partwright.toggleClip(on?)     // Toggle 3D clipping plane -> {enabled, z, min, max}
 partwright.setClipZ(z)         // Set clip height -> {enabled, z, min, max}
 partwright.getClipState()      // -> {enabled, z, min, max}

@@ -52,11 +52,14 @@ export async function exportSessionJSON(
 
 export interface BuiltCodeExport extends BuiltExport {
   text: string;
-  language: 'manifold-js' | 'scad';
+  language: 'manifold-js' | 'scad' | 'replicad';
 }
 
 /** Build the raw code blob for the editor source. */
-export function buildRawCode(code: string, language: 'manifold-js' | 'scad'): BuiltCodeExport {
+export function buildRawCode(code: string, language: 'manifold-js' | 'scad' | 'replicad'): BuiltCodeExport {
+  // BREP/replicad sessions are JavaScript on disk (they use api.BREP.*) so
+  // they share the .js extension with manifold-js. The session JSON carries
+  // the language metadata that recovers the engine choice on re-import.
   const ext = language === 'scad' ? 'scad' : 'js';
   const state = getState();
   let base = state.session?.name ?? 'code';
@@ -76,7 +79,7 @@ export function buildRawCode(code: string, language: 'manifold-js' | 'scad'): Bu
  * Export the editor's current code as a plain `.js` or `.scad` file.
  * Uses the active session/version for the filename when available.
  */
-export function exportRawCode(code: string, language: 'manifold-js' | 'scad'): void {
+export function exportRawCode(code: string, language: 'manifold-js' | 'scad' | 'replicad'): void {
   const built = buildRawCode(code, language);
   downloadBlob(built.blob, built.filename, 'Code');
 }

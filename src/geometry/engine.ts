@@ -3,6 +3,7 @@ import type { Engine, Language, ValidateResult } from './engines/types';
 import { DEFAULT_LANGUAGE, isLanguage } from './engines/types';
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
 import { openscadEngine } from './engines/openscad';
+import { replicadEngine } from './engines/replicad';
 import { getActiveImports } from '../import/importedMesh';
 import { getDefaultCircularSegments } from './qualitySettings';
 
@@ -12,6 +13,7 @@ export { isLanguage, DEFAULT_LANGUAGE };
 const engines: Record<Language, Engine> = {
   'manifold-js': manifoldJsEngine,
   'scad': openscadEngine,
+  'replicad': replicadEngine,
 };
 
 let activeLanguage: Language = DEFAULT_LANGUAGE;
@@ -55,11 +57,11 @@ function pickLang(lang?: Language): Language {
  *  For all other code execution use executeCodeAsync(). */
 export function executeCode(source: string, lang?: Language): MeshResult {
   const l = pickLang(lang);
-  if (l === 'scad') {
+  if (l === 'scad' || l === 'replicad') {
     return {
       mesh: null,
       manifold: null,
-      error: 'OpenSCAD requires async execution — use executeCodeAsync() instead.',
+      error: `${l === 'scad' ? 'OpenSCAD' : 'BREP/replicad'} requires async execution — use executeCodeAsync() instead.`,
     };
   }
   const engine = engines[l];
@@ -85,6 +87,10 @@ let callIdCounter = 0;
 
 const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void }>();
 const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => void; reject: (e: Error) => void }>();
+const pendingStepExports = new Map<string, { resolve: (blob: Blob | null) => void; reject: (e: Error) => void }>();
+const pendingStepBrepImports = new Map<string, { resolve: (filename: string) => void; reject: (e: Error) => void }>();
+const pendingStepMeshImports = new Map<string, { resolve: (mesh: MeshData) => void; reject: (e: Error) => void }>();
+const pendingClearBrepImports = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
 const pendingSimplifies  = new Map<string, {
   resolve: (r: SimplifyWorkerResult | null) => void;
   reject: (e: Error) => void;
@@ -101,14 +107,26 @@ const pendingSimplifies  = new Map<string, {
 const EXECUTE_TIMEOUT_MS: Record<Language, number> = {
   'manifold-js': 60_000,
   'scad':        180_000,
+  // BREP/replicad: OCCT booleans on complex parts (e.g. STEP-imported
+  // assemblies) can rival SCAD's worst cases, so use the same 3-minute
+  // ceiling as SCAD rather than the mesh kernel's tighter bound.
+  'replicad':    180_000,
 };
 
 function rejectAllPending(err: Error): void {
   for (const p of pendingExecutions.values()) p.reject(err);
   for (const p of pendingValidations.values()) p.reject(err);
+  for (const p of pendingStepExports.values()) p.reject(err);
+  for (const p of pendingStepBrepImports.values()) p.reject(err);
+  for (const p of pendingStepMeshImports.values()) p.reject(err);
+  for (const p of pendingClearBrepImports.values()) p.reject(err);
   for (const p of pendingSimplifies.values()) p.reject(err);
   pendingExecutions.clear();
   pendingValidations.clear();
+  pendingStepExports.clear();
+  pendingStepBrepImports.clear();
+  pendingStepMeshImports.clear();
+  pendingClearBrepImports.clear();
   pendingSimplifies.clear();
 }
 
@@ -187,6 +205,53 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     return;
   }
 
+  if (msg.type === 'exportSTEP_result') {
+    const callId = msg.callId as string;
+    const pending = pendingStepExports.get(callId);
+    if (!pending) return;
+    pendingStepExports.delete(callId);
+    const error = msg.error as string | null;
+    if (error) {
+      pending.reject(new Error(error));
+      return;
+    }
+    pending.resolve(msg.blob as Blob | null);
+    return;
+  }
+
+  if (msg.type === 'importSTEPToBrep_result') {
+    const callId = msg.callId as string;
+    const pending = pendingStepBrepImports.get(callId);
+    if (!pending) return;
+    pendingStepBrepImports.delete(callId);
+    const error = msg.error as string | null;
+    if (error) { pending.reject(new Error(error)); return; }
+    pending.resolve(msg.filename as string);
+    return;
+  }
+
+  if (msg.type === 'importSTEPToMesh_result') {
+    const callId = msg.callId as string;
+    const pending = pendingStepMeshImports.get(callId);
+    if (!pending) return;
+    pendingStepMeshImports.delete(callId);
+    const error = msg.error as string | null;
+    if (error) { pending.reject(new Error(error)); return; }
+    pending.resolve(msg.mesh as MeshData);
+    return;
+  }
+
+  if (msg.type === 'clearBrepImports_result') {
+    const callId = msg.callId as string;
+    const pending = pendingClearBrepImports.get(callId);
+    if (!pending) return;
+    pendingClearBrepImports.delete(callId);
+    const error = msg.error as string | null;
+    if (error) { pending.reject(new Error(error)); return; }
+    pending.resolve();
+    return;
+  }
+
   if (msg.type === 'simplify_progress') {
     const callId = msg.callId as string;
     const pending = pendingSimplifies.get(callId);
@@ -225,6 +290,14 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingExecutions.delete(callId ?? '');
       pendingValidations.get(callId)?.reject(err);
       pendingValidations.delete(callId ?? '');
+      pendingStepExports.get(callId)?.reject(err);
+      pendingStepExports.delete(callId ?? '');
+      pendingStepBrepImports.get(callId)?.reject(err);
+      pendingStepBrepImports.delete(callId ?? '');
+      pendingStepMeshImports.get(callId)?.reject(err);
+      pendingStepMeshImports.delete(callId ?? '');
+      pendingClearBrepImports.get(callId)?.reject(err);
+      pendingClearBrepImports.delete(callId ?? '');
       pendingSimplifies.get(callId)?.reject(err);
       pendingSimplifies.delete(callId ?? '');
     }
@@ -280,14 +353,18 @@ export async function ensureEngineReady(lang: Language): Promise<void> {
   }
 }
 
-/** Sync validation — works for manifold-js (cheap parse check). */
+/** Sync validation — works for manifold-js and replicad (both share a JS
+ *  parser, so the validate step doesn't need to boot WASM). SCAD still goes
+ *  async because its parser lives inside the WASM module. */
 export function validateCode(source: string, lang?: Language): ValidateResult {
   const l = pickLang(lang);
   if (l === 'scad') {
     return { valid: false, error: 'OpenSCAD validation requires async — use validateCodeAsync()' };
   }
   const engine = engines[l];
-  if (!engine.isReady()) {
+  // The replicad engine's `validate()` is a parse-only Function check that
+  // doesn't need the OCCT module loaded, so we don't gate on isReady() for it.
+  if (l !== 'replicad' && !engine.isReady()) {
     return { valid: false, error: `${engine.id} engine not initialized` };
   }
   return engine.validate(source);
@@ -324,6 +401,96 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
 
 export function isEngineReady(lang: Language): boolean {
   return engines[lang].isReady();
+}
+
+/** Ask the engine Worker for a STEP blob of the most recent BREP-engine
+ *  result. Returns `null` (with no rejection) when no shape is available so
+ *  the caller can surface a user-friendly "save your BREP model first"
+ *  message rather than treating it as a hard error. Any *real* failure
+ *  (worker dead, OCCT threw) rejects. */
+export async function exportLastBrepAsSTEP(): Promise<Blob | null> {
+  initEngineWorker();
+  await workerReady;
+  const callId = `step-${++callIdCounter}`;
+  return new Promise<Blob | null>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (pendingStepExports.has(callId)) {
+        restartEngineWorker('STEP export timed out');
+      }
+    }, EXECUTE_TIMEOUT_MS.replicad);
+    pendingStepExports.set(callId, {
+      resolve: (b) => { clearTimeout(timer); resolve(b); },
+      reject: (e) => { clearTimeout(timer); reject(e); },
+    });
+    engineWorker!.postMessage({ type: 'exportSTEP', callId });
+  });
+}
+
+/** Parse a STEP file and stash it on the worker's pending BREP import list.
+ *  Subsequent `replicad`-language runs will see it as `api.imports[0]`. The
+ *  blob is copied (zero-copy via transfer) into the worker; the main thread
+ *  doesn't hold the parsed shape itself. Resolves with the filename so the
+ *  caller can echo it in confirmation UI. */
+export async function importSTEPToBrep(blob: Blob, filename: string): Promise<string> {
+  initEngineWorker();
+  await workerReady;
+  const callId = `stepin-brep-${++callIdCounter}`;
+  const bytes = await blob.arrayBuffer();
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (pendingStepBrepImports.has(callId)) {
+        restartEngineWorker('STEP→BREP import timed out');
+      }
+    }, EXECUTE_TIMEOUT_MS.replicad);
+    pendingStepBrepImports.set(callId, {
+      resolve: (n) => { clearTimeout(timer); resolve(n); },
+      reject: (e) => { clearTimeout(timer); reject(e); },
+    });
+    engineWorker!.postMessage({ type: 'importSTEPToBrep', callId, bytes, filename }, [bytes]);
+  });
+}
+
+/** Parse a STEP file and tessellate it into a `MeshData` the caller can
+ *  feed through the normal STL-style import pipeline. The BREP source is
+ *  discarded — this path is for users who want the import as mesh (paint,
+ *  mesh-only ops). */
+export async function importSTEPToMesh(blob: Blob): Promise<MeshData> {
+  initEngineWorker();
+  await workerReady;
+  const callId = `stepin-mesh-${++callIdCounter}`;
+  const bytes = await blob.arrayBuffer();
+  return new Promise<MeshData>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (pendingStepMeshImports.has(callId)) {
+        restartEngineWorker('STEP→mesh import timed out');
+      }
+    }, EXECUTE_TIMEOUT_MS.replicad);
+    pendingStepMeshImports.set(callId, {
+      resolve: (m) => { clearTimeout(timer); resolve(m); },
+      reject: (e) => { clearTimeout(timer); reject(e); },
+    });
+    engineWorker!.postMessage({ type: 'importSTEPToMesh', callId, bytes }, [bytes]);
+  });
+}
+
+/** Drop any pending BREP imports. Called when the user opens a different
+ *  session or clears them explicitly. */
+export async function clearBrepImports(): Promise<void> {
+  initEngineWorker();
+  await workerReady;
+  const callId = `clearbrepin-${++callIdCounter}`;
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (pendingClearBrepImports.has(callId)) {
+        restartEngineWorker('clearBrepImports timed out');
+      }
+    }, EXECUTE_TIMEOUT_MS.replicad);
+    pendingClearBrepImports.set(callId, {
+      resolve: () => { clearTimeout(timer); resolve(); },
+      reject: (e) => { clearTimeout(timer); reject(e); },
+    });
+    engineWorker!.postMessage({ type: 'clearBrepImports', callId });
+  });
 }
 
 // ── Simplify Worker client ──────────────────────────────────────────────────

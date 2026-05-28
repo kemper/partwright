@@ -20,12 +20,19 @@ export interface ToolbarCallbacks {
   onExportSTL: () => void;
   onExportOBJ: () => void;
   onExport3MF: () => void;
+  /** BREP-only — silently hidden from the menu when the active language is
+   *  not 'replicad'. Toolbar pings `getActiveLanguage` at menu-open time to
+   *  decide visibility. */
+  onExportSTEP: () => void;
   onExportSessionJSON: () => void;
   onExportRawCode: () => void;
   onImportFile: (file: File) => void | Promise<void>;
   /** Re-import a blob already held in the inbox (e.g. recent-imports re-click). */
   onImportInboxEntry: (entry: ImportInboxEntry) => void | Promise<void>;
-  onLanguageSwitch: (lang: 'manifold-js' | 'scad') => void;
+  onLanguageSwitch: (lang: 'manifold-js' | 'scad' | 'replicad') => void;
+  /** "?" link next to the language toggle — opens a modal explaining
+   *  what each engine is best for. */
+  onLanguageHelp: () => void | Promise<void>;
   onGoHome: () => void;
   /** Toggle the AI chat drawer — drives the prominent "Use AI" button in the toolbar. */
   onToggleAi: () => void;
@@ -82,7 +89,7 @@ export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
 }
 
 /** File extensions accepted by the Import button and drag-and-drop. */
-export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl';
+export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp';
 
 let _autoRun = true;
 let _onAutoRunChange: ((on: boolean) => void) | null = null;
@@ -105,19 +112,21 @@ export function onAutoRunChange(cb: (on: boolean) => void): void { _onAutoRunCha
 // Language toggle state — managed externally via setToolbarLanguage()
 let _langBtnJs: HTMLButtonElement | null = null;
 let _langBtnScad: HTMLButtonElement | null = null;
-let _currentLang: 'manifold-js' | 'scad' = 'manifold-js';
+let _langBtnBrep: HTMLButtonElement | null = null;
+let _currentLang: 'manifold-js' | 'scad' | 'replicad' = 'manifold-js';
 
 const LANG_ACTIVE = 'px-2 py-0.5 rounded text-xs font-medium transition-colors bg-zinc-700 text-zinc-100';
 const LANG_INACTIVE = 'px-2 py-0.5 rounded text-xs font-medium transition-colors text-zinc-500 hover:text-zinc-300';
 
 function syncLangToggle() {
-  if (!_langBtnJs || !_langBtnScad) return;
+  if (!_langBtnJs || !_langBtnScad || !_langBtnBrep) return;
   _langBtnJs.className = _currentLang === 'manifold-js' ? LANG_ACTIVE : LANG_INACTIVE;
   _langBtnScad.className = _currentLang === 'scad' ? LANG_ACTIVE : LANG_INACTIVE;
+  _langBtnBrep.className = _currentLang === 'replicad' ? LANG_ACTIVE : LANG_INACTIVE;
 }
 
 /** Update the toolbar language toggle from outside (e.g. when opening a session). */
-export function setToolbarLanguage(lang: 'manifold-js' | 'scad'): void {
+export function setToolbarLanguage(lang: 'manifold-js' | 'scad' | 'replicad'): void {
   _currentLang = lang;
   syncLangToggle();
 }
@@ -201,10 +210,33 @@ export function createToolbar(
     }
   });
 
+  _langBtnBrep = document.createElement('button');
+  _langBtnBrep.textContent = 'BREP';
+  _langBtnBrep.title = 'BREP (replicad / OpenCASCADE) — exact fillets, chamfers, STEP export. Lazy-loads on first switch.';
+  _langBtnBrep.addEventListener('click', () => {
+    if (_currentLang !== 'replicad') {
+      callbacks.onLanguageSwitch('replicad');
+    }
+  });
+
   syncLangToggle();
   langGroup.appendChild(_langBtnJs);
   langGroup.appendChild(_langBtnScad);
+  langGroup.appendChild(_langBtnBrep);
   toolbar.appendChild(langGroup);
+
+  // Help link next to the language toggle — "?" icon that opens a modal
+  // explaining what each engine is best for. Small footprint so it doesn't
+  // crowd the toolbar; the title attribute also reads as a hint if the user
+  // hovers without clicking.
+  const langHelpBtn = document.createElement('button');
+  langHelpBtn.type = 'button';
+  langHelpBtn.className = 'ml-1 w-5 h-5 rounded-full text-[10px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 border border-zinc-600 flex items-center justify-center transition-colors';
+  langHelpBtn.textContent = '?';
+  langHelpBtn.title = 'What language to pick?';
+  langHelpBtn.setAttribute('aria-label', 'Open language help');
+  langHelpBtn.addEventListener('click', () => { void callbacks.onLanguageHelp(); });
+  toolbar.appendChild(langHelpBtn);
 
   // Spacer
   const spacer = document.createElement('div');
@@ -416,10 +448,25 @@ export function createToolbar(
     callbacks.onExportGLB();
   });
 
+  // STEP — BREP-only; the menu show/hide is gated below in the open-menu
+  // handler so the option only appears in 'replicad' sessions where there's
+  // an actual BREP shape on the heap. (In manifold-js sessions with
+  // `api.BREP.*` mixed in, the BREP source is forgotten at toManifold time —
+  // STEP wouldn't have anything to export.)
+  const stepOpt = createDescribedItem(
+    'STEP',
+    'Exact B-rep for mechanical-CAD interop (SolidWorks, Fusion, FreeCAD). BREP sessions only.',
+  );
+  stepOpt.addEventListener('click', () => {
+    dropdown.classList.add('hidden');
+    callbacks.onExportSTEP();
+  });
+
   dropdown.appendChild(threemfOpt);
   dropdown.appendChild(objOpt);
   dropdown.appendChild(stlOpt);
   dropdown.appendChild(glbOpt);
+  dropdown.appendChild(stepOpt);
 
   // Section: project / source — for sharing between users or working with the code directly
   dropdown.appendChild(createDivider());
@@ -521,6 +568,10 @@ export function createToolbar(
   btnExport.addEventListener('click', () => {
     // Refresh relative timestamps each time the dropdown opens.
     renderRecent();
+    // STEP is BREP-only — show/hide based on the language toggle's current
+    // state. Putting this on open (rather than wiring a setter) keeps the
+    // menu logic local; a language switch closes the menu first anyway.
+    stepOpt.classList.toggle('hidden', _currentLang !== 'replicad');
     dropdown.classList.toggle('hidden');
   });
 

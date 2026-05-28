@@ -24,9 +24,31 @@ export type RegionDescriptor =
   // saved before smoothing existed simply omit both fields (no subdivision).
   | { kind: 'slab'; normal: [number, number, number]; offset: number; thickness: number; smooth?: boolean; maxEdge?: number }
   | { kind: 'box'; center: [number, number, number]; size: [number, number, number]; quaternion: [number, number, number, number]; shape?: ShapeType; smooth?: boolean; maxEdge?: number }
+  // Cylindrical-shell selector — `rMin === 0` collapses to a solid cylinder,
+  // otherwise an annular ring. `topOnly` / `normalCone` / `coverageMode` /
+  // `maxTriangleArea` carry over from the original `paintInCylinder` API so
+  // descriptors round-trip identically. Smoothing subdivides boundary
+  // triangles at the inner / outer wall and the z-caps until they fall below
+  // `maxEdge`, giving crisp painted edges that follow the analytic cylinder
+  // rather than the coarse base tessellation.
+  | { kind: 'cylinder'; center: [number, number]; rMin: number; rMax: number; zMin: number; zMax: number;
+      normalCone?: { axis: [number, number, number]; angleDeg: number };
+      // Coverage mode literal — kept as a string union (not an imported type)
+      // so this descriptor stays serializable without pulling in main.ts.
+      coverageMode?: 'centroid' | 'fully_inside' | 'any_vertex_inside';
+      maxTriangleArea?: number;
+      smooth?: boolean; maxEdge?: number }
   | { kind: 'triangles'; ids: number[] }
   | { kind: 'byLabel'; label: string }
-  | { kind: 'connectedFromSeed'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; maxDeviationDeg: number }
+  | { kind: 'connectedFromSeed'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; maxDeviationDeg: number;
+      // Optional AABB clamp — flood-fill won't walk into triangles whose
+      // centroid falls outside this box. Used to constrain `paintConnected`
+      // on fused meshes where the topology is one connected component but
+      // the *intended* paint region only spans part of the bounding volume
+      // (e.g. paint the dome of an e-stop without bleeding into the collar).
+      // Persisted so a re-resolve after geometry edit walks the same path;
+      // descriptors saved before the clamp existed omit both fields.
+      clampMin?: [number, number, number]; clampMax?: [number, number, number] }
   // Smooth paintbrush stroke: surface samples + brush footprint, plus a target
   // edge length. Resolving it locally refines the mesh under the stroke until
   // boundary triangles are below `maxEdge`, so the painted edge follows the

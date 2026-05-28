@@ -139,7 +139,7 @@ export interface ExportedSession {
   mainifold?: string;
   /** Images may be the array form or the legacy object map ({front, right, ...}).
    * Both also exist under `referenceImages` for pre-rename exports. */
-  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' };
+  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' };
   /**
    * The session's parts, ordered by `order`. Present from schema 1.7. Pre-1.7
    * files omit this; on import they collapse into a single default part.
@@ -192,7 +192,7 @@ export interface ExportedSession {
      * mixed JS + SCAD versions.
      * @since 1.8
      */
-    language?: 'manifold-js' | 'scad';
+    language?: 'manifold-js' | 'scad' | 'replicad';
   }[];
   notes?: { text: string; timestamp: number }[];
   /**
@@ -428,7 +428,7 @@ export function getVersionFromURL(): number | null {
 
 // === Session operations ===
 
-export async function createSession(name?: string, language?: 'manifold-js' | 'scad'): Promise<Session> {
+export async function createSession(name?: string, language?: 'manifold-js' | 'scad' | 'replicad'): Promise<Session> {
   // Clean up the previous session if it was empty
   if (currentState.session) {
     await deleteIfEmpty(currentState.session.id);
@@ -536,27 +536,28 @@ export async function renameSession(id: string, newName: string): Promise<void> 
 
 // === Editor drafts (per session, per language) ===
 //
-// Each session keeps up to two in-progress drafts — one for manifold-js, one
-// for SCAD — so flipping the toolbar's language toggle preserves whatever the
-// user (or the AI) was writing in the other language. Drafts are persisted so
-// a reload doesn't lose them; they're cascade-deleted when the session is.
+// Each session keeps a per-language draft slot — manifold-js, SCAD, and
+// replicad (BREP) each get their own — so flipping the toolbar's language
+// toggle preserves whatever the user (or the AI) was writing in the previous
+// language. Drafts are persisted so a reload doesn't lose them; they're
+// cascade-deleted when the session is.
 
 /** Read the working buffer for a session in a given language. Returns null
  *  when no draft has been stashed yet (caller should fall back to a stub). */
-export async function readDraft(sessionId: string, language: 'manifold-js' | 'scad'): Promise<string | null> {
+export async function readDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad'): Promise<string | null> {
   const row = await dbGetDraft(sessionId, language);
   return row ? row.code : null;
 }
 
 /** Write the working buffer for a session in a given language. Idempotent —
  *  the row is upserted by composite key. */
-export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad', code: string): Promise<void> {
+export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad', code: string): Promise<void> {
   await dbSetDraft(sessionId, language, code);
 }
 
 /** Drop the working buffer for a (session, language) pair — used when the
  *  caller wants to force the next language switch to land on a stub. */
-export async function clearDraft(sessionId: string, language: 'manifold-js' | 'scad'): Promise<void> {
+export async function clearDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad'): Promise<void> {
   await dbDeleteDraft(sessionId, language);
 }
 
@@ -1116,7 +1117,7 @@ export function getRecentErrors(): { error: string; timestamp: number }[] {
 // === Session context (single call for AI agents) ===
 
 export interface SessionContext {
-  session: { id: string; name: string; created: number; updated: number; language: 'manifold-js' | 'scad' };
+  session: { id: string; name: string; created: number; updated: number; language: 'manifold-js' | 'scad' | 'replicad' };
   /** All parts in the session. The `versions`/`currentVersion` fields below are
    *  scoped to {@link currentPart}; switch parts with `changePart` to inspect
    *  another part's history. */
@@ -1129,7 +1130,7 @@ export interface SessionContext {
     notes?: string;
     /** Modeling language this version was authored in (resolved via the
      *  per-version → session-level → default fallback chain). */
-    language: 'manifold-js' | 'scad';
+    language: 'manifold-js' | 'scad' | 'replicad';
     geometrySummary: {
       volume?: number;
       surfaceArea?: number;
@@ -1140,7 +1141,7 @@ export interface SessionContext {
     } | null;
   }[];
   notes: { id: string; text: string; timestamp: number }[];
-  currentVersion: { index: number; label: string; language: 'manifold-js' | 'scad' } | null;
+  currentVersion: { index: number; label: string; language: 'manifold-js' | 'scad' | 'replicad' } | null;
   versionCount: number;
   agentHints: {
     apiDocsUrl: string;
@@ -1148,8 +1149,8 @@ export interface SessionContext {
     codeMustReturnManifold: boolean;
     /** Active engine language right now. May differ from
      *  {@link SessionContext.session.language} when the user/agent has
-     *  navigated to a version authored in the other language. */
-    language: 'manifold-js' | 'scad';
+     *  navigated to a version authored in another language. */
+    language: 'manifold-js' | 'scad' | 'replicad';
     supportedLanguages: string[];
     recentErrors: { error: string; timestamp: number }[];
     /** The AI spending budget the user has set. Agents should respect it. */
@@ -1212,9 +1213,14 @@ export async function getSessionContext(): Promise<SessionContext | null> {
     agentHints: {
       apiDocsUrl: '/ai.md',
       recommendedEntrypoint: 'runAndSave',
+      // 'manifold-js' returns a Manifold; 'scad' compiles SCAD source;
+      // 'replicad' returns a BREP shape (BREP.* …). Only the manifold-js path
+      // requires the literal `return manifold` convention. We use the live
+      // engine language (not the session-level hint) since per-version language
+      // means the active language can differ from session.language.
       codeMustReturnManifold: getActiveLanguage() === 'manifold-js',
       language: getActiveLanguage(),
-      supportedLanguages: ['manifold-js', 'scad'],
+      supportedLanguages: ['manifold-js', 'scad', 'replicad'],
       recentErrors: getRecentErrors(),
       spending: getSpendingSummary(),
     },
