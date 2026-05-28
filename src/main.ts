@@ -5080,10 +5080,20 @@ async function main() {
         // render carries ±10-20px error, so misses are an expected, common
         // case — make them self-correcting rather than a dead end.
         const b = result.modelPixelBounds;
-        const hint = b
+        // Thin-feature heuristic: if the model occupies fewer than ~32 px
+        // along either screen axis at the current size, the feature is
+        // smaller than the AI's pixel-estimation noise — bumping the
+        // render size makes each "perceived pixel" cover a smaller real
+        // area, so a future probe is more likely to land on geometry.
+        const thinAxis = b ? Math.min(b.maxX - b.minX, b.maxY - b.minY) : Infinity;
+        const isThin = thinAxis < 32;
+        const baseHint = b
           ? `In this ${size}×${size} view the model occupies pixels x[${b.minX}..${b.maxX}], y[${b.minY}..${b.maxY}] (top-left is [0,0]). Re-aim inside that box and probe again.`
           : 'The model does not project into this view (off-screen or degenerate). Render this exact view first to see where it sits, or try a different elevation/azimuth.';
-        return { ...result, reason: `Pixel [${px}, ${py}] missed the mesh (background).`, hint };
+        const thinHint = isThin
+          ? ` Thin feature (only ${thinAxis}px wide on the minor axis at size ${size}). Re-render this view at size: ${Math.min(1024, size * 2)} and probe again — each rendered pixel now covers half the real area, so an aim error of ±10-20 px is far less likely to fall off the feature.`
+          : '';
+        return { ...result, reason: `Pixel [${px}, ${py}] missed the mesh (background).`, hint: baseHint + thinHint };
       }
       return {
         ...result,
@@ -7812,6 +7822,29 @@ async function main() {
         'If intentional (separate printable parts), ignore this warning.',
       );
     }
+    // Surface color regions that no longer resolve to any triangles on
+    // the freshly-run mesh — descriptors are still serialized (so the
+    // user's intent is preserved), but the live render shows zero paint
+    // for them. The most common cause is editing the code so a
+    // previously-registered api.label / BREP.label is gone, or switching
+    // modeling languages: byLabel descriptors then silently drop on
+    // load. Naming them in the runAndSave response saves a re-load.
+    const empty: string[] = [];
+    for (const r of getRegions()) {
+      if (r.triangles.size === 0) {
+        const kind = r.descriptor.kind === 'byLabel'
+          ? `byLabel "${r.descriptor.label}"`
+          : r.descriptor.kind;
+        empty.push(`${r.name} (${kind})`);
+      }
+    }
+    if (empty.length > 0) {
+      warnings.push(
+        `${empty.length} color region${empty.length > 1 ? 's' : ''} resolved to zero triangles on the new mesh and will render as un-painted: ${empty.join(', ')}. ` +
+        'Most common cause: the api.label / BREP.label they reference is no longer registered (renamed, removed, or the modeling language changed). ' +
+        'Re-add the label, or drop the region with removeRegion / clearColors and repaint by coordinates.',
+      );
+    }
     return warnings;
   }
 
@@ -7963,9 +7996,29 @@ async function main() {
       if (hasColorRegions() && hasRefineDescriptors()) {
         rebuildPaintedGeometry();
         lastStrokeList = strokeDescriptors();
-      } else {
-        const displayMesh = hasColorRegions() ? applyTriColorsIfVisible(result.mesh) : result.mesh;
+      } else if (hasColorRegions()) {
+        // Re-resolve each non-refining region's triangles against the
+        // freshly-run mesh. Without this, the in-memory `triangles` Set
+        // still indexes the previous mesh — wrong colors when the
+        // triangle count changes, and the `byLabel` / `coplanar` /
+        // `connectedFromSeed` cases that depend on engine state
+        // (labelMap, surface positions) don't re-evaluate on the new
+        // run. Cheap when there are no regions; O(regions * tris) when
+        // there are.
+        const mesh = result.mesh;
+        let adjacency: AdjacencyGraph | null = null;
+        for (const region of getRegions()) {
+          const d = region.descriptor;
+          if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed')) {
+            adjacency = buildAdjacency(mesh);
+          }
+          setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, null));
+        }
+        const displayMesh = applyTriColorsIfVisible(mesh);
         updateMesh(displayMesh);
+        updatePaintMesh(mesh);
+      } else {
+        updateMesh(result.mesh);
         updatePaintMesh(result.mesh); // always pass uncolored mesh for adjacency
       }
 

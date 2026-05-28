@@ -251,6 +251,20 @@ export const manifoldJsEngine: Engine = {
         diagnostics: runtimeDiagnostic(error, 'Remove the partwright.* call from the model code and invoke paint tools separately.', 'JavaScript'),
       };
     }
+    // Bare `exportSTEP(` — same misconception as `partwright.exportSTEP`
+    // but without the prefix the agent sometimes drops. Caught here too
+    // (in addition to the BREP engine) because a manifold-js sandbox might
+    // reach for BREP via `api.BREP` and then assume `exportSTEP` is on the
+    // namespace, when it's actually a top-level tool call.
+    if (/\bexportSTEP\s*\(/.test(jsCode)) {
+      const error = 'exportSTEP is a tool call (partwright.exportSTEP), not a sandbox API. Call it AFTER runAndSave returns — between tool calls — not from inside the model code. Note: STEP export only works in the replicad (BREP) language session, not from manifold-js.';
+      return {
+        mesh: null,
+        manifold: null,
+        error,
+        diagnostics: runtimeDiagnostic(error, 'Remove the exportSTEP() call from the model code; invoke partwright.exportSTEP() after the run completes (in a BREP session).', 'JavaScript'),
+      };
+    }
 
     let result: InstanceType<typeof Manifold> | null = null;
 

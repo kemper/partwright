@@ -103,13 +103,27 @@ export async function runReplicadAsync(jsCode: string): Promise<MeshResult> {
   // Engines run inside the worker where `window.partwright` is undefined; the
   // manifold-js engine has its own check for the "paint inside model code"
   // misconception, but the same trap exists here so we replicate the guard.
+  // We also catch bare `exportSTEP(` — agents see it documented as
+  // `partwright.exportSTEP()` and sometimes drop the prefix inside the
+  // sandbox where it shows up as a bare ReferenceError that doesn't
+  // explain the boundary.
   if (/\bpartwright\s*\./.test(jsCode)) {
-    const error = 'Model code cannot call paint tools like partwright.paintByLabel from inside the BREP session. Paint operations are separate tool calls — invoke them between code runs, not inside the code.';
+    const error = 'Model code cannot call paint tools like partwright.paintByLabel or partwright.exportSTEP from inside the BREP session. They are separate tool calls — invoke them between code runs (after runAndSave), not inside the code.';
     return {
       mesh: null,
       manifold: null,
       error,
-      diagnostics: runtimeDiagnostic(error, 'Remove the partwright.* call from the model code and invoke paint tools separately.', 'JavaScript'),
+      diagnostics: runtimeDiagnostic(error, 'Remove the partwright.* call from the model code and invoke the tool separately.', 'JavaScript'),
+    };
+  }
+  // Bare `exportSTEP(` — same misconception, no `partwright.` prefix.
+  if (/\bexportSTEP\s*\(/.test(jsCode)) {
+    const error = 'exportSTEP is a tool call (partwright.exportSTEP), not a sandbox API. Call it AFTER runAndSave returns — between tool calls — not from inside the model code.';
+    return {
+      mesh: null,
+      manifold: null,
+      error,
+      diagnostics: runtimeDiagnostic(error, 'Remove the exportSTEP() call from the model code; invoke partwright.exportSTEP() after the run completes.', 'JavaScript'),
     };
   }
 

@@ -165,6 +165,42 @@ return BREP.box([20, 20, 20]).fillet(1, { minZ: 10, parallelToPlane: 'XY' });
 | `parallelToPlane: 'XY' \| 'XZ' \| 'YZ'` | Edges parallel to a standard plane (catches "horizontal" / "vertical" rings) |
 | `inDirection: [dx,dy,dz]` | Edges whose direction matches this axis (e.g. `[0,0,1]` for vertical edges) |
 
+> **Edge filters always operate in world coordinates** — after every
+> `translate` / `rotate` on the shape (Partwright bakes the transform into
+> the geometry). So a cylinder of height 8 translated to `z=5` has its top
+> rim at world `z=13`, and `.fillet(0.5, { minZ: 12.999 })` is the way to
+> hit it. Don't reason in the cylinder's local frame.
+
+### Painting a BREP solid — what works, what bleeds
+
+Once a BREP shape is tessellated for the viewport, **every Partwright paint
+tool works the same way it does on a mesh-native model**. The picks below
+are tuned for what BREP geometry tends to look like:
+
+| Situation | Reach for | Why |
+|---|---|---|
+| The feature was wrapped with `BREP.label(shape, 'name')` and the label *survived* (no fillet/chamfer remeshed that face) | `paintByLabel` / `paintByLabels` | The bullseye — no coordinate math, propagates through booleans. |
+| A `fuseAll` solid where labels were dropped or never applied; you can render the model | `renderViews` → `probePixel` → `paintConnected` | The flood is gated by deviation from the seed normal, so it follows a curved face without bleeding across the next one. Best general-purpose painter on labeled-less BREP. |
+| A cylindrical/conical region (inner bore wall, rim band) | `paintInCylinder` | Cleanly carves out a shell — works regardless of where OCCT placed the seam edges. |
+| A pure axis-aligned slab (top 2 mm, side band) | `paintSlab` | Doesn't care about interior seam triangles. |
+| An axis-aligned box selection on a **fused BREP solid** | Use `paintInBox` with `coverageMode: "fully_inside"` (or fall back to `paintConnected`) | See warning ↓ |
+
+> **Warning — `paintInBox` on fused BREP solids.** OCCT's boolean fuse can
+> leave interior intersection-seam triangles inside the resulting solid's
+> bounding volume. The default `centroid` coverage test treats those
+> seam triangles as "inside the box" and you get patchy paint on a
+> surface that *looks* solid. Mesh-kernel models don't do this because
+> their booleans drop interior surfaces. The fix on BREP: pass
+> `coverageMode: "fully_inside"`, or use `paintConnected` from a probed
+> surface seed instead.
+
+> **`paintByLabel` after a fillet.** Fillet / chamfer remesh the faces
+> they touch; those faces lose their labels (untouched faces keep theirs).
+> If `paintByLabel` reports zero triangles on a label you know existed
+> before the fillet, switch to `paintConnected` from a probed seed on
+> the same feature — or label the result *after* the fillet by exposing
+> the post-fillet sub-shape and wrapping it.
+
 ### STEP file import
 
 Drag a `.step` / `.stp` file into the editor (or use Import → Choose file). A
@@ -240,9 +276,16 @@ After `runAndSave`, call `partwright.exportSTEP()` (or use the export menu) to
 write the exact BREP geometry to a `.step` file:
 
 ```js
+// ✓ Right place to call it — between tool calls, NOT inside model code.
 const result = await partwright.exportSTEP();
 // { ok: true, filename: "session_v3.step", sizeBytes: 12345 }
 ```
+
+> **`exportSTEP` is a tool call, not a sandbox API.** Like every other
+> `partwright.*` method, it runs between code runs. Calling it from
+> inside `runCode` / `runAndSave` (i.e. in the same string of code that
+> defines the shape) is rejected with the standard "model code cannot
+> call paint/export tools" error. Run the model first, *then* export.
 
 Painting, render, geometry stats, GLB/STL/3MF export all still work in
 BREP sessions because the renderer sees the tessellation. The *extra* thing
