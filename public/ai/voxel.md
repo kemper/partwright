@@ -58,7 +58,11 @@ are **integers** in the range −1024…1023 on each axis. 1 voxel = 1 world uni
 | `v.get(x, y, z)` → `0xRRGGBB \| null` | Color of a voxel, or null if empty. |
 | `v.fillBox([x0,y0,z0], [x1,y1,z1], color)` | Fill an inclusive box (corners in any order). |
 | `v.sphere([cx,cy,cz], radius, color)` | Fill a solid sphere. |
+| `v.cylinder([cx,cy,cz], radius, height, color, axis?)` | Fill a solid cylinder; base centered on the point, extends `height` along `axis` (`'x'`/`'y'`/`'z'`, default `'z'`). |
 | `v.line([x0,y0,z0], [x1,y1,z1], color)` | Draw a 1-voxel-thick line (3D Bresenham). |
+| `v.translate([dx,dy,dz])` | Shift every voxel by an integer offset. |
+| `v.mirror('x' \| 'y' \| 'z')` | Add a mirrored copy across that axis's 0-plane (great for symmetric models). |
+| `v.hollow(thickness?)` | Remove interior voxels, leaving a shell of the given wall thickness (default 1). |
 | `v.size` | Number of occupied voxels. |
 | `v.bounds()` → `{min,max} \| null` | Inclusive extents, or null when empty. |
 | `v.forEach((x,y,z,color) => …)` | Iterate occupied voxels. |
@@ -86,6 +90,39 @@ rendered model is colored with no extra step, and GLB / 3MF / OBJ exports carry
 those colors out. (The face-region **paint tools** are mesh-triangle based and
 designed around the solid engines — painting *on top of* a voxel model is a
 planned follow-up; for now, set color per voxel in code.)
+
+## Rounded edges (smooth surfacing)
+
+By default a grid meshes as hard cubes. Call `.smooth()` before returning it to
+round the edges and corners instead — useful for organic shapes, soft props, or
+just softening the blocky look:
+
+```js
+const { voxels } = api;
+return voxels()
+  .sphere([0, 0, 0], 6, '#e7b')
+  .smooth();              // rounded edges
+```
+
+`.smooth(opts)` accepts an iteration count or `{ iterations, detail }`:
+
+- **`iterations`** (1–8, default 2) — more passes = rounder. It's a Taubin
+  λ/μ smoothing of the mesh, so the model rounds without collapsing/shrinking.
+- **`detail`** (1–4, default 1) — supersamples the grid ×`detail` before
+  smoothing, giving finer, more controlled rounding on coarse/small models (at
+  more triangles). The result is scaled back to the original world size.
+
+```js
+return voxels().fillBox([-4,-4,0],[4,4,8], '#6cf').smooth({ iterations: 4, detail: 2 });
+```
+
+Smoothing only moves vertices — topology is unchanged — so per-voxel colors are
+preserved and the result stays a watertight manifold (exports/paint still work).
+Call `.blocky()` to switch back to hard faces (the default).
+
+> For a fully organic surface from an implicit field, manifold-js's
+> `Manifold.levelSet` or the `api.sdf` engine are better suited; `.smooth()` is
+> the lightweight "round my voxels" option that stays inside the voxel workflow.
 
 ## Image import
 

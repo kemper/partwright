@@ -98,4 +98,46 @@ test.describe('voxel engine', () => {
     expect(result.lang).toBe('voxel');
     expect(result.geo.isManifold).toBe(true);
   });
+
+  test('smooth surfacing rounds the mesh while staying a manifold', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      const block = await pw.run(`
+        const { voxels } = api;
+        return voxels().fillBox([0,0,0],[5,5,5], '#3399ff');
+      `);
+      const smooth = await pw.run(`
+        const { voxels } = api;
+        return voxels().fillBox([0,0,0],[5,5,5], '#3399ff').smooth();
+      `);
+      return { block, smooth };
+    });
+    expect(result.block.error).toBeFalsy();
+    expect(result.smooth.error).toBeFalsy();
+    // The real-WASM proof: ofMesh accepts the smoothed mesh too.
+    expect(result.smooth.isManifold).toBe(true);
+    expect(result.smooth.componentCount).toBe(1);
+    // detail 1 only moves vertices, so the triangle count matches the block mesh.
+    expect(result.smooth.triangleCount).toBe(result.block.triangleCount);
+    // Still a valid, positive-volume solid (Taubin's anti-shrink pass keeps the
+    // size roughly stable rather than collapsing it).
+    expect(result.smooth.volume).toBeGreaterThan(0);
+  });
+
+  test('smooth with higher detail densifies and stays manifold', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      return await pw.run(`
+        const { voxels } = api;
+        return voxels().cylinder([0,0,0], 4, 12, '#ff8c42').smooth({ iterations: 2, detail: 2 });
+      `);
+    });
+    expect(result.error).toBeFalsy();
+    expect(result.isManifold).toBe(true);
+    expect(result.triangleCount).toBeGreaterThan(0);
+  });
 });

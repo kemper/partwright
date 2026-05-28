@@ -7,7 +7,7 @@
 // unit-tested directly in the vitest tier and imported into the geometry
 // Worker without pulling in browser globals.
 
-import { assertNumber, assertNumberTuple, ValidationError } from '../../validation/apiValidation';
+import { assertNumber, assertNumberTuple, assertObject, assertEnum, assertNoUnknownKeys, ValidationError } from '../../validation/apiValidation';
 
 export type Vec3 = [number, number, number];
 /** A color the sandbox API accepts: `[r,g,b]` 0–255, `'#rgb'`/`'#rrggbb'`, or a
@@ -31,6 +31,12 @@ function assertCoord(v: number, name: string): number {
 function packKey(x: number, y: number, z: number): number {
   // Each component is shifted into [0, 2047] before packing.
   return ((x + HALF) * DIM + (y + HALF)) * DIM + (z + HALF);
+}
+
+function inRange(x: number, y: number, z: number): boolean {
+  return x >= COORD_MIN && x <= COORD_MAX
+    && y >= COORD_MIN && y <= COORD_MAX
+    && z >= COORD_MIN && z <= COORD_MAX;
 }
 
 /** Normalize any accepted color form to a 24-bit `0xRRGGBB` integer. */
@@ -63,12 +69,19 @@ export function colorComponents(rgb: number): Vec3 {
 
 export interface GridBounds { min: Vec3; max: Vec3 }
 
+/** How a grid is turned into a mesh. `blocks` = hard cube faces (default);
+ *  `smooth` = Taubin-rounded edges (optionally over a `detail`× supersampled
+ *  grid for finer rounding). Carried on the grid so the mesher/engine can read
+ *  it off the returned value. */
+export interface Surfacing { mode: 'blocks' | 'smooth'; iterations: number; detail: number }
+
 /** A mutable sparse voxel grid. Builder methods chain (`return this`). */
 export class VoxelGrid {
   /** @internal Brand so the engine can recognize a returned grid even across
    *  bundle boundaries where `instanceof` alone might be fragile. */
   readonly __isVoxelGrid = true as const;
   private cells = new Map<number, number>();
+  private _surfacing: Surfacing = { mode: 'blocks', iterations: 2, detail: 1 };
 
   /** Number of occupied voxels. */
   get size(): number { return this.cells.size; }
@@ -179,6 +192,150 @@ export class VoxelGrid {
       if (z < min[2]) min[2] = z; if (z > max[2]) max[2] = z;
     });
     return { min, max };
+  }
+
+  /** Fill a solid cylinder of `radius` and `height` (in voxels) whose base
+   *  face is centered on `base`, extending in +`axis`. */
+  cylinder(base: Vec3, radius: number, height: number, color: ColorInput, axis: 'x' | 'y' | 'z' = 'z'): this {
+    const b = assertNumberTuple(base, 3, 'cylinder(base)');
+    const r = assertNumber(radius, 'cylinder(radius)', { min: 0 })!;
+    const h = assertNumber(height, 'cylinder(height)', { integer: true, min: 1 })!;
+    const ax = assertEnum(axis, ['x', 'y', 'z'] as const, 'cylinder(axis)');
+    const rgb = normalizeColor(color, 'cylinder(color)');
+    const bx = Math.round(b[0]), by = Math.round(b[1]), bz = Math.round(b[2]);
+    const ri = Math.ceil(r), r2 = r * r;
+    for (let l = 0; l < h; l++) {
+      for (let du = -ri; du <= ri; du++) {
+        for (let dv = -ri; dv <= ri; dv++) {
+          if (du * du + dv * dv > r2) continue;
+          let x: number, y: number, z: number;
+          if (ax === 'z') { x = bx + du; y = by + dv; z = bz + l; }
+          else if (ax === 'y') { x = bx + du; y = by + l; z = bz + dv; }
+          else { x = bx + l; y = by + du; z = bz + dv; }
+          if (inRange(x, y, z)) this.cells.set(packKey(x, y, z), rgb);
+        }
+      }
+    }
+    return this;
+  }
+
+  /** Translate every voxel by an integer offset (rounded). */
+  translate(delta: Vec3): this {
+    const d = assertNumberTuple(delta, 3, 'translate(delta)');
+    const dx = Math.round(d[0]), dy = Math.round(d[1]), dz = Math.round(d[2]);
+    const moved = new Map<number, number>();
+    this.forEach((x, y, z, c) => {
+      const nx = x + dx, ny = y + dy, nz = z + dz;
+      if (inRange(nx, ny, nz)) moved.set(packKey(nx, ny, nz), c);
+    });
+    this.cells = moved;
+    return this;
+  }
+
+  /** Add a mirrored copy of every voxel across the given axis's 0-plane (cell
+   *  `n` maps to cell `-1-n`, so the geometry mirrors exactly about 0). */
+  mirror(axis: 'x' | 'y' | 'z'): this {
+    const ax = assertEnum(axis, ['x', 'y', 'z'] as const, 'mirror(axis)');
+    const additions: [number, number, number, number][] = [];
+    this.forEach((x, y, z, c) => {
+      let nx = x, ny = y, nz = z;
+      if (ax === 'x') nx = -1 - x; else if (ax === 'y') ny = -1 - y; else nz = -1 - z;
+      if (inRange(nx, ny, nz)) additions.push([nx, ny, nz, c]);
+    });
+    for (const [x, y, z, c] of additions) this.cells.set(packKey(x, y, z), c);
+    return this;
+  }
+
+  /** Hollow the solid into a shell of the given wall `thickness` (in voxels),
+   *  removing voxels deeper than `thickness` from the surface. */
+  hollow(thickness = 1): this {
+    const t = assertNumber(thickness, 'hollow(thickness)', { integer: true, min: 1 })!;
+    // BFS the depth of each occupied voxel from the surface (a voxel with any
+    // empty face-neighbour is depth 1); remove anything deeper than `t`.
+    const dist = new Map<number, number>();
+    const queue: number[] = []; // flattened (x,y,z) triples
+    this.forEach((x, y, z) => {
+      if (!this.has(x + 1, y, z) || !this.has(x - 1, y, z)
+        || !this.has(x, y + 1, z) || !this.has(x, y - 1, z)
+        || !this.has(x, y, z + 1) || !this.has(x, y, z - 1)) {
+        dist.set(packKey(x, y, z), 1);
+        queue.push(x, y, z);
+      }
+    });
+    for (let head = 0; head < queue.length; head += 3) {
+      const x = queue[head], y = queue[head + 1], z = queue[head + 2];
+      const d = dist.get(packKey(x, y, z))!;
+      const nbrs: Vec3[] = [[x + 1, y, z], [x - 1, y, z], [x, y + 1, z], [x, y - 1, z], [x, y, z + 1], [x, y, z - 1]];
+      for (const [nx, ny, nz] of nbrs) {
+        if (!this.has(nx, ny, nz)) continue;
+        const nk = packKey(nx, ny, nz);
+        if (dist.has(nk)) continue;
+        dist.set(nk, d + 1);
+        queue.push(nx, ny, nz);
+      }
+    }
+    const toRemove: number[] = [];
+    this.forEach((x, y, z) => {
+      const d = dist.get(packKey(x, y, z));
+      if (d === undefined || d > t) toRemove.push(packKey(x, y, z));
+    });
+    for (const k of toRemove) this.cells.delete(k);
+    return this;
+  }
+
+  // ---- Surfacing (how the grid is meshed) -------------------------------
+
+  /** Select rounded-edge surfacing. Accepts an iteration count or
+   *  `{ iterations, detail }`; more iterations = rounder, higher detail
+   *  (supersample factor) = finer rounding on coarse models. Chainable. */
+  smooth(opts: number | { iterations?: number; detail?: number } = {}): this {
+    let iterations = 2, detail = 1;
+    if (typeof opts === 'number') {
+      iterations = assertNumber(opts, 'smooth(iterations)', { integer: true, min: 1, max: 8 })!;
+    } else {
+      const o = assertObject(opts, 'smooth(opts)')!;
+      assertNoUnknownKeys(o, ['iterations', 'detail'], 'smooth(opts)');
+      if (o.iterations !== undefined) iterations = assertNumber(o.iterations, 'smooth.iterations', { integer: true, min: 1, max: 8 })!;
+      if (o.detail !== undefined) detail = assertNumber(o.detail, 'smooth.detail', { integer: true, min: 1, max: 4 })!;
+    }
+    this._surfacing = { mode: 'smooth', iterations, detail };
+    return this;
+  }
+
+  /** Reset to hard-faced (blocky) surfacing — the default. Chainable. */
+  blocky(): this {
+    this._surfacing = { mode: 'blocks', iterations: 2, detail: 1 };
+    return this;
+  }
+
+  /** The grid's current surfacing settings (a copy). */
+  surfacing(): Surfacing { return { ...this._surfacing }; }
+
+  /** Return a NEW grid with every voxel expanded into a `factor`³ block — used
+   *  by smooth surfacing to give the smoother more vertices to work with. The
+   *  result uses default (blocky) surfacing; the caller scales the mesh back
+   *  down. Throws if the expansion would exceed the coordinate range. */
+  supersample(factor: number): VoxelGrid {
+    const f = assertNumber(factor, 'supersample(factor)', { integer: true, min: 1, max: 8 })!;
+    const out = new VoxelGrid();
+    const b = this.bounds();
+    if (!b || f === 1) {
+      this.forEach((x, y, z, c) => out.cells.set(packKey(x, y, z), c));
+      return out;
+    }
+    const lo = Math.min(b.min[0], b.min[1], b.min[2]) * f;
+    const hi = Math.max(b.max[0], b.max[1], b.max[2]) * f + (f - 1);
+    if (lo < COORD_MIN || hi > COORD_MAX) {
+      throw new ValidationError(`supersample(${f}): the model is too large to supersample by ${f}× (coordinates would exceed ±${HALF}). Use a smaller detail factor.`);
+    }
+    this.forEach((x, y, z, c) => {
+      const bx = x * f, by = y * f, bz = z * f;
+      for (let i = 0; i < f; i++)
+        for (let j = 0; j < f; j++)
+          for (let k = 0; k < f; k++)
+            out.cells.set(packKey(bx + i, by + j, bz + k), c);
+    });
+    return out;
   }
 
   /** @internal Raw cell map — for the mesher's fast neighbor queries. */

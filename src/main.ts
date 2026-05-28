@@ -3194,6 +3194,7 @@ async function main() {
     "v.fillBox([-5, -5, 0], [4, 4, 0], '#6b8cff');   // a 10x10 base slab\n" +
     "v.fillBox([-1, -1, 1], [1, 1, 6], '#ff8c42');   // a tower\n" +
     "v.set(0, 0, 7, '#ff3b30');                       // a red cap\n" +
+    '// Tip: return v.smooth() for rounded edges (see /ai/voxel.md).\n' +
     'return v;\n';
   // BREP / replicad — quick showcase of the headline features:
   //   - selective fillet (the inDirection-based workaround for box edges,

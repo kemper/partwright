@@ -307,7 +307,7 @@ export function toggleSuffix(toggles: ChatToggles): string {
         : lang === 'replicad'
           ? ' Note: BREP sessions return a BREP shape (api.BREP.box/cylinder/sphere.fillet/.chamfer/.fuse/.cut/.intersect), not a Manifold. See /ai/replicad.md for the full BREP API and STEP-export workflow. Mesh-only ops (api.Manifold.warp / .levelSet) are not exposed in BREP sessions — switch to manifold-js if you need them.'
           : lang === 'voxel'
-            ? ' Note: voxel sessions build a colored cube grid — `const v = api.voxels(); v.fillBox([x0,y0,z0],[x1,y1,z1],color); v.set(x,y,z,color); return v;`. No Manifold, no booleans, no return-a-Manifold; colors are per-voxel (hex or [r,g,b]). See /ai/voxel.md.'
+            ? ' Note: voxel sessions build a colored cube grid — `const v = api.voxels(); v.fillBox([x0,y0,z0],[x1,y1,z1],color); v.set(x,y,z,color); return v;`. No Manifold, no booleans, no return-a-Manifold; colors are per-voxel (hex or [r,g,b]). Also: v.cylinder/sphere/line/mirror/translate/hollow, and v.smooth() for rounded edges. See /ai/voxel.md.'
             : ' Tip: you can also reach for api.BREP.* inside a manifold-js session for one-off exact fillets/chamfers (then api.BREP.toManifold(shape, api.Manifold) to drop back into the mesh world) — no language switch needed unless STEP export is the goal.'
     }`,
     `Model: ${model}`,

@@ -17,6 +17,7 @@
 
 import type { MeshData } from '../types';
 import { VoxelGrid, colorComponents } from './grid';
+import { taubinSmooth, scaleMeshPositions } from './smooth';
 
 // The 6 face directions: neighbor offset + the 4 corner offsets (relative to
 // the voxel's min corner) in CCW order viewed from outside, so each face's
@@ -93,4 +94,19 @@ export function gridToMeshData(grid: VoxelGrid): MeshData {
     numProp: 3,
     triColors: triColorArr,
   };
+}
+
+/** Mesh a grid according to its surfacing setting. `blocks` (default) returns
+ *  the hard-faced mesh; `smooth` rounds the edges by Taubin-smoothing the
+ *  block mesh (optionally over a supersampled grid, then scaled back to the
+ *  original world size). Topology is unchanged by smoothing, so per-voxel
+ *  colors and manifoldness carry through. This is what the engine calls. */
+export function meshGrid(grid: VoxelGrid): MeshData {
+  const surf = grid.surfacing();
+  if (surf.mode !== 'smooth') return gridToMeshData(grid);
+  const dense = surf.detail > 1 ? grid.supersample(surf.detail) : grid;
+  let mesh = gridToMeshData(dense);
+  mesh = taubinSmooth(mesh, surf.iterations);
+  if (surf.detail > 1) scaleMeshPositions(mesh, 1 / surf.detail);
+  return mesh;
 }

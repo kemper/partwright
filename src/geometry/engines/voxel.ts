@@ -1,7 +1,7 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
 import { VoxelGrid, decodeGrid, normalizeColor } from '../voxel/grid';
-import { gridToMeshData } from '../voxel/mesher';
+import { meshGrid } from '../voxel/mesher';
 
 // The `voxel` engine: user code builds a sparse VoxelGrid and returns it; we
 // mesh the exposed faces into welded `MeshData` (with per-voxel colors) that
@@ -79,7 +79,7 @@ export const voxelEngine: Engine = {
     }
 
     try {
-      const mesh = gridToMeshData(grid);
+      const mesh = meshGrid(grid);
       return { mesh, manifold: null, error: null };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);

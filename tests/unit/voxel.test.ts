@@ -7,7 +7,8 @@ import {
   decodeGrid,
   COORD_MAX,
 } from '../../src/geometry/voxel/grid';
-import { gridToMeshData } from '../../src/geometry/voxel/mesher';
+import { gridToMeshData, meshGrid } from '../../src/geometry/voxel/mesher';
+import { taubinSmooth } from '../../src/geometry/voxel/smooth';
 import {
   imageDataToVoxelGrid,
   generateVoxelImportCode,
@@ -226,5 +227,136 @@ describe('imageDataToVoxelGrid', () => {
     const restored = decodeGrid(JSON.parse(m![1]));
     expect(restored.size).toBe(grid.size);
     expect(restored.get(-1, 0, 1)).toBe(0xff0000);
+  });
+});
+
+describe('VoxelGrid ops', () => {
+  it('cylinder fills a disc-extruded solid along the chosen axis', () => {
+    const v = new VoxelGrid();
+    v.cylinder([0, 0, 0], 3, 5, '#ffffff'); // Z by default, height 5
+    expect(v.has(0, 0, 0)).toBe(true);
+    expect(v.has(0, 0, 4)).toBe(true);    // height 5 → z 0..4
+    expect(v.has(0, 0, 5)).toBe(false);
+    expect(v.has(3, 0, 2)).toBe(true);    // 3² ≤ 9 (on the rim)
+    expect(v.has(3, 3, 2)).toBe(false);   // 18 > 9 (corner, outside)
+    const b = v.bounds()!;
+    expect([b.min[2], b.max[2]]).toEqual([0, 4]);
+
+    const vx = new VoxelGrid();
+    vx.cylinder([0, 0, 0], 2, 4, '#fff', 'x');
+    expect(vx.has(3, 0, 0)).toBe(true);   // extends along +X
+    expect(vx.has(0, 2, 0)).toBe(true);   // radius on the YZ disc
+  });
+
+  it('translate shifts every voxel and keeps colors', () => {
+    const v = new VoxelGrid();
+    v.set(0, 0, 0, '#ffffff').set(1, 0, 0, '#ff0000');
+    v.translate([5, 2, -1]);
+    expect(v.has(5, 2, -1)).toBe(true);
+    expect(v.has(6, 2, -1)).toBe(true);
+    expect(v.has(0, 0, 0)).toBe(false);
+    expect(v.size).toBe(2);
+    expect(v.get(5, 2, -1)).toBe(0xffffff);
+  });
+
+  it('mirror adds a reflected copy across the axis 0-plane', () => {
+    const v = new VoxelGrid();
+    v.set(2, 0, 0, '#abcdef');
+    v.mirror('x');
+    expect(v.has(2, 0, 0)).toBe(true);
+    expect(v.has(-3, 0, 0)).toBe(true); // cell 2 -> cell -1-2
+    expect(v.get(-3, 0, 0)).toBe(0xabcdef);
+    expect(v.size).toBe(2);
+  });
+
+  it('hollow removes interior voxels, leaving a shell', () => {
+    const v = new VoxelGrid();
+    v.fillBox([0, 0, 0], [2, 2, 2], '#ffffff'); // solid 3×3×3 = 27
+    expect(v.size).toBe(27);
+    v.hollow(1);
+    expect(v.has(1, 1, 1)).toBe(false); // the one interior voxel is gone
+    expect(v.has(0, 0, 0)).toBe(true);  // shell kept
+    expect(v.size).toBe(26);
+  });
+
+  it('supersample expands each voxel into a factor³ block', () => {
+    const v = new VoxelGrid();
+    v.set(0, 0, 0, '#aabbcc');
+    const big = v.supersample(2);
+    expect(big.size).toBe(8);
+    expect(big.get(0, 0, 0)).toBe(0xaabbcc);
+    expect(big.get(1, 1, 1)).toBe(0xaabbcc);
+    expect(v.size).toBe(1); // original untouched
+  });
+
+  it('supersample throws when the result would exceed the coordinate range', () => {
+    const v = new VoxelGrid();
+    v.set(1000, 0, 0, '#fff'); // 1000*8 ≫ 1023
+    expect(() => v.supersample(8)).toThrow();
+  });
+
+  it('surfacing defaults to blocks and smooth() toggles it', () => {
+    const v = new VoxelGrid();
+    expect(v.surfacing().mode).toBe('blocks');
+    v.smooth();
+    expect(v.surfacing()).toMatchObject({ mode: 'smooth', iterations: 2, detail: 1 });
+    v.smooth(4);
+    expect(v.surfacing().iterations).toBe(4);
+    v.smooth({ iterations: 3, detail: 2 });
+    expect(v.surfacing()).toMatchObject({ mode: 'smooth', iterations: 3, detail: 2 });
+    v.blocky();
+    expect(v.surfacing().mode).toBe('blocks');
+    expect(() => v.smooth({ detail: 9 })).toThrow();
+  });
+});
+
+describe('voxel surfacing (Taubin smoothing)', () => {
+  it('taubinSmooth moves vertices but preserves topology + colors', () => {
+    const v = new VoxelGrid();
+    v.fillBox([0, 0, 0], [3, 3, 3], '#3399ff');
+    const block = gridToMeshData(v);
+    const smoothed = taubinSmooth(block, 2);
+    expect(smoothed.numVert).toBe(block.numVert);
+    expect(smoothed.numTri).toBe(block.numTri);
+    expect(smoothed.triColors).toBe(block.triColors); // colors carried (same ref)
+    expect(Array.from(smoothed.vertProperties).every(Number.isFinite)).toBe(true);
+    let moved = false;
+    for (let i = 0; i < block.vertProperties.length; i++) {
+      if (Math.abs(block.vertProperties[i] - smoothed.vertProperties[i]) > 1e-6) { moved = true; break; }
+    }
+    expect(moved).toBe(true);
+  });
+
+  it('taubinSmooth with 0 iterations is a no-op', () => {
+    const v = new VoxelGrid();
+    v.set(0, 0, 0, '#fff');
+    const m = gridToMeshData(v);
+    expect(taubinSmooth(m, 0)).toBe(m);
+  });
+
+  it('meshGrid applies smooth surfacing (detail 1 keeps topology, detail>1 densifies)', () => {
+    const v = new VoxelGrid();
+    v.fillBox([0, 0, 0], [3, 3, 3], '#3399ff').smooth();
+    const m = meshGrid(v);
+    expect(m.numTri).toBe(192); // detail 1 → same topology as the block mesh
+    const block = gridToMeshData(new VoxelGrid().fillBox([0, 0, 0], [3, 3, 3], '#3399ff'));
+    let moved = false;
+    for (let i = 0; i < block.vertProperties.length; i++) {
+      if (Math.abs(block.vertProperties[i] - m.vertProperties[i]) > 1e-6) { moved = true; break; }
+    }
+    expect(moved).toBe(true);
+
+    const v2 = new VoxelGrid();
+    v2.fillBox([0, 0, 0], [3, 3, 3], '#3399ff').smooth({ iterations: 2, detail: 2 });
+    const m2 = meshGrid(v2);
+    expect(m2.numTri).toBeGreaterThan(192); // supersampled → denser mesh
+    expect(Array.from(m2.vertProperties).every(Number.isFinite)).toBe(true);
+    // Scaled back to the original world size — the block spans ~0..4 units,
+    // NOT the 0..8 of the 2× supersampled grid. (Taubin's anti-shrink pass can
+    // nudge corner vertices slightly past 4, so allow a small margin.)
+    let maxX = -Infinity;
+    for (let i = 0; i < m2.vertProperties.length; i += 3) maxX = Math.max(maxX, m2.vertProperties[i]);
+    expect(maxX).toBeGreaterThan(3);
+    expect(maxX).toBeLessThan(5);
   });
 });
