@@ -4,14 +4,16 @@
 // writes the result into public/catalog/. Also patches public/catalog/
 // manifest.json with the new entries.
 //
-// Run with: GENERATE_CATALOG=1 npx playwright test tests/generate-catalog-entries.spec.ts
+// Lives outside `tests/` so the default `npm run test:e2e` (which uses
+// playwright.config.ts → testDir: './tests') never picks it up.
+// Silently regenerating the catalog on every test run would leave the
+// working tree dirty after each run and confuse follow-up sessions.
+// It still uses the Playwright runner — that's where Page / fixtures /
+// the dev-server lifecycle come from — but loads via a dedicated
+// playwright.generators.config.ts.
 //
-// This is a *generator* — its job is to produce static catalog files
-// committed into the repo, not to assert behaviour. The describe block
-// is gated on GENERATE_CATALOG so a regular `npm run test:e2e` doesn't
-// silently overwrite the catalog files with churning sessionIds /
-// timestamps / codeHashes (which would otherwise leave the working
-// tree dirty after every test run).
+// Run with:
+//   npm run generate:catalog
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -79,11 +81,6 @@ async function waitForEngine(page: Page): Promise<void> {
 }
 
 test.describe.serial('generate catalog entries', () => {
-  test.beforeAll(() => {
-    test.skip(process.env.GENERATE_CATALOG !== '1',
-      'Generator-only spec. Re-run with GENERATE_CATALOG=1 to regenerate public/catalog/*.partwright.json.');
-  });
-
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
   });
