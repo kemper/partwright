@@ -172,13 +172,16 @@ export class SdfNode {
   intersect(other: SdfNode): SdfNode { return opIntersect(this, other); }
 
   smoothUnion(other: SdfNode, k: number): SdfNode {
-    return opSmoothUnion(this, other, assertSmoothK(k, 'smoothUnion(k)'));
+    assertNumber(k, 'smoothUnion(k)', { min: 1e-6 });
+    return opSmoothUnion(this, other, k);
   }
   smoothSubtract(other: SdfNode, k: number): SdfNode {
-    return opSmoothSubtract(this, other, assertSmoothK(k, 'smoothSubtract(k)'));
+    assertNumber(k, 'smoothSubtract(k)', { min: 1e-6 });
+    return opSmoothSubtract(this, other, k);
   }
   smoothIntersect(other: SdfNode, k: number): SdfNode {
-    return opSmoothIntersect(this, other, assertSmoothK(k, 'smoothIntersect(k)'));
+    assertNumber(k, 'smoothIntersect(k)', { min: 1e-6 });
+    return opSmoothIntersect(this, other, k);
   }
 
   // ---- Transforms -----------------------------------------------------
@@ -314,8 +317,8 @@ function buildSdf(
   if (!Number.isFinite(bounds.min[0] + bounds.min[1] + bounds.min[2]
                        + bounds.max[0] + bounds.max[1] + bounds.max[2])) {
     throw new ValidationError(
-      'api.sdf.build(): could not infer finite bounds for this SDF (likely an unbounded periodic op like .repeat()). '
-      + 'Pass an explicit { bounds: { min:[x,y,z], max:[x,y,z] } }.',
+      'api.sdf.build(): could not infer finite bounds for this SDF (e.g. a bare gyroid, which is mathematically infinite). '
+      + 'Intersect with a finite shape, or pass an explicit { bounds: { min:[x,y,z], max:[x,y,z] } }.',
     );
   }
   const edgeLength = opts.edgeLength ?? defaultEdgeLength(bounds);
@@ -621,11 +624,6 @@ function opIntersect(a: SdfNode, b: SdfNode): SdfNode {
   });
 }
 
-function assertSmoothK(k: unknown, paramName: string): number {
-  assertNumber(k, paramName, { min: 1e-6 });
-  return k as number;
-}
-
 function opSmoothUnion(a: SdfNode, b: SdfNode, k: number): SdfNode {
   return new SdfNode({
     kind: 'smoothUnion',
@@ -654,7 +652,10 @@ function opSmoothSubtract(a: SdfNode, b: SdfNode, k: number): SdfNode {
       const h = clamp(0.5 - 0.5 * (db + da) / k, 0, 1);
       return mix(da, -db, h) + k * h * (1 - h);
     },
-    bounds: a._bounds,
+    // The smooth-subtract seam can push the iso-surface up to ~k/4
+    // outward near the blend, same as smoothUnion. Expand by k*0.5
+    // so the mesh bbox doesn't crop a lid into the blend region.
+    bounds: bbExpand(a._bounds, k * 0.5),
     children: [a, b],
     partitionable: false,
   });
@@ -668,7 +669,9 @@ function opSmoothIntersect(a: SdfNode, b: SdfNode, k: number): SdfNode {
       const h = clamp(0.5 - 0.5 * (db - da) / k, 0, 1);
       return mix(db, da, h) + k * h * (1 - h);
     },
-    bounds: bbIntersect(a._bounds, b._bounds),
+    // Same blend-bulge concern as smoothUnion/Subtract — expand the
+    // sharp-intersect bbox so the meshed iso-surface closes cleanly.
+    bounds: bbExpand(bbIntersect(a._bounds, b._bounds), k * 0.5),
     children: [a, b],
     partitionable: false,
   });
@@ -815,16 +818,10 @@ function opTwist(child: SdfNode, degPerUnit: number, axis: 'x' | 'y' | 'z'): Sdf
       return child._eval(x, c * y + s * z, -s * y + c * z);
     };
   }
-  // Twist keeps points on the axis of twist where they are, and rotates
-  // off-axis points. Bound by twisting the bbox by the worst-case angle.
-  const b = child._bounds;
-  let worstAng = 0;
-  if (axis === 'z') worstAng = Math.max(Math.abs(b.min[2]), Math.abs(b.max[2])) * Math.abs(rate);
-  else if (axis === 'y') worstAng = Math.max(Math.abs(b.min[1]), Math.abs(b.max[1])) * Math.abs(rate);
-  else worstAng = Math.max(Math.abs(b.min[0]), Math.abs(b.max[0])) * Math.abs(rate);
   // After twist, the swept volume fits in a bounding cylinder whose
   // radius is the worst-case distance from the axis. Use a conservative
   // expansion: the bbox diagonal projected onto the twist plane.
+  const b = child._bounds;
   const sweep = (() => {
     if (axis === 'z') return Math.hypot(Math.max(Math.abs(b.min[0]), Math.abs(b.max[0])),
                                         Math.max(Math.abs(b.min[1]), Math.abs(b.max[1])));
@@ -839,9 +836,6 @@ function opTwist(child: SdfNode, degPerUnit: number, axis: 'x' | 'y' | 'z'): Sdf
   if (axis === 'z') bounds = { min: [-sweep, -sweep, b.min[2]], max: [sweep, sweep, b.max[2]] };
   else if (axis === 'y') bounds = { min: [-sweep, b.min[1], -sweep], max: [sweep, b.max[1], sweep] };
   else bounds = { min: [b.min[0], -sweep, -sweep], max: [b.max[0], sweep, sweep] };
-  // Reference worstAng so an unused-var lint doesn't fire — kept for
-  // future use (twist-direction error estimation).
-  void worstAng;
   return new SdfNode({ kind: 'twist', eval: evalFn, bounds, children: [child], partitionable: false });
 }
 
@@ -900,6 +894,8 @@ export interface SdfNamespace {
   gyroid(cellSize: number, thickness: number): SdfNode;
   union(...nodes: SdfNode[]): SdfNode;
   smoothUnion(a: SdfNode, b: SdfNode, k: number): SdfNode;
+  smoothSubtract(a: SdfNode, b: SdfNode, k: number): SdfNode;
+  smoothIntersect(a: SdfNode, b: SdfNode, k: number): SdfNode;
   subtract(a: SdfNode, b: SdfNode): SdfNode;
   intersect(a: SdfNode, b: SdfNode): SdfNode;
   /** Build the SDF tree into a Manifold via Manifold.levelSet, with
@@ -948,6 +944,8 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
       return acc;
     },
     smoothUnion: (a, b, k) => assertSdfNode(a, 'smoothUnion(a)').smoothUnion(assertSdfNode(b, 'smoothUnion(b)'), k),
+    smoothSubtract: (a, b, k) => assertSdfNode(a, 'smoothSubtract(a)').smoothSubtract(assertSdfNode(b, 'smoothSubtract(b)'), k),
+    smoothIntersect: (a, b, k) => assertSdfNode(a, 'smoothIntersect(a)').smoothIntersect(assertSdfNode(b, 'smoothIntersect(b)'), k),
     subtract: (a, b) => opSubtract(assertSdfNode(a, 'subtract(a)'), assertSdfNode(b, 'subtract(b)')),
     intersect: (a, b) => opIntersect(assertSdfNode(a, 'intersect(a)'), assertSdfNode(b, 'intersect(b)')),
     build: (node, opts) => assertSdfNode(node, 'build(node)').build(opts ?? {}),

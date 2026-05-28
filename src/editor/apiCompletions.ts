@@ -92,6 +92,8 @@ const SDF_STATIC: Completion[] = [
   fn('gyroid', '(cellSize, thickness)', 'Triply-periodic minimal surface — INFINITE. Intersect with a finite shape or pass explicit bounds to .build().'),
   fn('union', '(...nodes)', 'Hard union of two or more SDF nodes.'),
   fn('smoothUnion', '(a, b, k)', 'Smoothly blended union — k is the fillet radius. The killer feature of SDF.'),
+  fn('smoothSubtract', '(a, b, k)', 'Smoothly blended subtract — softened pocket with fillet radius k.'),
+  fn('smoothIntersect', '(a, b, k)', 'Smoothly blended intersection.'),
   fn('subtract', '(a, b)', 'a minus b (sharp).'),
   fn('intersect', '(a, b)', 'Intersection of two SDF nodes.'),
   fn('build', '(node, opts?)', 'Lower an SDF tree to a Manifold via marching tetrahedra. opts = { edgeLength?, bounds?, level?, tolerance? }.'),

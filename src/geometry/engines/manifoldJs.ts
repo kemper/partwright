@@ -4,7 +4,7 @@ import { createCurvesNamespace } from '../curves';
 import { createMeshOpsNamespace } from '../meshOps';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
-import { createSdfNamespace } from '../sdf';
+import { createSdfNamespace, SdfNode } from '../sdf';
 
 /** Marker the sandbox attaches to render-only proxies (see `renderMesh` below).
  *  The engine looks for it on the user-returned object to decide whether the
@@ -276,6 +276,18 @@ export const manifoldJsEngine: Engine = {
       result = fn(api);
 
       if (!result || typeof result.getMesh !== 'function') {
+        // Common SDF mistake: returning the expression tree without
+        // lowering it. Give a targeted hint instead of the generic
+        // "did you forget to return" message.
+        if (result instanceof SdfNode) {
+          const error = 'Code returned an SDF expression, not a Manifold. Add `.build()` to lower it: `return someSdf.build({ edgeLength: 0.5 })`. See /ai/sdf.md.';
+          return {
+            mesh: null,
+            manifold: null,
+            error,
+            diagnostics: runtimeDiagnostic(error, 'Append `.build()` (or `api.sdf.build(node)`) to the return value to mesh it through Manifold.levelSet.', 'JavaScript'),
+          };
+        }
         const error = 'Code must return a Manifold object. Did you forget to `return` the final Manifold? See /ai.md#before-you-start';
         return {
           mesh: null,

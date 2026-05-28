@@ -36,7 +36,10 @@ const {
   expandedMeshBounds,
 } = __testables__;
 
-const APPROX = 1e-9;
+// Digit-count for vitest's toBeCloseTo(value, numDigits). 10 means
+// |received - value| < 5e-11 — strict, because the primitives are exact
+// arithmetic when the query point lies on a defined face or apex.
+const APPROX = 10;
 
 describe('sdf primitives', () => {
   describe('sphere', () => {
@@ -208,6 +211,25 @@ describe('sdf booleans', () => {
     const u = opUnion(a, b);
     expect(u.bounds().min).toEqual([-8, -5, -5]);
     expect(u.bounds().max).toEqual([8, 5, 5]);
+  });
+
+  it('smoothUnion / smoothSubtract / smoothIntersect all expand bounds by ~k/2', () => {
+    // The smooth seam can bulge the iso-surface outward by ~k/4 — if the
+    // mesh bbox is tight to the sharp shape it can clip a lid. All three
+    // smooth ops apply the same expansion so the marching-tetrahedra
+    // bounds are safe.
+    const k = 2;
+    const su = __testables__.opSmoothUnion(a, b, k);
+    const ss = __testables__.opSmoothSubtract(a, b, k);
+    const si = __testables__.opSmoothIntersect(a, b, k);
+    expect(su.bounds().min[0]).toBeLessThanOrEqual(-9);     // -8 - k/2
+    expect(su.bounds().max[0]).toBeGreaterThanOrEqual(9);   // 8 + k/2
+    // smoothSubtract: a's bounds ([-8..2] in X) expanded by k/2=1 → [-9..3]
+    expect(ss.bounds().min[0]).toBeLessThanOrEqual(-9);
+    expect(ss.bounds().max[0]).toBeGreaterThanOrEqual(3);
+    // smoothIntersect: sharp ∩ is [-2,2] in X — expand by k/2 → [-3, 3]
+    expect(si.bounds().min[0]).toBeLessThanOrEqual(-3);
+    expect(si.bounds().max[0]).toBeGreaterThanOrEqual(3);
   });
 });
 

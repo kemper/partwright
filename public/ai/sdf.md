@@ -65,6 +65,8 @@ a.smoothIntersect(b, k)    // blended overlap
 
 // Or in functional form:
 api.sdf.smoothUnion(a, b, k)
+api.sdf.smoothSubtract(a, b, k)
+api.sdf.smoothIntersect(a, b, k)
 ```
 
 **Heuristic for `k`:** start at ~10% of the smallest dimension involved in the join. Too small → fillet looks like a sharp seam. Too big → the shapes lose their identity and merge into a blob.
