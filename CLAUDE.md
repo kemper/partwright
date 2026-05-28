@@ -152,7 +152,7 @@ After any changes that touch routing, Vite config, index.html, or initialization
 
 1. **Landing page**: Navigate to `http://localhost:5173/` — should show the hero section ("Partwright", "AI-driven parametric CAD in your browser"), CTA buttons, and a Recent Sessions grid (or empty state).
 2. **Open Editor**: Click "Open Editor" on the landing page — URL should change to `/editor`, status should show "Ready" (green), the code editor should appear on the left with a default example, and a 3D model should render in the viewport on the right.
-3. **WASM engine loads**: The status indicator (between editor header and tabs) should say "Ready" in green, NOT "Loading WASM..." or "WASM failed". If it shows "WASM failed", check:
+3. **WASM engine loads**: The status indicator (small pill in the top-left of the viewport) should say "Ready" in green, NOT "Loading WASM..." or "WASM failed". If it shows "WASM failed", check:
    - `coi-serviceworker.js` loads without 404 (check Network tab)
    - `manifold.wasm` loads without 403 (check Network tab) — if 403, check `server.fs.strict` in vite.config.ts
    - COEP/COOP headers are present on responses (check Response Headers)
