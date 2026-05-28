@@ -31,9 +31,12 @@ interface ModeDef {
 }
 
 const MODES: ModeDef[] = [
-  { id: 'luminance', label: 'Luminance' },
-  { id: 'quantized', label: 'Color levels' },
-  { id: 'ai', label: 'AI assist' },
+  // Order matches the new default: colour-region tiles (the keychain workflow)
+  // first, tonal heightmaps (lithophanes) second. 'ai' is intentionally absent
+  // — what used to live as a tab is now the Auto-tune button below the knobs,
+  // since it never had its own knob set and read as a phantom mode.
+  { id: 'quantized', label: 'Colour' },
+  { id: 'luminance', label: 'Tonal (relief)' },
 ];
 
 // Only one relief wizard at a time; createModalShell already enforces a single
@@ -61,7 +64,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   }
 
   const shell = createModalShell({
-    title: 'Image → Relief (HueForge)',
+    title: 'Make a part from an image',
     maxWidth: 'xl',
     scrollable: true,
     onClose: () => {
@@ -132,7 +135,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
 
   const commonSection = makeSection('Geometry');
   const luminanceSection = makeSection('Luminance mapping');
-  const quantizedSection = makeSection('Color levels');
+  const quantizedSection = makeSection('Colour regions');
 
   // Common knobs — always visible.
   numberControl(commonSection.grid, 'Width', 'mm', () => opts.common.widthMm, v => (opts.common.widthMm = v), { min: 1, max: 1000, step: 1 });
@@ -160,9 +163,9 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   // (Bambu-keychain style), and a tile cut to the image's subject silhouette.
   const tileSection = makeSection('Tile output');
   selectControl<TileOutputKind>(tileSection.grid, 'Output', () => opts.quantized.output, v => { opts.quantized.output = v; syncMode(); }, [
-    { value: 'flat', label: 'Flat tile' },
-    { value: 'silhouette', label: 'Silhouette tile' },
-    { value: 'relief', label: 'Stepped relief' },
+    { value: 'flat', label: 'Flat tile (keychain)' },
+    { value: 'silhouette', label: 'Cut to subject' },
+    { value: 'relief', label: 'Stepped relief (HueForge)' },
   ]);
   selectControl<TileShapeKind>(tileSection.grid, 'Shape', () => opts.quantized.shape, v => (opts.quantized.shape = v), [
     { value: 'rect', label: 'Rectangle' },
@@ -198,7 +201,8 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     aiBtn = document.createElement('button');
     aiBtn.type = 'button';
     aiBtn.className = 'self-start px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-500 transition-colors disabled:opacity-50 disabled:cursor-default';
-    aiBtn.textContent = '✦ AI assist';
+    aiBtn.textContent = '✦ Auto-tune';
+    aiBtn.title = 'Pick sensible defaults from the image’s contrast and saturation';
     aiBtn.addEventListener('click', runAiAssist);
     shell.body.appendChild(aiBtn);
   }
@@ -213,7 +217,9 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   const createBtn = document.createElement('button');
   createBtn.type = 'button';
   createBtn.className = BUTTON_PRIMARY;
-  createBtn.textContent = 'Create relief';
+  // Initial label set explicitly; syncMode() keeps it in sync as the user
+  // changes mode/output/file from there on.
+  createBtn.textContent = 'Create tile';
   createBtn.addEventListener('click', runCreate);
 
   shell.footer.append(cancelBtn, createBtn);
@@ -309,7 +315,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     if (!aiBtn || !image || !options.onAiAssist) return;
     aiBtn.disabled = true;
     const original = aiBtn.textContent;
-    aiBtn.textContent = '✦ Thinking…';
+    aiBtn.textContent = '✦ Tuning…';
     try {
       const result = await options.onAiAssist(image, opts);
       mergeOptions(opts, result);
@@ -321,7 +327,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
       syncMode();
       renderPreview();
     } catch (err) {
-      aiNote.textContent = `AI assist failed: ${err instanceof Error ? err.message : String(err)}`;
+      aiNote.textContent = `Auto-tune failed: ${err instanceof Error ? err.message : String(err)}`;
       aiNote.classList.remove('hidden');
     } finally {
       aiBtn.disabled = false;
@@ -420,11 +426,12 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     }
     ctx.putImageData(out, 0, 0);
 
-    const topTris = 2 * Math.max(0, w - 1) * Math.max(0, h - 1);
     const detail = opts.mode === 'quantized'
       ? `${opts.quantized.clusters} clusters`
       : `${opts.luminance.levels} levels`;
-    stat.textContent = `${w}×${h} grid · ${topTris.toLocaleString()} top tris · ${detail}`;
+    // This is a sampled source map — the actual rounded corners, keychain hole,
+    // and silhouette cut don't appear here; the stat caption flags that.
+    stat.textContent = `Source map · ${w}×${h} · ${detail}`;
   }
 
   // --- UI sync helpers -----------------------------------------------------
@@ -441,10 +448,24 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
       btn.classList.toggle('opacity-40', isSvg && !btn.disabled);
       btn.classList.toggle('pointer-events-none', isSvg);
     }
-    const showLum = !isSvg && (opts.mode === 'luminance' || opts.mode === 'ai');
+    const showLum = !isSvg && opts.mode === 'luminance';
     luminanceSection.root.classList.toggle('hidden', !showLum);
     quantizedSection.root.classList.toggle('hidden', isSvg || opts.mode !== 'quantized');
     tileSection.root.classList.toggle('hidden', !isSvg && opts.mode !== 'quantized');
+    createBtn.textContent = currentCtaLabel();
+  }
+
+  // Primary CTA label tracks the actual thing we're about to create — "Create
+  // relief" used to fire even when the user had picked a flat colour tile,
+  // which set the wrong expectation for the result.
+  function currentCtaLabel(): string {
+    if (svgText) return 'Create from SVG';
+    if (opts.mode === 'luminance') return 'Create relief';
+    switch (opts.quantized.output) {
+      case 'flat': return 'Create tile';
+      case 'silhouette': return 'Create silhouette';
+      case 'relief': return 'Create relief';
+    }
   }
 
   function syncEnabled(): void {

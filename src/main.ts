@@ -1488,6 +1488,10 @@ async function main() {
 
   // === Relief Studio (HueForge-style) ===
   let reliefStudio: ReliefStudioHandle | null = null;
+  // True only while the editor pane was collapsed by THIS module's show-studio
+  // call, so the close path can restore symmetrically without clobbering a
+  // pre-existing manual collapse the user set up before opening the studio.
+  let studioCollapsedEditor = false;
 
   function currentLayerHeight(): number {
     const sid = getState().session?.id ?? null;
@@ -1515,19 +1519,42 @@ async function main() {
   function showReliefStudio(): void {
     if (!reliefStudio) return;
     syncReliefPreviewFromSettings();
-    collapseEditor();
+    if (!studioCollapsedEditor) {
+      collapseEditor();
+      studioCollapsedEditor = true;
+    }
     reliefStudio.show();
     reliefStudio.refresh();
   }
 
+  function closeReliefStudio(): void {
+    if (!reliefStudio) return;
+    reliefStudio.hide();
+    if (studioCollapsedEditor) { expandEditor(); studioCollapsedEditor = false; }
+  }
+
   function toggleReliefStudio(): void {
     if (!reliefStudio) return;
-    if (reliefStudio.isOpen()) {
-      reliefStudio.hide();
-      expandEditor();
-    } else {
-      showReliefStudio();
+    const sid = getState().session?.id ?? null;
+    // No relief session yet — the studio's filaments/swap-guide/etc. are
+    // contextless. Send the user to the import wizard so the button has an
+    // intuitive meaning regardless of whether they've made a relief yet.
+    if (!isReliefSession(sid) && !reliefStudio.isOpen()) {
+      openReliefImportFlow();
+      return;
     }
+    if (reliefStudio.isOpen()) closeReliefStudio();
+    else showReliefStudio();
+  }
+
+  // Show/hide the studio in response to a session change. Keeps the panel from
+  // hovering over an unrelated session, and re-syncs the preview mode pills
+  // from the new session's saved settings.
+  function syncReliefStudioForSession(): void {
+    if (!reliefStudio) return;
+    const sid = getState().session?.id ?? null;
+    if (isReliefSession(sid)) showReliefStudio();
+    else if (reliefStudio.isOpen()) closeReliefStudio();
   }
 
   // Clamp the common knobs to sane physical/perf bounds. The wizard enforces
@@ -1630,6 +1657,13 @@ async function main() {
     const bounds = meshBounds(currentMeshData);
     const span = bounds.max[2] - bounds.min[2];
     if (span <= 0) return;
+    // Replace-instead-of-stack: clicking the button twice used to pile 24+
+    // overlapping slab regions on the mesh. Ask first, then start clean.
+    if (getRegions().length > 0) {
+      const ok = window.confirm('Replace existing colour regions with detected levels?');
+      if (!ok) return;
+      clearRegions();
+    }
     const lh = currentLayerHeight();
     const maxBands = 12;
     const bandCount = Math.max(2, Math.min(maxBands, Math.round(span / Math.max(lh, span / maxBands))));
@@ -2870,7 +2904,7 @@ async function main() {
     },
     getSwapGuide: () => (currentMeshData ? getSwapGuideFor(currentMeshData, currentLayerHeight()) : null),
     detectLevels: () => detectReliefLevels(),
-    onClose: () => { reliefStudio?.hide(); expandEditor(); },
+    onClose: () => closeReliefStudio(),
   });
 
   // Init editor — only auto-run if auto-run is enabled. Auto-runs drive the
@@ -3130,7 +3164,7 @@ async function main() {
   // If not on landing/help/catalog/404, load session or default code now
   if (!showLanding && !showHelpPage && !showCatalog && !show404 && engineOk) {
     await syncEditorFromURL();
-    if (isReliefSession(getState().session?.id)) showReliefStudio();
+    syncReliefStudioForSession();
   }
 
   // Keep this tab's session state in sync with peer tabs that mutate the same
@@ -4087,9 +4121,15 @@ async function main() {
     /** Switch the relief optical preview mode: 'flat' | 'ams' | 'single-nozzle'. */
     setReliefPreviewMode(mode: PreviewMode): { ok: true } | { error: string } {
       if (mode !== 'flat' && mode !== 'ams' && mode !== 'single-nozzle') return { error: "setReliefPreviewMode: mode must be 'flat', 'ams', or 'single-nozzle'" };
-      ctlSetReliefPreviewMode(mode);
       const sid = getState().session?.id ?? null;
-      if (sid) updateReliefSettings(sid, { previewMode: mode });
+      // Guard the setter — without this an AI/console call into a non-relief
+      // session writes a previewMode record into ReliefSettings for that
+      // session and starts shading its mesh with relief-preview colours.
+      if (!sid || !isReliefSession(sid)) {
+        return { error: 'setReliefPreviewMode: no relief session active. Create one with importImageAsRelief first.' };
+      }
+      ctlSetReliefPreviewMode(mode);
+      updateReliefSettings(sid, { previewMode: mode });
       refreshModelColors();
       reliefStudio?.refresh();
       return { ok: true };

@@ -79,7 +79,10 @@ export interface ReliefOptions {
 }
 
 export const DEFAULT_RELIEF_OPTIONS: ReliefOptions = {
-  mode: 'luminance',
+  // 'quantized' (Bambu-keychain-style flat colour tile) is the default — most
+  // user imports are characters/logos/photos that want a flat colour print;
+  // luminance lithophanes are a niche choice the user can pick explicitly.
+  mode: 'quantized',
   common: {
     widthMm: 100,
     layerHeight: 0.08,

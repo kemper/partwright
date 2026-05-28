@@ -247,8 +247,8 @@ export function createToolbar(
   importDropdown.appendChild(createDivider());
   importDropdown.appendChild(createSectionHeader('Create'));
   const reliefOpt = createDescribedItem(
-    'Image → Relief (HueForge)…',
-    'Turn an image into a paintable height-relief for HueForge-style prints.',
+    'Image → keychain / tile / relief…',
+    'Turn an image (or SVG) into a printable colour tile, keychain, sticker, or HueForge-style relief.',
   );
   reliefOpt.addEventListener('click', () => {
     importDropdown.classList.add('hidden');
@@ -347,7 +347,7 @@ export function createToolbar(
   toolbar.appendChild(importWrapper);
 
   const btnRelief = createButton('btn-relief', '✦ Relief');
-  btnRelief.title = 'Toggle the Relief Studio (HueForge-style painting)';
+  btnRelief.title = 'Make a tile / relief from an image — opens the wizard, or toggles the Relief Studio if one is already open.';
   btnRelief.addEventListener('click', () => callbacks.onToggleReliefStudio());
   toolbar.appendChild(btnRelief);
 

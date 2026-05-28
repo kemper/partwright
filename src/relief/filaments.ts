@@ -7,6 +7,7 @@ import type { Filament } from './types';
 export type { Filament };
 
 const STORAGE_KEY = 'partwright.filaments';
+const HIDDEN_KEY = 'partwright.filaments.hidden';
 
 export const DEFAULT_FILAMENTS: Filament[] = [
   { id: 'def-white', name: 'White', hex: '#f5f5f0', td: 3 },
@@ -19,6 +20,29 @@ export const DEFAULT_FILAMENTS: Filament[] = [
 
 // In-memory fallback when localStorage is unavailable (SSR / private mode / tests).
 let memoryStore: Filament[] = [];
+let memoryHidden: string[] = [];
+
+function readHidden(): string[] {
+  if (memoryHidden.length > 0) return memoryHidden;
+  try {
+    const raw = localStorage.getItem(HIDDEN_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeHidden(list: string[]): void {
+  memoryHidden = list;
+  try {
+    localStorage.setItem(HIDDEN_KEY, JSON.stringify(list));
+    memoryHidden = [];
+  } catch {
+    /* keep the in-memory copy */
+  }
+}
 
 function readUser(): Filament[] {
   if (memoryStore.length > 0) return memoryStore;
@@ -51,7 +75,11 @@ function writeUser(list: Filament[]): void {
 export function listFilaments(): Filament[] {
   const user = readUser();
   const seen = new Set(user.map(f => f.id));
-  return [...DEFAULT_FILAMENTS.filter(f => !seen.has(f.id)), ...user];
+  const hidden = new Set(readHidden());
+  return [
+    ...DEFAULT_FILAMENTS.filter(f => !seen.has(f.id) && !hidden.has(f.id)),
+    ...user,
+  ];
 }
 
 export function addFilament(f: Omit<Filament, 'id'>): Filament {
@@ -61,7 +89,22 @@ export function addFilament(f: Omit<Filament, 'id'>): Filament {
 }
 
 export function removeFilament(id: string): void {
+  // Default filaments aren't "in" the user list — removing one from the user
+  // store would do nothing visible (the default re-prepends every render).
+  // Persist hidden defaults in a parallel list so the × actually sticks.
+  const defaultIds = new Set(DEFAULT_FILAMENTS.map(f => f.id));
+  if (defaultIds.has(id)) {
+    const hidden = readHidden();
+    if (!hidden.includes(id)) writeHidden([...hidden, id]);
+    return;
+  }
   writeUser(readUser().filter(f => f.id !== id));
+}
+
+/** Restore a previously-hidden default filament. */
+export function restoreDefaultFilament(id: string): void {
+  const hidden = readHidden();
+  if (hidden.includes(id)) writeHidden(hidden.filter(s => s !== id));
 }
 
 export function hexToRgb(hex: string): [number, number, number] {

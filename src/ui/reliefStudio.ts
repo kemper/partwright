@@ -26,8 +26,8 @@ export interface ReliefStudioHandle {
 }
 
 const PREVIEW_MODES: { mode: PreviewMode; label: string; caption: string }[] = [
-  { mode: 'flat', label: 'Flat', caption: 'Raw paint colors — no optical simulation.' },
-  { mode: 'ams', label: 'AMS', caption: 'Glossy multi-material filament look (one nozzle per color).' },
+  { mode: 'flat', label: 'Flat', caption: 'Raw paint colours — no optical simulation.' },
+  { mode: 'ams', label: 'Multi-material', caption: 'Glossy AMS / multi-material look — one filament per region, no light bleed.' },
   { mode: 'single-nozzle', label: 'Single nozzle', caption: 'Translucent swap simulation — light bleeds through thin layers.' },
 ];
 
@@ -110,12 +110,13 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
   layerInput.type = 'number';
   layerInput.step = '0.02';
   layerInput.min = '0.04';
+  layerInput.max = '2';
   layerInput.className =
     'flex-1 min-w-0 px-2 py-1.5 text-sm bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
   layerInput.title = 'Print layer height in mm — drives the swap guide';
   const applyLayer = (): void => {
     const raw = parseFloat(layerInput.value);
-    if (!Number.isFinite(raw) || raw < 0.04) {
+    if (!Number.isFinite(raw) || raw < 0.04 || raw > 2) {
       layerInput.value = deps.getLayerHeight().toFixed(2);
       return;
     }
@@ -137,6 +138,10 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
   // --- Filament palette ---
   const filSection = document.createElement('div');
   filSection.appendChild(sectionLabel('Filament palette'));
+  const filHint = document.createElement('div');
+  filHint.className = 'text-[10px] text-zinc-500 mb-1.5 leading-snug';
+  filHint.textContent = 'TD = transmission distance, how far light passes through (mm). Larger = more translucent. Used by the Single-nozzle preview.';
+  filSection.appendChild(filHint);
   const filList = document.createElement('div');
   filList.className = 'flex flex-col gap-1';
   filSection.appendChild(filList);
@@ -299,6 +304,7 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
     const printPct = Math.round(Math.max(0, Math.min(1, guide.printability)) * 100);
     const printWrap = document.createElement('div');
     printWrap.className = 'mb-2';
+    printWrap.title = 'How faithfully a single-nozzle swap print can reproduce the painting. ≥90% green: clean. 60–89% amber: some layer mixing. <60% red: needs AMS, or constrain paint to Z-slabs.';
     const printLabel = document.createElement('div');
     printLabel.className = 'flex items-center justify-between text-[10px] text-zinc-500 mb-0.5';
     const printText = document.createElement('span');

@@ -74,7 +74,7 @@ test.describe('Relief Studio', () => {
     expect(cls).toContain('right-2');
     expect(cls).toContain('md:absolute');
     expect(cls).toContain('md:right-0');
-    await expect(page.getByText('Image → Relief (HueForge)…')).toBeVisible();
+    await expect(page.getByText('Image → keychain / tile / relief…')).toBeVisible();
   });
 
   test('toolbar exposes the relief entry points', async ({ page }) => {
@@ -84,7 +84,7 @@ test.describe('Relief Studio', () => {
     await expect(page.locator('#btn-relief')).toBeVisible();
 
     await page.locator('#btn-import').click();
-    await expect(page.getByText('Image → Relief (HueForge)…')).toBeVisible();
+    await expect(page.getByText('Image → keychain / tile / relief…')).toBeVisible();
   });
 
   // Regression: the wizard once threw mid-build (a const used in its temporal
@@ -108,16 +108,17 @@ test.describe('Relief Studio', () => {
     const buffer = Buffer.from(dataUrl.split(',')[1], 'base64');
 
     await page.locator('#btn-import').click();
-    await page.getByText('Image → Relief (HueForge)…').click();
-    await expect(page.getByText('Image → Relief (HueForge)', { exact: true })).toBeVisible();
+    await page.getByText('Image → keychain / tile / relief…').click();
+    await expect(page.getByText('Make a part from an image', { exact: true })).toBeVisible();
 
     const input = page.locator('input[type="file"][accept*="image"]');
     await input.setInputFiles({ name: 'grad.png', mimeType: 'image/png', buffer });
 
     // The wizard must react to the chosen image: live preview stat + an enabled
     // Create button. (Both were absent when the modal crashed mid-build.)
-    await expect(page.locator('canvas.rounded + div')).toContainText('grid', { timeout: 5000 });
-    const createBtn = page.getByRole('button', { name: 'Create relief' });
+    await expect(page.locator('canvas.rounded + div')).toContainText('Source map', { timeout: 5000 });
+    // Default mode + output is now quantized → flat tile, so the CTA reads "Create tile".
+    const createBtn = page.getByRole('button', { name: 'Create tile' });
     await expect(createBtn).toBeEnabled();
 
     await createBtn.click();
