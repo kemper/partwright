@@ -55,7 +55,7 @@ import {
 } from '../annotations/annotations';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { getActiveLanguage } from '../geometry/engine';
-import { effectiveVersionLanguage } from './languageFallback';
+import { effectiveVersionLanguage, asLanguage } from './languageFallback';
 
 /**
  * Current schema version for `.partwright.json` exports.
@@ -529,20 +529,6 @@ export async function renameSession(id: string, newName: string): Promise<void> 
   await dbUpdateSession(id, { name: newName, updated: Date.now() });
   if (currentState.session?.id === id) {
     currentState.session = { ...currentState.session, name: newName, updated: Date.now() };
-    notify();
-  }
-  publishTabSync({ kind: 'session-meta', sessionId: id });
-}
-
-/** Update the session's default modeling language. After versions gained their
- *  own `language` field, this is purely a "default for new versions / fallback
- *  for un-tagged versions" hint — it does NOT swap the engine, doesn't discard
- *  the editor, and doesn't spawn a fresh session. Toolbar/AI flows that flip
- *  the active language use the draft-swap path in main.ts instead. */
-export async function setSessionLanguage(id: string, language: 'manifold-js' | 'scad'): Promise<void> {
-  await dbUpdateSession(id, { language, updated: Date.now() });
-  if (currentState.session?.id === id) {
-    currentState.session = { ...currentState.session, language, updated: Date.now() };
     notify();
   }
   publishTabSync({ kind: 'session-meta', sessionId: id });
@@ -1531,7 +1517,10 @@ export async function importSession(
     throw new Error('Invalid session file: no versions found.');
   }
 
-  const session = await dbCreateSession(data.session.name, data.session.language);
+  // Filter the session-level language through asLanguage so a malformed
+  // export can't smuggle in an unknown value (which would later poison the
+  // version-language fallback chain).
+  const session = await dbCreateSession(data.session.name, asLanguage(data.session.language));
 
   // Restore images if present in the exported data. Handle two legacy shapes:
   //   - pre-rename: `referenceImages` instead of `images`
@@ -1618,7 +1607,10 @@ export async function importSession(
         deserializeImportedMeshes(v.importedMeshes),
         // Per-version language (schema 1.8+). Pre-1.8 files omit it; the
         // read path falls back to session-level via effectiveVersionLanguage.
-        v.language,
+        // Run unknown values through `asLanguage` so a malformed export
+        // (e.g. {language: 'python'}) drops the field rather than poisoning
+        // the engine + editor when this version is later loaded.
+        asLanguage(v.language),
       );
     }
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { effectiveVersionLanguage, DEFAULT_LANGUAGE } from '../../src/storage/languageFallback';
+import { effectiveVersionLanguage, DEFAULT_LANGUAGE, asLanguage } from '../../src/storage/languageFallback';
 
 describe('effectiveVersionLanguage', () => {
   it('returns the per-version language when set', () => {
@@ -41,5 +41,31 @@ describe('effectiveVersionLanguage', () => {
     // Pinned by contract — changing the default would silently re-engine
     // every legacy untagged version.
     expect(DEFAULT_LANGUAGE).toBe('manifold-js');
+  });
+});
+
+describe('asLanguage', () => {
+  it('returns the value when it is a known language', () => {
+    expect(asLanguage('manifold-js')).toBe('manifold-js');
+    expect(asLanguage('scad')).toBe('scad');
+  });
+
+  it('returns undefined for unknown strings', () => {
+    // Trust-boundary guard: a malformed .partwright.json could set the
+    // field to anything; the importer must filter the value rather than
+    // propagating it to the engine and editor.
+    expect(asLanguage('python')).toBeUndefined();
+    expect(asLanguage('JS')).toBeUndefined();
+    expect(asLanguage('')).toBeUndefined();
+    expect(asLanguage('Manifold-JS')).toBeUndefined();
+  });
+
+  it('returns undefined for non-string values', () => {
+    expect(asLanguage(undefined)).toBeUndefined();
+    expect(asLanguage(null)).toBeUndefined();
+    expect(asLanguage(42)).toBeUndefined();
+    expect(asLanguage(true)).toBeUndefined();
+    expect(asLanguage({})).toBeUndefined();
+    expect(asLanguage(['scad'])).toBeUndefined();
   });
 });

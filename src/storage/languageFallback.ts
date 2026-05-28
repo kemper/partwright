@@ -9,6 +9,14 @@ export type Language = 'manifold-js' | 'scad';
  *  module has no runtime dependencies. */
 export const DEFAULT_LANGUAGE: Language = 'manifold-js';
 
+/** Narrow an unknown value to a known {@link Language}. Use at trust
+ *  boundaries (importing a `.partwright.json`, restoring a stale draft) so a
+ *  junk value like `"python"` doesn't propagate to the engine and editor and
+ *  crash a downstream call expecting `'manifold-js' | 'scad'`. */
+export function asLanguage(v: unknown): Language | undefined {
+  return v === 'manifold-js' || v === 'scad' ? v : undefined;
+}
+
 /** Minimal shape needed to resolve a version's language. */
 type VersionLike = { language?: Language } | null | undefined;
 type SessionLike = { language?: Language } | null | undefined;

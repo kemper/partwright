@@ -2019,15 +2019,15 @@ async function main() {
       geometryData: enrichGeometryDataWithColors(getGeometryDataObj()),
       thumbnail: await captureThumbnail(),
     }),
-    onLoadVersion: async (code: string) => {
-      setValue(code);
-      const applied = await runCodeSync(code);
-      if (!applied) return;
-      const loadedVersion = getState().currentVersion;
-      if (loadedVersion) {
-        rehydrateColorRegions(loadedVersion.geometryData);
-      }
-      applyVersionAnnotations(loadedVersion);
+    onLoadVersion: async (_code: string) => {
+      // The session bar's prev/next/version-dropdown handlers update
+      // currentVersion before firing this; route through loadVersionIntoEditor
+      // so cross-language navigation swaps the engine and stashes the
+      // previous language's draft. The `code` argument is redundant once we
+      // read the version from state — kept on the callback to avoid churning
+      // the SessionBarCallbacks signature.
+      const v = getState().currentVersion;
+      if (v) await loadVersionIntoEditor(v);
     },
     onNewSession: startNewSessionInEditor,
   });
@@ -2162,17 +2162,12 @@ async function main() {
     { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); } },
   ]);
 
-  // Init gallery
-  createGalleryView(galleryContainer, async (code: string) => {
-    setValue(code);
-    const applied = await runCodeSync(code);
-    if (!applied) return;
-    // Rehydrate color regions and annotations from the loaded version
-    const loadedVersion = getState().currentVersion;
-    if (loadedVersion) {
-      rehydrateColorRegions(loadedVersion.geometryData);
-    }
-    applyVersionAnnotations(loadedVersion);
+  // Init gallery — `loadVersion` (in gallery.ts) has already updated state to
+  // point at the clicked version by the time this fires, so route through
+  // loadVersionIntoEditor for the engine swap + draft stash + rehydration.
+  createGalleryView(galleryContainer, async (_code: string) => {
+    const v = getState().currentVersion;
+    if (v) await loadVersionIntoEditor(v);
     switchTab('interactive');
   });
 
@@ -2305,9 +2300,14 @@ async function main() {
     // Each version remembers the language it was authored in (per-version
     // since schema 1.8); fall back to the session-level hint, then to the
     // engine default. Lets a single session hold mixed JS + SCAD versions
-    // and switch the engine as you click between them.
+    // and switch the engine as you click between them. When crossing a
+    // language boundary we stash the current editor buffer as a draft for
+    // the previous language first, so navigate ↔ toggle round-trips don't
+    // silently drop work-in-progress in the language we're leaving.
     const versionLang = effectiveVersionLanguage(version, getState().session);
     if (versionLang !== getActiveLanguage()) {
+      const sid = getState().session?.id;
+      if (sid) await writeDraft(sid, getActiveLanguage(), getValue());
       await switchLanguage(versionLang);
     }
     setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
@@ -3007,12 +3007,23 @@ async function main() {
   /** Toolbar / AI language toggle: stash the current editor buffer as a draft
    *  on the active session, swap engines, then restore the target language's
    *  draft (seeded with a stub if none has been stashed yet). Versions are not
-   *  touched — they keep the language they were authored in. */
+   *  touched — they keep the language they were authored in. Auto-creates a
+   *  session first when none is open, so a sessionless toggle (rare — usually
+   *  there's an auto-created session on first edit) doesn't silently drop the
+   *  current editor buffer with no place to stash it. */
   async function switchLanguageWithDrafts(lang: Language) {
     if (lang === getActiveLanguage()) return;
     const prevLang = getActiveLanguage();
-    const sid = getState().session?.id;
     const currentCode = getValue();
+    if (!getState().session) {
+      // No session means no draft store to stash into. Mirror the auto-create
+      // behavior used elsewhere in the editor so the user's in-progress code
+      // doesn't vanish. The new session is tagged with the PREVIOUS language
+      // (the one the current code is in) so its session-level fallback hint
+      // stays meaningful for the buffer being stashed.
+      await createSession(undefined, prevLang);
+    }
+    const sid = getState().session?.id;
     if (sid) {
       // Persist the previous language's working buffer so flipping back
       // restores it exactly. Both languages stay live in IDB until the
