@@ -103,12 +103,14 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
   },
   standard: {
     vision: { views: true, resolution: 'medium', angles: 'auto' },
-    // Paint off by default — color regions lock the editor and are easy
-    // for the model to mis-target. Notes off by default — the chat
-    // transcript already records the reasoning, so each addSessionNote
-    // call is a redundant tool round-trip. Users who want either can
-    // flip the pill on, or pick the Full preset.
-    scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: false },
+    // Paint on by default in standard — color is a strong signal for the
+    // AI to express "this part is the X, this is the Y" and pairs well
+    // with the BREP/labelled-construction patterns. The editor lock
+    // worry is mitigated by paintByLabel landing on labelled features
+    // (not coordinate guessing), so accidental misfires are rare. Notes
+    // off by default — the chat transcript already records the
+    // reasoning, so each addSessionNote call is a redundant round-trip.
+    scope: { runCode: true, saveVersions: true, paintFaces: true, sessionNotes: false },
     autoRetry: 1,
     maxIterations: 'high',
     maxSpend: 'medium',

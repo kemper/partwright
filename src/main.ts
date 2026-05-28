@@ -22,7 +22,7 @@
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, simplifyInWorker, type Language } from './geometry/engine';
+import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, simplifyInWorker, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setOnMeshUpdate, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
@@ -75,6 +75,8 @@ import {
 } from './import/importInbox';
 import { showImportPreview, summarizeSessionImport } from './ui/importPreview';
 import { showImportTargetModal } from './ui/importTargetModal';
+import { showStepImportTargetModal } from './ui/stepImportTargetModal';
+import { showLanguageHelpModal } from './ui/languageHelpModal';
 import { showMergePartsModal } from './ui/mergePartsModal';
 import { parseSTL } from './import/parsers/stl';
 import { generateImportCode } from './import/codegen';
@@ -137,6 +139,7 @@ import { initEditorLock, syncLockState, setUnlockHandlers } from './color/editor
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
+import { cylinderRefineRegion, findCylinderTriangles } from './color/cylinderPaint';
 import { computeFaceGroups } from './color/faceGroups';
 import {
   getSessionIdFromURL,
@@ -285,6 +288,12 @@ let currentManifold: any = null;
  *  to the triangle ids that came from the labelled input. Rebuilt on every
  *  successful run; null when no labels were registered or no code has run. */
 let currentLabelMap: Map<string, Set<number>> | null = null;
+/** Per-run list of label names the user wrote but that didn't make it into
+ *  `currentLabelMap` — typically because the label sat inside a SCAD boolean
+ *  the CGAL backend stripped, or a for-loop expansion produced a count
+ *  mismatch. Surfaced to agent callers via `runAndSave().lostLabels` and
+ *  `listLabels().lostLabels` so they don't have to diff by hand. */
+let currentLostLabels: string[] | null = null;
 
 // #geometry-data element — always-updated machine-readable state
 let geometryDataEl: HTMLElement;
@@ -509,7 +518,9 @@ function applyVersionAnnotations(version: Version | null | undefined): void {
  *  nothing, preserving their original blocky edges. */
 function descriptorRefines(d: RegionDescriptor): boolean {
   if (d.kind === 'brushStroke') return true;
-  if (d.kind === 'slab' || d.kind === 'box') return !!d.smooth && (d.maxEdge ?? 0) > 0;
+  if (d.kind === 'slab' || d.kind === 'box' || d.kind === 'cylinder') {
+    return !!d.smooth && (d.maxEdge ?? 0) > 0;
+  }
   return false;
 }
 
@@ -525,6 +536,8 @@ function collectRefineRegions(descriptors: RegionDescriptor[]): RefineRegion[] {
       regions.push(slabRefineRegion(d.normal, d.offset, d.thickness, d.maxEdge!));
     } else if (d.kind === 'box' && descriptorRefines(d)) {
       regions.push(shapeRefineRegion(d.shape ?? 'box', { center: d.center, size: d.size, quaternion: d.quaternion }, d.maxEdge!));
+    } else if (d.kind === 'cylinder' && descriptorRefines(d)) {
+      regions.push(cylinderRefineRegion(d.center, d.rMin, d.rMax, d.zMin, d.zMax, d.maxEdge!));
     }
   }
   return regions;
@@ -608,6 +621,13 @@ function resolveDescriptorTriangles(
       const { center, size, quaternion, shape } = descriptor;
       return findShapeTriangles(mesh, shape ?? 'box', { center, size, quaternion });
     }
+    case 'cylinder': {
+      // Same triangle collector `paintInCylinder` uses for the live call —
+      // re-resolves the shell against the (possibly subdivided) current mesh
+      // so smoothing-driven refinement carries forward across re-runs.
+      const { center, rMin, rMax, zMin, zMax, normalCone, coverageMode, maxTriangleArea } = descriptor;
+      return findCylinderTriangles(mesh, center, rMin, rMax, zMin, zMax, normalCone, coverageMode ?? 'centroid', maxTriangleArea);
+    }
     case 'byLabel': {
       // Labels are runtime state — manifold-3d assigns fresh originalIDs on
       // every run, so we re-resolve by name from the labelMap the engine just
@@ -618,14 +638,22 @@ function resolveDescriptorTriangles(
     }
     case 'connectedFromSeed': {
       if (!adjacency) return new Set<number>();
-      const { seedPoint, seedNormal, maxDeviationDeg } = descriptor;
+      const { seedPoint, seedNormal, maxDeviationDeg, clampMin, clampMax } = descriptor;
       // Find the closest triangle to the seed point — robust across re-runs
       // because triangle indices are unstable but world-space points are not.
       // Then BFS-flood gated by deviation from the stored seed normal.
       const nearest = findNearestTriangle(seedPoint, mesh, adjacency);
       if (nearest.triIndex < 0) return new Set<number>();
       const cos = Math.cos(maxDeviationDeg * Math.PI / 180);
-      let triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos);
+      // Restore the original clamp predicate so re-resolution after a
+      // geometry edit walks the same bounded region the user painted.
+      const predicate = (clampMin || clampMax)
+        ? (cx: number, cy: number, cz: number) =>
+            cx >= (clampMin?.[0] ?? -Infinity) && cx <= (clampMax?.[0] ?? Infinity) &&
+            cy >= (clampMin?.[1] ?? -Infinity) && cy <= (clampMax?.[1] ?? Infinity) &&
+            cz >= (clampMin?.[2] ?? -Infinity) && cz <= (clampMax?.[2] ?? Infinity)
+        : undefined;
+      let triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos, predicate);
       const sNorm = adjacency.normals;
       const dotSeed = sNorm[nearest.triIndex * 3] * seedNormal[0]
                     + sNorm[nearest.triIndex * 3 + 1] * seedNormal[1]
@@ -1859,15 +1887,15 @@ async function main() {
   async function handleImportFile(file: File, options: { skipPreActiveConfirm?: boolean } = {}): Promise<boolean> {
     const source = classifyImportSource(file.name);
     if (!source) {
-      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl`);
+      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl, .step / .stp`);
       return false;
     }
 
     // Raw code imports don't get a preview modal of their own — confirm before clobber.
     // JSON imports skip this confirm because the preview modal already serves as
-    // confirmation; STL imports skip it because the import-target modal lets the
-    // user choose a new part / current part / new session instead.
-    if (!options.skipPreActiveConfirm && source !== 'JSON' && source !== 'STL') {
+    // confirmation; STL and STEP imports skip it because their target modals let
+    // the user choose where the import should go.
+    if (!options.skipPreActiveConfirm && source !== 'JSON' && source !== 'STL' && source !== 'STEP') {
       const cur = getState();
       if (cur.session && cur.versionCount > 0) {
         const ok = await showInlineConfirm(
@@ -1894,6 +1922,8 @@ async function main() {
         if (parsed) {
           committed = await placeImportedMesh(parsed, file.name);
         }
+      } else if (source === 'STEP') {
+        committed = await handleStepImport(file);
       }
       if (committed) registerImport(file, file.name, source);
       return committed;
@@ -1908,6 +1938,64 @@ async function main() {
     /** True if Manifold.ofMesh() succeeded — supports boolean ops, paint, slicing.
      *  False if the user chose to import render-only after manifold construction failed. */
     isManifold: boolean;
+  }
+
+  /** Handle a `.step` / `.stp` import. The chooser modal asks the user
+   *  whether the file should land as exact BREP (default, recommended) or
+   *  as a tessellated manifold-js mesh. Each path then drives the same
+   *  downstream session-creation flow with a per-language starter so the
+   *  user can run the import immediately. Returns true iff a new session
+   *  was opened with the import in it. */
+  async function handleStepImport(file: File): Promise<boolean> {
+    const state = getState();
+    const hasWork = !!state.session && state.versionCount > 0;
+    const target = await showStepImportTargetModal({ filename: file.name, hasActiveSessionWithWork: hasWork });
+    if (target === null) return false;
+
+    const baseName = file.name.replace(/\.(step|stp)$/i, '');
+    if (target === 'brep') {
+      // Lazy-loads OCCT on the first call; subsequent imports are instant.
+      try {
+        await importSTEPToBrep(file, file.name);
+      } catch (e) {
+        alert(`Failed to parse STEP file: ${(e as Error).message}`);
+        return false;
+      }
+      // Switch the editor to the BREP language, open a fresh session named
+      // after the file, and seed the editor with the canonical "return the
+      // import" form so the user can iterate immediately. switchLanguage
+      // resets the editor to a stub starter; we overwrite that.
+      if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
+      await createSession(baseName, 'replicad');
+      const starter = `// Imported from ${file.name}\n// api.imports[0] is the BREP shape parsed from the STEP file.\nconst { BREP } = api;\nreturn api.imports[0];\n`;
+      setValue(starter);
+      runCode(starter);
+      return true;
+    }
+
+    // manifold-js path: parse + tessellate via the worker, then drop the
+    // mesh through the same path that STL imports use.
+    let mesh: MeshData;
+    try {
+      mesh = await importSTEPToMesh(file);
+    } catch (e) {
+      alert(`Failed to parse STEP file: ${(e as Error).message}`);
+      return false;
+    }
+    if (!mesh || mesh.numTri === 0) {
+      alert(`STEP file produced no geometry: ${file.name}`);
+      return false;
+    }
+    // Mirror STL flow: try to construct a Manifold from the tessellation so
+    // boolean / paint downstream tools work; fall back to render-only if
+    // the OCCT mesh isn't watertight.
+    const trial = tryConstructManifold(mesh);
+    const parsed: ParsedSTL = {
+      mesh: toImportedMesh(file.name, mesh),
+      isManifold: trial.ok,
+    };
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+    return placeImportedMesh(parsed, file.name);
   }
 
   /** Read an STL file, parse it, and verify Manifold.ofMesh() accepts the result.
@@ -2317,6 +2405,32 @@ async function main() {
     onExportSTL: actionExportSTL,
     onExportOBJ: actionExportOBJ,
     onExport3MF: actionExport3MF,
+    onExportSTEP: async () => {
+      // Inlined rather than calling partwrightAPI.exportSTEP because that
+      // const is defined further down main() — using it here would land in
+      // the TDZ on toolbar-build (and TS would flag a "used before
+      // declaration" anyway). The underlying worker round-trip is the same.
+      try {
+        const blob = await exportLastBrepAsSTEP();
+        if (!blob) {
+          showToast('No BREP shape available. Run a model in BREP mode first.', { variant: 'warn' });
+          return;
+        }
+        const state = getState();
+        const base = state.session?.name ?? 'model';
+        const versionLabel = state.currentVersion?.label;
+        const name = `${base}${versionLabel ? '_' + versionLabel : ''}.step`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showToast(`Exported ${name}`, { variant: 'success' });
+      } catch (e) {
+        showToast(`STEP export failed: ${e instanceof Error ? e.message : String(e)}`, { variant: 'warn' });
+      }
+    },
     onExportSessionJSON: async () => {
       if (!getState().session) {
         alert('No active session to export. Save a version first.');
@@ -2339,8 +2453,9 @@ async function main() {
     onImportFile: async (file) => { await handleImportFile(file); },
     onImportInboxEntry: handleReimportInboxEntry,
     onCreateRelief: () => { openReliefImportFlow(); },
+    onLanguageHelp: async () => { await showLanguageHelpModal(); },
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
-    onLanguageSwitch: async (lang: 'manifold-js' | 'scad') => {
+    onLanguageSwitch: async (lang: 'manifold-js' | 'scad' | 'replicad') => {
       if (lang === getActiveLanguage()) return;
       // Stash the current language's editor buffer as a draft on the active
       // session, then swap engines and restore (or seed) the other language's
@@ -2474,6 +2589,8 @@ async function main() {
     const editorTitleEl = document.getElementById('editor-title');
     if (!editorTitleEl) return;
     const part = state.currentPart;
+    // BREP/replicad sessions are still JavaScript files (api.BREP.*), so they
+    // share the .js extension fallback with manifold-js.
     editorTitleEl.textContent = part ? part.name : (getActiveLanguage() === 'scad' ? 'editor.scad' : 'editor.js');
   }
   syncEditorTitle(getState());
@@ -3401,7 +3518,11 @@ async function main() {
     setEditorLanguage(lang);
     setToolbarLanguage(lang);
     syncEditorTitle(getState());
-    setStatus(statusBar, 'running', lang === 'scad' ? 'Loading OpenSCAD...' : 'Switching...');
+    const loadingLabel =
+      lang === 'scad' ? 'Loading OpenSCAD...' :
+      lang === 'replicad' ? 'Loading BREP (OpenCASCADE)...' :
+      'Switching...';
+    setStatus(statusBar, 'running', loadingLabel);
     try {
       await ensureEngineReady(lang);
     } catch (e) {
@@ -3415,6 +3536,32 @@ async function main() {
 
   const DRAFT_STUB_JS = '// JavaScript\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
   const DRAFT_STUB_SCAD = '// OpenSCAD\ncube([10, 10, 10], center=true);';
+  // BREP / replicad — quick showcase of the headline features:
+  //   - selective fillet (the inDirection-based workaround for box edges,
+  //     called out in the gotchas cheat sheet at the top of replicad.md)
+  //   - true chamfer on the top rim
+  //   - boolean subtract (cut) of a cylinder bore
+  // The result is a rounded-corner mounting bracket with a bevelled bore.
+  // It's small enough that the OCCT solver runs in well under a second on
+  // a cold WASM load, so the first paint into the editor after switching
+  // languages still feels instant.
+  const DRAFT_STUB_REPLICAD =
+    '// BREP / replicad — exact-surface modeling\n' +
+    "const { BREP } = api;\n" +
+    '\n' +
+    '// Body: 30x30x10 box with rounded vertical corners and a chamfered top rim.\n' +
+    'const body = BREP.box([30, 30, 10])\n' +
+    '  // Round the four vertical corners. `inDirection: [0,0,1]` requires the\n' +
+    "  // edge be Z-parallel — needed because inBox alone is unreliable on a\n" +
+    "  // BREP.box's planar coincident edges (see replicad.md \"Gotchas\").\n" +
+    '  .fillet(3, { inDirection: [0, 0, 1] })\n' +
+    '  // Bevel the top rim — the four edges of the top face. Same gotcha:\n' +
+    "  // pair the maxZ bound with parallelToPlane: 'XY'.\n" +
+    "  .chamfer(0.6, { maxZ: 9.999, parallelToPlane: 'XY' });\n" +
+    '\n' +
+    '// Boolean cut: a 4 mm bore through the centre.\n' +
+    'const bore = BREP.cylinder(4, 12).translate([0, 0, -1]);\n' +
+    'return body.cut(bore);\n';
 
   /** Toolbar / AI language toggle: stash the current editor buffer as a draft
    *  on the active session, swap engines, then restore the target language's
@@ -3446,7 +3593,9 @@ async function main() {
     let nextCode: string | null = null;
     if (sid) nextCode = await readDraft(sid, lang);
     if (nextCode === null) {
-      nextCode = lang === 'scad' ? DRAFT_STUB_SCAD : DRAFT_STUB_JS;
+      nextCode = lang === 'scad' ? DRAFT_STUB_SCAD
+        : lang === 'replicad' ? DRAFT_STUB_REPLICAD
+        : DRAFT_STUB_JS;
     }
     setValue(nextCode);
     runCode(nextCode);
@@ -3568,6 +3717,37 @@ async function main() {
     export3MF(filename?: string) {
       assertString(filename, 'export3MF(filename)', { optional: true });
       if (currentMeshData) export3MF(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData, filename);
+    },
+
+    /** Export the most-recent BREP shape as a STEP file. Only meaningful in
+     *  replicad-language sessions — BREP shapes built ad-hoc inside a
+     *  manifold-js session (via api.BREP.*) are not retained past the
+     *  toManifold() conversion, so this won't pick them up. Returns
+     *  `{ ok: true, filename, sizeBytes }` on success, or
+     *  `{ ok: false, error }` when no BREP shape is available. */
+    async exportSTEP(filename?: string) {
+      assertString(filename, 'exportSTEP(filename)', { optional: true });
+      try {
+        const blob = await exportLastBrepAsSTEP();
+        if (!blob) {
+          return { ok: false as const, error: 'No BREP shape available. Switch to BREP language (setActiveLanguage("replicad")) and run a model first.' };
+        }
+        const state = getState();
+        const base = state.session?.name ?? 'model';
+        const versionLabel = state.currentVersion?.label;
+        const name = filename ?? `${base}${versionLabel ? '_' + versionLabel : ''}.step`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        a.click();
+        // Revoke after a tick so Safari/older browsers actually finish the
+        // download. Matches the pattern used by exportGLB/exportSTL.
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        return { ok: true as const, filename: name, sizeBytes: blob.size };
+      } catch (e) {
+        return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+      }
     },
 
     // === AI-friendly export API ===
@@ -3718,7 +3898,7 @@ async function main() {
     async importCodeData(code: string, language: Language, sessionName?: string) {
       const check = guard(() => {
         assertString(code, 'importCodeData(code)', { allowEmpty: false });
-        assertEnum(language, ['manifold-js', 'scad'], 'importCodeData(language)');
+        assertEnum(language, ['manifold-js', 'scad', 'replicad'], 'importCodeData(language)');
         assertString(sessionName, 'importCodeData(sessionName)', { optional: true, allowEmpty: false });
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
@@ -3786,7 +3966,7 @@ async function main() {
         if (opts !== undefined) {
           const o = assertObject(opts, 'validate(code, opts)')!;
           assertNoUnknownKeys(o, ['language'], 'validate(opts)');
-          if (o.language !== undefined) assertEnum(o.language, ['manifold-js', 'scad'], 'validate(opts).language');
+          if (o.language !== undefined) assertEnum(o.language, ['manifold-js', 'scad', 'replicad'], 'validate(opts).language');
         }
         return true;
       });
@@ -3806,7 +3986,7 @@ async function main() {
      *  session are not touched — they keep the language they were authored in
      *  and re-load you into that engine when you navigate to them. */
     async setActiveLanguage(lang: Language): Promise<void> {
-      assertEnum(lang, ['manifold-js', 'scad'], 'setActiveLanguage(lang)');
+      assertEnum(lang, ['manifold-js', 'scad', 'replicad'], 'setActiveLanguage(lang)');
       await switchLanguageWithDrafts(lang);
     },
 
@@ -4494,6 +4674,41 @@ async function main() {
       return saveCurrentVersion(label);
     },
 
+    /** Commit the current state, routing between `runAndSave` and
+     *  `saveVersion` automatically based on whether the code changed:
+     *
+     *  - `commitWithColors({code, label?, assertions?})` — code provided
+     *    AND differs from the editor: full run + save (carries colors via
+     *    the descriptor re-resolution pipeline, same as runAndSave).
+     *  - `commitWithColors({code, label?})` — code provided but matches
+     *    the editor: snapshot the in-memory state (geometry + colors)
+     *    without re-running. Equivalent to `saveVersion`.
+     *  - `commitWithColors({label?})` — code omitted: same as `saveVersion`.
+     *
+     *  Use this when you're an agent and the runAndSave-vs-saveVersion
+     *  decision feels brittle — calling `runAndSave` for a color-only
+     *  change wastes the WASM re-run; calling `saveVersion` when you
+     *  meant to update geometry silently snapshots stale colors. This
+     *  routes for you. */
+    async commitWithColors(opts: { code?: string; label?: string; assertions?: GeometryAssertions } = {}) {
+      const o = opts ?? {};
+      assertString(o.code, 'commitWithColors(opts).code', { optional: true });
+      assertString(o.label, 'commitWithColors(opts).label', { optional: true });
+      if (o.assertions !== undefined) validateAssertionsShape(o.assertions, 'commitWithColors(opts).assertions');
+      // If no code is given, or the code matches what's in the editor, just
+      // snapshot. The current-code check is intentionally string-equality —
+      // whitespace-equivalent reformatting will still re-run, but that's
+      // safer than skipping a meaningful change because of a hash collision.
+      const editorCode = getValue();
+      const shouldRun = typeof o.code === 'string' && o.code !== editorCode;
+      if (!shouldRun) {
+        const snapshot = await saveCurrentVersion(o.label);
+        return { routed: 'snapshot' as const, ...snapshot };
+      }
+      const run = await partwrightAPI.runAndSave(o.code as string, o.label, o.assertions);
+      return { routed: 'run' as const, ...run };
+    },
+
     /** List all versions in the current session */
     async listVersions() {
       const versions = await listCurrentVersions();
@@ -4610,6 +4825,9 @@ async function main() {
       }
 
       const warnings = geometryWarnings(newGeoData);
+      const lostLabels = currentLostLabels && currentLostLabels.length > 0
+        ? [...currentLostLabels]
+        : undefined;
       return {
         ...(assertions ? { passed: true } : {}),
         geometry: newGeoData,
@@ -4617,6 +4835,7 @@ async function main() {
         diff,
         galleryUrl: getGalleryUrl(),
         ...(warnings.length > 0 ? { warnings } : {}),
+        ...(lostLabels ? { lostLabels } : {}),
       };
     },
 
@@ -5303,12 +5522,23 @@ async function main() {
       return measureDistance(p1, p2);
     },
 
-    /** General ray query — cast from origin in direction, return all hits */
-    probeRay(origin: [number, number, number], direction: [number, number, number]): GeneralRayResult | null {
+    /** General ray query — cast from origin in direction, return hits along
+     *  the ray. Defaults to FRONT-FACE hits only (the outer-surface hits a
+     *  closed solid presents to an outside observer), so `hits[0]` is the
+     *  nearest exterior surface — which is almost always what you want for
+     *  "find the surface I'm aiming at". Pass `{ allHits: true }` to opt
+     *  into the full entry/exit soup (`DoubleSide`), useful for thickness
+     *  / through-piece queries. */
+    probeRay(
+      origin: [number, number, number],
+      direction: [number, number, number],
+      opts?: { allHits?: boolean },
+    ): GeneralRayResult | null {
       assertNumberTuple(origin, 3, 'probeRay(origin)');
       assertNumberTuple(direction, 3, 'probeRay(direction)');
+      assertBoolean(opts?.allHits, 'probeRay(opts).allHits', { optional: true });
       if (!currentMeshData) return null;
-      return probeRay(currentMeshData, origin, direction);
+      return probeRay(currentMeshData, origin, direction, opts);
     },
 
     /** Click in your perception. Translates a pixel in a rendered image
@@ -5363,10 +5593,20 @@ async function main() {
         // render carries ±10-20px error, so misses are an expected, common
         // case — make them self-correcting rather than a dead end.
         const b = result.modelPixelBounds;
-        const hint = b
+        // Thin-feature heuristic: if the model occupies fewer than ~32 px
+        // along either screen axis at the current size, the feature is
+        // smaller than the AI's pixel-estimation noise — bumping the
+        // render size makes each "perceived pixel" cover a smaller real
+        // area, so a future probe is more likely to land on geometry.
+        const thinAxis = b ? Math.min(b.maxX - b.minX, b.maxY - b.minY) : Infinity;
+        const isThin = thinAxis < 32;
+        const baseHint = b
           ? `In this ${size}×${size} view the model occupies pixels x[${b.minX}..${b.maxX}], y[${b.minY}..${b.maxY}] (top-left is [0,0]). Re-aim inside that box and probe again.`
           : 'The model does not project into this view (off-screen or degenerate). Render this exact view first to see where it sits, or try a different elevation/azimuth.';
-        return { ...result, reason: `Pixel [${px}, ${py}] missed the mesh (background).`, hint };
+        const thinHint = isThin
+          ? ` Thin feature (only ${thinAxis}px wide on the minor axis at size ${size}). Re-render this view at size: ${Math.min(1024, size * 2)} and probe again — each rendered pixel now covers half the real area, so an aim error of ±10-20 px is far less likely to fall off the feature.`
+          : '';
+        return { ...result, reason: `Pixel [${px}, ${py}] missed the mesh (background).`, hint: baseHint + thinHint };
       }
       return {
         ...result,
@@ -5405,6 +5645,19 @@ async function main() {
       maxDeviationDeg?: number;
       color: [number, number, number];
       name?: string;
+      /** Spatial clamp — the flood-fill won't walk into triangles whose
+       *  centroid falls outside this AABB. Essential when painting one
+       *  feature of a `BREP.fuseAll` / `Manifold.union` result: the
+       *  topology is one big connected mesh and `maxDeviationDeg` alone
+       *  can't stop the walk from bleeding across the join between (say)
+       *  a dome and the collar beneath it. Either field can be omitted to
+       *  leave that side unbounded. */
+      withinBox?: { min?: [number, number, number]; max?: [number, number, number] };
+      /** Convenience shortcuts for axis-aligned ranges — equivalent to
+       *  `withinBox: { min: [-∞,-∞,zMin], max: [∞,∞,zMax] }`. Combine with
+       *  withinBox for tighter constraints (AND'd together). */
+      zMin?: number;
+      zMax?: number;
     }) {
       if (!opts || typeof opts !== 'object') return { error: 'paintConnected requires { seed: {point, normal?}, color }' };
       if (!opts.seed || typeof opts.seed !== 'object') return { error: 'paintConnected.seed must be { point: [x,y,z], normal?: [nx,ny,nz] }' };
@@ -5425,6 +5678,30 @@ async function main() {
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'paintConnected.color must be [r,g,b] in 0..1' };
       if (!currentMeshData) return { error: 'No geometry loaded' };
 
+      // Resolve the clamp into a single AABB the BFS predicate can use. Both
+      // sides default to ±Infinity so an empty `withinBox` plus a `zMax` works.
+      const huge = Infinity;
+      const boxMin: [number, number, number] = [
+        opts.withinBox?.min?.[0] ?? -huge,
+        opts.withinBox?.min?.[1] ?? -huge,
+        Math.max(opts.withinBox?.min?.[2] ?? -huge, opts.zMin ?? -huge),
+      ];
+      const boxMax: [number, number, number] = [
+        opts.withinBox?.max?.[0] ?? huge,
+        opts.withinBox?.max?.[1] ?? huge,
+        Math.min(opts.withinBox?.max?.[2] ?? huge, opts.zMax ?? huge),
+      ];
+      const hasClamp = (
+        Number.isFinite(boxMin[0]) || Number.isFinite(boxMin[1]) || Number.isFinite(boxMin[2]) ||
+        Number.isFinite(boxMax[0]) || Number.isFinite(boxMax[1]) || Number.isFinite(boxMax[2])
+      );
+      const centroidPredicate = hasClamp
+        ? (cx: number, cy: number, cz: number) =>
+            cx >= boxMin[0] && cx <= boxMax[0] &&
+            cy >= boxMin[1] && cy <= boxMax[1] &&
+            cz >= boxMin[2] && cz <= boxMax[2]
+        : undefined;
+
       const mesh = currentMeshData;
       const adjacency = buildAdjacency(mesh);
       const nearest = findNearestTriangle(opts.seed.point, mesh, adjacency);
@@ -5437,15 +5714,32 @@ async function main() {
       // rehydration finds the same triangle on re-load.
       const seedPoint: [number, number, number] = nearest.closest;
       const cos = Math.cos(maxDev * Math.PI / 180);
-      const triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos);
-      if (triangles.size === 0) return { error: `paintConnected: seed triangle ${nearest.triIndex} has no neighbors meeting the deviation threshold` };
+      const triangles = findConnectedFromSeed(nearest.triIndex, adjacency, cos, centroidPredicate);
+      if (triangles.size === 0) {
+        if (centroidPredicate) {
+          return { error: `paintConnected: seed triangle ${nearest.triIndex} either fails the withinBox/zMin/zMax clamp or has no neighbors meeting both the deviation threshold and the clamp. Widen the clamp or pick a seed inside it.` };
+        }
+        return { error: `paintConnected: seed triangle ${nearest.triIndex} has no neighbors meeting the deviation threshold` };
+      }
 
       const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
       const region = addRegion(
         regionName,
         opts.color as [number, number, number],
         'paintbrush',
-        { kind: 'connectedFromSeed', seedPoint, seedNormal, maxDeviationDeg: maxDev },
+        // Persist the clamp on the descriptor so a re-resolve (e.g. after a
+        // code edit that re-tessellates) walks the same way. Old descriptors
+        // without clamp fields keep working — they decode as undefined.
+        {
+          kind: 'connectedFromSeed',
+          seedPoint,
+          seedNormal,
+          maxDeviationDeg: maxDev,
+          ...(hasClamp ? {
+            clampMin: boxMin,
+            clampMax: boxMax,
+          } : {}),
+        },
         triangles,
       );
       const colored = applyTriColorsIfVisible(mesh);
@@ -6062,30 +6356,83 @@ async function main() {
       topOnly?: boolean;
       coverageMode?: CoverageMode;
       maxTriangleArea?: number;
+      /** Smooth the painted boundary by subdividing the base mesh along the
+       *  cylinder wall(s) until boundary triangles fall below `maxEdge`.
+       *  Defaults to `true` — the painted edge follows the analytic
+       *  cylinder rather than the coarse base tessellation, which matters
+       *  most for radial-fan meshes (sphere/cylinder/revolve outputs)
+       *  where a single base triangle can span 10°+ of arc. Pass
+       *  `smooth: false` for the previous fast-but-jaggy behaviour. */
+      smooth?: boolean;
+      /** Either `resolution` (model bbox diagonal / resolution; default 256)
+       *  or an explicit absolute `maxEdge` controls how aggressively we
+       *  subdivide. Mirrors the `paintSlab` knobs. */
+      resolution?: number;
+      maxEdge?: number;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded' };
       if (!opts || typeof opts !== 'object') return { error: 'paintInCylinder requires { rMin, rMax, zMin, zMax, color }' };
       if (typeof opts.rMin !== 'number' || typeof opts.rMax !== 'number') return { error: 'rMin and rMax must be numbers' };
       if (typeof opts.zMin !== 'number' || typeof opts.zMax !== 'number') return { error: 'zMin and zMax must be numbers' };
+      if (opts.rMin < 0 || opts.rMax <= opts.rMin) return { error: 'paintInCylinder requires rMin >= 0 and rMax > rMin' };
+      if (opts.zMax <= opts.zMin) return { error: 'paintInCylinder requires zMax > zMin' };
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] in 0..1' };
       const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
       const coneErr = validateNormalCone(cone);
       if (coneErr) return { error: coneErr };
       const areaErr = validateMaxTriangleArea(opts.maxTriangleArea);
       if (areaErr) return { error: areaErr };
+      const smoothErr = validateSmoothParams(opts);
+      if (smoothErr) return { error: smoothErr };
+
+      const center = opts.center ?? [0, 0];
+      const coverageMode = opts.coverageMode;
+      const { smooth, maxEdge } = resolveShapeSmoothFields(opts);
+
+      // First pass: find triangles that match the cylinder selector on the
+      // CURRENT mesh. If we're going to subdivide, the post-refine resolver
+      // (see RegionDescriptor 'cylinder' case) will re-collect against the
+      // refined mesh — but we still need a non-empty seed set so addRegion
+      // doesn't reject the call with "0 triangles".
       const triangles = collectTrianglesByCylinder(
         currentMeshData,
-        opts.center ?? [0, 0],
+        center,
         opts.rMin, opts.rMax,
         opts.zMin, opts.zMax,
         cone,
-        opts.coverageMode,
+        coverageMode,
         opts.maxTriangleArea,
       );
       if (triangles.size === 0) {
         return { error: `paintInCylinder: no triangles in cylindrical shell (rMin=${opts.rMin}, rMax=${opts.rMax}, z=${opts.zMin}..${opts.zMax})${cone ? ' with normalCone filter' : ''}. Try widening the shell, checking the center, or calling paintPreview with a box first to locate the geometry.` };
       }
-      return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
+
+      const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
+      // withSyncReconcile mirrors the paintSlab pattern: smoothing routes
+      // refinement through the async listener, but the agent-facing API
+      // wants a fully-populated region back synchronously.
+      const region = withSyncReconcile(() => addRegion(
+        regionName,
+        opts.color as [number, number, number],
+        'paintbrush',
+        {
+          kind: 'cylinder',
+          center,
+          rMin: opts.rMin,
+          rMax: opts.rMax,
+          zMin: opts.zMin,
+          zMax: opts.zMax,
+          ...(cone ? { normalCone: cone } : {}),
+          ...(coverageMode ? { coverageMode } : {}),
+          ...(opts.maxTriangleArea !== undefined ? { maxTriangleArea: opts.maxTriangleArea } : {}),
+          smooth,
+          maxEdge,
+        },
+        triangles,
+      ));
+      scheduleColorRefresh();
+      syncLockState();
+      return { id: region.id, name: region.name, triangles: region.triangles.size, smooth, maxEdge };
     },
 
     /** Render a preview of the current model with a candidate region tinted
@@ -6955,7 +7302,12 @@ async function main() {
      *  when the code didn't use `api.label`. */
     listLabels() {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
-      if (!currentLabelMap || currentLabelMap.size === 0) return { count: 0, labels: [] };
+      const lost = currentLostLabels && currentLostLabels.length > 0
+        ? [...currentLostLabels]
+        : undefined;
+      if (!currentLabelMap || currentLabelMap.size === 0) {
+        return { count: 0, labels: [], ...(lost ? { lostLabels: lost } : {}) };
+      }
       const mesh = currentMeshData;
       const labels = [...currentLabelMap.entries()].map(([name, ids]) => {
         const stats = regionTriangleStats(ids, mesh);
@@ -6966,7 +7318,7 @@ async function main() {
           centroid: stats.centroid,
         };
       });
-      return { count: labels.length, labels };
+      return { count: labels.length, labels, ...(lost ? { lostLabels: lost } : {}) };
     },
 
     /** Paint a labelled feature by name. The label must have been
@@ -7988,6 +8340,29 @@ async function main() {
         'If intentional (separate printable parts), ignore this warning.',
       );
     }
+    // Surface color regions that no longer resolve to any triangles on
+    // the freshly-run mesh — descriptors are still serialized (so the
+    // user's intent is preserved), but the live render shows zero paint
+    // for them. The most common cause is editing the code so a
+    // previously-registered api.label / BREP.label is gone, or switching
+    // modeling languages: byLabel descriptors then silently drop on
+    // load. Naming them in the runAndSave response saves a re-load.
+    const empty: string[] = [];
+    for (const r of getRegions()) {
+      if (r.triangles.size === 0) {
+        const kind = r.descriptor.kind === 'byLabel'
+          ? `byLabel "${r.descriptor.label}"`
+          : r.descriptor.kind;
+        empty.push(`${r.name} (${kind})`);
+      }
+    }
+    if (empty.length > 0) {
+      warnings.push(
+        `${empty.length} color region${empty.length > 1 ? 's' : ''} resolved to zero triangles on the new mesh and will render as un-painted: ${empty.join(', ')}. ` +
+        'Most common cause: the api.label / BREP.label they reference is no longer registered (renamed, removed, or the modeling language changed). ' +
+        'Re-add the label, or drop the region with removeRegion / clearColors and repaint by coordinates.',
+      );
+    }
     return warnings;
   }
 
@@ -8127,6 +8502,7 @@ async function main() {
       // region descriptors look up their triangles here; rehydrating a
       // saved version re-runs the code first, which rebuilds the map.
       currentLabelMap = result.labelMap ?? null;
+      currentLostLabels = result.lostLabels ?? null;
       setPaintLabels(currentLabelMap);
 
       // Apply any existing color regions to the mesh. Refining regions —
@@ -8142,9 +8518,29 @@ async function main() {
       if (hasColorRegions() && hasRefineDescriptors()) {
         rebuildPaintedGeometry();
         lastStrokeList = strokeDescriptors();
-      } else {
-        const displayMesh = hasColorRegions() ? applyTriColorsIfVisible(result.mesh) : result.mesh;
+      } else if (hasColorRegions()) {
+        // Re-resolve each non-refining region's triangles against the
+        // freshly-run mesh. Without this, the in-memory `triangles` Set
+        // still indexes the previous mesh — wrong colors when the
+        // triangle count changes, and the `byLabel` / `coplanar` /
+        // `connectedFromSeed` cases that depend on engine state
+        // (labelMap, surface positions) don't re-evaluate on the new
+        // run. Cheap when there are no regions; O(regions * tris) when
+        // there are.
+        const mesh = result.mesh;
+        let adjacency: AdjacencyGraph | null = null;
+        for (const region of getRegions()) {
+          const d = region.descriptor;
+          if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed')) {
+            adjacency = buildAdjacency(mesh);
+          }
+          setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, null));
+        }
+        const displayMesh = applyTriColorsIfVisible(mesh);
         updateMesh(displayMesh);
+        updatePaintMesh(mesh);
+      } else {
+        updateMesh(result.mesh);
         updatePaintMesh(result.mesh); // always pass uncolored mesh for adjacency
       }
 

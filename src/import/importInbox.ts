@@ -5,7 +5,7 @@
 
 const MAX_ENTRIES = 10;
 
-export type ImportSource = 'JSON' | 'JS' | 'SCAD' | 'STL' | 'IMAGE' | 'SVG';
+export type ImportSource = 'JSON' | 'JS' | 'SCAD' | 'STL' | 'STEP' | 'IMAGE' | 'SVG';
 
 export interface ImportInboxEntry {
   id: string;
@@ -91,6 +91,7 @@ export function classifyImportSource(filename: string): ImportSource | null {
   if (lower.endsWith('.scad')) return 'SCAD';
   if (lower.endsWith('.js')) return 'JS';
   if (lower.endsWith('.stl')) return 'STL';
+  if (lower.endsWith('.step') || lower.endsWith('.stp')) return 'STEP';
   if (lower.endsWith('.svg')) return 'SVG';
   if (/\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(lower)) return 'IMAGE';
   return null;

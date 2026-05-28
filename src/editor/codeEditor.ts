@@ -10,7 +10,11 @@ import { manifoldApiCompletion } from './apiCompletions';
 import type { SourceDiagnostic } from '../geometry/types';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
 
-export type EditorLanguage = 'manifold-js' | 'scad';
+/** Replicad/BREP sessions reuse the JavaScript editor since they're written
+ *  as JS (`api.BREP.box(...)`), but we still track them as a distinct
+ *  language so callers (formatting, syntax highlighting, status badges) can
+ *  branch per engine. */
+export type EditorLanguage = 'manifold-js' | 'scad' | 'replicad';
 
 let editorView: EditorView | null = null;
 let debounceTimer: number | null = null;

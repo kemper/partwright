@@ -129,7 +129,13 @@ export default defineConfig({
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https:; worker-src 'self' blob:; font-src 'self'",
+      // Mirror the production CSP (public/_headers) so an accidental new
+      // external call surfaces here in dev instead of slipping through to
+      // production. The ONLY intentional delta is in connect-src: dev also
+      // allows the localhost WebSocket that Vite uses for HMR/live-reload,
+      // which production has no equivalent of. Keep the host allowlist below
+      // in sync with public/_headers.
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:* https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://raw.githubusercontent.com; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
     },
     fs: {
       // Relax strict fs access for WASM files in node_modules

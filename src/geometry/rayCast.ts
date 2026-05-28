@@ -125,9 +125,19 @@ export function probeRay(
   meshData: MeshData,
   origin: [number, number, number],
   direction: [number, number, number],
+  opts?: { allHits?: boolean },
 ): GeneralRayResult {
   const geometry = meshDataToBufferGeometry(meshData);
-  const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+  // FrontSide by default — for a closed manifold solid (which is what
+  // every engine produces), this gives the outer-surface hit unambiguously.
+  // DoubleSide would let the raycaster register every face the ray crosses
+  // (entry + interior + exit), which dumped a soup of hits in the result and
+  // misled callers into picking the back-face on simple "drop a ray on the
+  // top of the sphere" probes. `allHits: true` opts back into the soup for
+  // callers that genuinely want it (e.g. thickness measurement — see
+  // `probeAtXY`, which keeps DoubleSide because it pairs entry/exit hits).
+  const side = opts?.allHits ? THREE.DoubleSide : THREE.FrontSide;
+  const material = new THREE.MeshBasicMaterial({ side });
   const tempMesh = new THREE.Mesh(geometry, material);
 
   const raycaster = new THREE.Raycaster();

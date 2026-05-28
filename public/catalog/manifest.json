@@ -237,6 +237,125 @@
       "file": "modular_drawer_bin.partwright.json",
       "language": "scad",
       "description": "A stackable storage bin with two compartments, rounded corners, and stacking lugs. Built with BOSL2's cuboid(rounding=) for filleted edges, plus translate-and-anchor cyl() placement for the lugs."
+    },
+    {
+      "id": "rangefinder-camera",
+      "name": "Vintage Rangefinder Camera",
+      "file": "rangefinder_camera.partwright.json",
+      "language": "scad",
+      "description": "A classic 35mm rangefinder camera with a chrome top plate, leatherette body, a fixed lens with a dark recessed front element, twin viewfinder windows, a brass shutter release, and a wind-lever knob."
+    },
+    {
+      "id": "smiley-cactus",
+      "name": "Smiley Cactus",
+      "file": "smiley_cactus.partwright.json",
+      "language": "scad",
+      "description": "A cheerful potted saguaro with two upraised arms, a pink flower bud on its crown, and two little black bead eyes — sitting in a flared terracotta pot with rim and soil."
+    },
+    {
+      "id": "studio-microphone",
+      "name": "Studio Microphone",
+      "file": "studio_microphone.partwright.json",
+      "language": "scad",
+      "description": "Classic large-diaphragm studio condenser microphone cradled in a U-shaped shock-mount yoke on a weighted desktop stand, with a coiled cable looping back to the base."
+    },
+    {
+      "id": "vintage-biplane",
+      "name": "Vintage Biplane",
+      "file": "vintage_biplane.partwright.json",
+      "language": "scad",
+      "description": "A WW1-era biplane with stacked canvas wings, a tapered fuselage, a yellow engine cowling, a two-blade wooden propeller, and a swept tail fin."
+    },
+    {
+      "id": "pipe-flange",
+      "name": "Pipe Flange",
+      "file": "pipe_flange.partwright.json",
+      "language": "replicad",
+      "description": "An ANSI-style pipe flange with a 6-bolt circle, central bore, chamfered face, and beveled neck — showcasing BREP's exact selective edge filleting on a mechanically realistic part."
+    },
+    {
+      "id": "machine-knob",
+      "name": "Machine Tool Knob",
+      "file": "machine_knob.partwright.json",
+      "language": "replicad",
+      "description": "A precision machine-tool grip knob with a finger-grip skirt, chamfered top, domed crown, and a shaft bore — showcasing BREP's exact chamfers and fillets on rotational geometry."
+    },
+    {
+      "id": "butt-hinge",
+      "name": "Butt Hinge",
+      "file": "butt_hinge.partwright.json",
+      "language": "replicad",
+      "description": "A classic interlocking butt hinge: two flat leaves, three knuckles, and a continuous pin — showcasing BREP's exact cylindrical surfaces and clean selective fillets."
+    },
+    {
+      "id": "v-pulley",
+      "name": "V-Groove Pulley",
+      "file": "v_pulley.partwright.json",
+      "language": "replicad",
+      "description": "A precision V-belt pulley wheel with a beveled drive groove around its circumference, a central hub bore, and chamfered side rims — showcasing BREP's exact rotational geometry and angled surfaces."
+    },
+    {
+      "id": "l-bracket",
+      "name": "Precision L-Bracket",
+      "file": "l_bracket.partwright.json",
+      "language": "replicad",
+      "description": "A right-angle steel bracket with a large concave fillet on the inside web, rounded outer tip edges, and four mounting holes — showcasing BREP's exact selective edge rounding."
+    },
+    {
+      "id": "enclosure-shell",
+      "name": "Project Enclosure",
+      "file": "enclosure_shell.partwright.json",
+      "language": "replicad",
+      "description": "A rectangular electronics-project enclosure shell with rounded outer corners, an inset lid lip, PCB mounting bosses, and side ventilation slots — showcasing BREP's exact filleted shells."
+    },
+    {
+      "id": "robot-buddy",
+      "name": "Robot Buddy",
+      "file": "robot_buddy.partwright.json",
+      "language": "replicad",
+      "description": "A friendly retro desktop robot with a domed head, antenna, chest panel, and two stubby arms — colorful BREP showcase with paint."
+    },
+    {
+      "id": "bird-feeder",
+      "name": "Bird Feeder",
+      "file": "bird_feeder.partwright.json",
+      "language": "replicad",
+      "description": "A gazebo-style hanging bird feeder with conical wood roof, revolved seed reservoir, lipped dish, and circular perches — showcasing revolve + circularPattern + paint."
+    },
+    {
+      "id": "pendant-lamp",
+      "name": "Pendant Chandelier",
+      "file": "pendant_lamp.partwright.json",
+      "language": "replicad",
+      "description": "A 5-arm pendant chandelier with brass arms, glass bulbs, central canopy, and a decorative finial — showcasing BREP.circularPattern + paint."
+    },
+    {
+      "id": "wall-clock",
+      "name": "Wall Clock",
+      "file": "wall_clock.partwright.json",
+      "language": "replicad",
+      "description": "A classic round analog wall clock with chamfered bezel, painted hour markers, hour + minute hands, and a center spindle — showcasing circularPattern + paint."
+    },
+    {
+      "id": "vintage-camera",
+      "name": "Vintage Camera",
+      "file": "vintage_camera.partwright.json",
+      "language": "replicad",
+      "description": "A vintage rangefinder camera with a tapered lens barrel, viewfinder, shutter button, and film advance — colorful BREP showcase with paint."
+    },
+    {
+      "id": "lighthouse-brep",
+      "name": "Coastal Lighthouse",
+      "file": "lighthouse_brep.partwright.json",
+      "language": "replicad",
+      "description": "A tall round lighthouse with red-and-white tower stripes, balcony railing, domed lantern, and conical cap — colorful BREP showcase with paint."
+    },
+    {
+      "id": "coffee-mug",
+      "name": "Coffee Mug",
+      "file": "coffee_mug.partwright.json",
+      "language": "replicad",
+      "description": "A white ceramic coffee mug with a colored rim band, painted coffee inside, and a curved torus handle — showcasing BREP's shell op + paint."
     }
   ]
 }
