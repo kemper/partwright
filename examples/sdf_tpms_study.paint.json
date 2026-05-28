@@ -1,0 +1,9 @@
+{
+  "regions": [
+    { "label": "schwarzP",     "color": [0.93, 0.36, 0.20], "name": "Schwarz P (coral)" },
+    { "label": "diamond",      "color": [0.20, 0.62, 0.85], "name": "Diamond (cyan)" },
+    { "label": "lidinoid",     "color": [0.55, 0.30, 0.78], "name": "Lidinoid (violet)" },
+    { "label": "gradedGyroid", "color": [0.95, 0.78, 0.20], "name": "Graded gyroid (amber)" },
+    { "label": "plinth",       "color": [0.32, 0.34, 0.38], "name": "Plinth (graphite)" }
+  ]
+}

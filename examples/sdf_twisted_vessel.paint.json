@@ -1,0 +1,7 @@
+{
+  "regions": [
+    { "label": "body", "color": [0.72, 0.48, 0.18], "name": "Twisted Body" },
+    { "label": "base", "color": [0.32, 0.22, 0.16], "name": "Stone Plinth" },
+    { "label": "spire", "color": [0.92, 0.82, 0.40], "name": "Gilt Spire" }
+  ]
+}

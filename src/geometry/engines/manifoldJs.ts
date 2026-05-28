@@ -4,6 +4,7 @@ import { createCurvesNamespace } from '../curves';
 import { createMeshOpsNamespace } from '../meshOps';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
+import { createSdfNamespace, SdfNode } from '../sdf';
 import { getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, consumeBrepToManifoldLabels } from '../brepRuntime';
 
 /** Marker the sandbox attaches to render-only proxies (see `renderMesh` below).
@@ -188,6 +189,11 @@ export const manifoldJsEngine: Engine = {
       triVerts: m.triVerts,
     }));
 
+    // SDF namespace is constructed per-run because it needs to close over
+    // the run's `label` function (so labelled SDF subtrees register with
+    // the same labelRegistry as `api.label`-tagged Manifold parts).
+    const sdfNamespace = createSdfNamespace(Manifold, label);
+
     // `BREP` is only present when the engine Worker has lazy-loaded
     // OpenCASCADE.js — otherwise the namespace is undefined and the user
     // sees a normal "BREP is not defined" ReferenceError if they touch it
@@ -201,6 +207,7 @@ export const manifoldJsEngine: Engine = {
       Curves: curvesNamespace,
       BREP,
       meshOps: meshOpsNamespace,
+      sdf: sdfNamespace,
       // Flat aliases for the most-used meshOps verbs — agents reach for shorter
       // names like `api.intersects(a,b)` and `api.placeOn(part, table)` much more
       // often than they reach for the namespace, so we promote those to api.* too.
@@ -292,6 +299,18 @@ export const manifoldJsEngine: Engine = {
       result = fn(api);
 
       if (!result || typeof result.getMesh !== 'function') {
+        // Common SDF mistake: returning the expression tree without
+        // lowering it. Give a targeted hint instead of the generic
+        // "did you forget to return" message.
+        if (result instanceof SdfNode) {
+          const error = 'Code returned an SDF expression, not a Manifold. Add `.build()` to lower it: `return someSdf.build({ edgeLength: 0.5 })`. See /ai/sdf.md.';
+          return {
+            mesh: null,
+            manifold: null,
+            error,
+            diagnostics: runtimeDiagnostic(error, 'Append `.build()` (or `api.sdf.build(node)`) to the return value to mesh it through Manifold.levelSet.', 'JavaScript'),
+          };
+        }
         const error = 'Code must return a Manifold object. Did you forget to `return` the final Manifold? See /ai.md#before-you-start';
         return {
           mesh: null,

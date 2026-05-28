@@ -1,0 +1,6 @@
+{
+  "regions": [
+    { "label": "bricks", "color": [0.72, 0.32, 0.20], "name": "Terracotta bricks" },
+    { "label": "mortar", "color": [0.30, 0.28, 0.26], "name": "Charcoal mortar" }
+  ]
+}

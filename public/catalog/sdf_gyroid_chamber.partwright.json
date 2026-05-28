@@ -1,0 +1,283 @@
+{
+  "partwright": "1.8",
+  "session": {
+    "name": "SDF Gyroid Chamber",
+    "created": 1779991641240,
+    "updated": 1779991760217,
+    "images": null
+  },
+  "parts": [
+    {
+      "name": "Part 1",
+      "order": 0
+    }
+  ],
+  "versions": [
+    {
+      "index": 1,
+      "code": "// Gyroid lantern chamber — a porous triply-periodic minimal-surface core\n// sandwiched between a solid base and cap, cinched at the waist by a\n// decorative torus ring. The gyroid lattice is the showpiece (it's\n// infinite so we MUST intersect it with a finite cylinder to give the\n// mesher bounded support), while the solid bookends and ring keep the\n// piece readable as an object rather than \"just a chunk of gyroid\".\n//\n// Four labelled regions ('lattice', 'base', 'cap', 'ring') let the\n// paint manifest color each part independently. Labels are placed on\n// the OUTSIDE of every transform/intersect so they propagate cleanly\n// (the lattice label rides through the gyroid.intersect(cylinder) per\n// the propagation rules — label survives the A-side of intersect when\n// applied to the intersect node itself).\nconst { sdf, Manifold } = api;\n\n// ---- Parameters ----------------------------------------------------------\nconst R         = 22;     // outer radius of the lantern\nconst latticeH  = 32;     // height of the gyroid section\nconst baseH     = 5;      // solid base thickness\nconst capH      = 4;      // solid top cap thickness\nconst ringMinor = 1.6;    // torus tube radius (decorative waist ring)\nconst ringMajor = R + 0.4;// torus sits flush around the equator\n\nconst cellSize  = 5.5;    // gyroid cell period — chunky enough to read at a glance\nconst wallTh    = 0.9;    // gyroid wall thickness — sturdy enough to print\n\n// ---- Lattice (SDF) -------------------------------------------------------\n// Clip the infinite gyroid to a cylinder so it has finite bounds. The\n// intersect node inherits its bounds from the cylinder (the gyroid's\n// bounds are infinite). Label is applied to the intersect node so the\n// whole carved lattice paints as one region.\nconst lattice = sdf\n  .gyroid(cellSize, wallTh)\n  .intersect(sdf.cylinder(R - 0.2, latticeH))   // tiny inset so it sits inside the ring\n  .label('lattice');\n\n// ---- Decorative ring (SDF torus) -----------------------------------------\n// A subtle waist ring at z=0 (the equator of the lattice section). It\n// sticks out just slightly beyond R so it reads as a distinct band.\nconst ring = sdf\n  .torus(ringMajor, ringMinor)\n  .label('ring');\n\n// Build the SDF half. Both subtrees together still have finite bounds\n// (the lattice is bounded by its cylinder; the torus is naturally\n// finite). edgeLength tuned to resolve the gyroid surface cleanly\n// without the mesh ballooning past ~a few hundred k tris.\nconst sdfPart = lattice.union(ring).build({ edgeLength: 0.4 });\n\n// ---- Solid base + cap (Manifold) -----------------------------------------\n// Rounded thin disks that bracket the lattice top and bottom. We use\n// plain Manifold here because the geometry is crisp and axis-aligned;\n// SDF would add cost for no benefit. Each gets its own paint label via\n// api.label so the paint manifest can address them independently.\nconst base = api.label(\n  Manifold.cylinder(baseH, R, R, 96).translate([0, 0, -latticeH / 2 - baseH]),\n  'base',\n);\n\nconst cap = api.label(\n  Manifold.cylinder(capH, R, R, 96).translate([0, 0, latticeH / 2]),\n  'cap',\n);\n\n// ---- Combine -------------------------------------------------------------\n// SDF result is a normal Manifold, so a plain union closes the assembly.\n// We deliberately do NOT use expectUnion({expectComponents: 1}) here: a\n// gyroid clipped by a cylinder leaves hundreds of tiny lattice \"chips\"\n// at the boundary where partial cells get sliced — they're inherent to\n// the geometry, not a defect, and the main lantern body still meshes\n// as one piece. Manifold.union handles the many-component result fine.\nreturn Manifold.union([sdfPart, base, cap]);\n",
+      "label": "v1",
+      "geometryData": {
+        "status": "ok",
+        "vertexCount": 805989,
+        "triangleCount": 1620098,
+        "boundingBox": {
+          "x": [
+            -24,
+            24
+          ],
+          "y": [
+            -24,
+            24
+          ],
+          "z": [
+            -21,
+            20
+          ],
+          "dimensions": [
+            48,
+            48,
+            41
+          ]
+        },
+        "centroid": [
+          0,
+          0,
+          -0.5
+        ],
+        "volume": 43391.676887846224,
+        "surfaceArea": 53564.312458061526,
+        "genus": 2023,
+        "isManifold": true,
+        "componentCount": 280,
+        "crossSections": {
+          "z25": {
+            "z": -10.75,
+            "area": 899.0416491529704,
+            "contours": 82
+          },
+          "z50": {
+            "z": -0.5,
+            "area": 1267.3509445680047,
+            "contours": 107
+          },
+          "z75": {
+            "z": 9.75,
+            "area": 884.8732125330522,
+            "contours": 83
+          }
+        },
+        "unit": "unitless",
+        "executionTimeMs": 18569,
+        "codeHash": "cc587fba",
+        "sessionId": "a9ucLZi9Y45i",
+        "sessionUrl": "http://localhost:5173/editor?session=a9ucLZi9Y45i",
+        "galleryUrl": "http://localhost:5173/editor?session=a9ucLZi9Y45i&gallery"
+      },
+      "timestamp": 1779991696680,
+      "language": "manifold-js"
+    },
+    {
+      "index": 2,
+      "code": "// Gyroid lantern chamber — a porous triply-periodic minimal-surface core\n// sandwiched between a solid base and cap, cinched at the waist by a\n// decorative torus ring. The gyroid lattice is the showpiece (it's\n// infinite so we MUST intersect it with a finite cylinder to give the\n// mesher bounded support), while the solid bookends and ring keep the\n// piece readable as an object rather than \"just a chunk of gyroid\".\n//\n// Four labelled regions ('lattice', 'base', 'cap', 'ring') let the\n// paint manifest color each part independently. Labels are placed on\n// the OUTSIDE of every transform/intersect so they propagate cleanly\n// (the lattice label rides through the gyroid.intersect(cylinder) per\n// the propagation rules — label survives the A-side of intersect when\n// applied to the intersect node itself).\nconst { sdf, Manifold } = api;\n\n// ---- Parameters ----------------------------------------------------------\nconst R         = 22;     // outer radius of the lantern\nconst latticeH  = 32;     // height of the gyroid section\nconst baseH     = 5;      // solid base thickness\nconst capH      = 4;      // solid top cap thickness\nconst ringMinor = 1.6;    // torus tube radius (decorative waist ring)\nconst ringMajor = R + 0.4;// torus sits flush around the equator\n\nconst cellSize  = 5.5;    // gyroid cell period — chunky enough to read at a glance\nconst wallTh    = 0.9;    // gyroid wall thickness — sturdy enough to print\n\n// ---- Lattice (SDF) -------------------------------------------------------\n// Clip the infinite gyroid to a cylinder so it has finite bounds. The\n// intersect node inherits its bounds from the cylinder (the gyroid's\n// bounds are infinite). Label is applied to the intersect node so the\n// whole carved lattice paints as one region.\nconst lattice = sdf\n  .gyroid(cellSize, wallTh)\n  .intersect(sdf.cylinder(R - 0.2, latticeH))   // tiny inset so it sits inside the ring\n  .label('lattice');\n\n// ---- Decorative ring (SDF torus) -----------------------------------------\n// A subtle waist ring at z=0 (the equator of the lattice section). It\n// sticks out just slightly beyond R so it reads as a distinct band.\nconst ring = sdf\n  .torus(ringMajor, ringMinor)\n  .label('ring');\n\n// Build the SDF half. Both subtrees together still have finite bounds\n// (the lattice is bounded by its cylinder; the torus is naturally\n// finite). edgeLength tuned to resolve the gyroid surface cleanly\n// without the mesh ballooning past ~a few hundred k tris.\nconst sdfPart = lattice.union(ring).build({ edgeLength: 0.4 });\n\n// ---- Solid base + cap (Manifold) -----------------------------------------\n// Rounded thin disks that bracket the lattice top and bottom. We use\n// plain Manifold here because the geometry is crisp and axis-aligned;\n// SDF would add cost for no benefit. Each gets its own paint label via\n// api.label so the paint manifest can address them independently.\nconst base = api.label(\n  Manifold.cylinder(baseH, R, R, 96).translate([0, 0, -latticeH / 2 - baseH]),\n  'base',\n);\n\nconst cap = api.label(\n  Manifold.cylinder(capH, R, R, 96).translate([0, 0, latticeH / 2]),\n  'cap',\n);\n\n// ---- Combine -------------------------------------------------------------\n// SDF result is a normal Manifold, so a plain union closes the assembly.\n// We deliberately do NOT use expectUnion({expectComponents: 1}) here: a\n// gyroid clipped by a cylinder leaves hundreds of tiny lattice \"chips\"\n// at the boundary where partial cells get sliced — they're inherent to\n// the geometry, not a defect, and the main lantern body still meshes\n// as one piece. Manifold.union handles the many-component result fine.\nreturn Manifold.union([sdfPart, base, cap]);\n",
+      "label": "v1 colored",
+      "geometryData": {
+        "status": "ok",
+        "vertexCount": 805989,
+        "triangleCount": 1620098,
+        "boundingBox": {
+          "x": [
+            -24,
+            24
+          ],
+          "y": [
+            -24,
+            24
+          ],
+          "z": [
+            -21,
+            20
+          ],
+          "dimensions": [
+            48,
+            48,
+            41
+          ]
+        },
+        "centroid": [
+          0,
+          0,
+          -0.5
+        ],
+        "volume": 43391.676887846224,
+        "surfaceArea": 53564.312458061526,
+        "genus": 2023,
+        "isManifold": true,
+        "componentCount": 280,
+        "crossSections": {
+          "z25": {
+            "z": -10.75,
+            "area": 899.0416491529704,
+            "contours": 82
+          },
+          "z50": {
+            "z": -0.5,
+            "area": 1267.3509445680047,
+            "contours": 107
+          },
+          "z75": {
+            "z": 9.75,
+            "area": 884.8732125330522,
+            "contours": 83
+          }
+        },
+        "unit": "unitless",
+        "executionTimeMs": 18455,
+        "codeHash": "cc587fba",
+        "sessionId": "a9ucLZi9Y45i",
+        "sessionUrl": "http://localhost:5173/editor?session=a9ucLZi9Y45i",
+        "galleryUrl": "http://localhost:5173/editor?session=a9ucLZi9Y45i&gallery",
+        "colorRegions": [
+          {
+            "id": 1,
+            "name": "Gyroid lattice",
+            "color": [
+              0.95,
+              0.45,
+              0.12
+            ],
+            "source": "paintbrush",
+            "descriptor": {
+              "kind": "byLabel",
+              "label": "lattice"
+            },
+            "order": 1,
+            "visible": true
+          },
+          {
+            "id": 2,
+            "name": "Base",
+            "color": [
+              0.16,
+              0.18,
+              0.22
+            ],
+            "source": "paintbrush",
+            "descriptor": {
+              "kind": "byLabel",
+              "label": "base"
+            },
+            "order": 2,
+            "visible": true
+          },
+          {
+            "id": 3,
+            "name": "Cap",
+            "color": [
+              0.16,
+              0.18,
+              0.22
+            ],
+            "source": "paintbrush",
+            "descriptor": {
+              "kind": "byLabel",
+              "label": "cap"
+            },
+            "order": 3,
+            "visible": true
+          },
+          {
+            "id": 4,
+            "name": "Waist ring",
+            "color": [
+              0.85,
+              0.78,
+              0.4
+            ],
+            "source": "paintbrush",
+            "descriptor": {
+              "kind": "byLabel",
+              "label": "ring"
+            },
+            "order": 4,
+            "visible": true
+          }
+        ]
+      },
+      "timestamp": 1779991756106,
+      "language": "manifold-js",
+      "colorRegions": [
+        {
+          "id": 1,
+          "name": "Gyroid lattice",
+          "color": [
+            0.95,
+            0.45,
+            0.12
+          ],
+          "source": "paintbrush",
+          "descriptor": {
+            "kind": "byLabel",
+            "label": "lattice"
+          },
+          "order": 1,
+          "visible": true
+        },
+        {
+          "id": 2,
+          "name": "Base",
+          "color": [
+            0.16,
+            0.18,
+            0.22
+          ],
+          "source": "paintbrush",
+          "descriptor": {
+            "kind": "byLabel",
+            "label": "base"
+          },
+          "order": 2,
+          "visible": true
+        },
+        {
+          "id": 3,
+          "name": "Cap",
+          "color": [
+            0.16,
+            0.18,
+            0.22
+          ],
+          "source": "paintbrush",
+          "descriptor": {
+            "kind": "byLabel",
+            "label": "cap"
+          },
+          "order": 3,
+          "visible": true
+        },
+        {
+          "id": 4,
+          "name": "Waist ring",
+          "color": [
+            0.85,
+            0.78,
+            0.4
+          ],
+          "source": "paintbrush",
+          "descriptor": {
+            "kind": "byLabel",
+            "label": "ring"
+          },
+          "order": 4,
+          "visible": true
+        }
+      ]
+    }
+  ],
+  "notes": [
+    {
+      "text": "[WORKFLOW] Drive this app via window.partwright (see /ai.md). Use runAndSave(code, label, assertions) for iterations; after structural changes verify visually via renderViews (use views:\"box\" for an all-faces final check); addSessionNote with [REQUIREMENT]/[DECISION]/[MEASUREMENT]/[FEEDBACK]/[ATTEMPT]/[TODO] prefixes; getSessionContext() when resuming.",
+      "timestamp": 1779991641587
+    }
+  ]
+}

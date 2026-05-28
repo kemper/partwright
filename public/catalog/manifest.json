@@ -239,6 +239,41 @@
       "description": "A stackable storage bin with two compartments, rounded corners, and stacking lugs. Built with BOSL2's cuboid(rounding=) for filleted edges, plus translate-and-anchor cyl() placement for the lugs."
     },
     {
+      "id": "sdf-organic-creature",
+      "name": "SDF Organic Creature",
+      "file": "sdf_organic_creature.partwright.json",
+      "language": "manifold-js",
+      "description": "A smooth-blended creature built entirely from SDF primitives — showcases smoothUnion for organic body welds and paint-by-label colourisation of an SDF model."
+    },
+    {
+      "id": "sdf-gyroid-chamber",
+      "name": "SDF Gyroid Chamber",
+      "file": "sdf_gyroid_chamber.partwright.json",
+      "language": "manifold-js",
+      "description": "A triply-periodic gyroid lattice clipped inside a solid frame — the SDF way to do 3D-printable infill in one expression."
+    },
+    {
+      "id": "sdf-twisted-vessel",
+      "name": "SDF Twisted Vessel",
+      "file": "sdf_twisted_vessel.partwright.json",
+      "language": "manifold-js",
+      "description": "A spiralled body produced by the SDF `.twist()` domain warp on a non-radially-symmetric profile, joined to a base with smoothUnion."
+    },
+    {
+      "id": "sdf-mixed-mechanical",
+      "name": "SDF + Manifold Mechanical Part",
+      "file": "sdf_mixed_mechanical.partwright.json",
+      "language": "manifold-js",
+      "description": "A mechanical part that mixes smooth-blended SDF features (grip, fillets) with crisp Manifold CSG (mounting plate, drilled holes) — shows how the two engines compose."
+    },
+    {
+      "id": "sdf-bloom",
+      "name": "SDF Bloom",
+      "file": "sdf_bloom.partwright.json",
+      "language": "manifold-js",
+      "description": "A stylised flower showcasing the SDF combinators — ellipsoid petals fanned out with polarArray (no hand-written coordinates), a flattened pollen centre, and a taper-narrowed stem. Three painted regions."
+    },
+    {
       "id": "rangefinder-camera",
       "name": "Vintage Rangefinder Camera",
       "file": "rangefinder_camera.partwright.json",
@@ -356,6 +391,55 @@
       "file": "coffee_mug.partwright.json",
       "language": "replicad",
       "description": "A white ceramic coffee mug with a colored rim band, painted coffee inside, and a curved torus handle — showcasing BREP's shell op + paint."
+    },
+    {
+      "id": "sdf-tpms-study",
+      "name": "SDF TPMS Study",
+      "file": "sdf_tpms_study.partwright.json",
+      "language": "manifold-js",
+      "description": "Four 14³ lattice tiles side-by-side on a plinth — Schwarz P, Diamond, Lidinoid, and a gradedGyroid with a diagonal thickness ramp. The exhaustive TPMS comparison; five painted regions."
+    },
+    {
+      "id": "sdf-aetherjelly",
+      "name": "SDF Aetherjelly",
+      "file": "sdf_radial_creature.partwright.json",
+      "language": "manifold-js",
+      "description": "A radial jellyfish-drifter built from ellipsoids, fanned into shape by polarArray (8 tentacles, 6 ocelli), bilaterally completed by mirrorPair, and tapered along its body axis. Three painted regions; the showcase for the SDF combinators."
+    },
+    {
+      "id": "sdf-helix-lamp",
+      "name": "SDF Helix Lamp Standard",
+      "file": "sdf_helix_lamp_standard.partwright.json",
+      "language": "manifold-js",
+      "description": "An architectural light post whose square-cross-section shaft spirals around an OFFSET vertical axis, paired with a perforated screen wall built by repeat() clipped to a slab and topped by a roundedCylinder lamp cap. Four painted regions; showcases the new offset-twist, repeat, and roundedCylinder primitives."
+    },
+    {
+      "id": "sdf-spur-wheel",
+      "name": "SDF 28-Tooth Spur Wheel",
+      "file": "sdf_polarrepeat_showcase.partwright.json",
+      "language": "manifold-js",
+      "description": "A spur/turbine wheel — single tooth (roundedBox + taper) folded 28-fold via polarRepeat, plus a 6-hole polarArray lightening web and a bored central hub. The canonical \"polarArray for low counts, polarRepeat for high\" showcase, in three painted regions."
+    },
+    {
+      "id": "sdf-perforated-faceplate",
+      "name": "SDF Perforated Faceplate",
+      "file": "sdf_repeatn_showcase.partwright.json",
+      "language": "manifold-js",
+      "description": "A speaker-style faceplate built on the finite-count repeatN combinator — a 7×5 grid of through-holes subtracted from a rounded slab, a recessed bezel, and a 4×1 row of LED-indicator bumps. The textbook \"no intersect needed\" case in three painted regions."
+    },
+    {
+      "id": "sdf-graded-tpms-study",
+      "name": "SDF Graded TPMS Study",
+      "file": "sdf_graded_tpms_study.partwright.json",
+      "language": "manifold-js",
+      "description": "A femur-inspired model exercising all three new graded TPMS variants: gradedSchwarzP for the cortical shaft (radial density), gradedDiamond for the marrow canal (axial trabecular grading), and gradedLidinoid for the femoral head (spherical-radial). Five painted regions."
+    },
+    {
+      "id": "sdf-brick-wall",
+      "name": "SDF Running-Bond Brick Wall",
+      "file": "sdf_brick_wall.partwright.json",
+      "language": "manifold-js",
+      "description": "A classic running-bond brick wall — bricks tiled via repeatN({stagger: {along: x, by: y}}), the new option for brick/honeycomb patterns. Every other course shifts by half a brick. Two painted regions on a recessed mortar slab."
     }
   ]
 }

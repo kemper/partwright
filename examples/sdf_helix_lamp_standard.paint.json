@@ -1,0 +1,8 @@
+{
+  "regions": [
+    { "label": "plinth", "color": [0.22, 0.22, 0.24], "name": "Charcoal Plinth" },
+    { "label": "shaft",  "color": [0.78, 0.56, 0.22], "name": "Brushed Bronze Shaft" },
+    { "label": "screen", "color": [0.36, 0.42, 0.48], "name": "Slate Screen" },
+    { "label": "lamp",   "color": [0.96, 0.90, 0.62], "name": "Lit Lamp Cap" }
+  ]
+}
