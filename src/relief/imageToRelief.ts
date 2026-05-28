@@ -10,10 +10,56 @@ import type {
   HeightGrid,
   ReliefMesh,
   ReliefOptions,
+  PreprocessOptions,
   SeedRegion,
   GenerateReliefResult,
 } from './types';
 import { DEFAULT_RELIEF_OPTIONS } from './types';
+
+/** Brightness / contrast / saturation / levels applied to the downsampled
+ *  image in sRGB byte space. In-place over the interleaved RGB Float32 grid.
+ *  Operates BEFORE smoothing so the smoothed image already reflects the user's
+ *  tonal corrections. */
+export function preprocessRgb(rgb: Float32Array, w: number, h: number, p: PreprocessOptions): void {
+  const total = w * h;
+  const noOp =
+    p.brightness === 0 && p.contrast === 0 && p.saturation === 0 &&
+    p.levelsLow === 0 && p.levelsHigh === 255;
+  if (noOp) return;
+
+  const lo = Math.max(0, Math.min(254, p.levelsLow));
+  const hi = Math.max(lo + 1, Math.min(255, p.levelsHigh));
+  const levelsScale = 255 / (hi - lo);
+  const brightAdd = Math.max(-1, Math.min(1, p.brightness)) * 128;
+  // Standard contrast formula centred on 128. c in -1..+1 maps to a multiplier
+  // that compresses (c<0) or expands (c>0) the dynamic range around mid-grey.
+  const c = Math.max(-1, Math.min(1, p.contrast));
+  const cf = (259 * (c * 255 + 255)) / (255 * (259 - c * 255));
+  const sat = 1 + Math.max(-1, Math.min(1, p.saturation));
+
+  for (let i = 0; i < total; i++) {
+    const o = i * 3;
+    let r = rgb[o], g = rgb[o + 1], b = rgb[o + 2];
+    // Levels.
+    r = (r - lo) * levelsScale;
+    g = (g - lo) * levelsScale;
+    b = (b - lo) * levelsScale;
+    // Brightness.
+    r += brightAdd; g += brightAdd; b += brightAdd;
+    // Contrast.
+    r = cf * (r - 128) + 128;
+    g = cf * (g - 128) + 128;
+    b = cf * (b - 128) + 128;
+    // Saturation: blend each channel toward the cell's luminance.
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    r = lum + (r - lum) * sat;
+    g = lum + (g - lum) * sat;
+    b = lum + (b - lum) * sat;
+    rgb[o]     = r < 0 ? 0 : r > 255 ? 255 : r;
+    rgb[o + 1] = g < 0 ? 0 : g > 255 ? 255 : g;
+    rgb[o + 2] = b < 0 ? 0 : b > 255 ? 255 : b;
+  }
+}
 import { buildTileMesh, type TileOptions, type TileShape } from './tileMesh';
 import { parseSvgToTile } from '../import/parsers/svg';
 
@@ -168,6 +214,7 @@ function quantizeHeight(h: number, levels: Float32Array, maxHeight: number): num
 export function sampleImageToGrid(image: ImageData, opts: ReliefOptions): HeightGrid {
   const { resolution, smoothing, maxHeight, layerHeight } = opts.common;
   const ds = downsample(image, resolution);
+  preprocessRgb(ds.rgb, ds.width, ds.height, opts.preprocess);
   const rgb = blurRGB(ds.rgb, ds.width, ds.height, smoothing);
   const w = ds.width;
   const h = ds.height;
@@ -606,7 +653,12 @@ function buildQuantizedTile(grid: HeightGrid, opts: ReliefOptions): GenerateReli
       : undefined,
   };
   const shape: TileShape = opts.quantized.output === 'silhouette'
-    ? { kind: 'mask', mask: detectBackgroundMask(colors, W, H) }
+    ? {
+        kind: 'mask',
+        mask: opts.quantized.manualBackground
+          ? bgMaskFromColor(colors, W, H, opts.quantized.manualBackground)
+          : detectBackgroundMask(colors, W, H),
+      }
     : opts.quantized.shape === 'rounded'
       ? { kind: 'rounded', cornerRadiusMm: opts.quantized.cornerRadiusMm }
       : opts.quantized.shape === 'circle'
@@ -672,6 +724,23 @@ function mapBucketsToRegions(byColor: Map<number, { color: [number, number, numb
  *  When no border colour clearly dominates (busy photo edges, no single bg),
  *  falls back to keeping every cell — better to ship the full tile than to
  *  silently cut into the subject. */
+/** Mask-from-explicit-colour: 1 for any cell whose RGB is NOT within
+ *  `tolerance` (sum-of-squared-distance) of the target colour. Used by the
+ *  click-to-pick-background flow so the user can override the auto heuristic. */
+export function bgMaskFromColor(colors: Uint8Array, w: number, h: number, bg: [number, number, number], tolerance = 36 * 36 * 3): Uint8Array {
+  const total = w * h;
+  const out = new Uint8Array(total);
+  const br = bg[0], bgg = bg[1], bb = bg[2];
+  for (let i = 0; i < total; i++) {
+    const o = i * 3;
+    const dr = colors[o] - br;
+    const dg = colors[o + 1] - bgg;
+    const db = colors[o + 2] - bb;
+    out[i] = dr * dr + dg * dg + db * db > tolerance ? 1 : 0;
+  }
+  return out;
+}
+
 export function detectBackgroundMask(colors: Uint8Array, w: number, h: number): Uint8Array {
   const total = w * h;
   const keyOf = (cell: number) =>

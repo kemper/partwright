@@ -6,7 +6,7 @@
 
 import type { ReliefOptions, ReliefImportMode, TileOutputKind, TileShapeKind, HeightGrid } from '../relief/types';
 import { DEFAULT_RELIEF_OPTIONS } from '../relief/types';
-import { sampleImageToGrid, detectBackgroundMask } from '../relief/imageToRelief';
+import { sampleImageToGrid, detectBackgroundMask, bgMaskFromColor } from '../relief/imageToRelief';
 import { registerImport } from '../import/importInbox';
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
@@ -109,7 +109,26 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   sourceLabel.className = 'text-[11px] text-zinc-400 truncate flex-1 min-w-0';
   sourceLabel.textContent = 'No image selected';
 
-  pickRow.append(fileInput, pickBtn, thumb, sourceLabel);
+  // Background-pick indicator: swatch + clear button, shown when the user has
+  // clicked a colour on the thumbnail (silhouette mode).
+  const bgPickWrap = document.createElement('div');
+  bgPickWrap.className = 'hidden flex items-center gap-1';
+  const bgPickSwatch = document.createElement('span');
+  bgPickSwatch.className = 'w-4 h-4 rounded border border-zinc-600';
+  bgPickSwatch.title = 'Manual background colour';
+  const bgPickClear = document.createElement('button');
+  bgPickClear.type = 'button';
+  bgPickClear.className = 'text-[10px] text-zinc-400 hover:text-zinc-200 underline-offset-2 hover:underline';
+  bgPickClear.textContent = 'clear';
+  bgPickClear.title = 'Revert to auto background detection';
+  bgPickClear.addEventListener('click', () => {
+    opts.quantized.manualBackground = undefined;
+    syncMode();
+    renderPreview();
+  });
+  bgPickWrap.append(bgPickSwatch, bgPickClear);
+
+  pickRow.append(fileInput, pickBtn, thumb, sourceLabel, bgPickWrap);
   shell.body.appendChild(pickRow);
 
   // --- Mode selector -------------------------------------------------------
@@ -146,6 +165,14 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   // --- Knob sections -------------------------------------------------------
   const knobs = document.createElement('div');
   knobs.className = 'flex flex-col gap-4';
+
+  // --- Image pre-processing knobs (applied before clustering / luminance) ---
+  const imageSection = makeSection('Image');
+  sliderControl(imageSection.grid, 'Brightness', '', () => opts.preprocess.brightness, v => (opts.preprocess.brightness = v), { min: -1, max: 1, step: 0.05 });
+  sliderControl(imageSection.grid, 'Contrast', '', () => opts.preprocess.contrast, v => (opts.preprocess.contrast = v), { min: -1, max: 1, step: 0.05 });
+  sliderControl(imageSection.grid, 'Saturation', '', () => opts.preprocess.saturation, v => (opts.preprocess.saturation = v), { min: -1, max: 1, step: 0.05 });
+  sliderControl(imageSection.grid, 'Black point', '', () => opts.preprocess.levelsLow, v => (opts.preprocess.levelsLow = v), { min: 0, max: 254, step: 1, int: true });
+  sliderControl(imageSection.grid, 'White point', '', () => opts.preprocess.levelsHigh, v => (opts.preprocess.levelsHigh = v), { min: 1, max: 255, step: 1, int: true });
 
   const commonSection = makeSection('Geometry');
   const luminanceSection = makeSection('Luminance mapping');
@@ -191,7 +218,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   sliderControl(tileSection.grid, 'Hole diameter', 'mm', () => opts.quantized.holeDiameterMm, v => (opts.quantized.holeDiameterMm = v), { min: 2, max: 15, step: 0.5 });
   sliderControl(tileSection.grid, 'Hole offset from edge', 'mm', () => opts.quantized.holeOffsetMm, v => (opts.quantized.holeOffsetMm = v), { min: 2, max: 40, step: 0.5 });
 
-  knobs.append(commonSection.root, luminanceSection.root, quantizedSection.root, tileSection.root);
+  knobs.append(imageSection.root, commonSection.root, luminanceSection.root, quantizedSection.root, tileSection.root);
   shell.body.append(aiNote, knobs);
 
   // --- Live preview --------------------------------------------------------
@@ -329,6 +356,41 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     if (file) void loadFile(file);
   });
 
+  // Drag-and-drop a file anywhere on the modal body. preventDefault on
+  // dragover/drop keeps the browser from navigating to the file URL.
+  shell.body.addEventListener('dragover', (e) => {
+    if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) {
+      e.preventDefault();
+      shell.body.classList.add('ring-2', 'ring-blue-500/60');
+    }
+  });
+  shell.body.addEventListener('dragleave', (e) => {
+    if (e.target === shell.body) shell.body.classList.remove('ring-2', 'ring-blue-500/60');
+  });
+  shell.body.addEventListener('drop', (e) => {
+    e.preventDefault();
+    shell.body.classList.remove('ring-2', 'ring-blue-500/60');
+    const file = e.dataTransfer?.files?.[0];
+    if (file) void loadFile(file);
+  });
+
+  // Click-to-pick background colour for silhouette mode. The user clicks the
+  // source thumbnail at a representative background pixel; the picked colour
+  // overrides detectBackgroundMask's edge-frequency heuristic.
+  thumb.addEventListener('click', (e) => {
+    if (!image || opts.quantized.output !== 'silhouette') return;
+    const rect = thumb.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const fx = (e.clientX - rect.left) / rect.width;
+    const fy = (e.clientY - rect.top) / rect.height;
+    const ix = Math.max(0, Math.min(image.width - 1, Math.floor(fx * image.width)));
+    const iy = Math.max(0, Math.min(image.height - 1, Math.floor(fy * image.height)));
+    const idx = (iy * image.width + ix) * 4;
+    opts.quantized.manualBackground = [image.data[idx], image.data[idx + 1], image.data[idx + 2]];
+    syncMode();
+    renderPreview();
+  });
+
   if (options.initialFile) void loadFile(options.initialFile);
 
   // --- AI assist flow ------------------------------------------------------
@@ -454,8 +516,10 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
       }
     }
     // Overlay the final tile shape: cells outside the silhouette/shape or
-    // inside the keychain hole get muted so the user previews what they'll
-    // actually print (rounded corners, circles, the hole, silhouette cut).
+    // inside the keychain hole get a checkerboard "cut" indicator so the
+    // user previews what they'll actually print (rounded corners, circles,
+    // the hole, silhouette cut). A checkerboard reads as transparent/cut at a
+    // glance, where a solid dark fill was just looking like dark content.
     const keep = computePreviewKeepMask(grid, opts);
     if (keep) {
       for (let py = 0; py < h; py++) {
@@ -463,8 +527,9 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
         for (let px = 0; px < w; px++) {
           if (keep[sy * w + px] === 0) {
             const dst = (py * w + px) * 4;
-            // Cut areas — knock to a dark neutral so the shape pops.
-            data[dst] = 18; data[dst + 1] = 18; data[dst + 2] = 22; data[dst + 3] = 255;
+            const checker = ((px >> 1) + (py >> 1)) & 1;
+            const v = checker ? 64 : 36;
+            data[dst] = v; data[dst + 1] = v; data[dst + 2] = v + 4; data[dst + 3] = 255;
           }
         }
       }
@@ -502,7 +567,8 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
 
     const mask = new Uint8Array(w * h);
     if (hasSilhouette && grid.colors) {
-      mask.set(detectBackgroundMask(grid.colors, w, h));
+      const mb = o.quantized.manualBackground;
+      mask.set(mb ? bgMaskFromColor(grid.colors, w, h, mb) : detectBackgroundMask(grid.colors, w, h));
     } else {
       mask.fill(1);
     }
@@ -570,6 +636,15 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     quantizedSection.root.classList.toggle('hidden', isSvg || opts.mode !== 'quantized');
     tileSection.root.classList.toggle('hidden', !isSvg && opts.mode !== 'quantized');
     createBtn.textContent = currentCtaLabel();
+
+    // Silhouette mode: the thumb becomes click-to-pick background. Cursor
+    // hint + show the picked-colour indicator when set.
+    const silhouettePickable = !isSvg && opts.mode === 'quantized' && opts.quantized.output === 'silhouette' && image !== null;
+    thumb.classList.toggle('cursor-crosshair', silhouettePickable);
+    thumb.title = silhouettePickable ? 'Click to set the background colour' : '';
+    const mb = opts.quantized.manualBackground;
+    bgPickWrap.classList.toggle('hidden', !mb || !silhouettePickable);
+    if (mb) bgPickSwatch.style.backgroundColor = `rgb(${mb[0]}, ${mb[1]}, ${mb[2]})`;
   }
 
   // Primary CTA label tracks the actual thing we're about to create — "Create
@@ -776,4 +851,5 @@ function mergeOptions(target: ReliefOptions, patch: Partial<ReliefOptions> & { n
   if (patch.common) Object.assign(target.common, patch.common);
   if (patch.luminance) Object.assign(target.luminance, patch.luminance);
   if (patch.quantized) Object.assign(target.quantized, patch.quantized);
+  if (patch.preprocess) Object.assign(target.preprocess, patch.preprocess);
 }

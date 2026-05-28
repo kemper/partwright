@@ -1563,6 +1563,21 @@ async function main() {
   // Clamp the quantized + tile knobs to safe bounds. The wizard enforces these
   // via input min/max, but the programmatic (AI/console) path bypasses the UI,
   // so guard against an OOM hang (e.g. clusters=1e6) and degenerate tile sizes.
+  // Image pre-processing knobs: defaults are no-op so unset fields pass through
+  // untouched. Caps keep the API path from over-saturating / inverting wildly.
+  function clampReliefPreprocess(p: ReliefOptions['preprocess'] | undefined): ReliefOptions['preprocess'] {
+    const num = (v: number, def: number) => (Number.isFinite(v) ? v : def);
+    const defaults = DEFAULT_RELIEF_OPTIONS.preprocess;
+    if (!p) return { ...defaults };
+    return {
+      brightness: Math.max(-1, Math.min(1, num(p.brightness, defaults.brightness))),
+      contrast: Math.max(-1, Math.min(1, num(p.contrast, defaults.contrast))),
+      saturation: Math.max(-1, Math.min(1, num(p.saturation, defaults.saturation))),
+      levelsLow: Math.max(0, Math.min(254, Math.floor(num(p.levelsLow, defaults.levelsLow)))),
+      levelsHigh: Math.max(1, Math.min(255, Math.floor(num(p.levelsHigh, defaults.levelsHigh)))),
+    };
+  }
+
   function clampReliefQuantized(q: ReliefOptions['quantized']): ReliefOptions['quantized'] {
     const num = (v: number, def: number) => (Number.isFinite(v) ? v : def);
     return {
@@ -1634,6 +1649,7 @@ async function main() {
       ...options,
       common: clampReliefCommon(options.common),
       quantized: clampReliefQuantized(options.quantized),
+      preprocess: clampReliefPreprocess(options.preprocess),
     };
     const result = generateRelief(image, opts);
     return commitGeneratedRelief(result, opts, sourceName);
@@ -1644,6 +1660,7 @@ async function main() {
       ...options,
       common: clampReliefCommon(options.common),
       quantized: clampReliefQuantized(options.quantized),
+      preprocess: clampReliefPreprocess(options.preprocess),
       mode: 'svg',
     };
     const result = await generateReliefFromSvg(svgText, opts);
@@ -4089,7 +4106,7 @@ async function main() {
      *  Replaces all currently attached images. If a session is active, also persists
      *  to IndexedDB. Returns the canonical list with assigned ids. */
     /** Generate a HueForge-style relief Part from an image (data: or http(s) URL). */
-    async importImageAsRelief(args: { src: string; mode?: ReliefImportMode; options?: Partial<ReliefCommonOptions>; quantized?: Record<string, unknown> }): Promise<{ sessionId: string } | { error: string }> {
+    async importImageAsRelief(args: { src: string; mode?: ReliefImportMode; options?: Partial<ReliefCommonOptions>; quantized?: Record<string, unknown>; preprocess?: Record<string, unknown> }): Promise<{ sessionId: string } | { error: string }> {
       if (!args || typeof args !== 'object') return { error: 'importImageAsRelief: expected an object { src, mode?, options?, quantized? }' };
       const src = (args as { src?: unknown }).src;
       if (typeof src !== 'string' || src.length === 0) return { error: 'importImageAsRelief: src must be a non-empty data: or http(s) URL string' };
@@ -4102,6 +4119,8 @@ async function main() {
         if (o && typeof o === 'object') opts.common = { ...opts.common, ...(o as Partial<ReliefCommonOptions>) };
         const q = (args as { quantized?: unknown }).quantized;
         if (q && typeof q === 'object') opts.quantized = { ...opts.quantized, ...(q as Record<string, unknown>) } as typeof opts.quantized;
+        const pp = (args as { preprocess?: unknown }).preprocess;
+        if (pp && typeof pp === 'object') opts.preprocess = { ...opts.preprocess, ...(pp as Record<string, unknown>) } as typeof opts.preprocess;
         return await createReliefFromImageData(image, opts, 'relief');
       } catch (e) {
         return { error: `importImageAsRelief failed: ${e instanceof Error ? e.message : String(e)}` };
@@ -4109,7 +4128,7 @@ async function main() {
     },
     /** Generate a multi-colour tile from raw SVG text. Each `<path fill>` becomes
      *  one seed region with crisp boundaries (no clustering). */
-    async importSvgAsRelief(args: { svgText: string; options?: Partial<ReliefCommonOptions>; quantized?: Record<string, unknown> }): Promise<{ sessionId: string } | { error: string }> {
+    async importSvgAsRelief(args: { svgText: string; options?: Partial<ReliefCommonOptions>; quantized?: Record<string, unknown>; preprocess?: Record<string, unknown> }): Promise<{ sessionId: string } | { error: string }> {
       if (!args || typeof args !== 'object') return { error: 'importSvgAsRelief: expected an object { svgText, options?, quantized? }' };
       const svgText = (args as { svgText?: unknown }).svgText;
       if (typeof svgText !== 'string' || svgText.length === 0) return { error: 'importSvgAsRelief: svgText must be a non-empty SVG string' };
@@ -4119,6 +4138,8 @@ async function main() {
         if (o && typeof o === 'object') opts.common = { ...opts.common, ...(o as Partial<ReliefCommonOptions>) };
         const q = (args as { quantized?: unknown }).quantized;
         if (q && typeof q === 'object') opts.quantized = { ...opts.quantized, ...(q as Record<string, unknown>) } as typeof opts.quantized;
+        const pp = (args as { preprocess?: unknown }).preprocess;
+        if (pp && typeof pp === 'object') opts.preprocess = { ...opts.preprocess, ...(pp as Record<string, unknown>) } as typeof opts.preprocess;
         return await createReliefFromSvgText(svgText, opts, 'svg');
       } catch (e) {
         return { error: `importSvgAsRelief failed: ${e instanceof Error ? e.message : String(e)}` };

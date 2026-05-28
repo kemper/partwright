@@ -21,6 +21,21 @@ export type TileOutputKind =
 /** Outer profile of a flat tile (for output: 'flat'; silhouette uses the image). */
 export type TileShapeKind = 'rect' | 'rounded' | 'circle';
 
+/** Pre-processing applied to the sampled image BEFORE clustering / luminance
+ *  mapping. All ranges are designed so 0 / defaults = no-op. */
+export interface PreprocessOptions {
+  /** -1..+1, shifts the whole image lighter/darker. 0 = unchanged. */
+  brightness: number;
+  /** -1..+1, expands or compresses tonal range around mid-grey. 0 = unchanged. */
+  contrast: number;
+  /** -1..+1, pushes colour intensity. 0 = unchanged; -1 = fully desaturated. */
+  saturation: number;
+  /** Black point in 0..255 — anything below this is crushed to black. */
+  levelsLow: number;
+  /** White point in 0..255 — anything above this is clipped to white. */
+  levelsHigh: number;
+}
+
 /** Knobs shared by every import mode. Distances are in model units (mm). */
 export interface ReliefCommonOptions {
   /** Physical width of the relief in mm. Height (depth) scales to keep aspect. */
@@ -69,6 +84,10 @@ export interface QuantizedOptions {
   holeDiameterMm: number;
   /** Hole centre distance from the top edge of the tile, in mm. */
   holeOffsetMm: number;
+  /** When set in silhouette mode, treat this colour (0..255 RGB) as the
+   *  background instead of auto-detecting from the image's border colours.
+   *  The user picks it by clicking the source thumbnail. */
+  manualBackground?: [number, number, number];
 }
 
 export interface ReliefOptions {
@@ -76,6 +95,8 @@ export interface ReliefOptions {
   common: ReliefCommonOptions;
   luminance: LuminanceOptions;
   quantized: QuantizedOptions;
+  /** Image-level corrections applied before sampling for clustering/luminance. */
+  preprocess: PreprocessOptions;
 }
 
 export const DEFAULT_RELIEF_OPTIONS: ReliefOptions = {
@@ -103,6 +124,7 @@ export const DEFAULT_RELIEF_OPTIONS: ReliefOptions = {
     holeDiameterMm: 6,
     holeOffsetMm: 6,
   },
+  preprocess: { brightness: 0, contrast: 0, saturation: 0, levelsLow: 0, levelsHigh: 255 },
 };
 
 /** A regular grid of heights (and optionally per-cell colors) sampled from an
