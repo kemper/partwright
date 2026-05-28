@@ -621,4 +621,37 @@ test.describe('Relief Studio', () => {
     expect(res.zRange[1]).toBeCloseTo(2, 2);
     expect(res.zRange[0]).toBeCloseTo(0, 2);
   });
+
+  // The wizard's runCreate already shows an inline error and keeps the modal
+  // open on failure — but only if the create function actually re-throws.
+  // main.ts used to catch+alert+swallow, so the wizard thought the create
+  // succeeded and closed itself, losing the user's tuned settings. After the
+  // fix, errors propagate up to runCreate and the modal stays open. The
+  // easiest trigger is a 0×0 image — it sails through the layer-fit check
+  // (which is the click-time backstop) but commitGeneratedRelief throws
+  // "Source too small to build a relief" once mesh.numTri comes back 0.
+  test('failed create keeps the wizard open with the user\'s settings', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    // 1×1 PNG, smaller than the relief sampler can use.
+    const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+
+    await page.locator('#btn-import').click();
+    await page.getByText('Image → keychain / tile / relief…').click();
+    await expect(page.getByText('Make a part from an image', { exact: true })).toBeVisible();
+    await page.locator('input[type="file"][accept*="image"]').setInputFiles({ name: 'tiny.png', mimeType: 'image/png', buffer: tinyPng });
+
+    // Wait for the wizard to react to the file (its inline preview stat).
+    await expect(page.locator('text=/Preview · \\d+×\\d+ · \\d+ clusters/').first()).toBeVisible({ timeout: 5000 });
+    const createBtn = page.getByRole('button', { name: 'Create tile' });
+    await createBtn.click();
+
+    // The modal must stay open and surface an inline failure message — the
+    // alert+swallow path used to close it instead.
+    await expect(page.getByText('Make a part from an image', { exact: true })).toBeVisible();
+    await expect(page.locator('text=/Create failed:/')).toBeVisible({ timeout: 5000 });
+    // Create button re-enables so the user can fix knobs and retry.
+    await expect(createBtn).toBeEnabled();
+  });
 });

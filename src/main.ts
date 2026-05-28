@@ -1825,19 +1825,15 @@ async function main() {
       initialFile,
       initialOptions,
       onAiAssist: async (image, opts) => suggestReliefOptions(image, opts),
+      // Don't catch — let runCreate (inside the wizard) handle the error: it
+      // already shows an inline aiNote and keeps the modal open so the user
+      // doesn't lose their tuned settings. Swallowing here would also let the
+      // wizard think the create succeeded and close itself.
       onCreate: async (image, opts, name) => {
-        try {
-          await createReliefFromImageData(image, opts, name || 'relief');
-        } catch (e) {
-          alert(`Could not create relief: ${e instanceof Error ? e.message : String(e)}`);
-        }
+        await createReliefFromImageData(image, opts, name || 'relief');
       },
       onCreateSvg: async (svgText, opts, name) => {
-        try {
-          await createReliefFromSvgText(svgText, opts, name || 'relief');
-        } catch (e) {
-          alert(`Could not import SVG: ${e instanceof Error ? e.message : String(e)}`);
-        }
+        await createReliefFromSvgText(svgText, opts, name || 'relief');
       },
     });
   }

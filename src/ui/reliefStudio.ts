@@ -278,7 +278,17 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
         input.type = 'text';
         input.value = r.name;
         input.className = 'flex-1 min-w-0 px-1.5 py-0.5 text-[11px] bg-zinc-900 border border-zinc-600 rounded text-zinc-200';
+        // settled gates BOTH the keydown handler and the blur handler so each
+        // rename can only resolve once. Escape sets it to 'cancel' first,
+        // then blurs the input — when the resulting blur event fires, commit
+        // sees `settled = 'cancel'` and short-circuits. Enter/blur set
+        // 'commit' and remove the blur listener so re-rendering can't
+        // re-trigger commit a second time.
+        let settled: 'commit' | 'cancel' | null = null;
         const commit = (): void => {
+          if (settled) return;
+          settled = 'commit';
+          input.removeEventListener('blur', commit);
           const trimmed = input.value.trim();
           if (trimmed && trimmed !== r.name) {
             updateRegionName(r.id, trimmed);
@@ -286,10 +296,16 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
             renderFilaments();
           }
         };
+        const cancel = (): void => {
+          if (settled) return;
+          settled = 'cancel';
+          input.removeEventListener('blur', commit);
+          renderFilaments();
+        };
         input.addEventListener('blur', commit);
         input.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') { commit(); }
-          else if (e.key === 'Escape') { renderFilaments(); }
+          if (e.key === 'Enter') { commit(); input.blur(); }
+          else if (e.key === 'Escape') { cancel(); }
         });
         row.replaceChild(input, name);
         input.focus();

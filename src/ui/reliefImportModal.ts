@@ -211,11 +211,17 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   // picker switches between a stepped relief, a flat colour tile (keychain
   // style), and a tile cut to the image's subject silhouette.
   const tileSection = makeSection('Tile output');
-  selectControl<TileOutputKind>(tileSection.grid, 'Output', () => opts.quantized.output, v => { opts.quantized.output = v; syncMode(); }, [
+  const outputRow = selectControl<TileOutputKind>(tileSection.grid, 'Output', () => opts.quantized.output, v => { opts.quantized.output = v; syncMode(); }, [
     { value: 'flat', label: 'Flat tile (keychain)' },
     { value: 'silhouette', label: 'Cut to subject' },
     { value: 'relief', label: 'Stepped relief' },
   ]);
+  // SVG imports skip the height grid (each path fill becomes one region on a
+  // flat tile), so 'relief' is meaningless — `generateReliefFromSvg` would
+  // silently fall through to the rect/rounded/circle ternary and emit a flat
+  // tile anyway. Hide the option for SVGs so the dropdown doesn't promise
+  // something the pipeline can't deliver.
+  const outputReliefOption = outputRow.querySelector('select option[value="relief"]') as HTMLOptionElement | null;
   selectControl<TileShapeKind>(tileSection.grid, 'Shape', () => opts.quantized.shape, v => (opts.quantized.shape = v), [
     { value: 'rect', label: 'Rectangle' },
     { value: 'rounded', label: 'Rounded' },
@@ -1005,6 +1011,13 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   // --- UI sync helpers -----------------------------------------------------
   function syncMode(): void {
     const isSvg = svgText !== null;
+    // Hide the 'Stepped relief' Output option for SVG — generateReliefFromSvg
+    // ignores it and emits a flat tile, so dangling it in the dropdown is a
+    // UX lie. If an SVG happens to be loaded with output already set to
+    // 'relief' (from initialOptions on a re-import), snap it back to the SVG
+    // default 'silhouette' so the visible selection matches what will run.
+    if (outputReliefOption) outputReliefOption.hidden = isSvg;
+    if (isSvg && opts.quantized.output === 'relief') opts.quantized.output = 'silhouette';
     for (const [id, btn] of modeButtons) {
       const active = id === opts.mode;
       btn.classList.toggle('bg-blue-600', active && !isSvg);
@@ -1349,6 +1362,11 @@ function init3DPreview(canvas: HTMLCanvasElement): Preview3D {
   }
 
   function setMesh(mesh: ReliefMesh | null, seeds?: SeedRegion[], widthMm?: number): void {
+    // Async render races can resolve AFTER dispose() — the wizard was closed
+    // while generateReliefFromSvg awaited. Without this guard we'd allocate a
+    // BufferGeometry + MeshStandardMaterial into a torn-down scene and leak
+    // them (clearMesh + dispose already ran).
+    if (disposed) return;
     clearMesh();
     if (!mesh || mesh.numTri === 0) return;
     const geom = new THREE.BufferGeometry();
