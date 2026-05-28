@@ -42,13 +42,6 @@ function DiagnosticsBody() {
   const visible = filterEvents(events.value, filter.value);
   const errorCount = events.value.filter(e => e.status === 'error').length;
   const statsText = `${events.value.length} event(s) · ${errorCount} error(s) · showing ${visible.length}`;
-  // Map each event to its index in the UNFILTERED list. Used below as the
-  // Preact `key` so an event's <details> open/closed state stays attached
-  // to the event across filter toggles (filtering reorders positions; a
-  // positional key would leak open-state to whichever event happens to
-  // land at that slot).
-  const indexByEvent = new Map<DiagnosticEvent, number>();
-  events.value.forEach((e, i) => indexByEvent.set(e, i));
 
   return (
     <>
@@ -96,7 +89,7 @@ function DiagnosticsBody() {
                 ? 'No AI calls have been made this session.'
                 : 'No events match the current filter.'}
             </p>
-          : visible.map(evt => <EventRow key={indexByEvent.get(evt) ?? -1} evt={evt} />)}
+          : visible.map(evt => <EventRow key={`${evt.timestamp}:${evt.kind}`} evt={evt} />)}
       </div>
     </>
   );
