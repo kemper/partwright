@@ -816,7 +816,9 @@ function weldDuplicateVertices(rawVertices: number[], rawTriangles: number[]): B
 // ── Public namespace ─────────────────────────────────────────────────────────
 
 export interface BrepNamespace {
-  /** Axis-aligned box centred at the origin. `BREP.box([10, 10, 10])`. */
+  /** Axis-aligned box centred on the Z axis (X and Y from -size/2 to +size/2)
+   *  but with its base on the XY plane (z = 0 to +zLength). To centre in Z too,
+   *  follow with `.translate([0, 0, -h/2])`. `BREP.box([10, 10, 10])`. */
   box(size: [number, number, number]): BrepShape;
   /** Cylinder of radius `r` and height `h` along +Z, base on the XY plane. */
   cylinder(r: number, h: number): BrepShape;
@@ -1003,7 +1005,11 @@ export function createBrepNamespace(): BrepNamespace {
   return {
     box(size) {
       assertVec3(size, 'BREP.box(size)');
-      // Replicad's makeBaseBox centres the box at the origin.
+      // Replicad's makeBaseBox centres the box in X and Y (range
+      // [-size/2, +size/2] on each) but extrudes UP from z=0, so the
+      // z range is [0, size[2]], not centred. Documented this way in
+      // replicad.md; agents have tripped on the prior "centred at origin"
+      // wording assuming Z was symmetric too.
       return wrap(makeBaseBox(size[0], size[1], size[2]));
     },
     cylinder(r, h) {

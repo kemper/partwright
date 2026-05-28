@@ -267,16 +267,9 @@
       "description": "A precision V-belt pulley wheel with a beveled drive groove around its circumference, a central hub bore, and chamfered side rims — showcasing BREP's exact rotational geometry and angled surfaces."
     },
     {
-      "id": "test-dir",
-      "name": "Test Dir",
-      "file": "test_dir.partwright.json",
-      "language": "replicad",
-      "description": "test"
-    },
-    {
-      "id": "butt-hinge-test",
-      "name": "Butt Hinge Test",
-      "file": "butt_hinge_test.partwright.json",
+      "id": "test-simple",
+      "name": "Test Simple",
+      "file": "test_simple.partwright.json",
       "language": "replicad",
       "description": "test"
     }

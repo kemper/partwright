@@ -42,9 +42,9 @@ What BREP **doesn't** do:
 const { BREP } = api;
 
 // Primitives
-BREP.box([w, d, h]);    // centred at origin
-BREP.cylinder(r, h);    // base on XY, height along +Z
-BREP.sphere(r);
+BREP.box([w, d, h]);    // centred in X and Y, BASE at z=0 (NOT centered in Z)
+BREP.cylinder(r, h);    // axis on Z, base at z=0, height along +Z
+BREP.sphere(r);         // centred at origin
 
 // Operations (return a new shape; the original is immutable, like Manifold).
 // Inputs are NOT consumed — you can reuse the same shape in multiple ops.
