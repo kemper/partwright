@@ -42,6 +42,7 @@ import { mergeChatBucket } from './ai/db';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
 import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
+import { createLegalPage } from './ui/legal';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
 import { createCatalogPage, type CatalogManifestEntry } from './ui/catalog';
 import { createNotFoundPage } from './ui/notFound';
@@ -306,7 +307,7 @@ export type CoverageMode = typeof COVERAGE_MODES[number];
 const BASE_TITLE = 'Partwright';
 let _expectedTitle = 'Partwright — AI-Driven Parametric CAD in Your Browser';
 
-function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | '404' | 'catalog'; sessionName?: string | null }) {
+function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | '404' | 'catalog' | 'legal'; sessionName?: string | null }) {
   let route: RouteName;
   let titleOverride: string | undefined;
   if (context?.page === 'landing' || (context?.page === undefined && shouldShowLanding())) {
@@ -315,6 +316,8 @@ function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | 
     route = 'help';
   } else if (context?.page === 'catalog') {
     route = 'catalog';
+  } else if (context?.page === 'legal') {
+    route = 'legal';
   } else if (context?.page === '404') {
     route = '404';
   } else {
@@ -1350,9 +1353,13 @@ function shouldShowCatalog(): boolean {
   return window.location.pathname === '/catalog';
 }
 
+function shouldShowLegal(): boolean {
+  return window.location.pathname === '/legal';
+}
+
 function shouldShow404(): boolean {
   const path = window.location.pathname;
-  return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog';
+  return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog' && path !== '/legal';
 }
 
 function getTabFromURL(): TabName {
@@ -2377,6 +2384,8 @@ async function main() {
   const editorReadyPromise = new Promise<void>(resolve => { editorReadyResolve = resolve; });
   let engineOk = false;
   let helpHasAppBackTarget = false;
+  let legalEl: HTMLElement | null = null;
+  let legalHasAppBackTarget = false;
   let notFoundEl: HTMLElement | null = null;
   // Declared early so async callbacks (e.g. runCodeSync triggered during
   // initial syncEditorFromURL) don't hit a TDZ error before this point.
@@ -2410,6 +2419,7 @@ async function main() {
     showEditorUI(landingEl, helpEl, editorUI);
     if (notFoundEl) notFoundEl.classList.add('hidden');
     if (catalogEl) catalogEl.classList.add('hidden');
+    if (legalEl) legalEl.classList.add('hidden');
     overlayContainer.classList.add('hidden');
     window.dispatchEvent(new Event('resize'));
   }
@@ -2493,6 +2503,7 @@ async function main() {
     helpEl?.classList.add('hidden');
     notFoundEl?.classList.add('hidden');
     catalogEl?.classList.add('hidden');
+    legalEl?.classList.add('hidden');
     page.classList.remove('hidden');
     updateDocumentTitle({ page: 'landing' });
   }
@@ -2511,6 +2522,7 @@ async function main() {
     landingEl?.classList.add('hidden');
     helpEl?.classList.add('hidden');
     catalogEl?.classList.add('hidden');
+    legalEl?.classList.add('hidden');
     notFoundEl.classList.remove('hidden');
     updateDocumentTitle({ page: '404' });
   }
@@ -2550,8 +2562,38 @@ async function main() {
     if (landingEl) landingEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
     if (catalogEl) catalogEl.classList.add('hidden');
+    if (legalEl) legalEl.classList.add('hidden');
     helpEl.classList.remove('hidden');
     updateDocumentTitle({ page: 'help' });
+  }
+
+  // Helper to show legal page — mirrors showHelp's history / in-page-Back pattern.
+  function showLegal(options: { history?: 'push' | 'replace' | 'none' } = {}) {
+    const historyMode = options.history ?? 'push';
+    if (historyMode !== 'none') {
+      legalHasAppBackTarget = currentURLPathAndSearch() !== '/legal';
+      updateAppHistory('/legal', historyMode);
+    }
+    if (!legalEl) {
+      legalEl = createLegalPage(overlayContainer, {
+        onBack: () => {
+          if (legalHasAppBackTarget) {
+            window.history.back();
+          } else {
+            updateAppHistory('/editor', 'replace');
+            void syncEditorFromURL();
+          }
+        },
+      });
+    }
+    overlayContainer.classList.remove('hidden');
+    editorUI.classList.add('hidden');
+    if (landingEl) landingEl.classList.add('hidden');
+    if (notFoundEl) notFoundEl.classList.add('hidden');
+    if (catalogEl) catalogEl.classList.add('hidden');
+    if (helpEl) helpEl.classList.add('hidden');
+    legalEl.classList.remove('hidden');
+    updateDocumentTitle({ page: 'legal' });
   }
 
   let catalogEl: HTMLElement | null = null;
@@ -2580,6 +2622,7 @@ async function main() {
     if (landingEl) landingEl.classList.add('hidden');
     if (helpEl) helpEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
+    if (legalEl) legalEl.classList.add('hidden');
     catalogEl.classList.remove('hidden');
     updateDocumentTitle({ page: 'catalog' });
   }
@@ -2655,7 +2698,7 @@ async function main() {
     // Home — confusing because no editor / session is loaded to act on
     // it. /editor's own loader updates the AI session via onStateChange
     // when a session opens, so we don't need to set it explicitly here.
-    if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShow404()) {
+    if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShowLegal() || shouldShow404()) {
       void setAiActiveSession(null);
     }
     if (shouldShowLanding()) {
@@ -2664,6 +2707,8 @@ async function main() {
       showHelp({ history: 'none' });
     } else if (shouldShowCatalog()) {
       await showCatalogPage({ history: 'none' });
+    } else if (shouldShowLegal()) {
+      showLegal({ history: 'none' });
     } else if (shouldShow404()) {
       showNotFoundPage();
     } else {
@@ -2684,6 +2729,7 @@ async function main() {
   const showLanding = shouldShowLanding();
   const showHelpPage = shouldShowHelp();
   const showCatalog = shouldShowCatalog();
+  const showLegalPage = shouldShowLegal();
   const show404 = shouldShow404();
 
   if (showLanding) {
@@ -2692,6 +2738,8 @@ async function main() {
     showHelp({ history: 'none' });
   } else if (showCatalog) {
     await showCatalogPage({ history: 'none' });
+  } else if (showLegalPage) {
+    showLegal({ history: 'none' });
   } else if (show404) {
     showNotFoundPage();
   }
@@ -2969,13 +3017,13 @@ async function main() {
   editorReadyResolve();
 
   // Start guided tour on first visit (after editor fully renders)
-  if (!showLanding && !showHelpPage && !showCatalog && !show404) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showLegalPage && !show404) {
     maybeStartTour();
     maybeShowShortcutsHint();
   }
 
   // If not on landing/help/catalog/404, load session or default code now
-  if (!showLanding && !showHelpPage && !showCatalog && !show404 && engineOk) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showLegalPage && !show404 && engineOk) {
     await syncEditorFromURL();
   }
 
@@ -3069,7 +3117,7 @@ async function main() {
   }
 
   // Set initial editor title if we're on the editor page
-  if (!showLanding && !showHelpPage && !showCatalog && !show404) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showLegalPage && !show404) {
     updateDocumentTitle({ page: 'editor' });
   }
 
