@@ -1,20 +1,44 @@
 name: PR checks
 
-# Fast pre-merge feedback on PRs into main: type-check, production build, and
-# the unit tier. Deliberately NOT the e2e suite — the full e2e run is the
-# staging gate that fires after merge (see staging-gate.yml), keeping the main
-# preview a fast, pre-test deploy. This just stops type errors and obvious
-# breakage from reaching the main preview in the first place.
+# Pre-merge feedback on PRs into main: type-check, production build, unit
+# tests, and the full e2e suite. Build + unit gates the e2e matrix so we
+# don't burn shard minutes on a broken build.
+#
+# E2e fires only on non-draft PRs. Marking the PR ready for review is what
+# kicks it off — draft pushes get build + unit only (fast, ~2-3 min), so
+# the agent can iterate on a draft cheaply, then flip to ready when the
+# implementation looks done to trigger the full e2e shards.
+#
+# The e2e suite is CPU-bound (each test boots WASM in its own browser page),
+# so it runs SERIALLY within a runner (playwright.config.ts pins workers: 1)
+# and is parallelized across runners by sharding — contention-free, and
+# wall-clock cost drops ~3x.
+#
+# Doc-only changes (markdown, release config, license) skip CI entirely via
+# paths-ignore — they can't affect build/test/runtime behavior.
+#
+# The staging-gate workflow re-runs the full suite after merge as the
+# staging promotion gate (and as a safety net for any direct pushes).
 
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - '**/*.md'
+      - '.github/release.yml'
+      - 'LICENSE'
+
+# A new push to the PR branch supersedes an in-flight run for the same PR.
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  checks:
+  build-unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,3 +55,37 @@ jobs:
 
       - name: Unit tests
         run: npm run test:unit
+
+  e2e:
+    needs: build-unit
+    # Skip e2e on draft PRs — drafts get build + unit only. The "ready for
+    # review" transition (and any push after) fires the e2e shards.
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Cache the ~150MB Chromium build keyed on the lockfile (which pins the
+      # playwright version). Cache hits skip the download; system deps still
+      # install fresh below.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers (cache miss)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
+      - name: Install Playwright system deps
+        run: npx playwright install-deps chromium
+      - name: E2E tests (shard ${{ matrix.shard }}/3)
+        run: npx playwright test --shard=${{ matrix.shard }}/3
