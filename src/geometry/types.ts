@@ -42,6 +42,10 @@ export interface MeshResult {
    *  Resolved by walking `mesh.runOriginalID` + `runIndex`. Empty / absent
    *  when no labels were registered. */
   labelMap?: Map<string, Set<number>>;
+  /** True when the user code returned an `api.renderMesh(...)` proxy — the
+   *  mesh isn't manifold (or wasn't validated as one) and the main thread
+   *  must skip its Manifold.ofMesh fallback to avoid a "Not manifold" throw. */
+  renderOnly?: boolean;
   /** Names that the user wrote `label("X")` for but didn't survive into
    *  `labelMap`. Typical causes (SCAD): the label sat inside a `{ ... }`
    *  block, so CGAL stripped provenance; a for-loop expanded one source

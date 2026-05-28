@@ -269,6 +269,25 @@ export function updateRegionColor(id: number, color: [number, number, number]): 
   }
 }
 
+export function updateRegionName(id: number, name: string): void {
+  const region = regions.find(r => r.id === id);
+  if (region) {
+    region.name = name;
+    notify();
+  }
+}
+
+/** Move a region within the regions list. Index out of range is clamped. */
+export function reorderRegion(id: number, toIndex: number): void {
+  const from = regions.findIndex(r => r.id === id);
+  if (from < 0) return;
+  const target = Math.max(0, Math.min(regions.length - 1, toIndex));
+  if (from === target) return;
+  const [r] = regions.splice(from, 1);
+  regions.splice(target, 0, r);
+  notify();
+}
+
 /** Replace a region's resolved triangle set in place. Used when the working
  *  mesh changes (e.g. a smooth brush stroke subdivides it) and every region
  *  must be re-resolved against the new tessellation. Does not notify — the
