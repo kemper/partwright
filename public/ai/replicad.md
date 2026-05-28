@@ -57,6 +57,33 @@ them before writing BREP code or you'll burn iterations on silent failures.
    centroid coverage test catches them. Pass `coverageMode:"fully_inside"`
    or use `paintConnected` from a probed seed.
 
+9. **Labels propagate through `circularPattern` and individual
+   `fuse`/`cut` ops, but get SCRAMBLED by `BREP.fuseAll` on
+   many-feature composites.** Three subagents independently hit this:
+   `paintByLabel({label:'dial'})` returned 804 triangles at the back
+   plate's lower-left quadrant instead of the dial; `'spindle'`
+   painted at the wrong z range; `'lip'` covered most of the model.
+   The root cause is in the spatial-signature resolver
+   (`buildLabelMapFromShape` in `brepRuntime.ts`) — bbox-containment +
+   smallest-volume tiebreak collides when many labeled features stack
+   inside one larger feature's bbox.
+
+   **Workaround**: for multi-feature BREP composites, default to
+   coordinate-based selectors:
+   - `partwright.paintInCylinder({center, rMin, rMax, zMin, zMax, color})`
+     for rings / shells / coffee inside a mug / hour-marker rings.
+   - `partwright.paintSlab({normal:[0,0,1], offset, thickness, color})`
+     for z-bands (lighthouse stripes, dial face, back plate).
+   - `partwright.paintInBox({box:{min,max}, color})` for axis-aligned
+     features (logo patches, viewfinder windows).
+   - `partwright.paintNear({point, radius, color, normalCone?})` for
+     small focused features (eyes, dots).
+
+   **Debug first**: before any `paintByLabel` on a BREP composite, call
+   `partwright.listLabels()` — it returns `{name, triangleCount, bbox,
+   centroid}` per label. If a label's `bbox` doesn't match the feature
+   you labelled, the scramble happened — switch to coord selectors.
+
 ## The two ways to reach BREP
 
 Partwright exposes a **BREP** (boundary-representation) kernel via
