@@ -161,6 +161,21 @@ export async function runScadAsync(source: string): Promise<MeshResult> {
     instance.FS.writeFile('/in.scad', effectiveSource);
 
     if (labelScan.hasAnyLabelCalls) {
+      // Surface a parse-time warning when any label() appears inside a
+      // `{ ... }` block. The boolean / hull / minkowski that owns the block
+      // will be evaluated by CGAL, which strips originalID provenance — so
+      // those label names won't survive into paintByLabel reach. We can't
+      // tell from source which specific names were nested vs top-level
+      // without a full AST, so the warning is generic; the per-name miss
+      // is reflected in `lostLabels` on the result instead.
+      if (labelScan.hasNestedLabels) {
+        stderr.push(
+          'WARNING: label(...) inside a `{ ... }` block (difference/intersection/union/hull/etc.) ' +
+          'will be lost — CGAL strips originalID provenance through booleans. ' +
+          'Apply label() OUTSIDE the boolean to tag the whole result, or refactor the operands ' +
+          'into separate top-level statements. See lostLabels on the run result.',
+        );
+      }
       // Label-aware path: single compile to multi-object AMF via lazy-union,
       // then one Manifold component per object so paintByLabel resolves via
       // manifold-3d's originalID provenance — same machinery as manifold-js
@@ -336,7 +351,13 @@ async function runLabelAwareAsync(
 
   const canonical = canonicalMeshOf(composed);
   const labelMap = resolveLabelMap(canonical, labelRegistry);
-  return { mesh: canonical, manifold: composed, error: null, labelMap };
+  // Diff what the scanner SAW in source against what made it into labelMap.
+  // De-dupe and drop names the labelMap delivered so paintByLabel actually
+  // works on them. The leftovers are "the user wrote it but can't paint it."
+  const seen = new Set(labelScan.allLiteralLabelNames);
+  if (labelMap) for (const k of labelMap.keys()) seen.delete(k);
+  const lostLabels = seen.size > 0 ? [...seen] : undefined;
+  return { mesh: canonical, manifold: composed, error: null, labelMap, lostLabels };
 }
 
 /** Walk the source-scan output and decide a name (or null) for each of the

@@ -39,6 +39,12 @@ export interface ScadLabelScan {
    *  these labels will be lost because the surrounding boolean is performed
    *  by OpenSCAD's CGAL backend, which strips provenance. */
   hasNestedLabels: boolean;
+  /** Names of every `label("literal")` call the scanner saw, regardless of
+   *  position (top-level, inside booleans, anywhere). The engine diffs this
+   *  against the final labelMap to surface `lostLabels` — names the user
+   *  wrote but didn't survive into paintByLabel reach. Runtime-computed
+   *  names (`label(str("c", i))`) don't appear here. */
+  allLiteralLabelNames: string[];
 }
 
 /**
@@ -55,6 +61,7 @@ export function scanScadLabels(source: string): ScadLabelScan {
   const masked = maskCommentsAndStrings(source);
 
   const topLevelStatements: ScadTopLevelStatement[] = [];
+  const allLiteralLabelNames: string[] = [];
   let hasAnyLabelCalls = false;
   let hasNestedLabels = false;
 
@@ -80,6 +87,12 @@ export function scanScadLabels(source: string): ScadLabelScan {
     if (c === 'l' && isLabelTokenAt(masked, i)) {
       hasAnyLabelCalls = true;
       if (braceDepth > 0) hasNestedLabels = true;
+      // Collect the literal name if there is one. Reads from `source` —
+      // the mask erased string quotes, so masked indices won't survive an
+      // intra-call walk. `null` here means runtime-computed
+      // (`label(str(...))`) — those aren't surfaced as lost labels.
+      const lit = readLiteralLabelArg(source, i);
+      if (lit !== null) allLiteralLabelNames.push(lit);
     }
 
     if (c === '{') {
@@ -106,7 +119,34 @@ export function scanScadLabels(source: string): ScadLabelScan {
     i++;
   }
 
-  return { topLevelStatements, hasAnyLabelCalls, hasNestedLabels };
+  return {
+    topLevelStatements,
+    hasAnyLabelCalls,
+    hasNestedLabels,
+    allLiteralLabelNames,
+  };
+}
+
+/** Read the literal string argument of a `label(` token at `source[at..]`.
+ *  Returns the inner text, or null if the argument isn't a quoted string
+ *  literal (e.g. `label(str(...))`). Uses raw `source` throughout because
+ *  the comment/string mask erased the quote characters we need to find. */
+function readLiteralLabelArg(source: string, at: number): string | null {
+  let j = at + 5;
+  while (j < source.length && /[ \t\r\n]/.test(source[j])) j++;
+  if (source[j] !== '(') return null;
+  j++;
+  while (j < source.length && /[ \t\r\n]/.test(source[j])) j++;
+  if (source[j] !== '"') return null;
+  const start = j + 1;
+  let k = start;
+  while (k < source.length && source[k] !== '"') {
+    if (source[k] === '\\') k++;
+    k++;
+  }
+  if (k >= source.length) return null;
+  const name = source.slice(start, k);
+  return name.length > 0 ? name : null;
 }
 
 /** Replace contents of `// ...`, `/* ... *\/`, and `"..."` with spaces so the

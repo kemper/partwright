@@ -134,3 +134,39 @@ describe('scanScadLabels — top-level statement extraction', () => {
     expect(r.topLevelStatements[2].labelName).toBe('trailing');
   });
 });
+
+describe('scanScadLabels — allLiteralLabelNames', () => {
+  it('returns names from top-level labels in source order', () => {
+    const r = scanScadLabels(`
+      label("body") cube(10);
+      label("wheel") sphere(5);
+    `);
+    expect(r.allLiteralLabelNames).toEqual(['body', 'wheel']);
+  });
+
+  it('also captures names nested inside boolean blocks', () => {
+    // These will be lost at compile time, but the engine wants to know
+    // that the user wrote them so it can populate `lostLabels`.
+    const r = scanScadLabels(`
+      label("top") cube(10);
+      difference() {
+        label("body") cube(20);
+        label("hole") cylinder(r=2, h=30);
+      }
+    `);
+    expect(r.allLiteralLabelNames).toEqual(['top', 'body', 'hole']);
+  });
+
+  it('omits runtime-computed names', () => {
+    const r = scanScadLabels(`
+      label("static") cube(1);
+      label(str("c", i)) cube(1);
+    `);
+    expect(r.allLiteralLabelNames).toEqual(['static']);
+  });
+
+  it('returns an empty array when the source has no labels', () => {
+    const r = scanScadLabels('cube(10); sphere(5);');
+    expect(r.allLiteralLabelNames).toEqual([]);
+  });
+});

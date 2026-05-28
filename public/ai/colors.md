@@ -159,9 +159,31 @@ the manifold-js case. Constraints:
 - **Top-level only.** Labels inside a SCAD boolean (the `{ ... }` of
   `difference()`, `intersection()`, `union()`, `hull()`, etc.) are
   lost — OpenSCAD's CGAL backend doesn't carry provenance through
-  booleans. Refactor the operands into separate top-level statements
-  that union implicitly, or apply the label *outside* the boolean to
-  tag its whole result. `listLabels()` will tell you what survived.
+  booleans.
+
+  ```scad
+  // ✗ WRONG — both labels stripped by CGAL; paintByLabel can't find them
+  difference() {
+    label("body") cube([20, 20, 30]);
+    label("hole") cylinder(r=4, h=30);
+  }
+
+  // ✓ RIGHT — one label outside; the whole result tags as "body"
+  label("body") difference() {
+    cube([20, 20, 30]);
+    cylinder(r=4, h=30);
+  }
+
+  // ✓ ALSO RIGHT — labels at the top level (separate statements union
+  //   implicitly; the difference happens in Manifold not CGAL)
+  label("body") cube([20, 20, 30]);
+  label("knob") translate([0, 0, 32]) cylinder(r=4, h=6);
+  ```
+
+  When labels are lost this way, the engine pushes a `WARNING: label(...)
+  inside a { ... } block ...` to stderr at compile time, and the run
+  result's `lostLabels` field lists the names — so you don't have to diff
+  the labelMap by hand. `listLabels()` returns only what survived.
 - **Literal names only.** `label("body")` works; `label(str("c", i))`
   doesn't (the name is computed at SCAD runtime and we can't read it).
   For-loop bodies that use `label()` produce auto-named regions.

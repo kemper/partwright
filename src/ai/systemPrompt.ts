@@ -149,9 +149,11 @@ manifold-js. Constraints:
  - Apply label() at the TOP LEVEL of the source — labels inside a
    boolean ({ ... } block of difference/intersection/union/hull/etc.)
    are lost, because OpenSCAD's CGAL backend strips provenance through
-   booleans. Refactor those into top-level statements you union after
-   the fact, or apply the label OUTSIDE the boolean to tag the whole
-   result.
+   booleans. When this happens, the engine pushes a WARNING and lists
+   the dropped names in result.lostLabels. Two patterns work:
+     ✗ difference() { label("body") cube; label("hole") cylinder; }
+     ✓ label("body") difference() { cube; cylinder; }
+     ✓ label("body") cube; label("knob") translate(...) cylinder;
  - Only add label() when you actually plan to paint. The unlabelled
    path uses the fast STL pipeline; the labelled path costs a single
    AMF compile (similar wall-clock, slightly more parsing). When no

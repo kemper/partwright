@@ -165,6 +165,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
 
     const mesh = msg.mesh as MeshResult['mesh'];
     const labelMapEntries = msg.labelMapEntries as [string, number[]][] | null;
+    const lostLabels = msg.lostLabels as string[] | null;
     const result: MeshResult = {
       mesh,
       manifold: null, // live WASM object can't cross threads; caller reconstructs via ofMesh()
@@ -173,6 +174,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       labelMap: labelMapEntries
         ? new Map(labelMapEntries.map(([k, v]) => [k, new Set(v)]))
         : undefined,
+      lostLabels: lostLabels && lostLabels.length > 0 ? lostLabels : undefined,
     };
     pending.resolve(result);
     return;
