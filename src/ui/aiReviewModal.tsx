@@ -117,6 +117,14 @@ function ReviewerPicker(props: { state: Signal<ReviewState> }) {
             {modelOptionsFor(p).map(opt => (
               <option key={opt.id} value={opt.id}>{opt.label}</option>
             ))}
+            {/* Custom-id fallback: if the user pinned an id (via Settings →
+                "Use id") that isn't in the curated options, surface it as
+                a final selectable option labelled "(custom)" so the
+                dropdown's visible value doesn't silently diverge from
+                state.value.model. */}
+            {state.value.model && !modelOptionsFor(p).some(o => o.id === state.value.model) && (
+              <option key="custom" value={state.value.model}>{state.value.model} (custom)</option>
+            )}
           </select>
         )}
       </div>

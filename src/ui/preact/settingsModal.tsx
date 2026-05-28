@@ -506,19 +506,31 @@ function LocalTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
 /** Hosts the existing vanilla-TS renderLocalPicker inside a Preact ref —
  *  the cohabitation seam. Picking a local model flips the active provider
  *  via the picker's own onChange; `resyncSettings()` pulls that write off
- *  disk into the signal so EnableRow's `isActive` flips immediately. */
+ *  disk into the signal so EnableRow's `isActive` flips immediately.
+ *
+ *  Cleanup: the picker mutates `ref.current` via `replaceChildren` +
+ *  manual appends, and chains async work (cache scan, WebGPU probe,
+ *  storage probe) that can outlive the modal. The `disposed` flag short-
+ *  circuits the onChange callback so a late picker tick (e.g. switching
+ *  tabs Local → Anthropic while the cache scan is still running) doesn't
+ *  reach into the now-detached signal store. The ref's children are
+ *  unmounted by Preact when the modal closes, so the picker's DOM is
+ *  released; only the in-flight callbacks need explicit gating. */
 function LocalPickerEmbed(props: { cb: AiSettingsCallbacks }) {
   const { cb } = props;
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!ref.current) return;
+    let disposed = false;
     void renderLocalPicker(ref.current, {
       onChange: () => {
+        if (disposed) return;
         cb.onChange();
         resyncSettings();
       },
     }, { embedded: true });
+    return () => { disposed = true; };
   }, []);
 
   return <div ref={ref} class="flex flex-col gap-3" />;
