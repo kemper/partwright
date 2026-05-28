@@ -166,6 +166,16 @@ describe('gridToMeshData', () => {
     expect(m.numTri).toBe(6 * 16 * 2);
     assertClosedManifold(m.triVerts);
   });
+
+  it('marks every triangle painted so black voxels keep their color', () => {
+    const v = new VoxelGrid();
+    v.set(0, 0, 0, 0x000000); // pure black — the case the _painted mask guards
+    const m = gridToMeshData(v);
+    const painted = (m.triColors as Uint8Array & { _painted?: Uint8Array })._painted;
+    expect(painted).toBeDefined();
+    expect(painted!.length).toBe(m.numTri);
+    expect(Array.from(painted!).every(x => x === 1)).toBe(true);
+  });
 });
 
 describe('imageDataToVoxelGrid', () => {

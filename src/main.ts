@@ -1582,6 +1582,23 @@ async function main() {
     }
   }
 
+  /** Decode an image URL (a `data:` URL or same-origin URL) into ImageData via
+   *  an `<img>` element. Uses an img-src load, not `fetch`, so it isn't blocked
+   *  by the app's strict CSP `connect-src` (which rejects `fetch('data:…')`). */
+  async function decodeImageUrlToImageData(url: string): Promise<ImageData> {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.src = url;
+    await img.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) throw new Error('Could not get a 2D canvas context to read image pixels.');
+    ctx.drawImage(img, 0, 0);
+    return ctx.getImageData(0, 0, canvas.width, canvas.height);
+  }
+
   /** Import an image as a colored voxel billboard in a new voxel session.
    *  Transparent pixels (alpha below threshold) drop out, so logos and
    *  sprites voxelize cleanly; opaque photos become a full extruded slab.
@@ -3566,18 +3583,11 @@ async function main() {
         if (opts.alphaThreshold !== undefined) assertNumber(opts.alphaThreshold, 'importImageAsVoxels(opts.alphaThreshold)', { min: 0, max: 255, integer: true });
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      let blob: Blob;
-      try {
-        const resp = await fetch(imageUrl);
-        blob = await resp.blob();
-      } catch (e) {
-        return { error: `importImageAsVoxels: could not fetch image — ${(e as Error).message}` };
-      }
       let imageData: ImageData;
       try {
-        imageData = await decodeImageToImageData(blob);
+        imageData = await decodeImageUrlToImageData(imageUrl);
       } catch (e) {
-        return { error: `importImageAsVoxels: could not decode image — ${(e as Error).message}` };
+        return { error: `importImageAsVoxels: could not load/decode image — ${(e as Error).message}` };
       }
       const grid = imageDataToVoxelGrid(imageData, opts);
       if (grid.size === 0) return { error: 'importImageAsVoxels: image produced no voxels (every sampled pixel was transparent).' };

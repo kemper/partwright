@@ -72,12 +72,25 @@ export function gridToMeshData(grid: VoxelGrid): MeshData {
     }
   });
 
+  const numTri = tris.length / 3;
+  const triColorArr = Uint8Array.from(triColors);
+  // Every voxel triangle carries an authored color, so mark them all
+  // "painted". Without this mask the color pipeline's fallback heuristic
+  // (`r||g||b ≠ 0`) would treat a pure-black voxel — a legal color — as
+  // unpainted and recolor it to the default blue.
+  //
+  // NB: this `_painted` expando is dropped by structured clone when the mesh
+  // crosses the geometry Worker boundary, so the Worker-result handler in
+  // engine.ts re-establishes it on arrival. Setting it here still covers the
+  // synchronous (main-thread) execution path and keeps the module honest.
+  (triColorArr as Uint8Array & { _painted?: Uint8Array })._painted = new Uint8Array(numTri).fill(1);
+
   return {
     vertProperties: Float32Array.from(positions),
     triVerts: Uint32Array.from(tris),
     numVert: positions.length / 3,
-    numTri: tris.length / 3,
+    numTri,
     numProp: 3,
-    triColors: Uint8Array.from(triColors),
+    triColors: triColorArr,
   };
 }
