@@ -20,7 +20,7 @@ test.describe('Legal page', () => {
     // Each of the three documented sections is present.
     await expect(page.locator('#legal-page')).toContainText('Privacy');
     await expect(page.locator('#legal-page')).toContainText('no warranty');
-    await expect(page.locator('#legal-page')).toContainText('only run or import code from sources you trust');
+    await expect(page.locator('#legal-page')).toContainText('Only run or import code from sources you trust');
     // License is named explicitly.
     await expect(page.locator('#legal-page')).toContainText('PolyForm Noncommercial');
     // The document title reflects the route (the title guard keeps it stable).
