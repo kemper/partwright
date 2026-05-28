@@ -67,6 +67,30 @@ const newEntries: SdfEntry[] = [
     name: 'SDF Bloom',
     description: 'A stylised flower showcasing the SDF combinators — ellipsoid petals fanned out with polarArray (no hand-written coordinates), a flattened pollen centre, and a taper-narrowed stem. Three painted regions.',
   },
+  {
+    exampleFile: 'sdf_tpms_study.js',
+    paintFile: 'sdf_tpms_study.paint.json',
+    catalogFile: 'sdf_tpms_study.partwright.json',
+    id: 'sdf-tpms-study',
+    name: 'SDF TPMS Study',
+    description: 'Four 14³ lattice tiles side-by-side on a plinth — Schwarz P, Diamond, Lidinoid, and a gradedGyroid with a diagonal thickness ramp. The exhaustive TPMS comparison; five painted regions.',
+  },
+  {
+    exampleFile: 'sdf_radial_creature.js',
+    paintFile: 'sdf_radial_creature.paint.json',
+    catalogFile: 'sdf_radial_creature.partwright.json',
+    id: 'sdf-aetherjelly',
+    name: 'SDF Aetherjelly',
+    description: 'A radial jellyfish-drifter built from ellipsoids, fanned into shape by polarArray (8 tentacles, 6 ocelli), bilaterally completed by mirrorPair, and tapered along its body axis. Three painted regions; the showcase for the SDF combinators.',
+  },
+  {
+    exampleFile: 'sdf_helix_lamp_standard.js',
+    paintFile: 'sdf_helix_lamp_standard.paint.json',
+    catalogFile: 'sdf_helix_lamp_standard.partwright.json',
+    id: 'sdf-helix-lamp',
+    name: 'SDF Helix Lamp Standard',
+    description: 'An architectural light post whose square-cross-section shaft spirals around an OFFSET vertical axis, paired with a perforated screen wall built by repeat() clipped to a slab and topped by a roundedCylinder lamp cap. Four painted regions; showcases the new offset-twist, repeat, and roundedCylinder primitives.',
+  },
 ];
 
 interface PaintManifest {

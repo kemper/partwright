@@ -47,7 +47,7 @@ api.sdf.capsule([x1,y1,z1], [x2,y2,z2], radius)   // hemisphere-capped rod
 
 ### TPMS lattices (all infinite — see "Bounds for unbounded shapes")
 
-Triply-periodic minimal surfaces. All take `(cellSize, thickness)` — `cellSize` is the period, `thickness` the wall width (0 = a bare zero-thickness surface). They're mathematically infinite, so you **must** intersect with a finite shape or pass explicit `bounds` to `.build()`.
+Triply-periodic minimal surfaces. All take `(cellSize, thickness)` — `cellSize` is the period in world units, `thickness` is the wall width (0 = a bare zero-thickness surface). They're mathematically infinite, so you **must** intersect with a finite shape or pass explicit `bounds` to `.build()`.
 
 ```js
 api.sdf.gyroid(cellSize, thickness)     // the famous one — smooth, isotropic
@@ -58,6 +58,10 @@ api.sdf.lidinoid(cellSize, thickness)   // woven, higher-genus
 // Spatially-varying wall thickness (bone-like density grading):
 api.sdf.gradedGyroid(cellSize, (x, y, z) => /* thickness here */)
 ```
+
+**Sizing `thickness`:** for a printable shell `thickness ≈ cellSize/6 to cellSize/3` is the sweet spot — thinner gets fragile/under-resolved, thicker fills in the pores. With the default `edgeLength` heuristic the four families look comparable at matched parameters; **lidinoid** is the resolution-hungriest because its double-frequency terms create smaller effective features at the same `cellSize` — drop `edgeLength` a touch if it looks jaggy.
+
+**Mixing two lattices:** use **sharp `union`** to butt two regions side-by-side (preserves their labels for paint). `intersect` two infinite TPMS gives their common surface (also infinite — still needs an outer bound).
 
 `gradedGyroid`'s thickness function is called once per mesh sample (millions of times) — keep it to cheap arithmetic.
 
@@ -117,7 +121,10 @@ Twist, bend, and taper warp space — the resulting field is a Lipschitz *approx
 
 **For `.bend(degPerUnit, axis)`**: `axis` names the *input axis sampled* to compute the rotation amount — NOT the rotation axis. The rotation happens in the plane perpendicular to `axis`. So `bend(45, 'x')` reads the X coordinate of each point and rotates it in the XY plane (around Z) by `x * 45°`.
 
-**For `.taper(rate, axis)`**: the cross-section perpendicular to `axis` scales by `1 + rate*coord` — scale is 1 at the origin, so positive `rate` widens toward +axis and negative narrows it. `sdf.box([10,10,40]).taper(-0.02, 'z')` makes an obelisk that shrinks ~2% per unit of height.
+**For `.taper(rate, axis)`**: the cross-section perpendicular to `axis` scales by `1 + rate*coord` — scale is 1 at the origin, so positive `rate` widens toward +axis and negative narrows toward +axis (equivalently, widens toward −axis). Examples:
+- `sdf.box([10,10,40]).taper(-0.02, 'z')` — obelisk that shrinks ~2% per unit of height (wider bottom, narrower top).
+- `sdf.cylinder(2, 30).taper(+0.05, 'z')` — funnel that widens upward (5% per unit).
+- A primitive *centred on the origin* has scale=1 at its midpoint, so a +rate widens its top half and narrows its bottom half. Translate the shape if you want the taper anchored to one end instead of the middle.
 
 ## Combinators
 
@@ -129,7 +136,9 @@ node.repeat([px, py, pz])                           // infinite grid tiling (0 =
 
 - **`polarArray`** mirrors the Manifold-side `circularPattern`: `axis` defaults to `'z'`, `angle` defaults to 360 (full ring, no duplicate at the seam; any other angle places endpoints inclusively), and `radius` pushes each copy outward along the first perpendicular axis before rotating. The whole array meshes as ONE region unless you label individual copies.
 - **`mirrorPair`** is just `node.union(node.mirror(axis))` — model one half, get the symmetric whole.
-- **`repeat`** is **infinite** on every axis with a non-zero period, exactly like the TPMS lattices — you must intersect it with a finite shape or pass explicit `bounds` to `.build()`. Use it for truss/peg arrays; use `gyroid`/`schwarzP`/etc. for smooth periodic surfaces.
+- **`repeat`** is a **domain warp**: your input shape becomes the *unit cell* of an infinite tiling. So orient your input first — e.g. for a grid of holes through a Y-thin panel, `sdf.cylinder(1, 5).rotate(90, 0, 0).repeat([6, 0, 6])` (the rotate turns the Z-aligned cylinder into a Y-aligned hole, THEN repeat tiles it on the XZ grid). `repeat` is **infinite** on every axis with a non-zero period, exactly like the TPMS lattices — you must intersect it with a finite shape or pass explicit `bounds` to `.build()`. Use it for truss/peg arrays; use `gyroid`/`schwarzP`/etc. for smooth periodic surfaces.
+
+**Ordering: intersect FIRST, then warp.** Domain warps (`twist`, `bend`, `taper`, `repeat`) don't shrink their input's bounds — only spatial booleans do. So `infinite.twist(...)` stays infinite (and `.build()` fails); `infinite.intersect(finiteBox).twist(...)` works because the intersect makes bounds finite before the twist tries to compute its sweep. Same applies to `repeat(...).twist(...)` — clip the lattice first, then warp.
 
 ## Building (lowering to a Manifold)
 
@@ -215,12 +224,11 @@ return sdf.gyroid(5, 0.5)
 
 Without bounds, `.build()` throws — it can't mesh an infinite domain.
 
-## What about non-uniform scaling, repetition, custom math?
+## What about non-uniform scaling and custom math?
 
 The current SDF surface is deliberately scoped to the high-value subset:
 
-- **Non-uniform scale** is omitted (breaks the distance metric — model the stretched primitive instead).
-- **`repeat()`** for periodic arrays is not yet exposed (use `intersect` with a bounded region + design-time copies, or stick to `gyroid` for periodic surfaces).
+- **Non-uniform scale** is omitted (it breaks the distance metric — model the stretched primitive instead, or use `sdf.ellipsoid(rx, ry, rz)` for squashed spheres).
 - **Custom math** (write your own `f(x,y,z) → distance`) — fall back to `Manifold.levelSet(fn, bounds, edgeLength)` directly when the prebuilt vocabulary doesn't cover your case.
 
 If a missing primitive or op keeps coming up, the right move is to add it to `api.sdf` rather than re-inventing it in user code.

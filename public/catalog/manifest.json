@@ -363,6 +363,27 @@
       "file": "coffee_mug.partwright.json",
       "language": "replicad",
       "description": "A white ceramic coffee mug with a colored rim band, painted coffee inside, and a curved torus handle — showcasing BREP's shell op + paint."
+    },
+    {
+      "id": "sdf-tpms-study",
+      "name": "SDF TPMS Study",
+      "file": "sdf_tpms_study.partwright.json",
+      "language": "manifold-js",
+      "description": "Four 14³ lattice tiles side-by-side on a plinth — Schwarz P, Diamond, Lidinoid, and a gradedGyroid with a diagonal thickness ramp. The exhaustive TPMS comparison; five painted regions."
+    },
+    {
+      "id": "sdf-aetherjelly",
+      "name": "SDF Aetherjelly",
+      "file": "sdf_radial_creature.partwright.json",
+      "language": "manifold-js",
+      "description": "A radial jellyfish-drifter built from ellipsoids, fanned into shape by polarArray (8 tentacles, 6 ocelli), bilaterally completed by mirrorPair, and tapered along its body axis. Three painted regions; the showcase for the SDF combinators."
+    },
+    {
+      "id": "sdf-helix-lamp",
+      "name": "SDF Helix Lamp Standard",
+      "file": "sdf_helix_lamp_standard.partwright.json",
+      "language": "manifold-js",
+      "description": "An architectural light post whose square-cross-section shaft spirals around an OFFSET vertical axis, paired with a perforated screen wall built by repeat() clipped to a slab and topped by a roundedCylinder lamp cap. Four painted regions; showcases the new offset-twist, repeat, and roundedCylinder primitives."
     }
   ]
 }
