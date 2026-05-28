@@ -6,6 +6,7 @@ import {
   deactivate,
   isActive,
   setColor,
+  getColor,
   setTool,
   getTool,
   setBucketTolerance,
@@ -56,7 +57,9 @@ import {
   clearRegions,
   removeRegion,
   setRegionVisibility,
+  addRegion,
 } from './regions';
+import { getPaintLabels, onPaintLabelsChange, type LabelInfo } from './labels';
 import { forceDeactivate as forceDeactivateAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
@@ -300,6 +303,20 @@ function createPickerPanel(): HTMLElement {
   // === Box tool controls ===
   boxControls = createBoxControls();
   content.appendChild(boxControls);
+
+  // === Labels list ===
+  // Surfaces the named features `api.label(shape, name)` registered in the
+  // current run. Hovering a row highlights the label's triangles on the model
+  // (same translucent overlay the regions list uses); clicking paints them
+  // with the active color via a byLabel descriptor — identical to what
+  // `partwright.paintByLabel` produces from a script.
+  const labelList = document.createElement('div');
+  labelList.id = 'paint-label-list';
+  labelList.className = 'mt-2 border-t border-zinc-700 pt-2';
+  content.appendChild(labelList);
+  updateLabelList(labelList);
+  onPaintLabelsChange(() => updateLabelList(labelList));
+  onRegionsChange(() => updateLabelList(labelList));
 
   // === Region list ===
   // Flows inside the single scroll area; the sticky footer keeps the actions
@@ -1198,6 +1215,114 @@ function updateActiveSwatch(grid: HTMLElement, activeSwatch: HTMLElement): void 
     (child as HTMLElement).classList.remove('border-white/80', 'ring-1', 'ring-white/30');
   }
   activeSwatch.classList.add('border-white/80', 'ring-1', 'ring-white/30');
+}
+
+function updateLabelList(container: HTMLElement): void {
+  const labels = getPaintLabels();
+  container.innerHTML = '';
+
+  const header = document.createElement('div');
+  header.className = 'flex items-center justify-between mb-1';
+  const headerLabel = document.createElement('div');
+  headerLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
+  headerLabel.textContent = 'Labels';
+  header.appendChild(headerLabel);
+  if (labels.length > 0) {
+    const count = document.createElement('span');
+    count.className = 'text-[10px] text-zinc-600 tabular-nums';
+    count.textContent = String(labels.length);
+    header.appendChild(count);
+  }
+  container.appendChild(header);
+
+  if (labels.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'text-[10px] text-zinc-500 leading-snug';
+    empty.innerHTML = 'No labels in this run. Wrap features with <code class="px-1 py-0.5 rounded bg-zinc-900/60 text-zinc-300 text-[10px]">api.label(shape, "name")</code> in your code to get clickable labelled regions here.';
+    container.appendChild(empty);
+    return;
+  }
+
+  // Which labels are already painted, so the row can show a "painted" hint
+  // instead of pretending nothing's there. A label may be painted multiple
+  // times (e.g. a different color over the same area); we only need to know
+  // that *something* paints it.
+  const paintedLabels = new Set<string>();
+  for (const r of getRegions()) {
+    if (r.descriptor.kind === 'byLabel') paintedLabels.add(r.descriptor.label);
+  }
+
+  for (const label of labels) {
+    container.appendChild(createLabelRow(label, paintedLabels.has(label.name)));
+  }
+}
+
+function createLabelRow(label: LabelInfo, alreadyPainted: boolean): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'flex items-center gap-1.5 py-0.5 group rounded px-1 -mx-1 hover:bg-zinc-700/40 transition-colors cursor-pointer';
+  row.dataset.labelName = label.name;
+  row.title = alreadyPainted
+    ? `Paint label "${label.name}" again with the current color`
+    : `Paint label "${label.name}" with the current color`;
+
+  // Hover-to-highlight: render a 40%-opacity overlay over the label's triangles
+  // in the current paint color. The user can preview which region a click will
+  // paint before committing. Teardown on mouseleave so nothing sticks if the
+  // user moves away without clicking.
+  let releaseHover: (() => void) | null = null;
+  row.addEventListener('mouseenter', () => {
+    if (label.triangles.size === 0) return;
+    releaseHover = previewTriangles(label.triangles, getColor());
+  });
+  row.addEventListener('mouseleave', () => {
+    if (releaseHover) { releaseHover(); releaseHover = null; }
+  });
+
+  row.addEventListener('click', () => {
+    if (label.triangles.size === 0) return;
+    if (releaseHover) { releaseHover(); releaseHover = null; }
+    // Clone the triangle set so later region edits don't mutate the label
+    // snapshot. byLabel descriptor matches what partwright.paintByLabel emits,
+    // so re-hydration on session reload goes through the same resolve path.
+    addRegion(
+      label.name,
+      [...getColor()] as [number, number, number],
+      'paintbrush',
+      { kind: 'byLabel', label: label.name },
+      new Set(label.triangles),
+    );
+  });
+
+  const dot = document.createElement('span');
+  dot.className = 'w-3 h-3 rounded-sm shrink-0 border border-zinc-600/60';
+  if (alreadyPainted) {
+    // Show the most recently-applied color for this label so the user can
+    // distinguish "blue eye" from "red eye" at a glance.
+    const last = [...getRegions()].reverse().find(r => r.descriptor.kind === 'byLabel' && r.descriptor.label === label.name);
+    if (last) dot.style.backgroundColor = rgbToCSS(last.color);
+  }
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'text-[11px] truncate flex-1 text-zinc-300';
+  nameEl.textContent = label.name;
+
+  const count = document.createElement('span');
+  count.className = 'text-[10px] text-zinc-600 tabular-nums';
+  count.textContent = `${label.triangleCount}△`;
+
+  row.appendChild(dot);
+  row.appendChild(nameEl);
+  row.appendChild(count);
+
+  if (alreadyPainted) {
+    const badge = document.createElement('span');
+    badge.className = 'shrink-0 text-[10px] text-emerald-400 leading-none';
+    badge.textContent = '✓';
+    badge.title = 'Already painted (click to paint again with the current color)';
+    row.appendChild(badge);
+  }
+
+  return row;
 }
 
 function updateRegionList(container: HTMLElement): void {
