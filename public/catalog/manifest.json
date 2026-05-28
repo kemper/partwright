@@ -314,6 +314,13 @@
       "file": "vintage_camera.partwright.json",
       "language": "replicad",
       "description": "A vintage rangefinder camera with a tapered lens barrel, viewfinder, shutter button, and film advance — colorful BREP showcase with paint."
+    },
+    {
+      "id": "lighthouse-brep",
+      "name": "test",
+      "file": "lighthouse_brep.partwright.json",
+      "language": "replicad",
+      "description": "test"
     }
   ]
 }
