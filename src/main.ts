@@ -3118,6 +3118,32 @@ async function main() {
 
   const DRAFT_STUB_JS = '// JavaScript\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
   const DRAFT_STUB_SCAD = '// OpenSCAD\ncube([10, 10, 10], center=true);';
+  // BREP / replicad — quick showcase of the headline features:
+  //   - selective fillet (the inDirection-based workaround for box edges,
+  //     called out in the gotchas cheat sheet at the top of replicad.md)
+  //   - true chamfer on the top rim
+  //   - boolean subtract (cut) of a cylinder bore
+  // The result is a rounded-corner mounting bracket with a bevelled bore.
+  // It's small enough that the OCCT solver runs in well under a second on
+  // a cold WASM load, so the first paint into the editor after switching
+  // languages still feels instant.
+  const DRAFT_STUB_REPLICAD =
+    '// BREP / replicad — exact-surface modeling\n' +
+    "const { BREP } = api;\n" +
+    '\n' +
+    '// Body: 30x30x10 box with rounded vertical corners and a chamfered top rim.\n' +
+    'const body = BREP.box([30, 30, 10])\n' +
+    '  // Round the four vertical corners. `inDirection: [0,0,1]` requires the\n' +
+    "  // edge be Z-parallel — needed because inBox alone is unreliable on a\n" +
+    "  // BREP.box's planar coincident edges (see replicad.md \"Gotchas\").\n" +
+    '  .fillet(3, { inDirection: [0, 0, 1] })\n' +
+    '  // Bevel the top rim — the four edges of the top face. Same gotcha:\n' +
+    "  // pair the maxZ bound with parallelToPlane: 'XY'.\n" +
+    "  .chamfer(0.6, { maxZ: 9.999, parallelToPlane: 'XY' });\n" +
+    '\n' +
+    '// Boolean cut: a 4 mm bore through the centre.\n' +
+    'const bore = BREP.cylinder(4, 12).translate([0, 0, -1]);\n' +
+    'return body.cut(bore);\n';
 
   /** Toolbar / AI language toggle: stash the current editor buffer as a draft
    *  on the active session, swap engines, then restore the target language's
@@ -3149,7 +3175,9 @@ async function main() {
     let nextCode: string | null = null;
     if (sid) nextCode = await readDraft(sid, lang);
     if (nextCode === null) {
-      nextCode = lang === 'scad' ? DRAFT_STUB_SCAD : DRAFT_STUB_JS;
+      nextCode = lang === 'scad' ? DRAFT_STUB_SCAD
+        : lang === 'replicad' ? DRAFT_STUB_REPLICAD
+        : DRAFT_STUB_JS;
     }
     setValue(nextCode);
     runCode(nextCode);
