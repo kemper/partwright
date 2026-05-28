@@ -143,6 +143,22 @@ let forwardBtnRef: HTMLButtonElement | null = null;
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
 let inputEl: HTMLTextAreaElement | null = null;
+
+/** "Stuck to bottom" detection for the transcript. The auto-scroll on every
+ *  streamed delta used to fight the user when they scrolled up to read earlier
+ *  content. The fix is to measure pinned-ness *before* mutating content (since
+ *  appending text grows scrollHeight and would otherwise un-pin a user who was
+ *  at the bottom), then only re-pin to bottom if they were already there. The
+ *  threshold gives leeway for sub-pixel rounding and inertial scrolling. */
+const STICKY_BOTTOM_THRESHOLD_PX = 24;
+function isTranscriptPinnedToBottom(): boolean {
+  if (!transcriptEl) return true;
+  return transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight <= STICKY_BOTTOM_THRESHOLD_PX;
+}
+function pinTranscriptToBottom(): void {
+  if (!transcriptEl) return;
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
 let pendingImagesEl: HTMLElement | null = null;
 let toggleStripEl: HTMLElement | null = null;
 let costMeterEl: HTMLElement | null = null;
@@ -251,6 +267,9 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
   await loadHistoryForCurrentSession();
   await applySessionAiPreference();
   renderTranscript();
+  // Session switch is an explicit user action — land at the bottom regardless
+  // of where they were scrolled in the previous session's transcript.
+  pinTranscriptToBottom();
   renderCostMeter();
 }
 
@@ -1372,6 +1391,9 @@ function formatDuration(ms: number): string {
 
 function renderTranscript(): void {
   if (!transcriptEl) return;
+  // Measure before replaceChildren — clearing children clamps scrollTop, so
+  // any post-clear check would mis-report the user's intent.
+  const pinned = isTranscriptPinnedToBottom();
   transcriptEl.replaceChildren();
   const hasHistory = state.history.length > 0;
   const hasQueue = state.queuedBlocks.length > 0;
@@ -1395,7 +1417,7 @@ function renderTranscript(): void {
   if (hasQueue) {
     transcriptEl.appendChild(renderQueuedPreview());
   }
-  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  if (pinned) pinTranscriptToBottom();
 }
 
 function renderQueuedPreview(): HTMLElement {
@@ -2209,6 +2231,10 @@ async function sendMessage(): Promise<void> {
   state.rewindStack = [];
   progressState.retryCount = 0;
   stalledByWatchdog = false;
+  // Hitting send is an explicit "follow the new turn" gesture — re-pin to
+  // bottom so the user's own bubble and the streamed reply are visible even
+  // if they had been scrolled up reading earlier history.
+  pinTranscriptToBottom();
   await runTurnWithStallRetry(apiKey, settings.toggles, blocks);
 }
 
@@ -2343,11 +2369,13 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
       },
       onAssistantText: delta => {
         if (liveTextEl) {
+          const pinned = isTranscriptPinnedToBottom();
           liveTextEl.textContent = (liveTextEl.textContent ?? '') + delta;
-          if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+          if (pinned) pinTranscriptToBottom();
         }
       },
       onAssistantThinking: delta => {
+        const pinned = isTranscriptPinnedToBottom();
         if (!liveThinkingEl) {
           const wrapEl = (liveTextEl?.parentElement
             ?? transcriptEl?.querySelector(`[data-message-id="${activeAssistantId}"]`)) as HTMLElement | null;
@@ -2360,9 +2388,12 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         const body = liveThinkingEl.querySelector('[data-thinking-body]') as HTMLElement | null;
         if (body) {
           body.textContent = (body.textContent ?? '') + delta;
+          // The thinking box's inner <pre> (max-h-32) is its own scroll
+          // container — keep it pinned so the latest reasoning tokens stay
+          // visible inside the bubble itself.
           body.scrollTop = body.scrollHeight;
         }
-        if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+        if (pinned) pinTranscriptToBottom();
       },
       onProgress: info => {
         // The next step has begun — fold the live thinking preview into its
