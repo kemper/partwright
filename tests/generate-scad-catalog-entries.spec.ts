@@ -5,7 +5,12 @@
 // and the first compile takes ~3s; we use serial+page-per-test for isolation
 // and wait for the engine flip to settle before issuing pw.run().
 //
-// Run with: npx playwright test tests/generate-scad-catalog-entries.spec.ts
+// Run with: GENERATE_CATALOG=1 npx playwright test tests/generate-scad-catalog-entries.spec.ts
+//
+// Gated on GENERATE_CATALOG so a regular `npm run test:e2e` doesn't
+// silently overwrite the catalog files with churning sessionIds /
+// timestamps / codeHashes (which would otherwise leave the working
+// tree dirty after every test run).
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -65,6 +70,11 @@ async function waitForEngine(page: Page): Promise<void> {
 }
 
 test.describe.serial('generate SCAD catalog entries', () => {
+  test.beforeAll(() => {
+    test.skip(process.env.GENERATE_CATALOG !== '1',
+      'Generator-only spec. Re-run with GENERATE_CATALOG=1 to regenerate public/catalog/*.partwright.json.');
+  });
+
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
   });
