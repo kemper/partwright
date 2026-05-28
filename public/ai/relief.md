@@ -25,7 +25,10 @@ await partwright.importImageAsRelief({
     output: 'flat',              // 'flat' (default) | 'silhouette' | 'relief'
     shape: 'rounded',            // 'rect' | 'rounded' | 'circle' (flat only)
     cornerRadiusMm: 4,
-    holeEnabled: true, holeDiameterMm: 5, holeOffsetMm: 6,
+    chamferMm: 0.4,              // top-edge bevel; 0 = sharp corner
+    holes: [                     // any number of circular cut-outs (mm)
+      { cxMm: 0, cyMm: 44, diameterMm: 5 },
+    ],
   },
 })
 // -> { sessionId } (a new session whose geometry is the tile/relief), or { error }
@@ -91,7 +94,7 @@ Vector input — each `<path fill>` becomes one seed region with crisp boundarie
 await partwright.importSvgAsRelief({
   svgText: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">...</svg>',
   options: { widthMm: 60, layerHeight: 0.2, baseThickness: 1, maxHeight: 0.8, resolution: 200 },
-  quantized: { output: 'silhouette', holeEnabled: true, holeDiameterMm: 5, holeOffsetMm: 5 },
+  quantized: { output: 'silhouette', holes: [{ cxMm: 0, cyMm: 27, diameterMm: 5 }] },
 })
 ```
 
