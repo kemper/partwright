@@ -92,6 +92,10 @@ test.describe('Export safety confirmation', () => {
     // A watertight single-component cube in mm has no warning → exports
     // directly, surfacing the success toast and no dialog.
     await expect(page.locator('[role="dialog"]')).toHaveCount(0);
-    await expect(page.getByRole('status')).toContainText('Exported', { timeout: 5_000 });
+    // Target the toast specifically — the status pill (<span role="status">
+    // "Ready") also matches role=status, so getByRole would be ambiguous.
+    await expect(
+      page.locator('div[role="status"]').filter({ hasText: /Exported/ }),
+    ).toBeVisible({ timeout: 5_000 });
   });
 });
