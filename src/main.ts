@@ -1688,6 +1688,22 @@ async function main() {
     return { sessionId };
   }
 
+  /** Single-nozzle stepped relief needs each cluster on its own layer-height
+   *  band, otherwise two cluster filaments would have to swap mid-layer and
+   *  the user would see colour stripes inside a single Z. The minimum
+   *  maxHeight is `(clusters - 1) * layerHeight` — anything less can't fit. */
+  function steppedReliefLayerFitError(opts: ReliefOptions): string | null {
+    if (opts.mode !== 'quantized') return null;
+    if (opts.quantized.output !== 'relief') return null;
+    if (opts.quantized.paintingMode !== 'single-nozzle') return null;
+    const lh = opts.common.layerHeight;
+    const minMaxHeight = (opts.quantized.clusters - 1) * lh;
+    if (opts.common.maxHeight + 1e-6 < minMaxHeight) {
+      return `Single-nozzle stepped relief needs max height ≥ ${minMaxHeight.toFixed(2)} mm for ${opts.quantized.clusters} colours at ${lh} mm layers — otherwise two filaments would have to swap inside one print layer. Increase max height to at least ${minMaxHeight.toFixed(2)} mm, or reduce the cluster count.`;
+    }
+    return null;
+  }
+
   async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string): Promise<{ sessionId: string }> {
     const opts: ReliefOptions = {
       ...options,
@@ -1695,6 +1711,8 @@ async function main() {
       quantized: clampReliefQuantized(options.quantized),
       preprocess: clampReliefPreprocess(options.preprocess),
     };
+    const fitError = steppedReliefLayerFitError(opts);
+    if (fitError) throw new Error(fitError);
     const result = generateRelief(image, opts);
     return commitGeneratedRelief(result, opts, sourceName);
   }
@@ -1707,6 +1725,8 @@ async function main() {
       preprocess: clampReliefPreprocess(options.preprocess),
       mode: 'svg',
     };
+    const fitError = steppedReliefLayerFitError(opts);
+    if (fitError) throw new Error(fitError);
     const result = await generateReliefFromSvg(svgText, opts);
     return commitGeneratedRelief(result, opts, sourceName);
   }

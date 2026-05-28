@@ -229,6 +229,14 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     { value: 'single-nozzle', label: 'Single-nozzle (Z-banded)' },
     { value: 'multi-color', label: 'Multi-colour (AMS)' },
   ]);
+  // Inline hint: single-nozzle prints need one Z-band per cluster. If
+  // maxHeight < (clusters - 1) × layerHeight, two clusters land in the same
+  // band and the slicer has to swap mid-layer. Surface the required
+  // minimum so the user can fix it without having to read the error after
+  // hitting Create.
+  const layerFitHint = document.createElement('div');
+  layerFitHint.className = 'hidden col-span-2 text-[10px] leading-snug px-2 py-1.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-200';
+  tileSection.grid.appendChild(layerFitHint);
 
   // Holes editor — one row per hole with diameter + position inputs. Click
   // the preview canvas to drop a new hole at that point; "+ Add hole" drops
@@ -830,8 +838,9 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   function renderPreview(): void {
     // Keep the 3D preview in sync whenever the 2D one updates — the two
     // surface different facets (cluster map vs. realised mesh) of the same
-    // option set.
+    // option set. syncMode re-evaluates the painting-mode-fit hint too.
     schedule3DPreview();
+    syncMode();
     if (svgText) {
       // SVG mode: the source is shown in the thumbnail and each <path fill>
       // becomes its own crisp region — there's no luminance/cluster grid to
@@ -1010,7 +1019,20 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     // tiles paint their top 1:1 from the cluster map, so the choice is moot.
     const showPaintingMode = !isSvg && opts.mode === 'quantized' && opts.quantized.output === 'relief';
     paintingModeRow.classList.toggle('hidden', !showPaintingMode);
+    // Layer-fit hint — visible only when single-nozzle stepped relief would
+    // pile two clusters into one Z-band given the current settings. syncEnabled
+    // is what actually toggles createBtn.disabled; here we just paint the
+    // amber explainer.
+    const showFit = showPaintingMode && opts.quantized.paintingMode === 'single-nozzle';
+    const fits = layersFitForSingleNozzle();
+    layerFitHint.classList.toggle('hidden', !showFit || fits);
+    if (showFit && !fits) {
+      const lh = opts.common.layerHeight;
+      const minMaxHeight = (opts.quantized.clusters - 1) * lh;
+      layerFitHint.textContent = `Max height ${opts.common.maxHeight.toFixed(2)} mm is too low for ${opts.quantized.clusters} clusters at ${lh} mm layers — two filaments would have to swap inside one print layer. Raise max height to ≥ ${minMaxHeight.toFixed(2)} mm or reduce the cluster count.`;
+    }
     createBtn.textContent = currentCtaLabel();
+    syncEnabled();
 
     // Silhouette mode: the thumb becomes click-to-pick background. Cursor
     // hint + show the picked-colour indicator when set.
@@ -1047,11 +1069,21 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     }
   }
 
+  function layersFitForSingleNozzle(): boolean {
+    const isSvg = svgText !== null;
+    if (isSvg) return true; // SVG output is silhouette/flat, not stepped relief
+    if (opts.mode !== 'quantized') return true;
+    if (opts.quantized.output !== 'relief') return true;
+    if (opts.quantized.paintingMode !== 'single-nozzle') return true;
+    const minMaxHeight = (opts.quantized.clusters - 1) * opts.common.layerHeight;
+    return opts.common.maxHeight + 1e-6 >= minMaxHeight;
+  }
   function syncEnabled(): void {
     const ready = image !== null || svgText !== null;
-    createBtn.disabled = !ready || creating;
-    createBtn.classList.toggle('opacity-60', !ready);
-    createBtn.classList.toggle('cursor-default', !ready);
+    const fits = layersFitForSingleNozzle();
+    createBtn.disabled = !ready || creating || !fits;
+    createBtn.classList.toggle('opacity-60', !ready || !fits);
+    createBtn.classList.toggle('cursor-default', !ready || !fits);
     // AI assist tunes raster-clustering knobs; it has nothing to say about SVG.
     if (aiBtn) aiBtn.disabled = !ready || svgText !== null;
   }

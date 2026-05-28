@@ -472,6 +472,46 @@ test.describe('Relief Studio', () => {
     expect(res.sameImage).toBe(false);
   });
 
+  // Single-nozzle stepped reliefs need maxHeight ≥ (clusters - 1) × layerHeight
+  // so every cluster lands on its own Z-band. When it doesn't, two filaments
+  // would have to swap mid-layer (which prints as ugly stripes), so the API
+  // should refuse the import with an actionable error.
+  test('single-nozzle stepped relief refuses settings that would force a mid-layer swap', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+    const res = await page.evaluate(async () => {
+      const c = document.createElement('canvas');
+      c.width = 60; c.height = 60;
+      const x = c.getContext('2d')!;
+      // 5 colour stripes — requires ≥ 4 layers of vertical space.
+      const palette = ['#ff0000', '#ffaa00', '#ffff00', '#00aa00', '#0000ff'];
+      for (let i = 0; i < 5; i++) {
+        x.fillStyle = palette[i];
+        x.fillRect((60 / 5) * i, 0, 60 / 5, 60);
+      }
+      const src = c.toDataURL('image/png');
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      // maxHeight 0.4 mm at lh 0.2 mm gives 2 bands, far short of the 4 needed
+      // for 5 clusters.
+      const tooLow = await pw.importImageAsRelief({
+        src, mode: 'quantized',
+        options: { widthMm: 30, resolution: 60, maxHeight: 0.4, baseThickness: 0.4, layerHeight: 0.2 },
+        quantized: { output: 'relief', clusters: 5, paintingMode: 'single-nozzle' },
+      }) as { sessionId?: string; error?: string };
+      // Plenty of room at maxHeight = 1.0 mm.
+      const okFit = await pw.importImageAsRelief({
+        src, mode: 'quantized',
+        options: { widthMm: 30, resolution: 60, maxHeight: 1.0, baseThickness: 0.4, layerHeight: 0.2 },
+        quantized: { output: 'relief', clusters: 5, paintingMode: 'single-nozzle' },
+      }) as { sessionId?: string; error?: string };
+      return { tooLow, okFit };
+    });
+    expect(res.tooLow.error).toBeTruthy();
+    expect(res.tooLow.error).toContain('Single-nozzle stepped relief needs max height');
+    expect(res.okFit.error).toBeFalsy();
+    expect(res.okFit.sessionId).toBeTruthy();
+  });
+
   // Wave 3: chamferMm > 0 keeps the tile valid (same triangle count, since
   // chamfer reuses existing vertices) but raises the perimeter's z to the
   // chamfered level. Geometry stays manifold.

@@ -734,6 +734,15 @@ function buildSteppedReliefMesh(grid: HeightGrid, opts: ReliefOptions): { mesh: 
   // per Z-band strip + 2 triangles per strip. A wall is external iff the
   // neighbour cell is missing or shorter.
   const cellZ = (x: number, y: number): number => base + grid.heights[y * W + x];
+  // Slicers vary in how they assign triangles sitting EXACTLY on a layer
+  // boundary — some include the triangle in the upper layer, which picks up
+  // the WRONG band's filament. Shifting tops a hair below the boundary makes
+  // every top fall unambiguously in the band below, so a slicer at z=k*lh
+  // always sees the previous band's colour at z = k*lh - epsilon.
+  // Smaller than printer resolution (~0.1 mm), and a fraction of lh so it
+  // can't accidentally cross into the band below.
+  const Z_SHIFT = Math.min(lh * 0.05, 0.005);
+  const topZ = (x: number, y: number): number => cellZ(x, y) - Z_SHIFT;
   const neighborZ = (x: number, y: number): number => {
     if (x < 0 || y < 0 || x >= W || y >= H) return 0;
     return cellZ(x, y);
@@ -749,7 +758,7 @@ function buildSteppedReliefMesh(grid: HeightGrid, opts: ReliefOptions): { mesh: 
   let triCount = 0;
   for (let y = 0; y < H - 1; y++) {
     for (let x = 0; x < W - 1; x++) {
-      const z = cellZ(x, y);
+      const z = topZ(x, y);
       // Top + bottom: 8 verts + 4 tris.
       vertCount += 8;
       triCount += 4;
@@ -757,7 +766,7 @@ function buildSteppedReliefMesh(grid: HeightGrid, opts: ReliefOptions): { mesh: 
       // the neighbour is missing or shorter than this cell.
       const neighbours: [number, number][] = [[x, y - 1], [x + 1, y], [x, y + 1], [x - 1, y]];
       for (const [nx, ny] of neighbours) {
-        const nz = (nx < 0 || ny < 0 || nx >= W - 1 || ny >= H - 1) ? 0 : cellZ(nx, ny);
+        const nz = (nx < 0 || ny < 0 || nx >= W - 1 || ny >= H - 1) ? 0 : topZ(nx, ny);
         if (nz >= z) continue;
         const strips = stripsInRange(nz, z);
         vertCount += 4 * strips;
@@ -795,14 +804,15 @@ function buildSteppedReliefMesh(grid: HeightGrid, opts: ReliefOptions): { mesh: 
   // address them by id), then 4 bottom tris, then walls.
   for (let y = 0; y < H - 1; y++) {
     for (let x = 0; x < W - 1; x++) {
-      const z = cellZ(x, y);
+      const z = topZ(x, y);
       const px0 = -halfW + x * dx;
       const px1 = -halfW + (x + 1) * dx;
       const py0 = -halfH + y * dy;
       const py1 = -halfH + (y + 1) * dy;
 
-      // Top quad: 4 verts at z = cellZ. Top band is the one whose upper edge
-      // equals cellZ (snap-below).
+      // Top quad: 4 verts at z = cellZ - Z_SHIFT, so a slicer at z=k*lh sees
+      // this cell's top in the band BELOW the boundary (matching the
+      // filament that capped it in a single-nozzle swap print).
       const topBand = bandOf(z);
       const t00 = addVert(px0, py0, z);
       const t10 = addVert(px1, py0, z);
@@ -826,13 +836,13 @@ function buildSteppedReliefMesh(grid: HeightGrid, opts: ReliefOptions): { mesh: 
       // face outward.
       const sides: { x1: number; y1: number; x2: number; y2: number; outward: 'n' | 's' | 'e' | 'w'; nz: number }[] = [
         // -Y side (south): edge from (px0, py0) to (px1, py0)
-        { x1: px0, y1: py0, x2: px1, y2: py0, outward: 's', nz: (y - 1 < 0) ? 0 : cellZ(x, y - 1) },
+        { x1: px0, y1: py0, x2: px1, y2: py0, outward: 's', nz: (y - 1 < 0) ? 0 : topZ(x, y - 1) },
         // +X side (east): edge from (px1, py0) to (px1, py1)
-        { x1: px1, y1: py0, x2: px1, y2: py1, outward: 'e', nz: (x + 1 > W - 2) ? 0 : cellZ(x + 1, y) },
+        { x1: px1, y1: py0, x2: px1, y2: py1, outward: 'e', nz: (x + 1 > W - 2) ? 0 : topZ(x + 1, y) },
         // +Y side (north): edge from (px1, py1) to (px0, py1)
-        { x1: px1, y1: py1, x2: px0, y2: py1, outward: 'n', nz: (y + 1 > H - 2) ? 0 : cellZ(x, y + 1) },
+        { x1: px1, y1: py1, x2: px0, y2: py1, outward: 'n', nz: (y + 1 > H - 2) ? 0 : topZ(x, y + 1) },
         // -X side (west): edge from (px0, py1) to (px0, py0)
-        { x1: px0, y1: py1, x2: px0, y2: py0, outward: 'w', nz: (x - 1 < 0) ? 0 : cellZ(x - 1, y) },
+        { x1: px0, y1: py1, x2: px0, y2: py0, outward: 'w', nz: (x - 1 < 0) ? 0 : topZ(x - 1, y) },
       ];
       void neighborZ; // helper kept for readability
       for (const side of sides) {
