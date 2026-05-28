@@ -275,6 +275,40 @@ export class SdfNode {
     return opRepeat(this, p);
   }
 
+  /** Finite-count cousin of `.repeat()`. `counts` is [nx, ny, nz] —
+   *  the number of copies on each axis (integer >= 0; 0 disables). The
+   *  array centres on the origin and uses limit-modulo: points outside
+   *  the array snap to the nearest cell rather than carrying the tiling
+   *  infinitely. Bounds are finite even before any intersect. */
+  repeatN(counts: Vec3, periods: Vec3): SdfNode {
+    const n = assertNumberTuple(counts, 3, 'repeatN(counts)') as Vec3;
+    const p = assertNumberTuple(periods, 3, 'repeatN(periods)') as Vec3;
+    for (let i = 0; i < 3; i++) {
+      if (!Number.isInteger(n[i]) || n[i] < 0) {
+        throw new ValidationError(`repeatN(counts)[${i}]: must be a non-negative integer.`);
+      }
+      if (p[i] < 0) {
+        throw new ValidationError(`repeatN(periods)[${i}]: must be >= 0.`);
+      }
+    }
+    return opRepeatN(this, n, p);
+  }
+
+  /** Tile this node `count` times around an `axis` (full revolution).
+   *  Like `.polarArray`, but as a DOMAIN WARP: the child is evaluated
+   *  ONCE per sample instead of unioned N times — much cheaper for
+   *  large counts (gears, sun rays, fan blades). Optional `radius`
+   *  pushes the seed outward along the first perpendicular axis before
+   *  tiling, matching polarArray's convention. */
+  polarRepeat(count: number, opts: PolarRepeatOptions = {}): SdfNode {
+    assertNumber(count, 'polarRepeat(count)', { min: 1, integer: true });
+    const o = assertObject(opts, 'polarRepeat(opts)') ?? {};
+    assertNoUnknownKeys(o as Record<string, unknown>, POLAR_REPEAT_FIELDS, 'polarRepeat(opts)');
+    const axis = o.axis === undefined ? 'z' : assertEnum(o.axis, ['x', 'y', 'z'] as const, 'polarRepeat(axis)');
+    const radius = o.radius === undefined ? 0 : assertNumber(o.radius, 'polarRepeat(radius)', { min: 0 }) as number;
+    return opPolarRepeat(this, count as number, axis, radius);
+  }
+
   // ---- Labelling ------------------------------------------------------
 
   label(name: string): SdfNode {
@@ -733,29 +767,67 @@ function primLidinoid(cellSize: number, thickness: number): SdfNode {
   });
 }
 
-/** Gyroid whose wall thickness varies through space. `thicknessFn(x,y,z)`
- *  returns the local wall thickness at each point — e.g. thin at the top,
- *  thick at the base (bone-like density grading). Called millions of
- *  times during meshing, so keep it cheap. Infinite — intersect or pass
- *  bounds. */
-function primGradedGyroid(cellSize: number, thicknessFn: (x: number, y: number, z: number) => number): SdfNode {
-  assertNumber(cellSize, 'gradedGyroid(cellSize)', { min: 1e-6 });
-  assertFunction(thicknessFn, 'gradedGyroid(thicknessFn)');
+/** Shared builder for graded-thickness TPMS — the constant-thickness
+ *  cousin of `tpmsNode`. `thicknessFn(x,y,z)` returns the local wall
+ *  thickness in world units; called millions of times during meshing,
+ *  so keep it cheap. All graded TPMS are infinite — caller must
+ *  intersect with a finite shape or pass explicit `bounds` to .build(). */
+function gradedTpmsNode(
+  kind: string,
+  cellSize: number,
+  thicknessFn: (x: number, y: number, z: number) => number,
+  field: (kx: number, ky: number, kz: number) => number,
+): SdfNode {
+  assertNumber(cellSize, `${kind}(cellSize)`, { min: 1e-6 });
+  assertFunction(thicknessFn, `${kind}(thicknessFn)`);
   const k = (2 * Math.PI) / (cellSize as number);
   return new SdfNode({
-    kind: 'gradedGyroid',
+    kind,
     eval: (x, y, z) => {
-      const kx = k * x, ky = k * y, kz = k * z;
-      const g = Math.sin(kx) * Math.cos(ky) + Math.sin(ky) * Math.cos(kz) + Math.sin(kz) * Math.cos(kx);
+      const f = field(k * x, k * y, k * z);
       const t = thicknessFn(x, y, z);
-      // Guard against a user fn that returns a non-number — fall back to
-      // a bare surface (t=0) rather than poisoning the mesh with NaN.
+      // Guard against a user fn returning non-number — fall back to a
+      // bare surface (t=0) rather than poisoning the mesh with NaN.
       const tt = typeof t === 'number' && Number.isFinite(t) ? Math.max(t, 0) : 0;
-      return (Math.abs(g) - tt) / k;
+      return (Math.abs(f) - tt) / k;
     },
     bounds: INFINITE_BOUNDS,
     children: [],
     partitionable: false,
+  });
+}
+
+/** Gyroid whose wall thickness varies through space. */
+function primGradedGyroid(cellSize: number, thicknessFn: (x: number, y: number, z: number) => number): SdfNode {
+  return gradedTpmsNode('gradedGyroid', cellSize, thicknessFn, (x, y, z) =>
+    Math.sin(x) * Math.cos(y) + Math.sin(y) * Math.cos(z) + Math.sin(z) * Math.cos(x));
+}
+
+/** Schwarz Primitive with spatially-varying wall thickness. */
+function primGradedSchwarzP(cellSize: number, thicknessFn: (x: number, y: number, z: number) => number): SdfNode {
+  return gradedTpmsNode('gradedSchwarzP', cellSize, thicknessFn, (x, y, z) =>
+    Math.cos(x) + Math.cos(y) + Math.cos(z));
+}
+
+/** Schwarz Diamond with spatially-varying wall thickness. */
+function primGradedDiamond(cellSize: number, thicknessFn: (x: number, y: number, z: number) => number): SdfNode {
+  return gradedTpmsNode('gradedDiamond', cellSize, thicknessFn, (x, y, z) => {
+    const sx = Math.sin(x), cx = Math.cos(x);
+    const sy = Math.sin(y), cy = Math.cos(y);
+    const sz = Math.sin(z), cz = Math.cos(z);
+    return sx * sy * sz + sx * cy * cz + cx * sy * cz + cx * cy * sz;
+  });
+}
+
+/** Lidinoid with spatially-varying wall thickness. */
+function primGradedLidinoid(cellSize: number, thicknessFn: (x: number, y: number, z: number) => number): SdfNode {
+  return gradedTpmsNode('gradedLidinoid', cellSize, thicknessFn, (x, y, z) => {
+    const s2x = Math.sin(2 * x), s2y = Math.sin(2 * y), s2z = Math.sin(2 * z);
+    const c2x = Math.cos(2 * x), c2y = Math.cos(2 * y), c2z = Math.cos(2 * z);
+    const sx = Math.sin(x), sy = Math.sin(y), sz = Math.sin(z);
+    const cx = Math.cos(x), cy = Math.cos(y), cz = Math.cos(z);
+    return 0.5 * (s2x * cy * sz + s2y * cz * sx + s2z * cx * sy)
+      - 0.5 * (c2x * c2y + c2y * c2z + c2z * c2x) + 0.15;
   });
 }
 
@@ -1124,7 +1196,15 @@ export interface PolarArrayOptions {
   radius?: number;
 }
 
+export interface PolarRepeatOptions {
+  axis?: 'x' | 'y' | 'z';
+  /** Push the seed outward (along the first perpendicular axis) by this
+   *  much before tiling — same convention as polarArray. */
+  radius?: number;
+}
+
 const POLAR_FIELDS = ['axis', 'angle', 'radius'] as const;
+const POLAR_REPEAT_FIELDS = ['axis', 'radius'] as const;
 
 function opPolarArray(child: SdfNode, count: number, opts: PolarArrayOptions): SdfNode {
   assertNumber(count, 'polarArray(count)', { min: 1, integer: true });
@@ -1181,6 +1261,107 @@ function opRepeat(child: SdfNode, periods: Vec3): SdfNode {
   });
 }
 
+function opRepeatN(child: SdfNode, counts: Vec3, periods: Vec3): SdfNode {
+  // Finite-count cousin of opRepeat. Centred on the origin: N copies on
+  // each axis with N>0 span (N-1)*period. Points outside that span snap
+  // to the nearest cell (Inigo Quilez's `clampedRepeat` trick) — gives
+  // the boundary cells a "filled-in" distance field without leaking the
+  // tiling beyond the array. count=0 on an axis means "don't repeat
+  // there" (pass-through, same as opRepeat).
+  const [nx, ny, nz] = counts;
+  const [px, py, pz] = periods;
+  // Per-axis cell-index limits, centred on the origin:
+  // - N=1: only cell 0.
+  // - even N: cells [-N/2 .. N/2-1] (origin lies on the boundary between two cells).
+  // - odd  N: cells [-(N-1)/2 .. (N-1)/2] (origin is centred on a cell).
+  // This matches the visual "ring of N copies symmetric about the origin".
+  const cellMin = (n: number): number => n > 0 ? -Math.floor(n / 2) : 0;
+  const cellMax = (n: number): number => n > 0 ? Math.ceil(n / 2) - 1 : 0;
+  const lmod = (v: number, p: number, n: number): number => {
+    if (n <= 0 || p <= 0) return v;
+    if (n === 1) return v; // single cell at the origin — pass-through
+    const c = Math.max(cellMin(n), Math.min(cellMax(n), Math.round(v / p)));
+    return v - c * p;
+  };
+  const b = child._bounds;
+  const axisBounds = (n: number, p: number, lo: number, hi: number): [number, number] => {
+    if (n <= 0 || p <= 0 || n === 1) return [lo, hi];
+    return [cellMin(n) * p + lo, cellMax(n) * p + hi];
+  };
+  const [xLo, xHi] = axisBounds(nx, px, b.min[0], b.max[0]);
+  const [yLo, yHi] = axisBounds(ny, py, b.min[1], b.max[1]);
+  const [zLo, zHi] = axisBounds(nz, pz, b.min[2], b.max[2]);
+  return new SdfNode({
+    kind: 'repeatN',
+    eval: (x, y, z) => child._eval(lmod(x, px, nx), lmod(y, py, ny), lmod(z, pz, nz)),
+    bounds: { min: [xLo, yLo, zLo], max: [xHi, yHi, zHi] },
+    children: [child],
+    partitionable: false,
+  });
+}
+
+function opPolarRepeat(child: SdfNode, count: number, axis: 'x' | 'y' | 'z', radius: number): SdfNode {
+  // Domain-warp cousin of opPolarArray: instead of unioning N rotated
+  // copies, we fold the angular coordinate around `axis` into one
+  // sector and evaluate the child inside it. The result has perfect
+  // N-fold symmetry around the axis for any count, with no per-copy
+  // boolean cost (the child is evaluated ONCE per sample).
+  const n = count as number;
+  const sector = (2 * Math.PI) / n;
+  // Optionally pre-translate the child along the first perpendicular
+  // axis by `radius`, matching polarArray's convention. Lets you say
+  // "ring of teeth at radius R" without writing the translate.
+  let seed = child;
+  if (radius > 0) {
+    const push: Vec3 = axis === 'z' ? [radius, 0, 0] : axis === 'x' ? [0, radius, 0] : [0, 0, radius];
+    seed = opTranslate(child, push);
+  }
+  const b = seed._bounds;
+  // Reduce p's angular coordinate around `axis` into [-sector/2, sector/2),
+  // rotating back so the child sees a "first sector" query.
+  let evalFn: EvalFn;
+  if (axis === 'z') {
+    evalFn = (x, y, z) => {
+      const theta = Math.atan2(y, x);
+      const wrap = theta - sector * Math.round(theta / sector);
+      const r = Math.hypot(x, y);
+      return seed._eval(r * Math.cos(wrap), r * Math.sin(wrap), z);
+    };
+  } else if (axis === 'y') {
+    evalFn = (x, y, z) => {
+      const theta = Math.atan2(z, x);
+      const wrap = theta - sector * Math.round(theta / sector);
+      const r = Math.hypot(x, z);
+      return seed._eval(r * Math.cos(wrap), y, r * Math.sin(wrap));
+    };
+  } else {
+    evalFn = (x, y, z) => {
+      const theta = Math.atan2(z, y);
+      const wrap = theta - sector * Math.round(theta / sector);
+      const r = Math.hypot(y, z);
+      return seed._eval(x, r * Math.cos(wrap), r * Math.sin(wrap));
+    };
+  }
+  // Bounds: the polar fold produces N-fold symmetry around the axis.
+  // The radial extent equals the seed's max distance from the axis;
+  // the axial extent matches the seed's range along the axis.
+  let bounds: Box;
+  if (axis === 'z') {
+    const r = Math.max(Math.abs(b.min[0]), Math.abs(b.max[0]),
+                       Math.abs(b.min[1]), Math.abs(b.max[1]));
+    bounds = { min: [-r, -r, b.min[2]], max: [r, r, b.max[2]] };
+  } else if (axis === 'y') {
+    const r = Math.max(Math.abs(b.min[0]), Math.abs(b.max[0]),
+                       Math.abs(b.min[2]), Math.abs(b.max[2]));
+    bounds = { min: [-r, b.min[1], -r], max: [r, b.max[1], r] };
+  } else {
+    const r = Math.max(Math.abs(b.min[1]), Math.abs(b.max[1]),
+                       Math.abs(b.min[2]), Math.abs(b.max[2]));
+    bounds = { min: [b.min[0], -r, -r], max: [b.max[0], r, r] };
+  }
+  return new SdfNode({ kind: 'polarRepeat', eval: evalFn, bounds, children: [child], partitionable: false });
+}
+
 // --- Public namespace factory ------------------------------------------
 
 export interface SdfNamespace {
@@ -1197,6 +1378,9 @@ export interface SdfNamespace {
   diamond(cellSize: number, thickness: number): SdfNode;
   lidinoid(cellSize: number, thickness: number): SdfNode;
   gradedGyroid(cellSize: number, thicknessFn: (x: number, y: number, z: number) => number): SdfNode;
+  gradedSchwarzP(cellSize: number, thicknessFn: (x: number, y: number, z: number) => number): SdfNode;
+  gradedDiamond(cellSize: number, thicknessFn: (x: number, y: number, z: number) => number): SdfNode;
+  gradedLidinoid(cellSize: number, thicknessFn: (x: number, y: number, z: number) => number): SdfNode;
   union(...nodes: SdfNode[]): SdfNode;
   smoothUnion(a: SdfNode, b: SdfNode, k: number): SdfNode;
   smoothSubtract(a: SdfNode, b: SdfNode, k: number): SdfNode;
@@ -1248,6 +1432,9 @@ export function createSdfNamespace(Manifold: ManifoldClass, label: LabelFn): Sdf
     diamond: (cellSize, thickness) => bound(primDiamond(cellSize, thickness)),
     lidinoid: (cellSize, thickness) => bound(primLidinoid(cellSize, thickness)),
     gradedGyroid: (cellSize, thicknessFn) => bound(primGradedGyroid(cellSize, thicknessFn)),
+    gradedSchwarzP: (cellSize, thicknessFn) => bound(primGradedSchwarzP(cellSize, thicknessFn)),
+    gradedDiamond: (cellSize, thicknessFn) => bound(primGradedDiamond(cellSize, thicknessFn)),
+    gradedLidinoid: (cellSize, thicknessFn) => bound(primGradedLidinoid(cellSize, thicknessFn)),
     union: (...nodes) => {
       if (nodes.length === 0) throw new ValidationError('api.sdf.union(): need at least one SDF node.');
       let acc = assertSdfNode(nodes[0], 'union(nodes[0])');
@@ -1280,6 +1467,9 @@ export const __testables__ = {
   primDiamond,
   primLidinoid,
   primGradedGyroid,
+  primGradedSchwarzP,
+  primGradedDiamond,
+  primGradedLidinoid,
   opUnion,
   opSubtract,
   opIntersect,
@@ -1297,6 +1487,8 @@ export const __testables__ = {
   opTaper,
   opPolarArray,
   opRepeat,
+  opRepeatN,
+  opPolarRepeat,
   partitionByLabel,
   defaultEdgeLength,
   expandedMeshBounds,

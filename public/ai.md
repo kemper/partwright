@@ -451,10 +451,11 @@ CrossSection: square, circle, ofPolygons (CCW outer, CW holes),
 Curves: arc, bezier, naca4, polyline, loft, sweep, revolveAxis,
         fillet, chamfer, ringCopy, linearCopy, mirrorCopy   (see /ai/curves.md)
 sdf: sphere, ellipsoid, box, roundedBox, cylinder, roundedCylinder,
-     torus, capsule, gyroid/schwarzP/diamond/lidinoid/gradedGyroid (TPMS),
+     torus, capsule,
+     gyroid/schwarzP/diamond/lidinoid + their graded* variants (TPMS),
      union/subtract/intersect, smoothUnion/Subtract/Intersect,
      .translate/.rotate/.scale/.mirror, .shell/.round/.twist/.bend/.taper,
-     .polarArray/.mirrorPair/.repeat,
+     .polarArray/.polarRepeat/.mirrorPair/.repeat/.repeatN,
      .label(name), .build({edgeLength?, bounds?})        (see /ai/sdf.md)
 meshOps (flat on api): intersects, contains, pointInside, bbox,
                        componentBounds, volumeDelta,

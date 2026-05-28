@@ -295,4 +295,79 @@ test.describe('api.sdf', () => {
     expect(out.graded.status).toBe('ok');
     expect(out.graded.volume).toBeGreaterThan(0);
   });
+
+  // --- Follow-up #2: graded TPMS variants, repeatN, polarRepeat -------
+
+  test('gradedSchwarzP / gradedDiamond / gradedLidinoid all mesh in a box', async ({ page }) => {
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const run = (kind: string) => pw.runIsolated(`
+        const { sdf } = api;
+        return sdf.${kind}(6, (x, y, z) => 0.4 + 0.04 * (z + 7))
+          .intersect(sdf.box([14, 14, 14]))
+          .build({ edgeLength: 0.5 });
+      `);
+      return {
+        p: (await run('gradedSchwarzP')).geometryData,
+        d: (await run('gradedDiamond')).geometryData,
+        l: (await run('gradedLidinoid')).geometryData,
+      };
+    });
+    for (const stats of [out.p, out.d, out.l]) {
+      expect(stats.status).toBe('ok');
+      expect(stats.volume).toBeGreaterThan(20);
+      expect(stats.volume).toBeLessThan(2744);
+    }
+  });
+
+  test('repeatN produces a finite array without needing intersect', async ({ page }) => {
+    const stats = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const r = await pw.runIsolated(`
+        const { sdf } = api;
+        // 3x3 grid of spheres, centred on origin, NO intersect — bounds
+        // are finite already because repeatN limits the tiling.
+        return sdf.sphere(1).repeatN([3, 3, 0], [4, 4, 0]).build({ edgeLength: 0.4 });
+      `);
+      return r.geometryData;
+    });
+    expect(stats.status).toBe('ok');
+    // 9 spheres, separated by 4 with radius 1 → 9 disconnected components.
+    expect(stats.componentCount).toBe(9);
+    // bbox X+Y extents should be ~[-5, 5] each (cells at ±4 + sphere extent 1).
+    expect(stats.boundingBox.dimensions[0]).toBeGreaterThan(9.6);
+    expect(stats.boundingBox.dimensions[0]).toBeLessThan(10.4);
+    expect(stats.boundingBox.dimensions[1]).toBeGreaterThan(9.6);
+    expect(stats.boundingBox.dimensions[1]).toBeLessThan(10.4);
+  });
+
+  test('polarRepeat tiles a unit cell around an axis', async ({ page }) => {
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      // 12-fold ring of capsules around Z via polarRepeat — gear-like.
+      const ring = await pw.runIsolated(`
+        const { sdf } = api;
+        return sdf.capsule([4, 0, 0], [8, 0, 0], 0.8).polarRepeat(12, { axis: 'z' }).build({ edgeLength: 0.4 });
+      `);
+      // Same logical geometry via polarArray — should produce the same
+      // component count + comparable volume (the two paths emit
+      // identical iso-surfaces for matched parameters).
+      const array = await pw.runIsolated(`
+        const { sdf } = api;
+        return sdf.capsule([4, 0, 0], [8, 0, 0], 0.8).polarArray(12, { axis: 'z' }).build({ edgeLength: 0.4 });
+      `);
+      return { ring: ring.geometryData, array: array.geometryData };
+    });
+    expect(out.ring.status).toBe('ok');
+    expect(out.array.status).toBe('ok');
+    // Both should produce one connected ring of teeth.
+    expect(out.ring.componentCount).toBe(out.array.componentCount);
+    // Volumes should agree to within ~5% (same iso-surface, slightly
+    // different boundary cell sampling).
+    const vDiff = Math.abs(out.ring.volume - out.array.volume) / out.array.volume;
+    expect(vDiff).toBeLessThan(0.05);
+  });
 });

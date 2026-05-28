@@ -55,8 +55,11 @@ api.sdf.schwarzP(cellSize, thickness)   // blockier rounded-cubic cells
 api.sdf.diamond(cellSize, thickness)    // interpenetrating diamond channels (scaffold look)
 api.sdf.lidinoid(cellSize, thickness)   // woven, higher-genus
 
-// Spatially-varying wall thickness (bone-like density grading):
-api.sdf.gradedGyroid(cellSize, (x, y, z) => /* thickness here */)
+// Spatially-varying wall thickness — graded variant for every family:
+api.sdf.gradedGyroid  (cellSize, (x, y, z) => /* thickness here */)
+api.sdf.gradedSchwarzP(cellSize, (x, y, z) => /* thickness here */)
+api.sdf.gradedDiamond (cellSize, (x, y, z) => /* thickness here */)
+api.sdf.gradedLidinoid(cellSize, (x, y, z) => /* thickness here */)
 ```
 
 **Sizing `thickness`:** for a printable shell `thickness ≈ cellSize/6 to cellSize/3` is the sweet spot — thinner gets fragile/under-resolved, thicker fills in the pores. With the default `edgeLength` heuristic the four families look comparable at matched parameters; **lidinoid** is the resolution-hungriest because its double-frequency terms create smaller effective features at the same `cellSize` — drop `edgeLength` a touch if it looks jaggy.
@@ -130,15 +133,19 @@ Twist, bend, and taper warp space — the resulting field is a Lipschitz *approx
 
 ```js
 node.polarArray(count, { axis?, angle?, radius? })  // ring of rotated copies, unioned
+node.polarRepeat(count, { axis?, radius? })         // ring as a DOMAIN WARP — child evaluated ONCE per sample
 node.mirrorPair('x' | 'y' | 'z')                    // node ∪ its mirror — symmetric parts in one call
 node.repeat([px, py, pz])                           // infinite grid tiling (0 = no repeat on that axis)
+node.repeatN([nx, ny, nz], [px, py, pz])            // finite N-per-axis grid, centred on origin — bounds stay finite
 ```
 
 - **`polarArray`** mirrors the Manifold-side `circularPattern`: `axis` defaults to `'z'`, `angle` defaults to 360 (full ring, no duplicate at the seam; any other angle places endpoints inclusively), and `radius` pushes each copy outward along the first perpendicular axis before rotating. The whole array meshes as ONE region unless you label individual copies.
+- **`polarRepeat`** is the **domain-warp** cousin of `polarArray`: instead of unioning N rotated copies, it folds the angular coordinate around the axis into one sector, so the child SDF is evaluated **once** per sample rather than N times. Reach for it when `count` is large (gears, fan blades, sun rays, fluted columns) — `polarArray` is fine up to a dozen or so; past that, `polarRepeat` is noticeably cheaper and produces identical geometry. Only supports a full revolution (no `angle` arg); use `polarArray` for partial sweeps.
 - **`mirrorPair`** is just `node.union(node.mirror(axis))` — model one half, get the symmetric whole.
 - **`repeat`** is a **domain warp**: your input shape becomes the *unit cell* of an infinite tiling. So orient your input first — e.g. for a grid of holes through a Y-thin panel, `sdf.cylinder(1, 5).rotate(90, 0, 0).repeat([6, 0, 6])` (the rotate turns the Z-aligned cylinder into a Y-aligned hole, THEN repeat tiles it on the XZ grid). `repeat` is **infinite** on every axis with a non-zero period, exactly like the TPMS lattices — you must intersect it with a finite shape or pass explicit `bounds` to `.build()`. Use it for truss/peg arrays; use `gyroid`/`schwarzP`/etc. for smooth periodic surfaces.
+- **`repeatN([nx, ny, nz], [px, py, pz])`** is the finite-count cousin. `nx`/`ny`/`nz` are integer counts per axis (0 disables that axis); the array centres on the origin. Bounds are **finite** even before any intersect — no clipping required. Use it for "I want a 6×6 grid of holes" without the bookkeeping of sizing a clipping region. Points outside the array snap to the nearest boundary cell.
 
-**Ordering: intersect FIRST, then warp.** Domain warps (`twist`, `bend`, `taper`, `repeat`) don't shrink their input's bounds — only spatial booleans do. So `infinite.twist(...)` stays infinite (and `.build()` fails); `infinite.intersect(finiteBox).twist(...)` works because the intersect makes bounds finite before the twist tries to compute its sweep. Same applies to `repeat(...).twist(...)` — clip the lattice first, then warp.
+**Ordering: intersect FIRST, then warp.** Domain warps (`twist`, `bend`, `taper`, `repeat`, `polarRepeat`) don't shrink their input's bounds — only spatial booleans do. So `infinite.twist(...)` stays infinite (and `.build()` fails); `infinite.intersect(finiteBox).twist(...)` works because the intersect makes bounds finite before the twist tries to compute its sweep. Same applies to `repeat(...).twist(...)` — clip the lattice first, then warp. (`repeatN` is already finite, so this ordering rule doesn't apply to it.)
 
 ## Building (lowering to a Manifold)
 

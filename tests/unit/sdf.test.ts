@@ -737,3 +737,126 @@ describe('sdf twist with offset axis', () => {
     expect(oW).toBeGreaterThan(cW);
   });
 });
+
+// === Follow-up: graded TPMS variants, repeatN, polarRepeat =================
+
+describe('sdf graded TPMS variants', () => {
+  it('gradedSchwarzP / gradedDiamond / gradedLidinoid all infinite-bounded and finite-valued', () => {
+    const ramp = (_x: number, _y: number, z: number) => 0.3 + 0.05 * z;
+    const p = __testables__.primGradedSchwarzP(8, ramp);
+    const d = __testables__.primGradedDiamond(8, ramp);
+    const l = __testables__.primGradedLidinoid(8, ramp);
+    for (const n of [p, d, l]) {
+      expect(n.bounds().min[0]).toBe(-Infinity);
+      expect(Number.isFinite(n.evaluate(1, 2, 3))).toBe(true);
+    }
+  });
+  it('graded variants reject non-function thicknessFn and bad cellSize', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => __testables__.primGradedSchwarzP(8, 0.3 as any)).toThrow();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => __testables__.primGradedDiamond(0, ((): number => 0.3) as any)).toThrow();
+  });
+  it('non-number thicknessFn return tolerated (no NaN poisoning)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const n = __testables__.primGradedLidinoid(8, (() => undefined) as any);
+    expect(Number.isFinite(n.evaluate(1, 1, 1))).toBe(true);
+  });
+});
+
+describe('sdf repeatN (finite-count tiling)', () => {
+  const { opRepeatN } = __testables__;
+  it('finite bounds — even on axes the user repeats', () => {
+    const r = opRepeatN(primSphere(1), [3, 0, 0], [4, 0, 0]);
+    // 3 copies along X centred at cells -1, 0, 1 → X extent [-1-1, 1+1] = [-2, 2] times period 4 = [-5, 5].
+    expect(r.bounds().min[0]).toBe(-5);
+    expect(r.bounds().max[0]).toBe(5);
+    // Y/Z untouched.
+    expect(r.bounds().min[1]).toBe(-1);
+    expect(r.bounds().max[1]).toBe(1);
+  });
+  it('places copies on the right cells (odd count → centred on origin)', () => {
+    const r = opRepeatN(primSphere(1), [3, 0, 0], [4, 0, 0]);
+    // Cells at x = -4, 0, +4 → sphere centres there.
+    expect(r.evaluate(0, 0, 0)).toBeCloseTo(-1, 6);
+    expect(r.evaluate(4, 0, 0)).toBeCloseTo(-1, 6);
+    expect(r.evaluate(-4, 0, 0)).toBeCloseTo(-1, 6);
+  });
+  it('points well beyond the array snap to the nearest cell (filled boundary)', () => {
+    const r = opRepeatN(primSphere(1), [3, 0, 0], [4, 0, 0]);
+    // At x=20 (far past the last cell at x=4), should snap to that cell
+    // → distance ≈ 20 - 4 - 1 = 15 from the boundary sphere's surface.
+    expect(r.evaluate(20, 0, 0)).toBeCloseTo(15, 6);
+  });
+  it('count = 0 OR period = 0 on an axis means "pass-through"', () => {
+    const noRepeat = opRepeatN(primSphere(1), [0, 0, 0], [4, 0, 0]);
+    expect(noRepeat.evaluate(10, 0, 0)).toBeCloseTo(9, 6); // same as bare sphere
+    const noPeriod = opRepeatN(primSphere(1), [3, 0, 0], [0, 0, 0]);
+    expect(noPeriod.evaluate(10, 0, 0)).toBeCloseTo(9, 6); // same as bare sphere
+  });
+  it('count = 1 is a single cell at the origin (no repeat)', () => {
+    const single = opRepeatN(primSphere(1), [1, 0, 0], [4, 0, 0]);
+    // Only one cell at x=0 — far points get the bare-sphere distance.
+    expect(single.evaluate(10, 0, 0)).toBeCloseTo(9, 6);
+    expect(single.evaluate(4, 0, 0)).toBeCloseTo(3, 6);
+  });
+  it('rejects non-integer or negative counts and negative periods', () => {
+    expect(() => primSphere(1).repeatN([2.5, 0, 0], [3, 0, 0])).toThrow();
+    expect(() => primSphere(1).repeatN([-1, 0, 0], [3, 0, 0])).toThrow();
+    expect(() => primSphere(1).repeatN([2, 0, 0], [-1, 0, 0])).toThrow();
+  });
+});
+
+describe('sdf polarRepeat (domain-warp ring)', () => {
+  const { opPolarRepeat } = __testables__;
+  it('full revolution: a copy lands at every sector boundary', () => {
+    // Capsule arm along +X — polarRepeat with count=4 → arms at 0/90/180/270.
+    const arm = primCapsule([3, 0, 0], [8, 0, 0], 1);
+    const tile = opPolarRepeat(arm, 4, 'z', 0);
+    // Endpoint centres at (8,0), (0,8), (-8,0), (0,-8) all yield ≈ -1.
+    expect(tile.evaluate(8, 0, 0)).toBeCloseTo(-1, 6);
+    expect(tile.evaluate(0, 8, 0)).toBeCloseTo(-1, 6);
+    expect(tile.evaluate(-8, 0, 0)).toBeCloseTo(-1, 6);
+    expect(tile.evaluate(0, -8, 0)).toBeCloseTo(-1, 6);
+  });
+  it('result has N-fold symmetry around the axis', () => {
+    // Off-centre primitive: rotating any point by sector should give same
+    // field. Compute the rotated samples exactly so the test isn't bottlenecked
+    // by hand-rounded coordinates.
+    const seed = primSphere(2).translate(6, 0, 0);
+    const ring = opPolarRepeat(seed, 6, 'z', 0);
+    const samples: Array<[number, number]> = [];
+    for (let i = 0; i < 6; i++) {
+      const a = (i * Math.PI) / 3;
+      samples.push([6 * Math.cos(a), 6 * Math.sin(a)]);
+    }
+    const values = samples.map(([x, y]) => ring.evaluate(x, y, 0));
+    // All six values should be ≈ equal (60° apart on a 6-fold polar repeat).
+    for (let i = 1; i < values.length; i++) {
+      expect(values[i]).toBeCloseTo(values[0], 8);
+    }
+  });
+  it('radius option pushes the seed outward before tiling', () => {
+    // Centred sphere + radius=10 → ring of spheres at radius 10 from Z axis.
+    const ring = opPolarRepeat(primSphere(2), 8, 'z', 10);
+    // (10, 0, 0) is on a sphere centre → -2.
+    expect(ring.evaluate(10, 0, 0)).toBeCloseTo(-2, 6);
+  });
+  it('bounds: radial extent = max child distance from axis, axial extent preserved', () => {
+    const seed = primSphere(2).translate(6, 0, 0);
+    const ring = opPolarRepeat(seed, 8, 'z', 0);
+    // Seed bbox is [4,8]x[-2,2]x[-2,2]; radial extent = max(|4|, |8|, |2|) = 8.
+    expect(ring.bounds().min[0]).toBe(-8);
+    expect(ring.bounds().max[0]).toBe(8);
+    expect(ring.bounds().min[2]).toBe(-2);
+    expect(ring.bounds().max[2]).toBe(2);
+  });
+  it('rejects count < 1 or non-integer', () => {
+    expect(() => primSphere(1).polarRepeat(0)).toThrow();
+    expect(() => primSphere(1).polarRepeat(3.5)).toThrow();
+  });
+  it('rejects unknown options key (typo guard)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => primSphere(1).polarRepeat(6, { spread: 10 } as any)).toThrow();
+  });
+});
