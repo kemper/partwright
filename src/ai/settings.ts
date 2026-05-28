@@ -17,6 +17,12 @@ export interface AiSettings {
    *  the AI surface is discoverable; persists the user's choice thereafter, so
    *  once they close it it stays closed on reload. */
   drawerOpen: boolean;
+  /** Whether the code editor pane is collapsed. `null` means "no explicit
+   *  preference yet" — layout.ts then defaults it to match `drawerOpen` so a
+   *  first-time visitor with the AI panel up doesn't see two competing surfaces
+   *  in the editor. Once the user clicks "Hide code" / "Show code" the choice
+   *  is persisted and respected on every subsequent load. */
+  editorCollapsed: boolean | null;
   /** Default for new sessions before the user has touched the toggle bar. */
   autoCompactMode: 'off' | 'conservative' | 'standard' | 'aggressive';
   /** User-overridden system prompts. `null` means "use the built-in default
@@ -98,9 +104,11 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
   standard: {
     vision: { views: true, resolution: 'medium', angles: 'auto' },
     // Paint off by default — color regions lock the editor and are easy
-    // for the model to mis-target. Users who want AI-driven painting
-    // can flip the Paint pill on, or pick the Full preset.
-    scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: true },
+    // for the model to mis-target. Notes off by default — the chat
+    // transcript already records the reasoning, so each addSessionNote
+    // call is a redundant tool round-trip. Users who want either can
+    // flip the pill on, or pick the Full preset.
+    scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: false },
     autoRetry: 1,
     maxIterations: 'high',
     maxSpend: 'medium',
@@ -130,6 +138,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   preset: 'standard',
   toggles: DEFAULT_TOGGLES,
   drawerOpen: true,
+  editorCollapsed: null,
   autoCompactMode: 'off',
   systemPromptOverrides: { anthropic: null, local: null, openai: null, gemini: null },
   customLocalModels: [],
@@ -390,6 +399,7 @@ interface LegacyAiSettings {
   preset?: Preset;
   autoCompactMode?: AiSettings['autoCompactMode'];
   drawerOpen?: boolean;
+  editorCollapsed?: boolean | null;
   toggles?: Partial<ChatToggles> & { model?: ModelId };
   systemPromptOverrides?: Partial<AiSettings['systemPromptOverrides']>;
   customLocalModels?: CustomLocalModel[];
@@ -441,6 +451,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
     preset: partial.preset ?? DEFAULT_SETTINGS.preset,
     autoCompactMode: partial.autoCompactMode ?? DEFAULT_SETTINGS.autoCompactMode,
     drawerOpen: partial.drawerOpen ?? DEFAULT_SETTINGS.drawerOpen,
+    editorCollapsed: typeof partial.editorCollapsed === 'boolean' ? partial.editorCollapsed : null,
     toggles: {
       vision: { ...DEFAULT_SETTINGS.toggles.vision, ...(tgls.vision ?? {}) },
       scope: { ...DEFAULT_SETTINGS.toggles.scope, ...(tgls.scope ?? {}) },

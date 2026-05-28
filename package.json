@@ -11,6 +11,7 @@
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "vitest run",
     "test:e2e": "playwright test",
+    "generate:catalog": "playwright test --config=playwright.generators.config.ts",
     "refresh-models": "node scripts/refreshModelsSnapshot.mjs"
   },
   "devDependencies": {

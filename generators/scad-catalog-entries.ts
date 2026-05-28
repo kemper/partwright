@@ -1,11 +1,16 @@
 // One-shot generator for new SCAD catalog entries.
 //
-// Differs from generate-catalog-entries.spec.ts in that it switches the
-// engine to 'scad' before running each example. SCAD WASM is heavy (~10MB)
-// and the first compile takes ~3s; we use serial+page-per-test for isolation
-// and wait for the engine flip to settle before issuing pw.run().
+// Differs from catalog-entries.ts in that it switches the engine to
+// 'scad' before running each example. SCAD WASM is heavy (~10MB) and
+// the first compile takes ~3s; we use serial+page-per-test for
+// isolation and wait for the engine flip to settle before issuing
+// pw.run().
 //
-// Run with: npx playwright test tests/generate-scad-catalog-entries.spec.ts
+// Lives outside `tests/` so the default `npm run test:e2e` (which uses
+// playwright.config.ts → testDir: './tests') never picks it up.
+//
+// Run with:
+//   npm run generate:catalog -- generators/scad-catalog-entries.ts
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -70,9 +75,12 @@ test.describe.serial('generate SCAD catalog entries', () => {
   });
 
   // SCAD WASM (~10MB) + BOSL2 import + threaded-rod / gear-tooth math can
-  // easily push a single compile past the default 30s timeout. Give each
-  // generation a generous 180s.
-  test.setTimeout(180_000);
+  // easily push a single compile past the default 30s timeout. The engine
+  // itself allots 180s for a SCAD execute (see EXECUTE_TIMEOUT_MS), and the
+  // test does goto + waitForEngine + setActiveLanguage + thumbnail/export on
+  // top of that, so give the test a comfortable margin above the engine
+  // ceiling rather than racing it.
+  test.setTimeout(300_000);
 
   for (const entry of newEntries) {
     test(`build ${entry.catalogFile}`, async ({ page }) => {
@@ -85,26 +93,22 @@ test.describe.serial('generate SCAD catalog entries', () => {
       await page.goto('/editor');
       await waitForEngine(page);
 
-      // Switch to SCAD via the language toggle. SCAD WASM is heavy so this
-      // first switch can take ~10s on a fresh page. Confirm any dialog that
-      // pops up about discarding state.
-      page.on('dialog', d => d.accept());
-      await page.locator('#lang-toggle button:has-text("SCAD")').click();
-      // Re-wait for partwright after the engine swap, then give SCAD a moment
-      // to spin up before issuing the first compile.
-      await page.waitForFunction(
-        () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
-        { timeout: 30_000 },
-      );
-      await page.waitForTimeout(2_000);
-
+      // Switch to SCAD via the partwright API rather than the UI toggle so the
+      // active language flip and the SCAD-WASM init are deterministically
+      // awaited before runAndSave fires. The toolbar click hands off to an
+      // async handler that isn't awaited by Playwright; on a slow CI runner
+      // the wait that followed wasn't long enough for activeLanguage to land
+      // on 'scad', and runAndSave then executed under the manifold-js 60s
+      // timeout ceiling against a BOSL2 compile that needs ~50s on its own.
       const payload = await page.evaluate(async ({ code, name }) => {
         const pw = (window as unknown as { partwright: {
-          createSession: (n: string, lang?: string) => Promise<unknown>;
+          setActiveLanguage: (lang: 'manifold-js' | 'scad') => Promise<void>;
+          createSession: (n: string) => Promise<unknown>;
           runAndSave: (c: string, label?: string, a?: unknown) => Promise<unknown>;
           exportSessionData: (id?: string, opts?: { includeThumbnails?: boolean }) => Promise<{ data?: unknown; error?: string }>;
         } }).partwright;
-        await pw.createSession(name, 'scad');
+        await pw.setActiveLanguage('scad');
+        await pw.createSession(name);
         // Don't enforce maxComponents — some SCAD models in this batch are
         // intentionally multi-part (hex bolt + nut + washer is 3 pieces laid
         // out side-by-side, the gear pair has 2 free gears on a plate, etc.).

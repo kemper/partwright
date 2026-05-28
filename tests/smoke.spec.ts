@@ -88,6 +88,30 @@ test.describe('AI chat panel', () => {
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toHaveCount(0);
   });
 
+  test('code pane defaults hidden when the AI drawer is open, and respects an explicit Show code', async ({ page }) => {
+    // First visit: drawer opens by default, so the code pane should NOT
+    // compete with it for screen real estate. The "▶ Show code" expand
+    // button only shows when the editor group is collapsed.
+    await page.goto('/editor');
+    await page.waitForSelector('#btn-ai');
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
+    await expect(page.locator('#ai-panel')).toBeVisible();
+    const expandBtn = page.locator('button:has-text("▶ Show code")');
+    await expect(expandBtn).toBeVisible();
+
+    // User opts in to the code pane; that choice must survive a reload even
+    // though the AI drawer is still open.
+    await expandBtn.click();
+    await expect(expandBtn).toBeHidden();
+    await expect(page.locator('.cm-content')).toBeVisible();
+
+    await page.reload();
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
+    await expect(page.locator('#ai-panel')).toBeVisible();
+    await expect(page.locator('button:has-text("▶ Show code")')).toBeHidden();
+    await expect(page.locator('.cm-content')).toBeVisible();
+  });
+
   test('drawer close state persists across reload', async ({ page }) => {
     // The drawer opens by default, but the user's choice is remembered: once
     // they close it, the stored drawerOpen=false keeps it closed on reload.

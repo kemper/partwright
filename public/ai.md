@@ -53,7 +53,9 @@ await partwright.setActiveLanguage('scad')
 await partwright.setActiveLanguage('manifold-js')
 ```
 
-Selecting a SCAD example from the toolbar dropdown auto-switches to OpenSCAD mode. Session versions remember which engine was used.
+Switching is non-destructive. Your in-progress code in the previous language is stashed as a per-session draft and restored when you switch back — both languages stay live until the session is deleted. Saved versions are not touched; each version remembers the language it was authored in, and navigating to one auto-swaps the engine. A single session can hold mixed manifold-js + SCAD versions.
+
+Selecting a SCAD example from the toolbar dropdown auto-switches to OpenSCAD mode.
 
 ## What do I do for X? (verb decision tree)
 
@@ -168,7 +170,7 @@ partwright.sliceAtZ(z)         // Cross-section -> {polygons, svg, boundingBox, 
 partwright.getBoundingBox()    // -> {min:[x,y,z], max:[x,y,z]}
 partwright.getModule()         // Raw manifold-3d WASM module
 partwright.getActiveLanguage() // -> 'manifold-js' or 'scad'
-await partwright.setActiveLanguage(lang) // Switch engine + editor mode ('manifold-js' | 'scad')
+await partwright.setActiveLanguage(lang) // Swap engine ('manifold-js' | 'scad'); stashes the prev draft, restores the other
 partwright.toggleClip(on?)     // Toggle 3D clipping plane -> {enabled, z, min, max}
 partwright.setClipZ(z)         // Set clip height -> {enabled, z, min, max}
 partwright.getClipState()      // -> {enabled, z, min, max}
