@@ -283,14 +283,20 @@ function wrapInner(
       if (typeof radius !== 'number' || !isFinite(radius) || radius <= 0) {
         throw new Error('BREP.fillet(radius): radius must be a positive number.');
       }
+      // Pre-check: when a filter is given, ask the underlying EdgeFinder how
+      // many edges it actually matches before we hand the work to OCCT. A
+      // zero-match filter and a too-large radius both surface as the same
+      // opaque "no edge selected" message otherwise, and three agents in a
+      // row burned iterations against that conflation.
+      if (filter) {
+        const matched = countMatchedEdges(shape, filter);
+        if (matched === 0) {
+          throw new Error(buildNoEdgeMatchError(shape, filter, 'fillet'));
+        }
+      }
       try {
         const finder = filter ? buildEdgeFinder(filter) : undefined;
         const next = shape.clone().fillet(radius, finder);
-        // Fillet preserves most input faces (possibly remeshed); the new
-        // rounded surfaces have fresh hashcodes and no label. Survivor
-        // propagation is hashcode-equality. Spatial signatures pass through
-        // unchanged — the surfaces' world-space positions are preserved by
-        // fillet's local-rounding character.
         return wrap(next, propagateByHashSurvivor(next, faceLabels), labelSignatures);
       } catch (e) {
         throw new Error(formatOcctError(e, 'fillet', { radius, hadFilter: !!filter }));
@@ -299,6 +305,12 @@ function wrapInner(
     chamfer(distance: number, filter?: EdgeFilter) {
       if (typeof distance !== 'number' || !isFinite(distance) || distance <= 0) {
         throw new Error('BREP.chamfer(distance): distance must be a positive number.');
+      }
+      if (filter) {
+        const matched = countMatchedEdges(shape, filter);
+        if (matched === 0) {
+          throw new Error(buildNoEdgeMatchError(shape, filter, 'chamfer'));
+        }
       }
       try {
         const finder = filter ? buildEdgeFinder(filter) : undefined;
@@ -560,6 +572,151 @@ Hints:
   }
   return `BREP.${op} failed: ${base}
 Hint: degenerate or non-intersecting inputs are the usual cause — verify both shapes are solids and that they overlap (for fuse/intersect) or that the cutter is inside the body (for cut).`;
+}
+
+/** Per-edge geometric summary returned by `BREP.listEdges`. World-space.
+ *  Centroid is the world-space midpoint of the edge's start/end points
+ *  (not the arc midpoint — adequate for the common debug case of "which
+ *  edge am I looking at?"). */
+export interface EdgeInfo {
+  /** Stable index within this shape's edge enumeration (TopExp order).
+   *  Not portable across operations — only meaningful for the snapshot
+   *  this list was taken from. */
+  index: number;
+  /** [x, y, z] world-space midpoint between the edge's endpoints. */
+  midpoint: [number, number, number];
+  /** Unit direction from start to end. For closed circular edges (no
+   *  start≠end), this is `[NaN, NaN, NaN]` and `isClosed` is true. */
+  direction: [number, number, number];
+  /** Axis-aligned bounding box of the edge, [minX,minY,minZ,maxX,maxY,maxZ]. */
+  bbox: [number, number, number, number, number, number];
+  /** Straight-line distance from start to end. For closed/curved edges
+   *  this underestimates arc length; the `bbox` carries the spatial
+   *  extent. */
+  chord: number;
+  /** True if the edge is a closed loop (e.g. a circular rim where
+   *  start === end). */
+  isClosed: boolean;
+}
+
+/** Snapshot every edge of `shape` (optionally narrowed by a filter) into a
+ *  small debug-friendly array. Use this to figure out why a filter isn't
+ *  matching what you expected — the saved iterations across multiple
+ *  agents' fillet attempts justified shipping this as a first-class
+ *  surface. */
+export function listShapeEdges(shape: AnyShape, filter?: EdgeFilter): EdgeInfo[] {
+  if (!replicadModule) throw new Error('BREP runtime not loaded — call ensureBrepLoaded() first.');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const allEdges: any[] = shape.edges;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let edges: any[];
+  if (filter) {
+    const { EdgeFinder } = replicadModule;
+    const finder = buildEdgeFinder(filter)(new EdgeFinder());
+    edges = finder.find(shape);
+  } else {
+    edges = allEdges;
+  }
+  const out: EdgeInfo[] = [];
+  for (let i = 0; i < edges.length; i++) {
+    const edge = edges[i];
+    const bb = edge.boundingBox;
+    let midpoint: [number, number, number] = [0, 0, 0];
+    let direction: [number, number, number] = [NaN, NaN, NaN];
+    let chord = 0;
+    let isClosed = false;
+    try {
+      const start = edge.startPoint;
+      const end = edge.endPoint;
+      const sx = start.x, sy = start.y, sz = start.z;
+      const ex = end.x, ey = end.y, ez = end.z;
+      midpoint = [(sx + ex) * 0.5, (sy + ey) * 0.5, (sz + ez) * 0.5];
+      const dx = ex - sx, dy = ey - sy, dz = ez - sz;
+      chord = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (chord > 1e-9) {
+        direction = [dx / chord, dy / chord, dz / chord];
+      } else {
+        isClosed = true;
+        // For closed loops, fall back to bbox centre for midpoint so the
+        // caller still gets a usable spatial cue.
+        midpoint = [(bb.bounds[0][0] + bb.bounds[1][0]) * 0.5,
+                    (bb.bounds[0][1] + bb.bounds[1][1]) * 0.5,
+                    (bb.bounds[0][2] + bb.bounds[1][2]) * 0.5];
+      }
+      try { start.delete?.(); } catch { /* not all replicad builds emit deletable points */ }
+      try { end.delete?.(); } catch { /* not all replicad builds emit deletable points */ }
+    } catch {
+      // Degenerate edge — emit a stub so the index sequence stays intact.
+    }
+    out.push({
+      index: i,
+      midpoint,
+      direction,
+      bbox: [bb.bounds[0][0], bb.bounds[0][1], bb.bounds[0][2], bb.bounds[1][0], bb.bounds[1][1], bb.bounds[1][2]],
+      chord,
+      isClosed,
+    });
+  }
+  return out;
+}
+
+function countMatchedEdges(shape: AnyShape, filter: EdgeFilter): number {
+  if (!replicadModule) return 0;
+  try {
+    const { EdgeFinder } = replicadModule;
+    const finder = buildEdgeFinder(filter)(new EdgeFinder());
+    return finder.find(shape).length;
+  } catch {
+    // If the count probe itself throws, swallow and let the real fillet/chamfer
+    // call surface the underlying error — better than a misleading "0 matches".
+    return -1;
+  }
+}
+
+/** Build a focused "your filter matched zero edges" error message that
+ *  names the filter, summarises the shape's edge distribution, and points
+ *  at the documented workaround for the inBox-on-box-edges defect. */
+function buildNoEdgeMatchError(shape: AnyShape, filter: EdgeFilter, op: 'fillet' | 'chamfer'): string {
+  const edges = listShapeEdges(shape);
+  const total = edges.length;
+  const summary = summariseEdgeOrientations(edges);
+  const filterStr = JSON.stringify(filter);
+  const hasBoxFilter =
+    filter.minX !== undefined || filter.maxX !== undefined ||
+    filter.minY !== undefined || filter.maxY !== undefined ||
+    filter.minZ !== undefined || filter.maxZ !== undefined;
+  const inBoxHint = hasBoxFilter
+    ? '\n  • inBox-style filters (minZ/maxZ/minX/...) are unreliable on box-axis-aligned edges of a `BREP.box` because OCCT\'s containment test leaves planar coincident edges JUST outside tolerance. Workaround: pair the box bounds with `parallelToPlane` or `inDirection` to also require the edge orientation match. See replicad.md "Common errors".'
+    : '';
+  return `BREP.${op}: filter ${filterStr} matched 0 of ${total} edges; nothing to ${op}.
+Edge summary on this shape: ${summary}
+Hints:
+  • Call BREP.listEdges(shape, filter) (no fillet) to see exactly which edges your filter is/isn't catching, with their bbox + midpoint + direction. Iterate from there.${inBoxHint}
+  • Loosen the bounds (e.g. widen the maxZ window to 0.1 instead of 0.001) — bbox tolerances in OCCT can be lax on planar coincident edges.`;
+}
+
+/** Bucket a shape's edges by primary axis alignment for a short error
+ *  hint. Not a precise classifier — just enough to tell the caller "you
+ *  said vertical edges but this shape only has horizontal rings". */
+function summariseEdgeOrientations(edges: EdgeInfo[]): string {
+  if (edges.length === 0) return '(no edges)';
+  let xParallel = 0, yParallel = 0, zParallel = 0, other = 0, closed = 0;
+  for (const e of edges) {
+    if (e.isClosed) { closed++; continue; }
+    const [dx, dy, dz] = e.direction;
+    const ax = Math.abs(dx), ay = Math.abs(dy), az = Math.abs(dz);
+    if (ax > 0.99) xParallel++;
+    else if (ay > 0.99) yParallel++;
+    else if (az > 0.99) zParallel++;
+    else other++;
+  }
+  const parts: string[] = [];
+  if (xParallel) parts.push(`${xParallel} X-parallel`);
+  if (yParallel) parts.push(`${yParallel} Y-parallel`);
+  if (zParallel) parts.push(`${zParallel} Z-parallel`);
+  if (other) parts.push(`${other} oblique/curved`);
+  if (closed) parts.push(`${closed} closed-loop`);
+  return parts.join(', ') || '(only degenerate edges)';
 }
 
 /** Map our friendly `EdgeFilter` object onto a replicad EdgeFinder callback.
@@ -851,8 +1008,78 @@ export interface BrepNamespace {
   toMesh(shape: BrepShape, opts?: { tolerance?: number; angularTolerance?: number }): BrepMesh;
   /** Convenience helper — same as `shape.toManifold(Manifold, opts)`. */
   toManifold(shape: BrepShape, Manifold: ManifoldModule, opts?: { tolerance?: number; angularTolerance?: number }): unknown;
+  /** Snapshot the shape's edges (optionally narrowed by an EdgeFilter) into
+   *  a debug list of `{index, midpoint, direction, bbox, chord, isClosed}`.
+   *  Call before a tricky fillet/chamfer to confirm your filter is picking
+   *  the right edges — saves trial-and-error against the silent
+   *  "0 matched" failure mode. */
+  listEdges(shape: BrepShape, filter?: EdgeFilter): EdgeInfo[];
+  /** N copies of `shape` arranged on a circle, fused into one solid.
+   *  `count` ≥ 1, `radius` ≥ 0. Each copy is the original `shape`
+   *  translated to (cos θ × radius, sin θ × radius) at θ = 2π·i / count,
+   *  then rotated to face outward by default. Use this for bolt circles,
+   *  fan blades, gear teeth, etc.
+   *
+   *  The `axis` defaults to `[0,0,1]` (rotation about Z). To pattern in
+   *  the XZ plane use `axis: [0,1,0]`; for YZ use `[1,0,0]`. */
+  circularPattern(shape: BrepShape, count: number, opts: {
+    radius: number;
+    axis?: [number, number, number];
+    /** When true, also rotate each copy so its +X faces outward. Defaults
+     *  to true — set false if your shape is already rotationally symmetric
+     *  around its own +Z. */
+    rotateCopies?: boolean;
+    /** Sweep angle in degrees. Defaults to 360 (full circle, evenly spaced).
+     *  Pass 90 + count: 5 to fit five copies across a 90° arc. */
+    angle?: number;
+  }): BrepShape;
+  /** N copies of `shape` arranged on a straight line, fused into one
+   *  solid. The first copy is at the origin (unmoved); the i-th copy is
+   *  translated by `i * step` along `axis` (default `[1,0,0]`). Use for
+   *  vent slots, button rows, gear racks. */
+  linearPattern(shape: BrepShape, count: number, opts: {
+    step: number;
+    axis?: [number, number, number];
+  }): BrepShape;
+  /** Truncated cone (frustum) with radius `rBottom` at z=0 tapering to
+   *  `rTop` at z=h. Set either radius to zero for a full cone. */
+  cone(rBottom: number, rTop: number, h: number): BrepShape;
+  /** Donut with the given major (centre-of-ring to centre-of-tube)
+   *  and minor (tube) radius. Axis along Z, lying in the XY plane. */
+  torus(majorRadius: number, minorRadius: number): BrepShape;
+  /** Revolve a 2D polygon profile (in the XZ plane, the X axis being the
+   *  radial direction from the Z rotation axis) into a solid of
+   *  revolution. `profile` is an array of `[x, z]` points; the polygon
+   *  is closed automatically. All x ≥ 0; touching the Z axis (x=0) is
+   *  allowed and produces a closed solid (no central hole). Use this for
+   *  V-grooves, vases, flanges with non-trivial cross-sections, and any
+   *  rotational shape `cylinder`/`cone`/`sphere` can't express. */
+  revolve(profile: Array<[number, number]>): BrepShape;
+  /** Hollow the solid by removing the face(s) that match `openFaceFilter`
+   *  and leaving a wall of `thickness` units. Without a filter, hollows
+   *  with no openings (closed shell). The face filter shape mirrors
+   *  EdgeFilter loosely: `{minZ}`, `{maxZ}`, `{topZ: true}`,
+   *  `{bottomZ: true}` etc. */
+  shell(shape: BrepShape, thickness: number, openFaceFilter?: FaceFilter): BrepShape;
   /** Identity check used by sandbox runtime and engines. */
   readonly _isBrep: true;
+}
+
+/** Friendly face filter — analogous to EdgeFilter but for the `shell` op.
+ *  Picks faces by their bbox or normal direction. Used to name "the top
+ *  face" / "the bottom face" / "the +X face" of a box-like solid. */
+export interface FaceFilter {
+  /** Pick faces whose centroid Z is ≥ minZ. */
+  minZ?: number;
+  /** Pick faces whose centroid Z is ≤ maxZ. */
+  maxZ?: number;
+  /** Shortcut: pick THE single face with the largest +Z (the top face).
+   *  Mutually exclusive with `bottomZ`. */
+  topZ?: boolean;
+  /** Shortcut: pick THE single face with the smallest -Z (the bottom face). */
+  bottomZ?: boolean;
+  /** Pick faces whose outward normal is within 15° of this axis. */
+  normalAxis?: [number, number, number];
 }
 
 function reduceShapes(
@@ -1001,7 +1228,7 @@ export function getBrepNamespace(): BrepNamespace | null {
 /** Build the namespace. Requires `ensureBrepLoaded()` to have completed. */
 export function createBrepNamespace(): BrepNamespace {
   if (!replicadModule) throw new Error('BREP runtime not loaded — call ensureBrepLoaded() first.');
-  const { makeBaseBox, makeCylinder, makeSphere } = replicadModule;
+  const { makeBaseBox, makeCylinder, makeSphere, drawCircle, draw, FaceFinder } = replicadModule;
   return {
     box(size) {
       assertVec3(size, 'BREP.box(size)');
@@ -1106,8 +1333,210 @@ export function createBrepNamespace(): BrepNamespace {
       assertShape(shape, 'BREP.toManifold');
       return shape.toManifold(Manifold, opts);
     },
+    listEdges(shape, filter) {
+      assertShape(shape, 'BREP.listEdges');
+      return listShapeEdges(shape._shape, filter);
+    },
+    circularPattern(shape, count, opts) {
+      assertShape(shape, 'BREP.circularPattern');
+      if (typeof count !== 'number' || !Number.isInteger(count) || count < 1) {
+        throw new Error('BREP.circularPattern(shape, count, opts): count must be a positive integer.');
+      }
+      if (!opts || typeof opts !== 'object') {
+        throw new Error('BREP.circularPattern(shape, count, opts): opts is required ({radius, axis?, rotateCopies?, angle?}).');
+      }
+      const { radius, axis = [0, 0, 1], rotateCopies = true, angle = 360 } = opts;
+      if (typeof radius !== 'number' || !isFinite(radius) || radius < 0) {
+        throw new Error('BREP.circularPattern.radius must be a non-negative finite number.');
+      }
+      assertVec3(axis, 'BREP.circularPattern.axis');
+      if (typeof angle !== 'number' || !isFinite(angle) || angle <= 0) {
+        throw new Error('BREP.circularPattern.angle must be a positive finite number (degrees).');
+      }
+      // Full-circle: divide evenly into count slots, no copy at θ=2π
+      // duplicating θ=0. Partial: span [0, angle] inclusive with count
+      // points (so 5 copies over 90° lands at 0/22.5/45/67.5/90 deg).
+      const isFull = Math.abs(angle - 360) < 1e-9;
+      const step = isFull ? angle / count : (count > 1 ? angle / (count - 1) : 0);
+      const ax = axis[0], ay = axis[1], az = axis[2];
+      const al = Math.sqrt(ax * ax + ay * ay + az * az);
+      if (al < 1e-9) {
+        throw new Error('BREP.circularPattern.axis must be a non-zero vector.');
+      }
+      const ux = ax / al, uy = ay / al, uz = az / al;
+      const copies: BrepShape[] = [];
+      for (let i = 0; i < count; i++) {
+        const theta = i * step;
+        // Build a copy offset by `radius` along an axis perpendicular to
+        // `axis`, then rotate around `axis` by theta. Default axis [0,0,1]
+        // places the seed at [radius, 0, 0]; other axes pick a sensible
+        // perpendicular ([1,0,0] for Z=±1, [0,1,0] otherwise) so the
+        // pattern lies in the plane perpendicular to `axis`.
+        const perp: [number, number, number] = Math.abs(uz) > 0.99
+          ? [radius, 0, 0]
+          : Math.abs(ux) > 0.99
+            ? [0, radius, 0]
+            : [radius, 0, 0];
+        let copy = shape.translate(perp);
+        if (theta !== 0) copy = copy.rotate(theta, [ux, uy, uz]);
+        if (rotateCopies && theta !== 0) {
+          // The translate→rotate above already rotates the copy's local
+          // frame, so its +X faces outward at the new angular position.
+          // Nothing more to do — flag is here for API parity.
+        }
+        copies.push(copy);
+      }
+      return reduceShapes(copies, 'fuse', 'BREP.circularPattern');
+    },
+    linearPattern(shape, count, opts) {
+      assertShape(shape, 'BREP.linearPattern');
+      if (typeof count !== 'number' || !Number.isInteger(count) || count < 1) {
+        throw new Error('BREP.linearPattern(shape, count, opts): count must be a positive integer.');
+      }
+      if (!opts || typeof opts !== 'object') {
+        throw new Error('BREP.linearPattern(shape, count, opts): opts is required ({step, axis?}).');
+      }
+      const { step, axis = [1, 0, 0] } = opts;
+      if (typeof step !== 'number' || !isFinite(step) || step === 0) {
+        throw new Error('BREP.linearPattern.step must be a non-zero finite number.');
+      }
+      assertVec3(axis, 'BREP.linearPattern.axis');
+      const al = Math.sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+      if (al < 1e-9) {
+        throw new Error('BREP.linearPattern.axis must be a non-zero vector.');
+      }
+      const ux = axis[0] / al, uy = axis[1] / al, uz = axis[2] / al;
+      const copies: BrepShape[] = [];
+      for (let i = 0; i < count; i++) {
+        const d = step * i;
+        copies.push(i === 0 ? wrap(shape._shape.clone(), new Map(shape._faceLabels), shape._labelSignatures) : shape.translate([ux * d, uy * d, uz * d]));
+      }
+      return reduceShapes(copies, 'fuse', 'BREP.linearPattern');
+    },
+    cone(rBottom, rTop, h) {
+      if (typeof rBottom !== 'number' || !isFinite(rBottom) || rBottom < 0) {
+        throw new Error('BREP.cone(rBottom, rTop, h): rBottom must be a non-negative number.');
+      }
+      if (typeof rTop !== 'number' || !isFinite(rTop) || rTop < 0) {
+        throw new Error('BREP.cone(rBottom, rTop, h): rTop must be a non-negative number.');
+      }
+      if (typeof h !== 'number' || !isFinite(h) || h <= 0) {
+        throw new Error('BREP.cone(rBottom, rTop, h): h must be a positive number.');
+      }
+      if (rBottom === 0 && rTop === 0) {
+        throw new Error('BREP.cone(rBottom, rTop, h): both radii zero — degenerate cone.');
+      }
+      // Build a trapezoidal profile in the XZ half-plane (x ≥ 0) and
+      // revolve around Z. Bottom-left at (0,0), bottom-right at (rB,0),
+      // top-right at (rT,h), top-left at (0,h). If a radius is zero,
+      // collapse to the apex.
+      const EPS = 1e-6;
+      const rB = Math.max(rBottom, EPS);
+      const rT = Math.max(rTop, EPS);
+      const pen = draw([0, 0])
+        .hLineTo(rB)
+        .lineTo([rT, h])
+        .hLineTo(0)
+        .close();
+      const profile = pen.sketchOnPlane('XZ');
+      return wrap(profile.revolve([0, 0, 1]));
+    },
+    torus(majorRadius, minorRadius) {
+      if (typeof majorRadius !== 'number' || !isFinite(majorRadius) || majorRadius <= 0) {
+        throw new Error('BREP.torus(major, minor): majorRadius must be a positive number.');
+      }
+      if (typeof minorRadius !== 'number' || !isFinite(minorRadius) || minorRadius <= 0) {
+        throw new Error('BREP.torus(major, minor): minorRadius must be a positive number.');
+      }
+      if (minorRadius >= majorRadius) {
+        throw new Error('BREP.torus(major, minor): minorRadius must be < majorRadius (otherwise the tube self-intersects through the centre).');
+      }
+      // Circle of radius `minor` centred at (major, 0) in XZ, revolved
+      // about Z. drawCircle returns a centred drawing; translate it to
+      // major before sketching.
+      const tube = drawCircle(minorRadius).translate(majorRadius, 0);
+      const profile = tube.sketchOnPlane('XZ');
+      return wrap(profile.revolve([0, 0, 1]));
+    },
+    revolve(profile) {
+      if (!Array.isArray(profile) || profile.length < 3) {
+        throw new Error('BREP.revolve(profile): expected an array of [x, z] points (length ≥ 3).');
+      }
+      for (let i = 0; i < profile.length; i++) {
+        const pt = profile[i];
+        if (!Array.isArray(pt) || pt.length !== 2 || typeof pt[0] !== 'number' || typeof pt[1] !== 'number') {
+          throw new Error(`BREP.revolve(profile): point ${i} must be [x, z] (two finite numbers).`);
+        }
+        if (!isFinite(pt[0]) || !isFinite(pt[1])) {
+          throw new Error(`BREP.revolve(profile): point ${i} contains a non-finite coordinate.`);
+        }
+        if (pt[0] < -1e-9) {
+          throw new Error(`BREP.revolve(profile): point ${i} has x=${pt[0]} < 0; profile must stay in the half-plane x ≥ 0 (X is the radial axis from Z).`);
+        }
+      }
+      const [first, ...rest] = profile;
+      let pen = draw([first[0], first[1]]);
+      for (const [x, z] of rest) pen = pen.lineTo([x, z]);
+      const drawing = pen.close();
+      const sketch = drawing.sketchOnPlane('XZ');
+      return wrap(sketch.revolve([0, 0, 1]));
+    },
+    shell(shape, thickness, openFaceFilter) {
+      assertShape(shape, 'BREP.shell');
+      if (typeof thickness !== 'number' || !isFinite(thickness) || thickness === 0) {
+        throw new Error('BREP.shell(shape, thickness, filter?): thickness must be a non-zero finite number (positive = outward, negative = inward).');
+      }
+      if (!openFaceFilter) {
+        throw new Error('BREP.shell(shape, thickness, filter): an openFaceFilter is required — OCCT shell needs to know which face to remove for the opening. Try {topZ: true} to open the top face of a box/cylinder.');
+      }
+      try {
+        const finderFn = (f: AnyShape) => applyFaceFilter(f, openFaceFilter, shape._shape);
+        const next = shape._shape.clone().shell(thickness, finderFn);
+        return wrap(next);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new Error(`BREP.shell failed (thickness: ${thickness}): ${msg}
+Hints:
+  • Shell thickness must be small relative to the smallest local curvature radius — try a smaller value.
+  • The openFaceFilter must match exactly one face (the open side). For a box or cylinder, {topZ: true} picks the top face. For a sphere, this op generally won't work (no flat face to remove).`);
+      }
+      // Use FaceFinder for the filter; suppress the unused-symbol noise.
+      void FaceFinder;
+    },
     _isBrep: true,
   };
+}
+
+/** Apply a FaceFilter to a replicad FaceFinder. Mirrors `buildEdgeFinder`
+ *  but for the smaller face-filter surface. */
+function applyFaceFilter(finder: AnyShape, filter: FaceFilter, sourceShape: AnyShape): AnyShape {
+  let f = finder;
+  if (filter.topZ === true || filter.bottomZ === true) {
+    // Pick the face whose centroid Z is highest (or lowest). Replicad's
+    // FaceFinder doesn't expose an extremum picker directly, so we
+    // enumerate the faces, find the bbox-Z extreme, and add a centroid
+    // predicate that hits only that one face.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const faces: any[] = sourceShape.faces;
+    let bestZ = filter.topZ ? -Infinity : Infinity;
+    for (const face of faces) {
+      const bb = face.boundingBox;
+      const cz = (bb.bounds[0][2] + bb.bounds[1][2]) * 0.5;
+      if (filter.topZ ? cz > bestZ : cz < bestZ) bestZ = cz;
+    }
+    const target = bestZ;
+    if (filter.topZ) f = f.inPlane('XY', target);
+    else f = f.inPlane('XY', target);
+  }
+  if (filter.minZ !== undefined || filter.maxZ !== undefined) {
+    const huge = 1e9;
+    f = f.inBox([-huge, -huge, filter.minZ ?? -huge], [huge, huge, filter.maxZ ?? huge]);
+  }
+  if (filter.normalAxis !== undefined) {
+    assertVec3(filter.normalAxis, 'FaceFilter.normalAxis');
+    f = f.parallelTo(filter.normalAxis as [number, number, number]);
+  }
+  return f;
 }
 
 /** Source-level test: does the user's code reference `BREP`? Used by the

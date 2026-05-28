@@ -5,13 +5,21 @@
 // updates `public/catalog/manifest.json` to include it.
 //
 // Usage:
-//   node scripts/single-catalog-entry.cjs <code-file> <slug> <name> <language> "<description>"
+//   node scripts/single-catalog-entry.cjs <code-file> <slug> <name> <language> "<description>" [paint-file]
 //
 //   code-file   — path to a file holding the model's JavaScript / SCAD source.
 //   slug        — kebab-case id (e.g. "industrial-flange").
 //   name        — display name (e.g. "Industrial Flange").
 //   language    — "manifold-js" | "scad" | "replicad".
 //   description — short blurb shown on the catalog tile.
+//   paint-file  — OPTIONAL path to a JavaScript file holding paint
+//                 operations. The file's source is executed as an async
+//                 function body inside the page, AFTER runAndSave(v0)
+//                 succeeds. It can call any window.partwright.paint*
+//                 method. A "colored" version is then saved so the
+//                 catalog thumbnail captures the colors. Inside the file
+//                 you have access to `partwright` (alias for
+//                 window.partwright).
 //
 // Requires `npm run dev` already running on http://localhost:5173.
 // Writes <slug-with-underscores>.partwright.json into public/catalog/ and
@@ -46,9 +54,9 @@ function findChromiumExecutable() {
 }
 
 async function main() {
-  const [, , codeFile, slug, name, language, description] = process.argv;
+  const [, , codeFile, slug, name, language, description, paintFile] = process.argv;
   if (!codeFile || !slug || !name || !language || !description) {
-    console.error('Usage: node scripts/single-catalog-entry.cjs <code-file> <slug> <name> <language> "<description>"');
+    console.error('Usage: node scripts/single-catalog-entry.cjs <code-file> <slug> <name> <language> "<description>" [paint-file]');
     process.exit(2);
   }
   if (!['manifold-js', 'scad', 'replicad'].includes(language)) {
@@ -56,6 +64,7 @@ async function main() {
     process.exit(2);
   }
   const code = fs.readFileSync(codeFile, 'utf8');
+  const paintBody = paintFile ? fs.readFileSync(paintFile, 'utf8') : null;
   const fileBase = slug.replace(/-/g, '_');
   const outPath = path.join(CATALOG_DIR, `${fileBase}.partwright.json`);
 
@@ -77,7 +86,7 @@ async function main() {
   await page.goto(`${BASE_URL}/editor`, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!(window.partwright && window.partwright.runAndSave), null, { timeout: 30000 });
 
-  const result = await page.evaluate(async ({ name, language, code }) => {
+  const result = await page.evaluate(async ({ name, language, code, paintBody }) => {
     if (window.partwright.getActiveLanguage() !== language) {
       await window.partwright.setActiveLanguage(language);
     }
@@ -98,10 +107,27 @@ async function main() {
     const r = await window.partwright.runAndSave(code, 'v0', {});
     if (r && r.error) return { error: r.error, geometry: r.geometry };
     if (!r || !r.version) return { error: 'no version saved: ' + JSON.stringify(r).slice(0, 400) };
+    // Optional paint phase — run the paint script as an async function
+    // body with `partwright` bound, then save a fresh version so the
+    // thumbnail captures the colors (catalog uses the latest version's
+    // thumbnail).
+    let paintReport = null;
+    if (paintBody) {
+      try {
+        const paintFn = new Function('partwright', `return (async () => { ${paintBody} })();`);
+        const paintResult = await paintFn(window.partwright);
+        paintReport = { ok: true, returned: paintResult };
+      } catch (e) {
+        return { error: 'paint phase threw: ' + (e && e.message ? e.message : String(e)) };
+      }
+      const r2 = await window.partwright.saveVersion('colored');
+      if (r2 && r2.error) return { error: 'saveVersion(colored): ' + r2.error };
+      paintReport.savedVersion = r2;
+    }
     const data = await window.partwright.exportSession(undefined, { includeThumbnails: true });
     if (data && data.error) return { error: data.error };
-    return { ok: true, data, stats: r.geometry };
-  }, { name, language, code });
+    return { ok: true, data, stats: r.geometry, paint: paintReport };
+  }, { name, language, code, paintBody });
 
   await browser.close();
 
@@ -126,6 +152,9 @@ async function main() {
     componentCount: result.stats?.componentCount,
     volume: result.stats?.volume,
   }));
+  if (result.paint) {
+    console.log('  paint phase:', JSON.stringify(result.paint).slice(0, 400));
+  }
 
   // Merge into manifest.json
   const manifestPath = path.join(CATALOG_DIR, 'manifest.json');

@@ -1,5 +1,64 @@
 # BREP / replicad — exact-surface modeling
 
+## Gotchas cheat sheet — read first
+
+These are the issues every agent has tripped on at least once. Internalise
+them before writing BREP code or you'll burn iterations on silent failures.
+
+1. **`BREP.box([w,d,h])` is centred in X and Y but its base is at z=0**
+   (NOT centred in Z). A `BREP.box([10,10,10])` spans `x,y ∈ [-5,+5]` but
+   `z ∈ [0,10]`. To centre it in Z, follow with `.translate([0,0,-h/2])`.
+   `BREP.cylinder(r,h)` is the same (base at z=0). `BREP.sphere(r)` IS
+   centred at the origin.
+
+2. **EdgeFilters work in WORLD coordinates** — replicad bakes
+   `translate`/`rotate` into the geometry, so after
+   `BREP.cylinder(5, 8).translate([0, 0, 10])` the cylinder's top rim is
+   at `z=18` in world space; pick it with `{ minZ: 17.999 }`.
+
+3. **`inBox`-style filters (`minZ`/`maxZ`/`minX`/...) are unreliable on
+   the planar coincident edges of a `BREP.box`.** OCCT's containment
+   test leaves edges sitting exactly on the box's face plane "just
+   outside tolerance," so `BREP.box([20,20,10]).fillet(1, {maxZ: 0.001})`
+   silently selects 0 edges (and now throws a clear "matched 0 of N"
+   error pointing here). **Workaround**: combine the bounds with
+   `inDirection` or `parallelToPlane` so you also require the edge
+   orientation match. `fillet(1, { maxZ: 0.001, inDirection: [1,0,0] })`
+   picks the X-parallel bottom edges; `parallelToPlane: 'XY'` picks the
+   four bottom-rim edges of a box. Cylinder rims work without this
+   workaround because cylinder rim edges are *curved* (not coincident
+   with the bbox face).
+
+4. **`BREP.listEdges(shape, filter?)` is your fillet-debugger.** Call it
+   before any tricky `.fillet(r, filter)` to see exactly which edges
+   your filter is picking. Returns `[{index, midpoint, direction, bbox,
+   chord, isClosed}]` — eyeball it, then write a filter that matches by
+   inspection.
+
+5. **Apply `.fillet()` / `.chamfer()` BEFORE `.cut()` / `.fuse()` when
+   you can.** OCCT's solver is sensitive to the post-boolean edge graph
+   and silently fails on configurations that would have worked filleted
+   first.
+
+6. **Fillet/chamfer radii can have a precision cliff.** If `0.5` works
+   but `0.6` fails with an unhelpful "fillet failed" error, the failure
+   is usually local geometry (a small adjacent edge or a sliver face),
+   not the absolute radius. Try a slightly different value, or fillet a
+   different set of edges first to change the local graph.
+
+7. **`fillet` / `chamfer` drop labels on remeshed faces.** A
+   `BREP.label(shape, 'top')` survives `.translate`, `.fuse`, `.cut` —
+   but the faces the fillet solver remeshes lose their label and the
+   new rounded surfaces have none. Label *after* the fillet if you need
+   to paint the rounded surface.
+
+8. **`paintInBox` on fused BREP solids can leak.** OCCT can leave
+   interior seam triangles inside the bounding volume; the default
+   centroid coverage test catches them. Pass `coverageMode:"fully_inside"`
+   or use `paintConnected` from a probed seed.
+
+## The two ways to reach BREP
+
 Partwright exposes a **BREP** (boundary-representation) kernel via
 [replicad](https://replicad.xyz) on top of OpenCASCADE.js. There are **two
 ways** to reach it, and they're for different use cases:
@@ -61,11 +120,77 @@ BREP.fuseAll([a, b, c, ...]);                   // union of every shape
 BREP.cutAll([body, hole1, hole2, ...]);         // body - hole1 - hole2 - ...
 BREP.intersectAll([a, b, c, ...]);              // a ∩ b ∩ c ∩ ...
 
+// Higher-order primitives (built on the basics above).
+BREP.cone(rBottom, rTop, h);                    // truncated cone (frustum)
+                                                //   base radius rBottom at z=0,
+                                                //   top radius rTop at z=h.
+                                                //   set rTop=0 for a full cone.
+BREP.torus(majorR, minorR);                     // donut, axis along Z
+BREP.revolve([[x0,z0],[x1,z1],...]);            // solid of revolution around Z.
+                                                //   profile is an [x,z] polygon
+                                                //   in the half-plane x≥0
+                                                //   (x is the radial axis).
+                                                //   Polygon closes automatically.
+
+// Patterns — N copies fused into one solid. Single tool call instead of
+// N hand-coded translate+rotate copies.
+BREP.circularPattern(shape, count, { radius, axis?, angle? });   // N around a circle
+BREP.linearPattern(shape, count, { step, axis? });               // N along a line
+
+// Hollow shells.
+BREP.shell(shape, thickness, { topZ: true });   // hollow the shape, leaving
+                                                // walls of `thickness`, open
+                                                // on the top face (other
+                                                // openFaceFilter options:
+                                                // {bottomZ:true}, {minZ}/{maxZ},
+                                                // {normalAxis:[ax,ay,az]}).
+
+// Debug: snapshot all edges (optionally filtered) — call this BEFORE a
+// fillet/chamfer to see which edges your filter is hitting. Saves the
+// trial-and-error against silent "0 matched" failures.
+const list = BREP.listEdges(shape, filter?);
+// → [{index, midpoint:[x,y,z], direction:[dx,dy,dz], bbox:[6 nums], chord, isClosed}]
+
 // Labelling — the BREP equivalent of `api.label`. Attaches a name to every
 // face of a shape; the label survives boolean ops via OCCT's History, and
 // translate/rotate via positional face matching. Fillet/chamfer preserve
 // labels on unchanged faces but drop them on new rounded surfaces.
 BREP.label(shape, 'name');                      // wrap a shape with a label
+```
+
+### Worked examples for the new primitives
+
+```js
+// Cone — apex up, base 10 mm radius, 15 mm tall.
+return BREP.cone(10, 0, 15);
+
+// Truncated cone (frustum) — pulley hub silhouette.
+return BREP.cone(10, 7, 8).fuse(BREP.cylinder(7, 12).translate([0, 0, 8]));
+
+// Donut — wheel rim or O-ring.
+return BREP.torus(20, 3);
+
+// V-groove pulley in 4 lines, where it used to take 25:
+//   profile is the cross-section in the XZ half-plane,
+//   X is the radial axis from the Z spin axis.
+return BREP.revolve([
+  [0, 0],   [20, 0],   [20, 5],   [15, 10],
+  [20, 15], [20, 20],  [0, 20],
+]);
+
+// 6-bolt circle (no hand-coded angles).
+const hole = BREP.cylinder(2.5, 12).translate([0, 0, -1]);
+const bolts = BREP.circularPattern(hole, 6, { radius: 32, rotateCopies: false });
+return BREP.cutAll([flangeBody, bolts]);
+
+// 4-slot vent row.
+const slot = BREP.box([1.5, 4, 12]);
+const vents = BREP.linearPattern(slot, 4, { step: 5, axis: [1, 0, 0] });
+return body.cut(vents);
+
+// Project enclosure — outer shell minus inner cavity in one shell op.
+const outer = BREP.box([80, 50, 30]).fillet(3, { inDirection: [0, 0, 1] });
+return BREP.shell(outer, -3, { topZ: true });   // 3 mm walls, open top
 ```
 
 ### Labelled construction — paintByLabel inside a BREP session
