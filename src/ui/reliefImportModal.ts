@@ -662,8 +662,11 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     const fmt = (v: number) => (range.int ? String(Math.round(v)) : v.toFixed(2));
     const numEl = document.createElement('input');
     numEl.type = 'number';
+    // Number input deliberately omits `max` so the user can type a value
+    // larger than the slider visually allows (matching the freehand pattern
+    // used elsewhere in the app — main.ts's clampReliefCommon enforces a
+    // hard upper bound at create time).
     numEl.min = String(range.min);
-    numEl.max = String(range.max);
     numEl.step = String(range.step);
     numEl.value = fmt(get());
     numEl.className = 'w-16 px-1.5 py-0.5 text-[11px] bg-zinc-900 border border-zinc-700/60 rounded text-zinc-200 text-right tabular-nums focus:outline-none focus:border-blue-500';
@@ -685,9 +688,12 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
       let v = Number(numEl.value);
       if (!Number.isFinite(v)) { numEl.value = fmt(get()); return; }
       if (range.int) v = Math.round(v);
-      v = Math.max(range.min, Math.min(range.max, v));
+      // Floor at range.min (typed negatives would break downstream consumers),
+      // but accept values larger than range.max — the slider just pins at its
+      // visual max while the underlying value carries the user's input.
+      if (v < range.min) v = range.min;
       set(v);
-      input.value = String(v);
+      input.value = String(Math.min(v, range.max));
       numEl.value = fmt(v);
       schedulePreview();
     };
