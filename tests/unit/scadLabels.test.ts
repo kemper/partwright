@@ -135,6 +135,59 @@ describe('scanScadLabels — top-level statement extraction', () => {
   });
 });
 
+describe('scanScadLabels — string-escape handling', () => {
+  it('does not walk past escaped quotes inside string literals', () => {
+    // Regression: `echo("a\\\"b")` used to end string masking at the
+    // escaped quote, then re-enter at the next real `"`, eventually
+    // masking over a real `label("real") cube()`.
+    const r = scanScadLabels('echo("a\\"b"); label("real") cube(10);');
+    expect(r.hasAnyLabelCalls).toBe(true);
+    expect(r.allLiteralLabelNames).toEqual(['real']);
+    expect(r.topLevelStatements).toHaveLength(2);
+    expect(r.topLevelStatements[1].labelName).toBe('real');
+  });
+});
+
+describe('scanScadLabels — declaration body suppression', () => {
+  it('ignores label() calls inside `module foo() { ... }` bodies', () => {
+    // The module's body is dead code until invoked; including its labels
+    // would falsely populate `lostLabels` for the caller.
+    const r = scanScadLabels(`
+      module unused() { label("ghost") cube(10); }
+      label("real") cube(5);
+    `);
+    expect(r.allLiteralLabelNames).toEqual(['real']);
+    expect(r.hasNestedLabels).toBe(false);
+    expect(r.topLevelStatements).toHaveLength(1);
+    expect(r.topLevelStatements[0].labelName).toBe('real');
+  });
+
+  it('still collects labels OUTSIDE the module after the body closes', () => {
+    const r = scanScadLabels(`
+      label("before") cube(1);
+      module foo() { label("inside") cube(1); }
+      label("after") cube(1);
+    `);
+    expect(r.allLiteralLabelNames).toEqual(['before', 'after']);
+  });
+
+  it('handles a module body containing a brace-nested boolean correctly', () => {
+    const r = scanScadLabels(`
+      module rig() {
+        difference() {
+          label("a") cube(10);
+          label("b") cylinder(r=2, h=15);
+        }
+      }
+      label("real") cube(5);
+    `);
+    // Nothing from rig()'s body should appear, even though the boolean
+    // is at brace-depth >= 2 inside the suppression.
+    expect(r.allLiteralLabelNames).toEqual(['real']);
+    expect(r.hasNestedLabels).toBe(false);
+  });
+});
+
 describe('scanScadLabels — allLiteralLabelNames', () => {
   it('returns names from top-level labels in source order', () => {
     const r = scanScadLabels(`

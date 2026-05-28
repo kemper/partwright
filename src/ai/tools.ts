@@ -163,7 +163,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'listLabels',
-    description: 'Return labels registered in the current run via api.label(shape, name) — the cleanest paint primitive on agent-authored manifold-js geometry. Each entry: {name, triangleCount, bbox, centroid}. Empty when the code did not call api.label. Use to confirm labels resolved correctly before paintByLabel; otherwise prefer calling paintByLabel directly to save a round-trip.',
+    description: 'Return labels registered in the current run via api.label(shape, name) — the cleanest paint primitive on agent-authored geometry, in both manifold-js and SCAD (where labels come from top-level `label("name") <expr>;` wrappers). Each entry: {name, triangleCount, bbox, centroid}. Empty when the code did not call api.label or `label("name")`. Use to confirm labels resolved correctly before paintByLabel; otherwise prefer calling paintByLabel directly to save a round-trip.',
     input_schema: { type: 'object', properties: {} },
   },
   {

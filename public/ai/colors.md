@@ -180,10 +180,15 @@ the manifold-js case. Constraints:
   label("knob") translate([0, 0, 32]) cylinder(r=4, h=6);
   ```
 
-  When labels are lost this way, the engine pushes a `WARNING: label(...)
-  inside a { ... } block ...` to stderr at compile time, and the run
-  result's `lostLabels` field lists the names — so you don't have to diff
-  the labelMap by hand. `listLabels()` returns only what survived.
+  When labels are lost this way, the engine attaches a `warning`
+  diagnostic to the run and returns the dropped names as
+  `runAndSave(...).lostLabels` (also reachable via `listLabels().lostLabels`
+  on the next call) — so you don't have to diff the labelMap by hand.
+  `listLabels()`'s main `labels` array contains only what survived.
+- **`for`-loop expansion can also drop labels.** A single source
+  `label("c") cube();` inside `for (i = [0:9])` produces 10 AMF objects
+  but one scanner statement, so the engine falls back to auto-named
+  regions. `runAndSave(...).lostLabels` reports this case too.
 - **Literal names only.** `label("body")` works; `label(str("c", i))`
   doesn't (the name is computed at SCAD runtime and we can't read it).
   For-loop bodies that use `label()` produce auto-named regions.

@@ -70,6 +70,14 @@ export function scanScadLabels(source: string): ScadLabelScan {
   let stmtStart = 0;
   let i = 0;
 
+  // braceDepth at which we entered a `module foo() { ... }` declaration body,
+  // or -1 if we're not inside any module body. While inside, we suppress
+  // label() collection — those calls are dead until the module is
+  // *invoked*, and the invocation is what actually shows up in lazy-union
+  // output. Including them would inflate `lostLabels` with names the user
+  // never invoked.
+  let moduleBodyEntryDepth = -1;
+
   // Track whether the next top-level statement boundary should produce a
   // recorded statement. Module declarations (`module foo(...) { ... }`),
   // function declarations, `use`/`include` directives, and bare top-level
@@ -84,7 +92,8 @@ export function scanScadLabels(source: string): ScadLabelScan {
 
     // Check for a `label(` token before doing any depth changes — we want
     // the depth at the point of the token, not after stepping past `(`.
-    if (c === 'l' && isLabelTokenAt(masked, i)) {
+    // Suppress inside a module body: those labels are dead until invoked.
+    if (c === 'l' && isLabelTokenAt(masked, i) && moduleBodyEntryDepth === -1) {
       hasAnyLabelCalls = true;
       if (braceDepth > 0) hasNestedLabels = true;
       // Collect the literal name if there is one. Reads from `source` —
@@ -96,9 +105,26 @@ export function scanScadLabels(source: string): ScadLabelScan {
     }
 
     if (c === '{') {
+      // If this `{` opens a top-level `module foo(...) { ... }` body, mark
+      // the depth so we can suppress collection until it closes. Function
+      // declarations don't have braces (they're `function name(...) = expr;`),
+      // so the module check covers it.
+      if (moduleBodyEntryDepth === -1 && braceDepth === 0 && parenDepth === 0) {
+        const head = masked.slice(stmtStart, i);
+        if (/^\s*module\b/.test(head)) {
+          moduleBodyEntryDepth = braceDepth;
+        }
+      }
       braceDepth++;
     } else if (c === '}') {
       braceDepth = Math.max(0, braceDepth - 1);
+      // Closing back to the depth at which we entered a module body lifts
+      // the suppression. Reset BEFORE the statement-boundary check so the
+      // module declaration's chunk is still classified correctly (via
+      // isGeometryStatement → DECL_RE).
+      if (moduleBodyEntryDepth !== -1 && braceDepth === moduleBodyEntryDepth) {
+        moduleBodyEntryDepth = -1;
+      }
       // A `}` at top level closes a block statement (module body, anonymous
       // group, etc.). Treat that as a statement boundary too.
       if (braceDepth === 0 && parenDepth === 0) {
@@ -182,9 +208,16 @@ function maskCommentsAndStrings(source: string): string {
       out[i] = ' ';
       i++;
       while (i < len && source[i] !== '"') {
-        // Note: we don't honor backslash-escapes here. The cost of getting
-        // that wrong is an off-by-one in masking, which our callers don't
-        // care about — they only inspect `label(`, `{`, `}`, `(`, `)`, `;`.
+        // Honor backslash-escapes inside strings — a `\"` doesn't end the
+        // string. Otherwise `echo("a\"b"); label("real") cube();` would
+        // exit string mode at the escaped quote, re-enter at the next
+        // real one, and end up masking over the real `label("real")` call.
+        if (source[i] === '\\' && i + 1 < len) {
+          out[i] = ' ';
+          if (source[i + 1] !== '\n') out[i + 1] = ' ';
+          i += 2;
+          continue;
+        }
         if (source[i] !== '\n') out[i] = ' ';
         i++;
       }

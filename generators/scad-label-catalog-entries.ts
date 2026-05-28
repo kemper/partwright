@@ -1,14 +1,19 @@
 // One-shot generator for new SCAD-with-label() catalog entries.
 //
-// Reads JSON specs from `.plans/specs/*.json` (each describing one model:
-// slug, name, description, scadCode, paintCalls, triangleCount), runs each
-// through the SCAD label-aware pipeline in a real browser, applies the
-// paint calls, and writes the exported session data to
-// `public/catalog/<slug>.partwright.json`. Also writes the SCAD source to
-// `examples/<slug>.scad` and patches `public/catalog/manifest.json`.
+// Reads JSON specs from `generators/scad-label-specs/*.json` (each
+// describing one model: slug, name, description, scadCode, paintCalls,
+// triangleCount), runs each through the SCAD label-aware pipeline in a
+// real browser, applies the paint calls, and writes the exported session
+// data to `public/catalog/<slug>.partwright.json`. Also writes the SCAD
+// source to `examples/<slug>.scad` and patches
+// `public/catalog/manifest.json`.
 //
 // Lives outside `tests/` so the default `npm run test:e2e` (which uses
 // `playwright.config.ts → testDir: './tests'`) never picks it up.
+//
+// Specs live under `generators/scad-label-specs/` (tracked) instead of
+// `.plans/` (gitignored) so a fresh clone can regenerate the same catalog
+// entries deterministically.
 //
 // Run with:
 //   npm run generate:catalog -- generators/scad-label-catalog-entries.ts
@@ -21,7 +26,7 @@ import { test, type Page } from 'playwright/test';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..');
-const specsDir = path.join(repoRoot, '.plans', 'specs');
+const specsDir = path.join(__dirname, 'scad-label-specs');
 const examplesDir = path.join(repoRoot, 'examples');
 const catalogDir = path.join(repoRoot, 'public', 'catalog');
 
@@ -40,8 +45,19 @@ interface Spec {
 }
 
 function loadSpecs(): Spec[] {
-  if (!fs.existsSync(specsDir)) return [];
+  if (!fs.existsSync(specsDir)) {
+    throw new Error(
+      `scad-label-catalog-entries: specs dir not found: ${specsDir}. ` +
+      'Add JSON specs there (see existing files for shape) and re-run.',
+    );
+  }
   const files = fs.readdirSync(specsDir).filter(f => f.endsWith('.json'));
+  if (files.length === 0) {
+    throw new Error(
+      `scad-label-catalog-entries: no JSON specs found in ${specsDir}. ` +
+      'Without specs the generator would silently no-op and leave catalog files stale.',
+    );
+  }
   return files.map(f => {
     const raw = JSON.parse(fs.readFileSync(path.join(specsDir, f), 'utf8'));
     return raw as Spec;
