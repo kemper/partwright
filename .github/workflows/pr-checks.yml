@@ -4,12 +4,10 @@ name: PR checks
 # tests, and the full e2e suite. Build + unit gates the e2e matrix so we
 # don't burn shard minutes on a broken build.
 #
-# E2e is OPT-IN via the `run-e2e` label to keep CI minutes low. Build + unit
-# always runs (fast — typically ~2-3 min). The sharded e2e suite only runs
-# when the PR carries the `run-e2e` label. Adding the label triggers a fresh
-# workflow run, so the agent flow is:
-#   push the draft → watch build+unit go green → verify the change locally
-#   → add `run-e2e` (issue_write) → watch e2e go green → flip to ready.
+# E2e fires only on non-draft PRs. Marking the PR ready for review is what
+# kicks it off — draft pushes get build + unit only (fast, ~2-3 min), so
+# the agent can iterate on a draft cheaply, then flip to ready when the
+# implementation looks done to trigger the full e2e shards.
 #
 # The e2e suite is CPU-bound (each test boots WASM in its own browser page),
 # so it runs SERIALLY within a runner (playwright.config.ts pins workers: 1)
@@ -25,7 +23,7 @@ name: PR checks
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - '**/*.md'
       - '.github/release.yml'
@@ -60,9 +58,9 @@ jobs:
 
   e2e:
     needs: build-unit
-    # Opt-in: only run e2e when the PR is explicitly labeled. The agent (or a
-    # human) adds `run-e2e` when they're ready to spend the shard minutes.
-    if: contains(github.event.pull_request.labels.*.name, 'run-e2e')
+    # Skip e2e on draft PRs — drafts get build + unit only. The "ready for
+    # review" transition (and any push after) fires the e2e shards.
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
