@@ -6,7 +6,7 @@ import { createDefaultMaterial, createWireframeMaterial } from './materials';
 import { initPhantomGroup } from './phantomGeometry';
 import { initMeasureOverlay } from './measureOverlay';
 import { initOrientationGizmo, renderGizmo, updateGizmo, disposeGizmo, isGizmoAnimating } from './orientationGizmo';
-import { initDimensionLines, updateDimensionLines, disposeDimensionLines } from './dimensionLines';
+import { initDimensionLines, updateDimensionLines, disposeDimensionLines, setDimensionsVisible as setDimensionsVisibleImpl, isDimensionsVisible } from './dimensionLines';
 import { initAnnotationOverlay, setLiveResolution as setAnnotationResolution } from '../annotations/annotationOverlay';
 import { configureSessionPlane } from '../annotations/sessionPlane';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
@@ -29,6 +29,43 @@ let scene: THREE.Scene;
 let controls: OrbitControls;
 let meshGroup: THREE.Group;
 let animationId: number;
+
+// === On-demand rendering ===
+// The render loop only paints a frame when something actually changed, instead
+// of re-rendering an idle scene 60×/second. The `needsRender` flag (set by
+// `requestRender()`) marks the next frame dirty; OrbitControls 'change' events,
+// recent pointer activity over the canvas, and the gizmo's snap animation keep
+// it painting through interactions and inertia. On a heavy model this is the
+// difference between constant GPU churn and only working when the view moves.
+let needsRender = true;
+let lastPointerActivity = 0;
+const POINTER_GRACE_MS = 350;
+
+// === Adaptive resolution ===
+// Full (capped) device pixel ratio when the camera is still; a reduced ratio
+// while actively orbiting/panning/zooming, where the lower fragment count keeps
+// interaction smooth on dense meshes and the softer image is invisible mid-
+// motion. Restored to full res the instant interaction ends.
+const MAX_PIXEL_RATIO = 2;
+const INTERACTION_RENDER_SCALE = 0.6;
+let interacting = false;
+let cssWidth = 0;
+let cssHeight = 0;
+function baseDpr(): number {
+  return Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
+}
+function applyRenderScale(scale: number): void {
+  if (!renderer) return;
+  renderer.setPixelRatio(baseDpr() * scale);
+  if (cssWidth > 0 && cssHeight > 0) renderer.setSize(cssWidth, cssHeight, false);
+}
+
+/** Mark the viewport dirty so the next animation frame renders. Call after any
+ *  scene change not already driven by camera motion — geometry swaps, clipping,
+ *  overlays, theme, paint highlights. Cheap and idempotent (just sets a flag). */
+export function requestRender(): void {
+  needsRender = true;
+}
 
 // Orbit lock state — when locked, rotate/pan are disabled but zoom always works,
 // so wheel/two-finger-scroll keeps zooming the camera in every mode.
@@ -93,13 +130,42 @@ export function initViewport(container: HTMLElement): {
   container.appendChild(canvas);
 
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setPixelRatio(baseDpr());
   renderer.localClippingEnabled = true;
 
   controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
   controls.dampingFactor = 0.1;
   controls.target.set(0, 0, 0);
+
+  // On-demand rendering hooks: 'change' fires on every camera move (including
+  // each damping/inertia step), so the loop keeps painting until motion settles.
+  // 'start'/'end' bracket an active drag/zoom for the adaptive-resolution drop.
+  controls.addEventListener('change', () => { needsRender = true; });
+  controls.addEventListener('start', () => {
+    interacting = true;
+    applyRenderScale(INTERACTION_RENDER_SCALE);
+    needsRender = true;
+  });
+  controls.addEventListener('end', () => {
+    interacting = false;
+    applyRenderScale(1);
+    needsRender = true;
+  });
+
+  // Any pointer activity anywhere in the viewport region may drive a scene
+  // change that isn't a camera move (paint hover/drag, measure, gizmo hover,
+  // annotation drawing, and clicks on the overlay controls that sit over the
+  // canvas), so keep painting for a short grace window around it. Bound to the
+  // container (not just the canvas) so overlay-button clicks count too. Passive
+  // + capture: purely observational, never interferes with the real handlers.
+  const markPointerActivity = () => {
+    lastPointerActivity = performance.now();
+    needsRender = true;
+  };
+  for (const evt of ['pointerdown', 'pointermove', 'pointerup', 'wheel'] as const) {
+    container.addEventListener(evt, markPointerActivity, { capture: true, passive: true });
+  }
 
   // Capture-phase pointerdown gives paint tools the chance to veto OrbitControls'
   // pointerdown per-event (e.g. let orbit handle clicks that miss the model).
@@ -166,6 +232,7 @@ export function initViewport(container: HTMLElement): {
     grid = makeGrid(theme);
     grid.visible = wasVisible;
     scene.add(grid);
+    needsRender = true;
   });
 
   meshGroup = new THREE.Group();
@@ -191,10 +258,13 @@ export function initViewport(container: HTMLElement): {
   const observer = new ResizeObserver(entries => {
     const { width, height } = entries[0].contentRect;
     if (width === 0 || height === 0) return;
-    renderer.setSize(width, height);
+    cssWidth = width;
+    cssHeight = height;
+    applyRenderScale(interacting ? INTERACTION_RENDER_SCALE : 1);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
     setAnnotationResolution(width * window.devicePixelRatio, height * window.devicePixelRatio);
+    needsRender = true;
   });
   observer.observe(container);
 
@@ -213,9 +283,16 @@ export function initViewport(container: HTMLElement): {
     const delta = timer.getDelta();
     updateGizmo(delta);
     syncOrbitState();
+    // controls.update() applies damping and synchronously fires 'change' (which
+    // sets needsRender) whenever the camera actually moves, so inertia keeps the
+    // loop painting until it settles.
     controls.update();
-    renderer.render(scene, camera);
-    renderGizmo(renderer);
+    const pointerActive = performance.now() - lastPointerActivity < POINTER_GRACE_MS;
+    if (needsRender || pointerActive || isGizmoAnimating()) {
+      renderer.render(scene, camera);
+      renderGizmo(renderer);
+      needsRender = false;
+    }
   }
   animate();
 
@@ -310,6 +387,7 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
     }
   }
 
+  needsRender = true;
   onMeshUpdate?.(meshData);
 }
 
@@ -355,12 +433,14 @@ export function setClipping(enabled: boolean): void {
   } else {
     removeClipPlaneVisual();
   }
+  needsRender = true;
 }
 
 export function setClipZ(z: number): void {
   clipZ = z;
   clipPlane.constant = z;
   updateClipPlaneVisual();
+  needsRender = true;
 }
 
 export function getClipState(): { enabled: boolean; z: number; min: number; max: number } {
@@ -369,6 +449,7 @@ export function getClipState(): { enabled: boolean; z: number; min: number; max:
 
 function updateClipPlaneVisual() {
   removeClipPlaneVisual();
+  needsRender = true;
 
   if (!clippingEnabled) return;
 
@@ -577,12 +658,17 @@ function isVerticallyScrollable(el: HTMLElement): boolean {
   return (overflowY === 'auto' || overflowY === 'scroll') && el.scrollHeight > el.clientHeight;
 }
 
-export { setDimensionsVisible, isDimensionsVisible } from './dimensionLines';
+export function setDimensionsVisible(visible: boolean): void {
+  setDimensionsVisibleImpl(visible);
+  needsRender = true;
+}
+export { isDimensionsVisible };
 
 // === Grid visibility API ===
 
 export function setGridVisible(visible: boolean): void {
   grid.visible = visible;
+  needsRender = true;
 }
 
 export function isGridVisible(): boolean {
@@ -597,6 +683,7 @@ export function setWireframeVisible(visible: boolean): void {
   meshGroup.children.forEach(child => {
     if (child.name === 'wireframe') child.visible = visible;
   });
+  needsRender = true;
   wireframeChangeListener?.(visible);
 }
 

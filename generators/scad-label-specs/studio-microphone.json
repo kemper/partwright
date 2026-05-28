@@ -1,0 +1,23 @@
+{
+  "slug": "studio-microphone",
+  "name": "Studio Microphone",
+  "description": "Classic large-diaphragm studio condenser microphone cradled in a U-shaped shock-mount yoke on a weighted desktop stand, with a coiled cable looping back to the base.",
+  "scadCode": "module label(name) { children(); }\n\n// --- Classic studio microphone on a desk stand ---\n// All paint regions live at the top level so SCAD label provenance survives.\n\n$fn_hi  = 56;\n$fn_med = 32;\n$fn_lo  = 20;\n\n// Stand base — a wide, slightly domed disc on the floor\nlabel(\"base\") union() {\n    cylinder(h = 3, r = 18, $fn = $fn_hi);\n    translate([0, 0, 3]) scale([1, 1, 0.35])\n        sphere(r = 16, $fn = $fn_hi);\n}\n\n// Vertical pole rising from the base\nlabel(\"pole\") translate([0, 0, 3])\n    cylinder(h = 38, r = 2.2, $fn = $fn_med);\n\n// Yoke / shock mount — a U-shaped bracket that cradles the mic body.\n// The difference stays inside the single label so provenance survives.\nlabel(\"yoke\") translate([0, 0, 41]) difference() {\n    rotate([90, 0, 0])\n        rotate_extrude($fn = $fn_med)\n            translate([10, 0, 0]) square([2.5, 4], center = true);\n    translate([0, 0, -6]) cube([30, 8, 12], center = true);\n}\n\n// Microphone body — the cylindrical capsule that hangs in the yoke.\nlabel(\"body\") translate([0, 0, 45]) union() {\n    cylinder(h = 22, r = 6, $fn = $fn_hi);\n    translate([0, 0, -3]) cylinder(h = 3, r1 = 4.5, r2 = 6, $fn = $fn_hi);\n    translate([0, 0, 22]) cylinder(h = 1.2, r = 6.6, $fn = $fn_hi);\n}\n\n// Wire grille — spherical mesh head with crossed cuts that read as wire mesh.\nlabel(\"grille\") translate([0, 0, 74]) difference() {\n    sphere(r = 7.5, $fn = $fn_hi);\n    for (z = [-5 : 1.6 : 5]) {\n        translate([0, 0, z]) rotate([90, 0, 0])\n            cylinder(h = 20, r = 0.45, $fn = 12, center = true);\n        translate([0, 0, z]) rotate([0, 90, 0])\n            cylinder(h = 20, r = 0.45, $fn = 12, center = true);\n    }\n}\n\n// Brand badge — a small disc on the front of the mic body\nlabel(\"badge\") translate([0, -6.1, 54])\n    rotate([90, 0, 0])\n        cylinder(h = 0.6, r = 2.2, $fn = $fn_med);\n\n// Cable — a short drop from the bottom of the mic plus stacked coil rings on the base.\nlabel(\"cable\") union() {\n    translate([0, 0, 36]) cylinder(h = 6, r = 0.8, $fn = 16);\n    translate([0, 0, 36]) sphere(r = 0.9, $fn = 16);\n    for (i = [0 : 3]) {\n        translate([0, 0, 4 + i * 0.6])\n            rotate_extrude($fn = $fn_med)\n                translate([3.2 + i * 0.3, 0, 0]) circle(r = 0.6, $fn = 12);\n    }\n}\n",
+  "paintCalls": [
+    { "label": "base", "color": [0.18, 0.18, 0.20] },
+    { "label": "pole", "color": [0.55, 0.55, 0.58] },
+    { "label": "yoke", "color": [0.82, 0.82, 0.85] },
+    { "label": "body", "color": [0.92, 0.88, 0.62] },
+    { "label": "grille", "color": [0.78, 0.72, 0.30] },
+    { "label": "badge", "color": [0.85, 0.10, 0.12] },
+    { "label": "cable", "color": [0.08, 0.08, 0.08] }
+  ],
+  "triangleCount": 11828,
+  "feedback": [
+    "The 'labels-inside-boolean-ops-are-lost' rule is the single biggest footgun. I wanted to express 'body MINUS portholes-cut-by-grille' compositionally but had to fold every difference INSIDE one label or accept losing both tags. A linter that scans the SCAD source and flags `difference()/intersection() { label(...) ... }` patterns BEFORE compile would have saved 2-3 iterations.",
+    "Test loop turnaround is dominated by the openscad-wasm cold start (~5-10s). A persistent watcher mode for the harness (`tsx --watch`) that keeps the engine resident across SCAD edits would convert a 10s edit-test cycle into ~1s. Right now editing the SCAD literal in the test file is the path of least resistance and it's slow.",
+    "The harness reports per-label triangle counts but not bounding boxes or centroids. When I built the yoke with `rotate_extrude` + a chop-cube I had to eyeball whether the U actually opened upward — a one-line `bbox` echo per label would have caught one orientation bug instantly without screenshotting.",
+    "There's no way from the harness output to know if my labels overlap with each other geometrically (e.g. the cable rings clipping into the base). A `paintByLabel` collision summary ('grille shares 24 tris with body') would help me know when to nudge a region rather than waiting to see colors blotch in the viewer.",
+    "The `colors.md` examples lean on simple shapes; a worked example of a label wrapping a multi-step `difference()` (with the 'keep it inside ONE label' rule called out explicitly with an anti-pattern next to it) would have shortened my mental ramp. The text says 'labels are lost' but a side-by-side wrong/right snippet would land it harder."
+  ]
+}

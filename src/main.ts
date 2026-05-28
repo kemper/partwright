@@ -280,6 +280,12 @@ let currentManifold: any = null;
  *  to the triangle ids that came from the labelled input. Rebuilt on every
  *  successful run; null when no labels were registered or no code has run. */
 let currentLabelMap: Map<string, Set<number>> | null = null;
+/** Per-run list of label names the user wrote but that didn't make it into
+ *  `currentLabelMap` — typically because the label sat inside a SCAD boolean
+ *  the CGAL backend stripped, or a for-loop expansion produced a count
+ *  mismatch. Surfaced to agent callers via `runAndSave().lostLabels` and
+ *  `listLabels().lostLabels` so they don't have to diff by hand. */
+let currentLostLabels: string[] | null = null;
 
 // #geometry-data element — always-updated machine-readable state
 let geometryDataEl: HTMLElement;
@@ -3263,7 +3269,11 @@ async function main() {
       const check = guard(() => assertNumber(z, 'sliceAtZ(z)'));
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       if (!currentManifold) return { error: 'No geometry loaded' };
-      return sliceAtZ(currentManifold, z);
+      const result = sliceAtZ(currentManifold, z);
+      // sliceAtZ now returns a reference into a per-(manifold,z) memo cache.
+      // Hand external (console/AI) callers a copy so mutating the result can't
+      // corrupt the cache; in-app callers keep the fast shared reference.
+      return result ? structuredClone(result) : result;
     },
 
     /** Get bounding box of current geometry */
@@ -4345,6 +4355,9 @@ async function main() {
       }
 
       const warnings = geometryWarnings(newGeoData);
+      const lostLabels = currentLostLabels && currentLostLabels.length > 0
+        ? [...currentLostLabels]
+        : undefined;
       return {
         ...(assertions ? { passed: true } : {}),
         geometry: newGeoData,
@@ -4352,6 +4365,7 @@ async function main() {
         diff,
         galleryUrl: getGalleryUrl(),
         ...(warnings.length > 0 ? { warnings } : {}),
+        ...(lostLabels ? { lostLabels } : {}),
       };
     },
 
@@ -6818,7 +6832,12 @@ async function main() {
      *  when the code didn't use `api.label`. */
     listLabels() {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
-      if (!currentLabelMap || currentLabelMap.size === 0) return { count: 0, labels: [] };
+      const lost = currentLostLabels && currentLostLabels.length > 0
+        ? [...currentLostLabels]
+        : undefined;
+      if (!currentLabelMap || currentLabelMap.size === 0) {
+        return { count: 0, labels: [], ...(lost ? { lostLabels: lost } : {}) };
+      }
       const mesh = currentMeshData;
       const labels = [...currentLabelMap.entries()].map(([name, ids]) => {
         const stats = regionTriangleStats(ids, mesh);
@@ -6829,7 +6848,7 @@ async function main() {
           centroid: stats.centroid,
         };
       });
-      return { count: labels.length, labels };
+      return { count: labels.length, labels, ...(lost ? { lostLabels: lost } : {}) };
     },
 
     /** Paint a labelled feature by name. The label must have been
@@ -8011,6 +8030,7 @@ async function main() {
       // region descriptors look up their triangles here; rehydrating a
       // saved version re-runs the code first, which rebuilds the map.
       currentLabelMap = result.labelMap ?? null;
+      currentLostLabels = result.lostLabels ?? null;
       setPaintLabels(currentLabelMap);
 
       // Apply any existing color regions to the mesh. Refining regions —

@@ -117,6 +117,13 @@ export default defineConfig({
     __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
   },
   plugins: [tailwindcss(), absoluteUrls(), markdownCharset(), catalogSnapshot()],
+  esbuild: {
+    // .tsx files compile JSX via preact/jsx-runtime — keeps the bundle on
+    // Preact without pulling in React. Vanilla .ts files in the rest of
+    // the app are unaffected.
+    jsx: 'automatic',
+    jsxImportSource: 'preact',
+  },
   worker: {
     // ES module Workers support code-splitting and are required when
     // Worker files import other modules (agentWorker, engineWorker).

@@ -4,7 +4,7 @@
 // glue. All functions take their inputs as arguments — no closures over
 // editor state.
 
-import { sliceAtZ, getBoundingBox } from './crossSection';
+import { sliceMetrics, getBoundingBox } from './crossSection';
 import { getUnits } from './units';
 import type { MeshData } from './types';
 
@@ -101,13 +101,19 @@ export function computeGeometryStats(
   }
 
   const quartileSlices: Record<string, { z: number; area: number; contours: number }> = {};
-  if (bbox && manifold) {
+  // Slicing is a synchronous main-thread Manifold op. On very dense meshes the
+  // three auto-quartile slices computed on every run stall the UI right after
+  // the geometry appears. Past a generous triangle budget, skip them — the
+  // on-demand slice tools (sliceAtZ/sliceAtZVisual/inspect) still work when the
+  // user or agent explicitly asks for a section.
+  const SLICE_TRI_BUDGET = 250_000;
+  if (bbox && manifold && meshData.numTri <= SLICE_TRI_BUDGET) {
     const zRange = bbox.max[2] - bbox.min[2];
     for (const pct of [25, 50, 75]) {
       const z = bbox.min[2] + zRange * (pct / 100);
-      const s = sliceAtZ(manifold, z);
+      const s = sliceMetrics(manifold, z);
       if (s) {
-        quartileSlices[`z${pct}`] = { z, area: s.area, contours: s.polygons.length };
+        quartileSlices[`z${pct}`] = { z, area: s.area, contours: s.contours };
       }
     }
   }

@@ -88,10 +88,14 @@ self.onmessage = async (event: MessageEvent) => {
       circularSegments?: number;
     };
     try {
-      // Propagate main-thread quality setting so Worker uses same segment count.
-      // Reset in finally so a subsequent execution doesn't inherit a stale value
-      // if this execution's circularSegments message arrives out of order.
-      setCircularSegmentsOverride(typeof circularSegments === 'number' ? circularSegments : null);
+      // Propagate the main-thread quality setting so the Worker uses the same
+      // segment count. SCAD/replicad execute asynchronously, so two runs can
+      // overlap inside the worker; each carries its own circularSegments and
+      // sets it here before generating geometry, in message (== generation)
+      // order. We deliberately do NOT clear it back afterwards (see below) — the
+      // most-recently-started run, whose result the main thread keeps, sets the
+      // override last and so always reads the correct value.
+      if (typeof circularSegments === 'number') setCircularSegmentsOverride(circularSegments);
       // Populate the per-run import registry so api.imports works in user code.
       setActiveImports(imports ?? []);
 
@@ -132,6 +136,7 @@ self.onmessage = async (event: MessageEvent) => {
       const labelMapEntries: [string, number[]][] | null = result.labelMap
         ? Array.from(result.labelMap.entries()).map(([k, v]) => [k, Array.from(v)])
         : null;
+      const lostLabels = result.lostLabels ?? null;
 
       const mesh = result.mesh;
       if (mesh) {
@@ -147,7 +152,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, lostLabels },
           transfer,
         );
       } else {
@@ -158,6 +163,7 @@ self.onmessage = async (event: MessageEvent) => {
           error: result.error,
           diagnostics: result.diagnostics ?? [],
           labelMapEntries: null,
+          lostLabels: null,
         });
       }
 
@@ -178,10 +184,14 @@ self.onmessage = async (event: MessageEvent) => {
         callId,
         message: err instanceof Error ? err.message : String(err),
       });
-    } finally {
-      // Always reset so a subsequent execution doesn't inherit this run's value.
-      setCircularSegmentsOverride(null);
     }
+    // NB: intentionally no `finally { setCircularSegmentsOverride(null) }`.
+    // Clearing here would race a concurrent async run: when this (older) run
+    // finishes first, it would yank the override out from under a still-
+    // compiling newer run, which would then fall back to the worker's
+    // localStorage-less default segment count and silently render at the wrong
+    // quality. The per-run set above is sufficient; nothing reads the override
+    // outside an execute, and every execute sets it before generating geometry.
     return;
   }
 
