@@ -2308,7 +2308,6 @@ async function main() {
     onImportFile: async (file) => { await handleImportFile(file); },
     onImportInboxEntry: handleReimportInboxEntry,
     onCreateRelief: () => { openReliefImportFlow(); },
-    onToggleReliefStudio: () => { toggleReliefStudio(); },
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad') => {
       if (lang === getActiveLanguage()) return;
@@ -3148,6 +3147,21 @@ async function main() {
   initSimplifyUI(clipControls, simplifyHandlers);
   initMeasureToggle(clipControls);
   initOrbitLockToggle(clipControls);
+
+  // Relief / Edit colours toggle in the viewport overlay — paint/simplify are
+  // alongside this button so the colour palette is discoverable from the
+  // same place as the other model-editing tools (was previously in the top
+  // toolbar where it kept getting clipped behind Show Code).
+  const reliefViewportBtn = document.createElement('button');
+  reliefViewportBtn.id = 'relief-viewport-toggle';
+  reliefViewportBtn.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  reliefViewportBtn.textContent = '✦ Relief';
+  reliefViewportBtn.title = 'Edit colours / make a tile or relief from an image';
+  reliefViewportBtn.addEventListener('click', () => toggleReliefStudio());
+  const paintBtnEl = clipControls.querySelector('#paint-toggle');
+  if (paintBtnEl) clipControls.insertBefore(reliefViewportBtn, paintBtnEl);
+  else clipControls.appendChild(reliefViewportBtn);
+
   initEscapeMenuClose();
 
   // Initialize editor lock

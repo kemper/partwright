@@ -767,15 +767,18 @@ function seedRegionsByZBand(mesh: ReliefMesh, grid: HeightGrid, opts: ReliefOpti
   }
 
   // Collapse identical-colour neighbouring bands into single regions so the
-  // paint UI lists "Layer 0.6–1.2 mm" once, not once per layer.
+  // paint UI lists "Layer 0.6–1.2 mm" once, not once per layer. Push items
+  // one-by-one (not via spread) because triangleIds can hold millions of
+  // entries at 512-cell resolution and ...spread would overflow the JS call
+  // stack.
   const merged: { color: [number, number, number]; triangleIds: number[] }[] = [];
   for (const bucket of buckets) {
     if (bucket.triangleIds.length === 0) continue;
     const prev = merged[merged.length - 1];
     if (prev && prev.color[0] === bucket.color[0] && prev.color[1] === bucket.color[1] && prev.color[2] === bucket.color[2]) {
-      prev.triangleIds.push(...bucket.triangleIds);
+      for (let i = 0; i < bucket.triangleIds.length; i++) prev.triangleIds.push(bucket.triangleIds[i]);
     } else {
-      merged.push({ color: bucket.color, triangleIds: [...bucket.triangleIds] });
+      merged.push({ color: bucket.color, triangleIds: bucket.triangleIds });
     }
   }
   return merged.map((m, i) => ({ color: m.color, triangleIds: m.triangleIds, name: `Layer ${i + 1}` }));

@@ -27,8 +27,6 @@ export interface ToolbarCallbacks {
   onImportInboxEntry: (entry: ImportInboxEntry) => void | Promise<void>;
   /** Open the image → keychain / tile / stepped-relief import wizard. */
   onCreateRelief: () => void;
-  /** Toggle the Relief Studio overlay panel. */
-  onToggleReliefStudio: () => void;
   onLanguageSwitch: (lang: 'manifold-js' | 'scad') => void;
   onGoHome: () => void;
   /** Toggle the AI chat drawer — drives the prominent "Use AI" button in the toolbar. */
@@ -379,11 +377,6 @@ export function createToolbar(
   });
 
   toolbar.appendChild(importWrapper);
-
-  const btnRelief = createButton('btn-relief', '✦ Relief');
-  btnRelief.title = 'Make a tile / relief from an image — opens the wizard, or toggles the Relief Studio if one is already open.';
-  btnRelief.addEventListener('click', () => callbacks.onToggleReliefStudio());
-  toolbar.appendChild(btnRelief);
 
   // Export dropdown
   const exportWrapper = document.createElement('div');

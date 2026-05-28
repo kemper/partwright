@@ -7,8 +7,16 @@
 // palette for keychain-style imports.
 
 import type { PreviewMode, SwapGuide } from '../relief/types';
-import { listFilaments, addFilament, removeFilament, updateFilament, reorderFilaments, hexToRgb } from '../relief/filaments';
+import { hexToRgb } from '../relief/filaments';
 import { swapGuideToText, rgbToHex } from '../relief/swapGuide';
+import {
+  getRegions,
+  onChange as onRegionsChange,
+  updateRegionColor,
+  updateRegionName,
+  reorderRegion,
+  removeRegion,
+} from '../color/regions';
 
 export interface ReliefStudioDeps {
   getLayerHeight(): number;
@@ -159,15 +167,14 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
 
   // --- Colour palette ---
   const filSection = document.createElement('div');
-  filSection.appendChild(sectionLabel('Colour palette'));
+  filSection.appendChild(sectionLabel('Model colours'));
   const filHint = document.createElement('div');
   filHint.className = 'text-[10px] text-zinc-500 mb-1.5 leading-snug';
-  filHint.textContent = 'Click a swatch to recolour, click the name to rename, or use the arrows to reorder. Removed colours can be re-added with the picker below.';
+  filHint.textContent = 'Click a swatch to recolour the painted area, click the name to rename, or × to remove. Paint with the Paint tool to add new colours.';
   filSection.appendChild(filHint);
   const filList = document.createElement('div');
   filList.className = 'flex flex-col gap-1';
   filSection.appendChild(filList);
-  filSection.appendChild(buildAddFilamentForm(() => handle.refresh()));
   body.appendChild(filSection);
 
   // --- Swap guide ---
@@ -228,54 +235,53 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
 
   function renderFilaments(): void {
     filList.replaceChildren();
-    const filaments = listFilaments();
-    if (filaments.length === 0) {
+    // Backed by the SHARED region list — same data the paint UI shows. Edits
+    // here (recolour, rename, reorder, delete) call the regions module, which
+    // notifies the painted-mesh reconciler so the model updates in realtime.
+    const regions = getRegions();
+    if (regions.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'text-[11px] text-zinc-500';
-      empty.textContent = 'No colours yet — add one with the picker below.';
+      empty.textContent = 'No colours yet — paint a face on the model to add one.';
       filList.appendChild(empty);
       return;
     }
-    filaments.forEach((f, i) => {
+    regions.forEach((r, i) => {
       const row = document.createElement('div');
       row.className = 'flex items-center gap-1.5 py-1 px-1 -mx-1 rounded hover:bg-zinc-700/40 transition-colors';
 
-      // Click-to-edit swatch. Uses a native colour picker hidden inside the
-      // swatch element so the swatch itself is the affordance.
-      const swatchBtn = document.createElement('button');
-      swatchBtn.type = 'button';
-      swatchBtn.className = 'w-4 h-4 rounded-sm shrink-0 border border-black/30 cursor-pointer p-0 relative';
-      swatchBtn.style.backgroundColor = rgbToCSS(hexToRgb(f.hex));
-      swatchBtn.title = `Click to change colour (${f.hex})`;
+      // Click-to-edit swatch. The native `<input type="color">` IS the swatch
+      // (styled to look like one), so the OS picker pops up anchored to the
+      // swatch — not at the corner of a separately-sized hidden input, which
+      // was the root of the "picker closes too easily" complaint. `change`
+      // fires once when the picker is committed, so we reconcile the model
+      // mesh just once per pick instead of on every channel drag.
+      const hex = rgbToHex(r.color);
       const swatchPicker = document.createElement('input');
       swatchPicker.type = 'color';
-      swatchPicker.value = f.hex;
-      swatchPicker.className = 'absolute opacity-0 w-0 h-0 pointer-events-none';
-      swatchPicker.tabIndex = -1;
-      swatchPicker.addEventListener('input', () => {
-        updateFilament(f.id, { hex: swatchPicker.value });
-        handle.refresh();
+      swatchPicker.value = hex;
+      swatchPicker.className = 'w-5 h-5 shrink-0 rounded-sm border border-black/30 cursor-pointer bg-transparent p-0 [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:rounded-sm [&::-webkit-color-swatch]:border-0 [&::-moz-color-swatch]:rounded-sm [&::-moz-color-swatch]:border-0';
+      swatchPicker.title = `Click to change colour (${hex})`;
+      swatchPicker.addEventListener('change', () => {
+        updateRegionColor(r.id, hexToRgb(swatchPicker.value));
       });
-      swatchBtn.appendChild(swatchPicker);
-      swatchBtn.addEventListener('click', () => swatchPicker.click());
-      row.appendChild(swatchBtn);
+      row.appendChild(swatchPicker);
 
       // Click-to-rename: name span swaps to an input on click; commits on
       // blur/Enter and reverts on Escape.
       const name = document.createElement('span');
       name.className = 'text-[11px] text-zinc-300 flex-1 truncate cursor-text';
-      name.textContent = f.name;
+      name.textContent = r.name;
       name.title = 'Click to rename';
       name.addEventListener('click', () => {
         const input = document.createElement('input');
         input.type = 'text';
-        input.value = f.name;
+        input.value = r.name;
         input.className = 'flex-1 min-w-0 px-1.5 py-0.5 text-[11px] bg-zinc-900 border border-zinc-600 rounded text-zinc-200';
         const commit = (): void => {
           const trimmed = input.value.trim();
-          if (trimmed && trimmed !== f.name) {
-            updateFilament(f.id, { name: trimmed });
-            handle.refresh();
+          if (trimmed && trimmed !== r.name) {
+            updateRegionName(r.id, trimmed);
           } else {
             renderFilaments();
           }
@@ -291,20 +297,20 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
       });
       row.appendChild(name);
 
-      // Reorder buttons (up/down). Simpler than full drag-and-drop and still
-      // gives the user explicit control over palette order.
+      const triCount = document.createElement('span');
+      triCount.className = 'shrink-0 text-[10px] text-zinc-500 tabular-nums';
+      triCount.textContent = `${r.triangles.size}△`;
+      triCount.title = `${r.triangles.size} triangles painted`;
+      row.appendChild(triCount);
+
+      // Reorder buttons (up/down).
       const upBtn = document.createElement('button');
       upBtn.type = 'button';
       upBtn.className = 'shrink-0 w-5 h-5 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700/60 text-[10px] disabled:opacity-30';
       upBtn.textContent = '↑';
       upBtn.title = 'Move up';
       upBtn.disabled = i === 0;
-      upBtn.addEventListener('click', () => {
-        const ids = filaments.map(x => x.id);
-        [ids[i - 1], ids[i]] = [ids[i], ids[i - 1]];
-        reorderFilaments(ids);
-        handle.refresh();
-      });
+      upBtn.addEventListener('click', () => reorderRegion(r.id, i - 1));
       row.appendChild(upBtn);
 
       const downBtn = document.createElement('button');
@@ -312,13 +318,8 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
       downBtn.className = 'shrink-0 w-5 h-5 flex items-center justify-center rounded text-zinc-500 hover:text-zinc-200 hover:bg-zinc-700/60 text-[10px] disabled:opacity-30';
       downBtn.textContent = '↓';
       downBtn.title = 'Move down';
-      downBtn.disabled = i === filaments.length - 1;
-      downBtn.addEventListener('click', () => {
-        const ids = filaments.map(x => x.id);
-        [ids[i + 1], ids[i]] = [ids[i], ids[i + 1]];
-        reorderFilaments(ids);
-        handle.refresh();
-      });
+      downBtn.disabled = i === regions.length - 1;
+      downBtn.addEventListener('click', () => reorderRegion(r.id, i + 1));
       row.appendChild(downBtn);
 
       const rm = document.createElement('button');
@@ -326,11 +327,8 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
       rm.className =
         'shrink-0 w-7 h-7 flex items-center justify-center rounded text-zinc-500 hover:text-red-400 hover:bg-zinc-700/60 transition-colors text-base leading-none';
       rm.textContent = '×';
-      rm.title = `Remove ${f.name}`;
-      rm.addEventListener('click', () => {
-        removeFilament(f.id);
-        handle.refresh();
-      });
+      rm.title = `Remove ${r.name} from the model`;
+      rm.addEventListener('click', () => removeRegion(r.id));
       row.appendChild(rm);
       filList.appendChild(row);
     });
@@ -504,6 +502,11 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
     },
   };
 
+  // The Model colours list mirrors the region store; any external mutation
+  // (painting, undo, updateRegionColor from the paint UI) should re-render
+  // the list so the two views stay in sync.
+  onRegionsChange(() => { if (handle.isOpen()) renderFilaments(); });
+
   handle.refresh();
   return handle;
 }
@@ -515,43 +518,3 @@ function segButtonClass(active: boolean): string {
   return 'px-2 py-1.5 rounded text-[11px] bg-zinc-700/40 text-zinc-300 hover:bg-zinc-600/60 border border-transparent transition-colors text-center';
 }
 
-function buildAddFilamentForm(onAdded: () => void): HTMLElement {
-  const form = document.createElement('div');
-  form.className = 'flex items-center gap-1.5 mt-2 pt-2 border-t border-zinc-700/70';
-
-  const color = document.createElement('input');
-  color.type = 'color';
-  color.value = '#888888';
-  color.className = 'shrink-0 w-8 h-8 rounded cursor-pointer border-0 p-0 bg-transparent';
-  color.title = 'Colour';
-
-  const name = document.createElement('input');
-  name.type = 'text';
-  name.placeholder = 'Name';
-  name.className = 'flex-1 min-w-0 px-2 py-1.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200';
-  name.title = 'Colour name';
-
-  const add = document.createElement('button');
-  add.className = 'shrink-0 px-2 py-1.5 rounded text-[11px] bg-blue-500/30 text-blue-200 hover:bg-blue-500/50 border border-blue-500/50 transition-colors';
-  add.textContent = '+ Add';
-  add.title = 'Add this colour to the palette';
-
-  const submit = (): void => {
-    const trimmed = name.value.trim();
-    if (!trimmed) {
-      name.focus();
-      return;
-    }
-    addFilament({ name: trimmed, hex: color.value, td: 1 });
-    name.value = '';
-    color.value = '#888888';
-    onAdded();
-  };
-  add.addEventListener('click', submit);
-  name.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
-
-  form.appendChild(color);
-  form.appendChild(name);
-  form.appendChild(add);
-  return form;
-}

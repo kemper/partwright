@@ -77,11 +77,14 @@ test.describe('Relief Studio', () => {
     await expect(page.getByText('Image → keychain / tile / relief…')).toBeVisible();
   });
 
-  test('toolbar exposes the relief entry points', async ({ page }) => {
+  test('viewport overlay exposes the relief entry points', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
 
-    await expect(page.locator('#btn-relief')).toBeVisible();
+    // The Relief panel toggle lives in the viewport overlay alongside Paint /
+    // Measure / Simplify — was previously a top-toolbar button, which got
+    // clipped behind Show Code on narrower viewports.
+    await expect(page.locator('#relief-viewport-toggle')).toBeVisible();
 
     await page.locator('#btn-import').click();
     await expect(page.getByText('Image → keychain / tile / relief…')).toBeVisible();
