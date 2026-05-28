@@ -1,11 +1,16 @@
 // One-shot generator for new SCAD catalog entries.
 //
-// Differs from generate-catalog-entries.spec.ts in that it switches the
-// engine to 'scad' before running each example. SCAD WASM is heavy (~10MB)
-// and the first compile takes ~3s; we use serial+page-per-test for isolation
-// and wait for the engine flip to settle before issuing pw.run().
+// Differs from catalog-entries.ts in that it switches the engine to
+// 'scad' before running each example. SCAD WASM is heavy (~10MB) and
+// the first compile takes ~3s; we use serial+page-per-test for
+// isolation and wait for the engine flip to settle before issuing
+// pw.run().
 //
-// Run with: npx playwright test tests/generate-scad-catalog-entries.spec.ts
+// Lives outside `tests/` so the default `npm run test:e2e` (which uses
+// playwright.config.ts → testDir: './tests') never picks it up.
+//
+// Run with:
+//   npm run generate:catalog -- generators/scad-catalog-entries.ts
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';

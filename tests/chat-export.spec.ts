@@ -106,7 +106,7 @@ test.describe('Chat export', () => {
         chat?: { id?: string; sessionId?: string; blocks: { type: string; text?: string }[] }[];
       };
     }, id);
-    expect(exported.partwright).toBe('1.7');
+    expect(exported.partwright).toBe('1.8');
     expect(exported.chat?.length).toBe(3);
     expect(exported.chat?.[0].blocks[0].text).toBe('Design a widget bracket');
     expect(exported.chat?.[0].id).toBeUndefined();
