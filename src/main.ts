@@ -1709,10 +1709,11 @@ async function main() {
     return { mode: 'luminance', luminance: { ...opts.luminance, levels, invert }, note: `Tonal image — suggested Luminance relief with ${levels} levels${invert ? ' (inverted)' : ''}.` };
   }
 
-  function openReliefImportFlow(initialFile?: File): void {
+  function openReliefImportFlow(initialFile?: File, initialOptions?: ReliefOptions): void {
     openReliefImportModal({
       aiAvailable: true,
       initialFile,
+      initialOptions,
       onAiAssist: async (image, opts) => suggestReliefOptions(image, opts),
       onCreate: async (image, opts, name) => {
         try {
@@ -2151,7 +2152,8 @@ async function main() {
       // but gets to adjust knobs before re-generating.
       if (entry.source === 'IMAGE' || entry.source === 'SVG') {
         const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
-        openReliefImportFlow(file);
+        const savedOpts = (entry.metadata && typeof entry.metadata === 'object') ? entry.metadata as ReliefOptions : undefined;
+        openReliefImportFlow(file, savedOpts);
         return;
       }
       const cur = getState();

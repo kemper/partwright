@@ -16,6 +16,9 @@ export interface ReliefImportModalOptions {
   // Pre-load this file as if the user picked it (used by Recent Imports
   // re-clicks so the wizard reopens with the previous source).
   initialFile?: File;
+  // Pre-load these option values (recent imports keep the user's tweaks so
+  // a re-click reopens the wizard already tuned).
+  initialOptions?: ReliefOptions;
   // Called when the user clicks "AI assist"; returns option overrides to merge.
   onAiAssist?: (image: ImageData, opts: ReliefOptions) => Promise<Partial<ReliefOptions> & { note?: string }>;
   // Called on Create with the chosen image + resolved options + a base name.
@@ -52,6 +55,10 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   isOpen = true;
 
   const opts: ReliefOptions = structuredClone(DEFAULT_RELIEF_OPTIONS);
+  // Recent-imports re-clicks pass back the previously-used options so the user
+  // re-enters the wizard with their tweaks intact. Merge (not replace) so any
+  // new option fields added since that import still get their defaults.
+  if (options.initialOptions) mergeOptions(opts, options.initialOptions);
   let image: ImageData | null = null;
   let svgText: string | null = null;
   // The currently-picked source File, captured so we can register it with the
@@ -364,10 +371,12 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
       } else if (image) {
         await options.onCreate(image, opts, baseName);
       }
-      // Record the source file in the recent-imports inbox so a subsequent
-      // visit to the Import dropdown can re-open the wizard with this file.
+      // Record the source file + the settings the user chose in the recent
+      // imports inbox. The inbox dedupes on (filename, settings), so the same
+      // image with the same tweaks just bubbles to the top instead of stacking
+      // a new entry; tweaking any knob produces a separate entry.
       if (pickedFile) {
-        try { registerImport(pickedFile, pickedFile.name, svgText ? 'SVG' : 'IMAGE'); }
+        try { registerImport(pickedFile, pickedFile.name, svgText ? 'SVG' : 'IMAGE', structuredClone(opts)); }
         catch { /* best-effort, recents are nice-to-have */ }
       }
       shell.close();
