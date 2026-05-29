@@ -13,6 +13,7 @@ Built on [manifold-3d](https://github.com/elalish/manifold) (fast WASM boolean e
 - **Cross-sections** — Slice geometry at any Z height, inspect the 2D profile as SVG.
 - **Color regions** — Paint coplanar face regions with the in-app paint mode or the `paintRegion` console API; colors flow through GLB and 3MF exports for multi-material slicing.
 - **Export** — GLB, STL, OBJ, and 3MF download. GLB and 3MF carry per-region colors when present.
+- **Share links** — Turn the current version into a public link that encodes the whole design in the URL hash (gzipped, client-side — nothing is uploaded to any server). Opening a link shows a read-only preview (thumbnail + code + stats); the shared code never runs until the viewer chooses to fork it into their own local session.
 
 ## Quick start
 

@@ -25,6 +25,9 @@ export interface ToolbarCallbacks {
    *  decide visibility. */
   onExportSTEP: () => void;
   onExportSessionJSON: () => void;
+  /** "Share link…" — encode the current version into a read-only,
+   *  hash-encoded share URL and open the copy modal. */
+  onShareLink: () => void;
   onExportRawCode: () => void;
   onImportFile: (file: File) => void | Promise<void>;
   /** Re-import a blob already held in the inbox (e.g. recent-imports re-click). */
@@ -502,8 +505,18 @@ export function createToolbar(
     callbacks.onExportRawCode();
   });
 
+  const shareOpt = createDescribedItem(
+    'Share link…',
+    'Create a public read-only link to this version. Anyone can preview and fork it — nothing is uploaded.',
+  );
+  shareOpt.addEventListener('click', () => {
+    dropdown.classList.add('hidden');
+    callbacks.onShareLink();
+  });
+
   dropdown.appendChild(sessionOpt);
   dropdown.appendChild(codeOpt);
+  dropdown.appendChild(shareOpt);
 
   // Section: Recent Exports — reuse-anything-you-just-downloaded list. Hidden when empty.
   const recentDivider = createDivider();
