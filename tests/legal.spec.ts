@@ -40,9 +40,12 @@ test.describe('Legal page', () => {
     await page.goto('/legal');
     await expect(page.locator('#legal-page')).toBeVisible();
     await page.locator('#legal-page button', { hasText: 'Back' }).click();
-    // The editor's code pane is shown and the URL is /editor.
+    // The editor's code pane is shown and we're back on the editor route. A
+    // fresh editor visit restores/creates a session, so the URL may gain a
+    // ?session= suffix — match the route with or without it (a strict /editor$
+    // raced the session param being appended right after Back).
     await expect(page.locator('.cm-content')).toBeVisible();
-    await expect(page).toHaveURL(/\/editor$/);
+    await expect(page).toHaveURL(/\/editor(\?.*)?$/);
   });
 
   test('an unknown path still 404s (legal allowlist is exact)', async ({ page }) => {
