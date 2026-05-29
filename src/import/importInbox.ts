@@ -97,6 +97,26 @@ export function listImports(): ImportInboxEntry[] {
   return entries.slice();
 }
 
+/** Like {@link registerImport}, but first copies the blob's bytes into an
+ *  in-memory Blob. A File picked from an `<input>` (or dropped) is backed by
+ *  the OS file and read lazily; by the time the user re-imports it from the
+ *  Recent list the underlying file may have moved, been renamed, or had its
+ *  reference dropped by the browser, so reading it fails — `createImageBitmap`
+ *  reports this as "the source image could not be decoded", and STL/JSON
+ *  re-imports would hit the same read error. Materializing the bytes at import
+ *  time decouples the entry from the original file so re-import always works. */
+export async function registerImportSnapshot(blob: Blob, filename: string, source: ImportSource, metadata?: unknown, thumbnail?: string): Promise<ImportInboxEntry> {
+  let stable = blob;
+  try {
+    const buf = await blob.arrayBuffer();
+    stable = new Blob([buf], { type: blob.type });
+  } catch {
+    // Reading already failed (e.g. the file is gone) — fall back to the live
+    // reference; nothing more we can do, and a stale entry beats none.
+  }
+  return registerImport(stable, filename, source, metadata, thumbnail);
+}
+
 /** Look up a single entry by id. */
 export function getImport(id: string): ImportInboxEntry | null {
   return entries.find(e => e.id === id) ?? null;

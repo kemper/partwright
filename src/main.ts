@@ -76,7 +76,7 @@ import {
   hydrateExportInbox,
 } from './export/exportInbox';
 import {
-  registerImport,
+  registerImportSnapshot,
   classifyImportSource,
   hydrateImportInbox,
   type ImportInboxEntry,
@@ -2120,7 +2120,9 @@ async function main() {
       }
       // IMAGE registers itself inside handleImageImport (it owns the chosen
       // voxel options + thumbnail it needs to stash for a faithful re-import).
-      if (committed && source !== 'IMAGE') registerImport(file, file.name, source);
+      // Snapshot the bytes so a later re-import doesn't depend on the original
+      // (possibly moved/dropped) OS file handle.
+      if (committed && source !== 'IMAGE') await registerImportSnapshot(file, file.name, source);
       return committed;
     } catch (e) {
       alert(`Failed to import "${file.name}": ${(e as Error).message}`);
@@ -2197,9 +2199,11 @@ async function main() {
     // settings + a thumbnail, so re-clicking it reopens THIS modal (not relief)
     // pre-loaded with these knobs. Use the swapped-in source when present.
     const meta: ImportMetadata = { importer: 'voxel', options: opts };
-    // chosenImage always originates from decodeImage*ToImageData (a real
-    // ImageData), so the ImageDataLike→ImageData narrowing is safe here.
-    registerImport(sourceFile, chosenName, 'IMAGE', meta, createThumbnailFromImageData(chosenImage as ImageData));
+    // Snapshot the file bytes (see registerImportSnapshot): a re-import later
+    // must not depend on the original OS file still being readable. Use the
+    // swapped-in source when present. chosenImage always originates from
+    // decodeImage*ToImageData (a real ImageData), so the narrowing is safe.
+    await registerImportSnapshot(sourceFile, chosenName, 'IMAGE', meta, createThumbnailFromImageData(chosenImage as ImageData));
     return true;
   }
 
