@@ -4894,7 +4894,7 @@ async function main() {
         // active language too so a stale shape can never be served outside a
         // replicad session.
         if (getActiveLanguage() !== 'replicad') {
-          return { ok: false as const, error: 'STEP export is only available in BREP mode. Switch to BREP language (setActiveLanguage("replicad")) and run a model first.' };
+          return { ok: false as const, error: 'No BREP shape available. STEP export requires BREP mode — switch with setActiveLanguage("replicad") and run a model first.' };
         }
         const blob = await exportLastBrepAsSTEP();
         if (!blob) {
