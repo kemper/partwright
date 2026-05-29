@@ -20,6 +20,7 @@ export interface LandingCallbacks {
   onOpenEditor: () => void;
   onOpenHelp: () => void;
   onOpenCatalog: () => void;
+  onOpenWhatsNew: () => void;
   onOpenSession: (sessionId: string) => void;
 }
 
@@ -152,6 +153,18 @@ function buildHero(callbacks: LandingCallbacks): HTMLElement {
     pills.appendChild(pill);
   }
   hero.appendChild(pills);
+
+  // "What's new" announcement link — a discoverable entry point to the
+  // recently-shipped-features changelog.
+  const whatsNew = document.createElement('button');
+  whatsNew.className =
+    'mt-6 inline-flex items-center gap-2 text-xs text-zinc-300 bg-zinc-800/60 hover:bg-zinc-800 border border-zinc-700 rounded-full px-4 py-1.5 transition-colors';
+  whatsNew.innerHTML =
+    '<span class="text-[10px] font-semibold uppercase tracking-wider text-blue-400">New</span>' +
+    '<span>Voxels, BREP solids, image relief &amp; more</span>' +
+    '<span class="text-zinc-500">→</span>';
+  whatsNew.addEventListener('click', callbacks.onOpenWhatsNew);
+  hero.appendChild(whatsNew);
 
   return hero;
 }
@@ -547,6 +560,7 @@ function buildFooter(): HTMLElement {
   const items: { label: string; href: string; external?: boolean }[] = [
     { label: 'Editor', href: '/editor' },
     { label: 'Catalog', href: '/catalog' },
+    { label: "What's new", href: '/whats-new' },
     { label: 'How it works', href: '/help' },
     { label: 'AI agent docs', href: '/ai.md' },
     { label: 'GitHub', href: 'https://github.com/kemper/mainifold', external: true },

@@ -1,6 +1,6 @@
 # Partwright
 
-> AI-driven parametric CAD in the browser. Supports JavaScript (manifold-3d API) and OpenSCAD (.scad). All interaction is via the `window.partwright` console API. `window.mainifold` is a legacy alias.
+> AI-driven parametric CAD in the browser. Modeling engines: JavaScript (manifold-3d mesh API, incl. `api.sdf` signed-distance fields and `api.params`), OpenSCAD (.scad), BREP (replicad/OpenCASCADE solids with selective fillets/chamfers and STEP export), and voxel. All interaction is via the `window.partwright` console API. `window.mainifold` is a legacy alias.
 
 ## Entrypoint
 
@@ -70,4 +70,5 @@ await partwright.setActiveLanguage('scad') // Switch to OpenSCAD
 ## Docs
 
 - [Full API reference and workflow guide](/ai.md)
+- [What's new — recently shipped features](/whats-new)
 - `partwright.help()` in the browser console for live method discovery

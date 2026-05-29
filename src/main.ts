@@ -46,6 +46,7 @@ import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
 import { createCatalogPage, type CatalogManifestEntry } from './ui/catalog';
+import { createWhatsNewPage } from './ui/whatsNew';
 import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { createSessionBar } from './ui/sessionBar';
@@ -388,7 +389,7 @@ export type CoverageMode = typeof COVERAGE_MODES[number];
 const BASE_TITLE = 'Partwright';
 let _expectedTitle = 'Partwright — AI-Driven Parametric CAD in Your Browser';
 
-function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | '404' | 'catalog'; sessionName?: string | null }) {
+function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | '404' | 'catalog' | 'whats-new'; sessionName?: string | null }) {
   let route: RouteName;
   let titleOverride: string | undefined;
   if (context?.page === 'landing' || (context?.page === undefined && shouldShowLanding())) {
@@ -397,6 +398,8 @@ function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | 
     route = 'help';
   } else if (context?.page === 'catalog') {
     route = 'catalog';
+  } else if (context?.page === 'whats-new') {
+    route = 'whats-new';
   } else if (context?.page === '404') {
     route = '404';
   } else {
@@ -1459,9 +1462,13 @@ function shouldShowCatalog(): boolean {
   return window.location.pathname === '/catalog';
 }
 
+function shouldShowWhatsNew(): boolean {
+  return window.location.pathname === '/whats-new';
+}
+
 function shouldShow404(): boolean {
   const path = window.location.pathname;
-  return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog';
+  return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog' && path !== '/whats-new';
 }
 
 function getTabFromURL(): TabName {
@@ -2907,6 +2914,7 @@ async function main() {
     { id: 'toggle-diagnostics', title: 'Toggle diagnostic log', hint: 'View', keywords: 'errors warnings console', run: () => toggleDiagnosticsPanel() },
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
     { id: 'open-help', title: 'Open help', hint: 'Navigate', keywords: 'docs documentation guide', run: () => showHelp() },
+    { id: 'open-whats-new', title: "Open what's new", hint: 'Navigate', keywords: 'changelog recent features updates release notes', run: () => showWhatsNewPage() },
     { id: 'open-quality', title: 'Modeling quality settings', hint: 'Settings', keywords: 'resolution curve segments smoothness', run: () => showQualitySettingsModal() },
     { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); } },
   ]);
@@ -3124,6 +3132,7 @@ async function main() {
         onOpenEditor: openEditorFromLanding,
         onOpenHelp: () => showHelp(),
         onOpenCatalog: () => { void showCatalogPage(); },
+        onOpenWhatsNew: () => showWhatsNewPage(),
         onOpenSession: openSessionFromLanding,
       });
     }
@@ -3137,6 +3146,7 @@ async function main() {
     helpEl?.classList.add('hidden');
     notFoundEl?.classList.add('hidden');
     catalogEl?.classList.add('hidden');
+    whatsNewEl?.classList.add('hidden');
     page.classList.remove('hidden');
     updateDocumentTitle({ page: 'landing' });
   }
@@ -3155,6 +3165,7 @@ async function main() {
     landingEl?.classList.add('hidden');
     helpEl?.classList.add('hidden');
     catalogEl?.classList.add('hidden');
+    whatsNewEl?.classList.add('hidden');
     notFoundEl.classList.remove('hidden');
     updateDocumentTitle({ page: '404' });
   }
@@ -3194,6 +3205,7 @@ async function main() {
     if (landingEl) landingEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
     if (catalogEl) catalogEl.classList.add('hidden');
+    if (whatsNewEl) whatsNewEl.classList.add('hidden');
     helpEl.classList.remove('hidden');
     updateDocumentTitle({ page: 'help' });
   }
@@ -3224,8 +3236,40 @@ async function main() {
     if (landingEl) landingEl.classList.add('hidden');
     if (helpEl) helpEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
+    if (whatsNewEl) whatsNewEl.classList.add('hidden');
     catalogEl.classList.remove('hidden');
     updateDocumentTitle({ page: 'catalog' });
+  }
+
+  let whatsNewEl: HTMLElement | null = null;
+  let whatsNewHasAppBackTarget = false;
+  function showWhatsNewPage(options: { history?: 'push' | 'replace' | 'none' } = {}) {
+    const historyMode = options.history ?? 'push';
+    if (historyMode !== 'none') {
+      whatsNewHasAppBackTarget = currentURLPathAndSearch() !== '/whats-new';
+      updateAppHistory('/whats-new', historyMode);
+    }
+    if (!whatsNewEl) {
+      whatsNewEl = createWhatsNewPage(overlayContainer, {
+        onBack: () => {
+          if (whatsNewHasAppBackTarget) {
+            window.history.back();
+          } else {
+            updateAppHistory('/', 'replace');
+            void syncRouteFromURL();
+          }
+        },
+        onOpenEditor: openEditorFromLanding,
+      });
+    }
+    overlayContainer.classList.remove('hidden');
+    editorUI.classList.add('hidden');
+    if (landingEl) landingEl.classList.add('hidden');
+    if (helpEl) helpEl.classList.add('hidden');
+    if (catalogEl) catalogEl.classList.add('hidden');
+    if (notFoundEl) notFoundEl.classList.add('hidden');
+    whatsNewEl.classList.remove('hidden');
+    updateDocumentTitle({ page: 'whats-new' });
   }
 
   // Import a catalog entry as a fresh session and navigate to the editor.
@@ -3449,7 +3493,7 @@ async function main() {
     // Home — confusing because no editor / session is loaded to act on
     // it. /editor's own loader updates the AI session via onStateChange
     // when a session opens, so we don't need to set it explicitly here.
-    if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShow404()) {
+    if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShowWhatsNew() || shouldShow404()) {
       void setAiActiveSession(null);
     }
     // A share-link hash takes precedence over the normal editor sync on this
@@ -3463,6 +3507,8 @@ async function main() {
       showHelp({ history: 'none' });
     } else if (shouldShowCatalog()) {
       await showCatalogPage({ history: 'none' });
+    } else if (shouldShowWhatsNew()) {
+      showWhatsNewPage({ history: 'none' });
     } else if (shouldShow404()) {
       showNotFoundPage();
     } else {
@@ -3496,6 +3542,7 @@ async function main() {
   const showLanding = shouldShowLanding();
   const showHelpPage = shouldShowHelp();
   const showCatalog = shouldShowCatalog();
+  const showWhatsNew = shouldShowWhatsNew();
   const show404 = shouldShow404();
 
   if (showLanding) {
@@ -3504,6 +3551,8 @@ async function main() {
     showHelp({ history: 'none' });
   } else if (showCatalog) {
     await showCatalogPage({ history: 'none' });
+  } else if (showWhatsNew) {
+    showWhatsNewPage({ history: 'none' });
   } else if (show404) {
     showNotFoundPage();
   }
@@ -3902,7 +3951,7 @@ async function main() {
 
   // Start guided tour on first visit (after editor fully renders) — but not over
   // a shared preview, which is a read-only landing surface for an external link.
-  if (!showLanding && !showHelpPage && !showCatalog && !show404 && !hasShareHash()) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showWhatsNew && !show404 && !hasShareHash()) {
     maybeStartTour();
     maybeShowShortcutsHint();
   }
@@ -3913,7 +3962,7 @@ async function main() {
   // and degrades to a normal editable editor if the link is invalid. (The
   // editor + engine are ready here, so its internal ensureEditorReady resolves
   // immediately — no deadlock from awaiting it earlier in main().)
-  if (!showLanding && !showHelpPage && !showCatalog && !show404 && engineOk) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showWhatsNew && !show404 && engineOk) {
     if (hasShareHash()) {
       await enterSharedFromHash();
     } else {
@@ -4012,7 +4061,7 @@ async function main() {
   }
 
   // Set initial editor title if we're on the editor page
-  if (!showLanding && !showHelpPage && !showCatalog && !show404) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showWhatsNew && !show404) {
     updateDocumentTitle({ page: 'editor' });
   }
 
