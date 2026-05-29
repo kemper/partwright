@@ -208,6 +208,7 @@ import {
   type ExportedSession,
   type ExportOptions,
 } from './storage/sessionManager';
+import { isQuotaError } from './storage/quota';
 import { acquireSession as acquireSessionLock, initSessionLeader, onOwnershipChange } from './storage/sessionLock';
 import { initViewerMode, isReadOnlyViewer } from './ui/viewerMode';
 import type { Version, Part } from './storage/db';
@@ -3006,7 +3007,22 @@ async function main() {
 
   // Global undo / redo / save shortcuts (OS-aware, focus/tool-routed).
   const saveVersionWithToast = async () => {
-    const result = await saveCurrentVersion();
+    let result;
+    try {
+      result = await saveCurrentVersion();
+    } catch (e) {
+      // An explicit Save that fails (e.g. a full quota) must surface the
+      // failure — never the "Saved" toast — so the user knows it didn't
+      // persist. No caller inspects the result, so a warn toast is the
+      // signal (we don't re-throw, which would just be an unhandled
+      // rejection through the `void` call sites).
+      if (isQuotaError(e)) {
+        showToast('Storage full — could not save this version. Free up space or export your work.', { variant: 'warn' });
+      } else {
+        showToast(e instanceof Error ? e.message : 'Save failed', { variant: 'warn' });
+      }
+      return;
+    }
     if ('error' in result) {
       showToast(result.error, { variant: 'warn' });
     } else if ('skipped' in result) {
@@ -3605,6 +3621,30 @@ async function main() {
     updateDocumentTitle({ page: 'editor' });
   }
 
+  // On a session open where we land on the LATEST version (the version the
+  // user would be actively editing — the URL pins ?v=<latest> after every
+  // save, so this is the normal reopen case), prefer an autosaved draft for
+  // the active language when it exists and differs from the code we just
+  // loaded. This is what makes editor autosave recover unsaved typing across a
+  // reload / crash. It is deliberately skipped when we loaded an OLDER version
+  // (explicit history navigation), so a stale draft never shadows a version
+  // the user intentionally went back to.
+  async function restoreDraftIfNewer(): Promise<void> {
+    const sid = getState().session?.id;
+    if (!sid) return;
+    // Only at the tip: if a specific older version is loaded, don't override it.
+    const current = getState().currentVersion;
+    if (current) {
+      const versions = await listCurrentVersions();
+      const latestIndex = versions.reduce((m, v) => Math.max(m, v.index), -Infinity);
+      if (current.index !== latestIndex) return;
+    }
+    const draft = await readDraft(sid, getActiveLanguage());
+    if (draft == null || draft === getValue()) return;
+    setValue(draft);
+    await runCodeSync(draft);
+  }
+
   async function syncEditorFromURL() {
     transitionToEditor();
     const tab = getTabFromURL();
@@ -3625,6 +3665,10 @@ async function main() {
         const version = await openSession(sessionId, versionIndex ?? undefined, partId ?? undefined);
         if (version) {
           await loadVersionIntoEditor(version);
+          // restoreDraftIfNewer self-gates: it only acts when this is the
+          // latest version (the tip the user edits), not an older one they
+          // navigated back to.
+          await restoreDraftIfNewer();
           if (tab === 'gallery') refreshGallery();
           if (tab === 'versions') refreshVersions();
           return;
@@ -3635,6 +3679,7 @@ async function main() {
         // generic default example.
         if (getState().session?.id === sessionId) {
           await loadPartIntoEditor(getState().currentVersion);
+          await restoreDraftIfNewer();
           if (tab === 'gallery') refreshGallery();
           if (tab === 'versions') refreshVersions();
           return;
@@ -3819,15 +3864,46 @@ async function main() {
     },
   });
 
+  // Persist the editor's working buffer to the active session's draft so an
+  // accidental reload / tab-close / crash doesn't lose unsaved typing. Reads
+  // getActiveLanguage() + getValue() SYNCHRONOUSLY at fire time so the draft
+  // lands under the right (session, language) key — same key version-load and
+  // the language-toggle path use — and never writes OLD code under a NEW
+  // language. Skips when no session is open so we don't auto-create empty
+  // sessions (which would fight deleteIfEmpty on unload). Best-effort: a quota
+  // failure is swallowed with a warn toast since autosave is non-critical.
+  function autosaveDraft(): void {
+    const sid = getState().session?.id;
+    if (!sid) return;
+    const lang = getActiveLanguage();
+    const code = getValue();
+    void writeDraft(sid, lang, code).catch((e) => {
+      if (isQuotaError(e)) {
+        showToast('Storage full — could not autosave your draft. Free up space or export your work.', { variant: 'warn' });
+      }
+      // Other autosave failures are non-fatal and intentionally silent.
+    });
+  }
+
   // Init editor — only auto-run if auto-run is enabled. Auto-runs drive the
   // live preview but defer error surfacing (no panel/markers/log mid-keystroke);
   // the idle + blur hooks surface the held-back error gently once typing settles.
+  // The same idle/blur ticks autosave the draft. A programmatic setValue
+  // (version load / language switch) cancels the pending onIdle (see
+  // codeEditor.setValue), so autosave never fires for code the user didn't type.
   initEditor(editorContainer, defaultCode, (code: string) => {
     if (isAutoRun()) runCode(code, { surfaceErrors: false });
   }, 'manifold-js', {
     onEdit: () => clearEditorErrorPanel(editorErrorPanel),
-    onIdle: () => surfacePendingError(),
-    onBlur: () => surfacePendingError(),
+    onIdle: () => { surfacePendingError(); autosaveDraft(); },
+    onBlur: () => { surfacePendingError(); autosaveDraft(); },
+  });
+
+  // Autosave when the tab is hidden (switching apps, closing) — the most
+  // reliable "user is leaving" signal that still permits an async IDB write,
+  // unlike beforeunload which can't await. Singleton listener (main runs once).
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) autosaveDraft();
   });
 
   // When the user changes the modeling-quality preset, re-render the
