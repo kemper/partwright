@@ -71,6 +71,13 @@ export function showLanguageHelpModal(): Promise<void> {
   return new Promise((resolve) => {
     const shell = createModalShell({
       title: 'Pick a modeling language',
+      // Wider than the default 'md' so the four engine cards get room to
+      // breathe (and wrap less) on roomy screens, while `w-full` still lets
+      // it shrink to fit a phone. `scrollable` caps the height at the
+      // viewport and lets the body scroll instead of overflowing off-screen
+      // on short windows — the cards are taller than many laptop screens.
+      maxWidth: '2xl',
+      scrollable: true,
       onClose: () => resolve(),
     });
 
@@ -123,11 +130,14 @@ export function showLanguageHelpModal(): Promise<void> {
       shell.body.appendChild(wrapper);
     }
 
+    // Dismiss button lives in the shell's pinned footer (not the scrolling
+    // body) so it stays reachable without scrolling to the bottom of a long,
+    // scrollable card list.
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
-    closeBtn.className = 'mt-2 px-3 py-1.5 rounded text-sm font-medium transition-colors bg-zinc-700 hover:bg-zinc-600 text-zinc-100';
+    closeBtn.className = 'px-3 py-1.5 rounded text-sm font-medium transition-colors bg-zinc-700 hover:bg-zinc-600 text-zinc-100';
     closeBtn.textContent = 'Got it';
     closeBtn.addEventListener('click', () => shell.close());
-    shell.body.appendChild(closeBtn);
+    shell.footer.appendChild(closeBtn);
   });
 }
