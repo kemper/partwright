@@ -49,10 +49,10 @@ export function activate(): void {
   rebuildCuboid();
 
   const canvas = getRenderer().domElement;
-  canvas.addEventListener('mousemove', onMouseMove);
-  canvas.addEventListener('mousedown', onMouseDown);
-  canvas.addEventListener('mouseup', onMouseUp);
-  canvas.addEventListener('mouseleave', onMouseLeave);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointercancel', onPointerCancel);
 }
 
 export function deactivate(): void {
@@ -64,10 +64,10 @@ export function deactivate(): void {
   hoverCoord = null;
 
   const canvas = getRenderer().domElement;
-  canvas.removeEventListener('mousemove', onMouseMove);
-  canvas.removeEventListener('mousedown', onMouseDown);
-  canvas.removeEventListener('mouseup', onMouseUp);
-  canvas.removeEventListener('mouseleave', onMouseLeave);
+  canvas.removeEventListener('pointermove', onPointerMove);
+  canvas.removeEventListener('pointerdown', onPointerDown);
+  canvas.removeEventListener('pointerup', onPointerUp);
+  canvas.removeEventListener('pointercancel', onPointerCancel);
 
   disposeCuboid();
 }
@@ -220,7 +220,7 @@ function pickAxisCoord(event: MouseEvent): number | null {
   return axis === 'x' ? hit.x : axis === 'y' ? hit.y : hit.z;
 }
 
-function onMouseMove(event: MouseEvent): void {
+function onPointerMove(event: PointerEvent): void {
   if (!active) return;
 
   const coord = pickAxisCoord(event);
@@ -238,7 +238,7 @@ function onMouseMove(event: MouseEvent): void {
   refreshVisual();
 }
 
-function onMouseDown(event: MouseEvent): void {
+function onPointerDown(event: PointerEvent): void {
   if (!active) return;
   if (event.button !== 0) return;
 
@@ -248,16 +248,21 @@ function onMouseDown(event: MouseEvent): void {
   dragging = true;
   dragStart = coord;
   dragEnd = coord;
+  // Capture the pointer so the drag keeps tracking even if it leaves the
+  // canvas; pointerup then still fires here, replacing the old mouseleave
+  // edge handling.
+  try { (event.target as Element)?.setPointerCapture?.(event.pointerId); } catch { /* capture is best-effort */ }
   refreshVisual();
   event.preventDefault();
 }
 
-function onMouseUp(event: MouseEvent): void {
+function onPointerUp(event: PointerEvent): void {
   if (!active) return;
   if (event.button !== 0) return;
   if (!dragging) return;
 
   dragging = false;
+  try { (event.target as Element)?.releasePointerCapture?.(event.pointerId); } catch { /* ignore */ }
 
   if (dragStart !== null && dragEnd !== null) {
     const offset = Math.min(dragStart, dragEnd);
@@ -272,9 +277,11 @@ function onMouseUp(event: MouseEvent): void {
   refreshVisual();
 }
 
-function onMouseLeave(): void {
+function onPointerCancel(event: PointerEvent): void {
   if (!active) return;
-  // If the user releases their mouse outside the canvas, commit what we have.
+  try { (event.target as Element)?.releasePointerCapture?.(event.pointerId); } catch { /* ignore */ }
+  // Pointer was cancelled (e.g. gesture taken over by the OS); commit what we
+  // have, mirroring the previous mouseleave behavior.
   if (dragging && dragStart !== null && dragEnd !== null) {
     const offset = Math.min(dragStart, dragEnd);
     const thickness = Math.max(dragStart, dragEnd) - offset;

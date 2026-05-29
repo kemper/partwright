@@ -125,7 +125,7 @@ function remeshAndPush(): void {
   cbMeshUpdate?.(mesh);
 }
 
-function onPointerDown(event: MouseEvent): void {
+function onPointerDown(event: PointerEvent): void {
   if (!active || event.button !== 0) return;
   const hit = pickFace(event);
   if (!hit) return;
@@ -134,7 +134,7 @@ function onPointerDown(event: MouseEvent): void {
 
 function attachPointerHandler(): void {
   const canvas = getRenderer().domElement;
-  canvas.addEventListener('mousedown', onPointerDown);
+  canvas.addEventListener('pointerdown', onPointerDown);
   canvas.style.cursor = 'crosshair';
   // Veto OrbitControls on left-button hits over the model so paint doesn't
   // orbit. Off-model clicks fall through so the camera still rotates.
@@ -146,7 +146,7 @@ function attachPointerHandler(): void {
 
 function detachPointerHandler(): void {
   const canvas = getRenderer().domElement;
-  canvas.removeEventListener('mousedown', onPointerDown);
+  canvas.removeEventListener('pointerdown', onPointerDown);
   canvas.style.cursor = '';
   if (removeSuppressor) { removeSuppressor(); removeSuppressor = null; }
 }

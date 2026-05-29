@@ -54,12 +54,18 @@ function parseSingleObject(objText: string): MeshData | null {
   while ((m = VERT_RE.exec(objText)) !== null) {
     positions.push(parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3]));
   }
+  const numVert = positions.length / 3;
   const tris: number[] = [];
   TRI_RE.lastIndex = 0;
   while ((m = TRI_RE.exec(objText)) !== null) {
     const a = parseInt(m[1], 10);
     const b = parseInt(m[2], 10);
     const c = parseInt(m[3], 10);
+    // Drop NaN or out-of-range indices — a bad index would point past
+    // vertProperties and make Manifold.ofMesh reject/mishandle the mesh.
+    if (!Number.isInteger(a) || !Number.isInteger(b) || !Number.isInteger(c)) continue;
+    if (a < 0 || b < 0 || c < 0) continue;
+    if (a >= numVert || b >= numVert || c >= numVert) continue;
     if (a === b || b === c || a === c) continue; // skip degenerate
     tris.push(a, b, c);
   }

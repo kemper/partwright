@@ -304,6 +304,12 @@ let paintGeneration = 0;
  *  an orphan — neither applies to an internal abort. Cleared after the
  *  cancel handler runs. */
 let pendingInternalAbort = false;
+/** Id of the most recently created brushStroke region that is still awaiting
+ *  the worker's triangle resolution. `handlePaintCancel` removes exactly this
+ *  region on a user cancel — narrowing to the id avoids wiping an unrelated
+ *  brushStroke region that legitimately resolved to zero triangles. Cleared
+ *  once the stroke's refine lands (or its cancel is handled). */
+let pendingStrokeRegionId: number | null = null;
 /** Deferred that resolves once `asyncReconcileInFlight` flips false (so any
  *  coalesced follow-ups have also drained). `partwright.waitForPaint()` and
  *  the e2e tests that drive the brush via mouse events await this to know
@@ -1013,7 +1019,10 @@ function paintBrushStrokeSync(
   color: [number, number, number],
   descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }>,
 ): { id: number; name: string; triangles: Set<number> } {
-  return withSyncReconcile(() => addRegion(name, color, 'paintbrush', descriptor, new Set<number>()));
+  const region = withSyncReconcile(() => addRegion(name, color, 'paintbrush', descriptor, new Set<number>()));
+  // Track this as the in-flight stroke so a user cancel removes exactly it.
+  pendingStrokeRegionId = region.id;
+  return region;
 }
 
 /** True when `a` starts with exactly the entries of `b` (by reference). */
@@ -1076,6 +1085,8 @@ async function reconcilePaintedGeometryAsyncTick(): Promise<void> {
     const newDesc = strokesNow[strokesNow.length - 1] as Extract<RegionDescriptor, { kind: 'brushStroke' }>;
     try {
       await appendStrokeRefineAsync(newDesc);
+      // The stroke resolved successfully, so it's no longer a cancel orphan.
+      pendingStrokeRegionId = null;
       // Region set may have shifted while the await was in flight (coalesced
       // changes, or an agent-API sync action via withSyncReconcile). Re-read.
       lastStrokeList = strokeDescriptors();
@@ -1269,8 +1280,16 @@ function handlePaintCancel(): void {
 
   // Real user-initiated cancel. The mesh is still pre-stroke (the worker
   // never applied a result, since the rejection happened before the apply).
-  // Drop any orphaned brushStroke regions (empty triangles → unresolved).
-  const orphans = getRegions().filter(r => r.descriptor.kind === 'brushStroke' && r.triangles.size === 0);
+  // Drop the orphaned brushStroke region (empty triangles → unresolved). We
+  // remove exactly the region this cancelled stroke added (tracked by id at
+  // creation), still requiring its triangle set to be empty — removing every
+  // zero-triangle brushStroke region would also wipe an unrelated region that
+  // legitimately resolved to zero triangles.
+  const cancelledId = pendingStrokeRegionId;
+  pendingStrokeRegionId = null;
+  const orphans = cancelledId == null
+    ? []
+    : getRegions().filter(r => r.id === cancelledId && r.descriptor.kind === 'brushStroke' && r.triangles.size === 0);
   if (orphans.length > 0) {
     suspendReconcile = true;
     try {
@@ -1452,14 +1471,17 @@ function shouldShowLanding(): boolean {
 }
 
 function shouldShowHelp(): boolean {
-  return window.location.pathname === '/help';
+  // A `/help#share=…` link must open the shared preview (editor), not Help —
+  // mirrors shouldShowLanding's share-hash exclusion.
+  return window.location.pathname === '/help' && !hasShareHash();
 }
 
 function shouldShowCatalog(): boolean {
-  return window.location.pathname === '/catalog';
+  return window.location.pathname === '/catalog' && !hasShareHash();
 }
 
 function shouldShow404(): boolean {
+  if (hasShareHash()) return false;
   const path = window.location.pathname;
   return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog';
 }
@@ -1862,7 +1884,10 @@ async function main() {
       const offset = bounds.min[2] + i * thickness;
       const tris = findSlabTriangles(currentMeshData, [0, 0, 1], offset, thickness);
       if (tris.size === 0) continue;
-      const fil = palette[i % palette.length];
+      // palette is empty if the user hid every default filament and added no
+      // custom ones; fall back to neutral grey so we colour the slab instead
+      // of throwing on `fil.hex` (palette[NaN] === undefined).
+      const fil = palette.length > 0 ? palette[i % palette.length] : { hex: '#808080' };
       addRegion(`Level ${i + 1}`, hexToRgb(fil.hex), 'slab', { kind: 'slab', normal: [0, 0, 1], offset, thickness }, tris);
     }
     refreshModelColors();
@@ -3305,7 +3330,11 @@ async function main() {
    *  re-firing routing. Modeled on the ?takeover=1 strip — keeps path + search,
    *  drops only the hash, so refresh / Back never re-decodes the link. */
   function stripShareHash(): void {
-    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    // Entering a shared preview always shows the editor, so normalize the path
+    // to /editor — otherwise pasting #share=… onto /catalog or /help would
+    // leave the URL claiming a non-editor page while the editor is on screen.
+    // App-generated links already use /editor#share=, so this is a no-op there.
+    window.history.replaceState(null, '', '/editor' + window.location.search);
   }
 
   /** Open a `#share=…` link as a read-only preview. Decodes + validates the

@@ -37,7 +37,10 @@ const HARD_MAX = Math.min(256, COORD_MAX - COORD_MIN);
  *  voxels along +Y. */
 export function imageDataToVoxelGrid(image: ImageDataLike, options: ImageToVoxelOptions = {}): VoxelGrid {
   const maxSize = Math.max(1, Math.min(Math.floor(options.maxSize ?? DEFAULTS.maxSize), HARD_MAX));
-  const depth = Math.max(1, Math.floor(options.depth ?? DEFAULTS.depth));
+  // Upper-clamp to the grid's coordinate range (y runs 0..depth-1, and
+  // grid.set throws once a coord exceeds COORD_MAX) so a pathological depth
+  // degrades instead of throwing mid-loop — mirrors the maxSize clamp above.
+  const depth = Math.max(1, Math.min(Math.floor(options.depth ?? DEFAULTS.depth), COORD_MAX));
   const alphaThreshold = Math.max(0, Math.min(255, options.alphaThreshold ?? DEFAULTS.alphaThreshold));
 
   const { width: sw, height: sh, data } = image;
