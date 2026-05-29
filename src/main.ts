@@ -22,7 +22,7 @@
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, simplifyInWorker, type Language } from './geometry/engine';
+import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
@@ -2251,19 +2251,29 @@ async function main() {
 
     const baseName = file.name.replace(/\.(step|stp)$/i, '');
     if (target === 'brep') {
+      // Switch the editor to the BREP language and open a fresh session named
+      // after the file FIRST, so the session-change listener's
+      // clearBrepImports/clearBrepShape fires (and is enqueued on the worker)
+      // before we push this file's shape — otherwise it would wipe the
+      // just-imported shape. switchLanguage resets the editor to a stub
+      // starter; we overwrite that below.
+      if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
+      await createSession(baseName, 'replicad');
       // Lazy-loads OCCT on the first call; subsequent imports are instant.
       try {
+        // Drop any previously-imported BREP shapes first — otherwise the
+        // worker's pending-imports list accumulates and the seeded
+        // `return api.imports[0]` would render the *first* file, not this one.
+        // (Belt-and-suspenders with the session-change clear above, and the
+        // sole guard when the import doesn't change the active session.)
+        await clearBrepImports();
         await importSTEPToBrep(file, file.name);
       } catch (e) {
         alert(`Failed to parse STEP file: ${(e as Error).message}`);
         return false;
       }
-      // Switch the editor to the BREP language, open a fresh session named
-      // after the file, and seed the editor with the canonical "return the
-      // import" form so the user can iterate immediately. switchLanguage
-      // resets the editor to a stub starter; we overwrite that.
-      if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
-      await createSession(baseName, 'replicad');
+      // Seed the editor with the canonical "return the import" form so the
+      // user can iterate immediately.
       const starter = `// Imported from ${file.name}\n// api.imports[0] is the BREP shape parsed from the STEP file.\nconst { BREP } = api;\nreturn api.imports[0];\n`;
       setValue(starter);
       runCode(starter);
@@ -2912,6 +2922,14 @@ async function main() {
       // the TDZ on toolbar-build (and TS would flag a "used before
       // declaration" anyway). The underlying worker round-trip is the same.
       try {
+        // STEP export only makes sense for the active BREP/replicad session.
+        // The retained shape is cleared on session/language change, but guard
+        // here too so a stale shape can never be served outside a replicad
+        // session.
+        if (getActiveLanguage() !== 'replicad') {
+          showToast('STEP export is only available in BREP mode. Switch to BREP and run a model first.', { variant: 'warn' });
+          return;
+        }
         const blob = await exportLastBrepAsSTEP();
         if (!blob) {
           showToast('No BREP shape available. Run a model in BREP mode first.', { variant: 'warn' });
@@ -4442,8 +4460,21 @@ async function main() {
   // disabled, with a "Take over" banner).
   initViewerMode();
 
+  // Track the active session id so BREP worker state (pending STEP imports +
+  // the retained STEP-export shape) can be flushed when the session changes —
+  // both live module-global in the worker and would otherwise bleed across
+  // sessions (a second STEP-as-BREP import accumulating in `api.imports`, or
+  // exportSTEP serializing a previous session's shape).
+  let lastBrepSessionId: string | null = getState().session?.id ?? null;
+
   // Update document title when session state changes (create, open, close, rename)
   onStateChange((state) => {
+    const sid = state.session?.id ?? null;
+    if (sid !== lastBrepSessionId) {
+      lastBrepSessionId = sid;
+      void clearBrepImports().catch(() => {});
+      void clearBrepShape().catch(() => {});
+    }
     updateDocumentTitle({ page: 'editor', sessionName: state.session?.name ?? null });
     // Re-bind the AI panel to the current session so chat history follows.
     void setAiActiveSession(state.session?.id ?? null);
@@ -4560,6 +4591,11 @@ async function main() {
    *  only updated on session creation or by an explicit AI/console call. */
   async function applyEngineLanguage(lang: Language) {
     if (lang === getActiveLanguage()) return;
+    // Leaving a replicad session: drop the retained STEP-export shape so a
+    // later exportSTEP can't serialize a stale shape that belonged to the
+    // previous BREP model (it's module-global in the worker and only replaced
+    // by the next replicad run).
+    if (getActiveLanguage() === 'replicad') void clearBrepShape().catch(() => {});
     setActiveLanguage(lang);
     setEditorLanguage(lang);
     setToolbarLanguage(lang);
@@ -4854,6 +4890,12 @@ async function main() {
     async exportSTEP(filename?: string) {
       assertString(filename, 'exportSTEP(filename)', { optional: true });
       try {
+        // The retained shape is cleared on session/language change; guard the
+        // active language too so a stale shape can never be served outside a
+        // replicad session.
+        if (getActiveLanguage() !== 'replicad') {
+          return { ok: false as const, error: 'STEP export is only available in BREP mode. Switch to BREP language (setActiveLanguage("replicad")) and run a model first.' };
+        }
         const blob = await exportLastBrepAsSTEP();
         if (!blob) {
           return { ok: false as const, error: 'No BREP shape available. Switch to BREP language (setActiveLanguage("replicad")) and run a model first.' };
@@ -9840,7 +9882,16 @@ async function main() {
         currentManifold = null;
       } else {
         const mod = getModule();
-        currentManifold = (mod && result.mesh) ? mod.Manifold.ofMesh(result.mesh) : null;
+        // SCAD / replicad engines deliberately tolerate non-watertight output
+        // and return it as a raw mesh — ofMesh() throws "Not manifold" on
+        // those. Treat a failed reconstruction as render-only (parity with the
+        // renderOnly branch and the import flow) rather than letting the run
+        // handler blow up.
+        try {
+          currentManifold = (mod && result.mesh) ? mod.Manifold.ofMesh(result.mesh) : null;
+        } catch {
+          currentManifold = null;
+        }
       }
       // Capture the labelled-construction map for this run. byLabel
       // region descriptors look up their triangles here; rehydrating a
