@@ -1,6 +1,4 @@
-// Legal page — privacy summary, terms / no-warranty, and a code-execution
-// disclaimer. Mirrors the shape of createHelpPage(container, callbacks) so the
-// page-level routing in main.ts can treat it the same way.
+// Legal page — privacy, terms/no-warranty, and a code-execution disclaimer.
 
 export interface LegalCallbacks {
   onBack: () => void;
@@ -23,14 +21,12 @@ export function createLegalPage(
   const content = document.createElement('div');
   content.className = 'max-w-3xl w-full px-6 py-12';
 
-  // Back button
   const backBtn = document.createElement('button');
   backBtn.className = 'text-xs text-zinc-500 hover:text-zinc-300 mb-8 transition-colors';
   backBtn.textContent = '← Back';
   backBtn.addEventListener('click', callbacks.onBack);
   content.appendChild(backBtn);
 
-  // Title
   const title = document.createElement('h1');
   title.className = 'text-2xl font-bold mb-3';
   title.textContent = 'Legal';
@@ -68,7 +64,6 @@ export function createLegalPage(
     },
   ];
 
-  // Render sections
   for (const section of sections) {
     const h = document.createElement('h2');
     h.id = section.id;
@@ -82,7 +77,6 @@ export function createLegalPage(
     content.appendChild(p);
   }
 
-  // Footer with help link
   const footer = document.createElement('div');
   footer.className = 'mt-12 pt-6 border-t border-zinc-800 text-xs text-zinc-600';
   footer.innerHTML = 'More about how the app works: <a href="/help" class="text-zinc-500 hover:text-zinc-300 transition-colors">/help</a>';

@@ -1,9 +1,6 @@
 import { test, expect } from 'playwright/test';
 
-// The /legal route renders a standalone legal page (privacy, terms / no
-// warranty, code-execution disclaimer). It must be reachable directly by
-// URL, linked from the landing-page footer, return to the editor via its
-// in-page Back button, and an unknown path must still 404.
+// Coverage for the /legal route: direct load, footer link, in-page Back, and 404.
 
 test.beforeEach(async ({ page }) => {
   // Suppress the first-run guided tour — its backdrop intercepts clicks.

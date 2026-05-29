@@ -1,10 +1,5 @@
-// E2E coverage for the safety notes added to the UI:
-//  - The session import-preview modal warns that importing runs the file's
-//    code in the browser, before the user confirms (Item 2). The console
-//    importSession* API stays unguarded (covered elsewhere).
-//  - The Gemini key modal carries a note about the key travelling in the URL
-//    (Item 3).
-// Runs with no external network.
+// E2E for the import-preview code-execution warning and the Gemini
+// key-in-URL note. No external network.
 
 import { test, expect, type Page } from 'playwright/test';
 
@@ -24,9 +19,8 @@ test.describe('Import safety note', () => {
   test('the import-preview modal warns about code execution before confirming', async ({ page }) => {
     await openEditor(page);
 
-    // Build a real .partwright.json payload via the export API so the preview
-    // summary renders, then feed it through the UI import path (which is what
-    // shows showImportPreview — the console API path bypasses it by design).
+    // Build a real payload via the export API, then drive the UI import path
+    // (the console API path bypasses showImportPreview by design).
     const json = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: {
         createSession: (n?: string) => Promise<unknown>;
@@ -65,9 +59,8 @@ test.describe('Gemini key note', () => {
   test('the Gemini connect modal explains the key travels in the URL', async ({ page }) => {
     await openEditor(page);
 
-    // Open the AI key modal for Gemini directly via the exported helper used by
-    // the panel, so the test doesn't depend on the exact toolbar→provider UI
-    // navigation. The modal mounts into the document body.
+    // Open the Gemini key modal directly via the exported helper (avoids
+    // depending on the toolbar→provider navigation).
     await page.evaluate(async () => {
       const mod = await import('/src/ui/aiKeyModal.tsx');
       (mod as { showAiKeyModal: (cb: { onConnected: () => void; provider?: string }) => void })
