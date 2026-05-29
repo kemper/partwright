@@ -2592,32 +2592,36 @@ async function main() {
   // with a toast rather than minting a link that silently won't open.
   const MAX_SHARE_ENCODED_CHARS = 1_500_000;
 
-  /** Encode the current committed version into a `#share=…` link and open the
-   *  copy modal. Saves the current buffer first (exportSession reads the SAVED
-   *  version), feature-detects CompressionStream, and trims the thumbnail if the
-   *  link is too large before giving up. */
-  const actionShareLink = async (): Promise<void> => {
+  /** Encode the current committed version into a self-contained `#share=…`
+   *  read-only link. Saves the current buffer first (exportSession reads the
+   *  SAVED version), feature-detects CompressionStream, and trims the thumbnail
+   *  if the link is too large before giving up. Returns `{ url, encodedBytes }`
+   *  on success or `{ error }` with a user-facing message. Pure builder: it does
+   *  no UI — callers decide whether to open the modal (toolbar) or just return
+   *  the string (the partwright API).
+   *
+   *  `notify` optionally surfaces the "multi-part designs share one part" toast;
+   *  the API path passes a no-op so it never pops UI out from under an agent. */
+  const buildShareLink = async (
+    notify: (msg: string) => void = () => {},
+  ): Promise<{ url: string; encodedBytes: number } | { error: string }> => {
     if (typeof CompressionStream === 'undefined') {
-      showToast('Sharing needs a newer browser', { variant: 'warn' });
-      return;
+      return { error: 'Sharing needs a newer browser' };
     }
     if (!getState().session || !engineOk) {
-      showToast('Open or create a design before sharing.', { variant: 'warn' });
-      return;
+      return { error: 'Open or create a design before sharing.' };
     }
     // exportSession reads the SAVED version from IndexedDB, so commit the current
     // buffer first — both to give a fresh /editor (currentVersion: null) a
     // version to export and to capture any unsaved edits the user is sharing.
     const saved = await saveCurrentVersion();
     if ('error' in saved) {
-      showToast(saved.error, { variant: 'warn' });
-      return;
+      return { error: saved.error };
     }
     const state = getState();
     const versionIndex = state.currentVersion?.index;
     if (versionIndex === undefined) {
-      showToast('No saved version to share yet.', { variant: 'warn' });
-      return;
+      return { error: 'No saved version to share yet.' };
     }
 
     const sessionId = state.session!.id;
@@ -2630,8 +2634,7 @@ async function main() {
       includeNotes: false,
     });
     if (!exported) {
-      showToast('Could not prepare this design for sharing.', { variant: 'warn' });
-      return;
+      return { error: 'Could not prepare this design for sharing.' };
     }
     if (state.parts.length > 1) {
       // A share link carries one version of one part. Tell the user so a
@@ -2639,7 +2642,7 @@ async function main() {
       // after the current part.
       const partName = state.currentPart?.name;
       if (partName) exported.session = { ...exported.session, name: partName };
-      showToast(`Sharing only "${partName ?? 'the current part'}" — multi-part designs share one part per link.`, { variant: 'neutral' });
+      notify(`Sharing only "${partName ?? 'the current part'}" — multi-part designs share one part per link.`);
     }
 
     try {
@@ -2655,19 +2658,27 @@ async function main() {
         encoded = await encodeShare(slimmed);
       }
       if (encoded.length > MAX_SHARE_ENCODED_CHARS) {
-        showToast('Design too large to share via link', { variant: 'warn' });
-        return;
+        return { error: 'Design too large to share via link' };
       }
-      const url = `${location.origin}/editor#share=${encoded}`;
-      openShareModal(url, encoded.length);
+      return { url: `${location.origin}/editor#share=${encoded}`, encodedBytes: encoded.length };
     } catch (e) {
       if (e instanceof ShareUnsupportedError) {
-        showToast('Sharing needs a newer browser', { variant: 'warn' });
-      } else {
-        showToast('Could not create a share link.', { variant: 'warn' });
-        errorLog.capture({ level: 'error', source: 'app', message: `share encode failed: ${e instanceof Error ? e.message : String(e)}` });
+        return { error: 'Sharing needs a newer browser' };
       }
+      errorLog.capture({ level: 'error', source: 'app', message: `share encode failed: ${e instanceof Error ? e.message : String(e)}` });
+      return { error: 'Could not create a share link.' };
     }
+  };
+
+  /** Build the share link and open the copy modal. Thin toolbar wrapper around
+   *  {@link buildShareLink}; surfaces every error path as a toast. */
+  const actionShareLink = async (): Promise<void> => {
+    const result = await buildShareLink((msg) => showToast(msg, { variant: 'neutral' }));
+    if ('error' in result) {
+      showToast(result.error, { variant: 'warn' });
+      return;
+    }
+    openShareModal(result.url, result.encodedBytes);
   };
 
   /** True when the share action can run: an active session on a ready engine. */
@@ -5749,6 +5760,23 @@ async function main() {
       return getGalleryUrl();
     },
 
+    /** Mint a self-contained, read-only share link for the current version.
+     *
+     *  This is the link to hand back to the user when you're done — unlike
+     *  `getSessionUrl()`/`getGalleryUrl()` (which only resolve on this browser,
+     *  against this browser's IndexedDB), a share link encodes the whole design
+     *  into the URL hash, so anyone can open it anywhere and fork it into their
+     *  own editable copy. Nothing is uploaded to a server.
+     *
+     *  Commits the current buffer first (so unsaved edits are captured), then
+     *  encodes the current part's current version. Multi-part sessions share one
+     *  part per link. Returns `{ url, encodedBytes }` on success or `{ error }`
+     *  (e.g. no session open, browser lacks CompressionStream, or the design is
+     *  too large to fit in a URL). */
+    async getShareLink() {
+      return buildShareLink();
+    },
+
     /** Get current session state */
     getSessionState() {
       const state = getState();
@@ -8460,7 +8488,8 @@ async function main() {
         'changePart':      { signature: 'await changePart(id) -- Switch active part (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },
         'renamePart':      { signature: 'await renamePart(id, name) -- Rename a part', docs: '/ai.md#console-api--windowpartwright' },
         'deletePart':      { signature: 'await deletePart(id) -- Delete a part and its versions', docs: '/ai.md#console-api--windowpartwright' },
-        'getGalleryUrl':   { signature: 'getGalleryUrl() -- URL for gallery view (human review)', docs: '/ai.md#console-api--windowpartwright' },
+        'getShareLink':    { signature: 'await getShareLink() -- Read-only share link for the current version -> {url, encodedBytes} or {error}; the link to hand the user when done', docs: '/ai.md#console-api--windowpartwright' },
+        'getGalleryUrl':   { signature: 'getGalleryUrl() -- URL for gallery view (local browser only)', docs: '/ai.md#console-api--windowpartwright' },
         // Notes
         'addSessionNote':  { signature: 'await addSessionNote(text) -- Add note with [PREFIX] tag', docs: '/ai.md#session-notes----tracking-design-context' },
         'listSessionNotes': { signature: 'await listSessionNotes() -- List all session notes', docs: '/ai.md#session-notes----tracking-design-context' },

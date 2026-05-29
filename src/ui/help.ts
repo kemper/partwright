@@ -267,8 +267,8 @@ export function createHelpPage(
           '2. Build a standard 2x4 Lego brick (approximately 31.8mm x 15.8mm x 11.4mm with studs on top and hollow underside with tubes)\n' +
           '3. Save each major step as a version (e.g. v1 - base block, v2 - add studs, v3 - hollow underside with tubes)\n' +
           '4. Use assertions to verify each version is a valid manifold with maxComponents: 1\n' +
-          '5. Give me the gallery URL when done so I can review the versions</code></pre>' +
-          'The agent should read <code class="text-emerald-400 bg-zinc-800 px-1 rounded">ai.md</code>, create a named session, iterate through versions, and hand back a gallery link for review.';
+          '5. Give me a share link (partwright.getShareLink()) when done so I can open the design</code></pre>' +
+          'The agent should read <code class="text-emerald-400 bg-zinc-800 px-1 rounded">ai.md</code>, create a named session, iterate through versions, and hand back a read-only share link for review.';
       })(),
     },
     {
