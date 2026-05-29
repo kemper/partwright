@@ -19,14 +19,21 @@ import type { MeshData } from '../geometry/types';
 import { normalizeColor, type VoxelGrid } from '../geometry/voxel/grid';
 import { gridToMeshWithProvenance } from '../geometry/voxel/mesher';
 import { runVoxelForPaint, type VoxelPaintRun } from '../geometry/engines/voxel';
-import { bucketRecolor, clearBox, fillBoxRecolor, addTarget } from '../geometry/voxel/edits';
+import { bucketRecolor, clearBox, fillBoxRecolor, addTarget, brushApply, levelRecolor, type BrushShape } from '../geometry/voxel/edits';
 import { generateVoxelImportCode } from '../import/imageToVoxel';
 import { addPointerSuppressor, isPointerOverModel, getRenderer } from '../renderer/viewport';
 import { pickFace } from './facePicker';
 
-/** The edit tools the studio offers. `boxAdd`/`boxRemove` are two-click region
- *  ops (click one corner, then the opposite corner). */
-export type VoxelTool = 'paint' | 'add' | 'remove' | 'bucket' | 'boxAdd' | 'boxRemove';
+export type { BrushShape } from '../geometry/voxel/edits';
+
+/** The edit tools the studio offers. `paint`/`add`/`remove` are brush tools
+ *  (size + shape, drag to stroke); `bucket` flood-fills a same-color region;
+ *  `level` recolors a whole axis layer; `boxAdd`/`boxRemove` are two-click
+ *  region ops (click one corner, then the opposite corner). */
+export type VoxelTool = 'paint' | 'add' | 'remove' | 'bucket' | 'level' | 'boxAdd' | 'boxRemove';
+
+/** Tools that paint a brush footprint and support click-drag strokes. */
+function isBrushTool(t: VoxelTool): boolean { return t === 'paint' || t === 'add' || t === 'remove'; }
 
 export interface VoxelPaintCallbacks {
   /** Called whenever the edited mesh changes (activation + each edit + undo). */
@@ -46,8 +53,19 @@ let color: [number, number, number] = [255, 0, 0];
 let eraser = false;            // legacy single-voxel paint/erase modifier
 let tool: VoxelTool = 'paint';
 let boxCorner: [number, number, number] | null = null;
+// Brush settings (shared by the paint/add/remove tools).
+let brushRadius = 0;            // 0 = single voxel (preserves click-to-paint)
+let brushShape: BrushShape = 'sphere';
+let spray = false;             // scatter a random subset of the footprint
+let sprayDensity = 0.5;        // 0..1, fraction kept when spraying
+let levelAxis: 0 | 1 | 2 = 2;  // axis for the "level" tool (x/y/z)
 let undoStack: VoxelGrid[] = [];
 let redoStack: VoxelGrid[] = [];
+// Drag-stroke state: a whole pointerdown→move→up stroke is one undo step.
+let strokeActive = false;
+let strokeBefore: VoxelGrid | null = null;
+let strokeChanged = false;
+let strokeLastVoxel: [number, number, number] | null = null;
 let cbMeshUpdate: ((mesh: MeshData) => void) | null = null;
 let cbLockChange: ((locked: boolean) => void) | null = null;
 let cbStateChange: (() => void) | null = null;
@@ -74,6 +92,25 @@ export function setTool(t: VoxelTool): void {
   cbStateChange?.();
 }
 
+// ── Brush / level settings ───────────────────────────────────────────────
+const MAX_BRUSH_RADIUS = 16;
+export function getBrushRadius(): number { return brushRadius; }
+export function setBrushRadius(r: number): void {
+  brushRadius = Math.max(0, Math.min(MAX_BRUSH_RADIUS, Math.round(r) || 0));
+  cbStateChange?.();
+}
+export function getBrushShape(): BrushShape { return brushShape; }
+export function setBrushShape(s: BrushShape): void { brushShape = s; cbStateChange?.(); }
+export function isSpray(): boolean { return spray; }
+export function setSpray(on: boolean): void { spray = !!on; cbStateChange?.(); }
+export function getSprayDensity(): number { return sprayDensity; }
+export function setSprayDensity(d: number): void {
+  sprayDensity = Math.max(0.05, Math.min(1, d));
+  cbStateChange?.();
+}
+export function getLevelAxis(): 0 | 1 | 2 { return levelAxis; }
+export function setLevelAxis(a: 0 | 1 | 2): void { levelAxis = a; cbStateChange?.(); }
+
 /** Voxel count in the live grid, or 0 when the studio isn't active. */
 export function voxelCount(): number { return run?.grid.size ?? 0; }
 export function canUndo(): boolean { return undoStack.length > 0; }
@@ -81,6 +118,31 @@ export function canRedo(): boolean { return redoStack.length > 0; }
 /** The first corner of an in-progress box selection (null when none pending). */
 export function pendingBoxCorner(): [number, number, number] | null {
   return boxCorner ? [...boxCorner] : null;
+}
+
+// ── Stroke transactions ────────────────────────────────────────────────────
+// A click-drag stroke (or a programmatic begin/apply…/end) collapses into a
+// single undo step: snapshot once at begin, mutate in place per sample, push
+// the one snapshot at end.
+export function beginStroke(): void {
+  if (!active || !run || strokeActive) return;
+  strokeActive = true;
+  strokeBefore = run.grid.clone();
+  strokeChanged = false;
+  strokeLastVoxel = null;
+}
+export function endStroke(): void {
+  if (!strokeActive) return;
+  strokeActive = false;
+  strokeLastVoxel = null;
+  if (strokeChanged && strokeBefore) {
+    undoStack.push(strokeBefore);
+    if (undoStack.length > UNDO_CAP) undoStack.shift();
+    redoStack = [];
+  }
+  strokeBefore = null;
+  strokeChanged = false;
+  cbStateChange?.();
 }
 
 /** Activate the studio on the given code. Runs the code locally to obtain the
@@ -110,6 +172,10 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks): string |
   boxCorner = null;
   undoStack = [];
   redoStack = [];
+  strokeActive = false;
+  strokeBefore = null;
+  strokeChanged = false;
+  strokeLastVoxel = null;
   cbMeshUpdate = callbacks.onMeshUpdate;
   cbLockChange = callbacks.onLockChange ?? null;
   cbStateChange = callbacks.onStateChange ?? null;
@@ -133,6 +199,10 @@ export function deactivate(): void {
   boxCorner = null;
   undoStack = [];
   redoStack = [];
+  strokeActive = false;
+  strokeBefore = null;
+  strokeChanged = false;
+  strokeLastVoxel = null;
   notify?.();
 }
 
@@ -141,30 +211,72 @@ export function deactivate(): void {
  *  `paintVoxelFace` API + its tests; the studio's tools go through
  *  {@link applyAtTriangle}. Returns true iff the grid changed. */
 export function paintTriangle(triangleIndex: number): boolean {
-  const v = voxelOfTriangle(triangleIndex);
+  if (!active) return false;
+  const v = triangleVoxel(triangleIndex);
   if (!v) return false;
   const [x, y, z] = v;
-  return mutate(() => (eraser ? doRemove(x, y, z) : doPaint(x, y, z)));
+  return mutate(() => {
+    if (!run) return false;
+    if (eraser) {
+      if (!run.grid.has(x, y, z)) return false;
+      run.grid.remove(x, y, z);
+      return true;
+    }
+    const rgb = colorRgb();
+    if (run.grid.get(x, y, z) === rgb) return false;
+    run.grid.set(x, y, z, color);
+    return true;
+  });
 }
 
 /** Apply the active tool at the clicked triangle. This is what the pointer
  *  handler and the `voxelStudioApply` API call. Returns true iff the grid
- *  changed (a box tool's first click stores a corner and returns false). */
+ *  changed (a box tool's first click stores a corner and returns false).
+ *
+ *  Box tools are always single-shot (two clicks). Other tools run inside the
+ *  current stroke if one is open (so a drag collapses to one undo step), else
+ *  as a standalone undo-able edit. */
 export function applyAtTriangle(triangleIndex: number): boolean {
   if (!active || !run) return false;
   const idx = triangleIndex * 3;
   if (idx < 0 || idx + 2 >= run.triVoxel.length) return false;
+  if (tool === 'boxAdd' || tool === 'boxRemove') {
+    const x = run.triVoxel[idx], y = run.triVoxel[idx + 1], z = run.triVoxel[idx + 2];
+    return applyBox(x, y, z);
+  }
+  if (strokeActive) {
+    const changed = runOp(triangleIndex);
+    if (changed) { strokeChanged = true; remeshAndPush(); cbStateChange?.(); }
+    return changed;
+  }
+  return mutate(() => runOp(triangleIndex));
+}
+
+/** Mutate the grid for the active (non-box) tool at the clicked triangle.
+ *  Returns whether anything changed. Does NOT touch undo/remesh — callers
+ *  (`mutate` for single edits, the stroke loop for drags) handle that. */
+function runOp(triangleIndex: number): boolean {
+  if (!run) return false;
+  const idx = triangleIndex * 3;
+  if (idx < 0 || idx + 2 >= run.triVoxel.length) return false;
   const x = run.triVoxel[idx], y = run.triVoxel[idx + 1], z = run.triVoxel[idx + 2];
   const nx = run.triNormal[idx], ny = run.triNormal[idx + 1], nz = run.triNormal[idx + 2];
-
+  const density = spray ? sprayDensity : 1;
   switch (tool) {
-    case 'paint': return mutate(() => doPaint(x, y, z));
-    case 'remove': return mutate(() => doRemove(x, y, z));
-    case 'add': return mutate(() => doAdd([x, y, z], [nx, ny, nz]));
-    case 'bucket': return mutate(() => doBucket(x, y, z));
-    case 'boxAdd':
-    case 'boxRemove': return applyBox(x, y, z);
-    default: { const _exhaustive: never = tool; void _exhaustive; return false; }
+    case 'paint':
+      return brushApply(run.grid, [x, y, z], brushRadius, brushShape, 'paint', color, density) > 0;
+    case 'remove':
+      return brushApply(run.grid, [x, y, z], brushRadius, brushShape, 'remove', color, density) > 0;
+    case 'add': {
+      const target = addTarget([x, y, z], [nx, ny, nz]);
+      if (!target) return false;
+      return brushApply(run.grid, target, brushRadius, brushShape, 'add', color, density) > 0;
+    }
+    case 'bucket':
+      return bucketRecolor(run.grid, [x, y, z], color) > 0;
+    case 'level':
+      return levelRecolor(run.grid, levelAxis, [x, y, z][levelAxis], color) > 0;
+    default: return false;
   }
 }
 
@@ -201,13 +313,6 @@ export function bakeToCode(filename = 'painted'): string | null {
 
 function colorRgb(): number { return (color[0] << 16) | (color[1] << 8) | color[2]; }
 
-function voxelOfTriangle(triangleIndex: number): [number, number, number] | null {
-  if (!active || !run) return null;
-  const idx = triangleIndex * 3;
-  if (idx < 0 || idx + 2 >= run.triVoxel.length) return null;
-  return [run.triVoxel[idx], run.triVoxel[idx + 1], run.triVoxel[idx + 2]];
-}
-
 /** Run a grid mutation with undo bookkeeping. `fn` mutates `run.grid` and
  *  returns whether anything changed; only then do we snapshot + re-mesh. */
 function mutate(fn: () => boolean): boolean {
@@ -221,35 +326,6 @@ function mutate(fn: () => boolean): boolean {
   remeshAndPush();
   cbStateChange?.();
   return true;
-}
-
-function doPaint(x: number, y: number, z: number): boolean {
-  if (!run) return false;
-  const rgb = colorRgb();
-  if (run.grid.get(x, y, z) === rgb) return false;
-  run.grid.set(x, y, z, color);
-  return true;
-}
-
-function doRemove(x: number, y: number, z: number): boolean {
-  if (!run || !run.grid.has(x, y, z)) return false;
-  run.grid.remove(x, y, z);
-  return true;
-}
-
-function doAdd(voxel: [number, number, number], normal: [number, number, number]): boolean {
-  if (!run) return false;
-  const target = addTarget(voxel, normal);
-  if (!target) return false; // out of coordinate range
-  const rgb = colorRgb();
-  if (run.grid.get(target[0], target[1], target[2]) === rgb) return false;
-  run.grid.set(target[0], target[1], target[2], color);
-  return true;
-}
-
-function doBucket(x: number, y: number, z: number): boolean {
-  if (!run) return false;
-  return bucketRecolor(run.grid, [x, y, z], color) > 0;
 }
 
 /** Two-click box: the first click banks a corner (no mutation); the second
@@ -275,16 +351,55 @@ function remeshAndPush(): void {
   cbMeshUpdate?.(mesh);
 }
 
+/** The voxel a triangle maps back to (or null) — used to dedupe drag samples. */
+function triangleVoxel(triangleIndex: number): [number, number, number] | null {
+  if (!run) return null;
+  const idx = triangleIndex * 3;
+  if (idx < 0 || idx + 2 >= run.triVoxel.length) return null;
+  return [run.triVoxel[idx], run.triVoxel[idx + 1], run.triVoxel[idx + 2]];
+}
+
+function sameVoxel(a: [number, number, number] | null, b: [number, number, number] | null): boolean {
+  return !!a && !!b && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+}
+
 function onPointerDown(event: MouseEvent): void {
   if (!active || event.button !== 0) return;
   const hit = pickFace(event);
   if (!hit) return;
+  // Brush tools paint a drag stroke (one undo step); other tools are single
+  // clicks. Box tools manage their own two-click state.
+  if (isBrushTool(tool)) {
+    beginStroke();
+    strokeLastVoxel = triangleVoxel(hit.triangleIndex);
+    applyAtTriangle(hit.triangleIndex);
+  } else {
+    applyAtTriangle(hit.triangleIndex);
+  }
+}
+
+function onPointerMove(event: MouseEvent): void {
+  if (!active || !strokeActive || (event.buttons & 1) === 0) return;
+  const hit = pickFace(event);
+  if (!hit) return;
+  const v = triangleVoxel(hit.triangleIndex);
+  // Skip if the cursor is still over the same source voxel (avoids redundant
+  // re-stamps + re-meshes as the mouse jitters within one cell).
+  if (sameVoxel(v, strokeLastVoxel)) return;
+  strokeLastVoxel = v;
   applyAtTriangle(hit.triangleIndex);
+}
+
+function onPointerUp(): void {
+  if (strokeActive) endStroke();
 }
 
 function attachPointerHandler(): void {
   const canvas = getRenderer().domElement;
   canvas.addEventListener('mousedown', onPointerDown);
+  canvas.addEventListener('mousemove', onPointerMove);
+  // End the stroke on release even if the pointer left the canvas first.
+  window.addEventListener('mouseup', onPointerUp);
   canvas.style.cursor = 'crosshair';
   // Veto OrbitControls on left-button hits over the model so editing doesn't
   // orbit. Off-model clicks fall through so the camera still rotates.
@@ -297,6 +412,8 @@ function attachPointerHandler(): void {
 function detachPointerHandler(): void {
   const canvas = getRenderer().domElement;
   canvas.removeEventListener('mousedown', onPointerDown);
+  canvas.removeEventListener('mousemove', onPointerMove);
+  window.removeEventListener('mouseup', onPointerUp);
   canvas.style.cursor = '';
   if (removeSuppressor) { removeSuppressor(); removeSuppressor = null; }
 }

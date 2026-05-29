@@ -90,6 +90,68 @@ test.describe('voxel studio', () => {
     expect(r.second.pendingBoxCorner).toBeNull();
   });
 
+  test('brush size stamps a footprint of voxels in one apply', async ({ page }) => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().set(0,0,0,'#ffffff');`);
+      pw.activateVoxelPaint();
+      pw.setVoxelTool('add');
+      const brush = pw.setVoxelBrush({ radius: 1, shape: 'cube' });
+      // Add a 3×3×3 cube footprint onto the clicked face.
+      const added = pw.voxelStudioApply({ faceIndex: 0, color: [255, 0, 0] });
+      return { brush, added };
+    });
+    expect(r.brush.radius).toBe(1);
+    expect(r.brush.shape).toBe('cube');
+    expect(r.added.changed).toBe(true);
+    expect(r.added.voxelCount).toBe(27); // 1 original ∪ 3×3×3 stamp (overlaps the origin)
+  });
+
+  test('level tool recolors a whole axis layer without changing the count', async ({ page }) => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().fillBox([0,0,0],[2,2,2], '#ffffff');`);
+      pw.activateVoxelPaint();
+      pw.setVoxelTool('level');
+      pw.setVoxelLevelAxis(2);
+      const leveled = pw.voxelStudioApply({ faceIndex: 0, color: [0, 200, 100] });
+      const baked = await pw.bakeVoxelsToCode({ label: 'leveled' });
+      return { leveled, baked };
+    });
+    expect(r.leveled.changed).toBe(true);
+    expect(r.leveled.voxelCount).toBe(27); // recolor never adds/removes voxels
+    expect(r.baked.error).toBeFalsy();
+  });
+
+  test('a stroke collapses many applies into one undo step', async ({ page }) => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().set(0,0,0,'#ffffff');`);
+      pw.activateVoxelPaint();
+      pw.setVoxelTool('add');
+      pw.setVoxelBrush({ radius: 0 });
+      pw.voxelStudioBeginStroke();
+      const a = pw.voxelStudioApply({ faceIndex: 0, color: [255, 0, 0] });
+      const b = pw.voxelStudioApply({ faceIndex: 0 });
+      const end = pw.voxelStudioEndStroke();
+      const undone = pw.voxelStudioUndo();   // one undo reverts the whole stroke
+      const redone = pw.voxelStudioRedo();
+      return { a, b, end, undone, redone };
+    });
+    expect(r.a.voxelCount).toBe(2);
+    expect(r.b.voxelCount).toBe(3);
+    expect(r.end.voxelCount).toBe(3);
+    expect(r.undone.undone).toBe(true);
+    expect(r.undone.voxelCount).toBe(1); // back to the original single voxel
+    expect(r.redone.voxelCount).toBe(3); // the whole stroke restored at once
+  });
+
   test('image-import voxel blob is editable: import → add → bake', async ({ page }) => {
     const r = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

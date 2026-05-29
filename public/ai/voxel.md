@@ -145,23 +145,36 @@ in separate sessions or open them separately for now.)
 ## Voxel Studio
 
 Click the **🧊 Voxel Studio** button (appears in voxel sessions only, viewport
-overlay) to enter a Minecraft-style direct-editing mode. Pick a **tool**, then
-click faces on the model:
+overlay) to enter a Minecraft-style direct-editing mode. It mirrors the main
+Paint menu's layout, adapted for voxels. Pick a **tool**, then click — or
+**drag** — across faces on the model:
 
-| Tool | Glyph | What a click does |
-|------|-------|-------------------|
-| Paint | 🖌 | Recolor the clicked voxel with the picker color. |
-| Add | ➕ | Place a **new** cube on the clicked face (stacks on top, extends sideways, …). |
-| Remove | ⌫ | Delete the clicked voxel. |
+| Tool | Glyph | What it does |
+|------|-------|--------------|
+| Brush | 🖌 | Recolor voxels. **Drag** to paint a stroke; use **Size** for a wider brush. |
+| Add | ➕ | Build new cubes onto the clicked faces (stacks/extends). Drag to sculpt; respects brush size/shape. |
+| Remove | ⌫ | Delete voxels. Drag to erase; respects brush size/shape. |
 | Bucket | 🪣 | Recolor the whole face-connected region that shares the clicked voxel's color. |
-| Box fill | ⬚➕ | Click two voxels to fill the inclusive box between them with the picker color (bridges gaps; use **Add** to grow outward). |
+| Level | 🧱 | Recolor a whole **X/Y/Z layer** through the clicked voxel (pick the axis in the panel). |
+| Box fill | ⬚➕ | Click two voxels to fill the inclusive box between them (bridges gaps; use **Add** to grow outward). |
 | Box subtract | ⬚⌫ | Click two voxels to carve out the box between them (great for cutting holes). |
+
+**Brush** (for the Brush / Add / Remove tools): a **Size** slider (0 = a single
+voxel, up to a wide radius), three brush **shapes** — ● sphere, ◻ cube, ◆
+diamond (the 3D analogues of the paint menu's circle/square/diamond) — and a
+**Spray** toggle that scatters a random subset of the footprint (with a density
+slider) for a speckled look. A click-**drag** paints a continuous stroke that
+undoes as a single step.
 
 Pick a color from the swatches or the **custom color** picker (any RGB). **↺
 Undo** / **↻ Redo** step through your edits. The editor is locked while the
 studio is active so an auto-run can't clobber your edits. When you're done,
 click **Bake → code** to replace the editor with `voxels.decode(<your edited
 grid>)` and save a new version, or **Cancel** to discard.
+
+> Mesh-only paint features (edge-smoothing/subdivision, geodesic depth, the
+> rotatable shape gizmo, and named color regions) don't apply to voxels —
+> color lives per-cell in the grid and undo/redo replaces region history.
 
 > Editing *bakes* the procedural code into a static voxel grid — the new
 > version captures the edited state exactly, while the previous version (with
@@ -188,12 +201,24 @@ partwright.paintVoxelFace({ faceIndex: 12, erase: true });
 
 // Multi-tool studio:
 partwright.setVoxelTool('add');                                  // -> { tool }
-partwright.voxelStudioApply({ faceIndex: 0, color: [80,160,255] }); // place a cube
+partwright.setVoxelBrush({ radius: 2, shape: 'sphere' });        // wider brush
+partwright.voxelStudioApply({ faceIndex: 0, color: [80,160,255] }); // sculpt a blob
 partwright.setVoxelTool('bucket');
 partwright.voxelStudioApply({ faceIndex: 4, color: '#33cc55' });    // flood recolor
+partwright.setVoxelTool('level');
+partwright.setVoxelLevelAxis(2);                                  // z layers
+partwright.voxelStudioApply({ faceIndex: 8, color: '#ffcc00' });    // recolor a layer
 partwright.setVoxelTool('boxRemove');
 partwright.voxelStudioApply({ faceIndex: 0 });   // bank one corner (changed:false)
 partwright.voxelStudioApply({ faceIndex: 30 });  // complete the box → carve it out
+
+// A drag stroke = one undo step (programmatic equivalent of click-drag):
+partwright.setVoxelTool('paint');
+partwright.voxelStudioBeginStroke();
+partwright.voxelStudioApply({ faceIndex: 0, color: '#ff0000' });
+partwright.voxelStudioApply({ faceIndex: 2 });
+partwright.voxelStudioEndStroke();               // -> { ok, voxelCount }
+
 partwright.voxelStudioUndo();                                    // -> { undone, voxelCount }
 partwright.voxelStudioRedo();                                    // -> { redone, voxelCount }
 
@@ -205,8 +230,16 @@ await partwright.bakeVoxelsToCode({ label: 'castle' });   // commits + saves
   + per-triangle voxel/normal provenance. Returns `{ error }` outside voxel
   sessions, on a `.smooth()` grid (call `.blocky()` first), or if the code
   doesn't return a grid.
-- `setVoxelTool(tool)` — `'paint' | 'add' | 'remove' | 'bucket' | 'boxAdd' |
-  'boxRemove'`. Returns `{ tool }` or `{ error }`.
+- `setVoxelTool(tool)` — `'paint' | 'add' | 'remove' | 'bucket' | 'level' |
+  'boxAdd' | 'boxRemove'`. Returns `{ tool }` or `{ error }`.
+- `setVoxelBrush({ radius?, shape?, spray?, sprayDensity? })` — brush for the
+  paint/add/remove tools. `radius` in voxels (0 = single, max 16); `shape` is
+  `'sphere' | 'cube' | 'diamond'`; `spray` scatters a random subset;
+  `sprayDensity` 0.05..1. Returns the resolved settings.
+- `setVoxelLevelAxis(axis)` — `0`/`1`/`2` (x/y/z) for the `level` tool.
+- `voxelStudioBeginStroke()` / `voxelStudioEndStroke()` — bracket a run of
+  `voxelStudioApply` calls so they collapse into one undo step (the
+  programmatic equivalent of a click-drag).
 - `voxelStudioApply({ faceIndex, color?, tool? })` applies the active tool at a
   face. `faceIndex` is the triangle index a raycast would return; the API maps
   it back to the originating voxel (and, for **Add**, the empty cell on the

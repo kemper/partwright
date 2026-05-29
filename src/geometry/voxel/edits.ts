@@ -102,3 +102,77 @@ export function addTarget(voxel: Vec3, normal: Vec3): Vec3 | null {
   const nx = voxel[0] + normal[0], ny = voxel[1] + normal[1], nz = voxel[2] + normal[2];
   return inRange(nx, ny, nz) ? [nx, ny, nz] : null;
 }
+
+/** Voxel brush footprint shapes — the 3D analogues of the mesh paint brush's
+ *  circle/square/diamond, as integer-voxel distance tests around a center. */
+export type BrushShape = 'sphere' | 'cube' | 'diamond';
+
+/** True if the offset (dx,dy,dz) lies inside a `radius`-voxel brush of `shape`.
+ *  radius 0 ⇒ only the center cell, for single-voxel edits. */
+export function inBrush(shape: BrushShape, dx: number, dy: number, dz: number, radius: number): boolean {
+  if (radius <= 0) return dx === 0 && dy === 0 && dz === 0;
+  switch (shape) {
+    case 'sphere': return dx * dx + dy * dy + dz * dz <= radius * radius;
+    case 'cube': return Math.abs(dx) <= radius && Math.abs(dy) <= radius && Math.abs(dz) <= radius;
+    case 'diamond': return Math.abs(dx) + Math.abs(dy) + Math.abs(dz) <= radius;
+  }
+}
+
+/** What a brush stamp does to each candidate cell:
+ *  - `paint`  recolor cells already occupied (a 3D ball of surface+interior).
+ *  - `add`    occupy every cell in the footprint (sculpt new voxels).
+ *  - `remove` empty occupied cells in the footprint. */
+export type BrushOp = 'paint' | 'add' | 'remove';
+
+/** Apply a brush stamp of `shape`/`radius` centered on `center`. `density`
+ *  (0..1) sprays a random subset — `rng` is injectable for deterministic tests.
+ *  Returns the number of cells actually changed. Mutates `grid` in place. */
+export function brushApply(
+  grid: VoxelGrid,
+  center: Vec3,
+  radius: number,
+  shape: BrushShape,
+  op: BrushOp,
+  color: ColorInput,
+  density = 1,
+  rng: () => number = Math.random,
+): number {
+  const rgb = op === 'remove' ? 0 : normalizeColor(color, 'brushApply(color)');
+  const [cx, cy, cz] = center;
+  const ri = Math.max(0, Math.floor(radius));
+  let changed = 0;
+  for (let dx = -ri; dx <= ri; dx++)
+    for (let dy = -ri; dy <= ri; dy++)
+      for (let dz = -ri; dz <= ri; dz++) {
+        if (!inBrush(shape, dx, dy, dz, ri)) continue;
+        if (density < 1 && rng() > density) continue;
+        const x = cx + dx, y = cy + dy, z = cz + dz;
+        if (!inRange(x, y, z)) continue;
+        if (op === 'remove') {
+          if (grid.has(x, y, z)) { grid.remove(x, y, z); changed++; }
+        } else if (op === 'add') {
+          if (grid.get(x, y, z) !== rgb) { grid.set(x, y, z, rgb); changed++; }
+        } else { // paint — only existing cells
+          if (grid.has(x, y, z) && grid.get(x, y, z) !== rgb) { grid.set(x, y, z, rgb); changed++; }
+        }
+      }
+  return changed;
+}
+
+/** Recolor every occupied voxel that lies in one axis-aligned layer — the
+ *  "paint by level" tool. `axis` is 0/1/2 (x/y/z); `coord` is the layer index
+ *  on that axis (typically the clicked voxel's coordinate). Returns the number
+ *  of voxels recolored. */
+export function levelRecolor(grid: VoxelGrid, axis: 0 | 1 | 2, coord: number, color: ColorInput): number {
+  const rgb = normalizeColor(color, 'levelRecolor(color)');
+  const hits: Vec3[] = [];
+  grid.forEach((x, y, z) => {
+    const c = axis === 0 ? x : axis === 1 ? y : z;
+    if (c === coord) hits.push([x, y, z]);
+  });
+  let changed = 0;
+  for (const [x, y, z] of hits) {
+    if (grid.get(x, y, z) !== rgb) { grid.set(x, y, z, rgb); changed++; }
+  }
+  return changed;
+}

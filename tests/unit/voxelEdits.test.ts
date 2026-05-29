@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { VoxelGrid } from '../../src/geometry/voxel/grid';
 import { gridToMeshWithProvenance } from '../../src/geometry/voxel/mesher';
-import { bucketRecolor, clearBox, fillBoxRecolor, addTarget } from '../../src/geometry/voxel/edits';
+import { bucketRecolor, clearBox, fillBoxRecolor, addTarget, brushApply, levelRecolor, inBrush } from '../../src/geometry/voxel/edits';
 
 // Pure-logic tests for the Voxel Studio multi-voxel edit operations + the
 // provenance the "add" tool relies on. The DOM/raycast glue (voxelPaint.ts)
@@ -102,5 +102,72 @@ describe('addTarget + provenance triNormal', () => {
       expect(target).not.toBeNull();
       expect(g.has(target![0], target![1], target![2])).toBe(false);
     }
+  });
+});
+
+describe('inBrush footprints', () => {
+  it('radius 0 is a single cell', () => {
+    expect(inBrush('sphere', 0, 0, 0, 0)).toBe(true);
+    expect(inBrush('sphere', 1, 0, 0, 0)).toBe(false);
+  });
+  it('sphere excludes the corners a cube includes', () => {
+    expect(inBrush('cube', 1, 1, 1, 1)).toBe(true);     // corner inside cube
+    expect(inBrush('sphere', 1, 1, 1, 1)).toBe(false);  // corner outside sphere (dist²=3)
+    expect(inBrush('diamond', 1, 1, 0, 1)).toBe(false); // L1=2 > 1
+    expect(inBrush('diamond', 1, 0, 0, 1)).toBe(true);
+  });
+});
+
+describe('brushApply', () => {
+  it('add stamps a cube footprint of new voxels', () => {
+    const g = new VoxelGrid();
+    const changed = brushApply(g, [0, 0, 0], 1, 'cube', 'add', '#ff0000');
+    expect(changed).toBe(27); // 3×3×3
+    expect(g.size).toBe(27);
+    expect(g.get(1, 1, 1)).toBe(0xff0000);
+  });
+
+  it('paint only recolors existing voxels inside the footprint', () => {
+    const g = new VoxelGrid();
+    g.fillBox([-2, 0, 0], [2, 0, 0], '#ffffff'); // a 5-long row on the X axis
+    // A sphere radius 1 centered at origin covers (0,0,0) and its 6 neighbors,
+    // but only (−1,0,0)/(0,0,0)/(1,0,0) are occupied in this row.
+    const changed = brushApply(g, [0, 0, 0], 1, 'sphere', 'paint', '#00ff00');
+    expect(changed).toBe(3);
+    expect(g.size).toBe(5);              // paint never creates cells
+    expect(g.get(0, 0, 0)).toBe(0x00ff00);
+    expect(g.get(2, 0, 0)).toBe(0xffffff); // outside the radius
+  });
+
+  it('remove deletes occupied cells inside the footprint', () => {
+    const g = new VoxelGrid();
+    g.fillBox([-2, -2, -2], [2, 2, 2], '#fff'); // 125
+    const removed = brushApply(g, [0, 0, 0], 1, 'cube', 'remove', '#000');
+    expect(removed).toBe(27);
+    expect(g.size).toBe(98);
+  });
+
+  it('spray density keeps roughly the requested fraction (deterministic rng)', () => {
+    const g = new VoxelGrid();
+    // rng alternating below/above 0.5 → keep ~half with density 0.5.
+    let i = 0;
+    const rng = () => (i++ % 2 === 0 ? 0.1 : 0.9);
+    const changed = brushApply(g, [0, 0, 0], 2, 'cube', 'add', '#fff', 0.5, rng);
+    // 5×5×5 = 125 candidates; alternating rng keeps every other one.
+    expect(changed).toBeGreaterThan(0);
+    expect(changed).toBeLessThan(125);
+  });
+});
+
+describe('levelRecolor', () => {
+  it('recolors only the voxels in the chosen axis layer', () => {
+    const g = new VoxelGrid();
+    g.fillBox([0, 0, 0], [2, 2, 2], '#ffffff'); // 27
+    // Recolor the z=1 layer (9 voxels).
+    const changed = levelRecolor(g, 2, 1, '#ff0000');
+    expect(changed).toBe(9);
+    expect(g.get(0, 0, 1)).toBe(0xff0000);
+    expect(g.get(0, 0, 0)).toBe(0xffffff);
+    expect(g.get(2, 2, 2)).toBe(0xffffff);
   });
 });
