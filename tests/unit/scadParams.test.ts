@@ -142,3 +142,30 @@ describe('buildScadDefines — override flags', () => {
     expect(buildScadDefines(SRC, {})).toEqual([]);
   });
 });
+
+describe('parseScadParams — robustness on malformed input', () => {
+  // The parser runs on arbitrary user source on every SCAD run, so it must
+  // degrade (skip the param) rather than throw on anything weird.
+  const WEIRD = [
+    '', '\n\n', '////', '/*', '*/', '/* [Hidden',
+    'x = ;', '= 5;', 'x = "unterminated;',
+    `${'a'.repeat(50_000)} = 5; // [0:9]`,
+    `x = 5; // [${'a'.repeat(50_000)}]`,
+    'x = 0x1F;', 'x = 1_000;', 'x = .5; // [0:1]', 'x = 5.; // [0:9]', 'x = +5; // [0:9]',
+  ];
+
+  it('never throws, for parse or define-building', () => {
+    for (const c of WEIRD) {
+      expect(() => parseScadParams(c)).not.toThrow();
+      expect(() => buildScadDefines(c, { x: 3 })).not.toThrow();
+    }
+  });
+
+  it('handles unusual but valid numeric literals; ignores non-OpenSCAD ones', () => {
+    expect(byKey('x = .5; // [0:1]').get('x')).toMatchObject({ type: 'number', default: 0.5 });
+    expect(byKey('x = +5; // [0:9]').get('x')).toMatchObject({ type: 'int', default: 5 });
+    // OpenSCAD has no hex or underscore numeric literals — skip rather than misparse.
+    expect(parseScadParams('x = 0x1F;')).toEqual([]);
+    expect(parseScadParams('x = 1_000;')).toEqual([]);
+  });
+});
