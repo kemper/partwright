@@ -135,6 +135,26 @@ test.describe('share links', () => {
     await expect(page.getByText('Link copied')).toBeVisible();
   });
 
+  test('T1b partwright.getShareLink() returns a self-contained hash URL', async ({ page }) => {
+    // The console/AI API surface for sharing — what an agent hands back to the
+    // user when done. It commits the current buffer, then encodes the design.
+    await openEditor(page);
+
+    const result = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: {
+        getShareLink(): Promise<{ url: string; encodedBytes: number } | { error: string }>;
+      } }).partwright;
+      return pw.getShareLink();
+    });
+
+    expect('error' in result).toBe(false);
+    if ('url' in result) {
+      const origin = new URL(page.url()).origin;
+      expect(result.url.startsWith(`${origin}/editor#share=`)).toBe(true);
+      expect(result.encodedBytes).toBeGreaterThan(0);
+    }
+  });
+
   test('T2 Opening a share link shows a cold, read-only preview (no execution)', async ({ page }) => {
     await openEditor(page);
 

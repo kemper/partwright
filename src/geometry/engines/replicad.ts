@@ -3,6 +3,7 @@ import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnos
 import { ensureBrepLoaded, getBrepNamespace, consumeBrepAllocations, disposeBrepAllocationsExcept, extractLabelMap, getPendingBrepImports, type BrepShape } from '../brepRuntime';
 import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
 import { getActiveImports } from '../../import/importedMesh';
+import { createParamCapture } from '../params';
 
 // === replicad engine — Phase A of the BREP integration ===
 //
@@ -90,7 +91,7 @@ export const replicadEngine: Engine = {
  *  through `Manifold.ofMesh()` so downstream Partwright features (slice,
  *  stats, paint persistence) keep working, and stash the live BrepShape in
  *  `lastShape` so STEP export can find it. */
-export async function runReplicadAsync(jsCode: string): Promise<MeshResult> {
+export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<string, unknown>): Promise<MeshResult> {
   if (!manifoldModule || !getBrepNamespace()) {
     const error = 'BREP/replicad engine not initialised.';
     return { mesh: null, manifold: null, error };
@@ -143,12 +144,18 @@ export async function runReplicadAsync(jsCode: string): Promise<MeshResult> {
     triVerts: m.triVerts,
   }));
 
+  // Customizer parameters, shared with the manifold-js and voxel engines: a
+  // BREP-session model can declare `api.params({...})` to surface the same live
+  // slider/toggle panel and accept the Customizer's tweaked overrides.
+  const paramCapture = createParamCapture(paramOverrides);
+
   const api = {
     BREP,
     Manifold,
     CrossSection: manifoldModule.CrossSection,
     imports: brepImports,
     meshImports,
+    params: paramCapture.params,
   };
 
   // Same per-run BREP allocation drain pattern as the manifold-js engine —
@@ -183,11 +190,14 @@ export async function runReplicadAsync(jsCode: string): Promise<MeshResult> {
     // allocated along the way (e.g. `BREP.box(...).fillet(...)` chains whose
     // final step threw).
     disposeBrepAllocationsExcept(consumeBrepAllocations(), null);
+    // Schema rides on the error return too (matching manifold-js) so a model
+    // that declared params before failing keeps its Customizer panel live.
     return {
       mesh: null,
       manifold: null,
       error: userScriptError?.error ?? 'BREP code did not produce a shape.',
       diagnostics: userScriptError?.diagnostics,
+      paramsSchema: paramCapture.collectSchema(),
     };
   }
 
@@ -248,6 +258,7 @@ export async function runReplicadAsync(jsCode: string): Promise<MeshResult> {
         manifold,
         error: null,
         labelMap,
+        paramsSchema: paramCapture.collectSchema(),
       };
     }
     // Non-manifold tessellation — render the raw triangles.
@@ -262,6 +273,7 @@ export async function runReplicadAsync(jsCode: string): Promise<MeshResult> {
       manifold: null,
       error: null,
       labelMap,
+      paramsSchema: paramCapture.collectSchema(),
     };
   } catch (e: unknown) {
     // Tessellation failure — free the shape so we don't leak it.
@@ -272,6 +284,7 @@ export async function runReplicadAsync(jsCode: string): Promise<MeshResult> {
       manifold: null,
       error: `BREP tessellation failed: ${msg}`,
       diagnostics: runtimeDiagnostic(msg, undefined, 'JavaScript'),
+      paramsSchema: paramCapture.collectSchema(),
     };
   }
 }

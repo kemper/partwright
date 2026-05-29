@@ -276,3 +276,36 @@ export function pruneParamValues(schema: ParamSpec[], overrides?: Record<string,
   }
   return out;
 }
+
+/** A per-run Customizer capture shared by the JS-sandbox engines (manifold-js,
+ *  voxel, replicad). Each engine builds one with the user's overrides, hands
+ *  {@link ParamCapture.params} to the sandbox as `api.params`, then reads
+ *  {@link ParamCapture.collectSchema} afterward to report the declared schema
+ *  back to the Customizer panel. Lives here — the dependency-free param layer —
+ *  so all three engines share exactly one implementation rather than each
+ *  re-deriving the capture/merge/guard logic. */
+export interface ParamCapture {
+  /** The `api.params(schema)` function exposed to model code: validates +
+   *  normalizes the schema (throwing a clear `api.params: …` error on an author
+   *  bug), records it for {@link collectSchema}, and returns the resolved values
+   *  (override-or-default) guarded so a typo'd read throws instead of `NaN`. */
+  params: (schema: unknown) => ParamValues;
+  /** Merge of every schema captured this run (last definition wins, first-seen
+   *  order preserved), or `undefined` if the model declared none. */
+  collectSchema: () => ParamSpec[] | undefined;
+}
+
+export function createParamCapture(overrides?: Record<string, unknown>): ParamCapture {
+  const ov = overrides ?? {};
+  const captured: ParamSpec[][] = [];
+  return {
+    params(schema: unknown): ParamValues {
+      const normalized = normalizeParamSchema(schema);
+      captured.push(normalized);
+      return protectParamValues(resolveParamValues(normalized, ov));
+    },
+    collectSchema(): ParamSpec[] | undefined {
+      return captured.length > 0 ? mergeParamSchemas(captured) : undefined;
+    },
+  };
+}

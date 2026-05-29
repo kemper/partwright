@@ -22,6 +22,8 @@ export interface LandingCallbacks {
   onOpenHelp: () => void;
   onOpenCatalog: () => void;
   onOpenWhatsNew: () => void;
+  /** Open the editor and launch the first-visit guided tour. */
+  onTakeTour: () => void;
   onOpenSession: (sessionId: string) => void;
   /** Load a single catalog entry straight into the editor as a fresh session. */
   onLoadCatalogEntry: (entry: CatalogManifestEntry, payload: ExportedSession) => void | Promise<void>;
@@ -129,6 +131,12 @@ function buildHero(callbacks: LandingCallbacks): HTMLElement {
   help.textContent = 'How does this work?';
   help.addEventListener('click', callbacks.onOpenHelp);
   ctas.appendChild(help);
+
+  const tour = document.createElement('button');
+  tour.className = 'px-6 py-2.5 rounded-lg bg-transparent hover:bg-zinc-800 text-zinc-400 text-sm font-medium transition-colors';
+  tour.textContent = 'Take the guided tour';
+  tour.addEventListener('click', callbacks.onTakeTour);
+  ctas.appendChild(tour);
 
   hero.appendChild(ctas);
 
@@ -361,7 +369,7 @@ Then navigate to ${origin}/editor and use the window.partwright console API to:
 2. Build a standard 2x4 Lego brick (approximately 31.8mm x 15.8mm x 11.4mm with studs on top and hollow underside with tubes)
 3. Save each major step as a version (e.g. v1 - base block, v2 - add studs, v3 - hollow underside with tubes)
 4. Use assertions to verify each version is a valid manifold with maxComponents: 1
-5. Give me the gallery URL when done so I can review the versions`;
+5. Give me a share link (partwright.getShareLink()) when done so I can open the design`;
 
 function buildAgentSection(): HTMLElement {
   const section = document.createElement('section');
@@ -575,6 +583,7 @@ function buildFooter(): HTMLElement {
     { label: 'Catalog', href: '/catalog' },
     { label: "What's new", href: '/whats-new' },
     { label: 'How it works', href: '/help' },
+    { label: 'Legal', href: '/legal' },
     { label: 'AI agent docs', href: '/ai.md' },
     { label: 'GitHub', href: 'https://github.com/kemper/mainifold', external: true },
   ];
@@ -593,7 +602,7 @@ function buildFooter(): HTMLElement {
   footer.appendChild(links);
 
   const copyright = document.createElement('div');
-  copyright.textContent = `© ${new Date().getFullYear()} Partwright. Open source.`;
+  copyright.textContent = `© ${new Date().getFullYear()} Partwright Studio. Source-available · free for non-commercial use.`;
   footer.appendChild(copyright);
 
   // Low-emphasis "start fresh" escape hatch — discoverable but well out of the

@@ -4,10 +4,11 @@ name: PR checks
 # tests, and the full e2e suite. Build + unit gates the e2e matrix so we
 # don't burn shard minutes on a broken build.
 #
-# E2e fires only on non-draft PRs. Marking the PR ready for review is what
-# kicks it off — draft pushes get build + unit only (fast, ~2-3 min), so
-# the agent can iterate on a draft cheaply, then flip to ready when the
-# implementation looks done to trigger the full e2e shards.
+# Every PR push runs the full suite — build + unit, then the e2e shards —
+# regardless of draft state, so draft PRs get the same signal as ready ones.
+# Drafts already fire `opened`/`synchronize` like any PR, and there's no
+# draft gate on the e2e job. Marking a PR ready for review is purely a
+# review-readiness signal — it does not re-run CI (the draft pushes did).
 #
 # The e2e suite is CPU-bound (each test boots WASM in its own browser page),
 # so it runs SERIALLY within a runner (playwright.config.ts pins workers: 1)
@@ -23,7 +24,10 @@ name: PR checks
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
+    # Drafts trigger opened/synchronize like any PR, so they get the full
+    # suite too. No ready_for_review: flipping a green draft to ready would
+    # only re-run the same commit's checks and waste shard minutes.
+    types: [opened, synchronize, reopened]
     paths-ignore:
       - '**/*.md'
       - '.github/release.yml'
@@ -58,9 +62,6 @@ jobs:
 
   e2e:
     needs: build-unit
-    # Skip e2e on draft PRs — drafts get build + unit only. The "ready for
-    # review" transition (and any push after) fires the e2e shards.
-    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

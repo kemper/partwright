@@ -53,6 +53,15 @@ function assertFiniteExportableScene(scene: THREE.Object3D): void {
   });
 }
 
+// NOTE on attribution: the other export formats (3MF metadata, STL header,
+// OBJ/MTL comment) carry a "Partwright" attribution string. GLB intentionally
+// does not. The glTF spec puts producer info in `asset.generator`, but
+// three.js's GLTFExporter hard-codes that field and offers no public option to
+// set it; the only alternative (stuffing it into `scene.userData` → `extras`)
+// serializes inconsistently across three versions and risks emitting a
+// malformed GLB. Since a broken export is far worse than a missing credit, we
+// leave GLB attribution out rather than fight the exporter.
+
 /** Build the GLB blob for the current scene without triggering a download. */
 export async function buildGLB(customName?: string): Promise<BuiltExport> {
   const scene = getScene();

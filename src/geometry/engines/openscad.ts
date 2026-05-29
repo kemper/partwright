@@ -6,6 +6,7 @@ import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
 import { scadDiagnostics } from '../sourceDiagnostics';
 import { ensureBosl2InMemfs, sourceUsesBosl2 } from '../bosl2Loader';
 import { getDefaultCircularSegments } from '../qualitySettings';
+import { parseScadParams, buildScadDefines } from '../scadParams';
 
 /** Tiny passthrough module pre-injected into every SCAD compile so user code
  *  can write `label("name") <expr>;` without breaking. Duplicate declarations
@@ -128,8 +129,23 @@ export const openscadEngine: Engine = {
 
 /** Async run — creates a fresh WASM instance, compiles SCAD, parses STL or
  *  multi-object AMF (when `label()` is used to mark paintable regions), and
- *  round-trips through Manifold.ofMesh(). */
-export async function runScadAsync(source: string): Promise<MeshResult> {
+ *  round-trips through Manifold.ofMesh().
+ *
+ *  Customizer: top-level variables annotated in the OpenSCAD customizer style
+ *  (see `scadParams.ts`) surface as the same Parameters panel the JS engines
+ *  drive via `api.params`. The user's tweaks arrive as `paramOverrides` and are
+ *  applied through OpenSCAD's native `-D name=value` flag — no source
+ *  rewriting. The parsed schema rides on every result (success and error) so
+ *  the panel stays live, matching the other engines. */
+export async function runScadAsync(source: string, paramOverrides?: Record<string, unknown>): Promise<MeshResult> {
+  const schema = parseScadParams(source);
+  const paramsSchema = schema.length > 0 ? schema : undefined;
+  const defines = buildScadDefines(source, paramOverrides);
+  const result = await runScadInner(source, defines);
+  return paramsSchema ? { ...result, paramsSchema } : result;
+}
+
+async function runScadInner(source: string, defines: string[]): Promise<MeshResult> {
   if (!createFn) {
     const error = 'OpenSCAD engine not initialized.';
     return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
@@ -167,12 +183,12 @@ export async function runScadAsync(source: string): Promise<MeshResult> {
       // labelled construction. Any label-shape warnings (nested-in-boolean
       // etc.) are emitted as diagnostics on the result inside that helper,
       // so they surface even when the compile succeeds.
-      return runLabelAwareAsync(instance, source, stderr, labelScan);
+      return runLabelAwareAsync(instance, source, stderr, labelScan, defines);
     }
 
     // Fast path: no labels in source → single STL compile, single Manifold.
     // Functionally identical to the pre-label-support pipeline.
-    return runFlatStlAsync(instance, source, stderr);
+    return runFlatStlAsync(instance, source, stderr, defines);
   } catch (e: unknown) {
     let msg: string;
     if (typeof e === 'number' && instance?.formatException) {
@@ -196,12 +212,15 @@ async function runFlatStlAsync(
   instance: any,
   source: string,
   stderr: string[],
+  defines: string[],
 ): Promise<MeshResult> {
   // Seed $fn from the user's quality preset. The script can still
   // reassign $fn=… at the top level or pass $fn= per primitive to override.
+  // Customizer overrides follow as additional `-D` flags.
   const exitCode = instance.callMain([
     '--enable=manifold',
     '-D', `$fn=${getDefaultCircularSegments()}`,
+    ...defines,
     '--export-format=binstl',
     '-o', '/out.stl',
     '/in.scad',
@@ -252,11 +271,13 @@ async function runLabelAwareAsync(
   source: string,
   stderr: string[],
   labelScan: ReturnType<typeof scanScadLabels>,
+  defines: string[],
 ): Promise<MeshResult> {
   const exitCode = instance.callMain([
     '--enable=manifold',
     '--enable=lazy-union',
     '-D', `$fn=${getDefaultCircularSegments()}`,
+    ...defines,
     '--export-format=amf',
     '-o', '/out.amf',
     '/in.scad',

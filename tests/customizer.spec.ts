@@ -75,8 +75,10 @@ test.describe('Customizer parameters', () => {
     expect(after.x).toBeCloseTo(20, 1);
 
     await expect(page.locator('#params-panel')).toBeVisible();
-    // One widget row per declared parameter.
+    // One widget row per declared parameter. Number params pair the slider with
+    // an editable number field (the exact-entry feature).
     await expect(page.locator('#params-panel input[type="range"]')).toHaveCount(2); // width + height
+    await expect(page.locator('#params-panel input[type="number"]')).toHaveCount(2); // width + height fields
     await expect(page.locator('#params-panel input[type="checkbox"]')).toHaveCount(1); // hollow
     await expect(page.locator('#params-panel select')).toHaveCount(1); // style
 
@@ -98,6 +100,87 @@ test.describe('Customizer parameters', () => {
       slider.dispatchEvent(new Event('change', { bubbles: true }));
     });
     await expect.poll(() => currentXDim(page)).toBeCloseTo(100, 0);
+  });
+
+  test('typing an exact value into a number field re-runs the model', async ({ page }) => {
+    await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code), PARAM_MODEL);
+    await expect(page.locator('#params-panel')).toBeVisible();
+
+    // Type 47 into the Width number field (first number input) and commit with
+    // a 'change' event — the model re-runs to the exact typed dimension, which a
+    // slider's discrete steps may not land on as directly.
+    await page.evaluate(() => {
+      const panel = document.getElementById('params-panel')!;
+      const field = panel.querySelector('input[type="number"]') as HTMLInputElement; // first = width
+      field.value = '47';
+      field.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await expect.poll(() => currentXDim(page)).toBeCloseTo(47, 0);
+
+    // The paired slider tracked the typed value too.
+    const sliderVal = await page.evaluate(() => {
+      const panel = document.getElementById('params-panel')!;
+      return (panel.querySelector('input[type="range"]') as HTMLInputElement).value;
+    });
+    expect(Number(sliderVal)).toBeCloseTo(47, 0);
+  });
+
+  test('parameters work in a voxel session (engine-agnostic)', async ({ page }) => {
+    const VOXEL_PARAM_MODEL = `
+const p = api.params({ size: { type: 'int', default: 4, min: 1, max: 20, label: 'Size' } });
+const v = api.voxels();
+v.fillBox([0, 0, 0], [p.size - 1, p.size - 1, p.size - 1], '#88aaff');
+return v;`;
+
+    const out = await page.evaluate(async (code) => {
+      const api = (window as unknown as { partwright: PW & { setActiveLanguage: (l: string) => Promise<void> } }).partwright;
+      await api.createSession('voxel-customizer');
+      await api.setActiveLanguage('voxel');
+      const geo = await api.run(code);
+      const wide = await api.setParams({ size: 12 });
+      return {
+        schema: api.getParams().schema.map(s => s.key),
+        defaultX: (geo.boundingBox as { dimensions?: number[] }).dimensions?.[0] ?? -1,
+        wideX: (wide.geometry as { boundingBox: { dimensions: number[] } }).boundingBox.dimensions[0],
+      };
+    }, VOXEL_PARAM_MODEL);
+
+    // Schema captured + panel shown for a voxel model, and setParams re-runs it.
+    expect(out.schema).toEqual(['size']);
+    expect(out.defaultX).toBeCloseTo(4, 0);
+    expect(out.wideX).toBeCloseTo(12, 0);
+    await expect(page.locator('#params-panel')).toBeVisible();
+    await expect(page.locator('#customize-toggle')).toContainText('Customize (1)');
+  });
+
+  test('parameters work in a SCAD session (native customizer annotations)', async ({ page }) => {
+    // OpenSCAD customizer annotations (// [min:max], bare true/false) are parsed
+    // into the same schema; overrides apply through OpenSCAD's -D flag.
+    const SCAD_PARAM_MODEL = [
+      'width = 20; // [10:60]',
+      'tall = false;',
+      'cube([width, width, tall ? 40 : 10], center=true);',
+    ].join('\n');
+
+    const out = await page.evaluate(async (code) => {
+      const api = (window as unknown as { partwright: PW & { setActiveLanguage: (l: string) => Promise<void> } }).partwright;
+      await api.createSession('scad-customizer');
+      await api.setActiveLanguage('scad');
+      const geo = await api.run(code); // first SCAD run lazy-loads the WASM engine
+      const wide = await api.setParams({ width: 50 });
+      return {
+        schema: api.getParams().schema.map(s => s.key),
+        defaultX: (geo.boundingBox as { dimensions?: number[] }).dimensions?.[0] ?? -1,
+        wideX: (wide.geometry as { boundingBox: { dimensions: number[] } }).boundingBox.dimensions[0],
+      };
+    }, SCAD_PARAM_MODEL);
+
+    // Both top-level vars surfaced; width slider override re-runs via -D.
+    expect(out.schema).toEqual(['width', 'tall']);
+    expect(out.defaultX).toBeCloseTo(20, 0);
+    expect(out.wideX).toBeCloseTo(50, 0);
+    await expect(page.locator('#params-panel')).toBeVisible();
+    await expect(page.locator('#customize-toggle')).toContainText('Customize (2)');
   });
 
   test('Customize toolbar pill toggles the panel, and close → reopen always works', async ({ page }) => {
