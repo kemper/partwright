@@ -310,20 +310,6 @@ export function createToolbar(
   });
   importWrapper.appendChild(importInput);
 
-  // Dedicated image picker for the "Image → voxel" row, so it pre-filters to
-  // raster images and routes straight into the voxel-import modal (the same
-  // handler as a dropped image, just discoverable as its own menu row).
-  const imageVoxelInput = document.createElement('input');
-  imageVoxelInput.type = 'file';
-  imageVoxelInput.accept = IMAGE_ACCEPT;
-  imageVoxelInput.className = 'hidden';
-  imageVoxelInput.addEventListener('change', async () => {
-    const file = imageVoxelInput.files?.[0];
-    if (file) await callbacks.onImportFile(file);
-    imageVoxelInput.value = '';
-  });
-  importWrapper.appendChild(imageVoxelInput);
-
   const importDropdown = document.createElement('div');
   importDropdown.id = 'import-dropdown';
   importDropdown.className = 'fixed left-2 right-2 top-14 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1 hidden z-20 max-h-[80vh] overflow-y-auto md:absolute md:left-auto md:right-0 md:top-full md:mt-1 md:w-72';
@@ -335,6 +321,7 @@ export function createToolbar(
   );
   chooseFileOpt.addEventListener('click', () => {
     importDropdown.classList.add('hidden');
+    importInput.accept = IMPORT_ACCEPT; // restore the full filter (the image row narrows it)
     importInput.click();
   });
   importDropdown.appendChild(chooseFileOpt);
@@ -357,7 +344,12 @@ export function createToolbar(
   );
   imageVoxelOpt.addEventListener('click', () => {
     importDropdown.classList.add('hidden');
-    imageVoxelInput.click();
+    // Reuse the single import file input (a second one would break the
+    // `#import-wrapper input[type=file]` selector other tests rely on), just
+    // narrowed to raster images for this row. The change handler routes the
+    // picked image into the voxel-import modal via onImportFile.
+    importInput.accept = IMAGE_ACCEPT;
+    importInput.click();
   });
   importDropdown.appendChild(imageVoxelOpt);
 
