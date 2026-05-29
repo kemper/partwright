@@ -138,7 +138,7 @@ import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
 import { encodeShare, decodeShare, validateSharePayloadShape, ShareUnsupportedError } from './share/shareLink';
 import { openShareModal, renderSharedBanner, renderSharedOverlay } from './share/shareUI';
-import { initInsertPalette, toggleInsertPalette, setInsertPaletteAvailable } from './ui/insertPalette';
+import { initInsertPalette, setInsertPaletteAvailable } from './ui/insertPalette';
 import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
@@ -3361,9 +3361,8 @@ async function main() {
       if (isSimplifyOpen()) closeSimplifyMenu();
     },
   });
-  // The Insert toggle lives in the editor header (above the code pane).
-  document.getElementById('btn-insert')?.addEventListener('click', () => toggleInsertPalette());
-  // Codegen only covers manifold-js + scad — hide on voxel/replicad sessions.
+  // initInsertPalette wires the toolbar button itself; codegen only covers
+  // manifold-js + scad so hide it on voxel / replicad sessions.
   setInsertPaletteAvailable(getActiveLanguage() === 'manifold-js' || getActiveLanguage() === 'scad');
   initVoxelPaintUI(clipControls, {
     activate: async () => {
@@ -9029,7 +9028,10 @@ function setStatus(el: HTMLElement, state: 'ready' | 'running' | 'error' | 'load
   el.setAttribute('aria-live', 'polite');
   el.textContent = text;
   el.title = text;
-  el.className = 'text-xs font-mono max-w-[60%] truncate text-right ';
+  // Keep the indicator click-transparent — `setStatus` overwrites the className
+  // so the original `pointer-events-none` from layout.ts would otherwise be
+  // lost, letting it intercept clicks on the Insert button it overlaps.
+  el.className = 'text-xs font-mono max-w-[60%] truncate text-right pointer-events-none ';
   switch (state) {
     case 'ready':
       el.className += 'text-emerald-400';

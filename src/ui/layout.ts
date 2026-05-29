@@ -76,15 +76,6 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   editorTitle.textContent = 'editor.js';
   editorHeader.appendChild(editorTitle);
 
-  // Insert palette toggle — primary entry point for click-to-insert shapes &
-  // operations, placed right above the code it writes into.
-  const insertBtn = document.createElement('button');
-  insertBtn.id = 'btn-insert';
-  insertBtn.className = 'shrink-0 flex items-center gap-1 px-2 py-0.5 rounded text-xs leading-none text-blue-300 bg-blue-900/30 border border-blue-700/50 hover:bg-blue-900/50 transition-colors';
-  insertBtn.textContent = '➕ Insert';
-  insertBtn.title = 'Insert shapes and boolean operations as code';
-  editorHeader.appendChild(insertBtn);
-
   const editorHeaderSpacer = document.createElement('div');
   editorHeaderSpacer.className = 'flex-1';
   editorHeader.appendChild(editorHeaderSpacer);

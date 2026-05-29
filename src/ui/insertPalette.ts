@@ -113,6 +113,22 @@ const OP_TITLE: Record<BooleanOpKind, string> = {
 
 export function initInsertPalette(container: HTMLElement, callbacks: InsertPaletteCallbacks): void {
   cb = callbacks;
+
+  // The toolbar button. Lives next to Paint / Simplify / Measure in the
+  // viewport overlay so it's always visible regardless of editor-pane
+  // collapse state — and keeps the `#btn-insert` id existing tests depend on.
+  const btn = document.createElement('button');
+  btn.id = 'btn-insert';
+  btn.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  btn.textContent = '➕ Insert';
+  btn.title = 'Insert shapes and boolean operations as code';
+  btn.addEventListener('click', toggleInsertPalette);
+  // Sit before the paint button when present so the toolbar reads
+  // Insert · Paint · Simplify · Measure · …
+  const paintBtn = container.querySelector('#paint-toggle');
+  if (paintBtn) container.insertBefore(btn, paintBtn);
+  else container.appendChild(btn);
+
   panel = buildPanel();
   container.appendChild(panel);
 }
