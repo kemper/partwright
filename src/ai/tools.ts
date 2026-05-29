@@ -44,16 +44,16 @@ export interface ToolExecResult {
 const ALL_TOOLS: ToolDefinition[] = [
   {
     name: 'getActiveLanguage',
-    description: 'Returns the editor\'s current modeling language: "manifold-js", "scad", or "replicad". The per-turn system suffix already includes this, but call when in doubt or after a tool sequence that might have switched it.',
+    description: 'Returns the editor\'s current modeling language: "manifold-js", "scad", "replicad", or "voxel". The per-turn system suffix already includes this, but call when in doubt or after a tool sequence that might have switched it.',
     input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'setActiveLanguage',
-    description: 'Switch the editor between "manifold-js", "scad", and "replicad". Your in-progress code in the previous language is stashed as a per-session draft and restored when you switch back, so flipping is cheap and non-destructive — saved versions in this session are untouched and remember the language they were authored in. "replicad" is a full BREP / OpenCASCADE session — pick it when the user wants exact fillets, chamfers, STEP export, or mechanical-CAD interop. (Inside a manifold-js session you can also access BREP via `api.BREP.*` without switching languages — only switch when STEP export or a BREP-only workflow is required.) Use when the user asks, or when the new request maps obviously better to one of the engines; still avoid unnecessary back-and-forth since each switch costs a tool round-trip.',
+    description: 'Switch the editor between "manifold-js", "scad", and "replicad". Your in-progress code in the previous language is stashed as a per-session draft and restored when you switch back, so flipping is cheap and non-destructive — saved versions in this session are untouched and remember the language they were authored in. "replicad" is a full BREP / OpenCASCADE session — pick it when the user wants exact fillets, chamfers, STEP export, or mechanical-CAD interop. (Inside a manifold-js session you can also access BREP via `api.BREP.*` without switching languages — only switch when STEP export or a BREP-only workflow is required.) "voxel" is a blocky colored-cube engine (pure JS): build with `api.voxels()` then v.set/v.fillBox/v.sphere/v.line in hex or [r,g,b] colors and `return v` — pick it for Minecraft-style / pixel-art models or after an image-to-voxel import. Use when the user asks, or when the new request maps obviously better to one of the engines; still avoid unnecessary back-and-forth since each switch costs a tool round-trip.',
     input_schema: {
       type: 'object',
       properties: {
-        lang: { type: 'string', enum: ['manifold-js', 'scad', 'replicad'] },
+        lang: { type: 'string', enum: ['manifold-js', 'scad', 'replicad', 'voxel'] },
       },
       required: ['lang'],
     },
@@ -401,7 +401,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'readDoc',
-    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, colors, print-safety, reference-images, file-io, annotations.',
+    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, voxel, colors, print-safety, reference-images, file-io, annotations.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1075,13 +1075,15 @@ function detectLanguageMismatch(code: string): string | null {
     if (/^\s*return\s+(api\.)?Manifold\b/m.test(code)) {
       return 'Language mismatch: this session is BREP/replicad, which must `return` a BREP shape (api.BREP.box/cylinder/sphere/…), not a Manifold. If you want fillets/chamfers inside a Manifold session instead, call setActiveLanguage("manifold-js") and use api.BREP from within it.';
     }
-  } else {
+  } else if (lang === 'manifold-js') {
     // Strong SCAD markers in a JS session — `module name() {}` /
     // `function foo() = …` / `$fn = …;` are SCAD-only constructs.
     if (/^\s*module\s+\w+\s*\(/m.test(code) || /^\s*\$fn\s*=/m.test(code) || /^\s*function\s+\w+\s*\([^)]*\)\s*=/m.test(code)) {
       return 'Language mismatch: this session is manifold-js (JavaScript) but the code uses OpenSCAD-only syntax (`module`, `$fn`, or function-equals). Rewrite using the manifold-js API: `const { Manifold, CrossSection } = api;`, `Manifold.cube(...)`, `.translate(...)`, ending with `return manifold;`.';
     }
   }
+  // 'voxel' sessions get no mismatch heuristic — the voxel engine surfaces a
+  // targeted "return a grid" error on its own.
   return null;
 }
 
@@ -1089,7 +1091,7 @@ function detectLanguageMismatch(code: string): string | null {
  *  `tools.ts` to import the engine module statically. The function lives
  *  in `src/geometry/engine.ts` and is already loaded by the app shell at
  *  startup, so a require-style lookup via `window.partwright` is safe. */
-const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations']);
+const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations']);
 
 /** Fetch a topic subdoc by short name. Same fetch path for Anthropic and
  *  local providers — both run inside the user's browser tab, so this is
@@ -1109,11 +1111,11 @@ async function readSubdoc(name: string): Promise<{ content: string; isError: boo
   }
 }
 
-function readActiveLanguage(): 'manifold-js' | 'scad' | 'replicad' | null {
+function readActiveLanguage(): 'manifold-js' | 'scad' | 'replicad' | 'voxel' | null {
   try {
-    const w = window as unknown as { partwright?: { getActiveLanguage?: () => 'manifold-js' | 'scad' | 'replicad' } };
+    const w = window as unknown as { partwright?: { getActiveLanguage?: () => 'manifold-js' | 'scad' | 'replicad' | 'voxel' } };
     const lang = w.partwright?.getActiveLanguage?.();
-    return lang === 'manifold-js' || lang === 'scad' || lang === 'replicad' ? lang : null;
+    return lang === 'manifold-js' || lang === 'scad' || lang === 'replicad' || lang === 'voxel' ? lang : null;
   } catch {
     return null;
   }

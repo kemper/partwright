@@ -80,6 +80,7 @@ import { showLanguageHelpModal } from './ui/languageHelpModal';
 import { showMergePartsModal } from './ui/mergePartsModal';
 import { parseSTL } from './import/parsers/stl';
 import { generateImportCode } from './import/codegen';
+import { imageDataToVoxelGrid, generateVoxelImportCode } from './import/imageToVoxel';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import type { BuiltExport } from './export/gltf';
 
@@ -1517,7 +1518,7 @@ async function main() {
   async function handleImportFile(file: File, options: { skipPreActiveConfirm?: boolean } = {}): Promise<boolean> {
     const source = classifyImportSource(file.name);
     if (!source) {
-      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl, .step / .stp`);
+      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl, .step / .stp, .png / .jpg / .gif / .webp`);
       return false;
     }
 
@@ -1554,6 +1555,8 @@ async function main() {
         }
       } else if (source === 'STEP') {
         committed = await handleStepImport(file);
+      } else if (source === 'IMAGE') {
+        committed = await handleImageImport(file);
       }
       if (committed) registerImport(file, file.name, source);
       return committed;
@@ -1561,6 +1564,63 @@ async function main() {
       alert(`Failed to import "${file.name}": ${(e as Error).message}`);
       return false;
     }
+  }
+
+  /** Decode an image File/Blob into ImageData via an offscreen canvas. */
+  async function decodeImageToImageData(blob: Blob): Promise<ImageData> {
+    const bmp = await createImageBitmap(blob);
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('Could not get a 2D canvas context to read image pixels.');
+      ctx.drawImage(bmp, 0, 0);
+      return ctx.getImageData(0, 0, bmp.width, bmp.height);
+    } finally {
+      bmp.close();
+    }
+  }
+
+  /** Decode an image URL (a `data:` URL or same-origin URL) into ImageData via
+   *  an `<img>` element. Uses an img-src load, not `fetch`, so it isn't blocked
+   *  by the app's strict CSP `connect-src` (which rejects `fetch('data:…')`). */
+  async function decodeImageUrlToImageData(url: string): Promise<ImageData> {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.src = url;
+    await img.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) throw new Error('Could not get a 2D canvas context to read image pixels.');
+    ctx.drawImage(img, 0, 0);
+    return ctx.getImageData(0, 0, canvas.width, canvas.height);
+  }
+
+  /** Import an image as a colored voxel billboard in a new voxel session.
+   *  Transparent pixels (alpha below threshold) drop out, so logos and
+   *  sprites voxelize cleanly; opaque photos become a full extruded slab.
+   *  The grid is embedded in the generated `voxels.decode(...)` code, so the
+   *  session persists as code with no special schema. */
+  async function handleImageImport(file: File): Promise<boolean> {
+    let imageData: ImageData;
+    try {
+      imageData = await decodeImageToImageData(file);
+    } catch (e) {
+      alert(`Could not read image "${file.name}": ${(e as Error).message}`);
+      return false;
+    }
+    const grid = imageDataToVoxelGrid(imageData);
+    if (grid.size === 0) {
+      alert(`"${file.name}" produced no voxels — every sampled pixel was transparent. Try an image with opaque content.`);
+      return false;
+    }
+    const code = generateVoxelImportCode(grid, file.name);
+    const sessionName = file.name.replace(/\.(png|jpe?g|gif|webp|bmp)$/i, '');
+    await importCodePayload(code, 'voxel', sessionName);
+    return true;
   }
 
   interface ParsedSTL {
@@ -2075,7 +2135,7 @@ async function main() {
     onImportInboxEntry: handleReimportInboxEntry,
     onLanguageHelp: async () => { await showLanguageHelpModal(); },
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
-    onLanguageSwitch: async (lang: 'manifold-js' | 'scad' | 'replicad') => {
+    onLanguageSwitch: async (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => {
       if (lang === getActiveLanguage()) return;
       // Stash the current language's editor buffer as a draft on the active
       // session, then swap engines and restore (or seed) the other language's
@@ -3125,6 +3185,16 @@ async function main() {
 
   const DRAFT_STUB_JS = '// JavaScript\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
   const DRAFT_STUB_SCAD = '// OpenSCAD\ncube([10, 10, 10], center=true);';
+  // Voxel — a small colored model so the first paint after switching shows
+  // the workflow (fillBox / set with hex or [r,g,b] colors) immediately.
+  const DRAFT_STUB_VOXEL =
+    '// Voxel — build with colored cubes on an integer grid (1 voxel = 1 unit).\n' +
+    'const { voxels } = api;\n' +
+    'const v = voxels();\n' +
+    "v.fillBox([-5, -5, 0], [4, 4, 0], '#6b8cff');   // a 10x10 base slab\n" +
+    "v.fillBox([-1, -1, 1], [1, 1, 6], '#ff8c42');   // a tower\n" +
+    "v.set(0, 0, 7, '#ff3b30');                       // a red cap\n" +
+    'return v;\n';
   // BREP / replicad — quick showcase of the headline features:
   //   - selective fillet (the inDirection-based workaround for box edges,
   //     called out in the gotchas cheat sheet at the top of replicad.md)
@@ -3184,6 +3254,7 @@ async function main() {
     if (nextCode === null) {
       nextCode = lang === 'scad' ? DRAFT_STUB_SCAD
         : lang === 'replicad' ? DRAFT_STUB_REPLICAD
+        : lang === 'voxel' ? DRAFT_STUB_VOXEL
         : DRAFT_STUB_JS;
     }
     setValue(nextCode);
@@ -3491,12 +3562,38 @@ async function main() {
     async importCodeData(code: string, language: Language, sessionName?: string) {
       const check = guard(() => {
         assertString(code, 'importCodeData(code)', { allowEmpty: false });
-        assertEnum(language, ['manifold-js', 'scad', 'replicad'], 'importCodeData(language)');
+        assertEnum(language, ['manifold-js', 'scad', 'replicad', 'voxel'], 'importCodeData(language)');
         assertString(sessionName, 'importCodeData(sessionName)', { optional: true, allowEmpty: false });
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       const result = await importCodePayload(code, language, sessionName);
       return { sessionId: result.sessionId };
+    },
+
+    /** Import an image (a `data:` URL or a same-origin URL) as a colored voxel
+     *  billboard in a new voxel session — the programmatic equivalent of the
+     *  Import → image file flow. Transparent pixels drop out; opaque images
+     *  become a full slab. Returns `{ sessionId, voxelCount }` or `{ error }`. */
+    async importImageAsVoxels(imageUrl: string, opts: { maxSize?: number; depth?: number; alphaThreshold?: number } = {}) {
+      const check = guard(() => {
+        assertString(imageUrl, 'importImageAsVoxels(imageUrl)', { allowEmpty: false });
+        assertObject(opts, 'importImageAsVoxels(opts)', { optional: true });
+        if (opts.maxSize !== undefined) assertNumber(opts.maxSize, 'importImageAsVoxels(opts.maxSize)', { min: 1, integer: true });
+        if (opts.depth !== undefined) assertNumber(opts.depth, 'importImageAsVoxels(opts.depth)', { min: 1, integer: true });
+        if (opts.alphaThreshold !== undefined) assertNumber(opts.alphaThreshold, 'importImageAsVoxels(opts.alphaThreshold)', { min: 0, max: 255, integer: true });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      let imageData: ImageData;
+      try {
+        imageData = await decodeImageUrlToImageData(imageUrl);
+      } catch (e) {
+        return { error: `importImageAsVoxels: could not load/decode image — ${(e as Error).message}` };
+      }
+      const grid = imageDataToVoxelGrid(imageData, opts);
+      if (grid.size === 0) return { error: 'importImageAsVoxels: image produced no voxels (every sampled pixel was transparent).' };
+      const code = generateVoxelImportCode(grid, 'image');
+      const result = await importCodePayload(code, 'voxel', 'image-voxels');
+      return { sessionId: result.sessionId, voxelCount: grid.size };
     },
 
     // === Recent Exports inbox ===
@@ -3559,7 +3656,7 @@ async function main() {
         if (opts !== undefined) {
           const o = assertObject(opts, 'validate(code, opts)')!;
           assertNoUnknownKeys(o, ['language'], 'validate(opts)');
-          if (o.language !== undefined) assertEnum(o.language, ['manifold-js', 'scad', 'replicad'], 'validate(opts).language');
+          if (o.language !== undefined) assertEnum(o.language, ['manifold-js', 'scad', 'replicad', 'voxel'], 'validate(opts).language');
         }
         return true;
       });
@@ -3579,7 +3676,7 @@ async function main() {
      *  session are not touched — they keep the language they were authored in
      *  and re-load you into that engine when you navigate to them. */
     async setActiveLanguage(lang: Language): Promise<void> {
-      assertEnum(lang, ['manifold-js', 'scad', 'replicad'], 'setActiveLanguage(lang)');
+      assertEnum(lang, ['manifold-js', 'scad', 'replicad', 'voxel'], 'setActiveLanguage(lang)');
       await switchLanguageWithDrafts(lang);
     },
 

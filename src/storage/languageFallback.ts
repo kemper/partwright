@@ -2,7 +2,7 @@
 // file (with no engine or DOM imports) so the resolution logic can be unit-
 // tested directly.
 
-export type Language = 'manifold-js' | 'scad' | 'replicad';
+export type Language = 'manifold-js' | 'scad' | 'replicad' | 'voxel';
 
 /** Default modeling language used when neither the version nor the session
  *  carries one. Mirrors the engine's DEFAULT_LANGUAGE; kept inline here so this
@@ -14,7 +14,7 @@ export const DEFAULT_LANGUAGE: Language = 'manifold-js';
  *  junk value like `"python"` doesn't propagate to the engine and editor and
  *  crash a downstream call expecting one of the supported engines. */
 export function asLanguage(v: unknown): Language | undefined {
-  return v === 'manifold-js' || v === 'scad' || v === 'replicad' ? v : undefined;
+  return v === 'manifold-js' || v === 'scad' || v === 'replicad' || v === 'voxel' ? v : undefined;
 }
 
 /** Minimal shape needed to resolve a version's language. */

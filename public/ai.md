@@ -1,6 +1,6 @@
 # Partwright -- AI Agent Instructions
 
-Partwright is a browser-based parametric CAD tool with three modeling engines: **manifold-js** (default, JavaScript DSL with manifold-3d API + a `Curves` helper namespace), **OpenSCAD** (SCAD language via WASM, with BOSL2 bundled), and **BREP / replicad** (JavaScript with `api.BREP.*` — OpenCASCADE B-rep for exact fillets/chamfers and STEP export). You write code that constructs 3D geometry, which renders live. All interaction is via the `window.partwright` programmatic API -- do not drive the app through clicks or keystrokes. `window.mainifold` remains available as a legacy alias for older prompts.
+Partwright is a browser-based parametric CAD tool with four modeling engines: **manifold-js** (default, JavaScript DSL with manifold-3d API + a `Curves` helper namespace), **OpenSCAD** (SCAD language via WASM, with BOSL2 bundled), **BREP / replicad** (JavaScript with `api.BREP.*` — OpenCASCADE B-rep for exact fillets/chamfers and STEP export), and **voxel** (JavaScript — blocky colored-cube modeling for pixel-art and image-derived models; see `/ai/voxel.md`). You write code that constructs 3D geometry, which renders live. All interaction is via the `window.partwright` programmatic API -- do not drive the app through clicks or keystrokes. `window.mainifold` remains available as a legacy alias for older prompts.
 
 **Coordinate system:** Right-handed, Z-up. XY plane is the ground. Units are arbitrary.
 
@@ -35,7 +35,7 @@ Partwright is a browser-based parametric CAD tool with three modeling engines: *
 
 ## Choosing an engine
 
-Partwright supports three modeling engines. Pick whichever is best for the task:
+Partwright supports four modeling engines. The table below covers the three solid/CSG engines; the fourth, **voxel**, is a blocky colored-cube engine for pixel-art and image-derived models (`return api.voxels()…`) — see `/ai/voxel.md`. Pick whichever is best for the task:
 
 | | **manifold-js** (default) | **OpenSCAD** (SCAD) | **BREP / replicad** |
 |---|---|---|---|
@@ -51,10 +51,11 @@ Partwright supports three modeling engines. Pick whichever is best for the task:
 ### Switching engines
 
 ```js
-partwright.getActiveLanguage()        // -> 'manifold-js' or 'scad' or 'replicad'
+partwright.getActiveLanguage()        // -> 'manifold-js' or 'scad' or 'replicad' or 'voxel'
 await partwright.setActiveLanguage('scad')
 await partwright.setActiveLanguage('manifold-js')
 await partwright.setActiveLanguage('replicad')
+await partwright.setActiveLanguage('voxel')
 ```
 
 Switching is non-destructive. Your in-progress code in the previous language is stashed as a per-session draft and restored when you switch back — both languages stay live until the session is deleted. Saved versions are not touched; each version remembers the language it was authored in, and navigating to one auto-swaps the engine. A single session can hold mixed manifold-js + SCAD versions.
@@ -158,6 +159,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `sdf` | Before reaching for `api.sdf.*` — smooth blends (`smoothUnion`), domain warps (`twist`/`bend`), lattices (`gyroid`), constant-thickness shells. Anything the prompt frames as "smooth", "blended", "twisted", "lattice", or "gyroid" lives here. |
 | `bosl2` | Before writing SCAD code that needs edge rounding (`cuboid(rounding=)`), threads (`screw`), gears (`spur_gear`), path-following (`path_sweep`), or attachables. |
 | `replicad` | Before using `api.BREP.*` inside a manifold-js session, or before switching to the replicad/BREP language. Covers exact fillets/chamfers, STEP export, and the manifold-js ↔ BREP boundary. |
+| `voxel` | Before writing voxel-language code or importing an image as voxels. Covers the `api.voxels()` grid API, colors, coordinate system, and image import. |
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
 | `colors` | Before any paint operation — the picker decision tree, labelled construction, vision-driven painting, export behavior. |
 | `reference-images` | When the user attaches a photo or asks you to model from one — `setImages` shape, label conventions, the five-step photo-to-model loop. |
@@ -227,8 +229,9 @@ partwright.setCode(code)       // Set editor contents (no auto-run)
 partwright.sliceAtZ(z)         // Cross-section -> {polygons, svg, boundingBox, area}
 partwright.getBoundingBox()    // -> {min:[x,y,z], max:[x,y,z]}
 partwright.getModule()         // Raw manifold-3d WASM module
-partwright.getActiveLanguage() // -> 'manifold-js' | 'scad' | 'replicad'
-await partwright.setActiveLanguage(lang) // Swap engine ('manifold-js' | 'scad' | 'replicad'); stashes the prev draft, restores the other
+partwright.getActiveLanguage() // -> 'manifold-js' | 'scad' | 'replicad' | 'voxel'
+await partwright.setActiveLanguage(lang) // Swap engine ('manifold-js' | 'scad' | 'replicad' | 'voxel'); stashes the prev draft, restores the other
+partwright.importImageAsVoxels(imageUrl, opts?) // Image (data:/URL) -> colored voxel session. See /ai/voxel.md
 partwright.toggleClip(on?)     // Toggle 3D clipping plane -> {enabled, z, min, max}
 partwright.setClipZ(z)         // Set clip height -> {enabled, z, min, max}
 partwright.getClipState()      // -> {enabled, z, min, max}

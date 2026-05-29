@@ -7,7 +7,7 @@ export interface Session {
   updated: number;
   images?: AttachedImage[] | null;
   /** Modeling language for this session. Missing = 'manifold-js'. */
-  language?: 'manifold-js' | 'scad' | 'replicad';
+  language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
   /** Id of the part that is active when the session is (re)opened. Missing =
    *  fall back to the first part by `order`. Set on every part switch so the
    *  editor restores to the part the user last worked on. */
@@ -85,7 +85,7 @@ export interface Version {
   /** Modeling language this version was authored in. Missing = fall back to
    *  the owning session's `language` (then to 'manifold-js'). Versions can mix
    *  languages within a single session — navigating to one swaps the engine. */
-  language?: 'manifold-js' | 'scad' | 'replicad';
+  language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
   /** Snapshot of annotations (freehand strokes + pinned text labels) at the time
    *  this version was saved. Shape matches `SerializedAnnotation[]` from the
    *  annotations module — kept as `unknown[]` here to preserve db-layer isolation. */
@@ -106,12 +106,12 @@ export interface SessionDraft {
    *  session removal walk a simple `sessionId` index. */
   id: string;
   sessionId: string;
-  language: 'manifold-js' | 'scad' | 'replicad';
+  language: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
   code: string;
   updatedAt: number;
 }
 
-function draftId(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad'): string {
+function draftId(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): string {
   return `${sessionId}:${language}`;
 }
 
@@ -441,7 +441,7 @@ async function migratePartsData(targetDb: IDBDatabase): Promise<void> {
 
 // === Sessions ===
 
-export async function createSession(name?: string, language?: 'manifold-js' | 'scad' | 'replicad'): Promise<Session> {
+export async function createSession(name?: string, language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<Session> {
   const session: Session = {
     id: generateId(),
     name: name || `Session ${new Date().toLocaleDateString()}`,
@@ -686,7 +686,7 @@ export async function saveVersion(
   /** Modeling language the version was authored in. Stored on the version so
    *  navigating between versions can swap the engine independently of the
    *  session's default language. */
-  language?: 'manifold-js' | 'scad' | 'replicad',
+  language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel',
 ): Promise<Version> {
   // Compute the next index and write the version inside ONE readwrite
   // transaction. IndexedDB serializes overlapping readwrite transactions on
@@ -888,12 +888,12 @@ export async function clearAllData(): Promise<void> {
 
 // === Editor drafts (per session, per language) ===
 
-export async function getDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad'): Promise<SessionDraft | null> {
+export async function getDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<SessionDraft | null> {
   const store = await tx('drafts', 'readonly');
   return reqToPromise(store.get(draftId(sessionId, language))) as Promise<SessionDraft | null>;
 }
 
-export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad', code: string): Promise<void> {
+export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string): Promise<void> {
   const store = await tx('drafts', 'readwrite');
   const row: SessionDraft = {
     id: draftId(sessionId, language),
@@ -906,7 +906,7 @@ export async function setDraft(sessionId: string, language: 'manifold-js' | 'sca
   await txComplete(store.transaction);
 }
 
-export async function deleteDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad'): Promise<void> {
+export async function deleteDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<void> {
   const store = await tx('drafts', 'readwrite');
   store.delete(draftId(sessionId, language));
   await txComplete(store.transaction);

@@ -42,7 +42,7 @@ export interface ReviewContext {
   /** Active editor code. */
   code: string;
   /** Editor language label. */
-  language: 'manifold-js' | 'scad' | 'replicad';
+  language: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
   /** Snapshot of the rendered geometry (4-iso composite by default). */
   snapshot: ImageSource | null;
   /** Stat blob from window.partwright.getGeometryData (already a JSON string). */
@@ -256,13 +256,13 @@ export async function gatherReviewContext(): Promise<ReviewContext> {
   const w = window as unknown as {
     partwright?: {
       getCode?: () => string;
-      getActiveLanguage?: () => 'manifold-js' | 'scad' | 'replicad';
+      getActiveLanguage?: () => 'manifold-js' | 'scad' | 'replicad' | 'voxel';
       getGeometryData?: () => unknown;
       listSessionNotes?: () => Promise<Array<{ text: string }>>;
     };
   };
   const code = w.partwright?.getCode?.() ?? '';
-  const language: 'manifold-js' | 'scad' | 'replicad' = w.partwright?.getActiveLanguage?.() ?? 'manifold-js';
+  const language: 'manifold-js' | 'scad' | 'replicad' | 'voxel' = w.partwright?.getActiveLanguage?.() ?? 'manifold-js';
   const stats = w.partwright?.getGeometryData?.();
   const geometryStats = stats ? JSON.stringify(stats, null, 2) : '(no current geometry)';
   let notes: string[] = [];

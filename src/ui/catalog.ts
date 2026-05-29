@@ -17,7 +17,7 @@ export interface CatalogManifestEntry {
   /** Path (relative to /catalog/) of the .partwright.json file. */
   file: string;
   /** Optional language hint for the badge before the JSON loads. */
-  language?: 'manifold-js' | 'scad' | 'replicad';
+  language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
 }
 
 interface CatalogManifest {

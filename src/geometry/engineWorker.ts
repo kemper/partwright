@@ -33,6 +33,7 @@
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
 import { runScadAsync, openscadEngine } from './engines/openscad';
 import { runReplicadAsync, replicadEngine, getLastBrepShape } from './engines/replicad';
+import { voxelEngine } from './engines/voxel';
 import { ensureBrepLoaded, sourceUsesBrep, parseStepBlob, pushPendingBrepImport, clearPendingBrepImports } from './brepRuntime';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { setCircularSegmentsOverride } from './qualitySettings';
@@ -102,9 +103,13 @@ self.onmessage = async (event: MessageEvent) => {
       const effectiveLang: Language =
         lang === 'scad' ? 'scad' :
         lang === 'replicad' ? 'replicad' :
+        lang === 'voxel' ? 'voxel' :
         'manifold-js';
       let result;
-      if (effectiveLang === 'scad') {
+      if (effectiveLang === 'voxel') {
+        // Pure-JS voxel meshing — no WASM, no lazy init, synchronous.
+        result = voxelEngine.run(code as string);
+      } else if (effectiveLang === 'scad') {
         // Ensure the OpenSCAD engine is loaded (lazy init).
         if (!openscadEngine.isReady()) await openscadEngine.init();
         result = await runScadAsync(code as string);
@@ -149,6 +154,9 @@ self.onmessage = async (event: MessageEvent) => {
         if (mesh.mergeToVert)   transfer.push(mesh.mergeToVert.buffer);
         if (mesh.runIndex)      transfer.push(mesh.runIndex.buffer);
         if (mesh.runOriginalID) transfer.push(mesh.runOriginalID.buffer);
+        // Voxel meshes carry per-triangle colors; transfer them too (the
+        // manifold-js path leaves triColors undefined).
+        if (mesh.triColors)     transfer.push(mesh.triColors.buffer);
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
@@ -289,9 +297,12 @@ self.onmessage = async (event: MessageEvent) => {
       const effectiveLang: Language =
         lang === 'scad' ? 'scad' :
         lang === 'replicad' ? 'replicad' :
+        lang === 'voxel' ? 'voxel' :
         'manifold-js';
       let result;
-      if (effectiveLang === 'scad') {
+      if (effectiveLang === 'voxel') {
+        result = voxelEngine.validate(code);
+      } else if (effectiveLang === 'scad') {
         if (!openscadEngine.isReady()) await openscadEngine.init();
         result = await openscadEngine.validate(code);
       } else if (effectiveLang === 'replicad') {

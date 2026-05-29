@@ -53,6 +53,17 @@ const CARDS: LanguageCard[] = [
     ],
     tradeoffs: 'No mesh-only ops (Manifold.warp, .levelSet, .smoothOut), no Curves helpers (loft/sweep/NACA airfoils). For shapes that mix exact fillets with organic/SDF geometry, stay in manifold-js and use api.BREP for the one feature.',
   },
+  {
+    language: 'voxel',
+    pitch: 'Blocky, voxel-art modeling — build with colored cubes on a grid.',
+    bestFor: [
+      'Minecraft-style / pixel-art models — fast to author, no boolean math',
+      'Per-voxel color baked straight into the mesh (exports with vertex colors)',
+      'Importing an image (logo, sprite, photo) as a colored voxel billboard',
+      'AI-friendly authoring — v.fillBox(...), v.sphere(...), v.set(x,y,z,color)',
+    ],
+    tradeoffs: 'Stair-stepped surfaces (no smooth curves), no parametric history, no booleans/fillets. For precise or organic shapes use manifold-js or BREP. Diagonal-only voxel touches can produce a non-manifold edge.',
+  },
 ];
 
 /** Open the help modal. Pure UI; resolves when the user closes it. */

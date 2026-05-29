@@ -1,16 +1,16 @@
 import type { MeshData, MeshResult, SourceDiagnostic } from '../types';
 
-export type Language = 'manifold-js' | 'scad' | 'replicad';
+export type Language = 'manifold-js' | 'scad' | 'replicad' | 'voxel';
 
 export const DEFAULT_LANGUAGE: Language = 'manifold-js';
 
 /** Languages the app exposes to users, in the order shown in pickers. The
  *  default (manifold-js) goes first because it's eager-loaded and has the
  *  broadest feature surface; everything after it is lazy. */
-export const ALL_LANGUAGES: readonly Language[] = ['manifold-js', 'scad', 'replicad'] as const;
+export const ALL_LANGUAGES: readonly Language[] = ['manifold-js', 'scad', 'replicad', 'voxel'] as const;
 
 export function isLanguage(v: unknown): v is Language {
-  return v === 'manifold-js' || v === 'scad' || v === 'replicad';
+  return v === 'manifold-js' || v === 'scad' || v === 'replicad' || v === 'voxel';
 }
 
 /** Short label for UI badges and the editor title. */
@@ -19,6 +19,7 @@ export function languageDisplay(lang: Language): string {
     case 'manifold-js': return 'JS';
     case 'scad': return 'SCAD';
     case 'replicad': return 'BREP';
+    case 'voxel': return 'VOXEL';
   }
 }
 
