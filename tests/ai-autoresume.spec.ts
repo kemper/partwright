@@ -131,12 +131,14 @@ test.describe('Auto-continue (finish-tool resume)', () => {
         );
         // The SECOND request carries the resumed history — assert its roles
         // strictly alternate (no two consecutive 'user' contents).
-        const contents = JSON.parse(bodies[1]).contents as Array<{ role: string }>;
+        const contents = JSON.parse(bodies[1]).contents as Array<{ role: string; parts: Array<{ text?: string }> }>;
         let consecutiveUser = false;
         for (let i = 1; i < contents.length; i++) {
           if (contents[i].role === 'user' && contents[i - 1].role === 'user') consecutiveUser = true;
         }
-        return { calls: n, roles: contents.map(c => c.role), consecutiveUser };
+        const nudge = contents[contents.length - 1];
+        const nudgeText = (nudge.parts ?? []).map(p => p.text ?? '').join('');
+        return { calls: n, roles: contents.map(c => c.role), consecutiveUser, nudgeText };
       } finally {
         window.fetch = origFetch;
       }
@@ -145,6 +147,8 @@ test.describe('Auto-continue (finish-tool resume)', () => {
     expect(out.consecutiveUser).toBe(false);
     // user("do it") → model("(no response)" placeholder) → user(nudge)
     expect(out.roles).toEqual(['user', 'model', 'user']);
+    // The nudge must tell the model exactly what to call if it thinks it's done.
+    expect(out.nudgeText).toMatch(/call the `?finish`? tool/i);
   });
 
   test('a model that never calls finish is bounded by the no-progress ceiling', async ({ page }) => {

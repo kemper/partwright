@@ -76,8 +76,10 @@ const FINISH_TOOL = 'finish';
  *  `finish`. Persisted as a normal user turn (so provider history stays valid)
  *  but flagged `autoResumeNudge` for subtle rendering. */
 const AUTO_RESUME_PROMPT =
-  'Continue — your previous turn ended without calling the `finish` tool, so you have NOT signaled completion. '
-  + 'If the request is fully done and verified, call `finish` now. Otherwise keep working toward it.';
+  'Your previous turn ended without calling the `finish` tool, so the task is NOT yet marked complete. '
+  + 'If you believe the request is already fully done and verified, do NOT just say so in text — '
+  + 'call the `finish` tool now (optionally pass a one-line `summary`). That is the only way to end the turn. '
+  + 'Otherwise, keep working: take the next concrete step toward completing the request.';
 
 /** Hard ceiling on CONSECUTIVE auto-resume nudges that make no progress (no
  *  tool call, no `finish`). Resets to 0 whenever the model calls a tool. This
