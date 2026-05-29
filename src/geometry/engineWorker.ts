@@ -6,7 +6,7 @@
 //
 // Protocol — Main → Worker:
 //   { type: 'init' }
-//   { type: 'execute',           callId, code, lang?, imports? }
+//   { type: 'execute',           callId, code, lang?, imports?, circularSegments?, params? }
 //   { type: 'validate',          callId, code, lang? }
 //   { type: 'exportSTEP',        callId }
 //   { type: 'importSTEPToBrep',  callId, bytes, filename }
@@ -17,7 +17,7 @@
 //
 // Protocol — Worker → Main:
 //   { type: 'ready' }
-//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries }
+//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, lostLabels, paramsSchema }
 //   { type: 'validate_result',         callId, result }
 //   { type: 'exportSTEP_result',       callId, blob, error }
 //   { type: 'importSTEPToBrep_result', callId, filename, error }
@@ -81,12 +81,13 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
       imports?: ImportedMesh[];
       circularSegments?: number;
+      params?: Record<string, unknown> | null;
     };
     try {
       // Propagate the main-thread quality setting so the Worker uses the same
@@ -134,14 +135,19 @@ self.onmessage = async (event: MessageEvent) => {
         if (sourceUsesBrep(code as string)) {
           await ensureBrepLoaded();
         }
-        result = manifoldJsEngine.run(code as string);
+        result = manifoldJsEngine.run(code as string, params ?? undefined);
       }
 
       // labelMap is Map<string, Set<number>> — not directly serialisable.
       const labelMapEntries: [string, number[]][] | null = result.labelMap
         ? Array.from(result.labelMap.entries()).map(([k, v]) => [k, Array.from(v)])
         : null;
+      // Model-declared label colors (api.label(…, { color })) — plain entries.
+      const labelColorEntries: [string, [number, number, number]][] | null = result.labelColors
+        ? Array.from(result.labelColors.entries())
+        : null;
       const lostLabels = result.lostLabels ?? null;
+      const paramsSchema = result.paramsSchema ?? null;
 
       const mesh = result.mesh;
       if (mesh) {
@@ -160,7 +166,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, lostLabels },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly },
           transfer,
         );
       } else {
@@ -172,6 +178,7 @@ self.onmessage = async (event: MessageEvent) => {
           diagnostics: result.diagnostics ?? [],
           labelMapEntries: null,
           lostLabels: null,
+          paramsSchema,
         });
       }
 

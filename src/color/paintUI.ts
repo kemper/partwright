@@ -58,6 +58,7 @@ import {
   clearRegions,
   removeRegion,
   setRegionVisibility,
+  updateRegionColor,
   addRegion,
 } from './regions';
 import { getPaintLabels, onPaintLabelsChange, type LabelInfo } from './labels';
@@ -1371,10 +1372,26 @@ function updateRegionList(container: HTMLElement): void {
       if (releaseHover) { releaseHover(); releaseHover = null; }
     });
 
-    const dot = document.createElement('span');
-    dot.className = 'w-3 h-3 rounded-sm shrink-0';
-    dot.style.backgroundColor = rgbToCSS(region.color);
+    // Color swatch doubles as an edit affordance: the dot IS the native
+    // <input type="color">, styled to read as a swatch. The OS picker pops up
+    // anchored to the swatch (no hidden offscreen input → no "picker closes
+    // when I move the mouse" surprise). `change` commits a single
+    // updateRegionColor on release, so the mesh reconciler only fires once
+    // per pick instead of on every channel drag.
+    const dot = document.createElement('input');
+    dot.type = 'color';
+    dot.value = rgbToHex(region.color);
+    dot.className = 'w-3.5 h-3.5 shrink-0 rounded-sm border border-zinc-500 hover:border-white/60 cursor-pointer bg-transparent p-0 [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:rounded-sm [&::-webkit-color-swatch]:border-0 [&::-moz-color-swatch]:rounded-sm [&::-moz-color-swatch]:border-0';
+    dot.title = `Click to change colour (${rgbToHex(region.color)})`;
     if (!region.visible) dot.classList.add('opacity-30');
+    dot.addEventListener('change', () => {
+      const hex = dot.value;
+      const r = parseInt(hex.slice(1, 3), 16) / 255;
+      const g = parseInt(hex.slice(3, 5), 16) / 255;
+      const b = parseInt(hex.slice(5, 7), 16) / 255;
+      updateRegionColor(region.id, [r, g, b]);
+    });
+    dot.addEventListener('click', (e) => e.stopPropagation());
 
     const label = document.createElement('span');
     label.className = `text-[11px] truncate flex-1 ${region.visible ? 'text-zinc-400' : 'text-zinc-600 line-through'}`;

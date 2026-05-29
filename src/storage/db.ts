@@ -94,6 +94,12 @@ export interface Version {
    *  sandbox as `api.imports[i]` so user code can call `Manifold.ofMesh(...)`.
    *  Kept as `unknown[]` here to preserve db-layer isolation. */
   importedMeshes?: unknown[];
+  /** Customizer parameter overrides for this version — the tweaked values the
+   *  user dialed in against the model's `api.params({...})` schema. Re-applied
+   *  when the version is loaded so its geometry matches its saved thumbnail.
+   *  Only keys that differ from the model defaults are stored; absent when the
+   *  version uses all defaults (or declares no parameters). */
+  paramValues?: Record<string, number | boolean | string>;
 }
 
 /** Editor working buffer scoped to (session, language). One per language per
@@ -687,6 +693,8 @@ export async function saveVersion(
    *  navigating between versions can swap the engine independently of the
    *  session's default language. */
   language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel',
+  /** Customizer parameter overrides for this version (opaque to the db layer). */
+  paramValues?: Record<string, number | boolean | string>,
 ): Promise<Version> {
   // Compute the next index and write the version inside ONE readwrite
   // transaction. IndexedDB serializes overlapping readwrite transactions on
@@ -723,6 +731,7 @@ export async function saveVersion(
         ...(language ? { language } : {}),
         ...(annotations && annotations.length > 0 ? { annotations } : {}),
         ...(importedMeshes && importedMeshes.length > 0 ? { importedMeshes } : {}),
+        ...(paramValues && Object.keys(paramValues).length > 0 ? { paramValues } : {}),
       };
       const putReq = store.put(v);
       putReq.onsuccess = () => resolve(v);

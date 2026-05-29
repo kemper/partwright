@@ -84,6 +84,37 @@ them before writing BREP code or you'll burn iterations on silent failures.
    centroid}` per label. If a label's `bbox` doesn't match the feature
    you labelled, the scramble happened — switch to coord selectors.
 
+10. **`fuse` / `fuseAll` only weld shapes that volumetrically OVERLAP — and
+    Partwright models must end up as ONE solid to 3D-print.** This is the
+    single most common BREP defect. OCCT's boolean union leaves shapes that
+    merely *touch* (a coincident face, a point/edge kiss, or a razor-thin
+    sliver of overlap) as a **disconnected compound** — it tessellates and
+    *looks* like one model, but it's N separate solids. On a 3D printer those
+    extra pieces float free and detach (or try to print in mid-air). Decorative
+    bits are the usual culprits: a coffee disc 0.5 mm narrower than the mug
+    bore, a lantern sitting on a 2 mm gap above the balcony, eyes resting
+    exactly on a sphere's surface.
+
+    **Rules that keep it one solid:**
+    - Make every fused piece bite **≥ 0.5 units (ideally 1–2 mm)** *into* its
+      neighbour — overlap a real volume, not a face. A thin annular overlap
+      (e.g. a disc whose rim grazes a wall) often still fails to bond; give it
+      depth (seat it from the floor up, or sink it well inside).
+    - **Always verify `componentCount === 1`** after `runAndSave`. The result's
+      `warnings` will call out a multi-component model; don't save over it.
+    - When `componentCount > 1`, call **`runAndExplain(code)`** — it decomposes
+      the result and names each floater with a concrete overlap suggestion
+      (which face it sits on, how far to translate it). Fix, re-run, repeat
+      until it's 1.
+    - If a feature genuinely can't reach the body (a finial above a gap, a
+      pendant bulb on a thin arm), bridge it with an explicit connector
+      (a small `cylinder`/`box` that overlaps both), or merge it into the
+      neighbour's primitive — don't leave it floating.
+
+    A truly separate assembly (e.g. a lid you intend to print apart) is the
+    rare exception; if that's the goal, model each piece as its own **part**
+    (`createPart`) rather than as floaters in one mesh.
+
 ## The two ways to reach BREP
 
 Partwright exposes a **BREP** (boundary-representation) kernel via

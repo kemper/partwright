@@ -141,6 +141,34 @@ persist the name, and rehydration re-resolves by name on the next
 load — so saved-version round-trips work as long as the code still
 defines the same label names.
 
+**Color in the code (self-coloring models).** Skip the paint step
+entirely: pass a `color` to the label and it renders + exports colored
+on the spot, with the editor still editable.
+
+```js
+const body = api.label(api.Manifold.cube([20, 20, 20], true), 'body', { color: '#3b82f6' });
+const knob = api.label(api.Manifold.cylinder(6, 4, 4, 32).translate([0, 0, 13]), 'knob', { color: [1, 0, 0] });
+return body.add(knob);            // blue body + red knob, no paintByLabel call
+// api.labeledUnion([{ name, shape, color }, ...]) takes the same per-entry color.
+```
+
+`color` is a hex string (`'#rrggbb'` / `'#rgb'`) or an `[r,g,b]` array in
+0..1. It re-resolves every run (keyed by the label name), so it survives
+Customizer parameter changes — wire a `color` param in as
+`{ color: p.accent }` for a live color knob, or give each instance of a
+parametric count a distinct name (`'petal' + i`) for per-instance color.
+
+These model-declared colors are a derived **underlay**: manual paint
+(`paintByLabel` / the paint tools) composites on top as an optional
+override, and **only manual paint locks the editor**. They are not written
+into the saved paint sidecar — the code re-derives them on load. Read the
+active set with `partwright.getModelColors()` →
+`{ count, colors: [{ name, color, triangleCount }] }`; a zero
+`triangleCount` means that label's triangles were consumed by a later
+boolean (see `listLabels().lostLabels`). Prefer model-declared color when
+the color is intrinsic to the design; reach for `paintByLabel` when a
+human is tweaking colors interactively or overriding the code.
+
 SCAD has the same `label()` pattern. Partwright pre-injects a
 passthrough `module label(name) { children(); }` into every SCAD
 compile so the wrapper is portable to vanilla OpenSCAD too (the helper

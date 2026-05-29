@@ -1,0 +1,60 @@
+{
+  "partwright": "1.9",
+  "session": {
+    "name": "Parametric Control Knob",
+    "created": 1780007699589,
+    "updated": 1780007699589,
+    "images": null,
+    "language": "manifold-js"
+  },
+  "parts": [
+    {
+      "name": "Part 1",
+      "order": 0
+    }
+  ],
+  "versions": [
+    {
+      "index": 1,
+      "code": "// Parametric control knob / dial\n// ---------------------------------\n// A generic, ergonomic control knob for potentiometers, encoders, valves, etc.\n// Declares its tweakable dimensions via api.params so it drops straight into the\n// Customizer panel. Defaults are tuned to be an attractive catalog entry.\n\nconst { Manifold, CrossSection } = api;\n\nconst p = api.params({\n  diameter:    { type: 'number',  default: 34, min: 12, max: 80, step: 1, unit: 'mm',\n                 label: 'Body diameter', help: 'Outer diameter at the grip.' },\n  height:      { type: 'number',  default: 20, min: 6,  max: 50, step: 1, unit: 'mm',\n                 label: 'Body height' },\n  taper:       { type: 'number',  default: 0.78, min: 0.5, max: 1, step: 0.01,\n                 label: 'Top taper', help: 'Top diameter as a fraction of the bottom — <1 flares the skirt outward for grip.' },\n  gripCount:   { type: 'int',     default: 24, min: 0,  max: 60,\n                 label: 'Grip count', help: 'Number of knurls/flutes. 0 = smooth.' },\n  gripStyle:   { type: 'select',  default: 'knurled',\n                 options: ['knurled', 'fluted', 'smooth'],\n                 label: 'Grip style' },\n  gripDepth:   { type: 'number',  default: 1.1, min: 0.2, max: 3, step: 0.1, unit: 'mm',\n                 label: 'Grip depth' },\n  bore:        { type: 'boolean', default: true,  label: 'Center shaft bore' },\n  boreDiameter:{ type: 'number',  default: 6,  min: 2,  max: 20, step: 0.5, unit: 'mm',\n                 label: 'Bore diameter', help: 'Only used when Center shaft bore is on.' },\n  pointer:     { type: 'boolean', default: true,  label: 'Indicator pointer' },\n});\n\nconst rBottom = p.diameter / 2;\nconst rTop = rBottom * p.taper;\nconst h = p.height;\n\n// ---- Body: a revolved profile gives a softly domed top + a small chamfer at\n//      the base so it reads as a real molded knob rather than a raw cylinder.\nconst domeRise = Math.min(h * 0.18, rTop * 0.5);     // gentle crown on top\nconst baseChamfer = Math.min(2, rBottom * 0.15, h * 0.2);\n\n// Profile in (radial X, height Y). Walk the silhouette CCW.\nconst profile = CrossSection.ofPolygons([[\n  [0, 0],                               // bottom centre\n  [rBottom - baseChamfer, 0],           // bottom edge (start chamfer)\n  [rBottom, baseChamfer],               // chamfer up to full radius\n  [rTop, h - domeRise],                 // taper up the skirt\n  [rTop * 0.72, h],                     // round the top shoulder in\n  [0, h + domeRise * 0.35],             // domed centre top\n]]);\n\nlet knob = Manifold.revolve(profile);\n\n// ---- Indicator pointer ------------------------------------------------------\n// A rounded nub riding the domed top so you can read the dial position. Added\n// BEFORE grips/bore so a skirt notch can't sever it and the bore tunnels\n// through it cleanly. It runs from the crown centre out past the rim, so it\n// always shares plenty of volume with the body (no floating-island risk).\nconst topZ = h + domeRise * 0.35;                  // crown height\nif (p.pointer) {\n  const nub = Manifold.cylinder(rTop + 2, 1.7, 1.1)  // long enough to reach the rim\n    .rotate([0, 90, 0])                            // lay it radial (+X)\n    .translate([0, 0, topZ - 1.0]);                // start at centre, sit on the crown\n  knob = api.expectUnion([knob, nub], { expectComponents: 1 });\n}\n\n// ---- Grips around the skirt -------------------------------------------------\n// knurled = subtractive vertical notches; fluted = scalloped round channels.\n// Guard the count: circularPattern requires >=1, and 'smooth' means none.\nconst wantGrips = p.gripStyle !== 'smooth' && p.gripCount >= 1;\nif (wantGrips) {\n  const ringR = rBottom;                          // notch centres sit on the rim\n  // Confine cutters to a side \"grip band\": above the base chamfer, below the\n  // top shoulder. This guarantees a notch grooves only the wall — it can never\n  // sever the crown even at gripCount=1 (a single deep cut).\n  const bandLo = baseChamfer + 0.5;\n  const bandHi = (h - domeRise) - 0.5;\n  const bandH = Math.max(1, bandHi - bandLo);\n  const bandMid = (bandLo + bandHi) / 2;\n  let cutter;\n  if (p.gripStyle === 'knurled') {\n    // A slim diamond prism that bites a V-ish notch into the rim.\n    const w = Math.max(0.6, (2 * Math.PI * ringR) / p.gripCount * 0.55);\n    cutter = Manifold.cube([p.gripDepth * 2, w, bandH], true)\n      .rotate([0, 0, 45])                          // diamond profile -> knurl feel\n      .translate([ringR, 0, bandMid]);\n  } else {\n    // fluted: round channels scooped out of the side.\n    const fluteR = Math.max(0.8, (2 * Math.PI * ringR) / p.gripCount * 0.42);\n    cutter = Manifold.cylinder(bandH, fluteR, fluteR)\n      .translate([ringR + fluteR - p.gripDepth, 0, bandLo]);\n  }\n  // The notches only bite the skirt; the pointer rides above on the crown, so\n  // a notch at the pointer's angle can't sever it.\n  const grips = api.circularPattern(cutter, p.gripCount, { axis: 'z' });\n  knob = knob.subtract(grips);\n}\n\n// ---- Center shaft bore ------------------------------------------------------\n// Subtracted last so it cleanly tunnels through any pointer/grip features.\n// A real shaft bore makes the solid genus-1 (one through hole). Clamp the\n// radius so a too-wide bore can never eat the whole body: always keep >=1mm of\n// wall inside the narrower (top) radius.\nif (p.bore) {\n  const maxBoreR = Math.max(0.5, rTop - 1.0);\n  const br = Math.min(p.boreDiameter / 2, maxBoreR);\n  const boreH = topZ + 2;                          // through the crown\n  const bore = Manifold.cylinder(boreH + 1, br, br).translate([0, 0, -1]);\n  knob = knob.subtract(bore);\n}\n\nreturn knob;\n",
+      "label": "v1",
+      "geometryData": {
+        "status": "ok",
+        "vertexCount": 1298,
+        "triangleCount": 2596,
+        "boundingBox": {
+          "x": [
+            -17,
+            17
+          ],
+          "y": [
+            -17,
+            17
+          ],
+          "z": [
+            0,
+            21.842044830322266
+          ],
+          "dimensions": [
+            34,
+            34,
+            21.842044830322266
+          ]
+        },
+        "centroid": [
+          0,
+          0,
+          10.921022415161133
+        ],
+        "volume": 12964.882242089809,
+        "surfaceArea": 3585.397279908785,
+        "genus": 1,
+        "isManifold": true,
+        "componentCount": 1,
+        "unit": "mm"
+      },
+      "timestamp": 1780007699589,
+      "language": "manifold-js"
+    }
+  ]
+}

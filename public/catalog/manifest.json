@@ -440,6 +440,76 @@
       "file": "sdf_brick_wall.partwright.json",
       "language": "manifold-js",
       "description": "A classic running-bond brick wall — bricks tiled via repeatN({stagger: {along: x, by: y}}), the new option for brick/honeycomb patterns. Every other course shifts by half a brick. Two painted regions on a recessed mortar slab."
+    },
+    {
+      "id": "striped-lighthouse",
+      "name": "Striped Lighthouse",
+      "file": "striped_lighthouse.partwright.json",
+      "language": "manifold-js",
+      "description": "A parametric tapered lighthouse with alternating red/white bands, a railed gallery, and a domed lantern room glowing around a central light."
+    },
+    {
+      "id": "parametric-tray",
+      "name": "Parametric Storage Tray",
+      "file": "parametric_tray.partwright.json",
+      "language": "manifold-js",
+      "description": "Customizable rounded storage tray — adjust size, wall/floor thickness, corner style, and internal dividers via the Parameters panel."
+    },
+    {
+      "id": "parametric-knob",
+      "name": "Parametric Control Knob",
+      "file": "parametric_knob.partwright.json",
+      "language": "manifold-js",
+      "description": "Customizable control knob/dial — set diameter, height, grip count and style (knurled/fluted/smooth), center bore, and pointer via the Parameters panel."
+    },
+    {
+      "id": "parametric-vent-panel",
+      "name": "Parametric Vent Panel",
+      "file": "parametric_vent_panel.partwright.json",
+      "language": "manifold-js",
+      "description": "Customizable perforated honeycomb/vent panel — set size, thickness, cell size/shape (hex/square/round), wall, and an optional border frame via the Parameters panel."
+    },
+    {
+      "id": "daisy-flower",
+      "name": "Daisy Flower",
+      "file": "daisy_flower.partwright.json",
+      "language": "manifold-js",
+      "description": "A cheerful parametric daisy with a domed pollen center, a fan of radial petals, a tapering stem, and a pair of leaves."
+    },
+    {
+      "id": "rainbow-ring-stacker",
+      "name": "Rainbow Ring Stacker",
+      "file": "rainbow_ring_stacker.partwright.json",
+      "language": "manifold-js",
+      "description": "A parametric take on the classic children's stacking toy: a domed base, a tapered center post, and a free-sliding stack of rainbow donut rings of decreasing size."
+    },
+    {
+      "id": "rocket-ship",
+      "name": "Rocket Ship",
+      "file": "rocket_ship.partwright.json",
+      "language": "manifold-js",
+      "description": "A retro toy rocket with a parametric body, nose cone, ring of tail fins, a round porthole window, and a flared exhaust nozzle."
+    },
+    {
+      "id": "toadstool",
+      "name": "Toadstool Mushroom",
+      "file": "toadstool.partwright.json",
+      "language": "manifold-js",
+      "description": "A storybook Amanita toadstool with a flared, spotted red cap on a rounded cream stem, fully parametric from cap size to spot count."
+    },
+    {
+      "id": "traffic-light",
+      "name": "Traffic Light",
+      "file": "traffic_light.partwright.json",
+      "language": "manifold-js",
+      "description": "A parametric three-lamp traffic signal with red, amber, and green lenses recessed into a rounded housing, plus optional sun visors and a mounting post."
+    },
+    {
+      "id": "layer-cake",
+      "name": "Layer Cake",
+      "file": "layer_cake.partwright.json",
+      "language": "manifold-js",
+      "description": "A self-coloring parametric layer cake: colors live in the model code via api.label(shape, name, { color }), so it renders painted with no paint step and the editor stays editable. Set the frosting color and tier count in the Parameters panel."
     }
   ]
 }

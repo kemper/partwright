@@ -1,0 +1,60 @@
+{
+  "partwright": "1.9",
+  "session": {
+    "name": "Parametric Vent Panel",
+    "created": 1780007794798,
+    "updated": 1780007794798,
+    "images": null,
+    "language": "manifold-js"
+  },
+  "parts": [
+    {
+      "name": "Part 1",
+      "order": 0
+    }
+  ],
+  "versions": [
+    {
+      "index": 1,
+      "code": "// Parametric honeycomb / vent panel\n// A flat rectangular panel perforated with a repeating cutout grid (hex / square /\n// round), with an optional solid border frame. Tunable via the Customizer panel.\nconst { Manifold } = api;\n\nconst p = api.params({\n  width:     { type: 'number',  default: 80, min: 20, max: 300, step: 1, unit: 'mm', label: 'Panel width' },\n  height:    { type: 'number',  default: 60, min: 20, max: 300, step: 1, unit: 'mm', label: 'Panel height' },\n  thickness: { type: 'number',  default: 3,  min: 1,  max: 20,  step: 0.5, unit: 'mm', label: 'Panel thickness' },\n  cell:      { type: 'number',  default: 8,  min: 2,  max: 40,  step: 0.5, unit: 'mm', label: 'Cell size', help: 'Across-flats size of each opening' },\n  wall:      { type: 'number',  default: 1.6, min: 0.4, max: 10, step: 0.1, unit: 'mm', label: 'Wall thickness', help: 'Material left between openings' },\n  shape:     { type: 'select',  default: 'hex', options: [\n                 { value: 'hex', label: 'Hexagon' },\n                 { value: 'square', label: 'Square' },\n                 { value: 'round', label: 'Round' },\n               ], label: 'Cell shape' },\n  border:    { type: 'boolean', default: true, label: 'Solid border frame' },\n  borderW:   { type: 'number',  default: 5, min: 0, max: 40, step: 0.5, unit: 'mm', label: 'Border width' },\n});\n\n// --- derive grid geometry from the chosen cell size + wall -------------------\nconst pitch = p.cell + p.wall;                 // center-to-center spacing\nconst overcut = p.thickness + 2;               // make cutters poke through both faces\nconst frame = p.border ? Math.max(p.borderW, p.wall) : p.wall; // inset where cells may live\n\n// Region the openings are allowed to occupy (panel minus the frame margin).\nconst innerW = p.width  - 2 * frame;\nconst innerH = p.height - 2 * frame;\n\n// The solid panel, centered on the origin in XY, sitting z = 0..thickness.\nconst panel = Manifold.cube([p.width, p.height, p.thickness], true)\n  .translate([0, 0, p.thickness / 2]);\n\n// If the inner region is too small to fit even one opening, just return the\n// solid panel (still a valid single manifold).\nif (innerW < p.cell || innerH < p.cell) {\n  return panel;\n}\n\n// --- one cutter for a single cell ------------------------------------------\nfunction oneCell() {\n  if (p.shape === 'square') {\n    return Manifold.cube([p.cell, p.cell, overcut], true);\n  }\n  if (p.shape === 'round') {\n    // Facet count scaled to hole size: a 2mm vent hole doesn't need 128 facets,\n    // and a grid of thousands of them would explode the triangle count. Clamp to\n    // a smooth-enough range (16..64) instead of inheriting the global preset.\n    const seg = Math.max(16, Math.min(64, Math.round(p.cell * 4)));\n    return Manifold.cylinder(overcut, p.cell / 2, p.cell / 2, seg).translate([0, 0, -overcut / 2]);\n  }\n  // hex: a 6-sided cylinder. cell = across-flats, so circumradius = af / sqrt(3).\n  const r = p.cell / Math.sqrt(3);\n  return Manifold.cylinder(overcut, r, r, 6).translate([0, 0, -overcut / 2]);\n}\n\n// --- tile the cutter across a hex-packed grid -------------------------------\n// Hex packing: odd rows offset by half a pitch, rows spaced by pitch * sqrt(3)/2.\nconst cells = [];\nconst rowStep = p.shape === 'hex' ? pitch * Math.sqrt(3) / 2 : pitch;\nconst nCols = Math.max(1, Math.floor(innerW / pitch));\nconst nRows = Math.max(1, Math.floor(innerH / rowStep));\n\nconst cutter = oneCell();\nconst halfW = (nCols - 1) * pitch / 2;\nconst halfH = (nRows - 1) * rowStep / 2;\n\nfor (let row = 0; row < nRows; row++) {\n  const y = row * rowStep - halfH;\n  const stagger = p.shape === 'hex' && row % 2 === 1 ? pitch / 2 : 0;\n  for (let col = 0; col < nCols; col++) {\n    let x = col * pitch - halfW + stagger;\n    // keep staggered cells from poking out past the inner region\n    if (Math.abs(x) + p.cell / 2 > innerW / 2) continue;\n    cells.push(cutter.translate([x, y, p.thickness / 2]));\n  }\n}\n\nif (cells.length === 0) return panel;\n\nconst holes = Manifold.union(cells);\nreturn panel.subtract(holes);\n",
+      "label": "v1",
+      "geometryData": {
+        "status": "ok",
+        "vertexCount": 476,
+        "triangleCount": 1104,
+        "boundingBox": {
+          "x": [
+            -40,
+            40
+          ],
+          "y": [
+            -30,
+            30
+          ],
+          "z": [
+            0,
+            3
+          ],
+          "dimensions": [
+            80,
+            60,
+            3
+          ]
+        },
+        "centroid": [
+          0,
+          0,
+          1.5
+        ],
+        "volume": 7915.201644668012,
+        "surfaceArea": 9359.200241162845,
+        "genus": 39,
+        "isManifold": true,
+        "componentCount": 1,
+        "unit": "mm"
+      },
+      "timestamp": 1780007794798,
+      "language": "manifold-js"
+    }
+  ]
+}
