@@ -1,6 +1,7 @@
 import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
 import { showQualitySettingsModal } from './qualitySettingsModal';
 import { showAboutModal } from './aboutModal';
+import { loadSettings, saveSettings } from '../ai/settings';
 
 export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data';
 
@@ -94,9 +95,12 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
 
   const statusBar = document.createElement('span');
   statusBar.id = 'status-indicator';
-  statusBar.className = 'text-xs text-emerald-400 font-mono shrink-0';
+  // Lives on rightPane (appended below) as an always-visible overlay so engine
+  // status stays on screen even when the code pane is collapsed — otherwise
+  // tests and users lose the Ready/Loading signal whenever the AI drawer hides
+  // the editor header.
+  statusBar.className = 'absolute top-2 left-2 z-20 text-xs text-emerald-400 font-mono bg-zinc-900/70 px-2 py-0.5 rounded border border-zinc-700 pointer-events-none';
   statusBar.textContent = 'Ready';
-  editorHeader.appendChild(statusBar);
 
   const collapseEditorBtn = document.createElement('button');
   collapseEditorBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
@@ -158,6 +162,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // === Right (or bottom on mobile): viewport + tab panes ===
   const rightPane = document.createElement('div');
   rightPane.className = 'flex-1 flex flex-col min-w-0 min-h-0 relative';
+  rightPane.appendChild(statusBar);
 
   const tabInteractive = createRailItem('Interactive', '3D View', '\ud83e\uddca', true);
   tabInteractive.title = 'Live 3D viewport \u2014 orbit, zoom, and inspect';
@@ -353,7 +358,12 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // Tracks the most recently activated tab so breakpoint or mobile-pane
   // changes can recompose visibility without re-running tab DOM toggling.
   let _currentTab: TabName = 'interactive';
-  let editorCollapsed = false;
+  // Default the code pane closed when the AI drawer is opening too — two big
+  // surfaces fighting for the same screen on a first visit pushes the viewport
+  // into a sliver. The user's explicit Hide/Show choice (persisted below)
+  // takes precedence on every subsequent load.
+  const aiSettings = loadSettings();
+  let editorCollapsed = aiSettings.editorCollapsed ?? aiSettings.drawerOpen;
   const mqDesktop = window.matchMedia('(min-width: 768px)');
 
   // Composes desktop/mobile pane visibility from the active tab and (on mobile)
@@ -387,10 +397,29 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     window.dispatchEvent(new Event('resize'));
   }
 
+  function rememberEditorCollapsed(collapsed: boolean): void {
+    saveSettings({ ...loadSettings(), editorCollapsed: collapsed });
+  }
+
   collapseEditorBtn.addEventListener('click', () => {
     if (editorCollapsed) expandEditor(); else collapseEditor();
+    rememberEditorCollapsed(editorCollapsed);
   });
-  expandEditorBtn.addEventListener('click', expandEditor);
+  expandEditorBtn.addEventListener('click', () => {
+    expandEditor();
+    rememberEditorCollapsed(false);
+  });
+
+  // Apply the resolved initial collapsed state to the DOM before the first
+  // syncPaneVisibility() runs below — otherwise the "if (!editorCollapsed)…
+  // width = 40%" branch would expand it on the first paint and clobber the
+  // resolved default.
+  if (editorCollapsed) {
+    editorGroup.style.width = '0';
+    editorGroup.style.overflow = 'hidden';
+    expandEditorBtn.classList.remove('hidden');
+    splitter.classList.add('hidden');
+  }
 
   // === Parts rail collapse ===
   // Mirrors the editor collapse: hide the rail to reclaim width, leaving a small

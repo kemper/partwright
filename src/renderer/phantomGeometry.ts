@@ -2,6 +2,7 @@
 // Lives in a separate THREE.Group in the viewport scene, excluded from exports
 import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
+import { requestRender } from './viewport';
 
 let phantomGroup: THREE.Group | null = null;
 
@@ -68,6 +69,10 @@ export function setPhantom(meshData: MeshData, options?: PhantomOptions): void {
     const wireMesh = new THREE.Mesh(geometry, wireMat);
     phantomGroup.add(wireMesh);
   }
+
+  // With on-demand rendering, a programmatic (console/AI) setReferenceGeometry
+  // call has no pointer event or mesh re-render to repaint it — request one.
+  requestRender();
 }
 
 export function clearPhantom(): void {
@@ -85,6 +90,7 @@ export function clearPhantom(): void {
       }
     }
   }
+  requestRender();
 }
 
 export function hasPhantom(): boolean {

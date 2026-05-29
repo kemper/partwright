@@ -27,6 +27,28 @@ async function getCamera(page: Page) {
   });
 }
 
+/** Wait until OrbitControls has damped the wheel-driven zoom past a threshold,
+ *  re-issuing the wheel each poll. A single `mouse.wheel` + fixed 300 ms wait
+ *  was just enough at 60 fps with damping factor 0.1, but under CI load the
+ *  renderer can drop frames AND occasionally the synthetic wheel doesn't reach
+ *  OrbitControls — making these tests ~40 % flaky on a slow machine. Polling
+ *  the *distance* lets the damping settle without a fixed timeout, and the
+ *  per-poll wheel acts like a real user scrolling repeatedly until something
+ *  zooms (or the 5 s timeout proves it never will). Tests are still verifying
+ *  "this gesture zooms," not a specific zoom amount, so additional wheels
+ *  preserve the assertion's intent. */
+async function expectZoomBy(page: Page, beforeDistance: number, minDelta: number): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        await page.mouse.wheel(0, 120);
+        return Math.abs((await getCamera(page)).distance - beforeDistance);
+      },
+      { timeout: 5_000, intervals: [150, 250, 500] },
+    )
+    .toBeGreaterThan(minDelta);
+}
+
 async function enablePaintMode(page: Page) {
   await page.locator('#paint-toggle').dispatchEvent('click');
   await page.waitForSelector('#paint-picker-panel:not(.hidden)');
@@ -76,10 +98,7 @@ test.describe('paint mode camera passthrough', () => {
     await page.mouse.move(panel.x + panel.width / 2, panel.y + 12);
     await page.mouse.wheel(0, 240);
 
-    await page.waitForTimeout(300);
-
-    const after = await getCamera(page);
-    expect(Math.abs(after.distance - before.distance)).toBeGreaterThan(0.5);
+    await expectZoomBy(page, before.distance, 0.5);
   });
 
   test('wheel over the clip-controls toolbar zooms the camera', async ({ page }) => {
@@ -91,10 +110,7 @@ test.describe('paint mode camera passthrough', () => {
     await page.mouse.move(toolbar.x + toolbar.width / 2, toolbar.y + toolbar.height / 2);
     await page.mouse.wheel(0, 240);
 
-    await page.waitForTimeout(300);
-
-    const after = await getCamera(page);
-    expect(Math.abs(after.distance - before.distance)).toBeGreaterThan(0.5);
+    await expectZoomBy(page, before.distance, 0.5);
   });
 
   test('wheel zooms even when the camera is hard-locked', async ({ page }) => {
@@ -109,10 +125,7 @@ test.describe('paint mode camera passthrough', () => {
     await page.mouse.move(canvas.x + canvas.width / 2, canvas.y + canvas.height / 2);
     await page.mouse.wheel(0, 240);
 
-    await page.waitForTimeout(300);
-
-    const after = await getCamera(page);
-    expect(Math.abs(after.distance - before.distance)).toBeGreaterThan(0.5);
+    await expectZoomBy(page, before.distance, 0.5);
   });
 
   test('drag that lands on the model after starting off-model does not paint', async ({ page }) => {

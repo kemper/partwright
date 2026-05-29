@@ -41,8 +41,10 @@ export function summarizeSessionImport(data: ExportedSession): SessionImportSumm
   }
   // Annotations live per-version since schema 1.3, but 1.2 files put them at
   // the top level. Sum across both locations so the preview is accurate
-  // regardless of which schema the file was exported with.
-  const perVersionAnnotations = data.versions.reduce(
+  // regardless of which schema the file was exported with. Versions can be
+  // absent for chat/notes-only exports — fall back to an empty list.
+  const versions = Array.isArray(data.versions) ? data.versions : [];
+  const perVersionAnnotations = versions.reduce(
     (sum, v) => sum + (v.annotations?.length ?? 0),
     0,
   );
@@ -50,7 +52,7 @@ export function summarizeSessionImport(data: ExportedSession): SessionImportSumm
   return {
     sessionName: data.session.name || '(unnamed)',
     schemaVersion: data.partwright ?? data.mainifold ?? 'unknown',
-    versionCount: data.versions.length,
+    versionCount: versions.length,
     noteCount: data.notes?.length ?? 0,
     annotationCount: perVersionAnnotations + topLevelAnnotations,
     referenceSides,

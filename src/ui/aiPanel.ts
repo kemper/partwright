@@ -11,6 +11,7 @@ import { captureIsoViews, fileToImageSource } from '../ai/images';
 import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
+import { getLimits } from '../ai/catalog';
 import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
 import { showAiSettingsModal } from './aiSettingsModal';
@@ -26,7 +27,7 @@ import { getState, setSessionAiPreference } from '../storage/sessionManager';
 import { onTabSync, publishTabSync } from '../storage/tabSync';
 import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
-import { activeModel, SPEND_CAP_USD, type AnthropicModelId, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Provider, type TurnOutcomeReason } from '../ai/types';
+import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { errorLog } from '../diagnostics/errorLog';
 
 interface PanelState {
@@ -95,10 +96,13 @@ function effectiveSystemPromptChars(): number {
 }
 
 /** Token limit for the active provider/model — drives the % full bar
- *  on the cost meter and the auto-compaction thresholds. For local
- *  models we use the runtime-resolved WASM ceiling (fetched from the
- *  model's mlc-chat-config.json) when available, clamped by any user
- *  override, and falling back to the curated per-model default. */
+ *  on the cost meter and the auto-compaction thresholds. Hosted providers
+ *  read from the models.dev snapshot so Haiku's 200k, GPT-5's 400k, and
+ *  Gemini's 1M get the right number without us hand-maintaining a table.
+ *  Custom / out-of-catalog ids fall back to 200k (the smallest current
+ *  hosted-model window, conservative for the % bar). For local models we
+ *  use the runtime-resolved WASM ceiling (fetched from the model's
+ *  mlc-chat-config.json) when available, clamped by any user override. */
 function contextLimitFor(settings: AiSettings): number {
   if (settings.toggles.provider === 'local') {
     if (settings.toggles.localModel) {
@@ -115,8 +119,9 @@ function contextLimitFor(settings: AiSettings): number {
     }
     return settings.localContext.windowSizeOverride ?? 8192;
   }
-  if (settings.toggles.anthropicModel === 'claude-haiku-4-5') return 200_000;
-  return 1_000_000;
+  const model = activeModel(settings.toggles);
+  const limits = model ? getLimits(settings.toggles.provider, String(model)) : null;
+  return limits?.context ?? 200_000;
 }
 
 /** Compute the next sequence ordinal for a compaction summary so it sorts
@@ -138,6 +143,22 @@ let forwardBtnRef: HTMLButtonElement | null = null;
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
 let inputEl: HTMLTextAreaElement | null = null;
+
+/** "Stuck to bottom" detection for the transcript. The auto-scroll on every
+ *  streamed delta used to fight the user when they scrolled up to read earlier
+ *  content. The fix is to measure pinned-ness *before* mutating content (since
+ *  appending text grows scrollHeight and would otherwise un-pin a user who was
+ *  at the bottom), then only re-pin to bottom if they were already there. The
+ *  threshold gives leeway for sub-pixel rounding and inertial scrolling. */
+const STICKY_BOTTOM_THRESHOLD_PX = 24;
+function isTranscriptPinnedToBottom(): boolean {
+  if (!transcriptEl) return true;
+  return transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight <= STICKY_BOTTOM_THRESHOLD_PX;
+}
+function pinTranscriptToBottom(): void {
+  if (!transcriptEl) return;
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
 let pendingImagesEl: HTMLElement | null = null;
 let toggleStripEl: HTMLElement | null = null;
 let costMeterEl: HTMLElement | null = null;
@@ -246,6 +267,9 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
   await loadHistoryForCurrentSession();
   await applySessionAiPreference();
   renderTranscript();
+  // Session switch is an explicit user action — land at the bottom regardless
+  // of where they were scrolled in the previous session's transcript.
+  pinTranscriptToBottom();
   renderCostMeter();
 }
 
@@ -379,7 +403,7 @@ async function applySessionAiPreference(): Promise<void> {
   if (cur.toggles.provider === provider && activeModel(cur.toggles) === pref.model) return;
   let next = setProvider(cur, provider);
   switch (provider) {
-    case 'anthropic': next = setAnthropicModel(next, pref.model as AnthropicModelId); break;
+    case 'anthropic': next = setAnthropicModel(next, pref.model); break;
     case 'openai': next = setOpenaiModel(next, pref.model); break;
     case 'gemini': next = setGeminiModel(next, pref.model); break;
     case 'local': next = setLocalModel(next, pref.model); break;
@@ -855,7 +879,7 @@ function renderModelPicker(): void {
       options: ANTHROPIC_MODEL_OPTIONS,
       current: settings.toggles.anthropicModel,
       title: 'Anthropic model (hosted).',
-      setModel: (id) => setAnthropicModel(loadSettings(), id as AnthropicModelId),
+      setModel: (id) => setAnthropicModel(loadSettings(), id),
     },
     openai: {
       options: OPENAI_MODEL_OPTIONS,
@@ -1367,6 +1391,9 @@ function formatDuration(ms: number): string {
 
 function renderTranscript(): void {
   if (!transcriptEl) return;
+  // Measure before replaceChildren — clearing children clamps scrollTop, so
+  // any post-clear check would mis-report the user's intent.
+  const pinned = isTranscriptPinnedToBottom();
   transcriptEl.replaceChildren();
   const hasHistory = state.history.length > 0;
   const hasQueue = state.queuedBlocks.length > 0;
@@ -1390,7 +1417,7 @@ function renderTranscript(): void {
   if (hasQueue) {
     transcriptEl.appendChild(renderQueuedPreview());
   }
-  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  if (pinned) pinTranscriptToBottom();
 }
 
 function renderQueuedPreview(): HTMLElement {
@@ -2204,6 +2231,10 @@ async function sendMessage(): Promise<void> {
   state.rewindStack = [];
   progressState.retryCount = 0;
   stalledByWatchdog = false;
+  // Hitting send is an explicit "follow the new turn" gesture — re-pin to
+  // bottom so the user's own bubble and the streamed reply are visible even
+  // if they had been scrolled up reading earlier history.
+  pinTranscriptToBottom();
   await runTurnWithStallRetry(apiKey, settings.toggles, blocks);
 }
 
@@ -2338,11 +2369,13 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
       },
       onAssistantText: delta => {
         if (liveTextEl) {
+          const pinned = isTranscriptPinnedToBottom();
           liveTextEl.textContent = (liveTextEl.textContent ?? '') + delta;
-          if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+          if (pinned) pinTranscriptToBottom();
         }
       },
       onAssistantThinking: delta => {
+        const pinned = isTranscriptPinnedToBottom();
         if (!liveThinkingEl) {
           const wrapEl = (liveTextEl?.parentElement
             ?? transcriptEl?.querySelector(`[data-message-id="${activeAssistantId}"]`)) as HTMLElement | null;
@@ -2355,9 +2388,12 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         const body = liveThinkingEl.querySelector('[data-thinking-body]') as HTMLElement | null;
         if (body) {
           body.textContent = (body.textContent ?? '') + delta;
+          // The thinking box's inner <pre> (max-h-32) is its own scroll
+          // container — keep it pinned so the latest reasoning tokens stay
+          // visible inside the bubble itself.
           body.scrollTop = body.scrollHeight;
         }
-        if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+        if (pinned) pinTranscriptToBottom();
       },
       onProgress: info => {
         // The next step has begun — fold the live thinking preview into its

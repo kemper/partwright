@@ -7,6 +7,11 @@ import { test, expect } from 'playwright/test';
 async function openEditor(page: import('playwright/test').Page) {
   await page.addInitScript(() => {
     try { localStorage.setItem('partwright-tour-completed', new Date().toISOString()); } catch { /* ignore */ }
+    // Force the code pane visible: the app now defaults it collapsed when the
+    // AI drawer auto-opens, which would hide .cm-content and break these tests.
+    try {
+      localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false }));
+    } catch { /* ignore */ }
   });
   await page.goto('/editor');
   await page.waitForSelector('text=Ready', { timeout: 15000 });

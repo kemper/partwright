@@ -41,3 +41,8 @@ playwright/.cache/
 /*.png
 /*.jpg
 /*.jpeg
+
+# Catalog debug scratch — single-catalog-entry.cjs writes here when an agent
+# iterates with a temporary id like "test-foo". Real entries don't use the
+# test_ prefix.
+/public/catalog/test_*.partwright.json

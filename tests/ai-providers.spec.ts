@@ -1,5 +1,5 @@
 import { test, expect } from 'playwright/test';
-import { openAiPanel, waitForChatSessionId } from './helpers/aiPanel';
+import { openAiPanel, waitForChatSessionId, waitForEditorReady } from './helpers/aiPanel';
 
 // Regression coverage for the multi-provider extension to the in-app
 // chat. The base in-browser AI surface (Anthropic + Local) has its own
@@ -216,10 +216,17 @@ test.describe('Multi-provider AI', () => {
       } as any]);
     }, { sid });
     await page.reload();
-    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    // After the reload, the AI panel attaches to the DOM almost immediately,
+    // but its transcript stays empty until the editor is past WASM init AND
+    // the session has reopened — that's what fires onStateChange →
+    // setAiActiveSession(sid) → loadHistoryForCurrentSession. Wait for "Ready"
+    // (which gates session open) before checking the transcript, otherwise on
+    // a slow CI runner the default 5s expect timeout can lapse before the
+    // seeded message renders.
+    await waitForEditorReady(page);
     await openAiPanel(page);
     const box = page.locator('#ai-panel details').filter({ hasText: '🧠 Thinking' });
-    await expect(box).toBeVisible();
+    await expect(box).toBeVisible({ timeout: 15_000 });
     // The answer is in its own bubble, visible without expanding anything.
     await expect(page.locator('#ai-panel').getByText('Done — created the sphere.')).toBeVisible();
     // Reasoning is hidden (collapsed) until the box is expanded.

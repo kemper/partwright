@@ -169,10 +169,25 @@ export function findConnectedFromSeed(
   seedTri: number,
   adjacency: AdjacencyGraph,
   maxSeedDeviationCos: number,
+  /** Optional spatial clamp — the BFS only walks into triangles whose
+   *  centroid passes `centroidPredicate`. Use for "flood-fill the dome but
+   *  do NOT walk down into the collar at z=13" cases the seed-normal test
+   *  can't catch on its own (a fused-solid mesh is one connected component
+   *  even when its features used to be separate inputs). */
+  centroidPredicate?: (cx: number, cy: number, cz: number) => boolean,
 ): Set<number> {
-  const { neighbors, normals } = adjacency;
+  const { neighbors, normals, centroids } = adjacency;
   const result = new Set<number>();
   if (seedTri < 0 || seedTri >= neighbors.length) return result;
+
+  // The seed itself must satisfy the clamp — otherwise we're already
+  // outside the intended region and the walk is meaningless.
+  if (centroidPredicate) {
+    const cx = centroids[seedTri * 3];
+    const cy = centroids[seedTri * 3 + 1];
+    const cz = centroids[seedTri * 3 + 2];
+    if (!centroidPredicate(cx, cy, cz)) return result;
+  }
 
   const snx = normals[seedTri * 3];
   const sny = normals[seedTri * 3 + 1];
@@ -193,10 +208,17 @@ export function findConnectedFromSeed(
       const nz = normals[neighbor * 3 + 2];
 
       const dot = snx * nx + sny * ny + snz * nz;
-      if (dot >= maxSeedDeviationCos) {
-        result.add(neighbor);
-        queue.push(neighbor);
+      if (dot < maxSeedDeviationCos) continue;
+
+      if (centroidPredicate) {
+        const cx = centroids[neighbor * 3];
+        const cy = centroids[neighbor * 3 + 1];
+        const cz = centroids[neighbor * 3 + 2];
+        if (!centroidPredicate(cx, cy, cz)) continue;
       }
+
+      result.add(neighbor);
+      queue.push(neighbor);
     }
   }
 

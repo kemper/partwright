@@ -180,12 +180,18 @@ test.describe('Tool-result renderings in the chat transcript', () => {
     }, { tinyPng: TINY_PNG, sid });
 
     await page.reload();
+    // After the reload, the AI panel attaches almost immediately but its
+    // transcript stays empty until the editor is past WASM init AND the
+    // session has reopened. Wait for "Ready" first so the seeded message has
+    // a chance to land before the visibility assertion, otherwise on a slow
+    // CI runner the default 5s expect timeout can lapse first.
+    await waitForEditorReady(page);
     await openAiPanel(page);
 
     // The rendering shows as an <img> in the transcript, visible without the
     // user expanding anything (image-bearing tool results auto-expand).
     const rendering = page.locator(`#ai-panel img[src*="${TINY_PNG.slice(0, 24)}"]`);
-    await expect(rendering).toBeVisible();
+    await expect(rendering).toBeVisible({ timeout: 15_000 });
     // The result chip carrying it defaulted to open.
     const resultChip = page.locator('#ai-panel details', { hasText: 'Rendered views' });
     await expect(resultChip).toHaveAttribute('open', '');

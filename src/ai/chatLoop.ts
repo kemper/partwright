@@ -181,18 +181,26 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
 
   const seqStart = nextSeq(history);
 
-  const userMsg: ChatMessage = {
-    id: generateId(),
-    sessionId,
-    role: 'user',
-    blocks: userBlocks,
-    createdAt: Date.now(),
-    seq: seqStart,
-  };
-  await putMessages([userMsg]);
-  callbacks.onUserPersisted?.(userMsg);
+  // Resume ("Keep going") calls runTurn with no userBlocks — it continues
+  // the existing history rather than starting a new user turn. Skip the
+  // persisted-message + history-append work in that case so an empty user
+  // record doesn't accumulate in IndexedDB on every resume and doesn't
+  // appear as `[user]\n` noise in later compaction summaries.
+  let userMsg: ChatMessage | null = null;
+  if (userBlocks.length > 0) {
+    userMsg = {
+      id: generateId(),
+      sessionId,
+      role: 'user',
+      blocks: userBlocks,
+      createdAt: Date.now(),
+      seq: seqStart,
+    };
+    await putMessages([userMsg]);
+    callbacks.onUserPersisted?.(userMsg);
+  }
 
-  let workingHistory: ChatMessage[] = [...history, userMsg];
+  let workingHistory: ChatMessage[] = userMsg ? [...history, userMsg] : [...history];
   let totalCostUsd = 0;
   let totalToolCalls = 0;
   let turnApiTimeMs = 0;

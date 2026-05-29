@@ -20,13 +20,25 @@ export interface ToolbarCallbacks {
   onExportSTL: () => void;
   onExportOBJ: () => void;
   onExport3MF: () => void;
+  /** BREP-only — silently hidden from the menu when the active language is
+   *  not 'replicad'. Toolbar pings `getActiveLanguage` at menu-open time to
+   *  decide visibility. */
+  onExportSTEP: () => void;
   onExportSessionJSON: () => void;
+  /** "Share link…" — encode the current version into a read-only,
+   *  hash-encoded share URL and open the copy modal. */
+  onShareLink: () => void;
   onExportRawCode: () => void;
   onImportFile: (file: File) => void | Promise<void>;
   /** Re-import a blob already held in the inbox (e.g. recent-imports re-click). */
   onImportInboxEntry: (entry: ImportInboxEntry) => void | Promise<void>;
-  onLanguageSwitch: (lang: 'manifold-js' | 'scad') => void;
+  onLanguageSwitch: (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => void;
+  /** "?" link next to the language toggle — opens a modal explaining
+   *  what each engine is best for. */
+  onLanguageHelp: () => void | Promise<void>;
   onGoHome: () => void;
+  /** Toggle the AI chat drawer — drives the prominent "Use AI" button in the toolbar. */
+  onToggleAi: () => void;
 }
 
 /** Update the unseen-error badge count on the diagnostics rail button.
@@ -49,29 +61,38 @@ export type AiToolbarMode = 'disconnected' | 'cloud' | 'local';
  *  connected; Local = a local WebGPU model is configured; Disconnected =
  *  neither, so clicking opens the connect flow. */
 export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
-  // The AI control now lives in the activity rail (id `btn-ai`) as a labeled
-  // item with a small connection-status dot. Update the dot colour + title.
-  const dot = document.getElementById('ai-status-dot');
-  const btn = document.getElementById('btn-ai');
-  if (!dot || !btn) return;
+  // Two entry points share the same status: the activity-rail item (id
+  // `btn-ai`, label "AI") and the prominent toolbar button (id
+  // `btn-ai-toolbar`, label "Use AI"). Each has its own status-dot span; we
+  // sync title + dot colour on both so they always agree.
+  const railDot = document.getElementById('ai-status-dot');
+  const railBtn = document.getElementById('btn-ai');
+  const toolbarDot = document.getElementById('ai-toolbar-status-dot');
+  const toolbarBtn = document.getElementById('btn-ai-toolbar');
   // Tolerate the legacy boolean caller signature so an old import doesn't
   // crash at runtime.
   const actual: AiToolbarMode = typeof mode === 'boolean' ? (mode ? 'cloud' : 'disconnected') : mode;
   const base = 'w-1.5 h-1.5 rounded-full shrink-0 ';
+  let dotClass: string;
+  let title: string;
   if (actual === 'cloud') {
-    dot.className = base + 'bg-blue-400';
-    btn.title = 'AI chat — hosted Claude connected. Click to open.';
+    dotClass = base + 'bg-blue-400';
+    title = 'AI chat — hosted Claude connected. Click to open.';
   } else if (actual === 'local') {
-    dot.className = base + 'bg-emerald-400';
-    btn.title = 'AI chat — local WebGPU model. Click to open.';
+    dotClass = base + 'bg-emerald-400';
+    title = 'AI chat — local WebGPU model. Click to open.';
   } else {
-    dot.className = base + 'bg-zinc-500';
-    btn.title = 'AI chat — not connected. Click to connect an API key or local model.';
+    dotClass = base + 'bg-zinc-500';
+    title = 'AI chat — not connected. Click to connect an API key or local model.';
   }
+  if (railDot) railDot.className = dotClass;
+  if (railBtn) railBtn.title = title;
+  if (toolbarDot) toolbarDot.className = dotClass;
+  if (toolbarBtn) toolbarBtn.title = title;
 }
 
 /** File extensions accepted by the Import button and drag-and-drop. */
-export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl';
+export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp,.vox,.png,.jpg,.jpeg,.gif,.webp,.bmp';
 
 let _autoRun = true;
 let _onAutoRunChange: ((on: boolean) => void) | null = null;
@@ -94,19 +115,23 @@ export function onAutoRunChange(cb: (on: boolean) => void): void { _onAutoRunCha
 // Language toggle state — managed externally via setToolbarLanguage()
 let _langBtnJs: HTMLButtonElement | null = null;
 let _langBtnScad: HTMLButtonElement | null = null;
-let _currentLang: 'manifold-js' | 'scad' = 'manifold-js';
+let _langBtnBrep: HTMLButtonElement | null = null;
+let _langBtnVoxel: HTMLButtonElement | null = null;
+let _currentLang: 'manifold-js' | 'scad' | 'replicad' | 'voxel' = 'manifold-js';
 
 const LANG_ACTIVE = 'px-2 py-0.5 rounded text-xs font-medium transition-colors bg-zinc-700 text-zinc-100';
 const LANG_INACTIVE = 'px-2 py-0.5 rounded text-xs font-medium transition-colors text-zinc-500 hover:text-zinc-300';
 
 function syncLangToggle() {
-  if (!_langBtnJs || !_langBtnScad) return;
+  if (!_langBtnJs || !_langBtnScad || !_langBtnBrep || !_langBtnVoxel) return;
   _langBtnJs.className = _currentLang === 'manifold-js' ? LANG_ACTIVE : LANG_INACTIVE;
   _langBtnScad.className = _currentLang === 'scad' ? LANG_ACTIVE : LANG_INACTIVE;
+  _langBtnBrep.className = _currentLang === 'replicad' ? LANG_ACTIVE : LANG_INACTIVE;
+  _langBtnVoxel.className = _currentLang === 'voxel' ? LANG_ACTIVE : LANG_INACTIVE;
 }
 
 /** Update the toolbar language toggle from outside (e.g. when opening a session). */
-export function setToolbarLanguage(lang: 'manifold-js' | 'scad'): void {
+export function setToolbarLanguage(lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): void {
   _currentLang = lang;
   syncLangToggle();
 }
@@ -190,15 +215,71 @@ export function createToolbar(
     }
   });
 
+  _langBtnBrep = document.createElement('button');
+  _langBtnBrep.textContent = 'BREP';
+  _langBtnBrep.title = 'BREP (replicad / OpenCASCADE) — exact fillets, chamfers, STEP export. Lazy-loads on first switch.';
+  _langBtnBrep.addEventListener('click', () => {
+    if (_currentLang !== 'replicad') {
+      callbacks.onLanguageSwitch('replicad');
+    }
+  });
+
+  _langBtnVoxel = document.createElement('button');
+  _langBtnVoxel.textContent = 'VOXEL';
+  _langBtnVoxel.title = 'Voxel — blocky colored-cube modeling. Pure JS, no WASM; great for pixel-art and image imports.';
+  _langBtnVoxel.addEventListener('click', () => {
+    if (_currentLang !== 'voxel') {
+      callbacks.onLanguageSwitch('voxel');
+    }
+  });
+
   syncLangToggle();
   langGroup.appendChild(_langBtnJs);
   langGroup.appendChild(_langBtnScad);
+  langGroup.appendChild(_langBtnBrep);
+  langGroup.appendChild(_langBtnVoxel);
   toolbar.appendChild(langGroup);
+
+  // Help link next to the language toggle — "?" icon that opens a modal
+  // explaining what each engine is best for. Small footprint so it doesn't
+  // crowd the toolbar; the title attribute also reads as a hint if the user
+  // hovers without clicking.
+  const langHelpBtn = document.createElement('button');
+  langHelpBtn.type = 'button';
+  langHelpBtn.className = 'ml-1 w-5 h-5 rounded-full text-[10px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 border border-zinc-600 flex items-center justify-center transition-colors';
+  langHelpBtn.textContent = '?';
+  langHelpBtn.title = 'What language to pick?';
+  langHelpBtn.setAttribute('aria-label', 'Open language help');
+  langHelpBtn.addEventListener('click', () => { void callbacks.onLanguageHelp(); });
+  toolbar.appendChild(langHelpBtn);
 
   // Spacer
   const spacer = document.createElement('div');
   spacer.className = 'flex-1';
   toolbar.appendChild(spacer);
+
+  // Use AI — primary entry point to the chat drawer. The activity rail also
+  // has a "✦ AI" item, but on mobile it lives in a horizontally-scrollable
+  // strip and is easy to miss; this toolbar button is always visible and
+  // styled with an indigo accent so it catches the eye while still fitting
+  // the zinc toolbar palette. Id is `btn-ai-toolbar` to avoid colliding with
+  // the rail's existing `#btn-ai` (which tests and the tour both reference).
+  const aiToolbarBtn = document.createElement('button');
+  aiToolbarBtn.id = 'btn-ai-toolbar';
+  const aiBase = 'flex items-center gap-1.5 px-3 py-1.5 md:px-2.5 md:py-1 rounded text-xs font-semibold transition-colors border ml-2';
+  const aiIdle = `${aiBase} bg-indigo-500/15 border-indigo-500/40 text-indigo-200 [@media(hover:hover)]:hover:bg-indigo-500/25 [@media(hover:hover)]:hover:text-indigo-100`;
+  const aiOpen = `${aiBase} bg-indigo-500/30 border-indigo-500/70 text-indigo-50 [@media(hover:hover)]:hover:bg-indigo-500/35`;
+  aiToolbarBtn.className = aiIdle;
+  aiToolbarBtn.title = 'AI chat — not connected. Click to connect an API key or local model.';
+  aiToolbarBtn.setAttribute('aria-label', 'Open AI chat panel');
+  aiToolbarBtn.innerHTML = '<span id="ai-toolbar-status-dot" class="w-1.5 h-1.5 rounded-full shrink-0 bg-zinc-500"></span><span class="text-sm leading-none" aria-hidden="true">✦</span><span>Use AI</span>';
+  aiToolbarBtn.addEventListener('click', callbacks.onToggleAi);
+  window.addEventListener('ai-panel-toggled', (e) => {
+    const open = !!(e as CustomEvent).detail?.open;
+    aiToolbarBtn.className = open ? aiOpen : aiIdle;
+    aiToolbarBtn.setAttribute('aria-pressed', String(open));
+  });
+  toolbar.appendChild(aiToolbarBtn);
 
   // Catalog — navigates to /catalog where premade sessions are browsed.
   // (Catalog moved to the activity rail's utility group \u2014 see createLayout.)
@@ -382,10 +463,25 @@ export function createToolbar(
     callbacks.onExportGLB();
   });
 
+  // STEP — BREP-only; the menu show/hide is gated below in the open-menu
+  // handler so the option only appears in 'replicad' sessions where there's
+  // an actual BREP shape on the heap. (In manifold-js sessions with
+  // `api.BREP.*` mixed in, the BREP source is forgotten at toManifold time —
+  // STEP wouldn't have anything to export.)
+  const stepOpt = createDescribedItem(
+    'STEP',
+    'Exact B-rep for mechanical-CAD interop (SolidWorks, Fusion, FreeCAD). BREP sessions only.',
+  );
+  stepOpt.addEventListener('click', () => {
+    dropdown.classList.add('hidden');
+    callbacks.onExportSTEP();
+  });
+
   dropdown.appendChild(threemfOpt);
   dropdown.appendChild(objOpt);
   dropdown.appendChild(stlOpt);
   dropdown.appendChild(glbOpt);
+  dropdown.appendChild(stepOpt);
 
   // Section: project / source — for sharing between users or working with the code directly
   dropdown.appendChild(createDivider());
@@ -409,8 +505,18 @@ export function createToolbar(
     callbacks.onExportRawCode();
   });
 
+  const shareOpt = createDescribedItem(
+    'Share link…',
+    'Create a public read-only link to this version. Anyone can preview and fork it — nothing is uploaded.',
+  );
+  shareOpt.addEventListener('click', () => {
+    dropdown.classList.add('hidden');
+    callbacks.onShareLink();
+  });
+
   dropdown.appendChild(sessionOpt);
   dropdown.appendChild(codeOpt);
+  dropdown.appendChild(shareOpt);
 
   // Section: Recent Exports — reuse-anything-you-just-downloaded list. Hidden when empty.
   const recentDivider = createDivider();
@@ -487,6 +593,10 @@ export function createToolbar(
   btnExport.addEventListener('click', () => {
     // Refresh relative timestamps each time the dropdown opens.
     renderRecent();
+    // STEP is BREP-only — show/hide based on the language toggle's current
+    // state. Putting this on open (rather than wiring a setter) keeps the
+    // menu logic local; a language switch closes the menu first anyway.
+    stepOpt.classList.toggle('hidden', _currentLang !== 'replicad');
     dropdown.classList.toggle('hidden');
   });
 
@@ -504,8 +614,6 @@ export function createToolbar(
   });
 
   toolbar.appendChild(exportWrapper);
-
-  // (The AI chat toggle lives in the activity rail — see createLayout.)
 
   // Dark mode toggle — text button, on by default, off when clicked
   const themeBtn = document.createElement('button');

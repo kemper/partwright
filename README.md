@@ -13,6 +13,7 @@ Built on [manifold-3d](https://github.com/elalish/manifold) (fast WASM boolean e
 - **Cross-sections** — Slice geometry at any Z height, inspect the 2D profile as SVG.
 - **Color regions** — Paint coplanar face regions with the in-app paint mode or the `paintRegion` console API; colors flow through GLB and 3MF exports for multi-material slicing.
 - **Export** — GLB, STL, OBJ, and 3MF download. GLB and 3MF carry per-region colors when present.
+- **Share links** — Turn the current version into a public link that encodes the whole design in the URL hash (gzipped, client-side — nothing is uploaded to any server). Opening a link shows a read-only preview (thumbnail + code + stats); the shared code never runs until the viewer chooses to fork it into their own local session.
 
 ## Quick start
 
@@ -183,10 +184,9 @@ src/
 
 Requires `Cross-Origin-Embedder-Policy` and `Cross-Origin-Opener-Policy` headers for SharedArrayBuffer / WASM threads (configured in `vite.config.ts`).
 
-## Deployment
+## Hosting details
 
-Hosted on [Cloudflare Pages](https://pages.cloudflare.com/) with the production custom domain [www.partwrightstudio.com](https://www.partwrightstudio.com), served from the `production` branch. The `main` and `staging` branches deploy as previews (see the table above).
-
+- Production custom domain: [www.partwrightstudio.com](https://www.partwrightstudio.com), served from the `production` branch.
 - Build: `npm run build` → `dist/`
 - SPA routing via `_redirects`, COEP/COOP/CSP headers via `_headers`
 - Set `SITE_URL` env var in Cloudflare Pages dashboard for absolute OG/canonical URLs (falls back to `CF_PAGES_URL`)

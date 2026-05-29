@@ -1,0 +1,60 @@
+{
+  "partwright": "1.9",
+  "session": {
+    "name": "Parametric Storage Tray",
+    "created": 1780007697854,
+    "updated": 1780007697854,
+    "images": null,
+    "language": "manifold-js"
+  },
+  "parts": [
+    {
+      "name": "Part 1",
+      "order": 0
+    }
+  ],
+  "versions": [
+    {
+      "index": 1,
+      "code": "// Parametric rounded storage tray / box.\n//\n// A generic open-top tray: a rounded outer shell with a hollowed cavity and an\n// optional row of internal dividers. Every dimension someone would actually want\n// to change is exposed as a Customizer knob via api.params(), so the same model\n// covers a tiny coin cup or a wide desk organizer just by dragging sliders.\n\nconst { Manifold, CrossSection } = api;\n\nconst p = api.params({\n  width: {\n    type: 'number', default: 90, min: 20, max: 200, step: 1, unit: 'mm',\n    label: 'Outer width (X)',\n    help: 'Overall footprint along X. Dividers split this dimension.',\n  },\n  depth: {\n    type: 'number', default: 60, min: 20, max: 200, step: 1, unit: 'mm',\n    label: 'Outer depth (Y)',\n  },\n  height: {\n    type: 'number', default: 35, min: 8, max: 120, step: 1, unit: 'mm',\n    label: 'Outer height (Z)',\n  },\n  wall: {\n    type: 'number', default: 2.4, min: 0.8, max: 12, step: 0.2, unit: 'mm',\n    label: 'Wall thickness',\n    help: 'Side-wall thickness. The cavity shrinks by this on every side.',\n  },\n  floor: {\n    type: 'number', default: 2.0, min: 0.8, max: 12, step: 0.2, unit: 'mm',\n    label: 'Floor thickness',\n  },\n  radius: {\n    type: 'number', default: 6, min: 0, max: 40, step: 0.5, unit: 'mm',\n    label: 'Corner radius',\n    help: 'Outer corner rounding. Ignored when corner style is \"square\".',\n  },\n  dividers: {\n    type: 'int', default: 0, min: 0, max: 8,\n    label: 'Internal dividers',\n    help: 'Number of cross walls splitting the cavity along X into equal bays.',\n  },\n  corners: {\n    type: 'select', default: 'round',\n    options: [\n      { value: 'round', label: 'Rounded' },\n      { value: 'chamfer', label: 'Chamfered' },\n      { value: 'square', label: 'Square' },\n    ],\n    label: 'Corner style',\n  },\n  feet: {\n    type: 'boolean', default: false,\n    label: 'Recessed base',\n    help: 'Inset the bottom edge so the tray sits on a small lip (stackable look).',\n  },\n});\n\n// --- Derived dimensions -----------------------------------------------------\n// The cavity must leave a wall on each side and a floor underneath. Clamp the\n// inner size to a sane minimum so extreme slider combos (thick wall + narrow\n// box) still produce a real, manifold cavity instead of an empty/degenerate one.\nconst MIN_INNER = 1.0; // never let an inner dimension collapse below this\nconst innerW = Math.max(MIN_INNER, p.width - 2 * p.wall);\nconst innerD = Math.max(MIN_INNER, p.depth - 2 * p.wall);\nconst innerH = Math.max(MIN_INNER, p.height - p.floor); // open top: no ceiling\nconst cavityRadius = Math.max(0, p.radius - p.wall);\n\n// A rounded rectangle as a CrossSection, centered on the origin. The join style\n// is chosen by the `corners` select: Round -> arcs, Miter (no shrink/expand) ->\n// crisp square, and a Round shrink/expand at a small radius reads as a chamfer.\n//\n// IMPORTANT: a round/chamfer corner is built by an inward `offset(-r)` then an\n// outward `offset(+r)`. If `r` reaches half the SHORTER side the inward pass\n// erases the whole polygon (verified: offset(-w/2,'Round') -> area 0), leaving\n// an empty solid. The Customizer lets `radius` run to 40 while `width` can be as\n// low as 20, so we cap the *effective* radius just under half the shorter side.\nfunction plate(w, d, r, style) {\n  const base = CrossSection.square([w, d], true);\n  const rEff = Math.min(r, Math.min(w, d) / 2 - 0.01);\n  if (style === 'square' || rEff <= 0) return base;\n  if (style === 'chamfer') {\n    // Offset out then back with MITERED joins clipped short = a flat 45° cut.\n    return base.offset(rEff, 'Miter', 1).offset(-rEff, 'Miter', 1);\n  }\n  // Rounded: shrink with round joins then grow back — corners become true arcs\n  // of radius `rEff` while the bounding box is preserved.\n  return base.offset(-rEff, 'Round').offset(rEff, 'Round');\n}\n\n// --- Outer shell ------------------------------------------------------------\nconst outer = Manifold.extrude(plate(p.width, p.depth, p.radius, p.corners), p.height);\n\n// --- Cavity -----------------------------------------------------------------\n// Raised by the floor thickness; tall enough to reach (and break through) the\n// top so the tray is open. Extend it a hair above the rim so the top face is a\n// clean single loop rather than a coincident-face boolean seam.\nconst cavity = Manifold.extrude(\n  plate(innerW, innerD, cavityRadius, p.corners),\n  innerH + 1,\n).translate(0, 0, p.floor);\n\nlet tray = outer.subtract(cavity);\n\n// --- Internal dividers ------------------------------------------------------\n// Evenly spaced cross walls (constant `wall` thickness) spanning the cavity in\n// Y, splitting the X span into `dividers + 1` equal bays. Each wall overlaps the\n// floor and side walls so the union is a single solid.\nif (p.dividers > 0) {\n  const n = p.dividers;\n  const bay = (innerW - n * p.wall) / (n + 1); // width of each open bay\n  if (bay >= 0.5) {\n    const wallH = innerH; // rise from the floor up to the rim\n    const divider = Manifold.cube([p.wall, innerD + 1, wallH], true)\n      .translate(0, 0, p.floor + wallH / 2);\n    const walls = [];\n    for (let i = 0; i < n; i++) {\n      // Left edge of cavity is at -innerW/2. Step across one bay + one wall.\n      const x = -innerW / 2 + bay + p.wall / 2 + i * (bay + p.wall);\n      walls.push(divider.translate(x, 0, 0));\n    }\n    tray = tray.add(Manifold.union(walls));\n  }\n}\n\n// --- Optional recessed base -------------------------------------------------\n// Carve a shallow rebate into the underside so a stack of trays nests. Kept\n// smaller than the floor so it never punches through into the cavity.\nif (p.feet) {\n  const inset = Math.min(p.wall, 1.5);\n  const recessDepth = Math.min(p.floor * 0.5, 1.5);\n  if (inset > 0.2 && recessDepth > 0.2) {\n    const rebate = Manifold.extrude(\n      plate(p.width - 2 * inset, p.depth - 2 * inset, Math.max(0, p.radius - inset), p.corners),\n      recessDepth + 1,\n    ).translate(0, 0, -1); // start below z=0, cut up into the floor\n    tray = tray.subtract(rebate);\n  }\n}\n\nreturn tray;\n",
+      "label": "v1",
+      "geometryData": {
+        "status": "ok",
+        "vertexCount": 528,
+        "triangleCount": 1052,
+        "boundingBox": {
+          "x": [
+            -45,
+            45
+          ],
+          "y": [
+            -30,
+            30
+          ],
+          "z": [
+            0,
+            35
+          ],
+          "dimensions": [
+            90,
+            60,
+            35
+          ]
+        },
+        "centroid": [
+          0,
+          0,
+          17.5
+        ],
+        "volume": 33084.163271906946,
+        "surfaceArea": 29939.807645908102,
+        "genus": 0,
+        "isManifold": true,
+        "componentCount": 1,
+        "unit": "mm"
+      },
+      "timestamp": 1780007697854,
+      "language": "manifold-js"
+    }
+  ]
+}

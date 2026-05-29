@@ -19,6 +19,7 @@ import {
   type TextAnnotation,
 } from './annotations';
 import { onSelectionChange, getSelectedId } from './selectMode';
+import { requestRender } from '../renderer/viewport';
 
 let overlayGroup: THREE.Group | null = null;
 let visible = true;
@@ -62,6 +63,7 @@ export function setAnnotationsVisible(v: boolean): void {
   if (visible === v) return;
   visible = v;
   if (overlayGroup) overlayGroup.visible = v;
+  requestRender();
   for (const fn of visibilityListeners) fn(v);
 }
 
@@ -91,6 +93,9 @@ function rebuildLiveOverlay(): void {
     overlayGroup.add(textToSprite(t, t.id === selected));
   }
   overlayGroup.visible = visible;
+  // The store's onChange fires this for programmatic (console/AI) annotation
+  // add/clear too, which have no pointer event to drive an on-demand repaint.
+  requestRender();
 }
 
 /** Build a fresh disposable group of Line2 + Sprite objects for an offscreen

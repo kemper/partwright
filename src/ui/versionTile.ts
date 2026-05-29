@@ -1,8 +1,10 @@
 // Shared version tile — rendered by the Gallery (read-only) and the Versions
 // tab (with rename/delete controls). Shows a thumbnail, label, timestamp,
-// color-region swatches, geometry stats, and notes for one saved version.
+// language badge, color-region swatches, geometry stats, and notes for one
+// saved version.
 
-import type { Version } from '../storage/sessionManager';
+import type { Version, Session } from '../storage/sessionManager';
+import { effectiveVersionLanguage } from '../storage/sessionManager';
 
 export interface VersionTileControl {
   /** Glyph or short text shown on the button. */
@@ -20,10 +22,13 @@ export interface VersionTileOptions {
   controls?: VersionTileControl[];
   /** Highlight this tile as the currently-active version. */
   active?: boolean;
+  /** Owning session — only consulted to resolve a version's language fallback
+   *  when {@link Version.language} is absent (pre-schema-1.8 versions). */
+  session?: Session | null;
 }
 
 export function createVersionTile(version: Version, options: VersionTileOptions = {}): HTMLElement {
-  const { onClick, controls, active } = options;
+  const { onClick, controls, active, session } = options;
 
   const tile = document.createElement('div');
   tile.className =
@@ -89,6 +94,18 @@ export function createVersionTile(version: Version, options: VersionTileOptions 
   label.className = 'text-xs font-mono font-medium text-zinc-200 truncate';
   label.textContent = version.label;
   header.appendChild(label);
+
+  // Language badge — small, after the label. Matches the colour palette used
+  // by the session-level badges (sessionList / landing / sessionBar) so the
+  // gallery makes language visible at a glance for mixed-language sessions.
+  const versionLang = effectiveVersionLanguage(version, session ?? null);
+  const langBadge = document.createElement('span');
+  const langLabel = versionLang === 'scad' ? 'SCAD' : 'JS';
+  const langColor = versionLang === 'scad' ? 'text-amber-400 border-amber-400/30' : 'text-blue-400 border-blue-400/30';
+  langBadge.className = `text-[9px] font-semibold border rounded px-1 ml-1 ${langColor}`;
+  langBadge.textContent = langLabel;
+  langBadge.title = versionLang === 'scad' ? 'OpenSCAD' : 'manifold-js';
+  header.appendChild(langBadge);
 
   const time = document.createElement('span');
   time.className = 'text-xs text-zinc-500 shrink-0 ml-2';
