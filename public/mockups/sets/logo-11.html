@@ -22,15 +22,42 @@ a.back:hover{color:#e4e4e7}
 .fav{background:#0b0b0d;border:1px solid #27272a;border-radius:8px;padding:8px;display:flex;align-items:center;justify-content:center}
 .light{background:#f4f4f5}
 .light .lbl{color:#a1a1aa}
+/* ===== subtle reveal (HERO only): the pocket deepens + the counter boss seats on load, then rests ===== */
+@media (prefers-reduced-motion: reduce){
+  .mark-dt .walls,.mark-dt .chip{animation:none !important}
+}
+.mark-dt .walls{
+  transform-box: fill-box;
+  transform-origin: 30px 30px;
+  animation: dt-deepen 1.0s cubic-bezier(.2,.8,.2,1) 1 both;
+}
+.mark-dt .chip{
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: dt-seat 1.05s cubic-bezier(.2,.85,.25,1) 1 both, dt-float 5.5s ease-in-out 1.05s infinite;
+}
+@keyframes dt-deepen{
+  0%   { opacity:0; transform: translate(-2.4px,-2.6px) scale(.985); }
+  100% { opacity:1; transform: translate(0,0) scale(1); }
+}
+@keyframes dt-seat{
+  0%   { transform: translate(-1.4px,-3.2px) scale(1.03); opacity:0; }
+  55%  { opacity:1; }
+  100% { transform: translate(0,0) scale(1); }
+}
+@keyframes dt-float{
+  0%,100% { transform: translate(0,0); }
+  50%     { transform: translate(0,-0.4px); }
+}
 </style></head>
 <body>
 <a class="back" href="../">← all mockups</a>
 <div class="head">Negative-P · double-take</div>
-<div class="thesis">The team-favorite negative-space <strong>P</strong>, given a sly optical double-meaning. The same die-cut letter is knocked into a teal tile — but the cut has <em>real isometric depth</em>: the P-shaped channel reads as a pocket bored into the block, its side-walls raked down-and-right in a darker teal. The eye flips between a flat letter and a 3D <em>part</em>. The bowl's counter survives as a crisp teal island — and at hero size a copy of it lifts clear up-and-left, a small floating chip: <em>a part being made.</em> Unmistakably a P; at 16&nbsp;px the depth flattens to a clean knockout.</div>
+<div class="thesis">The team-favorite negative-space <strong>P</strong>, given a sly optical double-meaning. The same die-cut letter is bored into a teal tile — but the cut has <em>real isometric depth</em>: the P-shaped pocket sinks into the block, side-walls raked down-and-right in a darker teal under a crisp machined lip. The eye flips between a flat letter and a 3D <em>part</em>. And the bowl's counter isn't just a hole — it's a small teal boss standing <em>proud</em> inside the pocket, lit cap, drop-shadowed wall, one warm amber spark: <em>a part seated in its socket.</em> Unmistakably a P; at 16&nbsp;px the depth flattens to a clean knockout.</div>
 <div class="grid">
   <div class="panel hero s5"><div class="lbl">Primary mark</div>
     <!-- HERO -->
-    <svg class="mark-dt" width="120" height="120" viewBox="0 0 64 64" role="img" aria-label="Partwright — negative-space P bored as an isometric pocket with a floating counter chip">
+    <svg class="mark-dt" width="120" height="120" viewBox="0 0 64 64" role="img" aria-label="Partwright — negative-space P bored as an isometric pocket with a raised teal counter boss">
       <defs>
         <linearGradient id="h-teal" x1="8" y1="6" x2="56" y2="60" gradientUnits="userSpaceOnUse">
           <stop offset="0" stop-color="#5eead4"/><stop offset="0.5" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
@@ -284,62 +311,26 @@ a.back:hover{color:#e4e4e7}
     <!-- ONLIGHT -->
     <svg width="88" height="88" viewBox="0 0 64 64" role="img" aria-label="Partwright on light">
       <defs>
-        <path id="ol-Pring" fill-rule="evenodd"
-              d="M22 14 H38 a11.5 11.5 0 0 1 0 23 H30 V50 H22 Z
-                 M30 21 H37.6 a4.4 4.4 0 0 1 0 9 H30 Z"/>
+        <path id="ol-Pmouth" d="M22 14 H38 a11.5 11.5 0 0 1 0 23 H30 V50 H22 Z"/>
         <path id="ol-counter" d="M30 21 H37.6 a4.4 4.4 0 0 1 0 9 H30 Z"/>
         <clipPath id="ol-clip"><rect x="4" y="4" width="56" height="56" rx="15"/></clipPath>
       </defs>
       <g clip-path="url(#ol-clip)">
         <!-- deep-navy tile (the brand-tile inverse), pocket walls a touch lighter navy -->
         <g fill="#334155">
-          <use href="#ol-Pring" transform="translate(3.0 3.3)"/>
-          <use href="#ol-Pring" transform="translate(2.0 2.2)"/>
-          <use href="#ol-Pring" transform="translate(1.0 1.1)"/>
+          <use href="#ol-Pmouth" transform="translate(3.0 3.3)"/>
+          <use href="#ol-Pmouth" transform="translate(2.0 2.2)"/>
+          <use href="#ol-Pmouth" transform="translate(1.0 1.1)"/>
         </g>
-        <use href="#ol-Pring" transform="translate(3.4 3.75)" fill="#1e293b"/>
+        <use href="#ol-Pmouth" transform="translate(3.4 3.75)" fill="#1e293b"/>
         <path fill="#0f172a" fill-rule="evenodd"
               d="M4 19 a15 15 0 0 1 15 -15 H45 a15 15 0 0 1 15 15 V45 a15 15 0 0 1 -15 15 H19 a15 15 0 0 1 -15 -15 Z
-                 M22 14 H38 a11.5 11.5 0 0 1 0 23 H30 V50 H22 Z
-                 M30 21 H37.6 a4.4 4.4 0 0 1 0 9 H30 Z"/>
+                 M22 14 H38 a11.5 11.5 0 0 1 0 23 H30 V50 H22 Z"/>
       </g>
-      <!-- floating chip in teal so the maker-part wink survives on light -->
-      <use href="#ol-counter" transform="translate(2.4 2.7)" fill="#020617" opacity="0.45"/>
-      <use href="#ol-counter" transform="translate(-4.8 -4.5)" fill="#0d9488"/>
-      <use href="#ol-counter" transform="translate(-5.3 -5.05)" fill="#14b8a6"/>
+      <!-- raised counter boss in teal so the maker-part wink survives on light -->
+      <use href="#ol-counter" transform="translate(0.9 1.0)" fill="#0f766e"/>
+      <use href="#ol-counter" fill="#14b8a6"/>
     </svg>
   </div>
 </div>
-
-<!-- ===== subtle reveal: the pocket deepens + the chip lifts clear on load, then rests ===== -->
-<style>
-@media (prefers-reduced-motion: reduce){
-  .mark-dt .walls,.mark-dt .chip{animation:none !important}
-}
-/* HERO only: walls extrude into depth, then settle */
-.mark-dt .walls{
-  transform-box: fill-box;
-  transform-origin: 30px 30px;
-  animation: dt-deepen 1.0s cubic-bezier(.2,.8,.2,1) 1 both;
-}
-@keyframes dt-deepen{
-  0%   { opacity:0; transform: translate(-2.4px,-2.6px) scale(.985); }
-  100% { opacity:1; transform: translate(0,0) scale(1); }
-}
-/* HERO only: the counter chip lifts up-left out of the pocket, then a slow float */
-.mark-dt .chip{
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: dt-lift 1.05s cubic-bezier(.2,.85,.25,1) 1 both, dt-float 5.5s ease-in-out 1.05s infinite;
-}
-@keyframes dt-lift{
-  0%   { transform: translate(6.0px,5.6px) scale(.96); opacity:.0; }
-  60%  { opacity:1; }
-  100% { transform: translate(0,0) scale(1); }
-}
-@keyframes dt-float{
-  0%,100% { transform: translate(0,0); }
-  50%     { transform: translate(-0.6px,-0.6px); }
-}
-</style>
 </body></html>

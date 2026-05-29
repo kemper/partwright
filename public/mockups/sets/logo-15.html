@@ -26,92 +26,66 @@ a.back:hover{color:#e4e4e7}
 <body>
 <a class="back" href="../">← all mockups</a>
 <div class="head">Impossible part</div>
-<div class="thesis">An <strong>impossible tri-bar</strong> built from three chunky isometric beams that loop into a part your eye can't resolve — a Penrose object engineered, not just drawn. Two teal face-shades give the beams real volume; the <strong>amber beam</strong> is the one that "shouldn't connect," carrying the <em>aha</em>. The hollow triangle the loop encloses reads as a confident counter — the bowl of a <strong>P</strong> standing on its left beam. It looks like a machined solid that the renderer almost printed, and it simplifies cleanly to a bold iso-beam silhouette at 16&nbsp;px.</div>
+<div class="thesis">An <strong>impossible tri-bar</strong> — three chunky isometric beams chained into a Penrose loop your eye can't quite resolve. Two teal face-shades give the beams real volume; the <strong>amber beam</strong> is the one that "shouldn't connect," carrying the <em>aha</em>. It reads as a machined solid the renderer almost printed, not a flat optical trick — and the triangular counter it encloses snaps into a confident <strong>P</strong> (left beam = stem, loop = bowl), sharpest right when it shrinks to a 16&nbsp;px favicon.</div>
 <div class="grid">
   <div class="panel hero s5"><div class="lbl">Primary mark</div>
     <!-- {{SVG_HERO}} -->
     <svg class="imp-hero" width="120" height="120" viewBox="0 0 64 64" role="img" aria-label="Partwright — an impossible isometric tri-bar with one amber beam">
       <defs>
-        <!-- teal face-shades: top (lit), left side, right side -->
-        <linearGradient id="h-top" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
-        </linearGradient>
-        <linearGradient id="h-left" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0e7c70"/>
-        </linearGradient>
-        <linearGradient id="h-right" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6960"/>
-        </linearGradient>
-        <!-- amber accent beam -->
-        <linearGradient id="h-atop" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/>
-        </linearGradient>
-        <linearGradient id="h-aside" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#d97e06"/><stop offset="1" stop-color="#a85b04"/>
-        </linearGradient>
         <radialGradient id="h-shadow" cx="0.5" cy="0.5" r="0.5">
           <stop offset="0" stop-color="#000" stop-opacity="0.5"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
         </radialGradient>
+        <linearGradient id="h-tealtop" x1="9" y1="6" x2="55" y2="36" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#99f6e4"/><stop offset="1" stop-color="#5eead4"/>
+        </linearGradient>
+        <linearGradient id="h-tealmid" x1="9" y1="23" x2="55" y2="58" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <linearGradient id="h-ambertop" x1="9" y1="23" x2="55" y2="50" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/>
+        </linearGradient>
       </defs>
 
-      <!-- contact shadow grounding the solid -->
-      <ellipse cx="32" cy="60" rx="22" ry="2.6" fill="url(#h-shadow)"/>
+      <!-- contact shadow grounds the solid -->
+      <ellipse cx="32" cy="61" rx="22" ry="2.4" fill="url(#h-shadow)"/>
 
       <!-- ============================================================
-           IMPOSSIBLE TRI-BAR. Three chunky iso beams loop A→B→C→A.
-           Each beam = a parallelogram top + a vertical side face.
-           Draw order encodes the Penrose "impossible" overlap:
-           the amber (bottom) beam is drawn LAST so it passes OVER
-           the right beam that — by perspective — should be behind it.
-           Iso unit: dx=±9, dy=±5 per 9 horizontal. Beam width ~9.
+           IMPOSSIBLE TRI-BAR — three equal iso beams chained L3→L2→L1.
+           Each beam is a real cuboid (top + two side faces + end cap),
+           projected on a true isometric grid so every face is clean.
+           Draw order (vertical beam first, top beam last) makes each
+           beam occlude the previous one's joint — the Penrose "aha".
+           L1 = top beam (lit teal) · L3 = left/stem beam (mid teal)
+           L2 = lower beam = AMBER accent (the one that can't connect).
+           Coordinates baked to the 0–64 space — no nested transform.
            ============================================================ -->
 
-      <!-- LEFT beam (rises up the left side) : teal -->
-      <!-- left/dark vertical face -->
-      <polygon points="14,42 14,21 23,16 23,37" fill="url(#h-left)"/>
-      <!-- top face of left beam -->
-      <polygon points="14,21 23,16 32,21 23,26" fill="url(#h-top)"/>
-      <!-- right-facing inner face of left beam (in shade) -->
-      <polygon points="23,16 23,37 32,42 32,21" fill="url(#h-right)"/>
+      <!-- L3 — left vertical beam (drawn first = furthest back) -->
+      <polygon points="16.99,49.33 9.48,53.67 9.48,10.33 16.99,6.00" fill="#0e7c70"/>
+      <polygon points="16.99,49.33 24.49,53.67 24.49,10.33 16.99,6.00" fill="url(#h-tealmid)"/>
+      <polygon points="16.99,6.00 24.49,10.33 16.99,14.67 9.48,10.33" fill="#5eead4"/>
 
-      <!-- RIGHT beam (descends from top to bottom-right) : teal -->
-      <!-- top face -->
-      <polygon points="32,21 41,16 50,21 41,26" fill="url(#h-top)"/>
-      <!-- right vertical face -->
-      <polygon points="50,21 50,42 41,47 41,26" fill="url(#h-right)"/>
-      <!-- left-facing inner face -->
-      <polygon points="41,26 41,47 32,42 32,21" fill="url(#h-left)"/>
+      <!-- L2 — lower beam, AMBER (the impossible connector) -->
+      <polygon points="47.01,32.00 54.52,36.33 54.52,27.67 47.01,23.33" fill="#a85b04"/>
+      <polygon points="47.01,32.00 9.48,53.67 9.48,45.00 47.01,23.33" fill="#c9760a"/>
+      <polygon points="9.48,53.67 16.99,58.00 16.99,49.33 9.48,45.00" fill="#a85b04"/>
+      <polygon points="47.01,23.33 54.52,27.67 16.99,49.33 9.48,45.00" fill="url(#h-ambertop)"/>
 
-      <!-- TOP cross-beam connecting the two upper ends : teal -->
-      <!-- top face spanning across -->
-      <polygon points="23,16 32,11 41,16 32,21" fill="url(#h-top)"/>
+      <!-- L1 — top beam, lit teal (drawn last = nearest, completes the impossibility) -->
+      <polygon points="16.99,14.67 54.52,36.33 54.52,27.67 16.99,6.00" fill="#0d9488"/>
+      <polygon points="54.52,36.33 47.01,40.67 47.01,32.00 54.52,27.67" fill="#0a6960"/>
+      <polygon points="16.99,14.67 9.48,19.00 9.48,10.33 16.99,6.00" fill="#14b8a6"/>
+      <polygon points="16.99,6.00 54.52,27.67 47.01,32.00 9.48,10.33" fill="url(#h-tealtop)"/>
 
-      <!-- ===== the impossible bottom beam — AMBER — drawn last ===== -->
-      <!-- It travels from the foot of the left beam to the foot of the
-           right beam, but its near end visually crosses IN FRONT of the
-           right beam's base, which the loop says should be behind it. -->
-      <!-- amber top face -->
-      <polygon points="14,42 23,37 50,52 41,57" fill="url(#h-atop)"/>
-      <!-- amber front (lower) face -->
-      <polygon points="14,42 41,57 41,52 14,37" fill="url(#h-aside)"/>
-      <!-- correction: front face uses proper base; redraw cleanly below is avoided —
-           the two polygons above already form the beam. -->
-
-      <!-- crisp navy edge lines tie the faceted solid together and sell the illusion -->
-      <g fill="none" stroke="#06201d" stroke-width="0.9" stroke-linejoin="round" stroke-linecap="round" opacity="0.55">
-        <!-- left beam silhouette -->
-        <polygon points="14,21 23,16 32,21 32,42 23,37 14,42"/>
-        <!-- right beam silhouette -->
-        <polygon points="32,21 41,16 50,21 50,42 41,47 41,26"/>
-        <!-- top crossbeam -->
-        <path d="M23,16 L32,11 L41,16"/>
-        <!-- amber beam silhouette -->
-        <polygon points="14,42 23,37 50,52 41,57"/>
+      <!-- crisp dark edge lines around each beam sell the engineered solid -->
+      <g fill="none" stroke="#052a26" stroke-width="0.7" stroke-linejoin="round" stroke-linecap="round" opacity="0.5">
+        <polygon points="16.99,6.00 24.49,10.33 24.49,53.67 16.99,49.33 9.48,53.67 9.48,10.33"/>
+        <polygon points="9.48,45.00 47.01,23.33 54.52,27.67 54.52,36.33 47.01,40.67 16.99,58.00 9.48,53.67"/>
+        <polygon points="9.48,10.33 16.99,6.00 54.52,27.67 54.52,36.33 47.01,40.67 9.48,19.00"/>
       </g>
-
-      <!-- thin lit highlight rim along the top crests -->
-      <g fill="none" stroke="#99f6e4" stroke-width="0.8" stroke-linecap="round" opacity="0.85">
-        <path d="M14,21 L23,16 L32,11 L41,16 L50,21"/>
+      <!-- lit highlight along the two top crests -->
+      <g fill="none" stroke="#ccfbf1" stroke-width="0.7" stroke-linecap="round" opacity="0.7">
+        <path d="M9.48,10.33 L16.99,6.00 L54.52,27.67"/>
       </g>
     </svg>
   </div>
@@ -120,36 +94,24 @@ a.back:hover{color:#e4e4e7}
     <!-- {{SVG_MARK}} -->
     <svg width="42" height="42" viewBox="0 0 64 64" role="img" aria-label="Partwright impossible tri-bar mark">
       <defs>
-        <linearGradient id="m-top" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        <linearGradient id="m-tt" x1="9" y1="6" x2="55" y2="36" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#99f6e4"/><stop offset="1" stop-color="#5eead4"/>
         </linearGradient>
-        <linearGradient id="m-left" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0e7c70"/>
-        </linearGradient>
-        <linearGradient id="m-right" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6960"/>
-        </linearGradient>
-        <linearGradient id="m-atop" x1="0" y1="0" x2="1" y2="1">
+        <linearGradient id="m-at" x1="9" y1="23" x2="55" y2="50" gradientUnits="userSpaceOnUse">
           <stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/>
         </linearGradient>
-        <linearGradient id="m-aside" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#d97e06"/><stop offset="1" stop-color="#a85b04"/>
-        </linearGradient>
       </defs>
-      <polygon points="14,42 14,21 23,16 23,37" fill="url(#m-left)"/>
-      <polygon points="14,21 23,16 32,21 23,26" fill="url(#m-top)"/>
-      <polygon points="23,16 23,37 32,42 32,21" fill="url(#m-right)"/>
-      <polygon points="32,21 41,16 50,21 41,26" fill="url(#m-top)"/>
-      <polygon points="50,21 50,42 41,47 41,26" fill="url(#m-right)"/>
-      <polygon points="41,26 41,47 32,42 32,21" fill="url(#m-left)"/>
-      <polygon points="23,16 32,11 41,16 32,21" fill="url(#m-top)"/>
-      <polygon points="14,42 23,37 50,52 41,57" fill="url(#m-atop)"/>
-      <polygon points="14,42 41,57 41,52 14,37" fill="url(#m-aside)"/>
-      <g fill="none" stroke="#06201d" stroke-width="1.1" stroke-linejoin="round" opacity="0.5">
-        <polygon points="14,21 23,16 32,21 32,42 23,37 14,42"/>
-        <polygon points="32,21 41,16 50,21 50,42 41,47 41,26"/>
-        <polygon points="14,42 23,37 50,52 41,57"/>
-      </g>
+      <polygon points="16.99,49.33 9.48,53.67 9.48,10.33 16.99,6.00" fill="#0e7c70"/>
+      <polygon points="16.99,49.33 24.49,53.67 24.49,10.33 16.99,6.00" fill="#2dd4bf"/>
+      <polygon points="16.99,6.00 24.49,10.33 16.99,14.67 9.48,10.33" fill="#5eead4"/>
+      <polygon points="47.01,32.00 54.52,36.33 54.52,27.67 47.01,23.33" fill="#a85b04"/>
+      <polygon points="47.01,32.00 9.48,53.67 9.48,45.00 47.01,23.33" fill="#c9760a"/>
+      <polygon points="9.48,53.67 16.99,58.00 16.99,49.33 9.48,45.00" fill="#a85b04"/>
+      <polygon points="47.01,23.33 54.52,27.67 16.99,49.33 9.48,45.00" fill="url(#m-at)"/>
+      <polygon points="16.99,14.67 54.52,36.33 54.52,27.67 16.99,6.00" fill="#0d9488"/>
+      <polygon points="54.52,36.33 47.01,40.67 47.01,32.00 54.52,27.67" fill="#0a6960"/>
+      <polygon points="16.99,14.67 9.48,19.00 9.48,10.33 16.99,6.00" fill="#14b8a6"/>
+      <polygon points="16.99,6.00 54.52,27.67 47.01,32.00 9.48,10.33" fill="url(#m-tt)"/>
     </svg>
     <span class="wm">Partwright</span>
   </div></div>
@@ -161,20 +123,14 @@ a.back:hover{color:#e4e4e7}
         <linearGradient id="a-tile" x1="0" y1="0" x2="104" y2="104" gradientUnits="userSpaceOnUse">
           <stop offset="0" stop-color="#0f172a"/><stop offset="1" stop-color="#070b16"/>
         </linearGradient>
-        <linearGradient id="a-top" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        <linearGradient id="a-tt" x1="20" y1="16" x2="84" y2="58" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#99f6e4"/><stop offset="1" stop-color="#5eead4"/>
         </linearGradient>
-        <linearGradient id="a-left" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0e7c70"/>
+        <linearGradient id="a-tm" x1="20" y1="22" x2="84" y2="82" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
         </linearGradient>
-        <linearGradient id="a-right" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6960"/>
-        </linearGradient>
-        <linearGradient id="a-atop" x1="0" y1="0" x2="1" y2="1">
+        <linearGradient id="a-at" x1="20" y1="40" x2="84" y2="76" gradientUnits="userSpaceOnUse">
           <stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/>
-        </linearGradient>
-        <linearGradient id="a-aside" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#d97e06"/><stop offset="1" stop-color="#a85b04"/>
         </linearGradient>
         <radialGradient id="a-vig" cx="0.5" cy="0.42" r="0.62">
           <stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.42"/>
@@ -183,25 +139,28 @@ a.back:hover{color:#e4e4e7}
       </defs>
       <rect x="0" y="0" width="104" height="104" rx="22" fill="url(#a-tile)"/>
       <g clip-path="url(#a-tileclip)">
-        <!-- tri-bar scaled & centred into the 104 tile (~1.62× of 64-space, recentred) -->
-        <g transform="translate(52,54) scale(1.62) translate(-32,-34)">
-          <polygon points="14,42 14,21 23,16 23,37" fill="url(#a-left)"/>
-          <polygon points="14,21 23,16 32,21 23,26" fill="url(#a-top)"/>
-          <polygon points="23,16 23,37 32,42 32,21" fill="url(#a-right)"/>
-          <polygon points="32,21 41,16 50,21 41,26" fill="url(#a-top)"/>
-          <polygon points="50,21 50,42 41,47 41,26" fill="url(#a-right)"/>
-          <polygon points="41,26 41,47 32,42 32,21" fill="url(#a-left)"/>
-          <polygon points="23,16 32,11 41,16 32,21" fill="url(#a-top)"/>
-          <polygon points="14,42 23,37 50,52 41,57" fill="url(#a-atop)"/>
-          <polygon points="14,42 41,57 41,52 14,37" fill="url(#a-aside)"/>
-          <g fill="none" stroke="#06201d" stroke-width="0.8" stroke-linejoin="round" opacity="0.5">
-            <polygon points="14,21 23,16 32,21 32,42 23,37 14,42"/>
-            <polygon points="32,21 41,16 50,21 50,42 41,47 41,26"/>
-            <polygon points="14,42 23,37 50,52 41,57"/>
-          </g>
-          <g fill="none" stroke="#99f6e4" stroke-width="0.7" stroke-linecap="round" opacity="0.8">
-            <path d="M14,21 L23,16 L32,11 L41,16 L50,21"/>
-          </g>
+        <!-- L3 left beam -->
+        <polygon points="31.22,76.00 20.82,82.00 20.82,22.00 31.22,16.00" fill="#0e7c70"/>
+        <polygon points="31.22,76.00 41.61,82.00 41.61,22.00 31.22,16.00" fill="url(#a-tm)"/>
+        <polygon points="31.22,16.00 41.61,22.00 31.22,28.00 20.82,22.00" fill="#5eead4"/>
+        <!-- L2 amber beam -->
+        <polygon points="72.78,52.00 83.18,58.00 83.18,46.00 72.78,40.00" fill="#a85b04"/>
+        <polygon points="72.78,52.00 20.82,82.00 20.82,70.00 72.78,40.00" fill="#c9760a"/>
+        <polygon points="20.82,82.00 31.22,88.00 31.22,76.00 20.82,70.00" fill="#a85b04"/>
+        <polygon points="72.78,40.00 83.18,46.00 31.22,76.00 20.82,70.00" fill="url(#a-at)"/>
+        <!-- L1 top beam -->
+        <polygon points="31.22,28.00 83.18,58.00 83.18,46.00 31.22,16.00" fill="#0d9488"/>
+        <polygon points="83.18,58.00 72.78,64.00 72.78,52.00 83.18,46.00" fill="#0a6960"/>
+        <polygon points="31.22,28.00 20.82,34.00 20.82,22.00 31.22,16.00" fill="#14b8a6"/>
+        <polygon points="31.22,16.00 83.18,46.00 72.78,52.00 20.82,22.00" fill="url(#a-tt)"/>
+        <!-- edge lines -->
+        <g fill="none" stroke="#052a26" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.45">
+          <polygon points="31.22,16.00 41.61,22.00 41.61,82.00 31.22,76.00 20.82,82.00 20.82,22.00"/>
+          <polygon points="20.82,70.00 72.78,40.00 83.18,46.00 83.18,58.00 72.78,64.00 31.22,88.00 20.82,82.00"/>
+          <polygon points="20.82,22.00 31.22,16.00 83.18,46.00 83.18,58.00 72.78,64.00 20.82,34.00"/>
+        </g>
+        <g fill="none" stroke="#ccfbf1" stroke-width="0.8" stroke-linecap="round" opacity="0.65">
+          <path d="M20.82,22.00 L31.22,16.00 L83.18,46.00"/>
         </g>
         <rect x="0" y="0" width="104" height="104" rx="22" fill="url(#a-vig)"/>
       </g>
@@ -213,69 +172,45 @@ a.back:hover{color:#e4e4e7}
     <div class="fav">
       <!-- {{SVG_32}} -->
       <svg width="32" height="32" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 32">
-        <defs>
-          <linearGradient id="f32-top" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
-          </linearGradient>
-          <linearGradient id="f32-left" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0e7c70"/>
-          </linearGradient>
-          <linearGradient id="f32-right" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6960"/>
-          </linearGradient>
-        </defs>
-        <polygon points="14,42 14,21 23,16 23,37" fill="url(#f32-left)"/>
-        <polygon points="14,21 23,16 32,21 23,26" fill="url(#f32-top)"/>
-        <polygon points="23,16 23,37 32,42 32,21" fill="url(#f32-right)"/>
-        <polygon points="32,21 41,16 50,21 41,26" fill="url(#f32-top)"/>
-        <polygon points="50,21 50,42 41,47 41,26" fill="url(#f32-right)"/>
-        <polygon points="41,26 41,47 32,42 32,21" fill="url(#f32-left)"/>
-        <polygon points="23,16 32,11 41,16 32,21" fill="url(#f32-top)"/>
-        <polygon points="14,42 23,37 50,52 41,57" fill="#fbbf24"/>
-        <polygon points="14,42 41,57 41,52 14,37" fill="#c9760a"/>
-        <g fill="none" stroke="#06201d" stroke-width="1.1" stroke-linejoin="round" opacity="0.45">
-          <polygon points="14,21 23,16 32,21 32,42 23,37 14,42"/>
-          <polygon points="32,21 41,16 50,21 50,42 41,47 41,26"/>
-          <polygon points="14,42 23,37 50,52 41,57"/>
-        </g>
+        <polygon points="16.99,49.33 9.48,53.67 9.48,10.33 16.99,6.00" fill="#0e7c70"/>
+        <polygon points="16.99,49.33 24.49,53.67 24.49,10.33 16.99,6.00" fill="#2dd4bf"/>
+        <polygon points="16.99,6.00 24.49,10.33 16.99,14.67 9.48,10.33" fill="#5eead4"/>
+        <polygon points="47.01,32.00 54.52,36.33 54.52,27.67 47.01,23.33" fill="#a85b04"/>
+        <polygon points="47.01,32.00 9.48,53.67 9.48,45.00 47.01,23.33" fill="#c9760a"/>
+        <polygon points="9.48,53.67 16.99,58.00 16.99,49.33 9.48,45.00" fill="#a85b04"/>
+        <polygon points="47.01,23.33 54.52,27.67 16.99,49.33 9.48,45.00" fill="#fbbf24"/>
+        <polygon points="16.99,14.67 54.52,36.33 54.52,27.67 16.99,6.00" fill="#0d9488"/>
+        <polygon points="54.52,36.33 47.01,40.67 47.01,32.00 54.52,27.67" fill="#0a6960"/>
+        <polygon points="16.99,14.67 9.48,19.00 9.48,10.33 16.99,6.00" fill="#14b8a6"/>
+        <polygon points="16.99,6.00 54.52,27.67 47.01,32.00 9.48,10.33" fill="#5eead4"/>
       </svg>
     </div>
     <div class="fav">
       <!-- {{SVG_20}} -->
       <svg width="20" height="20" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 20">
-        <defs>
-          <linearGradient id="f20-left" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#0e9e8f"/>
-          </linearGradient>
-          <linearGradient id="f20-right" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6960"/>
-          </linearGradient>
-        </defs>
-        <!-- thicker beams, two shades + amber; junction simplified for 20px -->
-        <polygon points="12,44 12,20 23,14 23,38" fill="url(#f20-left)"/>
-        <polygon points="12,20 23,14 33,20 23,26" fill="#5eead4"/>
-        <polygon points="23,14 23,38 33,44 33,20" fill="url(#f20-right)"/>
-        <polygon points="33,20 43,14 52,20 43,26" fill="#5eead4"/>
-        <polygon points="52,20 52,44 43,49 43,26" fill="url(#f20-right)"/>
-        <polygon points="43,26 43,49 33,44 33,20" fill="url(#f20-left)"/>
-        <polygon points="23,14 33,8 43,14 33,20" fill="#5eead4"/>
-        <polygon points="12,44 23,38 52,53 43,59" fill="#fbbf24"/>
-        <polygon points="12,44 43,59 43,53 12,38" fill="#c9760a"/>
+        <!-- end caps dropped at 20px; bold faces only -->
+        <polygon points="16.99,49.33 9.48,53.67 9.48,10.33 16.99,6.00" fill="#0e7c70"/>
+        <polygon points="16.99,49.33 24.49,53.67 24.49,10.33 16.99,6.00" fill="#2dd4bf"/>
+        <polygon points="16.99,6.00 24.49,10.33 16.99,14.67 9.48,10.33" fill="#5eead4"/>
+        <polygon points="47.01,32.00 9.48,53.67 9.48,45.00 47.01,23.33" fill="#c9760a"/>
+        <polygon points="47.01,23.33 54.52,27.67 16.99,49.33 9.48,45.00" fill="#fbbf24"/>
+        <polygon points="16.99,14.67 54.52,36.33 54.52,27.67 16.99,6.00" fill="#0d9488"/>
+        <polygon points="16.99,14.67 9.48,19.00 9.48,10.33 16.99,6.00" fill="#14b8a6"/>
+        <polygon points="16.99,6.00 54.52,27.67 47.01,32.00 9.48,10.33" fill="#5eead4"/>
       </svg>
     </div>
     <div class="fav">
       <!-- {{SVG_16}} -->
       <svg width="16" height="16" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 16">
-        <!-- 16px: bold iso-beam silhouette, three faces only, amber base -->
-        <polygon points="11,45 11,19 24,12 24,38" fill="#2dd4bf"/>
-        <polygon points="11,19 24,12 34,19 24,26" fill="#5eead4"/>
-        <polygon points="24,12 24,38 34,45 34,19" fill="#0d9488"/>
-        <polygon points="34,19 45,12 54,19 45,26" fill="#5eead4"/>
-        <polygon points="54,19 54,45 45,50 45,26" fill="#0d9488"/>
-        <polygon points="45,26 45,50 34,45 34,19" fill="#2dd4bf"/>
-        <polygon points="24,12 34,6 45,12 34,19" fill="#5eead4"/>
-        <polygon points="11,45 24,38 54,54 45,60" fill="#fbbf24"/>
-        <polygon points="11,45 45,60 45,53 11,38" fill="#c9760a"/>
+        <!-- 16px: bold iso-beam silhouette, three faces per beam, amber accent -->
+        <polygon points="16.99,49.33 9.48,53.67 9.48,10.33 16.99,6.00" fill="#0e7c70"/>
+        <polygon points="16.99,49.33 24.49,53.67 24.49,10.33 16.99,6.00" fill="#2dd4bf"/>
+        <polygon points="16.99,6.00 24.49,10.33 16.99,14.67 9.48,10.33" fill="#5eead4"/>
+        <polygon points="47.01,32.00 9.48,53.67 9.48,45.00 47.01,23.33" fill="#c9760a"/>
+        <polygon points="47.01,23.33 54.52,27.67 16.99,49.33 9.48,45.00" fill="#fbbf24"/>
+        <polygon points="16.99,14.67 54.52,36.33 54.52,27.67 16.99,6.00" fill="#0d9488"/>
+        <polygon points="16.99,14.67 9.48,19.00 9.48,10.33 16.99,6.00" fill="#14b8a6"/>
+        <polygon points="16.99,6.00 54.52,27.67 47.01,32.00 9.48,10.33" fill="#5eead4"/>
       </svg>
     </div>
   </div></div>
@@ -283,24 +218,27 @@ a.back:hover{color:#e4e4e7}
   <div class="panel s3"><div class="lbl">Monochrome</div>
     <!-- {{SVG_MONO}} -->
     <svg width="88" height="88" viewBox="0 0 64 64" role="img" aria-label="Partwright monochrome impossible tri-bar">
-      <!-- single white ink: faces differentiated only by opacity so volume still reads -->
+      <!-- single white ink: faces differentiated by opacity so volume still reads -->
       <g fill="#fafafa">
-        <polygon points="14,42 14,21 23,16 23,37" opacity="0.40"/>
-        <polygon points="14,21 23,16 32,21 23,26" opacity="0.92"/>
-        <polygon points="23,16 23,37 32,42 32,21" opacity="0.22"/>
-        <polygon points="32,21 41,16 50,21 41,26" opacity="0.92"/>
-        <polygon points="50,21 50,42 41,47 41,26" opacity="0.22"/>
-        <polygon points="41,26 41,47 32,42 32,21" opacity="0.40"/>
-        <polygon points="23,16 32,11 41,16 32,21" opacity="0.92"/>
-        <!-- amber beam → brightest white top + mid front (the accent reads as the lit base) -->
-        <polygon points="14,42 23,37 50,52 41,57" opacity="0.68"/>
-        <polygon points="14,42 41,57 41,52 14,37" opacity="0.30"/>
+        <!-- L3 left beam -->
+        <polygon points="16.99,49.33 9.48,53.67 9.48,10.33 16.99,6.00" opacity="0.30"/>
+        <polygon points="16.99,49.33 24.49,53.67 24.49,10.33 16.99,6.00" opacity="0.52"/>
+        <polygon points="16.99,6.00 24.49,10.33 16.99,14.67 9.48,10.33" opacity="0.92"/>
+        <!-- L2 amber beam → kept as the BRIGHTEST faces so the accent still leads -->
+        <polygon points="47.01,32.00 9.48,53.67 9.48,45.00 47.01,23.33" opacity="0.40"/>
+        <polygon points="9.48,53.67 16.99,58.00 16.99,49.33 9.48,45.00" opacity="0.30"/>
+        <polygon points="47.01,23.33 54.52,27.67 16.99,49.33 9.48,45.00" opacity="0.74"/>
+        <polygon points="47.01,32.00 54.52,36.33 54.52,27.67 47.01,23.33" opacity="0.30"/>
+        <!-- L1 top beam -->
+        <polygon points="16.99,14.67 54.52,36.33 54.52,27.67 16.99,6.00" opacity="0.40"/>
+        <polygon points="54.52,36.33 47.01,40.67 47.01,32.00 54.52,27.67" opacity="0.22"/>
+        <polygon points="16.99,14.67 9.48,19.00 9.48,10.33 16.99,6.00" opacity="0.52"/>
+        <polygon points="16.99,6.00 54.52,27.67 47.01,32.00 9.48,10.33" opacity="0.92"/>
       </g>
-      <g fill="none" stroke="#fafafa" stroke-width="0.9" stroke-linejoin="round" opacity="0.85">
-        <polygon points="14,21 23,16 32,21 32,42 23,37 14,42"/>
-        <polygon points="32,21 41,16 50,21 50,42 41,47 41,26"/>
-        <polygon points="14,42 23,37 50,52 41,57"/>
-        <path d="M23,16 L32,11 L41,16"/>
+      <g fill="none" stroke="#fafafa" stroke-width="0.7" stroke-linejoin="round" stroke-linecap="round" opacity="0.85">
+        <polygon points="16.99,6.00 24.49,10.33 24.49,53.67 16.99,49.33 9.48,53.67 9.48,10.33"/>
+        <polygon points="9.48,45.00 47.01,23.33 54.52,27.67 54.52,36.33 47.01,40.67 16.99,58.00 9.48,53.67"/>
+        <polygon points="9.48,10.33 16.99,6.00 54.52,27.67 54.52,36.33 47.01,40.67 9.48,19.00"/>
       </g>
     </svg>
   </div>
@@ -308,54 +246,45 @@ a.back:hover{color:#e4e4e7}
   <div class="panel s3 light"><div class="lbl">On light</div>
     <!-- {{SVG_ONLIGHT}} -->
     <svg width="88" height="88" viewBox="0 0 64 64" role="img" aria-label="Partwright on light impossible tri-bar">
-      <defs>
-        <linearGradient id="ol-top" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
-        </linearGradient>
-        <linearGradient id="ol-left" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
-        </linearGradient>
-        <linearGradient id="ol-right" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
-        </linearGradient>
-      </defs>
-      <!-- light teal beams; dark navy edges carry the form on the light tile -->
-      <g>
-        <polygon points="14,42 14,21 23,16 23,37" fill="url(#ol-left)"/>
-        <polygon points="14,21 23,16 32,21 23,26" fill="url(#ol-top)"/>
-        <polygon points="23,16 23,37 32,42 32,21" fill="url(#ol-right)"/>
-        <polygon points="32,21 41,16 50,21 41,26" fill="url(#ol-top)"/>
-        <polygon points="50,21 50,42 41,47 41,26" fill="url(#ol-right)"/>
-        <polygon points="41,26 41,47 32,42 32,21" fill="url(#ol-left)"/>
-        <polygon points="23,16 32,11 41,16 32,21" fill="url(#ol-top)"/>
-        <!-- amber base beam keeps the accent on light -->
-        <polygon points="14,42 23,37 50,52 41,57" fill="#fbbf24"/>
-        <polygon points="14,42 41,57 41,52 14,37" fill="#e08a09"/>
-      </g>
-      <g fill="none" stroke="#0f172a" stroke-width="1" stroke-linejoin="round" stroke-linecap="round">
-        <polygon points="14,21 23,16 32,21 32,42 23,37 14,42"/>
-        <polygon points="32,21 41,16 50,21 50,42 41,47 41,26"/>
-        <polygon points="14,42 23,37 50,52 41,57"/>
-        <path d="M23,16 L32,11 L41,16"/>
+      <!-- light teal beams; amber accent; dark navy edges carry the form on light -->
+      <!-- L3 left beam -->
+      <polygon points="16.99,49.33 9.48,53.67 9.48,10.33 16.99,6.00" fill="#14b8a6"/>
+      <polygon points="16.99,49.33 24.49,53.67 24.49,10.33 16.99,6.00" fill="#2dd4bf"/>
+      <polygon points="16.99,6.00 24.49,10.33 16.99,14.67 9.48,10.33" fill="#5eead4"/>
+      <!-- L2 amber beam -->
+      <polygon points="47.01,32.00 54.52,36.33 54.52,27.67 47.01,23.33" fill="#b86a06"/>
+      <polygon points="47.01,32.00 9.48,53.67 9.48,45.00 47.01,23.33" fill="#e08a09"/>
+      <polygon points="9.48,53.67 16.99,58.00 16.99,49.33 9.48,45.00" fill="#b86a06"/>
+      <polygon points="47.01,23.33 54.52,27.67 16.99,49.33 9.48,45.00" fill="#fbbf24"/>
+      <!-- L1 top beam -->
+      <polygon points="16.99,14.67 54.52,36.33 54.52,27.67 16.99,6.00" fill="#0d9488"/>
+      <polygon points="54.52,36.33 47.01,40.67 47.01,32.00 54.52,27.67" fill="#0a6960"/>
+      <polygon points="16.99,14.67 9.48,19.00 9.48,10.33 16.99,6.00" fill="#14b8a6"/>
+      <polygon points="16.99,6.00 54.52,27.67 47.01,32.00 9.48,10.33" fill="#5eead4"/>
+      <!-- dark navy outlines -->
+      <g fill="none" stroke="#0f172a" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round">
+        <polygon points="16.99,6.00 24.49,10.33 24.49,53.67 16.99,49.33 9.48,53.67 9.48,10.33"/>
+        <polygon points="9.48,45.00 47.01,23.33 54.52,27.67 54.52,36.33 47.01,40.67 16.99,58.00 9.48,53.67"/>
+        <polygon points="9.48,10.33 16.99,6.00 54.52,27.67 54.52,36.33 47.01,40.67 9.48,19.00"/>
       </g>
     </svg>
   </div>
 </div>
 
-<!-- ===== subtle optional rotation: the impossible solid turns slowly in place,
+<!-- ===== subtle optional motion: the impossible solid rocks gently in place,
      so the loop's "wrongness" keeps catching the eye. Geometry never deforms. ===== -->
 <style>
 @media (prefers-reduced-motion: reduce){
   .imp-hero{animation:none !important}
 }
-/* HERO only: a tiny in-place rock, never a full spin — keeps it premium, not gimmicky. */
+/* HERO only: a tiny in-place rock — never a full spin. Keeps it premium, not gimmicky. */
 .imp-hero{
   transform-origin:50% 52%;
   animation: imp-rock 9s ease-in-out infinite;
 }
 @keyframes imp-rock{
-  0%,100% { transform: rotate(-1.4deg); }
-  50%     { transform: rotate(1.4deg); }
+  0%,100% { transform: rotate(-1.3deg); }
+  50%     { transform: rotate(1.3deg); }
 }
 </style>
 </body></html>

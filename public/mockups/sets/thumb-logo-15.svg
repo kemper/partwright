@@ -1,84 +1,58 @@
 <svg class="imp-hero" width="120" height="120" viewBox="0 0 64 64" role="img" aria-label="Partwright — an impossible isometric tri-bar with one amber beam">
       <defs>
-        <!-- teal face-shades: top (lit), left side, right side -->
-        <linearGradient id="h-top" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
-        </linearGradient>
-        <linearGradient id="h-left" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0e7c70"/>
-        </linearGradient>
-        <linearGradient id="h-right" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6960"/>
-        </linearGradient>
-        <!-- amber accent beam -->
-        <linearGradient id="h-atop" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/>
-        </linearGradient>
-        <linearGradient id="h-aside" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stop-color="#d97e06"/><stop offset="1" stop-color="#a85b04"/>
-        </linearGradient>
         <radialGradient id="h-shadow" cx="0.5" cy="0.5" r="0.5">
           <stop offset="0" stop-color="#000" stop-opacity="0.5"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
         </radialGradient>
+        <linearGradient id="h-tealtop" x1="9" y1="6" x2="55" y2="36" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#99f6e4"/><stop offset="1" stop-color="#5eead4"/>
+        </linearGradient>
+        <linearGradient id="h-tealmid" x1="9" y1="23" x2="55" y2="58" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <linearGradient id="h-ambertop" x1="9" y1="23" x2="55" y2="50" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/>
+        </linearGradient>
       </defs>
 
-      <!-- contact shadow grounding the solid -->
-      <ellipse cx="32" cy="60" rx="22" ry="2.6" fill="url(#h-shadow)"/>
+      <!-- contact shadow grounds the solid -->
+      <ellipse cx="32" cy="61" rx="22" ry="2.4" fill="url(#h-shadow)"/>
 
       <!-- ============================================================
-           IMPOSSIBLE TRI-BAR. Three chunky iso beams loop A→B→C→A.
-           Each beam = a parallelogram top + a vertical side face.
-           Draw order encodes the Penrose "impossible" overlap:
-           the amber (bottom) beam is drawn LAST so it passes OVER
-           the right beam that — by perspective — should be behind it.
-           Iso unit: dx=±9, dy=±5 per 9 horizontal. Beam width ~9.
+           IMPOSSIBLE TRI-BAR — three equal iso beams chained L3→L2→L1.
+           Each beam is a real cuboid (top + two side faces + end cap),
+           projected on a true isometric grid so every face is clean.
+           Draw order (vertical beam first, top beam last) makes each
+           beam occlude the previous one's joint — the Penrose "aha".
+           L1 = top beam (lit teal) · L3 = left/stem beam (mid teal)
+           L2 = lower beam = AMBER accent (the one that can't connect).
+           Coordinates baked to the 0–64 space — no nested transform.
            ============================================================ -->
 
-      <!-- LEFT beam (rises up the left side) : teal -->
-      <!-- left/dark vertical face -->
-      <polygon points="14,42 14,21 23,16 23,37" fill="url(#h-left)"/>
-      <!-- top face of left beam -->
-      <polygon points="14,21 23,16 32,21 23,26" fill="url(#h-top)"/>
-      <!-- right-facing inner face of left beam (in shade) -->
-      <polygon points="23,16 23,37 32,42 32,21" fill="url(#h-right)"/>
+      <!-- L3 — left vertical beam (drawn first = furthest back) -->
+      <polygon points="16.99,49.33 9.48,53.67 9.48,10.33 16.99,6.00" fill="#0e7c70"/>
+      <polygon points="16.99,49.33 24.49,53.67 24.49,10.33 16.99,6.00" fill="url(#h-tealmid)"/>
+      <polygon points="16.99,6.00 24.49,10.33 16.99,14.67 9.48,10.33" fill="#5eead4"/>
 
-      <!-- RIGHT beam (descends from top to bottom-right) : teal -->
-      <!-- top face -->
-      <polygon points="32,21 41,16 50,21 41,26" fill="url(#h-top)"/>
-      <!-- right vertical face -->
-      <polygon points="50,21 50,42 41,47 41,26" fill="url(#h-right)"/>
-      <!-- left-facing inner face -->
-      <polygon points="41,26 41,47 32,42 32,21" fill="url(#h-left)"/>
+      <!-- L2 — lower beam, AMBER (the impossible connector) -->
+      <polygon points="47.01,32.00 54.52,36.33 54.52,27.67 47.01,23.33" fill="#a85b04"/>
+      <polygon points="47.01,32.00 9.48,53.67 9.48,45.00 47.01,23.33" fill="#c9760a"/>
+      <polygon points="9.48,53.67 16.99,58.00 16.99,49.33 9.48,45.00" fill="#a85b04"/>
+      <polygon points="47.01,23.33 54.52,27.67 16.99,49.33 9.48,45.00" fill="url(#h-ambertop)"/>
 
-      <!-- TOP cross-beam connecting the two upper ends : teal -->
-      <!-- top face spanning across -->
-      <polygon points="23,16 32,11 41,16 32,21" fill="url(#h-top)"/>
+      <!-- L1 — top beam, lit teal (drawn last = nearest, completes the impossibility) -->
+      <polygon points="16.99,14.67 54.52,36.33 54.52,27.67 16.99,6.00" fill="#0d9488"/>
+      <polygon points="54.52,36.33 47.01,40.67 47.01,32.00 54.52,27.67" fill="#0a6960"/>
+      <polygon points="16.99,14.67 9.48,19.00 9.48,10.33 16.99,6.00" fill="#14b8a6"/>
+      <polygon points="16.99,6.00 54.52,27.67 47.01,32.00 9.48,10.33" fill="url(#h-tealtop)"/>
 
-      <!-- ===== the impossible bottom beam — AMBER — drawn last ===== -->
-      <!-- It travels from the foot of the left beam to the foot of the
-           right beam, but its near end visually crosses IN FRONT of the
-           right beam's base, which the loop says should be behind it. -->
-      <!-- amber top face -->
-      <polygon points="14,42 23,37 50,52 41,57" fill="url(#h-atop)"/>
-      <!-- amber front (lower) face -->
-      <polygon points="14,42 41,57 41,52 14,37" fill="url(#h-aside)"/>
-      <!-- correction: front face uses proper base; redraw cleanly below is avoided —
-           the two polygons above already form the beam. -->
-
-      <!-- crisp navy edge lines tie the faceted solid together and sell the illusion -->
-      <g fill="none" stroke="#06201d" stroke-width="0.9" stroke-linejoin="round" stroke-linecap="round" opacity="0.55">
-        <!-- left beam silhouette -->
-        <polygon points="14,21 23,16 32,21 32,42 23,37 14,42"/>
-        <!-- right beam silhouette -->
-        <polygon points="32,21 41,16 50,21 50,42 41,47 41,26"/>
-        <!-- top crossbeam -->
-        <path d="M23,16 L32,11 L41,16"/>
-        <!-- amber beam silhouette -->
-        <polygon points="14,42 23,37 50,52 41,57"/>
+      <!-- crisp dark edge lines around each beam sell the engineered solid -->
+      <g fill="none" stroke="#052a26" stroke-width="0.7" stroke-linejoin="round" stroke-linecap="round" opacity="0.5">
+        <polygon points="16.99,6.00 24.49,10.33 24.49,53.67 16.99,49.33 9.48,53.67 9.48,10.33"/>
+        <polygon points="9.48,45.00 47.01,23.33 54.52,27.67 54.52,36.33 47.01,40.67 16.99,58.00 9.48,53.67"/>
+        <polygon points="9.48,10.33 16.99,6.00 54.52,27.67 54.52,36.33 47.01,40.67 9.48,19.00"/>
       </g>
-
-      <!-- thin lit highlight rim along the top crests -->
-      <g fill="none" stroke="#99f6e4" stroke-width="0.8" stroke-linecap="round" opacity="0.85">
-        <path d="M14,21 L23,16 L32,11 L41,16 L50,21"/>
+      <!-- lit highlight along the two top crests -->
+      <g fill="none" stroke="#ccfbf1" stroke-width="0.7" stroke-linecap="round" opacity="0.7">
+        <path d="M9.48,10.33 L16.99,6.00 L54.52,27.67"/>
       </g>
     </svg>
