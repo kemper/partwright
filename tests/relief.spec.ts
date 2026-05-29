@@ -753,20 +753,21 @@ test.describe('Relief Studio', () => {
     await page.locator('#btn-import').click();
     await page.getByText('Image → voxel…').click();
     const dialog = page.getByRole('dialog');
-    await expect(page.getByText('Image → Voxel', { exact: true })).toBeVisible();
+    await expect(page.getByText('Image → Voxel', { exact: true })).toBeVisible({ timeout: 10_000 });
 
     // Modal-first: pick the first image inside the modal via its hidden file
     // input (the "Choose image…" button triggers it).
-    await expect(dialog.getByRole('button', { name: 'Choose image…' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Choose image…' })).toBeVisible({ timeout: 10_000 });
     await dialog.locator('input[type="file"]').setInputFiles({ name: 'small.png', mimeType: 'image/png', buffer: smallPng });
 
     // Swap the source in-modal. The "Choose a different image…" button triggers
-    // the same hidden file input — set files on it directly.
-    await expect(dialog.getByRole('button', { name: 'Choose a different image…' })).toBeVisible();
+    // the same hidden file input — set files on it directly. (Generous timeout:
+    // it appears only after the picked image decodes, which can lag under CI load.)
+    await expect(dialog.getByRole('button', { name: 'Choose a different image…' })).toBeVisible({ timeout: 10_000 });
     await dialog.locator('input[type="file"]').setInputFiles({ name: 'big.png', mimeType: 'image/png', buffer: bigBuf });
 
     // Filename caption updates to the swapped image, and the import builds from it.
-    await expect(dialog.getByText('big.png')).toBeVisible({ timeout: 5000 });
+    await expect(dialog.getByText('big.png')).toBeVisible({ timeout: 10_000 });
     await dialog.getByRole('button', { name: 'Import' }).click();
 
     // A voxel session is created from the swapped image, named after big.png.

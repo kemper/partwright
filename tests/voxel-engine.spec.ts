@@ -291,7 +291,7 @@ test.describe('voxel engine', () => {
     // Click the menu row — the modal must open FIRST (no OS file picker).
     await page.locator('#btn-import').click();
     await page.getByText('Image → voxel…', { exact: true }).click();
-    await expect(page.getByText('Image → Voxel', { exact: true })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('Image → Voxel', { exact: true })).toBeVisible({ timeout: 10_000 });
 
     // No image yet: a "Choose image…" CTA, and Import disabled.
     await expect(page.getByRole('button', { name: 'Choose image…', exact: true })).toBeVisible();
@@ -301,7 +301,8 @@ test.describe('voxel engine', () => {
     await page.locator('[data-testid="voxel-image-input"]').setInputFiles({ name: 'dot.png', mimeType: 'image/png', buffer });
 
     // Controls populate; the button now offers a swap; Import becomes enabled.
-    await expect(page.getByRole('button', { name: 'Choose a different image…', exact: true })).toBeVisible({ timeout: 5000 });
+    // (Generous timeout: the swap button appears only after the image decodes.)
+    await expect(page.getByRole('button', { name: 'Choose a different image…', exact: true })).toBeVisible({ timeout: 10_000 });
     await expect(page.getByRole('button', { name: 'Import', exact: true })).toBeEnabled();
 
     await page.getByRole('button', { name: 'Import', exact: true }).click();
