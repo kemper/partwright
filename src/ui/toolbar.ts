@@ -385,15 +385,32 @@ export function createToolbar(
 
   function renderImportRecentItem(entry: ImportInboxEntry): HTMLElement {
     const btn = document.createElement('button');
-    btn.className = 'block w-full text-left px-3 py-1 hover:bg-zinc-700 transition-colors';
+    btn.className = 'flex items-center gap-2 w-full text-left px-3 py-1 hover:bg-zinc-700 transition-colors';
     btn.title = `Re-import ${entry.filename}`;
+
+    // Thumbnail (image/SVG imports only); a checkered backdrop reads through
+    // transparent PNGs so a logo's shape is still legible.
+    if (entry.thumbnail) {
+      const thumb = document.createElement('img');
+      thumb.src = entry.thumbnail;
+      thumb.alt = '';
+      thumb.className = 'w-8 h-8 rounded border border-zinc-600 object-contain shrink-0 bg-zinc-900';
+      btn.appendChild(thumb);
+    }
+
+    const textCol = document.createElement('div');
+    textCol.className = 'min-w-0 flex-1';
 
     const top = document.createElement('div');
     top.className = 'flex items-center gap-1.5';
 
     const sourceBadge = document.createElement('span');
     sourceBadge.className = 'text-[9px] uppercase tracking-wide text-zinc-400 border border-zinc-600 rounded px-1 py-px shrink-0';
-    sourceBadge.textContent = entry.source;
+    // Tag voxel image imports distinctly from relief ones in the badge.
+    const meta = entry.metadata as { importer?: string } | undefined;
+    sourceBadge.textContent = meta?.importer === 'voxel' ? 'VOXEL'
+      : meta?.importer === 'relief' ? 'RELIEF'
+      : entry.source;
     top.appendChild(sourceBadge);
 
     const nameEl = document.createElement('span');
@@ -401,12 +418,14 @@ export function createToolbar(
     nameEl.textContent = entry.filename;
     top.appendChild(nameEl);
 
-    btn.appendChild(top);
+    textCol.appendChild(top);
 
-    const meta = document.createElement('div');
-    meta.className = 'text-[10px] text-zinc-500 leading-tight mt-0.5';
-    meta.textContent = `${formatSize(entry.sizeBytes)} • ${formatRelativeTime(entry.timestamp)}`;
-    btn.appendChild(meta);
+    const metaEl = document.createElement('div');
+    metaEl.className = 'text-[10px] text-zinc-500 leading-tight mt-0.5';
+    metaEl.textContent = `${formatSize(entry.sizeBytes)} • ${formatRelativeTime(entry.timestamp)}`;
+    textCol.appendChild(metaEl);
+
+    btn.appendChild(textCol);
 
     btn.addEventListener('click', () => {
       importDropdown.classList.add('hidden');

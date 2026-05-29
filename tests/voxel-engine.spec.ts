@@ -10,6 +10,9 @@ import { test, expect } from 'playwright/test';
 
 test.describe('voxel engine', () => {
   test.beforeEach(async ({ page }) => {
+    // Dismiss the product tour up front so its backdrop can't intercept the
+    // toolbar clicks the import-history test makes.
+    await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
     await page.goto('/editor');
     await page.waitForFunction(
       () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
@@ -21,6 +24,41 @@ test.describe('voxel engine', () => {
   test('import dropdown has a dedicated "Image → voxel" row', async ({ page }) => {
     await page.locator('#btn-import').click();
     await expect(page.getByText('Image → voxel…')).toBeVisible();
+  });
+
+  test('voxel image import is remembered as voxel and reopens the voxel modal', async ({ page }) => {
+    // Stand-in image fed straight to the shared import input (the file-drop /
+    // "Image → voxel" path), which routes to the voxel parameter modal.
+    const dataUrl = await page.evaluate(() => {
+      const c = document.createElement('canvas');
+      c.width = 8; c.height = 8;
+      const x = c.getContext('2d')!;
+      x.fillStyle = '#3399ff'; x.fillRect(0, 0, 8, 8);
+      return c.toDataURL('image/png');
+    });
+    const buffer = Buffer.from(dataUrl.split(',')[1], 'base64');
+
+    await page.locator('#import-wrapper input[type="file"]').first()
+      .setInputFiles({ name: 'logo.png', mimeType: 'image/png', buffer });
+
+    // The voxel modal (not the relief wizard) opens; commit it.
+    await expect(page.getByText('Image → Voxel', { exact: true })).toBeVisible({ timeout: 5000 });
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+    await expect.poll(async () => page.evaluate(
+      () => (window as any).partwright.getActiveLanguage(), // eslint-disable-line @typescript-eslint/no-explicit-any
+    ), { timeout: 10_000 }).toBe('voxel');
+
+    // Recent Imports shows it tagged VOXEL with a thumbnail.
+    await page.locator('#btn-import').click();
+    const recent = page.locator('#import-recent-list button', { hasText: 'logo.png' }).first();
+    await expect(recent).toBeVisible();
+    await expect(recent.getByText('VOXEL', { exact: true })).toBeVisible();
+    await expect(recent.locator('img')).toBeVisible();
+
+    // Re-clicking the entry reopens the VOXEL modal — the bug was it opened relief.
+    await recent.click();
+    await expect(page.getByText('Image → Voxel', { exact: true })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('Make a part from an image', { exact: true })).toHaveCount(0);
   });
 
   test('switching to voxel renders a watertight, colored, manifold mesh', async ({ page }) => {

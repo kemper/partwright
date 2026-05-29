@@ -231,7 +231,10 @@ await partwright.importImageAsVoxels(imageUrl, { mode: 'heightmap', maxSize: 96,
   color; omit it to auto-detect the dominant border color.
 
 The in-app modal exposes all of these (image adjustments live under an
-"Image adjustments" disclosure) with a live preview.
+"Image adjustments" disclosure) with a live preview. The Recent Imports list
+shows a thumbnail beside each image import and remembers whether it was a voxel
+or a relief import — re-clicking a voxel import reopens this modal pre-loaded
+with the settings you used.
 
 ## Gotchas
 

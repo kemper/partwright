@@ -75,7 +75,9 @@ import {
   registerImport,
   classifyImportSource,
   type ImportInboxEntry,
+  type ImportMetadata,
 } from './import/importInbox';
+import { createThumbnailFromImageData } from './import/imageThumbnail';
 import { showImportPreview, summarizeSessionImport } from './ui/importPreview';
 import { showImportTargetModal } from './ui/importTargetModal';
 import { showImageVoxelImportModal } from './ui/imageVoxelImportModal';
@@ -2013,7 +2015,9 @@ async function main() {
       } else if (source === 'VOX') {
         committed = await handleVoxImport(file);
       }
-      if (committed) registerImport(file, file.name, source);
+      // IMAGE registers itself inside handleImageImport (it owns the chosen
+      // voxel options + thumbnail it needs to stash for a faithful re-import).
+      if (committed && source !== 'IMAGE') registerImport(file, file.name, source);
       return committed;
     } catch (e) {
       alert(`Failed to import "${file.name}": ${(e as Error).message}`);
@@ -2059,7 +2063,7 @@ async function main() {
    *  sprites voxelize cleanly; opaque photos become a full extruded slab.
    *  The grid is embedded in the generated `voxels.decode(...)` code, so the
    *  session persists as code with no special schema. */
-  async function handleImageImport(file: File): Promise<boolean> {
+  async function handleImageImport(file: File, initialOptions?: ImageToVoxelOptions): Promise<boolean> {
     let imageData: ImageData;
     try {
       imageData = await decodeImageToImageData(file);
@@ -2070,7 +2074,8 @@ async function main() {
     // Let the user dial in resolution / mode / depth / color before
     // committing. The modal's Cancel doubles as the back-out, so the generic
     // pre-import confirm is skipped for images (see handleImportFile).
-    const opts = await showImageVoxelImportModal({ filename: file.name, image: imageData });
+    // `initialOptions` pre-fills the controls when re-importing a past entry.
+    const opts = await showImageVoxelImportModal({ filename: file.name, image: imageData, initialOptions });
     if (!opts) return false;
     const grid = imageDataToVoxelGrid(imageData, opts);
     if (grid.size === 0) {
@@ -2080,6 +2085,11 @@ async function main() {
     const code = generateVoxelImportCode(grid, file.name);
     const sessionName = file.name.replace(/\.(png|jpe?g|gif|webp|bmp)$/i, '');
     await importCodePayload(code, 'voxel', sessionName);
+    // Register in Recent Imports tagged as a voxel import, with the chosen
+    // settings + a thumbnail, so re-clicking it reopens THIS modal (not relief)
+    // pre-loaded with these knobs.
+    const meta: ImportMetadata = { importer: 'voxel', options: opts };
+    registerImport(file, file.name, 'IMAGE', meta, createThumbnailFromImageData(imageData));
     return true;
   }
 
@@ -2489,12 +2499,19 @@ async function main() {
         if (parsed) await placeImportedMesh(parsed, entry.filename);
         return;
       }
-      // Image / SVG re-imports re-open the Relief Studio wizard with the
-      // original file pre-loaded — the user keeps their previous tweaks fresh
-      // but gets to adjust knobs before re-generating.
+      // Image / SVG re-imports reopen the same importer that produced them,
+      // pre-loaded with the original settings: voxel imports return to the
+      // voxel modal, everything else (relief, SVG) to the Relief Studio.
       if (entry.source === 'IMAGE' || entry.source === 'SVG') {
         const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
-        const savedOpts = (entry.metadata && typeof entry.metadata === 'object') ? entry.metadata as ReliefOptions : undefined;
+        const meta = (entry.metadata && typeof entry.metadata === 'object') ? entry.metadata as Partial<ImportMetadata> : undefined;
+        if (meta?.importer === 'voxel') {
+          await handleImageImport(file, meta.options as ImageToVoxelOptions);
+          return;
+        }
+        // Relief imports store { importer:'relief', options }; older/plain
+        // entries stored the ReliefOptions directly — accept both shapes.
+        const savedOpts = (meta?.importer === 'relief' ? meta.options : entry.metadata) as ReliefOptions | undefined;
         openReliefImportFlow(file, savedOpts);
         return;
       }

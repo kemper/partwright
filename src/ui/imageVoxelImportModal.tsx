@@ -20,6 +20,8 @@ import {
 export interface ImageVoxelModalOptions {
   filename: string;
   image: ImageDataLike;
+  /** Pre-fill the controls (e.g. re-importing a past entry with its settings). */
+  initialOptions?: ImageToVoxelOptions;
 }
 
 // Above this the model gets heavy to mesh/render; we warn but don't block.
@@ -44,6 +46,31 @@ const DEFAULT_OPTS: Opts = {
   posterizeColors: 0,
   removeBackground: false,
 };
+
+/** Seed the modal state from optional initial options, falling back to each
+ *  default. Picks only the fields the modal owns (drops backgroundColor, which
+ *  the modal has no control for — auto-detect is used when removeBackground is
+ *  on). */
+function seedOpts(init?: ImageToVoxelOptions): Opts {
+  if (!init) return { ...DEFAULT_OPTS };
+  return {
+    maxSize: init.maxSize ?? DEFAULT_OPTS.maxSize,
+    mode: init.mode ?? DEFAULT_OPTS.mode,
+    depth: init.depth ?? DEFAULT_OPTS.depth,
+    maxHeight: init.maxHeight ?? DEFAULT_OPTS.maxHeight,
+    baseThickness: init.baseThickness ?? DEFAULT_OPTS.baseThickness,
+    invert: init.invert ?? DEFAULT_OPTS.invert,
+    alphaThreshold: init.alphaThreshold ?? DEFAULT_OPTS.alphaThreshold,
+    colorMode: init.colorMode ?? DEFAULT_OPTS.colorMode,
+    flatColor: init.flatColor ?? DEFAULT_OPTS.flatColor,
+    gamma: init.gamma ?? DEFAULT_OPTS.gamma,
+    brightness: init.brightness ?? DEFAULT_OPTS.brightness,
+    contrast: init.contrast ?? DEFAULT_OPTS.contrast,
+    saturation: init.saturation ?? DEFAULT_OPTS.saturation,
+    posterizeColors: init.posterizeColors ?? DEFAULT_OPTS.posterizeColors,
+    removeBackground: init.removeBackground ?? DEFAULT_OPTS.removeBackground,
+  };
+}
 
 function toHex([r, g, b]: [number, number, number]): string {
   const h = (n: number) => n.toString(16).padStart(2, '0');
@@ -341,7 +368,7 @@ function ImageVoxelFooter(props: {
 export function showImageVoxelImportModal(opts: ImageVoxelModalOptions): Promise<ImageToVoxelOptions | null> {
   return new Promise(resolve => {
     let result: ImageToVoxelOptions | null = null;
-    const state = signal<Opts>({ ...DEFAULT_OPTS });
+    const state = signal<Opts>(seedOpts(opts.initialOptions));
     mountPreactModal(
       {
         title: 'Image → Voxel',
