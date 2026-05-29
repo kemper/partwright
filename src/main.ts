@@ -7851,20 +7851,38 @@ async function main() {
   function geometryWarnings(geo: Record<string, unknown>): string[] {
     if (!geo || geo.status !== 'ok') return [];
     const warnings: string[] = [];
+    const isBrep = getActiveLanguage() === 'replicad';
     if (geo.isManifold === false) {
       warnings.push(
-        'isManifold: false — the mesh has non-manifold edges or gaps. ' +
-        'Export and slicing will fail with most tools. Fix the geometry ' +
-        'before finalizing: ensure boolean operands overlap by ≥ 0.5 units, ' +
+        'isManifold: false — the mesh has non-manifold edges or gaps, so it is ' +
+        'not a watertight solid and will fail to slice / 3D-print with most tools. ' +
+        'Fix before finalizing: ensure boolean operands overlap by ≥ 0.5 units, ' +
         'avoid zero-thickness walls, and check for duplicate faces.',
       );
     }
     if (typeof geo.componentCount === 'number' && geo.componentCount > 1) {
-      warnings.push(
-        `componentCount: ${geo.componentCount} — model has ${geo.componentCount} disconnected pieces. ` +
-        'If unintentional, check that boolean union shapes overlap by ≥ 0.5 units. ' +
-        'If intentional (separate printable parts), ignore this warning.',
-      );
+      const cc = geo.componentCount;
+      // Partwright exists to produce printable parts, so a multi-component
+      // result is almost always a failed union rather than a deliberate
+      // assembly. Frame it as a print defect and point at the exact tool that
+      // diagnoses it, instead of inviting the model to shrug it off.
+      let msg =
+        `componentCount: ${cc} — the model is ${cc} disconnected solids. ` +
+        `For 3D printing that means ${cc} separate pieces: any part not connected ` +
+        `to the main body floats free and will detach (or print in mid-air). ` +
+        `Unless you deliberately intend a multi-part assembly, the pieces must ` +
+        `volumetrically OVERLAP by ≥ 0.5 units to fuse into one solid — a shared ` +
+        `face or a point/edge touch is NOT enough.`;
+      msg += isBrep
+        ? ' In BREP this bites often: OCCT leaves non-overlapping or thinly-touching ' +
+          'shapes as a disconnected compound even after fuse / fuseAll (e.g. a thin ' +
+          'annular sliver of overlap frequently fails to bond). Call ' +
+          'runAndExplain(code) to list every component with a per-floater overlap ' +
+          'suggestion, then seat the piece a few units deeper into its neighbour and ' +
+          're-run until componentCount is 1.'
+        : ' Call runAndExplain(code) to see which pieces are disconnected and get a ' +
+          'concrete .translate() overlap suggestion for each floater.';
+      warnings.push(msg);
     }
     // Surface color regions that no longer resolve to any triangles on
     // the freshly-run mesh — descriptors are still serialized (so the
