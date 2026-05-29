@@ -79,8 +79,10 @@ import { showStepImportTargetModal } from './ui/stepImportTargetModal';
 import { showLanguageHelpModal } from './ui/languageHelpModal';
 import { showMergePartsModal } from './ui/mergePartsModal';
 import { parseSTL } from './import/parsers/stl';
+import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode } from './import/imageToVoxel';
+import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import type { BuiltExport } from './export/gltf';
 
@@ -99,6 +101,7 @@ import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
+import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, type SimplifyHandlers } from './ui/simplifyUI';
 import { updatePaintMesh, setOnRegionPainted, isActive as isPaintActive } from './color/paintMode';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu } from './annotations/annotateUI';
@@ -1565,7 +1568,7 @@ async function main() {
   async function handleImportFile(file: File, options: { skipPreActiveConfirm?: boolean } = {}): Promise<boolean> {
     const source = classifyImportSource(file.name);
     if (!source) {
-      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl, .step / .stp, .png / .jpg / .gif / .webp`);
+      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl, .step / .stp, .vox, .png / .jpg / .gif / .webp`);
       return false;
     }
 
@@ -1604,6 +1607,8 @@ async function main() {
         committed = await handleStepImport(file);
       } else if (source === 'IMAGE') {
         committed = await handleImageImport(file);
+      } else if (source === 'VOX') {
+        committed = await handleVoxImport(file);
       }
       if (committed) registerImport(file, file.name, source);
       return committed;
@@ -1666,6 +1671,28 @@ async function main() {
     }
     const code = generateVoxelImportCode(grid, file.name);
     const sessionName = file.name.replace(/\.(png|jpe?g|gif|webp|bmp)$/i, '');
+    await importCodePayload(code, 'voxel', sessionName);
+    return true;
+  }
+
+  /** Import a MagicaVoxel `.vox` file as a voxel session. Mirrors the image
+   *  flow: parse → grid → bake as `voxels.decode(...)` editor code so the
+   *  session persists as code with no schema change. */
+  async function handleVoxImport(file: File): Promise<boolean> {
+    let grid;
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      grid = parseVox(bytes);
+    } catch (e) {
+      alert(`Could not read .vox file "${file.name}": ${(e as Error).message}`);
+      return false;
+    }
+    if (grid.size === 0) {
+      alert(`"${file.name}" contained no voxels.`);
+      return false;
+    }
+    const code = generateVoxelImportCode(grid, file.name);
+    const sessionName = file.name.replace(/\.vox$/i, '');
     await importCodePayload(code, 'voxel', sessionName);
     return true;
   }
@@ -3259,6 +3286,35 @@ async function main() {
   initDimensionsToggle(clipControls);
   initAnnotateUI(clipControls);
   initPaintUI(clipControls);
+  initVoxelPaintUI(clipControls, {
+    activate: async () => {
+      const code = getValue();
+      const err = voxelPaint.activate(code, {
+        onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
+        onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
+      });
+      if (err) alert(`Voxel paint: ${err}`);
+      syncVoxelPaintUI();
+    },
+    deactivate: async () => {
+      voxelPaint.deactivate();
+      runCode(getValue());
+      syncVoxelPaintUI();
+    },
+    bake: async () => {
+      if (!voxelPaint.isActive()) return;
+      const code = voxelPaint.bakeToCode('painted');
+      if (!code) return;
+      voxelPaint.deactivate();
+      setValue(code);
+      await runCodeSync(code);
+      const thumbnail = await captureThumbnail();
+      const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
+      await saveVersion(code, geometryData, thumbnail, 'painted');
+      syncVoxelPaintUI();
+    },
+  });
+  setVoxelPaintAvailable(getActiveLanguage() === 'voxel');
   initSimplifyUI(clipControls, simplifyHandlers);
   initMeasureToggle(clipControls);
   initOrbitLockToggle(clipControls);
@@ -3483,6 +3539,7 @@ async function main() {
     setActiveLanguage(lang);
     setEditorLanguage(lang);
     setToolbarLanguage(lang);
+    setVoxelPaintAvailable(lang === 'voxel');
     syncEditorTitle(getState());
     const loadingLabel =
       lang === 'scad' ? 'Loading OpenSCAD...' :
@@ -7306,6 +7363,77 @@ async function main() {
      *  ```
      *  Returns `{ id, name, triangles, bbox, centroid }` on success or
      *  `{ error }` if no such label exists or no labels were registered. */
+    /** Voxel paint mode — only valid in `voxel` language sessions. Activates a
+     *  per-voxel click-to-color edit loop: the current code is re-run locally
+     *  to capture the grid + per-triangle voxel provenance, the editor is
+     *  locked (read-only) so auto-run can't clobber edits, and clicks on the
+     *  3D model set or erase voxels in the live grid. Call
+     *  `bakeVoxelsToCode()` to commit; `deactivateVoxelPaint()` to cancel.
+     *  Returns `{ ok: true, voxelCount }` or `{ error }`. */
+    activateVoxelPaint() {
+      if (getActiveLanguage() !== 'voxel') {
+        return { error: 'activateVoxelPaint is only available in voxel sessions — call setActiveLanguage("voxel") first.' };
+      }
+      const code = getValue();
+      const err = voxelPaint.activate(code, {
+        onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
+        onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
+      });
+      if (err) return { error: `activateVoxelPaint: ${err}` };
+      return { ok: true as const, voxelCount: voxelPaint.voxelCount() };
+    },
+
+    /** Cancel voxel paint mode without committing — the editor unlocks and the
+     *  next auto-run / Run rebuilds the mesh from the (unchanged) code. */
+    deactivateVoxelPaint() {
+      if (!voxelPaint.isActive()) return { ok: false as const, error: 'voxel paint is not active' };
+      voxelPaint.deactivate();
+      // Trigger a fresh render so the viewport returns to the code's output.
+      runCode(getValue());
+      return { ok: true as const };
+    },
+
+    /** Click on a face during voxel paint: set the underlying voxel's color
+     *  (or remove it when `erase: true`). Use this instead of synthesising
+     *  pointer events. Returns whether the grid actually changed. */
+    paintVoxelFace(opts: { faceIndex: number; color?: [number, number, number] | string | number; erase?: boolean }) {
+      if (!voxelPaint.isActive()) return { error: 'voxel paint is not active — call activateVoxelPaint() first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'paintVoxelFace requires { faceIndex, color? }' };
+      if (!Number.isInteger(opts.faceIndex) || opts.faceIndex < 0) return { error: 'paintVoxelFace.faceIndex must be a non-negative integer' };
+      voxelPaint.setEraser(!!opts.erase);
+      if (!opts.erase && opts.color !== undefined) {
+        try { voxelPaint.setColor(opts.color); }
+        catch (e) { return { error: (e as Error).message }; }
+      }
+      const changed = voxelPaint.paintTriangle(opts.faceIndex);
+      return { changed, voxelCount: voxelPaint.voxelCount() };
+    },
+
+    /** Bake the painted grid into `voxels.decode(...)` editor code, run it,
+     *  and save as a new version. Deactivates voxel paint mode after baking.
+     *  Auto-creates a session if none exists. Returns `{ versionIndex,
+     *  voxelCount }` or `{ error }`. */
+    async bakeVoxelsToCode(opts: { label?: string } = {}) {
+      if (!voxelPaint.isActive()) return { error: 'voxel paint is not active.' };
+      const count = voxelPaint.voxelCount();
+      if (count === 0) return { error: 'The painted grid is empty — paint or keep at least one voxel before baking.' };
+      const code = voxelPaint.bakeToCode('painted');
+      if (!code) return { error: 'voxel paint has no grid to bake.' };
+      const label = typeof opts.label === 'string' && opts.label ? opts.label : 'painted';
+      voxelPaint.deactivate();
+      setValue(code);
+      await runCodeSync(code);
+      // Mirror the runAndSave auto-create pattern so AI/console callers don't
+      // need to wrap bake with a manual createSession.
+      if (!getState().session) {
+        await createSession(label, getActiveLanguage());
+      }
+      const thumbnail = await captureThumbnail();
+      const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
+      const v = await saveVersion(code, geometryData, thumbnail, label);
+      return { versionIndex: v?.index ?? null, voxelCount: count };
+    },
+
     paintByLabel(opts: { label: string; color: [number, number, number]; name?: string; topOnly?: boolean; normalCone?: { axis: [number, number, number]; angleDeg: number } }) {
       if (!opts || typeof opts !== 'object') return { error: 'paintByLabel requires { label, color }' };
       if (typeof opts.label !== 'string' || opts.label.length === 0) return { error: 'paintByLabel.label must be a non-empty string' };

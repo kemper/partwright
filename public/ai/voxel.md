@@ -130,6 +130,55 @@ feature (`hollow(2)`, ≥2-voxel walls) or use fewer `iterations` if you see it.
 > `Manifold.levelSet` or the `api.sdf` engine are better suited; `.smooth()` is
 > the lightweight "round my voxels" option that stays inside the voxel workflow.
 
+## MagicaVoxel `.vox` import
+
+Drag a `.vox` file (from MagicaVoxel, Goxel, or any tool that exports the
+format) onto the editor, or use Import → choose a `.vox` file. The file's
+first model is parsed (palette + occupancy) and dropped into a fresh voxel
+session as `voxels.decode(<encoded>)` editor code, centered on the origin and
+sitting on z=0. Custom RGBA palettes are honored; files without one fall back
+to MagicaVoxel's default 256-color palette.
+
+(Multi-model `.vox` files: only the first model is imported. Open the others
+in separate sessions or open them separately for now.)
+
+## Voxel paint
+
+Click on the **🎨 Voxel paint** button (appears in voxel sessions only,
+viewport overlay) to enter paint mode. Click a face on the model to set that
+voxel's color to the picker color; toggle **⌫ Eraser** to remove voxels
+instead. The editor is locked while paint is active so an auto-run can't
+clobber your edits. When you're done, click **Bake → code** to replace the
+editor with `voxels.decode(<your painted grid>)` and save a new version, or
+**Cancel** to discard.
+
+> Painting *bakes* the procedural code into a static voxel grid — the new
+> version captures the painted state exactly, while the previous version (with
+> the original code) is preserved in the version history.
+
+### Programmatic / AI equivalent
+
+```js
+await partwright.setActiveLanguage('voxel');
+await partwright.run(`return api.voxels().fillBox([-3,-3,0],[3,3,3], '#888');`);
+partwright.activateVoxelPaint();                       // -> { ok, voxelCount } | { error }
+partwright.paintVoxelFace({ faceIndex: 0, color: [255, 0, 0] });
+partwright.paintVoxelFace({ faceIndex: 12, erase: true });
+await partwright.bakeVoxelsToCode({ label: 'sad-cube' });   // commits + saves
+// (or) partwright.deactivateVoxelPaint() to cancel without saving
+```
+
+- `activateVoxelPaint()` re-runs the current code locally to capture the grid
+  + per-triangle voxel provenance. Returns `{ error }` outside voxel sessions
+  or if the code doesn't return a grid.
+- `paintVoxelFace({ faceIndex, color?, erase? })` mutates the live grid.
+  `faceIndex` is the triangle index a raycast would return (e.g. from a
+  pointer event); the API maps it back to the originating voxel. Returns
+  `{ changed, voxelCount }`.
+- `bakeVoxelsToCode({ label? })` deactivates paint, writes
+  `voxels.decode(...)` to the editor, runs it, and saves a new version. Returns
+  `{ versionIndex, voxelCount }` (or `{ error }` for an empty grid).
+
 ## Image import
 
 Drag an image (`.png`, `.jpg`, `.gif`, `.webp`) onto the editor, or use

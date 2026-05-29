@@ -1,7 +1,7 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
 import { VoxelGrid, decodeGrid, normalizeColor } from '../voxel/grid';
-import { meshGrid } from '../voxel/mesher';
+import { meshGrid, gridToMeshWithProvenance, type VoxelMesh } from '../voxel/mesher';
 
 // The `voxel` engine: user code builds a sparse VoxelGrid and returns it; we
 // mesh the exposed faces into welded `MeshData` (with per-voxel colors) that
@@ -101,3 +101,31 @@ export const voxelEngine: Engine = {
     }
   },
 };
+
+/** Result of {@link runVoxelForPaint}: an executable run that exposes the
+ *  underlying grid + per-triangle voxel provenance to voxel paint mode. */
+export interface VoxelPaintRun extends VoxelMesh { grid: VoxelGrid }
+
+/** Run voxel code locally (synchronously) and return the grid along with the
+ *  block mesh and tri→voxel provenance. Used by voxel paint mode on the main
+ *  thread: paint operations mutate `grid` and re-mesh in place, so this never
+ *  needs to round-trip the Worker.
+ *
+ *  Returns null and a message on error. Smooth surfacing is honored for
+ *  rendering only — paint operates on the un-supersampled, block-meshed grid
+ *  so triangle indices map cleanly to user-authored voxels. */
+export function runVoxelForPaint(jsCode: string): { ok: true; data: VoxelPaintRun } | { ok: false; error: string } {
+  const api = createVoxelApi();
+  let result: unknown;
+  try {
+    const fn = new Function('api', `"use strict";\n${jsCode}`);
+    result = fn(api);
+  } catch (e: unknown) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  if (!isVoxelGrid(result)) return { ok: false, error: 'Voxel code must return a grid.' };
+  const grid = result as VoxelGrid;
+  if (grid.size === 0) return { ok: false, error: 'The voxel grid is empty.' };
+  const { mesh, triVoxel } = gridToMeshWithProvenance(grid);
+  return { ok: true, data: { grid, mesh, triVoxel } };
+}
