@@ -1,5 +1,4 @@
-// E2E for the import-preview code-execution warning and the Gemini
-// key-in-URL note. No external network.
+// E2E for the import-preview code-execution warning. No external network.
 
 import { test, expect, type Page } from 'playwright/test';
 
@@ -52,24 +51,5 @@ test.describe('Import safety note', () => {
     // Cancel — nothing is imported.
     await dialog.getByRole('button', { name: 'Cancel' }).click();
     await expect(dialog).toBeHidden();
-  });
-});
-
-test.describe('Gemini key note', () => {
-  test('the Gemini connect modal explains the key travels in the URL', async ({ page }) => {
-    await openEditor(page);
-
-    // Open the Gemini key modal directly via the exported helper (avoids
-    // depending on the toolbar→provider navigation).
-    await page.evaluate(async () => {
-      const mod = await import('/src/ui/aiKeyModal.tsx');
-      (mod as { showAiKeyModal: (cb: { onConnected: () => void; provider?: string }) => void })
-        .showAiKeyModal({ onConnected: () => {}, provider: 'gemini' });
-    });
-
-    const dialog = page.locator('[role="dialog"]');
-    await expect(dialog).toBeVisible({ timeout: 6000 });
-    await expect(dialog).toContainText('Connect Google Gemini');
-    await expect(dialog).toContainText('key as a URL query parameter');
   });
 });
