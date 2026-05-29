@@ -191,6 +191,11 @@ export interface AiPanelOptions {
    *  changes (landing ↔ editor) — the landing-page chat flow depends on that.
    *  Falls back to <body> if omitted. */
   mountInto?: HTMLElement;
+  /** Suppress the remembered-open auto-expand for this load. main.ts passes
+   *  this when the app boots on the landing page so the drawer never
+   *  auto-opens there, even if `drawerOpen` is set from a prior editor
+   *  session. The user can still open it manually. */
+  suppressAutoOpen?: boolean;
 }
 
 /** Mount the drawer once on app start. Idempotent. */
@@ -205,7 +210,10 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
 
   const settings = loadSettings();
   panelWidth = settings.aiPanelWidth;
-  state.open = settings.drawerOpen;
+  // Honor the remembered open state, but never auto-open on the landing page
+  // (main.ts sets suppressAutoOpen there) — the drawer shouldn't pop open
+  // before the user has even entered the editor.
+  state.open = settings.drawerOpen && !opts.suppressAutoOpen;
 
   buildDrawer();
   // The panel docks as a column on desktop but becomes a full-screen overlay
@@ -237,7 +245,13 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   // On a default-open load, show the panel without grabbing keyboard focus —
   // the user hasn't asked to type in it yet.
   if (state.open) showDrawer(false);
-  else hideDrawer();
+  else if (opts.suppressAutoOpen) {
+    // Landing-page boot: keep the drawer visually hidden (its default state)
+    // but DON'T persist drawerOpen:false — that would wipe the user's
+    // remembered preference, so the panel wouldn't auto-open in the editor
+    // later. The drawer element already starts with the `hidden` class.
+    state.open = false;
+  } else hideDrawer();
 }
 
 /** Called by main.ts whenever the active session changes (open / close).
