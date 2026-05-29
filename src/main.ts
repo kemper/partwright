@@ -46,6 +46,7 @@ import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
 import { createLegalPage } from './ui/legal';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
+import { showExportConfirm, hasExportWarning, type ExportWarningInfo } from './ui/exportConfirmModal';
 import { createCatalogPage, type CatalogManifestEntry } from './ui/catalog';
 import { createWhatsNewPage } from './ui/whatsNew';
 import { createNotFoundPage } from './ui/notFound';
@@ -2620,8 +2621,42 @@ async function main() {
 
   // Mesh export actions, shared by the toolbar and the command palette so the
   // guards + success/error toasts stay in one place.
+  //
+  // These UI actions gate on the pre-export safety modal (unitless / non-
+  // manifold / multi-component) — but the underlying window.partwright.export*
+  // console API stays unguarded so AI agents and e2e can drive it
+  // programmatically without a blocking modal.
+
+  /** Build the warning descriptor for the current geometry from the published
+   *  stats blob (which carries bbox dimensions, isManifold, componentCount even
+   *  for render-only imports where currentManifold is null). */
+  function exportWarningInfo(format: string): ExportWarningInfo {
+    const gd = getGeometryDataObj();
+    const bbox = gd?.boundingBox as { dimensions?: unknown } | null | undefined;
+    const rawDims = bbox?.dimensions;
+    const dimensions = Array.isArray(rawDims) && rawDims.length === 3 && rawDims.every(n => typeof n === 'number')
+      ? (rawDims as [number, number, number])
+      : null;
+    return {
+      unitless: _getUnits() === 'unitless',
+      dimensions,
+      isManifold: gd?.isManifold !== false, // treat unknown as manifold (no false alarm)
+      componentCount: typeof gd?.componentCount === 'number' ? gd.componentCount : 1,
+      format,
+    };
+  }
+
+  /** Returns true if the export should proceed: no warning, or the user
+   *  confirmed it. Only used by the UI export actions below. */
+  async function confirmExportOrProceed(format: string): Promise<boolean> {
+    const info = exportWarningInfo(format);
+    if (!hasExportWarning(info)) return true;
+    return showExportConfirm(info);
+  }
+
   const actionExportGLB = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
+    if (!(await confirmExportOrProceed('GLB'))) return;
     try {
       if (currentMeshData) assertFiniteMesh(currentMeshData);
       const filename = await exportGLB();
@@ -2630,21 +2665,24 @@ async function main() {
       showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
     }
   };
-  const actionExportSTL = () => {
+  const actionExportSTL = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) return;
+    if (!(await confirmExportOrProceed('STL'))) return;
     try { showToast(`Exported ${exportSTL(currentMeshData)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
   };
-  const actionExportOBJ = () => {
+  const actionExportOBJ = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) return;
+    if (!(await confirmExportOrProceed('OBJ'))) return;
     try { showToast(`Exported ${exportOBJ((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
   };
-  const actionExport3MF = () => {
+  const actionExport3MF = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) return;
+    if (!(await confirmExportOrProceed('3MF'))) return;
     try { showToast(`Exported ${export3MF((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
   };

@@ -76,7 +76,9 @@ ${colors}
   const modelXml = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="${get3MFUnitString()}" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"${nsAttr}>
   <metadata name="Title">${title}</metadata>
-  <metadata name="Application">Partwright</metadata>
+  <metadata name="Application">Partwright (https://www.partwrightstudio.com)</metadata>
+  <metadata name="Designer">Partwright</metadata>
+  <metadata name="LicenseTerms">Created with Partwright — https://www.partwrightstudio.com</metadata>
   <resources>${colorgroupXml}
     <object id="1" type="model"${hasColors ? ' pid="2" pindex="0"' : ''}>
       <mesh>
