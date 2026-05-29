@@ -4078,7 +4078,7 @@ async function main() {
       const err = voxelPaint.activate(code, {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
-      });
+      }, currentParamValues);
       if (err) alert(`Voxel paint: ${err}`);
       syncVoxelPaintUI();
     },
@@ -8395,7 +8395,7 @@ async function main() {
       const err = voxelPaint.activate(code, {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
-      });
+      }, currentParamValues);
       if (err) return { error: `activateVoxelPaint: ${err}` };
       syncVoxelPaintUI();
       return { voxelCount: voxelPaint.voxelCount() };

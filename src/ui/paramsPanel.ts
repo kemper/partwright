@@ -181,33 +181,68 @@ function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue)
   let setValue: (v: ParamValue) => void;
 
   if (spec.type === 'number' || spec.type === 'int') {
-    // Numeric readout sits next to the label; a range slider drives it. We fire
-    // onChange on 'change' (pointer release) to avoid a re-run per slider tick,
-    // but update the readout live on 'input'.
-    const readout = document.createElement('span');
-    readout.className = 'text-[11px] font-mono tabular-nums text-zinc-200';
-    labelRow.appendChild(readout);
+    // Numeric editor sits next to the label: an *editable* number field paired
+    // with a range slider. The slider gives quick coarse control; the field
+    // lets you type an exact value (e.g. 47.5) — and, when the spec sets no
+    // `max`, type a value beyond the slider's synthesized range (params.ts only
+    // clamps to limits the author actually declared). We fire onChange on
+    // 'change' (slider pointer-release / field blur-or-Enter), not per slider
+    // tick, but keep the field in sync live on slider 'input'.
+    const isInt = spec.type === 'int';
+    const min = spec.min ?? 0;
+    const max = spec.max ?? (typeof spec.default === 'number' ? Math.max(spec.default * 2, spec.default + 10) : 100);
+    const step = spec.step ?? (isInt ? 1 : (max - min) / 100 || 1);
+
+    const numInput = document.createElement('input');
+    numInput.type = 'number';
+    // Narrow, mono, right-aligned — reads like the old readout but is editable.
+    numInput.className = 'w-16 text-[11px] font-mono tabular-nums text-right text-zinc-200 bg-zinc-800 border border-zinc-600 rounded px-1 py-0.5 focus:border-blue-400 focus:outline-none';
+    // Only constrain the field by limits the author declared, so an undeclared
+    // bound doesn't silently clamp a typed value (the slider keeps its own
+    // synthesized range for the thumb).
+    if (spec.min !== undefined) numInput.min = String(spec.min);
+    if (spec.max !== undefined) numInput.max = String(spec.max);
+    numInput.step = String(step);
+    labelRow.appendChild(numInput);
     row.appendChild(labelRow);
 
     const slider = document.createElement('input');
     slider.type = 'range';
     slider.className = 'w-full accent-blue-400 cursor-pointer';
-    const min = spec.min ?? 0;
-    const max = spec.max ?? (typeof spec.default === 'number' ? Math.max(spec.default * 2, spec.default + 10) : 100);
     slider.min = String(min);
     slider.max = String(max);
-    slider.step = String(spec.step ?? (spec.type === 'int' ? 1 : (max - min) / 100 || 1));
-    slider.addEventListener('input', () => { readout.textContent = slider.value; });
+    slider.step = String(step);
+    slider.addEventListener('input', () => { numInput.value = slider.value; });
     slider.addEventListener('change', () => {
-      const n = spec.type === 'int' ? Math.round(Number(slider.value)) : Number(slider.value);
+      const n = isInt ? Math.round(Number(slider.value)) : Number(slider.value);
+      numInput.value = String(n);
       onChange(spec.key, n);
     });
     row.appendChild(slider);
 
+    const commitField = () => {
+      const raw = Number(numInput.value);
+      if (numInput.value.trim() === '' || !Number.isFinite(raw)) {
+        // Empty / unparseable — revert the field to the slider's value, no run.
+        numInput.value = slider.value;
+        return;
+      }
+      const n = isInt ? Math.round(raw) : raw;
+      // Reflect the typed value on the slider thumb (the browser clamps it into
+      // the slider's range; the field keeps the true value). The post-run
+      // sync via setValue will reconcile both to params.ts's coerced result.
+      slider.value = String(n);
+      if (isInt) numInput.value = String(n);
+      onChange(spec.key, n);
+    };
+    numInput.addEventListener('change', commitField);
+    // Enter commits without leaving the field (change already fires on blur).
+    numInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); numInput.blur(); } });
+
     setValue = (v) => {
       const n = typeof v === 'number' ? v : Number(v);
       slider.value = String(n);
-      readout.textContent = String(n);
+      numInput.value = String(n);
     };
   } else if (spec.type === 'boolean') {
     const wrap = document.createElement('div');

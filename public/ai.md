@@ -70,7 +70,7 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 |---|---|---|---|
 | Cube / sphere / cylinder | `Manifold.cube/sphere/cylinder(...)` | `cube()`, `sphere()`, `cylinder()` | `BREP.box([w,d,h])`, `BREP.sphere(r)`, `BREP.cylinder(r, h)` |
 | Boolean union / difference / intersection | `.add(o)`, `.subtract(o)`, `.intersect(o)` | `union(){...}`, `difference(){...}`, `intersection(){...}` | `.fuse(o)` / `.cut(o)` / `.intersect(o)`, or `BREP.fuseAll([a,b,c])` / `BREP.cutAll([body,…holes])` / `BREP.intersectAll([…])` for N-way |
-| Expose tweakable knobs (make it customizable) | `api.params({...})` at the top → live Parameters panel; `partwright.getParams()`/`setParams({...})` to drive | (manifold-js only) | (manifold-js only) |
+| Expose tweakable knobs (make it customizable) | `api.params({...})` at the top → live Parameters panel; `partwright.getParams()`/`setParams({...})` to drive | (not in SCAD yet) | `api.params({...})` — same as manifold-js (also works in voxel sessions) |
 | 2D shape extruded to 3D | `cs.extrude(h, nDiv?, twist?, scaleTop?)` | `linear_extrude(h, twist=, slices=, scale=) polygon(...)` | (use manifold-js + BREP for one piece) |
 | Surface of revolution (vase, lens, bottle) | `cs.revolve(n?, degrees?)` | `rotate_extrude(angle=) polygon(...)` | (use manifold-js) |
 | Smooth curve from a few points | `Curves.bezier(controls)` -> `/ai/curves.md` | `bezier_curve()` (BOSL2) -> `/ai/bosl2.md` | (use manifold-js Curves) |
@@ -402,6 +402,8 @@ Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console
 ### Customizer parameters (`api.params`)
 
 Declare the model's tweakable dimensions/options at the top via `api.params(schema)`. It returns an object of resolved values; a **Parameters panel** appears in the viewport so the user (or you) can adjust them with sliders/toggles/dropdowns and the model re-runs live — Tinkercad-style customization without leaving code. This is the preferred way to make a model reusable: expose the few dimensions someone would actually want to change.
+
+`api.params` works the same in **manifold-js, voxel, and BREP (replicad) sessions** — all three are JS sandboxes that share one implementation (SCAD is the exception and has no `api.params` yet). For `number`/`int` params the panel pairs a slider with an editable number field, so you can type an exact value (and exceed the slider's range when the spec declares no `max`).
 
 ```js
 const { Manifold } = api;

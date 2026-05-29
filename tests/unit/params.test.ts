@@ -7,6 +7,7 @@ import {
   pruneParamValues,
   protectParamValues,
   normalizeHexColor,
+  createParamCapture,
   type ParamSpec,
 } from '../../src/geometry/params';
 
@@ -151,5 +152,49 @@ describe('normalizeHexColor', () => {
     expect(normalizeHexColor('#abc')).toBe('#aabbcc');
     expect(normalizeHexColor('red')).toBeNull();
     expect(normalizeHexColor(123)).toBeNull();
+  });
+});
+
+// The shared capture used by every JS-sandbox engine (manifold-js, voxel,
+// replicad) so they expose `api.params` identically. The per-engine wiring is
+// covered in the e2e tier (worker round-trip); this locks the pure logic.
+describe('createParamCapture', () => {
+  it('captures the declared schema and resolves override-or-default values', () => {
+    const capture = createParamCapture({ width: 80, bogus: 1 });
+    const resolved = capture.params({
+      width: { type: 'number', default: 20, min: 10, max: 100 },
+      height: { type: 'number', default: 30, min: 5, max: 80 },
+    });
+    // Override applied to width; height falls back to its default; unknown
+    // override keys are ignored.
+    expect(resolved.width).toBe(80);
+    expect(resolved.height).toBe(30);
+    expect(capture.collectSchema()?.map(s => s.key)).toEqual(['width', 'height']);
+  });
+
+  it('guards the returned values against typo reads', () => {
+    const capture = createParamCapture();
+    const p = capture.params({ width: { type: 'number', default: 20 } });
+    expect(p.width).toBe(20);
+    expect(() => (p as Record<string, unknown>).widht).toThrow(/no parameter "widht"/);
+  });
+
+  it('clamps an out-of-range override to the declared limits', () => {
+    const capture = createParamCapture({ width: 999 });
+    const p = capture.params({ width: { type: 'number', default: 20, min: 10, max: 100 } });
+    expect(p.width).toBe(100);
+  });
+
+  it('merges schemas across multiple api.params calls (last def wins, order kept)', () => {
+    const capture = createParamCapture();
+    capture.params({ a: { type: 'int', default: 1 } });
+    capture.params({ b: { type: 'boolean', default: true }, a: { type: 'int', default: 5 } });
+    const schema = capture.collectSchema()!;
+    expect(schema.map(s => s.key)).toEqual(['a', 'b']);
+    expect(schema.find(s => s.key === 'a')?.default).toBe(5);
+  });
+
+  it('reports undefined schema when the model declares no params', () => {
+    expect(createParamCapture().collectSchema()).toBeUndefined();
   });
 });

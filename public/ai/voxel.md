@@ -45,6 +45,18 @@ v.set(0, 0, 7, '#ff3b30');                       // a single red cap voxel
 return v;
 ```
 
+`api.params({...})` works here too, exactly as in manifold-js — declare tweakable
+knobs (grid size, colors, counts) at the top and the live Parameters panel drives
+them. See the Customizer section in `/ai.md`. Example:
+
+```js
+const { voxels } = api;
+const p = api.params({ size: { type: 'int', default: 6, min: 2, max: 20 }, tint: { type: 'color', default: '#6b8cff' } });
+const v = voxels();
+v.fillBox([0, 0, 0], [p.size - 1, p.size - 1, p.size - 1], p.tint);
+return v;
+```
+
 ### Grid builder methods
 
 All methods mutate the grid in place and return it (so they chain). Coordinates
