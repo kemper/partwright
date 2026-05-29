@@ -166,7 +166,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly },
           transfer,
         );
       } else {

@@ -24,6 +24,10 @@ export interface LayoutElements {
   switchTab: (tab: TabName, options?: SwitchTabOptions) => void;
   /** Collapse/expand the parts rail (wired to the rail's own collapse button). */
   togglePartsRail: () => void;
+  /** Collapse the code editor pane (used by focus modes like Relief Studio). */
+  collapseEditor: () => void;
+  /** Restore the code editor pane after a collapse. */
+  expandEditor: () => void;
 }
 
 export interface SwitchTabOptions {
@@ -625,7 +629,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, partsRail, editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, togglePartsRail };
+  return { editorPane, partsRail, editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, togglePartsRail, collapseEditor, expandEditor };
 }
 
 // Rail item base — a bottom accent border on mobile (horizontal strip) becomes

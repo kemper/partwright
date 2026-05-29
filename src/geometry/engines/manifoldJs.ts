@@ -397,6 +397,7 @@ export const manifoldJsEngine: Engine = {
         labelMap,
         labelColors: labelColors.size > 0 ? labelColors : undefined,
         paramsSchema: collectParamsSchema(),
+        renderOnly,
       };
     } catch (e: unknown) {
       let msg = e instanceof Error ? e.message : String(e);
