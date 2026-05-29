@@ -420,13 +420,13 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'readDoc',
-    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, voxel, colors, print-safety, reference-images, file-io, annotations.',
+    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, reference-images, file-io, annotations.',
     input_schema: {
       type: 'object',
       properties: {
         name: {
           type: 'string',
-          enum: ['curves', 'bosl2', 'replicad', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations'],
+          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations'],
           description: 'Subdoc name without the .md extension.',
         },
       },
@@ -1111,7 +1111,7 @@ function detectLanguageMismatch(code: string): string | null {
  *  `tools.ts` to import the engine module statically. The function lives
  *  in `src/geometry/engine.ts` and is already loaded by the app shell at
  *  startup, so a require-style lookup via `window.partwright` is safe. */
-const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations']);
+const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations']);
 
 /** Fetch a topic subdoc by short name. Same fetch path for Anthropic and
  *  local providers — both run inside the user's browser tab, so this is

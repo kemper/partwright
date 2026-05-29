@@ -92,7 +92,7 @@ export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
 }
 
 /** File extensions accepted by the Import button and drag-and-drop. */
-export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp';
+export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp,.vox,.png,.jpg,.jpeg,.gif,.webp,.bmp';
 
 let _autoRun = true;
 let _onAutoRunChange: ((on: boolean) => void) | null = null;

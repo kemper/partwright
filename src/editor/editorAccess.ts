@@ -5,7 +5,7 @@
 // means none stomps another — the editor is read-only if ANY reason is active,
 // regardless of the order the modules run in.
 //
-// Known reasons: 'colorLock', 'viewer', 'shared'.
+// Known reasons: 'colorLock', 'viewer', 'shared', 'voxelPaint'.
 
 import { setReadOnly } from './codeEditor';
 

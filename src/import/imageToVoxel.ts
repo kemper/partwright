@@ -77,10 +77,18 @@ export function generateVoxelImportCode(grid: VoxelGrid, filename: string): stri
     ? `${b.max[0] - b.min[0] + 1}×${b.max[1] - b.min[1] + 1}×${b.max[2] - b.min[2] + 1}`
     : '0×0×0';
   const encoded = encodeGrid(grid);
+  // Preserve the grid's surfacing setting in the emitted code so a
+  // smooth-surfaced model that's baked (e.g. via the voxel paint flow) keeps
+  // its rounded edges after the next run, instead of silently reverting to
+  // hard blocks. The default (blocks) needs no call.
+  const surf = grid.surfacing();
+  const surfaceCall = surf.mode === 'smooth'
+    ? `\nv.smooth({ iterations: ${surf.iterations}, detail: ${surf.detail} });`
+    : '';
   return `// Imported from ${filename} on ${date}
 // ${grid.size} voxels (${dims}). Edit below — e.g. add v.fillBox(...) before returning.
 const { voxels } = api;
-const v = voxels.decode(${JSON.stringify(encoded)});
+const v = voxels.decode(${JSON.stringify(encoded)});${surfaceCall}
 return v;
 `;
 }

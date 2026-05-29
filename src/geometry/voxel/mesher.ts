@@ -19,6 +19,12 @@ import type { MeshData } from '../types';
 import { VoxelGrid, colorComponents } from './grid';
 import { taubinSmooth, scaleMeshPositions } from './smooth';
 
+/** Per-triangle voxel coordinate provenance. `triVoxel` is `numTri * 3`,
+ *  flattened (x, y, z, x, y, z, …), giving the integer coord of the voxel
+ *  each triangle came from. Used by voxel paint mode to map a clicked face
+ *  back to a single voxel for color/erase. */
+export interface VoxelMesh { mesh: MeshData; triVoxel: Int16Array }
+
 // The 6 face directions: neighbor offset + the 4 corner offsets (relative to
 // the voxel's min corner) in CCW order viewed from outside, so each face's
 // triangles wind with the outward normal.
@@ -109,4 +115,63 @@ export function meshGrid(grid: VoxelGrid): MeshData {
   mesh = taubinSmooth(mesh, surf.iterations);
   if (surf.detail > 1) scaleMeshPositions(mesh, 1 / surf.detail);
   return mesh;
+}
+
+/** Block-mesh a grid AND record which voxel each triangle came from. Voxel
+ *  paint mode uses this on the main thread to map a clicked face back to a
+ *  single voxel. Only the `blocks` surfacing is supported — smoothing
+ *  resamples / supersamples the grid, so the provenance no longer maps to
+ *  the user-authored voxels in any useful way. Paint mode falls back to the
+ *  unprovenanced `meshGrid` when surfacing is `smooth`. */
+export function gridToMeshWithProvenance(grid: VoxelGrid): VoxelMesh {
+  const positions: number[] = [];
+  const tris: number[] = [];
+  const triColors: number[] = [];
+  const triVoxelList: number[] = [];
+  const vertIndex = new Map<number, number>();
+  const VKEY = (vx: number, vy: number, vz: number) =>
+    ((vx + 2048) * 4096 + (vy + 2048)) * 4096 + (vz + 2048);
+
+  function vertex(vx: number, vy: number, vz: number): number {
+    const k = VKEY(vx, vy, vz);
+    let i = vertIndex.get(k);
+    if (i === undefined) {
+      i = positions.length / 3;
+      positions.push(vx, vy, vz);
+      vertIndex.set(k, i);
+    }
+    return i;
+  }
+
+  grid.forEach((x, y, z, rgb) => {
+    const [r, g, b] = colorComponents(rgb);
+    for (const face of FACES) {
+      if (grid.has(x + face.d[0], y + face.d[1], z + face.d[2])) continue;
+      const [c0, c1, c2, c3] = face.corners;
+      const i0 = vertex(x + c0[0], y + c0[1], z + c0[2]);
+      const i1 = vertex(x + c1[0], y + c1[1], z + c1[2]);
+      const i2 = vertex(x + c2[0], y + c2[1], z + c2[2]);
+      const i3 = vertex(x + c3[0], y + c3[1], z + c3[2]);
+      tris.push(i0, i1, i2, i0, i2, i3);
+      triColors.push(r, g, b, r, g, b);
+      // Both triangles of this face belong to voxel (x, y, z).
+      triVoxelList.push(x, y, z, x, y, z);
+    }
+  });
+
+  const numTri = tris.length / 3;
+  const triColorArr = Uint8Array.from(triColors);
+  (triColorArr as Uint8Array & { _painted?: Uint8Array })._painted = new Uint8Array(numTri).fill(1);
+
+  return {
+    mesh: {
+      vertProperties: Float32Array.from(positions),
+      triVerts: Uint32Array.from(tris),
+      numVert: positions.length / 3,
+      numTri,
+      numProp: 3,
+      triColors: triColorArr,
+    },
+    triVoxel: Int16Array.from(triVoxelList),
+  };
 }
