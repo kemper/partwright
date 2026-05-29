@@ -160,18 +160,26 @@ export default defineConfig({
       injectRegister: false,
       manifest: false,
       injectManifest: {
-        // Precache the core shell. The 6 MB main bundle is the largest single
-        // file we keep; the heavy lazy engines (OpenSCAD ~11 MB, replicad WASM
-        // ~10 MB) are deliberately excluded — they stay lazy-loaded and are
-        // runtime-cached by sw.ts the first time they're actually used.
-        maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
+        // Precache the core shell only. The main bundle is the largest single
+        // file we keep (~6 MB and growing); the cap is set well above it so a
+        // little growth can't silently drop it from the precache (vite-plugin-pwa
+        // only *warns* when a file exceeds the cap) and break the offline boot —
+        // the heavy lazy chunks excluded below stay out regardless via globIgnores.
+        maximumFileSizeToCacheInBytes: 12 * 1024 * 1024,
         globPatterns: ['**/*.{js,css,html,wasm,svg,png,json}'],
-        // Heavy lazy chunks stay out of the install precache and are
-        // runtime-cached on first use instead: the OpenSCAD/replicad engines,
-        // and the ~6 MB WebLLM worker (which only loads once a user opts into
-        // a local model — and downloading the weights needs the network
-        // anyway, so it's cached in that same online session).
-        globIgnores: ['**/openscad-*', '**/replicad*', '**/localEngineWorker-*'],
+        // Keep large/optional chunks out of the install precache; they're
+        // runtime-cached by sw.ts the first time they're actually used:
+        //  - the lazy engines: OpenSCAD (~11 MB) + its BOSL2 libs, replicad WASM (~10 MB)
+        //  - the ~6 MB WebLLM worker (only loads when a user opts into a local
+        //    model — and downloading the weights needs the network anyway)
+        //  - the catalog of premade sessions (~9 MB of JSON, browsed on demand)
+        globIgnores: [
+          '**/openscad-*',
+          '**/openscad-libs/**',
+          '**/replicad*',
+          '**/localEngineWorker-*',
+          '**/catalog/**',
+        ],
       },
       // Keep the SW out of dev entirely: it would fight Vite's module/HMR
       // pipeline, and dev gets COOP/COEP straight from the server (see below),

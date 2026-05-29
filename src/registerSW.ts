@@ -24,7 +24,7 @@
 // the one-time isolation reload, so the two never deadlock on a shared key.
 const COI_RELOAD_FLAG = 'partwright-sw-coi-reloaded';
 
-function maybeReloadForIsolation(): void {
+function maybeReloadForIsolation(registration?: ServiceWorkerRegistration): void {
   try {
     // Already isolated (server sent the headers) — nothing to do.
     if (self.crossOriginIsolated !== false) return;
@@ -32,7 +32,13 @@ function maybeReloadForIsolation(): void {
     // isolated (the editor then surfaces its own "not cross-origin isolated"
     // message instead of reloading forever).
     if (sessionStorage.getItem(COI_RELOAD_FLAG) === '1') return;
-    if (!navigator.serviceWorker.controller) return;
+    // Reload once a worker exists that can serve a stamped document on the next
+    // navigation. Accept `registration.active` as well as a live controller:
+    // on a fast first install the worker can already be active before the
+    // updatefound/statechange listener is attached, and a reload then lets the
+    // (about-to-control) worker isolate the page.
+    const hasWorker = !!navigator.serviceWorker.controller || !!registration?.active;
+    if (!hasWorker) return;
     sessionStorage.setItem(COI_RELOAD_FLAG, '1');
     window.location.reload();
   } catch {
@@ -51,7 +57,7 @@ export function registerServiceWorker(): void {
       // Tell an already-active worker which COEP mode to stamp, then check
       // whether we need the one-time isolation reload.
       navigator.serviceWorker.controller?.postMessage({ type: 'coepCredentialless', value: false });
-      maybeReloadForIsolation();
+      maybeReloadForIsolation(registration);
 
       // On first install there's no controller yet; reload once it activates so
       // it can serve a stamped, isolated document (only matters if the server
@@ -60,7 +66,7 @@ export function registerServiceWorker(): void {
         const installing = registration.installing;
         if (!installing) return;
         installing.addEventListener('statechange', () => {
-          if (installing.state === 'activated') maybeReloadForIsolation();
+          if (installing.state === 'activated') maybeReloadForIsolation(registration);
         });
       });
     })
