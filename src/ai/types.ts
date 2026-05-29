@@ -98,6 +98,13 @@ export interface ChatToggles {
    *  byte-for-byte — the control is opt-in. No effect on the local provider
    *  (WebLLM models do their own thing and we strip `<think>` blocks). */
   thinking: 'off' | 'low' | 'medium' | 'high';
+  /** Auto-continue mode. When ON, the agent only stops when the model calls
+   *  the `finish` sentinel tool; a turn that ends WITHOUT calling finish is
+   *  automatically resumed (a synthetic nudge is appended and the loop runs
+   *  again) so the model keeps working — bounded by the iteration + spend caps,
+   *  whichever trips first. OFF (default) reproduces the normal
+   *  one-stop-per-end_turn behavior. Per-session, like the other toggles. */
+  autoResume: boolean;
   /** Which backend the chat is talking to right now. */
   provider: Provider;
   /** Anthropic model for cloud chats. Plain string so dated snapshots
@@ -236,6 +243,12 @@ export interface ChatMessage {
    *  continues the agent loop from the existing history (no new user prompt).
    *  Not persisted to IndexedDB. */
   stopNotice?: { reason: TurnOutcomeReason; detail?: string; iterations: number };
+  /** Marks the synthetic user prompt the agent loop injects to auto-continue a
+   *  turn that ended without calling `finish` (auto-continue mode). Rendered as
+   *  a subtle divider rather than a normal user bubble, but persisted (and sent
+   *  to the model as a normal user turn) so the conversation stays valid across
+   *  reloads. */
+  autoResumeNudge?: boolean;
   /** Wall-clock milliseconds for this single model request/response cycle. */
   durationMs?: number;
   /** Cumulative model time in milliseconds across all API calls since the

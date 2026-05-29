@@ -201,6 +201,15 @@ Gemini 3 thinking models emit their reasoning as `thought:true` text parts (we o
 - **OpenAI** — maps to the Responses `reasoning.effort` (`low/medium/high`), sent only for reasoning models (`gpt-5*`, `o1/o3/o4` — sniffed by `isReasoningModel`, which is also what routes them to the Responses endpoint). 'off' omits the `reasoning` field. Non-reasoning models go down the Chat Completions path, which never sends a reasoning request in either spelling, so they don't 400. OpenAI hides reasoning-model CoT, so this controls cost/quality but never surfaces a thinking box.
 - **Local** — no effect (WebLLM models reason on their own; `<think>` is still stripped).
 
+#### Auto-continue (the ♾ pill)
+
+`ChatToggles.autoResume` (boolean, default **off**, per-session) makes the agent keep working until the model explicitly signals completion by calling the **`finish`** sentinel tool, instead of stopping at every `end_turn`. It's the antidote to models (notably Gemini) that end a turn early without finishing the task. When **on**:
+
+- `buildToolList` adds the `finish` tool (gated by `AUTORESUME_GATED` in `tools.ts`); `executeTool` short-circuits it to a sentinel ack (it never touches `window.partwright`). `toggleSuffix` appends an instruction telling the model to call `finish` only when truly done.
+- In `chatLoop`, a turn that ends with `end_turn` (text **or** empty) **without** a `finish` call appends a synthetic user nudge (`AUTO_RESUME_PROMPT`, persisted with `ChatMessage.autoResumeNudge` → rendered as a subtle divider, not a blue bubble) and loops again. A turn that **does** call `finish` runs any remaining tools, then stops cleanly with reason `end_turn`.
+- It's bounded by the existing **iteration cap** (the `for` loop) and **spend cap** (checked each iteration) — whichever trips first — so a model that never calls `finish` lands on the normal iteration-cap "Keep going" notice rather than looping forever. A queued human message takes priority over a `finish` stop (the loop delivers it instead of stopping).
+- **off** (default) is byte-for-byte the old behavior: no `finish` tool, no nudges, stop at each `end_turn`.
+
 #### Cross-provider review
 
 A "👁" button in the panel header opens `src/ui/aiReviewModal.ts`. The user picks a **different** provider/model than the one driving the chat, optionally types a focus prompt, and the reviewer is sent the current code + geometry stats + 4-iso snapshot + session notes via a single non-tool turn. The response lands as a `'review'` `ChatBlock` rendered with a distinct purple-bordered bubble in the transcript AND a `[REVIEW from <provider> / <model>] …` session note (so the primary agent picks it up on its next turn via `getSessionContext()`).
