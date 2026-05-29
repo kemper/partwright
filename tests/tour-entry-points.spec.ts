@@ -33,7 +33,11 @@ test.describe('Guided tour entry points', () => {
 
   test('landing CTA opens the editor and starts the tour', async ({ page }) => {
     await page.goto('/');
-    const cta = page.getByRole('button', { name: 'Take the guided tour' });
+    // Target the landing CTA by id, not by accessible name: the editor's rail
+    // button (#btn-tour) carries the same name ("Take the guided tour") and is
+    // present-but-hidden in the DOM on the landing route, so a name-based
+    // locator can bind to that hidden button and time out the click on CI.
+    const cta = page.locator('#btn-landing-tour');
     await expect(cta).toBeVisible();
 
     await cta.click();

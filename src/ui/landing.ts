@@ -133,6 +133,7 @@ function buildHero(callbacks: LandingCallbacks): HTMLElement {
   ctas.appendChild(help);
 
   const tour = document.createElement('button');
+  tour.id = 'btn-landing-tour';
   tour.className = 'px-6 py-2.5 rounded-lg bg-transparent hover:bg-zinc-800 text-zinc-400 text-sm font-medium transition-colors';
   tour.textContent = 'Take the guided tour';
   tour.addEventListener('click', callbacks.onTakeTour);
