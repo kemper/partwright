@@ -95,6 +95,8 @@ export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
 
 /** File extensions accepted by the Import button and drag-and-drop. */
 export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp,.vox,.png,.jpg,.jpeg,.gif,.webp,.bmp';
+/** Raster image types accepted by the dedicated "Image → voxel" picker. */
+export const IMAGE_ACCEPT = '.png,.jpg,.jpeg,.gif,.webp,.bmp';
 
 let _autoRun = true;
 let _onAutoRunChange: ((on: boolean) => void) | null = null;
@@ -319,6 +321,7 @@ export function createToolbar(
   );
   chooseFileOpt.addEventListener('click', () => {
     importDropdown.classList.add('hidden');
+    importInput.accept = IMPORT_ACCEPT; // restore the full filter (the image row narrows it)
     importInput.click();
   });
   importDropdown.appendChild(chooseFileOpt);
@@ -334,6 +337,21 @@ export function createToolbar(
     callbacks.onCreateRelief();
   });
   importDropdown.appendChild(reliefOpt);
+
+  const imageVoxelOpt = createDescribedItem(
+    'Image → voxel…',
+    'Turn an image into a colored voxel model — flat billboard or brightness-driven relief — with adjustable resolution, depth, and color.',
+  );
+  imageVoxelOpt.addEventListener('click', () => {
+    importDropdown.classList.add('hidden');
+    // Reuse the single import file input (a second one would break the
+    // `#import-wrapper input[type=file]` selector other tests rely on), just
+    // narrowed to raster images for this row. The change handler routes the
+    // picked image into the voxel-import modal via onImportFile.
+    importInput.accept = IMAGE_ACCEPT;
+    importInput.click();
+  });
+  importDropdown.appendChild(imageVoxelOpt);
 
   // Recent Imports section — populated from the import inbox.
   const importRecentDivider = createDivider();
@@ -367,15 +385,32 @@ export function createToolbar(
 
   function renderImportRecentItem(entry: ImportInboxEntry): HTMLElement {
     const btn = document.createElement('button');
-    btn.className = 'block w-full text-left px-3 py-1 hover:bg-zinc-700 transition-colors';
+    btn.className = 'flex items-center gap-2 w-full text-left px-3 py-1 hover:bg-zinc-700 transition-colors';
     btn.title = `Re-import ${entry.filename}`;
+
+    // Thumbnail (image/SVG imports only); a checkered backdrop reads through
+    // transparent PNGs so a logo's shape is still legible.
+    if (entry.thumbnail) {
+      const thumb = document.createElement('img');
+      thumb.src = entry.thumbnail;
+      thumb.alt = '';
+      thumb.className = 'w-8 h-8 rounded border border-zinc-600 object-contain shrink-0 bg-zinc-900';
+      btn.appendChild(thumb);
+    }
+
+    const textCol = document.createElement('div');
+    textCol.className = 'min-w-0 flex-1';
 
     const top = document.createElement('div');
     top.className = 'flex items-center gap-1.5';
 
     const sourceBadge = document.createElement('span');
     sourceBadge.className = 'text-[9px] uppercase tracking-wide text-zinc-400 border border-zinc-600 rounded px-1 py-px shrink-0';
-    sourceBadge.textContent = entry.source;
+    // Tag voxel image imports distinctly from relief ones in the badge.
+    const meta = entry.metadata as { importer?: string } | undefined;
+    sourceBadge.textContent = meta?.importer === 'voxel' ? 'VOXEL'
+      : meta?.importer === 'relief' ? 'RELIEF'
+      : entry.source;
     top.appendChild(sourceBadge);
 
     const nameEl = document.createElement('span');
@@ -383,12 +418,14 @@ export function createToolbar(
     nameEl.textContent = entry.filename;
     top.appendChild(nameEl);
 
-    btn.appendChild(top);
+    textCol.appendChild(top);
 
-    const meta = document.createElement('div');
-    meta.className = 'text-[10px] text-zinc-500 leading-tight mt-0.5';
-    meta.textContent = `${formatSize(entry.sizeBytes)} • ${formatRelativeTime(entry.timestamp)}`;
-    btn.appendChild(meta);
+    const metaEl = document.createElement('div');
+    metaEl.className = 'text-[10px] text-zinc-500 leading-tight mt-0.5';
+    metaEl.textContent = `${formatSize(entry.sizeBytes)} • ${formatRelativeTime(entry.timestamp)}`;
+    textCol.appendChild(metaEl);
+
+    btn.appendChild(textCol);
 
     btn.addEventListener('click', () => {
       importDropdown.classList.add('hidden');

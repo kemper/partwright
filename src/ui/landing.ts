@@ -361,7 +361,7 @@ Then navigate to ${origin}/editor and use the window.partwright console API to:
 2. Build a standard 2x4 Lego brick (approximately 31.8mm x 15.8mm x 11.4mm with studs on top and hollow underside with tubes)
 3. Save each major step as a version (e.g. v1 - base block, v2 - add studs, v3 - hollow underside with tubes)
 4. Use assertions to verify each version is a valid manifold with maxComponents: 1
-5. Give me the gallery URL when done so I can review the versions`;
+5. Give me a share link (partwright.getShareLink()) when done so I can open the design`;
 
 function buildAgentSection(): HTMLElement {
   const section = document.createElement('section');

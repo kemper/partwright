@@ -75,16 +75,19 @@ import {
   registerImport,
   classifyImportSource,
   type ImportInboxEntry,
+  type ImportMetadata,
 } from './import/importInbox';
+import { createThumbnailFromImageData } from './import/imageThumbnail';
 import { showImportPreview, summarizeSessionImport } from './ui/importPreview';
 import { showImportTargetModal } from './ui/importTargetModal';
+import { showImageVoxelImportModal } from './ui/imageVoxelImportModal';
 import { showStepImportTargetModal } from './ui/stepImportTargetModal';
 import { showLanguageHelpModal } from './ui/languageHelpModal';
 import { showMergePartsModal } from './ui/mergePartsModal';
 import { parseSTL } from './import/parsers/stl';
 import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
-import { imageDataToVoxelGrid, generateVoxelImportCode } from './import/imageToVoxel';
+import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
@@ -2001,8 +2004,9 @@ async function main() {
     // Raw code imports don't get a preview modal of their own — confirm before clobber.
     // JSON imports skip this confirm because the preview modal already serves as
     // confirmation; STL and STEP imports skip it because their target modals let
-    // the user choose where the import should go.
-    if (!options.skipPreActiveConfirm && source !== 'JSON' && source !== 'STL' && source !== 'STEP') {
+    // the user choose where the import should go; IMAGE imports skip it because
+    // the image→voxel parameter modal (with its own Cancel) serves the same role.
+    if (!options.skipPreActiveConfirm && source !== 'JSON' && source !== 'STL' && source !== 'STEP' && source !== 'IMAGE') {
       const cur = getState();
       if (cur.session && cur.versionCount > 0) {
         const ok = await showInlineConfirm(
@@ -2036,7 +2040,9 @@ async function main() {
       } else if (source === 'VOX') {
         committed = await handleVoxImport(file);
       }
-      if (committed) registerImport(file, file.name, source);
+      // IMAGE registers itself inside handleImageImport (it owns the chosen
+      // voxel options + thumbnail it needs to stash for a faithful re-import).
+      if (committed && source !== 'IMAGE') registerImport(file, file.name, source);
       return committed;
     } catch (e) {
       alert(`Failed to import "${file.name}": ${(e as Error).message}`);
@@ -2082,7 +2088,7 @@ async function main() {
    *  sprites voxelize cleanly; opaque photos become a full extruded slab.
    *  The grid is embedded in the generated `voxels.decode(...)` code, so the
    *  session persists as code with no special schema. */
-  async function handleImageImport(file: File): Promise<boolean> {
+  async function handleImageImport(file: File, initialOptions?: ImageToVoxelOptions): Promise<boolean> {
     let imageData: ImageData;
     try {
       imageData = await decodeImageToImageData(file);
@@ -2090,14 +2096,25 @@ async function main() {
       alert(`Could not read image "${file.name}": ${(e as Error).message}`);
       return false;
     }
-    const grid = imageDataToVoxelGrid(imageData);
+    // Let the user dial in resolution / mode / depth / color before
+    // committing. The modal's Cancel doubles as the back-out, so the generic
+    // pre-import confirm is skipped for images (see handleImportFile).
+    // `initialOptions` pre-fills the controls when re-importing a past entry.
+    const opts = await showImageVoxelImportModal({ filename: file.name, image: imageData, initialOptions });
+    if (!opts) return false;
+    const grid = imageDataToVoxelGrid(imageData, opts);
     if (grid.size === 0) {
-      alert(`"${file.name}" produced no voxels — every sampled pixel was transparent. Try an image with opaque content.`);
+      alert(`"${file.name}" produced no voxels at the chosen settings. Try lowering the transparency cutoff.`);
       return false;
     }
     const code = generateVoxelImportCode(grid, file.name);
     const sessionName = file.name.replace(/\.(png|jpe?g|gif|webp|bmp)$/i, '');
     await importCodePayload(code, 'voxel', sessionName);
+    // Register in Recent Imports tagged as a voxel import, with the chosen
+    // settings + a thumbnail, so re-clicking it reopens THIS modal (not relief)
+    // pre-loaded with these knobs.
+    const meta: ImportMetadata = { importer: 'voxel', options: opts };
+    registerImport(file, file.name, 'IMAGE', meta, createThumbnailFromImageData(imageData));
     return true;
   }
 
@@ -2507,12 +2524,19 @@ async function main() {
         if (parsed) await placeImportedMesh(parsed, entry.filename);
         return;
       }
-      // Image / SVG re-imports re-open the Relief Studio wizard with the
-      // original file pre-loaded — the user keeps their previous tweaks fresh
-      // but gets to adjust knobs before re-generating.
+      // Image / SVG re-imports reopen the same importer that produced them,
+      // pre-loaded with the original settings: voxel imports return to the
+      // voxel modal, everything else (relief, SVG) to the Relief Studio.
       if (entry.source === 'IMAGE' || entry.source === 'SVG') {
         const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
-        const savedOpts = (entry.metadata && typeof entry.metadata === 'object') ? entry.metadata as ReliefOptions : undefined;
+        const meta = (entry.metadata && typeof entry.metadata === 'object') ? entry.metadata as Partial<ImportMetadata> : undefined;
+        if (meta?.importer === 'voxel') {
+          await handleImageImport(file, meta.options as ImageToVoxelOptions);
+          return;
+        }
+        // Relief imports store { importer:'relief', options }; older/plain
+        // entries stored the ReliefOptions directly — accept both shapes.
+        const savedOpts = (meta?.importer === 'relief' ? meta.options : entry.metadata) as ReliefOptions | undefined;
         openReliefImportFlow(file, savedOpts);
         return;
       }
@@ -2593,32 +2617,36 @@ async function main() {
   // with a toast rather than minting a link that silently won't open.
   const MAX_SHARE_ENCODED_CHARS = 1_500_000;
 
-  /** Encode the current committed version into a `#share=…` link and open the
-   *  copy modal. Saves the current buffer first (exportSession reads the SAVED
-   *  version), feature-detects CompressionStream, and trims the thumbnail if the
-   *  link is too large before giving up. */
-  const actionShareLink = async (): Promise<void> => {
+  /** Encode the current committed version into a self-contained `#share=…`
+   *  read-only link. Saves the current buffer first (exportSession reads the
+   *  SAVED version), feature-detects CompressionStream, and trims the thumbnail
+   *  if the link is too large before giving up. Returns `{ url, encodedBytes }`
+   *  on success or `{ error }` with a user-facing message. Pure builder: it does
+   *  no UI — callers decide whether to open the modal (toolbar) or just return
+   *  the string (the partwright API).
+   *
+   *  `notify` optionally surfaces the "multi-part designs share one part" toast;
+   *  the API path passes a no-op so it never pops UI out from under an agent. */
+  const buildShareLink = async (
+    notify: (msg: string) => void = () => {},
+  ): Promise<{ url: string; encodedBytes: number } | { error: string }> => {
     if (typeof CompressionStream === 'undefined') {
-      showToast('Sharing needs a newer browser', { variant: 'warn' });
-      return;
+      return { error: 'Sharing needs a newer browser' };
     }
     if (!getState().session || !engineOk) {
-      showToast('Open or create a design before sharing.', { variant: 'warn' });
-      return;
+      return { error: 'Open or create a design before sharing.' };
     }
     // exportSession reads the SAVED version from IndexedDB, so commit the current
     // buffer first — both to give a fresh /editor (currentVersion: null) a
     // version to export and to capture any unsaved edits the user is sharing.
     const saved = await saveCurrentVersion();
     if ('error' in saved) {
-      showToast(saved.error, { variant: 'warn' });
-      return;
+      return { error: saved.error };
     }
     const state = getState();
     const versionIndex = state.currentVersion?.index;
     if (versionIndex === undefined) {
-      showToast('No saved version to share yet.', { variant: 'warn' });
-      return;
+      return { error: 'No saved version to share yet.' };
     }
 
     const sessionId = state.session!.id;
@@ -2631,8 +2659,7 @@ async function main() {
       includeNotes: false,
     });
     if (!exported) {
-      showToast('Could not prepare this design for sharing.', { variant: 'warn' });
-      return;
+      return { error: 'Could not prepare this design for sharing.' };
     }
     if (state.parts.length > 1) {
       // A share link carries one version of one part. Tell the user so a
@@ -2640,7 +2667,7 @@ async function main() {
       // after the current part.
       const partName = state.currentPart?.name;
       if (partName) exported.session = { ...exported.session, name: partName };
-      showToast(`Sharing only "${partName ?? 'the current part'}" — multi-part designs share one part per link.`, { variant: 'neutral' });
+      notify(`Sharing only "${partName ?? 'the current part'}" — multi-part designs share one part per link.`);
     }
 
     try {
@@ -2656,19 +2683,27 @@ async function main() {
         encoded = await encodeShare(slimmed);
       }
       if (encoded.length > MAX_SHARE_ENCODED_CHARS) {
-        showToast('Design too large to share via link', { variant: 'warn' });
-        return;
+        return { error: 'Design too large to share via link' };
       }
-      const url = `${location.origin}/editor#share=${encoded}`;
-      openShareModal(url, encoded.length);
+      return { url: `${location.origin}/editor#share=${encoded}`, encodedBytes: encoded.length };
     } catch (e) {
       if (e instanceof ShareUnsupportedError) {
-        showToast('Sharing needs a newer browser', { variant: 'warn' });
-      } else {
-        showToast('Could not create a share link.', { variant: 'warn' });
-        errorLog.capture({ level: 'error', source: 'app', message: `share encode failed: ${e instanceof Error ? e.message : String(e)}` });
+        return { error: 'Sharing needs a newer browser' };
       }
+      errorLog.capture({ level: 'error', source: 'app', message: `share encode failed: ${e instanceof Error ? e.message : String(e)}` });
+      return { error: 'Could not create a share link.' };
     }
+  };
+
+  /** Build the share link and open the copy modal. Thin toolbar wrapper around
+   *  {@link buildShareLink}; surfaces every error path as a toast. */
+  const actionShareLink = async (): Promise<void> => {
+    const result = await buildShareLink((msg) => showToast(msg, { variant: 'neutral' }));
+    if ('error' in result) {
+      showToast(result.error, { variant: 'warn' });
+      return;
+    }
+    openShareModal(result.url, result.encodedBytes);
   };
 
   /** True when the share action can run: an active session on a ready engine. */
@@ -4061,6 +4096,9 @@ async function main() {
           await syncRouteFromURL();
         },
         mountInto: appRow,
+        // Never auto-open the drawer when the app boots on the landing page —
+        // the remembered open state only applies once the user is in the editor.
+        suppressAutoOpen: shouldShowLanding(),
       });
       const cur = getState();
       await setAiActiveSession(cur.session?.id ?? null);
@@ -4585,16 +4623,40 @@ async function main() {
     },
 
     /** Import an image (a `data:` URL or a same-origin URL) as a colored voxel
-     *  billboard in a new voxel session — the programmatic equivalent of the
-     *  Import → image file flow. Transparent pixels drop out; opaque images
-     *  become a full slab. Returns `{ sessionId, voxelCount }` or `{ error }`. */
-    async importImageAsVoxels(imageUrl: string, opts: { maxSize?: number; depth?: number; alphaThreshold?: number } = {}) {
+     *  model in a new voxel session — the programmatic equivalent of the
+     *  Import → image file flow. `mode: 'billboard'` (default) extrudes every
+     *  surviving pixel to a uniform `depth`; `mode: 'heightmap'` drives a
+     *  per-column height from pixel brightness (with an optional `baseThickness`
+     *  backing, and `invert` to raise dark areas). `colorMode` keeps the
+     *  original color, converts to `grayscale`, or paints a single `flatColor`.
+     *  Transparent pixels below `alphaThreshold` drop out. Returns
+     *  `{ sessionId, voxelCount }` or `{ error }`. */
+    async importImageAsVoxels(imageUrl: string, opts: ImageToVoxelOptions = {}) {
       const check = guard(() => {
         assertString(imageUrl, 'importImageAsVoxels(imageUrl)', { allowEmpty: false });
         assertObject(opts, 'importImageAsVoxels(opts)', { optional: true });
         if (opts.maxSize !== undefined) assertNumber(opts.maxSize, 'importImageAsVoxels(opts.maxSize)', { min: 1, integer: true });
+        if (opts.mode !== undefined) assertEnum(opts.mode, ['billboard', 'heightmap'], 'importImageAsVoxels(opts.mode)');
         if (opts.depth !== undefined) assertNumber(opts.depth, 'importImageAsVoxels(opts.depth)', { min: 1, integer: true });
+        if (opts.maxHeight !== undefined) assertNumber(opts.maxHeight, 'importImageAsVoxels(opts.maxHeight)', { min: 1, integer: true });
+        if (opts.baseThickness !== undefined) assertNumber(opts.baseThickness, 'importImageAsVoxels(opts.baseThickness)', { min: 0, integer: true });
+        if (opts.invert !== undefined) assertBoolean(opts.invert, 'importImageAsVoxels(opts.invert)');
         if (opts.alphaThreshold !== undefined) assertNumber(opts.alphaThreshold, 'importImageAsVoxels(opts.alphaThreshold)', { min: 0, max: 255, integer: true });
+        if (opts.colorMode !== undefined) assertEnum(opts.colorMode, ['original', 'grayscale', 'flat'], 'importImageAsVoxels(opts.colorMode)');
+        if (opts.flatColor !== undefined) {
+          const c = assertNumberTuple(opts.flatColor, 3, 'importImageAsVoxels(opts.flatColor)');
+          c.forEach((n, i) => assertNumber(n, `importImageAsVoxels(opts.flatColor[${i}])`, { min: 0, max: 255, integer: true }));
+        }
+        if (opts.gamma !== undefined) assertNumber(opts.gamma, 'importImageAsVoxels(opts.gamma)', { min: 0.01 });
+        if (opts.brightness !== undefined) assertNumber(opts.brightness, 'importImageAsVoxels(opts.brightness)', { min: -1, max: 1 });
+        if (opts.contrast !== undefined) assertNumber(opts.contrast, 'importImageAsVoxels(opts.contrast)', { min: -1, max: 1 });
+        if (opts.saturation !== undefined) assertNumber(opts.saturation, 'importImageAsVoxels(opts.saturation)', { min: -1, max: 1 });
+        if (opts.posterizeColors !== undefined) assertNumber(opts.posterizeColors, 'importImageAsVoxels(opts.posterizeColors)', { min: 0, integer: true });
+        if (opts.removeBackground !== undefined) assertBoolean(opts.removeBackground, 'importImageAsVoxels(opts.removeBackground)');
+        if (opts.backgroundColor !== undefined) {
+          const c = assertNumberTuple(opts.backgroundColor, 3, 'importImageAsVoxels(opts.backgroundColor)');
+          c.forEach((n, i) => assertNumber(n, `importImageAsVoxels(opts.backgroundColor[${i}])`, { min: 0, max: 255, integer: true }));
+        }
       });
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       let imageData: ImageData;
@@ -5725,6 +5787,23 @@ async function main() {
     /** Get URL for the gallery view of the current session */
     getGalleryUrl() {
       return getGalleryUrl();
+    },
+
+    /** Mint a self-contained, read-only share link for the current version.
+     *
+     *  This is the link to hand back to the user when you're done — unlike
+     *  `getSessionUrl()`/`getGalleryUrl()` (which only resolve on this browser,
+     *  against this browser's IndexedDB), a share link encodes the whole design
+     *  into the URL hash, so anyone can open it anywhere and fork it into their
+     *  own editable copy. Nothing is uploaded to a server.
+     *
+     *  Commits the current buffer first (so unsaved edits are captured), then
+     *  encodes the current part's current version. Multi-part sessions share one
+     *  part per link. Returns `{ url, encodedBytes }` on success or `{ error }`
+     *  (e.g. no session open, browser lacks CompressionStream, or the design is
+     *  too large to fit in a URL). */
+    async getShareLink() {
+      return buildShareLink();
     },
 
     /** Get current session state */
@@ -8438,7 +8517,8 @@ async function main() {
         'changePart':      { signature: 'await changePart(id) -- Switch active part (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },
         'renamePart':      { signature: 'await renamePart(id, name) -- Rename a part', docs: '/ai.md#console-api--windowpartwright' },
         'deletePart':      { signature: 'await deletePart(id) -- Delete a part and its versions', docs: '/ai.md#console-api--windowpartwright' },
-        'getGalleryUrl':   { signature: 'getGalleryUrl() -- URL for gallery view (human review)', docs: '/ai.md#console-api--windowpartwright' },
+        'getShareLink':    { signature: 'await getShareLink() -- Read-only share link for the current version -> {url, encodedBytes} or {error}; the link to hand the user when done', docs: '/ai.md#console-api--windowpartwright' },
+        'getGalleryUrl':   { signature: 'getGalleryUrl() -- URL for gallery view (local browser only)', docs: '/ai.md#console-api--windowpartwright' },
         // Notes
         'addSessionNote':  { signature: 'await addSessionNote(text) -- Add note with [PREFIX] tag', docs: '/ai.md#session-notes----tracking-design-context' },
         'listSessionNotes': { signature: 'await listSessionNotes() -- List all session notes', docs: '/ai.md#session-notes----tracking-design-context' },

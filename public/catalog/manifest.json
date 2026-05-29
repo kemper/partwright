@@ -510,6 +510,13 @@
       "file": "layer_cake.partwright.json",
       "language": "manifold-js",
       "description": "A self-coloring parametric layer cake: colors live in the model code via api.label(shape, name, { color }), so it renders painted with no paint step and the editor stays editable. Set the frosting color and tier count in the Parameters panel."
+    },
+    {
+      "id": "country-manor-estate",
+      "name": "Country Manor Estate",
+      "file": "country_manor_estate.partwright.json",
+      "language": "manifold-js",
+      "description": "A symmetric Palladian-style country manor with projecting end wings, a columned entrance portico, grand pediment and crest, hipped roofs ringed by balustrades, dormer windows, clustered chimneys with clay pots, and a central rooftop cupola — self-colored via labeled regions for multi-color prints."
     }
   ]
 }
