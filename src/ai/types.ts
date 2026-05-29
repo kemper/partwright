@@ -7,9 +7,12 @@
 import type { LocalModelId } from './localModels';
 
 /** Anthropic = hosted Claude (BYO API key). Local = WebLLM running on the
- *  user's GPU. OpenAI / Gemini = hosted, BYO key. Only one is active per
- *  chat at a time; switching is a UI affordance, not a per-turn decision. */
-export type Provider = 'anthropic' | 'local' | 'openai' | 'gemini';
+ *  user's GPU. OpenAI / Gemini = hosted, BYO key. Custom = a generic
+ *  OpenAI-compatible HTTP endpoint the user points us at (e.g. a llama.cpp
+ *  server on their LAN); base URL lives on ChatToggles and the API key is
+ *  optional. Only one is active per chat at a time; switching is a UI
+ *  affordance, not a per-turn decision. */
+export type Provider = 'anthropic' | 'local' | 'openai' | 'gemini' | 'custom';
 
 export type AnthropicModelId = 'claude-haiku-4-5' | 'claude-sonnet-4-6' | 'claude-opus-4-7';
 
@@ -114,6 +117,18 @@ export interface ChatToggles {
   openaiModel: string;
   /** Google Gemini model id. Same custom-id story as OpenAI. */
   geminiModel: string;
+  /** Model id sent to the custom OpenAI-compatible endpoint. Free-form —
+   *  a self-hosted server (llama.cpp, vLLM, LM Studio, …) serves whatever
+   *  the user loaded, so this is whatever id `/v1/models` reports (or they
+   *  typed). Lives in toggles (not the key record) so it serializes into
+   *  the agent Worker alongside `customBaseUrl`. */
+  customModel: string;
+  /** Base URL of the custom OpenAI-compatible endpoint, including any
+   *  version path (e.g. `http://localhost:8080/v1`). We append
+   *  `/chat/completions` and `/models` to it. Empty string = not configured.
+   *  Auth for this endpoint is optional — the API key, when present, lives
+   *  in the `aiKeys` store keyed by 'custom'. */
+  customBaseUrl: string;
 }
 
 /** Source of truth for the iteration-cap dropdown. The toggle pill,
@@ -328,6 +343,7 @@ export function activeModel(toggles: ChatToggles): ModelId | string | null {
     case 'anthropic': return toggles.anthropicModel;
     case 'openai': return toggles.openaiModel;
     case 'gemini': return toggles.geminiModel;
+    case 'custom': return toggles.customModel;
     case 'local': return toggles.localModel;
   }
 }

@@ -8,7 +8,7 @@ import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerC
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
@@ -378,6 +378,9 @@ async function isProviderModelUsable(provider: Provider, model: string): Promise
   if (provider === 'local') {
     try { resolveLocalModel(model); return true; } catch { return false; }
   }
+  // Custom is usable once its endpoint URL is configured — the API key is
+  // optional, so don't gate on a stored key.
+  if (provider === 'custom') return loadSettings().toggles.customBaseUrl.trim().length > 0;
   return !!(await getKey(provider));
 }
 
@@ -403,7 +406,7 @@ async function applySessionAiPreference(): Promise<void> {
   hidePrefNotice();
   const pref = getState().session?.aiPreference;
   if (!pref) return;
-  const known: Provider[] = ['anthropic', 'openai', 'gemini', 'local'];
+  const known: Provider[] = ['anthropic', 'openai', 'gemini', 'custom', 'local'];
   const provider = pref.provider as Provider;
   if (!known.includes(provider)) return;
   if (!(await isProviderModelUsable(provider, pref.model))) {
@@ -420,6 +423,7 @@ async function applySessionAiPreference(): Promise<void> {
     case 'anthropic': next = setAnthropicModel(next, pref.model); break;
     case 'openai': next = setOpenaiModel(next, pref.model); break;
     case 'gemini': next = setGeminiModel(next, pref.model); break;
+    case 'custom': next = setCustomModel(next, pref.model); break;
     case 'local': next = setLocalModel(next, pref.model); break;
   }
   saveSettings(next);
@@ -939,6 +943,24 @@ function renderModelPicker(): void {
     return;
   }
 
+  // Custom OpenAI-compatible endpoint: a chip showing the configured model
+  // (or a prompt to configure), opening AI Settings on the Custom tab — the
+  // endpoint URL + model live there, like the local model lives in its modal.
+  if (settings.toggles.provider === 'custom') {
+    const customChip = document.createElement('button');
+    customChip.type = 'button';
+    customChip.className = 'h-6 px-2 inline-flex items-center rounded text-[11px] bg-sky-900/30 border border-sky-700/50 text-sky-200 hover:bg-sky-900/50';
+    customChip.textContent = settings.toggles.customModel.trim() || 'Configure endpoint';
+    customChip.title = settings.toggles.customBaseUrl.trim()
+      ? `Custom endpoint: ${settings.toggles.customBaseUrl} · model: ${settings.toggles.customModel || '(none set)'}. Click to configure.`
+      : 'No custom endpoint configured yet. Click to set the base URL and model.';
+    customChip.addEventListener('click', () => {
+      void showAiSettingsModal({ onChange: afterAiSettingsChange }, { initialTab: 'custom' });
+    });
+    modelPickerEl.appendChild(customChip);
+    return;
+  }
+
   const chip = document.createElement('button');
   chip.type = 'button';
   chip.className = 'h-6 px-2 inline-flex items-center rounded text-[11px] bg-emerald-900/30 border border-emerald-700/50 text-emerald-200 hover:bg-emerald-900/50';
@@ -1313,6 +1335,33 @@ function panelStatusUpdate(): void {
     hint.appendChild(switchLink);
     hint.appendChild(document.createTextNode(' for better quality.'));
     panelStatusEl.appendChild(hint);
+    return;
+  }
+  // Custom OpenAI-compatible endpoint: readiness is the base URL + model
+  // (the API key is optional), so don't run the cloud-key check below — it
+  // would falsely report "Not connected" for a keyless self-hosted server.
+  if (settings.toggles.provider === 'custom') {
+    panelStatusEl.replaceChildren();
+    panelStatusEl.classList.remove('hidden', 'text-emerald-400', 'text-amber-400', 'text-blue-300');
+    const needsUrl = settings.toggles.customBaseUrl.trim().length === 0;
+    const needsModel = settings.toggles.customModel.trim().length === 0;
+    if (needsUrl || needsModel) {
+      panelStatusEl.classList.add('text-amber-400');
+      panelStatusEl.appendChild(document.createTextNode(needsUrl ? 'Custom endpoint not configured. ' : 'No model set for the endpoint. '));
+      const link = document.createElement('button');
+      link.className = 'underline text-amber-200 hover:text-amber-100';
+      link.textContent = needsUrl ? 'Set endpoint URL' : 'Choose a model';
+      link.addEventListener('click', () => {
+        void showAiSettingsModal(
+          { onChange: () => { renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); renderPromptChip(); panelStatusUpdate(); } },
+          { initialTab: 'custom' },
+        );
+      });
+      panelStatusEl.appendChild(link);
+      panelStatusEl.appendChild(document.createTextNode('.'));
+    } else {
+      panelStatusEl.classList.add('hidden');
+    }
     return;
   }
   // Hosted providers (anthropic / openai / gemini) all need a key. When the
@@ -2147,8 +2196,20 @@ async function preflightTurn(
   onReady: () => void,
 ): Promise<string | undefined | typeof PREFLIGHT_ABORT> {
   let apiKey: string | undefined;
-  if (settings.toggles.provider !== 'local') {
-    // Hosted provider (anthropic / openai / gemini): need a stored key.
+  if (settings.toggles.provider === 'custom') {
+    // Custom OpenAI-compatible endpoint: needs a base URL + model; the API
+    // key is OPTIONAL (a stored one is used when present, else no auth). Send
+    // the user to the Custom settings tab if it isn't configured yet.
+    if (!settings.toggles.customBaseUrl.trim() || !settings.toggles.customModel.trim()) {
+      void showAiSettingsModal(
+        { onChange: () => { panelStatusUpdate(); renderModelPicker(); renderToggleStrip(); renderCostMeter(); onReady(); } },
+        { initialTab: 'custom' },
+      );
+      return PREFLIGHT_ABORT;
+    }
+    apiKey = (await getKey('custom'))?.apiKey;
+  } else if (settings.toggles.provider !== 'local') {
+    // Hosted cloud provider (anthropic / openai / gemini): need a stored key.
     const provider = settings.toggles.provider;
     const key = await getKey(provider);
     if (!key) {
@@ -2787,7 +2848,11 @@ async function maybeAutoCompact(): Promise<void> {
   }
 
   let apiKey: string | undefined;
-  if (settings.toggles.provider !== 'local') {
+  if (settings.toggles.provider === 'custom') {
+    // Optional key; skip silently if the endpoint isn't fully configured.
+    if (!settings.toggles.customBaseUrl.trim() || !settings.toggles.customModel.trim()) return;
+    apiKey = (await getKey('custom'))?.apiKey;
+  } else if (settings.toggles.provider !== 'local') {
     const key = await getKey(settings.toggles.provider);
     if (!key) return;
     apiKey = key.apiKey;
@@ -2839,7 +2904,16 @@ async function runCompact(): Promise<void> {
   }
   const settings = loadSettings();
   let apiKey: string | undefined;
-  if (settings.toggles.provider !== 'local') {
+  if (settings.toggles.provider === 'custom') {
+    // Custom endpoint: API key optional; route to the Custom tab if the
+    // endpoint isn't configured yet.
+    if (!settings.toggles.customBaseUrl.trim() || !settings.toggles.customModel.trim()) {
+      void showAiSettingsModal({ onChange: () => panelStatusUpdate() }, { initialTab: 'custom' });
+      return;
+    }
+    apiKey = (await getKey('custom'))?.apiKey;
+    setTransientStatus('Summarizing the conversation…');
+  } else if (settings.toggles.provider !== 'local') {
     const provider = settings.toggles.provider;
     const key = await getKey(provider);
     if (!key) {

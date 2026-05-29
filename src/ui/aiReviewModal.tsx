@@ -12,6 +12,7 @@ import { getKey } from '../ai/db';
 import { formatUsd, estimateTurnCostUsd } from '../ai/cost';
 import { showAiKeyModal } from './aiKeyModal';
 import { showAiLocalModal } from './aiLocalModal';
+import { showAiSettingsModal } from './aiSettingsModal';
 import { mountPreactModal } from './preact/mount';
 import { isModelLoaded, resolveLocalModel } from '../ai/local';
 import type { ChatMessage, Provider } from '../ai/types';
@@ -28,8 +29,8 @@ export interface ReviewModalCallbacks {
   onReviewPosted: (msg: ChatMessage) => void;
 }
 
-const HOSTED_PROVIDERS: Provider[] = ['anthropic', 'openai', 'gemini'];
-const ALL_PROVIDERS: Provider[] = ['anthropic', 'openai', 'gemini', 'local'];
+const HOSTED_PROVIDERS: Provider[] = ['anthropic', 'openai', 'gemini', 'custom'];
+const ALL_PROVIDERS: Provider[] = ['anthropic', 'openai', 'gemini', 'custom', 'local'];
 
 interface ReviewState {
   provider: Provider;
@@ -48,6 +49,9 @@ function modelOptionsFor(p: Provider): { id: string; label: string }[] {
     case 'anthropic': return ANTHROPIC_MODEL_OPTIONS;
     case 'openai': return OPENAI_MODEL_OPTIONS;
     case 'gemini': return GEMINI_MODEL_OPTIONS;
+    // Custom endpoints have no curated catalog — the configured model is
+    // surfaced via the "(custom)" fallback option in the picker.
+    case 'custom': return [];
     case 'local': return [];
   }
 }
@@ -58,6 +62,7 @@ function defaultModelFor(p: Provider): string {
     case 'anthropic': return settings.toggles.anthropicModel;
     case 'openai': return settings.toggles.openaiModel;
     case 'gemini': return settings.toggles.geminiModel;
+    case 'custom': return settings.toggles.customModel;
     case 'local': return settings.toggles.localModel ?? '';
   }
 }
@@ -188,7 +193,9 @@ function ReviewBody(props: { state: Signal<ReviewState> }) {
     const focusChars = focus.length;
     const tokens = Math.round((codeChars + notesChars + focusChars + 800) / 4) + (context?.snapshot ? 1500 : 0);
     const est = estimateTurnCostUsd(provider, model, 0, tokens, 200);
-    costText = provider === 'local' ? 'Local model: free at the API level.' : `Estimated cost: ~${formatUsd(est)}`;
+    costText = (provider === 'local' || provider === 'custom')
+      ? 'Self-hosted model: free at the API level.'
+      : `Estimated cost: ~${formatUsd(est)}`;
   }
 
   return (
@@ -214,11 +221,23 @@ function ReviewBody(props: { state: Signal<ReviewState> }) {
       {runError && <div class="text-xs text-red-400">{runError}</div>}
       {noKeyForProvider && (
         <div class="text-xs text-amber-400 flex items-center gap-2">
-          <span>No key for {providerLabel(noKeyForProvider)}. </span>
+          <span>{noKeyForProvider === 'custom' ? "Custom endpoint isn't configured. " : `No key for ${providerLabel(noKeyForProvider)}. `}</span>
           <button
             type="button"
             class="underline text-amber-200 hover:text-amber-100"
             onClick={() => {
+              if (noKeyForProvider === 'custom') {
+                // Custom is configured in the settings modal, not the key modal.
+                void showAiSettingsModal({
+                  onChange: () => {
+                    const s = loadSettings();
+                    const ok = s.toggles.customBaseUrl.trim().length > 0 && s.toggles.customModel.trim().length > 0;
+                    const nextAvail: Record<Provider, boolean> = { ...availability, custom: ok };
+                    state.value = { ...state.value, noKeyForProvider: ok ? null : noKeyForProvider, availability: nextAvail, model: defaultModelFor('custom') };
+                  },
+                }, { initialTab: 'custom' });
+                return;
+              }
               void showAiKeyModal({
                 provider: noKeyForProvider,
                 onConnected: () => {
@@ -227,7 +246,7 @@ function ReviewBody(props: { state: Signal<ReviewState> }) {
                 },
               });
             }}
-          >Connect now</button>
+          >{noKeyForProvider === 'custom' ? 'Configure' : 'Connect now'}</button>
         </div>
       )}
       <p class="text-[10px] text-zinc-500">{costText}</p>
@@ -296,6 +315,9 @@ export async function showAiReviewModal(cb: ReviewModalCallbacks): Promise<void>
     anthropic: !!(await getKey('anthropic')),
     openai: !!(await getKey('openai')),
     gemini: !!(await getKey('gemini')),
+    // Custom is "available" as a reviewer once both its endpoint URL and a
+    // model id are set (the API key is optional).
+    custom: settings.toggles.customBaseUrl.trim().length > 0 && settings.toggles.customModel.trim().length > 0,
     local: !!settings.toggles.localModel,
   };
   const defaultProvider: Provider =
