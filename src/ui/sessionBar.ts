@@ -9,11 +9,13 @@ import {
   navigateVersion,
   listCurrentVersions,
   renameSession,
+  effectiveVersionLanguage,
   type SessionState,
 } from '../storage/sessionManager';
 import { onChange as onColorRegionsChange } from '../color/regions';
 import { onChange as onAnnotationStrokesChange } from '../annotations/annotations';
 import { showToast } from './toast';
+import { languageBadge } from './languageBadge';
 
 export interface SessionBarCallbacks {
   onSaveVersion: () => Promise<{ code: string; geometryData: Record<string, unknown> | null; thumbnail: Blob | null }>;
@@ -108,10 +110,14 @@ function render(state: SessionState) {
   });
   barEl.appendChild(nameEl);
 
-  // Language badge
-  const langLabel = state.session.language === 'scad' ? 'SCAD' : 'JS';
-  const langColor = state.session.language === 'scad' ? 'text-amber-400 border-amber-400/30' : 'text-blue-400 border-blue-400/30';
-  const langBadge = el('span', `text-[10px] font-semibold border rounded px-1 ${langColor}`, langLabel);
+  // Language badge — reflects the CURRENT version's language (since schema
+  // 1.8 each version carries its own), falling back to the session's default
+  // for pre-1.8 versions and for fresh sessions with no current version. The
+  // colour/label come from the shared `languageBadge` helper so JS / SCAD /
+  // BREP all read consistently with the toolbar pill and the gallery tiles.
+  const activeLang = effectiveVersionLanguage(state.currentVersion, state.session);
+  const badge = languageBadge(activeLang);
+  const langBadge = el('span', `text-[10px] font-semibold border rounded px-1 ${badge.classes}`, badge.label);
   barEl.appendChild(langBadge);
 
   // Separator

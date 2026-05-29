@@ -143,6 +143,22 @@ let forwardBtnRef: HTMLButtonElement | null = null;
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
 let inputEl: HTMLTextAreaElement | null = null;
+
+/** "Stuck to bottom" detection for the transcript. The auto-scroll on every
+ *  streamed delta used to fight the user when they scrolled up to read earlier
+ *  content. The fix is to measure pinned-ness *before* mutating content (since
+ *  appending text grows scrollHeight and would otherwise un-pin a user who was
+ *  at the bottom), then only re-pin to bottom if they were already there. The
+ *  threshold gives leeway for sub-pixel rounding and inertial scrolling. */
+const STICKY_BOTTOM_THRESHOLD_PX = 24;
+function isTranscriptPinnedToBottom(): boolean {
+  if (!transcriptEl) return true;
+  return transcriptEl.scrollHeight - transcriptEl.scrollTop - transcriptEl.clientHeight <= STICKY_BOTTOM_THRESHOLD_PX;
+}
+function pinTranscriptToBottom(): void {
+  if (!transcriptEl) return;
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
 let pendingImagesEl: HTMLElement | null = null;
 let toggleStripEl: HTMLElement | null = null;
 let costMeterEl: HTMLElement | null = null;
@@ -175,6 +191,11 @@ export interface AiPanelOptions {
    *  changes (landing ↔ editor) — the landing-page chat flow depends on that.
    *  Falls back to <body> if omitted. */
   mountInto?: HTMLElement;
+  /** Suppress the remembered-open auto-expand for this load. main.ts passes
+   *  this when the app boots on the landing page so the drawer never
+   *  auto-opens there, even if `drawerOpen` is set from a prior editor
+   *  session. The user can still open it manually. */
+  suppressAutoOpen?: boolean;
 }
 
 /** Mount the drawer once on app start. Idempotent. */
@@ -189,7 +210,10 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
 
   const settings = loadSettings();
   panelWidth = settings.aiPanelWidth;
-  state.open = settings.drawerOpen;
+  // Honor the remembered open state, but never auto-open on the landing page
+  // (main.ts sets suppressAutoOpen there) — the drawer shouldn't pop open
+  // before the user has even entered the editor.
+  state.open = settings.drawerOpen && !opts.suppressAutoOpen;
 
   buildDrawer();
   // The panel docks as a column on desktop but becomes a full-screen overlay
@@ -221,7 +245,13 @@ export async function initAiPanel(opts: AiPanelOptions = {}): Promise<void> {
   // On a default-open load, show the panel without grabbing keyboard focus —
   // the user hasn't asked to type in it yet.
   if (state.open) showDrawer(false);
-  else hideDrawer();
+  else if (opts.suppressAutoOpen) {
+    // Landing-page boot: keep the drawer visually hidden (its default state)
+    // but DON'T persist drawerOpen:false — that would wipe the user's
+    // remembered preference, so the panel wouldn't auto-open in the editor
+    // later. The drawer element already starts with the `hidden` class.
+    state.open = false;
+  } else hideDrawer();
 }
 
 /** Called by main.ts whenever the active session changes (open / close).
@@ -251,6 +281,9 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
   await loadHistoryForCurrentSession();
   await applySessionAiPreference();
   renderTranscript();
+  // Session switch is an explicit user action — land at the bottom regardless
+  // of where they were scrolled in the previous session's transcript.
+  pinTranscriptToBottom();
   renderCostMeter();
 }
 
@@ -1372,6 +1405,9 @@ function formatDuration(ms: number): string {
 
 function renderTranscript(): void {
   if (!transcriptEl) return;
+  // Measure before replaceChildren — clearing children clamps scrollTop, so
+  // any post-clear check would mis-report the user's intent.
+  const pinned = isTranscriptPinnedToBottom();
   transcriptEl.replaceChildren();
   const hasHistory = state.history.length > 0;
   const hasQueue = state.queuedBlocks.length > 0;
@@ -1395,7 +1431,7 @@ function renderTranscript(): void {
   if (hasQueue) {
     transcriptEl.appendChild(renderQueuedPreview());
   }
-  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  if (pinned) pinTranscriptToBottom();
 }
 
 function renderQueuedPreview(): HTMLElement {
@@ -2209,6 +2245,10 @@ async function sendMessage(): Promise<void> {
   state.rewindStack = [];
   progressState.retryCount = 0;
   stalledByWatchdog = false;
+  // Hitting send is an explicit "follow the new turn" gesture — re-pin to
+  // bottom so the user's own bubble and the streamed reply are visible even
+  // if they had been scrolled up reading earlier history.
+  pinTranscriptToBottom();
   await runTurnWithStallRetry(apiKey, settings.toggles, blocks);
 }
 
@@ -2343,11 +2383,13 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
       },
       onAssistantText: delta => {
         if (liveTextEl) {
+          const pinned = isTranscriptPinnedToBottom();
           liveTextEl.textContent = (liveTextEl.textContent ?? '') + delta;
-          if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+          if (pinned) pinTranscriptToBottom();
         }
       },
       onAssistantThinking: delta => {
+        const pinned = isTranscriptPinnedToBottom();
         if (!liveThinkingEl) {
           const wrapEl = (liveTextEl?.parentElement
             ?? transcriptEl?.querySelector(`[data-message-id="${activeAssistantId}"]`)) as HTMLElement | null;
@@ -2360,9 +2402,12 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         const body = liveThinkingEl.querySelector('[data-thinking-body]') as HTMLElement | null;
         if (body) {
           body.textContent = (body.textContent ?? '') + delta;
+          // The thinking box's inner <pre> (max-h-32) is its own scroll
+          // container — keep it pinned so the latest reasoning tokens stay
+          // visible inside the bubble itself.
           body.scrollTop = body.scrollHeight;
         }
-        if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+        if (pinned) pinTranscriptToBottom();
       },
       onProgress: info => {
         // The next step has begun — fold the live thinking preview into its

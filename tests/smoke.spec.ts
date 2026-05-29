@@ -88,6 +88,30 @@ test.describe('AI chat panel', () => {
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toHaveCount(0);
   });
 
+  test('code pane defaults hidden when the AI drawer is open, and respects an explicit Show code', async ({ page }) => {
+    // First visit: drawer opens by default, so the code pane should NOT
+    // compete with it for screen real estate. The "▶ Show code" expand
+    // button only shows when the editor group is collapsed.
+    await page.goto('/editor');
+    await page.waitForSelector('#btn-ai');
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
+    await expect(page.locator('#ai-panel')).toBeVisible();
+    const expandBtn = page.locator('button:has-text("▶ Show code")');
+    await expect(expandBtn).toBeVisible();
+
+    // User opts in to the code pane; that choice must survive a reload even
+    // though the AI drawer is still open.
+    await expandBtn.click();
+    await expect(expandBtn).toBeHidden();
+    await expect(page.locator('.cm-content')).toBeVisible();
+
+    await page.reload();
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
+    await expect(page.locator('#ai-panel')).toBeVisible();
+    await expect(page.locator('button:has-text("▶ Show code")')).toBeHidden();
+    await expect(page.locator('.cm-content')).toBeVisible();
+  });
+
   test('drawer close state persists across reload', async ({ page }) => {
     // The drawer opens by default, but the user's choice is remembered: once
     // they close it, the stored drawerOpen=false keeps it closed on reload.
@@ -216,25 +240,23 @@ test.describe('AI chat panel', () => {
     }
   });
 
-  test('drawer + send from landing page navigates to editor', async ({ page }) => {
-    // Ensure the drawer is open on /editor first so it persists open, then go
-    // back to the landing page. The drawer docks into the app-level row
-    // (outside the per-page subtrees), so it stays mounted and visible there.
+  test('drawer never auto-opens on a fresh landing-page load', async ({ page }) => {
+    // Open the drawer in the editor so the remembered drawerOpen=true setting
+    // is persisted, then do a FULL reload of the landing page. The drawer must
+    // NOT auto-open there — the remembered open state only applies once the
+    // user is in the editor. (The panel still docks into the app-level row, so
+    // it stays mounted/attached — it's just hidden.)
     await page.goto('/editor');
     await openAiPanel(page);
     await page.goto('/');
     await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await expect(page.locator('#ai-panel')).toBeVisible();
+    await expect(page.locator('#ai-panel')).toBeHidden();
 
-    // Sending a message from the landing page should navigate to /editor.
-    // No key is set so the key modal appears first — that path is fine,
-    // we just want to confirm we don't silently model on /.
-    await page.locator('#ai-panel textarea').fill('build a cube');
-    await page.locator('#ai-panel button:has-text("Send")').dispatchEvent('click');
-    const onEditor = page.waitForURL(/\/editor/, { timeout: 5000 }).then(() => 'editor');
-    const onModal = page.waitForSelector('input[type="password"]', { timeout: 5000 }).then(() => 'modal');
-    const which = await Promise.race([onEditor, onModal]);
-    expect(['editor', 'modal']).toContain(which);
+    // And the remembered preference is untouched: opening the editor again
+    // auto-opens the drawer as before.
+    await page.goto('/editor');
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
+    await expect(page.locator('#ai-panel')).toBeVisible();
   });
 
   test('Send stays as Send when a turn is in flight; Stop is the separate red button', async ({ page }) => {

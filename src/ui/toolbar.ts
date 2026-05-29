@@ -20,12 +20,24 @@ export interface ToolbarCallbacks {
   onExportSTL: () => void;
   onExportOBJ: () => void;
   onExport3MF: () => void;
+  /** BREP-only — silently hidden from the menu when the active language is
+   *  not 'replicad'. Toolbar pings `getActiveLanguage` at menu-open time to
+   *  decide visibility. */
+  onExportSTEP: () => void;
   onExportSessionJSON: () => void;
+  /** "Share link…" — encode the current version into a read-only,
+   *  hash-encoded share URL and open the copy modal. */
+  onShareLink: () => void;
   onExportRawCode: () => void;
   onImportFile: (file: File) => void | Promise<void>;
   /** Re-import a blob already held in the inbox (e.g. recent-imports re-click). */
   onImportInboxEntry: (entry: ImportInboxEntry) => void | Promise<void>;
-  onLanguageSwitch: (lang: 'manifold-js' | 'scad') => void;
+  /** Open the image → keychain / tile / stepped-relief import wizard. */
+  onCreateRelief: () => void;
+  onLanguageSwitch: (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => void;
+  /** "?" link next to the language toggle — opens a modal explaining
+   *  what each engine is best for. */
+  onLanguageHelp: () => void | Promise<void>;
   onGoHome: () => void;
   /** Toggle the AI chat drawer — drives the prominent "Use AI" button in the toolbar. */
   onToggleAi: () => void;
@@ -82,7 +94,7 @@ export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
 }
 
 /** File extensions accepted by the Import button and drag-and-drop. */
-export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl';
+export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp,.vox,.png,.jpg,.jpeg,.gif,.webp,.bmp';
 
 let _autoRun = true;
 let _onAutoRunChange: ((on: boolean) => void) | null = null;
@@ -105,19 +117,23 @@ export function onAutoRunChange(cb: (on: boolean) => void): void { _onAutoRunCha
 // Language toggle state — managed externally via setToolbarLanguage()
 let _langBtnJs: HTMLButtonElement | null = null;
 let _langBtnScad: HTMLButtonElement | null = null;
-let _currentLang: 'manifold-js' | 'scad' = 'manifold-js';
+let _langBtnBrep: HTMLButtonElement | null = null;
+let _langBtnVoxel: HTMLButtonElement | null = null;
+let _currentLang: 'manifold-js' | 'scad' | 'replicad' | 'voxel' = 'manifold-js';
 
 const LANG_ACTIVE = 'px-2 py-0.5 rounded text-xs font-medium transition-colors bg-zinc-700 text-zinc-100';
 const LANG_INACTIVE = 'px-2 py-0.5 rounded text-xs font-medium transition-colors text-zinc-500 hover:text-zinc-300';
 
 function syncLangToggle() {
-  if (!_langBtnJs || !_langBtnScad) return;
+  if (!_langBtnJs || !_langBtnScad || !_langBtnBrep || !_langBtnVoxel) return;
   _langBtnJs.className = _currentLang === 'manifold-js' ? LANG_ACTIVE : LANG_INACTIVE;
   _langBtnScad.className = _currentLang === 'scad' ? LANG_ACTIVE : LANG_INACTIVE;
+  _langBtnBrep.className = _currentLang === 'replicad' ? LANG_ACTIVE : LANG_INACTIVE;
+  _langBtnVoxel.className = _currentLang === 'voxel' ? LANG_ACTIVE : LANG_INACTIVE;
 }
 
 /** Update the toolbar language toggle from outside (e.g. when opening a session). */
-export function setToolbarLanguage(lang: 'manifold-js' | 'scad'): void {
+export function setToolbarLanguage(lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): void {
   _currentLang = lang;
   syncLangToggle();
 }
@@ -201,10 +217,43 @@ export function createToolbar(
     }
   });
 
+  _langBtnBrep = document.createElement('button');
+  _langBtnBrep.textContent = 'BREP';
+  _langBtnBrep.title = 'BREP (replicad / OpenCASCADE) — exact fillets, chamfers, STEP export. Lazy-loads on first switch.';
+  _langBtnBrep.addEventListener('click', () => {
+    if (_currentLang !== 'replicad') {
+      callbacks.onLanguageSwitch('replicad');
+    }
+  });
+
+  _langBtnVoxel = document.createElement('button');
+  _langBtnVoxel.textContent = 'VOXEL';
+  _langBtnVoxel.title = 'Voxel — blocky colored-cube modeling. Pure JS, no WASM; great for pixel-art and image imports.';
+  _langBtnVoxel.addEventListener('click', () => {
+    if (_currentLang !== 'voxel') {
+      callbacks.onLanguageSwitch('voxel');
+    }
+  });
+
   syncLangToggle();
   langGroup.appendChild(_langBtnJs);
   langGroup.appendChild(_langBtnScad);
+  langGroup.appendChild(_langBtnBrep);
+  langGroup.appendChild(_langBtnVoxel);
   toolbar.appendChild(langGroup);
+
+  // Help link next to the language toggle — "?" icon that opens a modal
+  // explaining what each engine is best for. Small footprint so it doesn't
+  // crowd the toolbar; the title attribute also reads as a hint if the user
+  // hovers without clicking.
+  const langHelpBtn = document.createElement('button');
+  langHelpBtn.type = 'button';
+  langHelpBtn.className = 'ml-1 w-5 h-5 rounded-full text-[10px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 border border-zinc-600 flex items-center justify-center transition-colors';
+  langHelpBtn.textContent = '?';
+  langHelpBtn.title = 'What language to pick?';
+  langHelpBtn.setAttribute('aria-label', 'Open language help');
+  langHelpBtn.addEventListener('click', () => { void callbacks.onLanguageHelp(); });
+  toolbar.appendChild(langHelpBtn);
 
   // Spacer
   const spacer = document.createElement('div');
@@ -261,7 +310,7 @@ export function createToolbar(
 
   const importDropdown = document.createElement('div');
   importDropdown.id = 'import-dropdown';
-  importDropdown.className = 'absolute right-0 top-full mt-1 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1 hidden z-20 w-72 max-h-[80vh] overflow-y-auto';
+  importDropdown.className = 'fixed left-2 right-2 top-14 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1 hidden z-20 max-h-[80vh] overflow-y-auto md:absolute md:left-auto md:right-0 md:top-full md:mt-1 md:w-72';
 
   importDropdown.appendChild(createSectionHeader('From file'));
   const chooseFileOpt = createDescribedItem(
@@ -273,6 +322,18 @@ export function createToolbar(
     importInput.click();
   });
   importDropdown.appendChild(chooseFileOpt);
+
+  importDropdown.appendChild(createDivider());
+  importDropdown.appendChild(createSectionHeader('Create'));
+  const reliefOpt = createDescribedItem(
+    'Image → keychain / tile / relief…',
+    'Turn an image (or SVG) into a printable colour tile, keychain, sticker, or stepped relief.',
+  );
+  reliefOpt.addEventListener('click', () => {
+    importDropdown.classList.add('hidden');
+    callbacks.onCreateRelief();
+  });
+  importDropdown.appendChild(reliefOpt);
 
   // Recent Imports section — populated from the import inbox.
   const importRecentDivider = createDivider();
@@ -374,7 +435,7 @@ export function createToolbar(
 
   const dropdown = document.createElement('div');
   dropdown.id = 'export-dropdown';
-  dropdown.className = 'absolute right-0 top-full mt-1 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1 hidden z-20 w-72 max-h-[80vh] overflow-y-auto';
+  dropdown.className = 'fixed left-2 right-2 top-14 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1 hidden z-20 max-h-[80vh] overflow-y-auto md:absolute md:left-auto md:right-0 md:top-full md:mt-1 md:w-72';
 
   // Section: 3D model formats
   dropdown.appendChild(createSectionHeader('3D model'));
@@ -416,10 +477,25 @@ export function createToolbar(
     callbacks.onExportGLB();
   });
 
+  // STEP — BREP-only; the menu show/hide is gated below in the open-menu
+  // handler so the option only appears in 'replicad' sessions where there's
+  // an actual BREP shape on the heap. (In manifold-js sessions with
+  // `api.BREP.*` mixed in, the BREP source is forgotten at toManifold time —
+  // STEP wouldn't have anything to export.)
+  const stepOpt = createDescribedItem(
+    'STEP',
+    'Exact B-rep for mechanical-CAD interop (SolidWorks, Fusion, FreeCAD). BREP sessions only.',
+  );
+  stepOpt.addEventListener('click', () => {
+    dropdown.classList.add('hidden');
+    callbacks.onExportSTEP();
+  });
+
   dropdown.appendChild(threemfOpt);
   dropdown.appendChild(objOpt);
   dropdown.appendChild(stlOpt);
   dropdown.appendChild(glbOpt);
+  dropdown.appendChild(stepOpt);
 
   // Section: project / source — for sharing between users or working with the code directly
   dropdown.appendChild(createDivider());
@@ -443,8 +519,18 @@ export function createToolbar(
     callbacks.onExportRawCode();
   });
 
+  const shareOpt = createDescribedItem(
+    'Share link…',
+    'Create a public read-only link to this version. Anyone can preview and fork it — nothing is uploaded.',
+  );
+  shareOpt.addEventListener('click', () => {
+    dropdown.classList.add('hidden');
+    callbacks.onShareLink();
+  });
+
   dropdown.appendChild(sessionOpt);
   dropdown.appendChild(codeOpt);
+  dropdown.appendChild(shareOpt);
 
   // Section: Recent Exports — reuse-anything-you-just-downloaded list. Hidden when empty.
   const recentDivider = createDivider();
@@ -521,6 +607,10 @@ export function createToolbar(
   btnExport.addEventListener('click', () => {
     // Refresh relative timestamps each time the dropdown opens.
     renderRecent();
+    // STEP is BREP-only — show/hide based on the language toggle's current
+    // state. Putting this on open (rather than wiring a setter) keeps the
+    // menu logic local; a language switch closes the menu first anyway.
+    stepOpt.classList.toggle('hidden', _currentLang !== 'replicad');
     dropdown.classList.toggle('hidden');
   });
 

@@ -1,0 +1,22 @@
+{
+  "slug": "rangefinder-camera",
+  "name": "Vintage Rangefinder Camera",
+  "description": "A classic 35mm rangefinder camera with a chrome top plate, leatherette body, a fixed lens with a dark recessed front element, twin viewfinder windows, a brass shutter release, and a wind-lever knob.",
+  "scadCode": "module label(name) { children(); }\n\n// Camera body: a rounded box that includes the top plate cap\nlabel(\"body\") union() {\n  translate([-40, -12,  2]) cube([80, 24, 26]);\n  translate([0, 0, 28]) cube([80, 24, 4], true);\n}\n\n// Lens barrel (front of camera) -- pointing +Y, mounted on body front\nlabel(\"lens\")\n  translate([0, 12, 15])\n    rotate([-90, 0, 0])\n      difference() {\n        union() {\n          cylinder(h = 22, r1 = 11, r2 = 10, $fn = 48);\n          translate([0, 0, 22]) cylinder(h = 3, r = 12, $fn = 48);\n          translate([0, 0, -2]) cylinder(h = 2, r = 12, $fn = 48);\n        }\n        translate([0, 0, 18]) cylinder(h = 8, r = 8, $fn = 48);\n      }\n\n// Front glass element (dark, recessed inside the lens barrel)\nlabel(\"glass\")\n  translate([0, 33, 15])\n    rotate([-90, 0, 0])\n      cylinder(h = 1, r = 7.5, $fn = 48);\n\n// Shutter release button on the top plate\nlabel(\"shutter\")\n  translate([28, 0, 31]) cylinder(h = 3, r = 3, $fn = 32);\n\n// Rangefinder / viewfinder windows -- two small rectangles set into the front\nlabel(\"viewfinder\") union() {\n  // main viewfinder window\n  translate([-26, 11.5, 26]) cube([10, 2, 5], true);\n  // rangefinder window\n  translate([18, 11.5, 26]) cube([8, 2, 5], true);\n}\n\n// Wind lever knob on the right side of the top plate\nlabel(\"wind\")\n  translate([34, -7, 31])\n    cylinder(h = 4, r = 4, $fn = 32);\n",
+  "paintCalls": [
+    { "label": "body",       "color": [0.10, 0.10, 0.11] },
+    { "label": "lens",       "color": [0.78, 0.80, 0.82] },
+    { "label": "glass",      "color": [0.10, 0.18, 0.28] },
+    { "label": "shutter",    "color": [0.82, 0.62, 0.25] },
+    { "label": "viewfinder", "color": [0.55, 0.78, 0.88] },
+    { "label": "wind",       "color": [0.78, 0.80, 0.82] }
+  ],
+  "triangleCount": 1236,
+  "feedback": [
+    "The 'labels at top level only' rule is a real footgun — I almost wrapped my lens barrel difference() in a label() that lived inside another union. A linter that warns when label() appears inside difference/intersection/hull/union blocks would save an iteration every time.",
+    "Building additive sub-features works fine, but it's awkward that a region that is visually 'a hole through the body' (like a real viewfinder window cut into the front plate) has to be modeled as a small additive solid floating in front. A way to label a subtracted region (paint the resulting interior face) would unlock dial holes, speaker grilles, lens recesses.",
+    "I wanted a quick way to preview each labelled region by itself before painting — e.g. a CLI flag or REPL command that re-renders with one label highlighted. Right now you compile, paint, and only then discover that 'glass' is actually a bigger surface than you thought.",
+    "$fn tuning is mostly guesswork until you compile. Showing the triangle count per label live in the editor (not just the total) would make it easy to spot the one cylinder that's eating half the budget.",
+    "Label names being literal-only is fine for hand-written models, but it kills procedural generation (e.g. label(str('tooth', i)) for a gear). A whitelist of allowed runtime expressions, or even just str() with literal-only args, would be a small win."
+  ]
+}

@@ -1,11 +1,26 @@
 import type { MeshData, MeshResult, SourceDiagnostic } from '../types';
 
-export type Language = 'manifold-js' | 'scad';
+export type Language = 'manifold-js' | 'scad' | 'replicad' | 'voxel';
 
 export const DEFAULT_LANGUAGE: Language = 'manifold-js';
 
+/** Languages the app exposes to users, in the order shown in pickers. The
+ *  default (manifold-js) goes first because it's eager-loaded and has the
+ *  broadest feature surface; everything after it is lazy. */
+export const ALL_LANGUAGES: readonly Language[] = ['manifold-js', 'scad', 'replicad', 'voxel'] as const;
+
 export function isLanguage(v: unknown): v is Language {
-  return v === 'manifold-js' || v === 'scad';
+  return v === 'manifold-js' || v === 'scad' || v === 'replicad' || v === 'voxel';
+}
+
+/** Short label for UI badges and the editor title. */
+export function languageDisplay(lang: Language): string {
+  switch (lang) {
+    case 'manifold-js': return 'JS';
+    case 'scad': return 'SCAD';
+    case 'replicad': return 'BREP';
+    case 'voxel': return 'VOXEL';
+  }
 }
 
 export interface ValidateResult {
@@ -21,8 +36,10 @@ export interface Engine {
   /** Is the engine initialized and ready? */
   isReady(): boolean;
   /** Run source code; return mesh + (optional) manifold handle or error.
-   * Requires init() to have completed — throws/errors if not ready. */
-  run(source: string): MeshResult;
+   * Requires init() to have completed — throws/errors if not ready.
+   * `paramOverrides` feeds the Customizer's tweaked values into the model's
+   * `api.params({...})` call (manifold-js only; other engines ignore it). */
+  run(source: string, paramOverrides?: Record<string, unknown>): MeshResult;
   /** Best-effort syntax/compile check. */
   validate(source: string): ValidateResult;
 }
