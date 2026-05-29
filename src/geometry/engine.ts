@@ -201,7 +201,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     const lostLabels = msg.lostLabels as string[] | null;
     const result: MeshResult = {
       mesh,
-      manifold: null, // live WASM object can't cross threads; caller reconstructs via ofMesh()
+      manifold: null, // live WASM object can't cross threads; caller reconstructs via ofMesh() when not render-only
       error: msg.error as string | null,
       diagnostics: msg.diagnostics as MeshResult['diagnostics'],
       labelMap: labelMapEntries
@@ -210,6 +210,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       labelColors: labelColorEntries && labelColorEntries.length > 0
         ? new Map(labelColorEntries)
         : undefined,
+      renderOnly: !!msg.renderOnly,
       lostLabels: lostLabels && lostLabels.length > 0 ? lostLabels : undefined,
       paramsSchema: (msg.paramsSchema as MeshResult['paramsSchema']) ?? undefined,
     };

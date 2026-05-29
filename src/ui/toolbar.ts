@@ -32,6 +32,8 @@ export interface ToolbarCallbacks {
   onImportFile: (file: File) => void | Promise<void>;
   /** Re-import a blob already held in the inbox (e.g. recent-imports re-click). */
   onImportInboxEntry: (entry: ImportInboxEntry) => void | Promise<void>;
+  /** Open the image → keychain / tile / stepped-relief import wizard. */
+  onCreateRelief: () => void;
   onLanguageSwitch: (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => void;
   /** "?" link next to the language toggle — opens a modal explaining
    *  what each engine is best for. */
@@ -308,7 +310,7 @@ export function createToolbar(
 
   const importDropdown = document.createElement('div');
   importDropdown.id = 'import-dropdown';
-  importDropdown.className = 'absolute right-0 top-full mt-1 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1 hidden z-20 w-72 max-h-[80vh] overflow-y-auto';
+  importDropdown.className = 'fixed left-2 right-2 top-14 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1 hidden z-20 max-h-[80vh] overflow-y-auto md:absolute md:left-auto md:right-0 md:top-full md:mt-1 md:w-72';
 
   importDropdown.appendChild(createSectionHeader('From file'));
   const chooseFileOpt = createDescribedItem(
@@ -320,6 +322,18 @@ export function createToolbar(
     importInput.click();
   });
   importDropdown.appendChild(chooseFileOpt);
+
+  importDropdown.appendChild(createDivider());
+  importDropdown.appendChild(createSectionHeader('Create'));
+  const reliefOpt = createDescribedItem(
+    'Image → keychain / tile / relief…',
+    'Turn an image (or SVG) into a printable colour tile, keychain, sticker, or stepped relief.',
+  );
+  reliefOpt.addEventListener('click', () => {
+    importDropdown.classList.add('hidden');
+    callbacks.onCreateRelief();
+  });
+  importDropdown.appendChild(reliefOpt);
 
   // Recent Imports section — populated from the import inbox.
   const importRecentDivider = createDivider();
@@ -421,7 +435,7 @@ export function createToolbar(
 
   const dropdown = document.createElement('div');
   dropdown.id = 'export-dropdown';
-  dropdown.className = 'absolute right-0 top-full mt-1 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1 hidden z-20 w-72 max-h-[80vh] overflow-y-auto';
+  dropdown.className = 'fixed left-2 right-2 top-14 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1 hidden z-20 max-h-[80vh] overflow-y-auto md:absolute md:left-auto md:right-0 md:top-full md:mt-1 md:w-72';
 
   // Section: 3D model formats
   dropdown.appendChild(createSectionHeader('3D model'));
