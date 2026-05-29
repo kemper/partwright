@@ -194,23 +194,26 @@ test.describe('Auto-continue (finish-tool resume)', () => {
     expect(out.reason).toBe('end_turn'); // not iteration_cap (32) — the ceiling stopped it first
   });
 
-  test('the Auto-continue pill toggles the setting', async ({ page }) => {
+  test('auto-continue is ON by default, and a disable persists across reload', async ({ page }) => {
     await page.goto('/editor');
     await waitForEditorReady(page);
-    await page.evaluate(async () => {
-      const settings = await import('/src/ai/settings.ts');
-      settings.saveSettings(settings.setToggles(settings.loadSettings(), { autoResume: false }));
-    });
     await openAiPanel(page);
     const pill = page.locator('#ai-panel button:has-text("Auto-continue")');
     await expect(pill).toBeVisible();
-    expect(await pill.getAttribute('aria-pressed')).toBe('false');
-    await pill.dispatchEvent('click');
+    // Enabled by default (fresh context → default standard preset).
     await expect(pill).toHaveAttribute('aria-pressed', 'true');
-    const persisted = await page.evaluate(async () => {
-      const settings = await import('/src/ai/settings.ts');
-      return settings.loadSettings().toggles.autoResume;
-    });
-    expect(persisted).toBe(true);
+    expect(await page.evaluate(async () => (await import('/src/ai/settings.ts')).loadSettings().toggles.autoResume)).toBe(true);
+
+    // Disable it.
+    await pill.dispatchEvent('click');
+    await expect(pill).toHaveAttribute('aria-pressed', 'false');
+
+    // The disable must survive a page refresh (the user's explicit ask).
+    await page.reload();
+    await waitForEditorReady(page);
+    await openAiPanel(page);
+    const pillAfter = page.locator('#ai-panel button:has-text("Auto-continue")');
+    await expect(pillAfter).toHaveAttribute('aria-pressed', 'false');
+    expect(await page.evaluate(async () => (await import('/src/ai/settings.ts')).loadSettings().toggles.autoResume)).toBe(false);
   });
 });

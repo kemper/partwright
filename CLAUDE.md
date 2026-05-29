@@ -203,12 +203,13 @@ Gemini 3 thinking models emit their reasoning as `thought:true` text parts (we o
 
 #### Auto-continue (the ♾ pill)
 
-`ChatToggles.autoResume` (boolean, default **off**, per-session) makes the agent keep working until the model explicitly signals completion by calling the **`finish`** sentinel tool, instead of stopping at every `end_turn`. It's the antidote to models (notably Gemini) that end a turn early without finishing the task. When **on**:
+`ChatToggles.autoResume` (boolean, **on by default** in the standard/full presets — off in the lean minimal preset; per-session) makes the agent keep working until the model explicitly signals completion by calling the **`finish`** sentinel tool, instead of stopping at every `end_turn`. It's the antidote to models (notably Gemini) that end a turn early without finishing the task. The default lives in `DEFAULT_TOGGLES_BY_PRESET`; turning it off writes a `custom` preset that the `??`-based `mergeWithDefaults` preserves across reloads (an explicit `false` is never overwritten by the on-by-default). When **on**:
 
 - `buildToolList` adds the `finish` tool (gated by `AUTORESUME_GATED` in `tools.ts`); `executeTool` short-circuits it to a sentinel ack (it never touches `window.partwright`). `toggleSuffix` appends an instruction telling the model to call `finish` only when truly done.
 - In `chatLoop`, a turn that ends with `end_turn` (text **or** empty) **without** a `finish` call appends a synthetic user nudge (`AUTO_RESUME_PROMPT`, persisted with `ChatMessage.autoResumeNudge` → rendered as a subtle divider, not a blue bubble) and loops again. A turn that **does** call `finish` runs any remaining tools, then stops cleanly with reason `end_turn`.
 - It's bounded by the existing **iteration cap** (the `for` loop) and **spend cap** (checked each iteration) — whichever trips first — so a model that never calls `finish` lands on the normal iteration-cap "Keep going" notice rather than looping forever. A queued human message takes priority over a `finish` stop (the loop delivers it instead of stopping).
-- **off** (default) is byte-for-byte the old behavior: no `finish` tool, no nudges, stop at each `end_turn`.
+- A no-progress ceiling (`MAX_CONSECUTIVE_AUTO_RESUMES` in `chatLoop.ts`) caps consecutive nudges that make no progress (no tool call), resetting on any tool call — so even under infinite iteration + spend caps a model that never calls `finish` can't loop forever. The auto-resume nudge also handles the `empty_final` case: an empty assistant turn gets a `(no response)` placeholder so it isn't dropped by the request builders (which would otherwise leave two consecutive `user` turns — a hard 400 on Anthropic). A human message queued mid-turn is delivered on the resume path in preference to the synthetic nudge.
+- Turning it **off** is byte-for-byte the old behavior (no `finish` tool, no nudges, stop at each `end_turn`) and is remembered across reloads.
 
 #### Cross-provider review
 

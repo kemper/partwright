@@ -102,8 +102,10 @@ export interface ChatToggles {
    *  the `finish` sentinel tool; a turn that ends WITHOUT calling finish is
    *  automatically resumed (a synthetic nudge is appended and the loop runs
    *  again) so the model keeps working — bounded by the iteration + spend caps,
-   *  whichever trips first. OFF (default) reproduces the normal
-   *  one-stop-per-end_turn behavior. Per-session, like the other toggles. */
+   *  whichever trips first. ON by default (standard/full presets; off in the
+   *  lean minimal preset); turning it OFF reproduces the normal
+   *  one-stop-per-end_turn behavior and is remembered across reloads.
+   *  Per-session, like the other toggles. */
   autoResume: boolean;
   /** Which backend the chat is talking to right now. */
   provider: Provider;

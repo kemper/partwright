@@ -99,6 +99,9 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     // Standard (the default) and Full enable it — thinking ships on by
     // default now; users can still dial it back with the Thinking pill.
     thinking: 'off',
+    // Auto-continue is enabled by default in standard/full, but stays off in
+    // the lean minimal preset — it's a cost-increasing autonomy feature, so it
+    // belongs in the same "off to minimize spend" bucket as vision/thinking.
     autoResume: false,
     anthropicModel: 'claude-haiku-4-5',
   },
@@ -116,7 +119,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     maxIterations: 'high',
     maxSpend: 'medium',
     thinking: 'high',
-    autoResume: false,
+    autoResume: true,
     anthropicModel: 'claude-sonnet-4-6',
   },
   full: {
@@ -126,7 +129,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     maxIterations: 'ultra',
     maxSpend: 'high',
     thinking: 'high',
-    autoResume: false,
+    autoResume: true,
     anthropicModel: 'claude-opus-4-7',
   },
 };
