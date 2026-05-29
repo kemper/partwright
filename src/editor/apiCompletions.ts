@@ -82,6 +82,57 @@ const MANIFOLD_INSTANCE: Completion[] = [
   fn('minGap', '(other, searchLength)', 'Minimum gap to another Manifold (0..searchLength).'),
 ];
 
+const SDF_STATIC: Completion[] = [
+  fn('sphere', '(radius)', 'SDF sphere centered at origin. Chain with .translate/.union/.smoothUnion/.build.'),
+  fn('ellipsoid', '(rx, ry, rz)', 'Ellipsoid with per-axis radii — the "squashed sphere" uniform .scale() can\'t make.'),
+  fn('box', '([x,y,z] | n)', 'SDF box centered at origin with full extents [x,y,z] (or a scalar cube).'),
+  fn('roundedBox', '([x,y,z], radius)', 'Box with rounded edges. OUTER size stays [x,y,z] (radius < half the smallest dim).'),
+  fn('cylinder', '(radius, height)', 'Z-aligned cylinder centered at origin, height spans [-h/2, h/2].'),
+  fn('roundedCylinder', '(radius, height, edgeRadius)', 'Cylinder with rounded top/bottom edges. OUTER radius + height stay as given.'),
+  fn('torus', '(majorRadius, minorRadius)', 'Torus in the XY plane.'),
+  fn('capsule', '([x1,y1,z1], [x2,y2,z2], radius)', 'Hemisphere-capped rod between two points.'),
+  fn('gyroid', '(cellSize, thickness)', 'Gyroid TPMS — INFINITE. Intersect with a finite shape or pass explicit bounds to .build().'),
+  fn('schwarzP', '(cellSize, thickness)', 'Schwarz Primitive TPMS (blockier cubic lattice). INFINITE — intersect or pass bounds.'),
+  fn('diamond', '(cellSize, thickness)', 'Schwarz Diamond TPMS (interpenetrating channels). INFINITE — intersect or pass bounds.'),
+  fn('lidinoid', '(cellSize, thickness)', 'Lidinoid TPMS (woven, higher-genus). INFINITE — intersect or pass bounds.'),
+  fn('gradedGyroid', '(cellSize, thicknessFn)', 'Gyroid with spatially-varying wall thickness — thicknessFn(x,y,z)=>thickness. INFINITE.'),
+  fn('gradedSchwarzP', '(cellSize, thicknessFn)', 'Schwarz P with spatially-varying wall thickness — thicknessFn(x,y,z)=>thickness. INFINITE.'),
+  fn('gradedDiamond', '(cellSize, thicknessFn)', 'Diamond TPMS with spatially-varying wall thickness — thicknessFn(x,y,z)=>thickness. INFINITE.'),
+  fn('gradedLidinoid', '(cellSize, thicknessFn)', 'Lidinoid with spatially-varying wall thickness — thicknessFn(x,y,z)=>thickness. INFINITE.'),
+  fn('union', '(...nodes)', 'Hard union of two or more SDF nodes.'),
+  fn('smoothUnion', '(a, b, k)', 'Smoothly blended union — k is the fillet radius. The killer feature of SDF.'),
+  fn('smoothSubtract', '(a, b, k)', 'Smoothly blended subtract — softened pocket with fillet radius k.'),
+  fn('smoothIntersect', '(a, b, k)', 'Smoothly blended intersection.'),
+  fn('subtract', '(a, b)', 'a minus b (sharp).'),
+  fn('intersect', '(a, b)', 'Intersection of two SDF nodes.'),
+  fn('build', '(node, opts?)', 'Lower an SDF tree to a Manifold via marching tetrahedra. opts = { edgeLength?, bounds?, level?, tolerance? }.'),
+];
+
+const SDF_INSTANCE: Completion[] = [
+  fn('union', '(other)', 'Sharp union with another SDF node.'),
+  fn('subtract', '(other)', 'Sharp subtract another SDF node from this.'),
+  fn('intersect', '(other)', 'Sharp intersection with another SDF node.'),
+  fn('smoothUnion', '(other, k)', 'Blended union — k is the fillet radius.'),
+  fn('smoothSubtract', '(other, k)', 'Blended subtract.'),
+  fn('smoothIntersect', '(other, k)', 'Blended intersection.'),
+  fn('translate', '([x,y,z]) | (x,y,z)', 'Move in space.'),
+  fn('rotate', '([rx,ry,rz]) | (rx,ry,rz)', 'Euler degrees, X then Y then Z (matches Manifold).'),
+  fn('scale', '(s)', 'UNIFORM scale only — non-uniform breaks the distance field (use sdf.ellipsoid for squashed spheres).'),
+  fn('mirror', '("x" | "y" | "z")', 'Mirror across the given axis-plane.'),
+  fn('mirrorPair', '("x" | "y" | "z")', 'Union of this node with its mirror across the axis — symmetric parts in one call.'),
+  fn('shell', '(thickness)', 'Solid shell of given thickness centered on the original surface (|f| - t/2).'),
+  fn('round', '(r)', 'Grow the WHOLE shape by r (f - r) — rounds sharp edges AND offsets the surface outward.'),
+  fn('twist', '(degreesPerUnit, axis?, center?)', 'Twist around axis ("z" default); center=[u,v] offsets the twist line. Lipschitz approx; mesh stays clean.'),
+  fn('bend', '(degreesPerUnit, axis?)', 'Bend — axis names the input coordinate that drives the rotation ("x" default).'),
+  fn('taper', '(rate, axis?)', 'Linearly scale the cross-section perpendicular to axis ("z" default); scale = 1 + rate*coord.'),
+  fn('polarArray', '(count, {axis?, angle?, radius?})', 'Union of count copies rotated evenly around axis. radius pushes each copy outward first.'),
+  fn('polarRepeat', '(count, {axis?, radius?})', 'Domain-warp ring: tile this node count times around axis. Cheaper than polarArray for large counts (child evaluated ONCE per sample).'),
+  fn('repeat', '([px,py,pz])', 'Tile infinitely on a grid (0 = no repeat on that axis). INFINITE — intersect or pass bounds.'),
+  fn('repeatN', '([nx,ny,nz], [px,py,pz], {stagger?})', 'Finite-count grid: nx×ny×nz copies centred on the origin (0 disables an axis). Bounds finite. Optional stagger: {along, by, amount?} for brick/honeycomb patterns.'),
+  fn('label', '(name)', 'Mark this subtree as a paintable region for partwright.paintByLabel.'),
+  fn('build', '({edgeLength?, bounds?, level?, tolerance?})', 'Lower to a Manifold via marching tetrahedra.'),
+];
+
 const CROSSSECTION_STATIC: Completion[] = [
   fn('square', '(size?, center?)', 'Square/rectangle. size is [x,y] or a number; center shifts to the origin.'),
   fn('circle', '(radius, circularSegments?)', 'Circle of the given radius.'),
@@ -120,7 +171,7 @@ const CROSSSECTION_INSTANCE: Completion[] = [
 const INSTANCE_ANY: Completion[] = (() => {
   const seen = new Set<string>();
   const out: Completion[] = [];
-  for (const c of [...MANIFOLD_INSTANCE, ...CROSSSECTION_INSTANCE]) {
+  for (const c of [...MANIFOLD_INSTANCE, ...CROSSSECTION_INSTANCE, ...SDF_INSTANCE]) {
     if (seen.has(c.label)) continue;
     seen.add(c.label);
     out.push(c);
@@ -133,6 +184,7 @@ const API_MEMBERS: Completion[] = [
   val('CrossSection', 'class', 'The CrossSection (2D) class.', 'class'),
   val('Curves', 'namespace', 'Helpers for parametric curves / paths.', 'variable'),
   val('meshOps', 'namespace', 'Predicates (intersects, pointInside, bbox), alignment (alignTo, placeOn), patterns (linearPattern, circularPattern, mirrorCopy) and robust booleans (expectUnion, heal).', 'variable'),
+  val('sdf', 'namespace', 'SDF (signed distance field) builder — smooth blends, gyroids, shells, twists. See /ai/sdf.md.', 'variable'),
   val('imports', 'Mesh[]', 'Imported meshes (e.g. STL) — pass to Manifold.ofMesh(api.imports[i]).', 'variable'),
   fn('label', '(shape, name)', 'Tag a shape so painted regions can target it by name.'),
   fn('labeledUnion', '(parts)', 'Union [{name, shape}, …], tagging each part for later paint-by-label.'),
@@ -182,6 +234,7 @@ function manifoldCompletionSource(context: CompletionContext): CompletionResult 
     let options: Completion[];
     if (obj === 'Manifold') options = MANIFOLD_STATIC;
     else if (obj === 'CrossSection') options = CROSSSECTION_STATIC;
+    else if (obj === 'sdf') options = SDF_STATIC;
     else if (obj === 'api') options = API_MEMBERS;
     else options = INSTANCE_ANY; // unknown receiver or a call result like cube(…).
     return { from: wordFrom, options, validFor: /^[\w$]*$/ };

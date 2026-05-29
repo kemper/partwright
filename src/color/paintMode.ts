@@ -6,7 +6,7 @@ import type { MeshData } from '../geometry/types';
 import { pickFace } from './facePicker';
 import { buildAdjacency, findCoplanarRegion, getTriangleNormal, type AdjacencyGraph } from './adjacency';
 import { addRegion, getRegions } from './regions';
-import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel } from '../renderer/viewport';
+import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 import { smoothEdgeForResolution } from './slabPaint';
@@ -300,6 +300,7 @@ export function deactivate(): void {
   if (!active) return;
   active = false;
   adjacency = null;
+  cancelPendingMove();
 
   if (removeSuppressor) { removeSuppressor(); removeSuppressor = null; }
 
@@ -319,7 +320,29 @@ export function deactivate(): void {
   mouseDownOffModel = false;
 }
 
+// Hover/drag handling does a raycast + coplanar-region scan + highlight
+// geometry rebuild; on a dense mesh that's far too heavy to run on every native
+// mousemove (they fire much faster than the display refreshes). Coalesce to at
+// most one run per animation frame, always using the latest pointer position.
+let pendingMoveEvent: MouseEvent | null = null;
+let moveRaf = 0;
 function onMouseMove(event: MouseEvent): void {
+  pendingMoveEvent = event;
+  if (moveRaf) return;
+  moveRaf = requestAnimationFrame(() => {
+    moveRaf = 0;
+    const e = pendingMoveEvent;
+    pendingMoveEvent = null;
+    if (e) processMouseMove(e);
+  });
+}
+
+function cancelPendingMove(): void {
+  if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = 0; }
+  pendingMoveEvent = null;
+}
+
+function processMouseMove(event: MouseEvent): void {
   if (!adjacency || !currentMesh) return;
 
   // Slab and box tools own their own gizmo / drag interactions; the
@@ -401,6 +424,7 @@ function onMouseMove(event: MouseEvent): void {
 }
 
 function onMouseDown(event: MouseEvent): void {
+  cancelPendingMove();
   if (!adjacency || !currentMesh) return;
   if (event.button !== 0) return;
   if (currentTool === 'slab' || currentTool === 'box') return;
@@ -674,6 +698,7 @@ function clearBrushPrism(): void {
 }
 
 function onMouseUp(event: MouseEvent): void {
+  cancelPendingMove();
   if (!adjacency || !currentMesh) return;
   if (event.button !== 0) return;
   if (currentTool === 'slab' || currentTool === 'box') return;
@@ -724,6 +749,7 @@ function onMouseUp(event: MouseEvent): void {
 }
 
 function onMouseLeave(): void {
+  cancelPendingMove();
   if (currentTool === 'brush' && hasActiveStroke()) {
     commitBrushStroke();
   }
@@ -786,6 +812,7 @@ function showHighlight(triangles: Set<number>, colorOverride?: [number, number, 
   highlightMesh.name = 'paint-hover';
   highlightMesh.renderOrder = 999;
   getMeshGroup().add(highlightMesh);
+  requestRender();
 }
 
 function clearHighlight(): void {
@@ -794,6 +821,7 @@ function clearHighlight(): void {
     highlightMesh.geometry.dispose();
     (highlightMesh.material as THREE.Material).dispose();
     highlightMesh = null;
+    requestRender();
   }
   // The filled footprint preview is the smooth-brush counterpart of the jagged
   // highlight; clear it on the same paths (smooth handlers redraw it right

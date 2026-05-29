@@ -94,7 +94,11 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Cross-section image (any axis, for debugging cavities) | `partwright.renderSection({axis, offset?, size?})` | `partwright.renderSection(...)` — same window API | `partwright.renderSection(...)` — same window API |
 | Threaded rod / bolt / nut | (write a helix manually) | BOSL2 `threaded_rod()`, `screw()`, `nut()` | (coming; today use OpenSCAD/BOSL2) |
 | Spur / bevel / worm gear | (sample involute manually) | BOSL2 `spur_gear()`, `bevel_gear()`, `worm_gear()` | (coming; today use OpenSCAD/BOSL2) |
-| Implicit surface (gyroid, metaball, SDF blend) | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) | (mesh-only; not in BREP) |
+| Smooth fillet / blend between two shapes (no edge-picking) | `a.smoothUnion(b, k)` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
+| Lattice / gyroid / periodic infill | `api.sdf.gyroid(cell, thickness)` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
+| Twisted / bent body (one expression) | `api.sdf.<shape>(...).twist(deg)` -> `/ai/sdf.md` | (`linear_extrude(twist=)` for the extrusion case only) | (mesh-only; not in BREP) |
+| Constant-thickness shell of any shape | `node.shell(t)` via `api.sdf` -> `/ai/sdf.md` | (not available) | (mesh-only; not in BREP) |
+| Implicit surface / raw SDF function | `Manifold.levelSet(sdf, bounds, edgeLen)` | (not available) | (mesh-only; not in BREP) |
 | Mesh-level smoothing (rounded blob from cube) | `.smoothOut(angle).refine(n)` | (not available) | (mesh-only; not in BREP) |
 | Arbitrary vertex warp (bend extrusion) | `.warp(fn)` | (not available) | (mesh-only; not in BREP) |
 
@@ -121,6 +125,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `readDoc` name | When to read it |
 |---|---|
 | `curves` | Before writing manifold-js code with `Curves.loft/sweep/bezier/arc/naca4/polyline/fillet/...` (smooth curves, organic shapes, airfoils, lofted surfaces). |
+| `sdf` | Before reaching for `api.sdf.*` — smooth blends (`smoothUnion`), domain warps (`twist`/`bend`), lattices (`gyroid`), constant-thickness shells. Anything the prompt frames as "smooth", "blended", "twisted", "lattice", or "gyroid" lives here. |
 | `bosl2` | Before writing SCAD code that needs edge rounding (`cuboid(rounding=)`), threads (`screw`), gears (`spur_gear`), path-following (`path_sweep`), or attachables. |
 | `replicad` | Before using `api.BREP.*` inside a manifold-js session, or before switching to the replicad/BREP language. Covers exact fillets/chamfers, STEP export, and the manifold-js ↔ BREP boundary. |
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
@@ -382,6 +387,7 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 - `Manifold` and `CrossSection` -- the raw manifold-3d bindings
 - `Curves` -- helpers for smooth/organic shapes (loft, sweep, bezier, arc, naca4, polyline with fillet, arbitrary-axis revolve, fillet/chamfer, pattern arrays). See **[/ai/curves.md](/ai/curves.md)**.
 - `params` -- declare tweakable **Customizer** knobs that surface as sliders/toggles in the viewport (see below).
+- `sdf` -- signed-distance-field builder for smooth blends, twists, gyroids, and shells. Tree-of-expressions style, lowered to a Manifold via `.build()`. See **[/ai/sdf.md](/ai/sdf.md)**.
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
 
 Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console`, etc.) are available. There is no DOM access, no `fetch`/network, no `require`/`import`, and no file I/O. Do not attempt to load external libraries or make HTTP requests in model code.
@@ -404,9 +410,9 @@ const p = api.params({
 return Manifold.cube([p.width, p.width, p.rows * 10], true);
 ```
 
-**Types:** `number` / `int` (slider; `min`,`max`,`step`,`unit`), `boolean` (toggle), `select` (dropdown; `options` = array of strings or `{value,label}`), `text` (`maxLength`), `color` (hex). Optional `label` and `help` on any. A malformed *schema* throws a clear `api.params: …` error; bad *values* are clamped or fall back to the default, never throwing — so the model always renders.
+**Types:** `number` / `int` (slider; `min`,`max`,`step`,`unit`), `boolean` (toggle), `select` (dropdown; `options` = array of strings or `{value,label}`), `text` (`maxLength`), `color` (hex). Optional `label` and `help` on any. A malformed *schema* throws a clear `api.params: …` error; bad *values* are clamped or fall back to the default, never throwing — so the model always renders. Reading an undeclared key (`p.widht`) throws too, so a typo can't silently become `NaN`.
 
-**Driving it yourself:** `partwright.getParams()` returns `{ schema, values }` so you can see what knobs exist; `partwright.setParams({ width: 50, rows: 3 })` changes values and re-runs (the `getParams`/`setParams` tools do the same). Prefer `setParams` over rewriting code when you only need to change a declared dimension — it's cheaper and keeps the model intact. The chosen values persist with each saved version (so a version re-renders exactly as saved).
+**Driving it yourself:** `partwright.getParams()` returns `{ schema, values }` so you can see what knobs exist; `partwright.setParams({ width: 50, rows: 3 })` changes values and re-runs (the `getParams`/`setParams` tools do the same). Prefer `setParams` over rewriting code when you only need to change a declared dimension — it's cheaper and keeps the model intact. The chosen values persist with each saved version (so a version re-renders exactly as saved). Today `color`/`text` params are captured but have no geometry sink — model code returns geometry only; coloring is a separate paint step.
 
 ### Primitive origins and orientations
 
@@ -439,6 +445,13 @@ CrossSection: square, circle, ofPolygons (CCW outer, CW holes),
               compose, union, difference, intersection, hull
 Curves: arc, bezier, naca4, polyline, loft, sweep, revolveAxis,
         fillet, chamfer, ringCopy, linearCopy, mirrorCopy   (see /ai/curves.md)
+sdf: sphere, ellipsoid, box, roundedBox, cylinder, roundedCylinder,
+     torus, capsule,
+     gyroid/schwarzP/diamond/lidinoid + their graded* variants (TPMS),
+     union/subtract/intersect, smoothUnion/Subtract/Intersect,
+     .translate/.rotate/.scale/.mirror, .shell/.round/.twist/.bend/.taper,
+     .polarArray/.polarRepeat/.mirrorPair/.repeat/.repeatN,
+     .label(name), .build({edgeLength?, bounds?})        (see /ai/sdf.md)
 meshOps (flat on api): intersects, contains, pointInside, bbox,
                        componentBounds, volumeDelta,
                        alignTo, placeOn, mirrorAcross, mirrorCopy,

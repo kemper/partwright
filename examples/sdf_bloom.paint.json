@@ -1,0 +1,7 @@
+{
+  "regions": [
+    { "label": "petals", "color": [0.94, 0.32, 0.55], "name": "Petals (rose pink)" },
+    { "label": "centre", "color": [0.98, 0.80, 0.22], "name": "Pollen centre (golden)" },
+    { "label": "stem",   "color": [0.30, 0.55, 0.28], "name": "Stem (leaf green)" }
+  ]
+}

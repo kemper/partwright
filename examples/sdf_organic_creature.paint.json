@@ -1,0 +1,8 @@
+{
+  "regions": [
+    { "label": "body",    "color": [0.42, 0.78, 0.55], "name": "Body (sea-foam green)" },
+    { "label": "eye",     "color": [0.98, 0.96, 0.90], "name": "Eye whites" },
+    { "label": "pupil",   "color": [0.08, 0.06, 0.12], "name": "Pupils (near-black)" },
+    { "label": "antenna", "color": [1.00, 0.62, 0.20], "name": "Antenna bobble (warm orange)" }
+  ]
+}

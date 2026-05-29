@@ -3349,7 +3349,11 @@ async function main() {
       const check = guard(() => assertNumber(z, 'sliceAtZ(z)'));
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       if (!currentManifold) return { error: 'No geometry loaded' };
-      return sliceAtZ(currentManifold, z);
+      const result = sliceAtZ(currentManifold, z);
+      // sliceAtZ now returns a reference into a per-(manifold,z) memo cache.
+      // Hand external (console/AI) callers a copy so mutating the result can't
+      // corrupt the cache; in-app callers keep the fast shared reference.
+      return result ? structuredClone(result) : result;
     },
 
     /** Get bounding box of current geometry */
