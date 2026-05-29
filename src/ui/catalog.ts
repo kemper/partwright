@@ -35,7 +35,61 @@ interface LoadedEntry {
   payload: ExportedSession | null;
   /** Pulled from the latest version's embedded thumbnail, or null. */
   thumbnailUrl: string | null;
+  /** Declares `api.params({...})` in any version's code — drives the
+   *  "Customizable" category + the parametric tile badge. */
+  hasParams: boolean;
+  /** Uses an implicit/signed-distance surface (`levelSet`, or an `sdf-` id). */
+  isSDF: boolean;
   error: string | null;
+}
+
+/** The catalog is sectioned so each tile's reason for being here is obvious.
+ *  Categories are mutually exclusive and assigned in {@link categorize}; the
+ *  array order is the on-page section order. */
+type CategoryId = 'customizable' | 'manifold' | 'sdf' | 'voxel' | 'scad' | 'brep';
+
+interface CategoryDef {
+  id: CategoryId;
+  title: string;
+  blurb: string;
+}
+
+const CATEGORIES: CategoryDef[] = [
+  { id: 'customizable', title: 'Customizable', blurb: 'Tweak these live with sliders and toggles — open the 🎛 Customize panel in the editor, no code changes needed.' },
+  { id: 'manifold', title: 'JavaScript Models', blurb: 'Built with the default manifold-3d mesh API — the everyday JS modeling path.' },
+  { id: 'sdf', title: 'Implicit Surfaces (SDF)', blurb: 'Signed-distance-field models via the Sdf builder — gyroids, lattices, and organic blends.' },
+  { id: 'voxel', title: 'Voxel Models', blurb: 'Built by painting and baking a voxel grid.' },
+  { id: 'scad', title: 'OpenSCAD', blurb: 'Authored in OpenSCAD with the BOSL2 library — gears, threads, and machined parts.' },
+  { id: 'brep', title: 'Solid CAD (BREP)', blurb: 'Exact OpenCASCADE solids (replicad) with true fillets and STEP export.' },
+];
+
+/** Assign one category per entry. Parametric models lead (it's the trait users
+ *  most want to find); otherwise we split by engine, with SDF pulled out of the
+ *  manifold-js bucket as its own showcase. */
+function categorize(entry: LoadedEntry): CategoryId {
+  if (entry.hasParams) return 'customizable';
+  const lang = entry.payload?.session.language ?? entry.manifest.language ?? 'manifold-js';
+  if (lang === 'scad') return 'scad';
+  if (lang === 'replicad') return 'brep';
+  if (lang === 'voxel') return 'voxel';
+  if (entry.isSDF) return 'sdf';
+  return 'manifold';
+}
+
+/** Inspect a payload's code for the characteristics that drive categorization
+ *  and tile badges. Reads across all versions so a trait declared on any
+ *  version still counts. */
+function deriveCharacteristics(entry: CatalogManifestEntry, payload: ExportedSession | null): { hasParams: boolean; isSDF: boolean } {
+  const code = (payload?.versions ?? []).map(v => v.code ?? '').join('\n');
+  const hasParams = /\bapi\.params\s*\(/.test(code);
+  // SDF catalog entries reach the surface builder through the `sdf` api
+  // namespace — either `api.sdf.…` or, more often, destructured as
+  // `const { sdf, Manifold } = api`. Detect both, plus the raw manifold
+  // `levelSet`, and fall back to the `sdf-` id prefix so a thumbnail-only or
+  // differently-authored entry still classifies.
+  const usesSdfApi = /\bapi\.sdf\b/.test(code) || /[{,]\s*sdf\s*[,}]/.test(code);
+  const isSDF = usesSdfApi || /\blevelSet\s*\(/.test(code) || /^sdf[-_]/i.test(entry.id);
+  return { hasParams, isSDF };
 }
 
 export async function createCatalogPage(
@@ -81,7 +135,7 @@ export async function createCatalogPage(
 
   const intro = document.createElement('p');
   intro.className = 'w-full max-w-5xl px-6 -mt-4 mb-6 text-sm text-zinc-400 leading-relaxed';
-  intro.textContent = 'Curated premade models. Click a tile to import it as a fresh session you can edit.';
+  intro.textContent = 'Curated premade models, grouped by what makes each one tick — parametric, JavaScript, implicit-surface (SDF), OpenSCAD, and solid-CAD (BREP). Click a tile to import it as a fresh session you can edit.';
   page.appendChild(intro);
 
   // Body: grid (loading / empty / error states handled below).
@@ -131,25 +185,65 @@ export async function createCatalogPage(
         const versions = payload.versions ?? [];
         const latest = versions.length > 0 ? versions[versions.length - 1] : null;
         const thumbnailUrl = latest?.thumbnail ?? null;
-        return { manifest: entry, payload, thumbnailUrl, error: null };
+        const { hasParams, isSDF } = deriveCharacteristics(entry, payload);
+        return { manifest: entry, payload, thumbnailUrl, hasParams, isSDF, error: null };
       } catch (e) {
-        return { manifest: entry, payload: null, thumbnailUrl: null, error: (e as Error).message };
+        return { manifest: entry, payload: null, thumbnailUrl: null, hasParams: false, isSDF: false, error: (e as Error).message };
       }
     }),
   );
 
   status.remove();
 
-  const grid = document.createElement('div');
-  grid.className = 'grid gap-4';
-  grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(220px, 1fr))';
-  body.appendChild(grid);
-
+  // Bucket entries into their category, then render the non-empty sections in
+  // CATEGORIES order. Entry order within a section follows the manifest.
+  const buckets = new Map<CategoryId, LoadedEntry[]>();
   for (const entry of loaded) {
-    grid.appendChild(renderTile(entry, callbacks));
+    const cat = categorize(entry);
+    const arr = buckets.get(cat);
+    if (arr) arr.push(entry);
+    else buckets.set(cat, [entry]);
+  }
+
+  for (const def of CATEGORIES) {
+    const entries = buckets.get(def.id);
+    if (!entries || entries.length === 0) continue;
+    body.appendChild(renderCategorySection(def, entries, callbacks));
   }
 
   return page;
+}
+
+/** Render one titled, blurbed category section with its own tile grid. */
+function renderCategorySection(def: CategoryDef, entries: LoadedEntry[], callbacks: CatalogCallbacks): HTMLElement {
+  const section = document.createElement('section');
+  section.className = 'mb-10';
+  section.dataset.category = def.id;
+
+  const titleRow = document.createElement('div');
+  titleRow.className = 'flex items-baseline gap-2';
+  const h2 = document.createElement('h2');
+  h2.className = 'text-lg font-semibold text-zinc-100';
+  h2.textContent = def.title;
+  const count = document.createElement('span');
+  count.className = 'text-xs text-zinc-500 tabular-nums';
+  count.textContent = String(entries.length);
+  titleRow.appendChild(h2);
+  titleRow.appendChild(count);
+  section.appendChild(titleRow);
+
+  const blurb = document.createElement('p');
+  blurb.className = 'text-xs text-zinc-400 mt-0.5 mb-3 leading-relaxed';
+  blurb.textContent = def.blurb;
+  section.appendChild(blurb);
+
+  const grid = document.createElement('div');
+  grid.className = 'grid gap-4';
+  grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(220px, 1fr))';
+  for (const entry of entries) grid.appendChild(renderTile(entry, callbacks));
+  section.appendChild(grid);
+
+  return section;
 }
 
 function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLElement {
@@ -198,6 +292,16 @@ function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLEleme
   langBadge.className = `font-semibold border rounded px-1 ${badge.classes}`;
   langBadge.textContent = badge.label;
   meta.appendChild(langBadge);
+
+  // Parametric chip — the headline "special characteristic": this model exposes
+  // tweakable knobs. Reinforces the Customizable section at a per-tile glance.
+  if (loaded.hasParams) {
+    const paramBadge = document.createElement('span');
+    paramBadge.className = 'font-semibold border rounded px-1 text-violet-300 border-violet-400/30';
+    paramBadge.textContent = '🎛 Parametric';
+    paramBadge.title = 'Exposes adjustable parameters — tweak it in the Customize panel';
+    meta.appendChild(paramBadge);
+  }
 
   if (loaded.error) {
     const errBadge = document.createElement('span');
