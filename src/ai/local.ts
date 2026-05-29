@@ -468,6 +468,12 @@ export async function ensureModelLoaded(modelId: string, opts: LoadOptions = {})
 
 export interface StreamCallbacks {
   onText?: (delta: string) => void;
+  /** Reasoning deltas from a local `<think>` block. Routed to the panel's
+   *  collapsible thinking box (mirroring Gemini/Anthropic) instead of the
+   *  answer bubble. Fired once post-stream with the full captured reasoning
+   *  — the live scanner suppresses `<think>` from `onText`, so this is the
+   *  channel that surfaces it. */
+  onThinking?: (delta: string) => void;
   onToolStart?: (toolUseId: string, toolName: string) => void;
 }
 
@@ -480,9 +486,11 @@ export interface StreamResult {
    *  emitted an unclosed `<tool_call>` block (a crash, likely). chatLoop
    *  surfaces a "response was cut off" message and skips re-prompting. */
   truncated?: boolean;
-  /** Reasoning text if surfaced. Local `<think>` blocks are stripped and
-   *  hidden today, so this stays undefined; present so chatLoop reads
-   *  `result.thinking` uniformly across providers. */
+  /** Reasoning text if surfaced. Reasoning-style local models emit a
+   *  `<think>...</think>` block; we strip it from the answer (so the bubble
+   *  stays clean) and surface it here + via `onThinking` so chatLoop renders
+   *  the same collapsible thinking box Gemini/Anthropic get. Undefined when
+   *  the model emitted no reasoning. */
   thinking?: string;
   /** Anthropic-only thinking-block replay payload — always undefined here.
    *  Declared for a uniform `StreamResult` across the provider union. */
@@ -694,6 +702,11 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
   // (which would also rebroadcast them to the model on the next turn).
   // Unclosed `<think>` tails (truncation) just get dropped.
   const withoutThink = stripThinkBlocks(rawText);
+  // Surface the reasoning the scanner suppressed from the live bubble so the
+  // panel can render the same collapsible thinking box hosted providers get.
+  // (The answer text — `cleanedText` below — stays free of the `<think>` body.)
+  const thinkText = extractThinkBlocks(rawText);
+  if (thinkText.length > 0) callbacks.onThinking?.(thinkText);
 
   let toolCalls: PersistedToolCall[] = [];
   let cleanedText: string;
@@ -722,6 +735,7 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
     stopReason: normStop,
     usage,
     truncated: truncatedMidToolCall || (truncatedMaxTokens && toolCalls.length === 0),
+    thinking: thinkText.length > 0 ? thinkText : undefined,
   };
 }
 
@@ -801,6 +815,22 @@ function stripThinkBlocks(text: string): string {
   // Then strip any trailing unclosed block (truncation).
   const unclosed = completed.indexOf(THINK_OPEN);
   return unclosed >= 0 ? completed.slice(0, unclosed).trimEnd() : completed.trimEnd();
+}
+
+/** Inverse of stripThinkBlocks: pull the reasoning OUT of completed
+ *  `<think>...</think>` blocks so it can drive the panel's thinking box.
+ *  Truncated (unclosed) blocks are skipped — a partial chain-of-thought the
+ *  user never saw isn't worth surfacing. Multiple blocks are joined with a
+ *  blank line. Returns '' when there's no reasoning. */
+function extractThinkBlocks(text: string): string {
+  const out: string[] = [];
+  const re = /<think>([\s\S]*?)<\/think>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const body = m[1].trim();
+    if (body.length > 0) out.push(body);
+  }
+  return out.join('\n\n');
 }
 
 /** Build a compact tool-use instruction block to append to the system
