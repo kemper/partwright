@@ -15,16 +15,16 @@ import { readSseStream } from './sse';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
-function streamUrl(model: string, apiKey: string): string {
-  return `${API_BASE}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+function streamUrl(model: string): string {
+  return `${API_BASE}/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
 }
 
-function generateUrl(model: string, apiKey: string): string {
-  return `${API_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+function generateUrl(model: string): string {
+  return `${API_BASE}/models/${encodeURIComponent(model)}:generateContent`;
 }
 
-function modelsUrl(apiKey: string, pageSize: number): string {
-  return `${API_BASE}/models?key=${encodeURIComponent(apiKey)}&pageSize=${pageSize}`;
+function modelsUrl(pageSize: number): string {
+  return `${API_BASE}/models?pageSize=${pageSize}`;
 }
 
 export function resetClient(): void {
@@ -39,9 +39,9 @@ export async function validateKey(apiKey: string): Promise<string | null> {
   // key itself — no per-model availability, no generation quota, and no
   // hard-coded model id to go stale (the same trap listModels warns about).
   try {
-    const res = await fetch(modelsUrl(apiKey, 1), {
+    const res = await fetch(modelsUrl(1), {
       method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     });
     if (res.ok) return null;
     // 429/5xx are transient service hiccups (overload, maintenance) — the key
@@ -66,9 +66,9 @@ export async function validateKey(apiKey: string): Promise<string | null> {
  *  picks from their real current lineup, including newer models like
  *  Gemini 3 / "Nano Banana" with whatever id Google actually assigned. */
 export async function listModels(apiKey: string): Promise<{ id: string; label: string }[]> {
-  const res = await fetch(modelsUrl(apiKey, 1000), {
+  const res = await fetch(modelsUrl(1000), {
     method: 'GET',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
   });
   if (!res.ok) {
     const err = await res.text().catch(() => '');
@@ -219,9 +219,9 @@ export async function streamTurn(
 
   let res: Response;
   try {
-    res = await fetch(streamUrl(spec.model, spec.apiKey), {
+    res = await fetch(streamUrl(spec.model), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': spec.apiKey },
       body: JSON.stringify(body),
       signal,
     });
@@ -495,9 +495,9 @@ export async function summarize(
   user: string,
   maxTokens = 4096,
 ): Promise<{ text: string; usage: TurnUsage }> {
-  const res = await fetch(generateUrl(model, apiKey), {
+  const res = await fetch(generateUrl(model), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: user }] }],
       generationConfig: { maxOutputTokens: maxTokens },
