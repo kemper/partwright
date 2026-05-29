@@ -174,6 +174,342 @@
       "file": "retro_rocket.partwright.json",
       "language": "manifold-js",
       "description": "Classic retro rocket with ogive nose cone, fins, porthole window, and thrust nozzle."
+    },
+    {
+      "id": "spiral-staircase",
+      "name": "Spiral Staircase",
+      "file": "spiral_staircase.partwright.json",
+      "language": "manifold-js",
+      "description": "A 16-step helical staircase around a central column, topped by a circular platform and balusters. Built with the spiralPattern helper for the steps and railing posts."
+    },
+    {
+      "id": "geodesic-lantern",
+      "name": "Geodesic Lantern",
+      "file": "geodesic_lantern.partwright.json",
+      "language": "manifold-js",
+      "description": "A faceted dome lantern with two rings of cylindrical window cutouts and a small spire finial. Showcases circularPattern, placeOn, and the expectUnion safety net."
+    },
+    {
+      "id": "clock-face",
+      "name": "Wall Clock Face",
+      "file": "clock_face.partwright.json",
+      "language": "manifold-js",
+      "description": "100mm-diameter clock face with 12 hour markers, 60 minute ticks, and tapered hour + minute hands posed at 10:10. Built with the circularPattern radius shortcut."
+    },
+    {
+      "id": "honeycomb-planter",
+      "name": "Honeycomb Planter",
+      "file": "honeycomb_planter.partwright.json",
+      "language": "manifold-js",
+      "description": "A cylindrical planter pot with a staggered honeycomb pattern carved through its wall. Built with nested linearPattern + circularPattern and the expectUnion connectivity check."
+    },
+    {
+      "id": "wind-turbine",
+      "name": "Wind Turbine",
+      "file": "wind_turbine.partwright.json",
+      "language": "manifold-js",
+      "description": "A tapered tower with a nacelle, hub, and 3 swept blades — plus a service ladder up the tower face. Showcases placeOn for the nacelle and circularPattern with a non-Z axis for the rotor."
+    },
+    {
+      "id": "hex-bolt-and-nut",
+      "name": "Hex Bolt & Nut Set",
+      "file": "hex_bolt_and_nut.partwright.json",
+      "language": "scad",
+      "description": "M16x3 hex bolt, matching nut, and washer laid out side-by-side. Showcases BOSL2's screw() and nut() — real threaded geometry that manifold-js can't easily reproduce."
+    },
+    {
+      "id": "spur-gear-pair",
+      "name": "Spur Gear Pair",
+      "file": "spur_gear_pair.partwright.json",
+      "language": "scad",
+      "description": "Two meshing involute spur gears on a rounded base plate, with tooth offset so they interlock correctly. Built with BOSL2's spur_gear() and gear_dist()."
+    },
+    {
+      "id": "pipe-tee-fitting",
+      "name": "Pipe Tee Fitting",
+      "file": "pipe_tee_fitting.partwright.json",
+      "language": "scad",
+      "description": "A 3-way plumbing tee fitting with flared collars and a connected interior cavity. Built with BOSL2's xcyl()/zcyl() axis-aligned cylinders and cyl(chamfer1=) for the flared collar edges."
+    },
+    {
+      "id": "modular-drawer-bin",
+      "name": "Modular Drawer Bin",
+      "file": "modular_drawer_bin.partwright.json",
+      "language": "scad",
+      "description": "A stackable storage bin with two compartments, rounded corners, and stacking lugs. Built with BOSL2's cuboid(rounding=) for filleted edges, plus translate-and-anchor cyl() placement for the lugs."
+    },
+    {
+      "id": "sdf-organic-creature",
+      "name": "SDF Organic Creature",
+      "file": "sdf_organic_creature.partwright.json",
+      "language": "manifold-js",
+      "description": "A smooth-blended creature built entirely from SDF primitives — showcases smoothUnion for organic body welds and paint-by-label colourisation of an SDF model."
+    },
+    {
+      "id": "sdf-gyroid-chamber",
+      "name": "SDF Gyroid Chamber",
+      "file": "sdf_gyroid_chamber.partwright.json",
+      "language": "manifold-js",
+      "description": "A triply-periodic gyroid lattice clipped inside a solid frame — the SDF way to do 3D-printable infill in one expression."
+    },
+    {
+      "id": "sdf-twisted-vessel",
+      "name": "SDF Twisted Vessel",
+      "file": "sdf_twisted_vessel.partwright.json",
+      "language": "manifold-js",
+      "description": "A spiralled body produced by the SDF `.twist()` domain warp on a non-radially-symmetric profile, joined to a base with smoothUnion."
+    },
+    {
+      "id": "sdf-mixed-mechanical",
+      "name": "SDF + Manifold Mechanical Part",
+      "file": "sdf_mixed_mechanical.partwright.json",
+      "language": "manifold-js",
+      "description": "A mechanical part that mixes smooth-blended SDF features (grip, fillets) with crisp Manifold CSG (mounting plate, drilled holes) — shows how the two engines compose."
+    },
+    {
+      "id": "sdf-bloom",
+      "name": "SDF Bloom",
+      "file": "sdf_bloom.partwright.json",
+      "language": "manifold-js",
+      "description": "A stylised flower showcasing the SDF combinators — ellipsoid petals fanned out with polarArray (no hand-written coordinates), a flattened pollen centre, and a taper-narrowed stem. Three painted regions."
+    },
+    {
+      "id": "rangefinder-camera",
+      "name": "Vintage Rangefinder Camera",
+      "file": "rangefinder_camera.partwright.json",
+      "language": "scad",
+      "description": "A classic 35mm rangefinder camera with a chrome top plate, leatherette body, a fixed lens with a dark recessed front element, twin viewfinder windows, a brass shutter release, and a wind-lever knob."
+    },
+    {
+      "id": "smiley-cactus",
+      "name": "Smiley Cactus",
+      "file": "smiley_cactus.partwright.json",
+      "language": "scad",
+      "description": "A cheerful potted saguaro with two upraised arms, a pink flower bud on its crown, and two little black bead eyes — sitting in a flared terracotta pot with rim and soil."
+    },
+    {
+      "id": "studio-microphone",
+      "name": "Studio Microphone",
+      "file": "studio_microphone.partwright.json",
+      "language": "scad",
+      "description": "Classic large-diaphragm studio condenser microphone cradled in a U-shaped shock-mount yoke on a weighted desktop stand, with a coiled cable looping back to the base."
+    },
+    {
+      "id": "vintage-biplane",
+      "name": "Vintage Biplane",
+      "file": "vintage_biplane.partwright.json",
+      "language": "scad",
+      "description": "A WW1-era biplane with stacked canvas wings, a tapered fuselage, a yellow engine cowling, a two-blade wooden propeller, and a swept tail fin."
+    },
+    {
+      "id": "pipe-flange",
+      "name": "Pipe Flange",
+      "file": "pipe_flange.partwright.json",
+      "language": "replicad",
+      "description": "An ANSI-style pipe flange with a 6-bolt circle, central bore, chamfered face, and beveled neck — showcasing BREP's exact selective edge filleting on a mechanically realistic part."
+    },
+    {
+      "id": "machine-knob",
+      "name": "Machine Tool Knob",
+      "file": "machine_knob.partwright.json",
+      "language": "replicad",
+      "description": "A precision machine-tool grip knob with a finger-grip skirt, chamfered top, domed crown, and a shaft bore — showcasing BREP's exact chamfers and fillets on rotational geometry."
+    },
+    {
+      "id": "butt-hinge",
+      "name": "Butt Hinge",
+      "file": "butt_hinge.partwright.json",
+      "language": "replicad",
+      "description": "A classic interlocking butt hinge: two flat leaves, three knuckles, and a continuous pin — showcasing BREP's exact cylindrical surfaces and clean selective fillets."
+    },
+    {
+      "id": "v-pulley",
+      "name": "V-Groove Pulley",
+      "file": "v_pulley.partwright.json",
+      "language": "replicad",
+      "description": "A precision V-belt pulley wheel with a beveled drive groove around its circumference, a central hub bore, and chamfered side rims — showcasing BREP's exact rotational geometry and angled surfaces."
+    },
+    {
+      "id": "l-bracket",
+      "name": "Precision L-Bracket",
+      "file": "l_bracket.partwright.json",
+      "language": "replicad",
+      "description": "A right-angle steel bracket with a large concave fillet on the inside web, rounded outer tip edges, and four mounting holes — showcasing BREP's exact selective edge rounding."
+    },
+    {
+      "id": "enclosure-shell",
+      "name": "Project Enclosure",
+      "file": "enclosure_shell.partwright.json",
+      "language": "replicad",
+      "description": "A rectangular electronics-project enclosure shell with rounded outer corners, an inset lid lip, PCB mounting bosses, and side ventilation slots — showcasing BREP's exact filleted shells."
+    },
+    {
+      "id": "robot-buddy",
+      "name": "Robot Buddy",
+      "file": "robot_buddy.partwright.json",
+      "language": "replicad",
+      "description": "A friendly retro desktop robot with a domed head, antenna, chest panel, and two stubby arms — colorful BREP showcase with paint."
+    },
+    {
+      "id": "bird-feeder",
+      "name": "Bird Feeder",
+      "file": "bird_feeder.partwright.json",
+      "language": "replicad",
+      "description": "A gazebo-style hanging bird feeder with conical wood roof, revolved seed reservoir, lipped dish, and circular perches — showcasing revolve + circularPattern + paint."
+    },
+    {
+      "id": "pendant-lamp",
+      "name": "Pendant Chandelier",
+      "file": "pendant_lamp.partwright.json",
+      "language": "replicad",
+      "description": "A 5-arm pendant chandelier with brass arms, glass bulbs, central canopy, and a decorative finial — showcasing BREP.circularPattern + paint."
+    },
+    {
+      "id": "wall-clock",
+      "name": "Wall Clock",
+      "file": "wall_clock.partwright.json",
+      "language": "replicad",
+      "description": "A classic round analog wall clock with chamfered bezel, painted hour markers, hour + minute hands, and a center spindle — showcasing circularPattern + paint."
+    },
+    {
+      "id": "vintage-camera",
+      "name": "Vintage Camera",
+      "file": "vintage_camera.partwright.json",
+      "language": "replicad",
+      "description": "A vintage rangefinder camera with a tapered lens barrel, viewfinder, shutter button, and film advance — colorful BREP showcase with paint."
+    },
+    {
+      "id": "lighthouse-brep",
+      "name": "Coastal Lighthouse",
+      "file": "lighthouse_brep.partwright.json",
+      "language": "replicad",
+      "description": "A tall round lighthouse with red-and-white tower stripes, balcony railing, domed lantern, and conical cap — colorful BREP showcase with paint."
+    },
+    {
+      "id": "coffee-mug",
+      "name": "Coffee Mug",
+      "file": "coffee_mug.partwright.json",
+      "language": "replicad",
+      "description": "A white ceramic coffee mug with a colored rim band, painted coffee inside, and a curved torus handle — showcasing BREP's shell op + paint."
+    },
+    {
+      "id": "sdf-tpms-study",
+      "name": "SDF TPMS Study",
+      "file": "sdf_tpms_study.partwright.json",
+      "language": "manifold-js",
+      "description": "Four 14³ lattice tiles side-by-side on a plinth — Schwarz P, Diamond, Lidinoid, and a gradedGyroid with a diagonal thickness ramp. The exhaustive TPMS comparison; five painted regions."
+    },
+    {
+      "id": "sdf-aetherjelly",
+      "name": "SDF Aetherjelly",
+      "file": "sdf_radial_creature.partwright.json",
+      "language": "manifold-js",
+      "description": "A radial jellyfish-drifter built from ellipsoids, fanned into shape by polarArray (8 tentacles, 6 ocelli), bilaterally completed by mirrorPair, and tapered along its body axis. Three painted regions; the showcase for the SDF combinators."
+    },
+    {
+      "id": "sdf-helix-lamp",
+      "name": "SDF Helix Lamp Standard",
+      "file": "sdf_helix_lamp_standard.partwright.json",
+      "language": "manifold-js",
+      "description": "An architectural light post whose square-cross-section shaft spirals around an OFFSET vertical axis, paired with a perforated screen wall built by repeat() clipped to a slab and topped by a roundedCylinder lamp cap. Four painted regions; showcases the new offset-twist, repeat, and roundedCylinder primitives."
+    },
+    {
+      "id": "sdf-spur-wheel",
+      "name": "SDF 28-Tooth Spur Wheel",
+      "file": "sdf_polarrepeat_showcase.partwright.json",
+      "language": "manifold-js",
+      "description": "A spur/turbine wheel — single tooth (roundedBox + taper) folded 28-fold via polarRepeat, plus a 6-hole polarArray lightening web and a bored central hub. The canonical \"polarArray for low counts, polarRepeat for high\" showcase, in three painted regions."
+    },
+    {
+      "id": "sdf-perforated-faceplate",
+      "name": "SDF Perforated Faceplate",
+      "file": "sdf_repeatn_showcase.partwright.json",
+      "language": "manifold-js",
+      "description": "A speaker-style faceplate built on the finite-count repeatN combinator — a 7×5 grid of through-holes subtracted from a rounded slab, a recessed bezel, and a 4×1 row of LED-indicator bumps. The textbook \"no intersect needed\" case in three painted regions."
+    },
+    {
+      "id": "sdf-graded-tpms-study",
+      "name": "SDF Graded TPMS Study",
+      "file": "sdf_graded_tpms_study.partwright.json",
+      "language": "manifold-js",
+      "description": "A femur-inspired model exercising all three new graded TPMS variants: gradedSchwarzP for the cortical shaft (radial density), gradedDiamond for the marrow canal (axial trabecular grading), and gradedLidinoid for the femoral head (spherical-radial). Five painted regions."
+    },
+    {
+      "id": "sdf-brick-wall",
+      "name": "SDF Running-Bond Brick Wall",
+      "file": "sdf_brick_wall.partwright.json",
+      "language": "manifold-js",
+      "description": "A classic running-bond brick wall — bricks tiled via repeatN({stagger: {along: x, by: y}}), the new option for brick/honeycomb patterns. Every other course shifts by half a brick. Two painted regions on a recessed mortar slab."
+    },
+    {
+      "id": "striped-lighthouse",
+      "name": "Striped Lighthouse",
+      "file": "striped_lighthouse.partwright.json",
+      "language": "manifold-js",
+      "description": "A parametric tapered lighthouse with alternating red/white bands, a railed gallery, and a domed lantern room glowing around a central light."
+    },
+    {
+      "id": "parametric-tray",
+      "name": "Parametric Storage Tray",
+      "file": "parametric_tray.partwright.json",
+      "language": "manifold-js",
+      "description": "Customizable rounded storage tray — adjust size, wall/floor thickness, corner style, and internal dividers via the Parameters panel."
+    },
+    {
+      "id": "parametric-knob",
+      "name": "Parametric Control Knob",
+      "file": "parametric_knob.partwright.json",
+      "language": "manifold-js",
+      "description": "Customizable control knob/dial — set diameter, height, grip count and style (knurled/fluted/smooth), center bore, and pointer via the Parameters panel."
+    },
+    {
+      "id": "parametric-vent-panel",
+      "name": "Parametric Vent Panel",
+      "file": "parametric_vent_panel.partwright.json",
+      "language": "manifold-js",
+      "description": "Customizable perforated honeycomb/vent panel — set size, thickness, cell size/shape (hex/square/round), wall, and an optional border frame via the Parameters panel."
+    },
+    {
+      "id": "daisy-flower",
+      "name": "Daisy Flower",
+      "file": "daisy_flower.partwright.json",
+      "language": "manifold-js",
+      "description": "A cheerful parametric daisy with a domed pollen center, a fan of radial petals, a tapering stem, and a pair of leaves."
+    },
+    {
+      "id": "rainbow-ring-stacker",
+      "name": "Rainbow Ring Stacker",
+      "file": "rainbow_ring_stacker.partwright.json",
+      "language": "manifold-js",
+      "description": "A parametric take on the classic children's stacking toy: a domed base, a tapered center post, and a free-sliding stack of rainbow donut rings of decreasing size."
+    },
+    {
+      "id": "rocket-ship",
+      "name": "Rocket Ship",
+      "file": "rocket_ship.partwright.json",
+      "language": "manifold-js",
+      "description": "A retro toy rocket with a parametric body, nose cone, ring of tail fins, a round porthole window, and a flared exhaust nozzle."
+    },
+    {
+      "id": "toadstool",
+      "name": "Toadstool Mushroom",
+      "file": "toadstool.partwright.json",
+      "language": "manifold-js",
+      "description": "A storybook Amanita toadstool with a flared, spotted red cap on a rounded cream stem, fully parametric from cap size to spot count."
+    },
+    {
+      "id": "traffic-light",
+      "name": "Traffic Light",
+      "file": "traffic_light.partwright.json",
+      "language": "manifold-js",
+      "description": "A parametric three-lamp traffic signal with red, amber, and green lenses recessed into a rounded housing, plus optional sun visors and a mounting post."
+    },
+    {
+      "id": "layer-cake",
+      "name": "Layer Cake",
+      "file": "layer_cake.partwright.json",
+      "language": "manifold-js",
+      "description": "A self-coloring parametric layer cake: colors live in the model code via api.label(shape, name, { color }), so it renders painted with no paint step and the editor stays editable. Set the frosting color and tier count in the Parameters panel."
     }
   ]
 }

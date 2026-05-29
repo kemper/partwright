@@ -136,6 +136,16 @@ export function toggleInsertPalette(): void {
   else openInsertPalette();
 }
 
+/** Show / hide the editor-header Insert button. Called from the language-
+ *  change handler so the palette only appears for languages whose codegen we
+ *  support (manifold-js + scad) — voxel and replicad sessions hide it. */
+export function setInsertPaletteAvailable(available: boolean): void {
+  const btn = document.getElementById('btn-insert');
+  if (!btn) return;
+  btn.classList.toggle('hidden', !available);
+  if (!available && isInsertPaletteOpen()) closeInsertPalette();
+}
+
 // ---------------------------------------------------------------------------
 // Panel
 // ---------------------------------------------------------------------------

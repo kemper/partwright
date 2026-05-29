@@ -1033,7 +1033,16 @@ function userBlocksToContent(blocks: ChatBlock[], info: LocalModelInfo): string 
 }
 
 function assistantTextOf(blocks: ChatBlock[]): string {
-  return blocks.filter(b => b.type === 'text').map(b => (b as { text: string }).text).join('');
+  const parts: string[] = [];
+  for (const b of blocks) {
+    if (b.type === 'text') parts.push(b.text);
+    // Cross-provider review lands as an assistant turn; surface it on the
+    // next turn so the local model sees the reviewer's feedback.
+    else if (b.type === 'review' && b.text.length > 0) {
+      parts.push(`[Review from ${b.provider}/${b.model}]\n${b.text}`);
+    }
+  }
+  return parts.join('');
 }
 
 function imageDataUrl(source: ImageSource): string {

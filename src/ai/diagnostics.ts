@@ -52,10 +52,26 @@ const MAX_EVENTS = 50;
 const events: DiagnosticEvent[] = [];
 const listeners = new Set<() => void>();
 let counter = 0;
+let forwarder: ((evt: DiagnosticEvent) => void) | null = null;
 
 function nextId(): string {
   counter += 1;
   return `diag-${Date.now().toString(36)}-${counter.toString(36)}`;
+}
+
+/** Register a sink that receives each event INSTEAD of storing it in this
+ *  context's ring buffer (pass `null` to clear).
+ *
+ *  The AI chat loop runs inside the agent Worker for every hosted provider
+ *  (anthropic/openai/gemini — see aiPanel's runTurn router), so the
+ *  `streamTurn` events it records would otherwise land in the Worker's own
+ *  module-instance buffer — which the AI Call Log modal, living on the main
+ *  thread, never reads. The Worker sets a forwarder that ships each event to
+ *  the main thread via postMessage; the main thread (no forwarder) stores them
+ *  as usual. Without this, only main-thread calls (validateKey, review,
+ *  compaction) ever showed up in the log. */
+export function setEventForwarder(fn: ((evt: DiagnosticEvent) => void) | null): void {
+  forwarder = fn;
 }
 
 /** Push an event. Caller fills everything except `id` and `timestamp`. */
@@ -65,6 +81,26 @@ export function recordEvent(evt: Omit<DiagnosticEvent, 'id' | 'timestamp'>): voi
     timestamp: Date.now(),
     ...evt,
   };
+  if (forwarder) {
+    // Forward-only context (the agent Worker): hand the fully-formed event to
+    // the sink and skip local storage. This buffer is never displayed here,
+    // and the main thread stores + console-mirrors the event on receipt —
+    // doing both would double-log it in devtools.
+    try { forwarder(full); }
+    catch { /* a broken forwarder must never break the caller's turn */ }
+    return;
+  }
+  ingestEvent(full);
+}
+
+/** Insert a fully-formed event (id + timestamp already assigned) into this
+ *  context's ring buffer, mirror it to the console, and notify listeners.
+ *
+ *  Called by recordEvent on the storing context, and directly by the main
+ *  thread when it receives an event forwarded from the agent Worker — the
+ *  origin thread's id/timestamp are preserved so the modal shows the call's
+ *  real time, not when the main thread happened to receive it. */
+export function ingestEvent(full: DiagnosticEvent): void {
   events.unshift(full);
   if (events.length > MAX_EVENTS) events.length = MAX_EVENTS;
   // Mirror to devtools so a user who reports "diagnostics shows nothing"

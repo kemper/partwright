@@ -27,6 +27,10 @@ import {
   listNotes as dbListNotes,
   deleteNote as dbDeleteNote,
   updateNote as dbUpdateNote,
+  getDraft as dbGetDraft,
+  setDraft as dbSetDraft,
+  deleteDraft as dbDeleteDraft,
+  listDrafts as dbListDrafts,
   legacyImagesObjectToArray,
   generateId,
   type Session,
@@ -50,6 +54,8 @@ import {
   type SerializedAnnotation,
 } from '../annotations/annotations';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
+import { getActiveLanguage } from '../geometry/engine';
+import { effectiveVersionLanguage, asLanguage } from './languageFallback';
 
 /**
  * Current schema version for `.partwright.json` exports.
@@ -104,8 +110,20 @@ import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
  *           Also adds optional `versions[].importedMeshes` (base64-encoded
  *           mesh buffers) so imported STL geometry finally round-trips through
  *           export. Files with no `parts` import as a single default part.
+ *  - `1.8` — per-version modeling language (`versions[].language`). Versions
+ *           remember the engine they were authored in, so a single session can
+ *           hold mixed manifold-js + SCAD versions. Pre-1.8 files have no
+ *           per-version field; on import each version falls back to the
+ *           session-level `language` (then to 'manifold-js'). Older readers
+ *           ignore the field.
+ *  - `1.9` — per-version Customizer parameter overrides (`versions[].paramValues`).
+ *           When a model declares tweakable parameters via `api.params({...})`,
+ *           the values the user dialed in are stored here so the version re-runs
+ *           with them (and matches its saved thumbnail/stats). Only non-default
+ *           keys are written; pre-1.9 files have none and import with all
+ *           defaults. Older readers ignore the field.
  */
-export const SCHEMA_VERSION = '1.7';
+export const SCHEMA_VERSION = '1.9';
 
 const CURRENT_MAJOR = 1;
 
@@ -127,7 +145,7 @@ export interface ExportedSession {
   mainifold?: string;
   /** Images may be the array form or the legacy object map ({front, right, ...}).
    * Both also exist under `referenceImages` for pre-rename exports. */
-  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' };
+  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel' };
   /**
    * The session's parts, ordered by `order`. Present from schema 1.7. Pre-1.7
    * files omit this; on import they collapse into a single default part.
@@ -174,6 +192,21 @@ export interface ExportedSession {
      * @since 1.4
      */
     thumbnail?: string;
+    /**
+     * Modeling language this version was authored in. Absent ⇒ fall back to
+     * `session.language`, then to 'manifold-js'. Lets a single session hold
+     * mixed JS + SCAD versions.
+     * @since 1.8
+     */
+    language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
+    /**
+     * Customizer parameter overrides — the values dialed in against the model's
+     * `api.params({...})` schema. Only keys that differ from the model defaults
+     * are written. Re-applied on import so the version's geometry matches its
+     * saved thumbnail. Absent ⇒ all defaults.
+     * @since 1.9
+     */
+    paramValues?: Record<string, number | boolean | string>;
   }[];
   notes?: { text: string; timestamp: number }[];
   /**
@@ -304,7 +337,12 @@ export function getSchemaCompatibilityWarning(data: ExportedSession): string | n
   return null;
 }
 
-export type { Session, Part, Version, SessionNote, AttachedImage } from './db';
+export type { Session, Part, Version, SessionNote, AttachedImage, SessionDraft } from './db';
+
+// Pure resolver for a version's effective modeling language — re-exported from
+// its own tiny module so unit tests can import it without dragging in the
+// engine or DOM modules. See {@link ./languageFallback.ts}.
+export { effectiveVersionLanguage, DEFAULT_LANGUAGE } from './languageFallback';
 
 export interface SessionState {
   session: Session | null;
@@ -404,12 +442,15 @@ export function getVersionFromURL(): number | null {
 
 // === Session operations ===
 
-export async function createSession(name?: string, language?: 'manifold-js' | 'scad'): Promise<Session> {
+export async function createSession(name?: string, language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<Session> {
   // Clean up the previous session if it was empty
   if (currentState.session) {
     await deleteIfEmpty(currentState.session.id);
   }
-  const session = await dbCreateSession(name, language);
+  // Default to whatever engine the user currently has active — a "+ New
+  // Session" click while in SCAD mode shouldn't silently start a JS session.
+  const lang = language ?? getActiveLanguage();
+  const session = await dbCreateSession(name, lang);
   // Every session starts with one part; the current-part pointer references it.
   const part = await dbCreatePart(session.id, DEFAULT_PART_NAME, 0);
   await dbUpdateSession(session.id, { currentPartId: part.id });
@@ -507,13 +548,36 @@ export async function renameSession(id: string, newName: string): Promise<void> 
   publishTabSync({ kind: 'session-meta', sessionId: id });
 }
 
-export async function setSessionLanguage(id: string, language: 'manifold-js' | 'scad'): Promise<void> {
-  await dbUpdateSession(id, { language, updated: Date.now() });
-  if (currentState.session?.id === id) {
-    currentState.session = { ...currentState.session, language, updated: Date.now() };
-    notify();
-  }
-  publishTabSync({ kind: 'session-meta', sessionId: id });
+// === Editor drafts (per session, per language) ===
+//
+// Each session keeps a per-language draft slot — manifold-js, SCAD, and
+// replicad (BREP) each get their own — so flipping the toolbar's language
+// toggle preserves whatever the user (or the AI) was writing in the previous
+// language. Drafts are persisted so a reload doesn't lose them; they're
+// cascade-deleted when the session is.
+
+/** Read the working buffer for a session in a given language. Returns null
+ *  when no draft has been stashed yet (caller should fall back to a stub). */
+export async function readDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<string | null> {
+  const row = await dbGetDraft(sessionId, language);
+  return row ? row.code : null;
+}
+
+/** Write the working buffer for a session in a given language. Idempotent —
+ *  the row is upserted by composite key. */
+export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string): Promise<void> {
+  await dbSetDraft(sessionId, language, code);
+}
+
+/** Drop the working buffer for a (session, language) pair — used when the
+ *  caller wants to force the next language switch to land on a stub. */
+export async function clearDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<void> {
+  await dbDeleteDraft(sessionId, language);
+}
+
+/** All drafts stashed for a session, ordered by language. */
+export async function listSessionDrafts(sessionId: string) {
+  return dbListDrafts(sessionId);
 }
 
 // === Per-session AI preference ===
@@ -771,6 +835,17 @@ function annotationsEqual(a: unknown[] | undefined, b: unknown[] | undefined): b
   return JSON.stringify(aArr) === JSON.stringify(bArr);
 }
 
+/** Customizer parameter overrides are persisted per version. Compare them so a
+ *  save that only changes a parameter value still creates a new version — the
+ *  code is identical (params live in code; values are overrides), but the dialed
+ *  geometry is the change. Key order is irrelevant, so compare sorted entries. */
+function paramValuesEqual(a: Record<string, unknown> | undefined, b: Record<string, unknown> | undefined): boolean {
+  const aKeys = a ? Object.keys(a).sort() : [];
+  const bKeys = b ? Object.keys(b).sort() : [];
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((k, i) => bKeys[i] === k && a![k] === b![k]);
+}
+
 /** Color regions are persisted as `geometryData.colorRegions` on each version.
  *  Compare them so a save that only adds/edits color regions still creates a
  *  new version — code may be identical, but the painted state is the change. */
@@ -790,11 +865,12 @@ export async function saveVersion(
   thumbnail: Blob | null,
   label?: string,
   notes?: string,
-  options?: { force?: boolean; importedMeshes?: ImportedMesh[] },
+  options?: { force?: boolean; importedMeshes?: ImportedMesh[]; paramValues?: Record<string, number | boolean | string> },
 ): Promise<Version | null> {
   if (!currentState.session || !currentState.currentPart) return null;
 
   const annotationSnapshot = serializeAnnotations();
+  const paramValues = options?.paramValues;
 
   // Imports carry forward to new versions automatically: if the user edits
   // their imported-mesh code and re-saves, the same mesh data should still
@@ -812,7 +888,8 @@ export async function saveVersion(
     currentState.currentVersion &&
     currentState.currentVersion.code === code &&
     annotationsEqual(currentState.currentVersion.annotations, annotationSnapshot) &&
-    colorRegionsEqual(currentState.currentVersion.geometryData as Record<string, unknown> | null, geometryData)
+    colorRegionsEqual(currentState.currentVersion.geometryData as Record<string, unknown> | null, geometryData) &&
+    paramValuesEqual(currentState.currentVersion.paramValues, paramValues)
   ) {
     return null;
   }
@@ -828,6 +905,11 @@ export async function saveVersion(
     undefined,
     annotationSnapshot,
     nextImports.length > 0 ? nextImports : undefined,
+    // Snapshot the engine language at save time. Versions remember the
+    // language they were authored in, so navigating between them swaps the
+    // engine independently of the session's default.
+    getActiveLanguage(),
+    paramValues,
   );
 
   currentState = {
@@ -1063,7 +1145,7 @@ export function getRecentErrors(): { error: string; timestamp: number }[] {
 // === Session context (single call for AI agents) ===
 
 export interface SessionContext {
-  session: { id: string; name: string; created: number; updated: number; language: 'manifold-js' | 'scad' };
+  session: { id: string; name: string; created: number; updated: number; language: 'manifold-js' | 'scad' | 'replicad' | 'voxel' };
   /** All parts in the session. The `versions`/`currentVersion` fields below are
    *  scoped to {@link currentPart}; switch parts with `changePart` to inspect
    *  another part's history. */
@@ -1074,6 +1156,9 @@ export interface SessionContext {
     label: string;
     timestamp: number;
     notes?: string;
+    /** Modeling language this version was authored in (resolved via the
+     *  per-version → session-level → default fallback chain). */
+    language: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
     geometrySummary: {
       volume?: number;
       surfaceArea?: number;
@@ -1084,13 +1169,16 @@ export interface SessionContext {
     } | null;
   }[];
   notes: { id: string; text: string; timestamp: number }[];
-  currentVersion: { index: number; label: string } | null;
+  currentVersion: { index: number; label: string; language: 'manifold-js' | 'scad' | 'replicad' | 'voxel' } | null;
   versionCount: number;
   agentHints: {
     apiDocsUrl: string;
     recommendedEntrypoint: string;
     codeMustReturnManifold: boolean;
-    language: 'manifold-js' | 'scad';
+    /** Active engine language right now. May differ from
+     *  {@link SessionContext.session.language} when the user/agent has
+     *  navigated to a version authored in another language. */
+    language: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
     supportedLanguages: string[];
     recentErrors: { error: string; timestamp: number }[];
     /** The AI spending budget the user has set. Agents should respect it. */
@@ -1130,6 +1218,7 @@ export async function getSessionContext(): Promise<SessionContext | null> {
         label: v.label,
         timestamp: v.timestamp,
         ...(v.notes ? { notes: v.notes } : {}),
+        language: effectiveVersionLanguage(v, session),
         geometrySummary: geo && geo.status === 'ok' ? {
           volume: geo.volume as number | undefined,
           surfaceArea: geo.surfaceArea as number | undefined,
@@ -1142,15 +1231,24 @@ export async function getSessionContext(): Promise<SessionContext | null> {
     }),
     notes: notes.map(n => ({ id: n.id, text: n.text, timestamp: n.timestamp })),
     currentVersion: currentState.currentVersion
-      ? { index: currentState.currentVersion.index, label: currentState.currentVersion.label }
+      ? {
+          index: currentState.currentVersion.index,
+          label: currentState.currentVersion.label,
+          language: effectiveVersionLanguage(currentState.currentVersion, session),
+        }
       : null,
     versionCount: currentState.versionCount,
     agentHints: {
       apiDocsUrl: '/ai.md',
       recommendedEntrypoint: 'runAndSave',
-      codeMustReturnManifold: (session.language ?? 'manifold-js') === 'manifold-js',
-      language: session.language ?? 'manifold-js',
-      supportedLanguages: ['manifold-js', 'scad'],
+      // 'manifold-js' returns a Manifold; 'scad' compiles SCAD source;
+      // 'replicad' returns a BREP shape (BREP.* …). Only the manifold-js path
+      // requires the literal `return manifold` convention. We use the live
+      // engine language (not the session-level hint) since per-version language
+      // means the active language can differ from session.language.
+      codeMustReturnManifold: getActiveLanguage() === 'manifold-js',
+      language: getActiveLanguage(),
+      supportedLanguages: ['manifold-js', 'scad', 'replicad', 'voxel'],
       recentErrors: getRecentErrors(),
       spending: getSpendingSummary(),
     },
@@ -1159,14 +1257,18 @@ export async function getSessionContext(): Promise<SessionContext | null> {
 
 // === Cleanup ===
 
-/** Delete a session if it has no versions and no notes (used for auto-created empty sessions) */
+/** Delete a session if it has no versions, no notes, and no AI chat
+ *  messages (used for auto-created empty sessions). Chat-only sessions
+ *  ARE content — `dbDeleteSession` cascade-deletes chats via the
+ *  sessionId index, so omitting the chat check here would silently wipe
+ *  a user's transcript on the next "new session" / navigation away. */
 export async function deleteIfEmpty(sessionId: string): Promise<boolean> {
-  // Empty = no saved versions in any part and no notes. The auto-created part
-  // that every session carries doesn't count as content.
   const count = await getSessionVersionCount(sessionId);
   if (count > 0) return false;
   const notes = await dbListNotes(sessionId);
   if (notes.length > 0) return false;
+  const chat = await dbListMessages(sessionId);
+  if (chat.length > 0) return false;
   await dbDeleteSession(sessionId);
   if (currentState.session?.id === sessionId) {
     currentState = { session: null, parts: [], currentPart: null, currentVersion: null, versionCount: 0 };
@@ -1412,10 +1514,12 @@ export async function exportSession(
         timestamp: v.timestamp,
         ...(partOrder !== 0 ? { part: partOrder } : {}),
         ...(v.notes ? { notes: v.notes } : {}),
+        ...(v.language ? { language: v.language } : {}),
         ...(colorRegions ? { colorRegions } : {}),
         ...(versionAnnotations.length > 0 ? { annotations: versionAnnotations } : {}),
         ...(thumbDataUrl ? { thumbnail: thumbDataUrl } : {}),
         ...(importedMeshes ? { importedMeshes } : {}),
+        ...(v.paramValues && Object.keys(v.paramValues).length > 0 ? { paramValues: v.paramValues } : {}),
       };
     }),
     ...(notes.length > 0 ? { notes: notes.map(n => ({ text: n.text, timestamp: n.timestamp })) } : {}),
@@ -1448,7 +1552,10 @@ export async function importSession(
     throw new Error('Invalid session file: no versions found.');
   }
 
-  const session = await dbCreateSession(data.session.name, data.session.language);
+  // Filter the session-level language through asLanguage so a malformed
+  // export can't smuggle in an unknown value (which would later poison the
+  // version-language fallback chain).
+  const session = await dbCreateSession(data.session.name, asLanguage(data.session.language));
 
   // Restore images if present in the exported data. Handle two legacy shapes:
   //   - pre-rename: `referenceImages` instead of `images`
@@ -1533,6 +1640,17 @@ export async function importSession(
         v.timestamp,
         versionAnnotations,
         deserializeImportedMeshes(v.importedMeshes),
+        // Per-version language (schema 1.8+). Pre-1.8 files omit it; the
+        // read path falls back to session-level via effectiveVersionLanguage.
+        // Run unknown values through `asLanguage` so a malformed export
+        // (e.g. {language: 'python'}) drops the field rather than poisoning
+        // the engine + editor when this version is later loaded.
+        asLanguage(v.language),
+        // Customizer parameter overrides (schema 1.9+). Pre-1.9 files omit it;
+        // the version then runs at the model's declared defaults. Validation of
+        // the values against the model's schema happens at run time (coerced /
+        // clamped in resolveParamValues), so a stale value can't break a load.
+        v.paramValues && typeof v.paramValues === 'object' ? v.paramValues : undefined,
       );
     }
   }

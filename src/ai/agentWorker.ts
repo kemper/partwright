@@ -12,12 +12,26 @@
 // Protocol — Worker → Main:
 //   { type: 'tool_call',  callId, name, input }
 //   { type: 'callback',   name: string, args: unknown[] }
+//   { type: 'diagnostic', event: DiagnosticEvent }
 //   { type: 'turn_done',  history: ChatMessage[] }
 //   { type: 'error',      message: string }
 
 import { runTurn, type RunTurnInput, type RunTurnCallbacks } from './chatLoop';
+import { setEventForwarder } from './diagnostics';
 import type { ChatBlock } from './types';
 import type { ToolExecResult } from './tools';
+
+// The chat loop records each provider API call via diagnostics.recordEvent.
+// Inside this Worker those land in the Worker's own module-instance ring
+// buffer, which the AI Call Log modal (main thread) never reads — so for
+// hosted providers the log looked empty save for the main-thread validateKey
+// ping. Forward every event to the main thread, where agentWorkerClient
+// ingests it into the buffer the modal actually shows. Registered once at
+// module load; DiagnosticEvent is a plain object, so it structured-clones
+// across the postMessage boundary.
+setEventForwarder((event) => {
+  self.postMessage({ type: 'diagnostic', event });
+});
 
 /** Serialisable subset of RunTurnInput sent from the main thread.
  *  signal, onDrainQueuedBlocks and executeToolFn are managed by the Worker

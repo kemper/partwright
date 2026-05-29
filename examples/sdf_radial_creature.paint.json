@@ -1,0 +1,7 @@
+{
+  "regions": [
+    { "label": "body",   "color": [0.42, 0.58, 0.82], "name": "Bell + foot (deep aqua)" },
+    { "label": "limbs",  "color": [0.78, 0.36, 0.68], "name": "Tentacles + rear fins (orchid)" },
+    { "label": "crown",  "color": [0.98, 0.86, 0.30], "name": "Ocellus crown (luminescent gold)" }
+  ]
+}

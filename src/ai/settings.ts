@@ -6,6 +6,7 @@ import { MAX_ITERATIONS, MAX_SPEND, RENDER_RESOLUTION, RENDER_RESOLUTION_PX, SPE
 import type { LocalModelId } from './localModels';
 import { LOCAL_MODELS } from './localModels';
 import { getKey } from './db';
+import { getModelOptions, type ModelOption } from './catalog';
 
 const STORAGE_KEY = 'partwright-ai-settings-v1';
 
@@ -16,6 +17,12 @@ export interface AiSettings {
    *  the AI surface is discoverable; persists the user's choice thereafter, so
    *  once they close it it stays closed on reload. */
   drawerOpen: boolean;
+  /** Whether the code editor pane is collapsed. `null` means "no explicit
+   *  preference yet" — layout.ts then defaults it to match `drawerOpen` so a
+   *  first-time visitor with the AI panel up doesn't see two competing surfaces
+   *  in the editor. Once the user clicks "Hide code" / "Show code" the choice
+   *  is persisted and respected on every subsequent load. */
+  editorCollapsed: boolean | null;
   /** Default for new sessions before the user has touched the toggle bar. */
   autoCompactMode: 'off' | 'conservative' | 'standard' | 'aggressive';
   /** User-overridden system prompts. `null` means "use the built-in default
@@ -96,10 +103,14 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
   },
   standard: {
     vision: { views: true, resolution: 'medium', angles: 'auto' },
-    // Paint off by default — color regions lock the editor and are easy
-    // for the model to mis-target. Users who want AI-driven painting
-    // can flip the Paint pill on, or pick the Full preset.
-    scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: true },
+    // Paint on by default in standard — color is a strong signal for the
+    // AI to express "this part is the X, this is the Y" and pairs well
+    // with the BREP/labelled-construction patterns. The editor lock
+    // worry is mitigated by paintByLabel landing on labelled features
+    // (not coordinate guessing), so accidental misfires are rare. Notes
+    // off by default — the chat transcript already records the
+    // reasoning, so each addSessionNote call is a redundant round-trip.
+    scope: { runCode: true, saveVersions: true, paintFaces: true, sessionNotes: false },
     autoRetry: 1,
     maxIterations: 'high',
     maxSpend: 'medium',
@@ -129,6 +140,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   preset: 'standard',
   toggles: DEFAULT_TOGGLES,
   drawerOpen: true,
+  editorCollapsed: null,
   autoCompactMode: 'off',
   systemPromptOverrides: { anthropic: null, local: null, openai: null, gemini: null },
   customLocalModels: [],
@@ -310,9 +322,11 @@ export function getSpendingSummary(): {
   };
 }
 
-/** Set the Anthropic-side model. Used when the user picks Haiku/Sonnet/Opus
- *  from the header dropdown while on the Anthropic provider. */
-export function setAnthropicModel(settings: AiSettings, model: AnthropicModelId): AiSettings {
+/** Set the Anthropic-side model. Used when the user picks a Claude tier from
+ *  the header dropdown while on the Anthropic provider. Takes a plain string
+ *  so dated snapshots (claude-opus-4-1-20250805, etc.) and any catalog id
+ *  beyond the curated starter tiers still fit. */
+export function setAnthropicModel(settings: AiSettings, model: string): AiSettings {
   return {
     ...settings,
     preset: 'custom',
@@ -387,6 +401,7 @@ interface LegacyAiSettings {
   preset?: Preset;
   autoCompactMode?: AiSettings['autoCompactMode'];
   drawerOpen?: boolean;
+  editorCollapsed?: boolean | null;
   toggles?: Partial<ChatToggles> & { model?: ModelId };
   systemPromptOverrides?: Partial<AiSettings['systemPromptOverrides']>;
   customLocalModels?: CustomLocalModel[];
@@ -438,6 +453,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
     preset: partial.preset ?? DEFAULT_SETTINGS.preset,
     autoCompactMode: partial.autoCompactMode ?? DEFAULT_SETTINGS.autoCompactMode,
     drawerOpen: partial.drawerOpen ?? DEFAULT_SETTINGS.drawerOpen,
+    editorCollapsed: typeof partial.editorCollapsed === 'boolean' ? partial.editorCollapsed : null,
     toggles: {
       vision: { ...DEFAULT_SETTINGS.toggles.vision, ...(tgls.vision ?? {}) },
       scope: { ...DEFAULT_SETTINGS.toggles.scope, ...(tgls.scope ?? {}) },
@@ -559,42 +575,52 @@ export const VERIFY_ANGLE_OPTIONS: { id: ChatToggles['vision']['angles']; label:
   { id: 'all', label: '4 views', hint: 'Front + right + top + iso (4 images per check). Most thorough, most tokens.' },
 ];
 
-export const ANTHROPIC_MODEL_OPTIONS: { id: AnthropicModelId; label: string }[] = [
+// Curated fallback menus used when the build-time models.dev snapshot is
+// empty for a provider (rare — would mean the refresh failed AND the
+// committed snapshot was wiped). These mirror the most common current
+// defaults so the UI always has something usable to render. The real menus
+// come from the catalog and are rebuilt below.
+
+const ANTHROPIC_FALLBACK_OPTIONS: ModelOption[] = [
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5' },
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
   { id: 'claude-opus-4-7', label: 'Opus 4.7' },
 ];
 
-/** Curated OpenAI model menu shown in the panel header dropdown. The user
- *  can also type a custom id in the settings modal (e.g. a dated
- *  snapshot) and have it stick across provider switches. */
-export const OPENAI_MODEL_OPTIONS: { id: string; label: string }[] = [
+const OPENAI_FALLBACK_OPTIONS: ModelOption[] = [
   { id: 'gpt-5.5', label: 'GPT-5.5' },
   { id: 'gpt-5', label: 'GPT-5' },
   { id: 'gpt-5-mini', label: 'GPT-5 mini' },
   { id: 'gpt-5-nano', label: 'GPT-5 nano' },
-  { id: 'o3', label: 'o3 (reasoning)' },
-  { id: 'gpt-4.1', label: 'GPT-4.1' },
-  { id: 'gpt-4o', label: 'GPT-4o' },
-  { id: 'gpt-4o-mini', label: 'GPT-4o mini' },
 ];
 
-/** Curated Gemini starter menu — the general-purpose chat+tools models
- *  best suited to driving CAD design, picked from the live model list.
- *  Deliberately excludes image-gen (Nano Banana), music (Lyria), TTS,
- *  robotics, and Gemma families — they don't do tool-driven modeling.
- *  The "-latest" aliases auto-update so they don't go stale; the pinned
- *  previews give a fixed target. The Gemini tab's "Load models from your
- *  key" button still surfaces the full lineup (incl. Nano Banana) for
- *  anyone who wants to experiment, and the custom-id input covers the
- *  rest. */
-export const GEMINI_MODEL_OPTIONS: { id: string; label: string }[] = [
+const GEMINI_FALLBACK_OPTIONS: ModelOption[] = [
   { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview' },
-  { id: 'gemini-pro-latest', label: 'Gemini Pro (latest)' },
   { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },
   { id: 'gemini-flash-latest', label: 'Gemini Flash (latest)' },
   { id: 'gemini-flash-lite-latest', label: 'Gemini Flash-Lite (latest)' },
 ];
+
+function pickOptions(provider: Provider, fallback: ModelOption[]): ModelOption[] {
+  const fromCatalog = getModelOptions(provider);
+  return fromCatalog.length > 0 ? fromCatalog : fallback;
+}
+
+/** Anthropic models surfaced in the picker. Sourced from the models.dev
+ *  snapshot (filtered to the last year of releases), with the curated
+ *  fallback above used only if the snapshot is empty. */
+export const ANTHROPIC_MODEL_OPTIONS: ModelOption[] = pickOptions('anthropic', ANTHROPIC_FALLBACK_OPTIONS);
+
+/** OpenAI models surfaced in the picker. Catalog-sourced; the user can also
+ *  type a custom id in the settings modal (a dated snapshot, a model the
+ *  catalog hasn't ingested yet) and have it stick across provider switches. */
+export const OPENAI_MODEL_OPTIONS: ModelOption[] = pickOptions('openai', OPENAI_FALLBACK_OPTIONS);
+
+/** Gemini models surfaced in the picker. Catalog-sourced (filtered to the
+ *  last year of releases). The Gemini tab's "Load models from your key"
+ *  button still surfaces the user's full live lineup (incl. older models,
+ *  Nano Banana, previews) for anyone who wants to experiment. */
+export const GEMINI_MODEL_OPTIONS: ModelOption[] = pickOptions('gemini', GEMINI_FALLBACK_OPTIONS);
 
 /** Human-readable name for a provider — for chat-bubble badges, modal
  *  headings, and the diagnostics view. */

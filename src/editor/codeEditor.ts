@@ -10,7 +10,11 @@ import { manifoldApiCompletion } from './apiCompletions';
 import type { SourceDiagnostic } from '../geometry/types';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
 
-export type EditorLanguage = 'manifold-js' | 'scad';
+/** Replicad/BREP sessions reuse the JavaScript editor since they're written
+ *  as JS (`api.BREP.box(...)`), but we still track them as a distinct
+ *  language so callers (formatting, syntax highlighting, status badges) can
+ *  branch per engine. */
+export type EditorLanguage = 'manifold-js' | 'scad' | 'replicad' | 'voxel';
 
 let editorView: EditorView | null = null;
 let debounceTimer: number | null = null;
@@ -212,6 +216,20 @@ export function setValue(code: string): void {
   editorView.dispatch({
     changes: { from: 0, to: editorView.state.doc.length, insert: formatted },
   });
+  // Programmatic setValue (partwright.run, version load, etc.) signals an
+  // explicit caller-managed run, so cancel the debounced auto-run that the
+  // docChanged listener just scheduled. Without this, every programmatic
+  // value-set triggers an extra run 300 ms later that re-runs the code and
+  // (via updateMesh's auto-frame) snaps the camera back — wiping any zoom /
+  // orbit the user did in the meantime.
+  if (debounceTimer !== null) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+  if (idleTimer !== null) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
 }
 
 function applyFormat(code: string, lang: EditorLanguage): string {

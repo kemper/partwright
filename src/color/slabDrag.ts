@@ -6,7 +6,7 @@
 
 import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
-import { getMeshGroup, getRenderer, getCamera } from '../renderer/viewport';
+import { getMeshGroup, getRenderer, getCamera, getScene } from '../renderer/viewport';
 import { addRegion, getRegions } from './regions';
 import { findSlabTriangles, projectionRange, AXIS_NORMALS } from './slabPaint';
 import { getColor, getCurrentMesh, shapeSmoothDescriptorFields } from './paintMode';
@@ -112,7 +112,9 @@ function rebuildCuboid(): void {
   cuboid.name = 'slab-cuboid';
   cuboid.renderOrder = 998;
   cuboid.visible = false;
-  getMeshGroup().add(cuboid);
+  // Parent to the scene (not meshGroup) so updateMesh() clearing meshGroup
+  // children on a paint commit doesn't dispose the cuboid's geometry/material.
+  getScene().add(cuboid);
 
   // Wireframe edges for clearer slab boundary
   const edgeGeo = new THREE.EdgesGeometry(geo);
@@ -121,7 +123,7 @@ function rebuildCuboid(): void {
   edges.name = 'slab-cuboid-edges';
   edges.renderOrder = 999;
   edges.visible = false;
-  getMeshGroup().add(edges);
+  getScene().add(edges);
 
   // Center the box in the lateral axes; slab axis position is updated each frame
   const centerLateral = (k: 'x' | 'y' | 'z'): number => {
@@ -139,13 +141,13 @@ function rebuildCuboid(): void {
 
 function disposeCuboid(): void {
   if (cuboid) {
-    getMeshGroup().remove(cuboid);
+    getScene().remove(cuboid);
     cuboid.geometry.dispose();
     (cuboid.material as THREE.Material).dispose();
     cuboid = null;
   }
   if (edges) {
-    getMeshGroup().remove(edges);
+    getScene().remove(edges);
     edges.geometry.dispose();
     (edges.material as THREE.Material).dispose();
     edges = null;
@@ -171,9 +173,6 @@ function setSlabAxisScale(thickness: number, center: number): void {
 }
 
 function refreshVisual(): void {
-  // Re-add the cuboid if a viewport refresh detached it.
-  if (cuboid && !cuboid.parent) getMeshGroup().add(cuboid);
-  if (edges && !edges.parent) getMeshGroup().add(edges);
   if (!cuboid) return;
   let lo: number;
   let hi: number;

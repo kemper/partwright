@@ -82,25 +82,35 @@ function hideLockOverlay(): void {
   }
 }
 
-function disableRun(): void {
-  if (runButton) {
-    (runButton as HTMLButtonElement).disabled = true;
-    runButton.classList.add('opacity-40', 'pointer-events-none');
+/** Disable the manual Run + auto-run buttons. Exported so other read-only
+ *  modes (e.g. shared-link preview in main.ts) reuse the same disable approach
+ *  rather than re-grabbing `#btn-run`/`#btn-auto-run` in a third place. The
+ *  ids are re-queried each call so a caller that runs before initEditorLock —
+ *  or after the buttons are recreated — still works. */
+export function disableRun(): void {
+  const run = runButton ?? document.getElementById('btn-run');
+  const auto = autoRunButton ?? document.getElementById('btn-auto-run');
+  if (run) {
+    (run as HTMLButtonElement).disabled = true;
+    run.classList.add('opacity-40', 'pointer-events-none');
   }
-  if (autoRunButton) {
-    (autoRunButton as HTMLButtonElement).disabled = true;
-    autoRunButton.classList.add('opacity-40', 'pointer-events-none');
+  if (auto) {
+    (auto as HTMLButtonElement).disabled = true;
+    auto.classList.add('opacity-40', 'pointer-events-none');
   }
 }
 
-function enableRun(): void {
-  if (runButton) {
-    (runButton as HTMLButtonElement).disabled = false;
-    runButton.classList.remove('opacity-40', 'pointer-events-none');
+/** Re-enable the Run + auto-run buttons disabled by {@link disableRun}. */
+export function enableRun(): void {
+  const run = runButton ?? document.getElementById('btn-run');
+  const auto = autoRunButton ?? document.getElementById('btn-auto-run');
+  if (run) {
+    (run as HTMLButtonElement).disabled = false;
+    run.classList.remove('opacity-40', 'pointer-events-none');
   }
-  if (autoRunButton) {
-    (autoRunButton as HTMLButtonElement).disabled = false;
-    autoRunButton.classList.remove('opacity-40', 'pointer-events-none');
+  if (auto) {
+    (auto as HTMLButtonElement).disabled = false;
+    auto.classList.remove('opacity-40', 'pointer-events-none');
   }
 }
 

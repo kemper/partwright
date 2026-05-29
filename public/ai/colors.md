@@ -141,9 +141,92 @@ persist the name, and rehydration re-resolves by name on the next
 load — so saved-version round-trips work as long as the code still
 defines the same label names.
 
-Limitations: manifold-js only (SCAD has no equivalent). For
-geometry you didn't author with labels (user-imported, legacy code),
-fall back to `paintComponent` below.
+**Color in the code (self-coloring models).** Skip the paint step
+entirely: pass a `color` to the label and it renders + exports colored
+on the spot, with the editor still editable.
+
+```js
+const body = api.label(api.Manifold.cube([20, 20, 20], true), 'body', { color: '#3b82f6' });
+const knob = api.label(api.Manifold.cylinder(6, 4, 4, 32).translate([0, 0, 13]), 'knob', { color: [1, 0, 0] });
+return body.add(knob);            // blue body + red knob, no paintByLabel call
+// api.labeledUnion([{ name, shape, color }, ...]) takes the same per-entry color.
+```
+
+`color` is a hex string (`'#rrggbb'` / `'#rgb'`) or an `[r,g,b]` array in
+0..1. It re-resolves every run (keyed by the label name), so it survives
+Customizer parameter changes — wire a `color` param in as
+`{ color: p.accent }` for a live color knob, or give each instance of a
+parametric count a distinct name (`'petal' + i`) for per-instance color.
+
+These model-declared colors are a derived **underlay**: manual paint
+(`paintByLabel` / the paint tools) composites on top as an optional
+override, and **only manual paint locks the editor**. They are not written
+into the saved paint sidecar — the code re-derives them on load. Read the
+active set with `partwright.getModelColors()` →
+`{ count, colors: [{ name, color, triangleCount }] }`; a zero
+`triangleCount` means that label's triangles were consumed by a later
+boolean (see `listLabels().lostLabels`). Prefer model-declared color when
+the color is intrinsic to the design; reach for `paintByLabel` when a
+human is tweaking colors interactively or overriding the code.
+
+SCAD has the same `label()` pattern. Partwright pre-injects a
+passthrough `module label(name) { children(); }` into every SCAD
+compile so the wrapper is portable to vanilla OpenSCAD too (the helper
+does nothing geometrically — `paintByLabel` is the only thing that
+acts on it). Wrap each top-level statement you intend to paint:
+
+```scad
+label("body") cube([10,10,10]);
+translate([20,0,0]) label("wheel") sphere(r=4);
+label("post") translate([0,20,0]) cylinder(r=2, h=8);
+```
+
+Then `paintByLabel({label:'body', color:[1,0,0]})` works exactly like
+the manifold-js case. Constraints:
+
+- **Top-level only.** Labels inside a SCAD boolean (the `{ ... }` of
+  `difference()`, `intersection()`, `union()`, `hull()`, etc.) are
+  lost — OpenSCAD's CGAL backend doesn't carry provenance through
+  booleans.
+
+  ```scad
+  // ✗ WRONG — both labels stripped by CGAL; paintByLabel can't find them
+  difference() {
+    label("body") cube([20, 20, 30]);
+    label("hole") cylinder(r=4, h=30);
+  }
+
+  // ✓ RIGHT — one label outside; the whole result tags as "body"
+  label("body") difference() {
+    cube([20, 20, 30]);
+    cylinder(r=4, h=30);
+  }
+
+  // ✓ ALSO RIGHT — labels at the top level (separate statements union
+  //   implicitly; the difference happens in Manifold not CGAL)
+  label("body") cube([20, 20, 30]);
+  label("knob") translate([0, 0, 32]) cylinder(r=4, h=6);
+  ```
+
+  When labels are lost this way, the engine attaches a `warning`
+  diagnostic to the run and returns the dropped names as
+  `runAndSave(...).lostLabels` (also reachable via `listLabels().lostLabels`
+  on the next call) — so you don't have to diff the labelMap by hand.
+  `listLabels()`'s main `labels` array contains only what survived.
+- **`for`-loop expansion can also drop labels.** A single source
+  `label("c") cube();` inside `for (i = [0:9])` produces 10 AMF objects
+  but one scanner statement, so the engine falls back to auto-named
+  regions. `runAndSave(...).lostLabels` reports this case too.
+- **Literal names only.** `label("body")` works; `label(str("c", i))`
+  doesn't (the name is computed at SCAD runtime and we can't read it).
+  For-loop bodies that use `label()` produce auto-named regions.
+- **Only label when you plan to paint.** No-label SCAD takes a faster
+  single-STL path; using `label()` switches to a single multi-object
+  AMF compile (similar cost, slightly more parsing). When no labels
+  are present, there is zero overhead.
+
+For geometry you didn't author with labels (user-imported, legacy
+code), fall back to `paintComponent` below.
 
 **Paint by feature on unioned models (legacy fallback).** When the
 geometry is a boolean union of distinct pieces but the code didn't
@@ -161,8 +244,8 @@ for (const c of components) {
 
 This avoids guessing world coordinates, survives small parametric
 tweaks to the model, and skips the listComponents → paintInBox pair.
-Prefer `paintByLabel` when you control the code; reach for
-`paintComponent` when you don't.
+Prefer `paintByLabel` when you control the code (whether manifold-js
+or SCAD); reach for `paintComponent` when you don't.
 
 **Avoiding over-paint.** When `paintInBox` / `paintNear` catches side
 walls or the bottom face by mistake, pass `topOnly: true` — restricts

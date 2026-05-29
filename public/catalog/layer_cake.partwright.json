@@ -1,0 +1,60 @@
+{
+  "partwright": "1.9",
+  "session": {
+    "name": "Layer Cake",
+    "created": 1780016793863,
+    "updated": 1780016793863,
+    "images": null,
+    "language": "manifold-js"
+  },
+  "parts": [
+    {
+      "name": "Part 1",
+      "order": 0
+    }
+  ],
+  "versions": [
+    {
+      "index": 1,
+      "code": "// Layer cake — a self-coloring parametric model.\n//\n// Every part's color is declared right in the code via\n// `api.label(shape, name, { color })`, so the cake renders AND exports colored\n// with no separate paint pass, and the editor stays fully editable. The\n// frosting color is a Customizer knob (a `color` param wired straight into a\n// label), and the number of tiers is parametric — each new tier is born colored.\nconst { Manifold } = api;\n\nconst p = api.params({\n  tiers:    { type: 'int',    default: 3,  min: 1,  max: 5,   label: 'Tiers' },\n  diameter: { type: 'number', default: 80, min: 40, max: 160, step: 2, unit: 'mm', label: 'Base diameter' },\n  frosting: { type: 'color',  default: '#ffd1dc', label: 'Frosting color' },\n});\n\nconst SPONGE = '#c8843c'; // baked sponge brown\nconst CHERRY = '#d11a2a';\n\nconst tierH = 18;\nconst pieces = [];\nlet z = 0;\nlet topR = p.diameter / 2;\n\nfor (let i = 0; i < p.tiers; i++) {\n  const r = (p.diameter / 2) * (1 - i * 0.16);\n  topR = r;\n  // Sponge layer — each tier gets its own labelled region so the colors stay\n  // crisp across the boolean union.\n  pieces.push(api.label(Manifold.cylinder(tierH, r, r, 64).translate([0, 0, z]), 'sponge' + i, { color: SPONGE }));\n  // Frosting band straddling the top of the layer: a little wider and thin, and\n  // overlapping the sponge so it fuses. Every tier shares the 'frosting' label,\n  // so they're one region driven by a single color param.\n  pieces.push(api.label(Manifold.cylinder(tierH * 0.45, r * 1.03, r * 1.03, 64).translate([0, 0, z + tierH * 0.8]), 'frosting', { color: p.frosting }));\n  z += tierH;\n}\n\n// A cherry on top, dipping into the topmost frosting so it unions cleanly.\npieces.push(api.label(Manifold.sphere(topR * 0.16, 32).translate([0, 0, z + topR * 0.08]), 'cherry', { color: CHERRY }));\n\nlet cake = pieces[0];\nfor (let i = 1; i < pieces.length; i++) cake = cake.add(pieces[i]);\nreturn cake;\n",
+      "label": "v1",
+      "geometryData": {
+        "status": "ok",
+        "vertexCount": 873,
+        "triangleCount": 1742,
+        "boundingBox": {
+          "x": [
+            -41.20000076293945,
+            41.20000076293945
+          ],
+          "y": [
+            -41.20000076293945,
+            41.20000076293945
+          ],
+          "z": [
+            0,
+            60.52799987792969
+          ],
+          "dimensions": [
+            82.4000015258789,
+            82.4000015258789,
+            60.52799987792969
+          ]
+        },
+        "centroid": [
+          0,
+          0,
+          30.263999938964844
+        ],
+        "volume": 223836.9324184301,
+        "surfaceArea": 24054.894129135784,
+        "genus": 0,
+        "isManifold": true,
+        "componentCount": 1,
+        "unit": "mm"
+      },
+      "timestamp": 1780016793863,
+      "language": "manifold-js"
+    }
+  ]
+}

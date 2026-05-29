@@ -44,16 +44,16 @@ export interface ToolExecResult {
 const ALL_TOOLS: ToolDefinition[] = [
   {
     name: 'getActiveLanguage',
-    description: 'Returns the editor\'s current modeling language: "manifold-js" or "scad". The per-turn system suffix already includes this, but call when in doubt or after a tool sequence that might have switched it.',
+    description: 'Returns the editor\'s current modeling language: "manifold-js", "scad", "replicad", or "voxel". The per-turn system suffix already includes this, but call when in doubt or after a tool sequence that might have switched it.',
     input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'setActiveLanguage',
-    description: 'Switch the editor between "manifold-js" and "scad". Switching DISCARDS the current editor contents and resets to a stub — only do this when the user asked for the switch, or when the new request is much better expressed in the other language. Do NOT switch back and forth speculatively.',
+    description: 'Switch the editor between "manifold-js", "scad", and "replicad". Your in-progress code in the previous language is stashed as a per-session draft and restored when you switch back, so flipping is cheap and non-destructive — saved versions in this session are untouched and remember the language they were authored in. "replicad" is a full BREP / OpenCASCADE session — pick it when the user wants exact fillets, chamfers, STEP export, or mechanical-CAD interop. (Inside a manifold-js session you can also access BREP via `api.BREP.*` without switching languages — only switch when STEP export or a BREP-only workflow is required.) "voxel" is a blocky colored-cube engine (pure JS): build with `api.voxels()` then v.set/v.fillBox/v.sphere/v.line in hex or [r,g,b] colors and `return v` — pick it for Minecraft-style / pixel-art models or after an image-to-voxel import. Use when the user asks, or when the new request maps obviously better to one of the engines; still avoid unnecessary back-and-forth since each switch costs a tool round-trip.',
     input_schema: {
       type: 'object',
       properties: {
-        lang: { type: 'string', enum: ['manifold-js', 'scad'] },
+        lang: { type: 'string', enum: ['manifold-js', 'scad', 'replicad', 'voxel'] },
       },
       required: ['lang'],
     },
@@ -72,6 +72,25 @@ const ALL_TOOLS: ToolDefinition[] = [
         code: { type: 'string', description: 'New editor contents (must be a complete program ending in `return manifold;`).' },
       },
       required: ['code'],
+    },
+  },
+  {
+    name: 'getParams',
+    description: 'Read the current model\'s Customizer parameters — the tweakable knobs it declares via `api.params({...})`. Returns `{ schema, values }`: `schema` lists each parameter (key, type, default, min/max/options) and `values` its current resolved value. Returns empty arrays/objects when the model declares none. Call before setParams to discover what can be tweaked without re-reading the code.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'setParams',
+    description: 'Tweak one or more Customizer parameters and re-run the model — the same effect as the user dragging the Parameters panel\'s sliders, but driven from code. Pass an object of `{ paramKey: value }`. Out-of-range or wrong-type values are clamped / fall back to the default (never errors on a bad value); unknown keys are ignored. Returns the updated geometry stats and resolved parameter values. Prefer this over rewriting the code when you only need to change a declared dimension/option — it\'s cheaper and preserves the model. Errors only if the model declares no parameters.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        values: {
+          type: 'object',
+          description: 'Map of parameter key → new value, e.g. { "width": 50, "rows": 3, "rounded": false }.',
+        },
+      },
+      required: ['values'],
     },
   },
   {
@@ -163,12 +182,12 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'listLabels',
-    description: 'Return labels registered in the current run via api.label(shape, name) — the cleanest paint primitive on agent-authored manifold-js geometry. Each entry: {name, triangleCount, bbox, centroid}. Empty when the code did not call api.label. Use to confirm labels resolved correctly before paintByLabel; otherwise prefer calling paintByLabel directly to save a round-trip.',
+    description: 'Return labels registered in the current run via api.label(shape, name) — the cleanest paint primitive on agent-authored geometry, in both manifold-js and SCAD (where labels come from top-level `label("name") <expr>;` wrappers). Each entry: {name, triangleCount, bbox, centroid}. Empty when the code did not call api.label or `label("name")`. Use to confirm labels resolved correctly before paintByLabel; otherwise prefer calling paintByLabel directly to save a round-trip.',
     input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'paintByLabel',
-    description: 'Paint a labelled feature by name. The label must have been registered in the current run via api.label(shape, name) or api.labeledUnion. This is the bullseye for "describe how to make and paint a model" workflows: write the geometry with labels, then paint by name — no coordinate guessing, no bounding-box estimation, no fan-bleed. Survives boolean ops because manifold-3d propagates originalID through runOriginalID on the result mesh. Only works for manifold-js (SCAD has no equivalent); falls back to paintComponent / paintInBox there. For multi-feature models, batch with paintByLabels in one round-trip instead of N sequential paintByLabel calls. IMPORTANT: api.label only tracks surfaces that exist in the original labeled shape. Boolean subtraction creates NEW triangles at the cut surface (e.g. the inner wall of a mug after subtracting the void) — those new triangles have NO label. Use probePixel + paintConnected for inner surfaces created by boolean ops.',
+    description: 'Paint a labelled feature by name. The label must have been registered in the current run via api.label(shape, name) / api.labeledUnion (manifold-js) or label("name") <expr>; at the top level of the source (SCAD). This is the bullseye for "describe how to make and paint a model" workflows: write the geometry with labels, then paint by name — no coordinate guessing, no bounding-box estimation, no fan-bleed. For manifold-js it survives boolean ops because manifold-3d propagates originalID through runOriginalID. For SCAD it only survives at the top level — labels inside a CGAL boolean ({ ... } of difference/intersection/etc.) are lost; fall back to paintComponent / paintInBox there. For multi-feature models, batch with paintByLabels in one round-trip instead of N sequential paintByLabel calls. IMPORTANT: api.label only tracks surfaces that exist in the original labeled shape. Boolean subtraction creates NEW triangles at the cut surface (e.g. the inner wall of a mug after subtracting the void) — those new triangles have NO label. Use probePixel + paintConnected for inner surfaces created by boolean ops.',
     input_schema: {
       type: 'object',
       properties: {
@@ -223,7 +242,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'probePixel',
-    description: 'Click in your own perception. Translates a pixel in a renderView image back to a world-space surface hit on the mesh: {point, normal, distance, triangleId, nextStep}. The view must match the renderView call (same elevation/azimuth/ortho/size). This is THE tool for organic geometry: render → identify the feature visually → probePixel to get exact coords → paintConnected or paintNear. The returned point is exactly on the mesh surface (raycast, not snap), so paintRegion-style seed-precision worries are gone. Front-most hit = occlusion correct. A background pixel does NOT fail — it returns {hit:false, modelPixelBounds, hint} reporting where the model projects in this view, so just re-aim inside those bounds and probe again (pixel estimates off a render carry ±10-20px error, so the occasional miss is normal).',
+    description: 'Click in your own perception. Translates a pixel in a renderView image back to a world-space surface hit on the mesh: {point, normal, distance, triangleId, nextStep}. The view must match the renderView call (same elevation/azimuth/ortho/size). This is THE tool for organic geometry: render → identify the feature visually → probePixel to get exact coords → paintConnected or paintNear. The returned point is exactly on the mesh surface (raycast, not snap), so paintRegion-style seed-precision worries are gone. Front-most hit = occlusion correct. A background pixel does NOT fail — it returns {hit:false, modelPixelBounds, hint} reporting where the model projects in this view, so just re-aim inside those bounds and probe again (pixel estimates off a render carry ±10-20px error, so the occasional miss is normal). THIN FEATURES: if the same feature keeps missing (e.g. a rim, a wire, a thin stripe) and the model only occupies a small fraction of the frame on the minor axis, the miss-hint suggests doubling the renderView `size` — each pixel then covers half the real area, so the same ±20px aim error stays on the feature.',
     input_schema: {
       type: 'object',
       properties: {
@@ -401,13 +420,13 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'readDoc',
-    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, colors, print-safety, reference-images, file-io, annotations.',
+    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, reference-images, file-io, annotations.',
     input_schema: {
       type: 'object',
       properties: {
         name: {
           type: 'string',
-          enum: ['curves', 'bosl2', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations'],
+          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations'],
           description: 'Subdoc name without the .md extension.',
         },
       },
@@ -479,7 +498,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'paintInBox',
-    description: 'Paint every triangle whose centroid is inside the axis-aligned box (optionally constrained by a normal cone). One call. Use for "paint the top half / the right rim / everything below z=0". Pass `topOnly: true` to skip side walls and the bottom face — the most common over-paint cause. On fan-topology meshes (cylinder/revolve/linear_extrude surfaces), pass `coverageMode: "fully_inside"` and/or `maxTriangleArea` to avoid long radial triangles bleeding paint outside the box.',
+    description: 'Paint every triangle whose centroid is inside the axis-aligned box (optionally constrained by a normal cone). One call. Use for "paint the top half / the right rim / everything below z=0". Pass `topOnly: true` to skip side walls and the bottom face — the most common over-paint cause. On fan-topology meshes (cylinder/revolve/linear_extrude surfaces), pass `coverageMode: "fully_inside"` and/or `maxTriangleArea` to avoid long radial triangles bleeding paint outside the box. On BREP-engine solids (replicad language, or a manifold-js session whose return value came through `BREP.toManifold`), OCCT booleans can leave interior intersection-seam triangles inside the bounding volume — the centroid test then catches them and you get patchy paint on a surface that looks solid. Default to `coverageMode: "fully_inside"` on BREP, or use `paintConnected` from a probePixel seed instead.',
     input_schema: {
       type: 'object',
       properties: {
@@ -928,6 +947,7 @@ const ALWAYS_AVAILABLE = new Set([
   'setActiveLanguage',
   'getCode',
   'setCode',
+  'getParams',
   'getGeometryData',
   'getMeshSummary',
   'getFeatureCentroids',
@@ -967,7 +987,7 @@ const ALWAYS_AVAILABLE = new Set([
   'paintInCylinder',
 ]);
 
-const RUN_GATED = new Set(['runCode']);
+const RUN_GATED = new Set(['runCode', 'setParams']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
@@ -1066,13 +1086,24 @@ function detectLanguageMismatch(code: string): string | null {
     if (/\bManifold\s*\./.test(code) || /\bCrossSection\s*\./.test(code) || /^\s*return\s+/m.test(code) || /\bconst\s*\{\s*Manifold\b/.test(code)) {
       return 'Language mismatch: this session is OpenSCAD (.scad) but the code looks like manifold-js (JavaScript). Rewrite using SCAD syntax: `cube([w,d,h], center=true);`, `cylinder(h=…, r1=…, r2=…, $fn=64);`, `translate([x,y,z]) <child>;`, `union() { ... }`, etc. No `return`, no `Manifold.` calls.';
     }
-  } else {
+  } else if (lang === 'replicad') {
+    // BREP sessions must return a BrepShape, not a Manifold. Calling
+    // `Manifold.cube()` without piping through BREP is the usual mistake.
+    if (/\bModule\s*=/.test(code) || /^\s*module\s+\w+\s*\(/m.test(code) || /^\s*\$fn\s*=/m.test(code)) {
+      return 'Language mismatch: this session is BREP/replicad but the code uses OpenSCAD syntax. Rewrite using the BREP API: `const { BREP } = api;`, `return BREP.box([w,d,h]).fillet(2);`. No `module`, no `$fn`.';
+    }
+    if (/^\s*return\s+(api\.)?Manifold\b/m.test(code)) {
+      return 'Language mismatch: this session is BREP/replicad, which must `return` a BREP shape (api.BREP.box/cylinder/sphere/…), not a Manifold. If you want fillets/chamfers inside a Manifold session instead, call setActiveLanguage("manifold-js") and use api.BREP from within it.';
+    }
+  } else if (lang === 'manifold-js') {
     // Strong SCAD markers in a JS session — `module name() {}` /
     // `function foo() = …` / `$fn = …;` are SCAD-only constructs.
     if (/^\s*module\s+\w+\s*\(/m.test(code) || /^\s*\$fn\s*=/m.test(code) || /^\s*function\s+\w+\s*\([^)]*\)\s*=/m.test(code)) {
       return 'Language mismatch: this session is manifold-js (JavaScript) but the code uses OpenSCAD-only syntax (`module`, `$fn`, or function-equals). Rewrite using the manifold-js API: `const { Manifold, CrossSection } = api;`, `Manifold.cube(...)`, `.translate(...)`, ending with `return manifold;`.';
     }
   }
+  // 'voxel' sessions get no mismatch heuristic — the voxel engine surfaces a
+  // targeted "return a grid" error on its own.
   return null;
 }
 
@@ -1080,7 +1111,7 @@ function detectLanguageMismatch(code: string): string | null {
  *  `tools.ts` to import the engine module statically. The function lives
  *  in `src/geometry/engine.ts` and is already loaded by the app shell at
  *  startup, so a require-style lookup via `window.partwright` is safe. */
-const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations']);
+const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations']);
 
 /** Fetch a topic subdoc by short name. Same fetch path for Anthropic and
  *  local providers — both run inside the user's browser tab, so this is
@@ -1100,11 +1131,11 @@ async function readSubdoc(name: string): Promise<{ content: string; isError: boo
   }
 }
 
-function readActiveLanguage(): 'manifold-js' | 'scad' | null {
+function readActiveLanguage(): 'manifold-js' | 'scad' | 'replicad' | 'voxel' | null {
   try {
-    const w = window as unknown as { partwright?: { getActiveLanguage?: () => 'manifold-js' | 'scad' } };
+    const w = window as unknown as { partwright?: { getActiveLanguage?: () => 'manifold-js' | 'scad' | 'replicad' | 'voxel' } };
     const lang = w.partwright?.getActiveLanguage?.();
-    return lang === 'manifold-js' || lang === 'scad' ? lang : null;
+    return lang === 'manifold-js' || lang === 'scad' || lang === 'replicad' || lang === 'voxel' ? lang : null;
   } catch {
     return null;
   }
@@ -1234,6 +1265,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.run(input.code as string | undefined);
     case 'runAndSave':
       return api.runAndSave(input.code as string, input.label as string | undefined, input.assertions as Record<string, unknown> | undefined);
+    case 'getParams':
+      return api.getParams();
+    case 'setParams':
+      return api.setParams(input.values as Record<string, unknown>);
     case 'getGeometryData':
       return api.getGeometryData();
     case 'getMeshSummary':

@@ -10,6 +10,7 @@
 //  • Expose pushQueuedBlocks() so aiPanel can relay mid-turn queued input.
 
 import { executeTool } from './tools';
+import { ingestEvent, type DiagnosticEvent } from './diagnostics';
 import type { RunTurnInput, RunTurnCallbacks } from './chatLoop';
 import type { ChatBlock, ChatMessage, PersistedToolResult } from './types';
 import type { AgentWorkerInput } from './agentWorker';
@@ -59,6 +60,14 @@ async function handleMessage(event: MessageEvent): Promise<void> {
     };
     const result = await executeTool(name, input);
     getWorker().postMessage({ type: 'tool_result', callId, result });
+    return;
+  }
+
+  // ── diagnostic: an AI-call event the chat loop recorded inside the Worker.
+  //    Ingest it into the main-thread ring buffer so the AI Call Log modal
+  //    (which only reads this thread's buffer) shows the streamTurn calls. ──
+  if (msg.type === 'diagnostic') {
+    ingestEvent(msg.event as DiagnosticEvent);
     return;
   }
 
