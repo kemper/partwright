@@ -3528,6 +3528,26 @@ async function main() {
   // declares via api.params({...}). Editing a widget records the override and
   // re-runs (live preview); Reset clears all overrides back to model defaults.
   // Hidden until a run reports a parameter schema.
+  //
+  // A "Customize" toggle pill in the viewport toolbar (created below) is the
+  // discoverable open/reopen affordance: it appears only when the active model
+  // declares parameters, shows the count, and mirrors the panel's open state —
+  // so closing the panel never strands the user without a way back in.
+  const customizeBtn = document.createElement('button');
+  customizeBtn.id = 'customize-toggle';
+  customizeBtn.title = 'Tweak this model’s parameters';
+  customizeBtn.className = 'hidden'; // shown by syncCustomizeBtn once a run reports params
+  customizeBtn.addEventListener('click', () => paramsPanel?.toggle());
+  const CUSTOMIZE_BTN_BASE = 'md:px-2 md:py-1 px-3 py-2 rounded text-sm md:text-xs backdrop-blur transition-colors border';
+  const CUSTOMIZE_BTN_OPEN = `${CUSTOMIZE_BTN_BASE} bg-blue-500/30 text-blue-300 border-blue-500/50`;
+  const CUSTOMIZE_BTN_CLOSED = `${CUSTOMIZE_BTN_BASE} bg-zinc-800/80 text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 border-zinc-600/50`;
+  const syncCustomizeBtn = (state: { hasParams: boolean; open: boolean; count: number }) => {
+    customizeBtn.textContent = state.count > 0 ? `🎛 Customize (${state.count})` : '🎛 Customize';
+    customizeBtn.className = state.open ? CUSTOMIZE_BTN_OPEN : CUSTOMIZE_BTN_CLOSED;
+    // No declared parameters → no button at all (matches the panel being hidden).
+    customizeBtn.classList.toggle('hidden', !state.hasParams);
+  };
+
   paramsPanel = createParamsPanel({
     onChange: (key, value) => {
       currentParamValues = { ...currentParamValues, [key]: value };
@@ -3537,8 +3557,16 @@ async function main() {
       currentParamValues = {};
       runCode();
     },
+    onVisibilityChange: syncCustomizeBtn,
   });
   viewportPane.appendChild(paramsPanel.element);
+  // Sit the Customize pill with the other panel-toggling tools (Paint/Measure),
+  // just after the view-toggle divider — same grouping Paint/Annotate use, so it
+  // reads as a tool and stays clear of the top-left "Show code" button that the
+  // wrapping toolbar's leftmost item collides with.
+  const measureToggle = clipControls.querySelector('#measure-toggle');
+  if (measureToggle) clipControls.insertBefore(customizeBtn, measureToggle);
+  else clipControls.appendChild(customizeBtn);
 
   // Init measure tool
   initMeasureTool(getCanvas(), getCamera(), getMeshGroup(), viewportPane);
