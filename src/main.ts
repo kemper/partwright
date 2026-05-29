@@ -63,6 +63,7 @@ import { exportGLB, buildGLB } from './export/gltf';
 import { exportSTL, buildSTL } from './export/stl';
 import { exportOBJ, buildOBJ } from './export/obj';
 import { export3MF, build3MF } from './export/threemf';
+import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
 import { exportSessionJSON, exportRawCode, buildSessionJSON, buildRawCode } from './export/session';
 import { blobToBase64, downloadBlob } from './export/download';
@@ -89,6 +90,8 @@ import { parseSTL } from './import/parsers/stl';
 import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
+import { runVoxelForPaint } from './geometry/engines/voxel';
+import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
@@ -2644,6 +2647,29 @@ async function main() {
     try { showToast(`Exported ${export3MF((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
   };
+  // The integer VoxelGrid behind a voxel session. The engine meshes in the
+  // Worker, so the grid isn't on the main thread after a normal run — re-run the
+  // current code locally to recover it (the same trick voxel paint uses), or use
+  // the live painted grid when paint is active so unbaked edits are exported.
+  const getCurrentVoxelGrid = (): VoxelGrid | null => {
+    if (getActiveLanguage() !== 'voxel') return null;
+    const painted = voxelPaint.getGrid();
+    if (painted) return painted;
+    const r = runVoxelForPaint(getValue());
+    return r.ok ? r.data.grid : null;
+  };
+  const actionExportVOX = () => {
+    if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
+    const grid = getCurrentVoxelGrid();
+    if (!grid) {
+      showToast(getActiveLanguage() === 'voxel'
+        ? 'Run a voxel model before exporting .vox.'
+        : 'Switch to the Voxel language to export .vox.', { variant: 'warn' });
+      return;
+    }
+    try { showToast(`Exported ${exportVOX(grid)}`, { variant: 'success' }); }
+    catch (e) { showToast(e instanceof Error ? e.message : 'VOX export failed', { variant: 'warn' }); }
+  };
 
   // Hard cap on the encoded share string. Browsers and chat apps choke on very
   // long URLs; past this we drop the thumbnail once and, if still too big, abort
@@ -2753,6 +2779,7 @@ async function main() {
     onExportSTL: actionExportSTL,
     onExportOBJ: actionExportOBJ,
     onExport3MF: actionExport3MF,
+    onExportVOX: actionExportVOX,
     onExportSTEP: async () => {
       // Inlined rather than calling partwrightAPI.exportSTEP because that
       // const is defined further down main() — using it here would land in
@@ -3009,6 +3036,7 @@ async function main() {
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
+    { id: 'export-vox', title: 'Export VOX', hint: 'Export', keywords: 'download magicavoxel voxel goxel', run: actionExportVOX, enabled: () => getActiveLanguage() === 'voxel' && currentMeshData !== null },
     { id: 'share-link', title: 'Share design (copy link)', hint: 'Share', keywords: 'url public link copy fork readonly', run: () => { void actionShareLink(); }, enabled: canShare },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
     { id: 'toggle-diagnostics', title: 'Toggle diagnostic log', hint: 'View', keywords: 'errors warnings console', run: () => toggleDiagnosticsPanel() },
@@ -4521,6 +4549,19 @@ async function main() {
       if (currentMeshData) export3MF((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData, filename);
     },
 
+    /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
+     *  sessions only (the integer grid is re-derived from the current code, or
+     *  the live painted grid when paint is active). Returns
+     *  `{ ok, filename }` or `{ error }` (no grid, or a model larger than the
+     *  format's 256-per-axis limit). */
+    exportVOX(filename?: string) {
+      assertString(filename, 'exportVOX(filename)', { optional: true });
+      const grid = getCurrentVoxelGrid();
+      if (!grid) return { error: 'No voxel grid — switch to the Voxel language (setActiveLanguage("voxel")) and run a model first.' };
+      try { return { ok: true as const, filename: exportVOX(grid, filename) }; }
+      catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
     /** Export the most-recent BREP shape as a STEP file. Only meaningful in
      *  replicad-language sessions — BREP shapes built ad-hoc inside a
      *  manifold-js session (via api.BREP.*) are not retained past the
@@ -4615,6 +4656,25 @@ async function main() {
       const mesh = (hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData;
       const built = build3MF(mesh, filename);
       registerExportFromBuilt(built, '3MF');
+      return {
+        filename: built.filename,
+        mimeType: built.mimeType,
+        sizeBytes: built.blob.size,
+        base64: await blobToBase64(built.blob),
+      };
+    },
+
+    /** Build a MagicaVoxel `.vox` and return its bytes as base64. Voxel sessions
+     *  only. Returns `{ error }` with no grid, or when the model exceeds the
+     *  format's 256-per-axis limit. */
+    async exportVOXData(filename?: string) {
+      assertString(filename, 'exportVOXData(filename)', { optional: true });
+      const grid = getCurrentVoxelGrid();
+      if (!grid) return { error: 'No voxel grid — switch to the Voxel language (setActiveLanguage("voxel")) and run a model first.' };
+      let built;
+      try { built = buildVOX(grid, filename); }
+      catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+      registerExportFromBuilt(built, 'VOX');
       return {
         filename: built.filename,
         mimeType: built.mimeType,
@@ -8642,11 +8702,13 @@ async function main() {
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
+        'exportVOX':       { signature: 'exportVOX() -- Download MagicaVoxel .vox (voxel sessions)', docs: '/ai/voxel.md' },
         // AI-friendly export — return bytes over the API instead of triggering a download
         'exportGLBData':   { signature: 'await exportGLBData() -- Return GLB as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
         'exportSTLData':   { signature: 'await exportSTLData() -- Return STL as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
         'exportOBJData':   { signature: 'await exportOBJData() -- Return OBJ as {filename, mimeType, text? | base64, sizeBytes}', docs: '/ai/file-io.md' },
         'export3MFData':   { signature: 'await export3MFData() -- Return 3MF as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
+        'exportVOXData':   { signature: 'await exportVOXData() -- Return .vox as {filename, mimeType, base64, sizeBytes} (voxel sessions)', docs: '/ai/file-io.md' },
         'exportSessionData': { signature: 'await exportSessionData(sessionId?) -- Return parsed session JSON {filename, mimeType, data, sizeBytes}', docs: '/ai/file-io.md' },
         'exportCodeData':  { signature: 'exportCodeData() -- Return editor source as {filename, mimeType, language, text, sizeBytes}', docs: '/ai/file-io.md' },
         // AI-friendly import — bypass the file picker

@@ -224,11 +224,13 @@ await partwright.exportGLB()   // Download GLB (browser file dialog -- prefer ex
 partwright.exportSTL()         // Download STL ("                                       exportSTLData() ")
 partwright.exportOBJ()         // Download OBJ ("                                       exportOBJData() ")
 partwright.export3MF()         // Download 3MF ("                                       export3MFData() ")
+partwright.exportVOX()         // Download MagicaVoxel .vox (voxel sessions only -- keeps the editable grid). See /ai/voxel.md
 // Agent-friendly variants -- bytes return inline, no file dialog. See /ai/file-io.md.
 await partwright.exportGLBData()        // -> {filename, mimeType, base64, sizeBytes}
 await partwright.exportSTLData()
 await partwright.exportOBJData()        // text or base64 depending on whether colors are painted
 await partwright.export3MFData()
+await partwright.exportVOXData()        // -> {filename, mimeType, base64, sizeBytes} (voxel sessions only)
 await partwright.exportSessionData()    // -> {filename, mimeType, data, sizeBytes} (parsed JSON)
 partwright.exportCodeData()             // -> {filename, mimeType, language, text, sizeBytes}
 await partwright.importSessionData(parsedJson)         // -> {sessionId} or {error}
