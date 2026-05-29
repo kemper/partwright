@@ -587,6 +587,45 @@ export function getScene(): THREE.Scene {
   return scene;
 }
 
+/** Run `fn` (typically a GLB export pass that serializes `getScene()`) with the
+ *  display mesh's geometry temporarily swapped to one carrying `coloredMesh`'s
+ *  fully-baked triangle colors, then restore the original geometry no matter how
+ *  `fn` settles.
+ *
+ *  GLB export reads the live scene, whose colors come from the viewport's
+ *  visibility-aware coloring (paint toggle off → no colors; a hidden region →
+ *  skipped). Exports must bake ALL regions regardless of those UI flags, matching
+ *  OBJ/3MF. Callers pass `applyTriColors(currentMeshData)` so the swapped geometry
+ *  is the unindexed, per-triangle-colored layout the exporter should serialize.
+ *  When the mesh has no color regions, `applyTriColors` returns it unchanged and
+ *  the swapped geometry is the same uncolored layout as the display — so the
+ *  no-paint case is unaffected. */
+export async function withExportColors<T>(coloredMesh: MeshData, fn: () => Promise<T>): Promise<T> {
+  // The solid + wireframe meshes share one geometry object (see updateMesh); the
+  // clip-cap holds a clone. Swap every meshGroup child that references the solid
+  // geometry to the colored one, then restore on the way out.
+  const solid = meshGroup.children.find(
+    (c): c is THREE.Mesh => c instanceof THREE.Mesh && c.name !== 'wireframe' && c.name !== 'clip-cap',
+  );
+  if (!solid) return fn();
+
+  const original = solid.geometry as THREE.BufferGeometry;
+  const exportGeometry = meshGLToBufferGeometry(coloredMesh);
+  const swapped: THREE.Mesh[] = [];
+  for (const child of meshGroup.children) {
+    if (child instanceof THREE.Mesh && child.geometry === original) {
+      child.geometry = exportGeometry;
+      swapped.push(child);
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const child of swapped) child.geometry = original;
+    exportGeometry.dispose();
+  }
+}
+
 export function getCamera(): THREE.PerspectiveCamera {
   return camera;
 }

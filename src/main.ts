@@ -67,7 +67,7 @@ import { export3MF, build3MF } from './export/threemf';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
 import { exportSessionJSON, exportRawCode, buildSessionJSON, buildRawCode } from './export/session';
-import { blobToBase64, downloadBlob } from './export/download';
+import { blobToBase64, downloadBlob, getExportFilename } from './export/download';
 import {
   listExports as listInboxExports,
   getExport as getInboxExport,
@@ -2741,12 +2741,37 @@ async function main() {
     return showExportConfirm(info);
   }
 
+  // One standardized "nothing to export" toast for every mesh export action, so
+  // the feedback is consistent instead of some formats silently no-op'ing and
+  // others (GLB) producing a bogus empty file.
+  const noGeometryToast = () => showToast('No geometry to export — run a model first.', { variant: 'warn' });
+
+  /** The MeshData to feed an export: bakes ALL color regions when any are
+   *  present (independent of viewport paint visibility) so every format ships
+   *  the same colors; otherwise the mesh as-is. */
+  const coloredMeshForExport = (mesh: MeshData): MeshData =>
+    (hasColorRegions() || hasModelColorRegions()) ? applyTriColors(mesh) : mesh;
+
+  /** Non-blocking heads-up that a multi-part session exports only the active
+   *  part (mesh exports consume the single `currentMeshData`). Mirrors the
+   *  share-link warning so users aren't silently handed one part of an
+   *  assembly. */
+  const notifyMultiPartExport = () => {
+    const parts = getState().parts;
+    if (parts.length > 1) {
+      const partName = getState().currentPart?.name ?? 'the current part';
+      showToast(`Exporting only "${partName}" — ${parts.length} parts in this session. Merge parts first to export them together.`, { variant: 'neutral' });
+    }
+  };
+
   const actionExportGLB = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
+    if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('GLB'))) return;
     try {
-      if (currentMeshData) assertFiniteMesh(currentMeshData);
-      const filename = await exportGLB();
+      assertFiniteMesh(currentMeshData);
+      notifyMultiPartExport();
+      const filename = await exportGLB(undefined, coloredMeshForExport(currentMeshData));
       showToast(`Exported ${filename}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
@@ -2754,23 +2779,26 @@ async function main() {
   };
   const actionExportSTL = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
-    if (!currentMeshData) return;
+    if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('STL'))) return;
+    notifyMultiPartExport();
     try { showToast(`Exported ${exportSTL(currentMeshData)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
   };
   const actionExportOBJ = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
-    if (!currentMeshData) return;
+    if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('OBJ'))) return;
-    try { showToast(`Exported ${exportOBJ((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
+    notifyMultiPartExport();
+    try { showToast(`Exported ${exportOBJ(coloredMeshForExport(currentMeshData))}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
   };
   const actionExport3MF = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
-    if (!currentMeshData) return;
+    if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
-    try { showToast(`Exported ${export3MF((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
+    notifyMultiPartExport();
+    try { showToast(`Exported ${export3MF(coloredMeshForExport(currentMeshData))}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
   };
   // The integer VoxelGrid behind a voxel session. The engine meshes in the
@@ -2795,6 +2823,28 @@ async function main() {
     }
     try { showToast(`Exported ${exportVOX(grid)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'VOX export failed', { variant: 'warn' }); }
+  };
+  // STEP — BREP (replicad) sessions only. Shared by the toolbar callback and the
+  // command palette so the worker round-trip + download convention live in one
+  // place. (The partwrightAPI.exportSTEP const is defined further down main(), so
+  // inlining the worker call here avoids a TDZ on toolbar build.)
+  const actionExportSTEP = async () => {
+    if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
+    try {
+      const blob = await exportLastBrepAsSTEP();
+      if (!blob) {
+        showToast('No BREP shape available. Run a model in BREP mode first.', { variant: 'warn' });
+        return;
+      }
+      // Route through the shared download helper so STEP gets the same filename
+      // convention (date/unit suffix, sanitization), unified revoke, and a
+      // Recent Exports entry as every other format.
+      const filename = getExportFilename('step');
+      downloadBlob(blob, filename, 'STEP');
+      showToast(`Exported ${filename}`, { variant: 'success' });
+    } catch (e) {
+      showToast(`STEP export failed: ${e instanceof Error ? e.message : String(e)}`, { variant: 'warn' });
+    }
   };
 
   // Hard cap on the encoded share string. Browsers and chat apps choke on very
@@ -2906,32 +2956,7 @@ async function main() {
     onExportOBJ: actionExportOBJ,
     onExport3MF: actionExport3MF,
     onExportVOX: actionExportVOX,
-    onExportSTEP: async () => {
-      // Inlined rather than calling partwrightAPI.exportSTEP because that
-      // const is defined further down main() — using it here would land in
-      // the TDZ on toolbar-build (and TS would flag a "used before
-      // declaration" anyway). The underlying worker round-trip is the same.
-      try {
-        const blob = await exportLastBrepAsSTEP();
-        if (!blob) {
-          showToast('No BREP shape available. Run a model in BREP mode first.', { variant: 'warn' });
-          return;
-        }
-        const state = getState();
-        const base = state.session?.name ?? 'model';
-        const versionLabel = state.currentVersion?.label;
-        const name = `${base}${versionLabel ? '_' + versionLabel : ''}.step`;
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = name;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-        showToast(`Exported ${name}`, { variant: 'success' });
-      } catch (e) {
-        showToast(`STEP export failed: ${e instanceof Error ? e.message : String(e)}`, { variant: 'warn' });
-      }
-    },
+    onExportSTEP: actionExportSTEP,
     onExportSessionJSON: async () => {
       if (!getState().session) {
         alert('No active session to export. Save a version first.');
@@ -3170,7 +3195,14 @@ async function main() {
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
-    { id: 'export-vox', title: 'Export VOX', hint: 'Export', keywords: 'download magicavoxel voxel goxel', run: actionExportVOX, enabled: () => getActiveLanguage() === 'voxel' && currentMeshData !== null },
+    // VOX exports the voxel grid (getCurrentVoxelGrid), not currentMeshData, so
+    // gate on the active language — the grid is re-derived on demand inside the
+    // action, which also toasts if there's nothing to export. (Re-running the
+    // model inside an `enabled` predicate would be far too heavy.)
+    { id: 'export-vox', title: 'Export VOX', hint: 'Export', keywords: 'download magicavoxel voxel goxel', run: actionExportVOX, enabled: () => getActiveLanguage() === 'voxel' },
+    // STEP exports the retained BREP shape, only available in replicad sessions
+    // (mirrors the toolbar's STEP gating); the action toasts if no shape exists.
+    { id: 'export-step', title: 'Export STEP', hint: 'Export', keywords: 'download brep cad solidworks fusion freecad', run: () => { void actionExportSTEP(); }, enabled: () => getActiveLanguage() === 'replicad' },
     { id: 'share-link', title: 'Share design (copy link)', hint: 'Share', keywords: 'url public link copy fork readonly', run: () => { void actionShareLink(); }, enabled: canShare },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
     { id: 'toggle-diagnostics', title: 'Toggle diagnostic log', hint: 'View', keywords: 'errors warnings console', run: () => toggleDiagnosticsPanel() },
@@ -4810,26 +4842,30 @@ async function main() {
     /** Export current model as GLB download. Optional filename override. */
     async exportGLB(filename?: string) {
       assertString(filename, 'exportGLB(filename)', { optional: true });
-      if (currentMeshData) assertFiniteMesh(currentMeshData);
-      await exportGLB(filename);
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      assertFiniteMesh(currentMeshData);
+      await exportGLB(filename, coloredMeshForExport(currentMeshData));
     },
 
     /** Export current model as STL download. Optional filename override. */
     exportSTL(filename?: string) {
       assertString(filename, 'exportSTL(filename)', { optional: true });
-      if (currentMeshData) exportSTL(currentMeshData, filename);
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      exportSTL(currentMeshData, filename);
     },
 
     /** Export current model as OBJ download. Optional filename override. */
     exportOBJ(filename?: string) {
       assertString(filename, 'exportOBJ(filename)', { optional: true });
-      if (currentMeshData) exportOBJ((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData, filename);
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      exportOBJ(coloredMeshForExport(currentMeshData), filename);
     },
 
     /** Export current model as 3MF download. Optional filename override. */
     export3MF(filename?: string) {
       assertString(filename, 'export3MF(filename)', { optional: true });
-      if (currentMeshData) export3MF((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData, filename);
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      export3MF(coloredMeshForExport(currentMeshData), filename);
     },
 
     /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
@@ -4858,18 +4894,11 @@ async function main() {
         if (!blob) {
           return { ok: false as const, error: 'No BREP shape available. Switch to BREP language (setActiveLanguage("replicad")) and run a model first.' };
         }
-        const state = getState();
-        const base = state.session?.name ?? 'model';
-        const versionLabel = state.currentVersion?.label;
-        const name = filename ?? `${base}${versionLabel ? '_' + versionLabel : ''}.step`;
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = name;
-        a.click();
-        // Revoke after a tick so Safari/older browsers actually finish the
-        // download. Matches the pattern used by exportGLB/exportSTL.
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        // Route through the shared download helper so STEP gets the standard
+        // filename convention, unified revoke, and a Recent Exports entry like
+        // every other format.
+        const name = getExportFilename('step', filename);
+        downloadBlob(blob, name, 'STEP');
         return { ok: true as const, filename: name, sizeBytes: blob.size };
       } catch (e) {
         return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
