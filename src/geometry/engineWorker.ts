@@ -113,7 +113,7 @@ self.onmessage = async (event: MessageEvent) => {
       } else if (effectiveLang === 'scad') {
         // Ensure the OpenSCAD engine is loaded (lazy init).
         if (!openscadEngine.isReady()) await openscadEngine.init();
-        result = await runScadAsync(code as string);
+        result = await runScadAsync(code as string, params ?? undefined);
       } else if (effectiveLang === 'replicad') {
         // Full replicad-language session — lazy-init OCCT then evaluate as
         // BREP. Tessellation happens inside the engine before returning.
