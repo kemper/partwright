@@ -338,6 +338,15 @@ export class VoxelGrid {
     return out;
   }
 
+  /** A deep copy of this grid (cells + surfacing). Used by Voxel Studio's
+   *  undo/redo history, which snapshots the grid before each edit. */
+  clone(): VoxelGrid {
+    const out = new VoxelGrid();
+    out.cells = new Map(this.cells);
+    out._surfacing = { ...this._surfacing };
+    return out;
+  }
+
   /** @internal Raw cell map — for the mesher's fast neighbor queries. */
   rawCells(): Map<number, number> { return this.cells; }
 

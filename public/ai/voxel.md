@@ -87,9 +87,9 @@ or near the ground plane (Z=0) by convention.
 
 Each voxel's color is written onto the triangles of its exposed faces, so the
 rendered model is colored with no extra step, and GLB / 3MF / OBJ exports carry
-those colors out. (The face-region **paint tools** are mesh-triangle based and
-designed around the solid engines — painting *on top of* a voxel model is a
-planned follow-up; for now, set color per voxel in code.)
+those colors out. (The face-region **paint tools** in the toolbar are
+mesh-triangle based and designed around the solid engines; for voxel models use
+the **Voxel Studio** overlay below, or set color per voxel in code.)
 
 ## Rounded edges (smooth surfacing)
 
@@ -142,40 +142,82 @@ to MagicaVoxel's default 256-color palette.
 (Multi-model `.vox` files: only the first model is imported. Open the others
 in separate sessions or open them separately for now.)
 
-## Voxel paint
+## Voxel Studio
 
-Click on the **🎨 Voxel paint** button (appears in voxel sessions only,
-viewport overlay) to enter paint mode. Click a face on the model to set that
-voxel's color to the picker color; toggle **⌫ Eraser** to remove voxels
-instead. The editor is locked while paint is active so an auto-run can't
-clobber your edits. When you're done, click **Bake → code** to replace the
-editor with `voxels.decode(<your painted grid>)` and save a new version, or
-**Cancel** to discard.
+Click the **🧊 Voxel Studio** button (appears in voxel sessions only, viewport
+overlay) to enter a Minecraft-style direct-editing mode. Pick a **tool**, then
+click faces on the model:
 
-> Painting *bakes* the procedural code into a static voxel grid — the new
-> version captures the painted state exactly, while the previous version (with
+| Tool | Glyph | What a click does |
+|------|-------|-------------------|
+| Paint | 🖌 | Recolor the clicked voxel with the picker color. |
+| Add | ➕ | Place a **new** cube on the clicked face (stacks on top, extends sideways, …). |
+| Remove | ⌫ | Delete the clicked voxel. |
+| Bucket | 🪣 | Recolor the whole face-connected region that shares the clicked voxel's color. |
+| Box fill | ⬚➕ | Click two corners to fill that inclusive box with the picker color. |
+| Box subtract | ⬚⌫ | Click two corners to carve that box out (great for cutting holes). |
+
+Pick a color from the swatches or the **custom color** picker (any RGB). **↺
+Undo** / **↻ Redo** step through your edits. The editor is locked while the
+studio is active so an auto-run can't clobber your edits. When you're done,
+click **Bake → code** to replace the editor with `voxels.decode(<your edited
+grid>)` and save a new version, or **Cancel** to discard.
+
+> Editing *bakes* the procedural code into a static voxel grid — the new
+> version captures the edited state exactly, while the previous version (with
 > the original code) is preserved in the version history.
+
+### Editing an imported voxel
+
+Image-import (and `.vox`) sessions open as `voxels.decode("…")` code. That
+string *is* a live grid — Voxel Studio decodes it, so every tool works on an
+imported model too. Use **Box subtract** / **Remove** to carve away parts you
+didn't want, **Add** to extend it, and **Paint** / **Bucket** to recolor, then
+**Bake** to commit the result as a new `voxels.decode(...)` version.
 
 ### Programmatic / AI equivalent
 
 ```js
 await partwright.setActiveLanguage('voxel');
 await partwright.run(`return api.voxels().fillBox([-3,-3,0],[3,3,3], '#888');`);
-partwright.activateVoxelPaint();                       // -> { ok, voxelCount } | { error }
+partwright.activateVoxelPaint();                       // -> { voxelCount } | { error }
+
+// Single-voxel paint / erase (back-compat shortcut):
 partwright.paintVoxelFace({ faceIndex: 0, color: [255, 0, 0] });
 partwright.paintVoxelFace({ faceIndex: 12, erase: true });
-await partwright.bakeVoxelsToCode({ label: 'sad-cube' });   // commits + saves
+
+// Multi-tool studio:
+partwright.setVoxelTool('add');                                  // -> { tool }
+partwright.voxelStudioApply({ faceIndex: 0, color: [80,160,255] }); // place a cube
+partwright.setVoxelTool('bucket');
+partwright.voxelStudioApply({ faceIndex: 4, color: '#33cc55' });    // flood recolor
+partwright.setVoxelTool('boxRemove');
+partwright.voxelStudioApply({ faceIndex: 0 });   // bank one corner (changed:false)
+partwright.voxelStudioApply({ faceIndex: 30 });  // complete the box → carve it out
+partwright.voxelStudioUndo();                                    // -> { undone, voxelCount }
+partwright.voxelStudioRedo();                                    // -> { redone, voxelCount }
+
+await partwright.bakeVoxelsToCode({ label: 'castle' });   // commits + saves
 // (or) partwright.deactivateVoxelPaint() to cancel without saving
 ```
 
 - `activateVoxelPaint()` re-runs the current code locally to capture the grid
-  + per-triangle voxel provenance. Returns `{ error }` outside voxel sessions
-  or if the code doesn't return a grid.
-- `paintVoxelFace({ faceIndex, color?, erase? })` mutates the live grid.
-  `faceIndex` is the triangle index a raycast would return (e.g. from a
-  pointer event); the API maps it back to the originating voxel. Returns
-  `{ changed, voxelCount }`.
-- `bakeVoxelsToCode({ label? })` deactivates paint, writes
+  + per-triangle voxel/normal provenance. Returns `{ error }` outside voxel
+  sessions, on a `.smooth()` grid (call `.blocky()` first), or if the code
+  doesn't return a grid.
+- `setVoxelTool(tool)` — `'paint' | 'add' | 'remove' | 'bucket' | 'boxAdd' |
+  'boxRemove'`. Returns `{ tool }` or `{ error }`.
+- `voxelStudioApply({ faceIndex, color?, tool? })` applies the active tool at a
+  face. `faceIndex` is the triangle index a raycast would return; the API maps
+  it back to the originating voxel (and, for **Add**, the empty cell on the
+  clicked face). The box tools need **two** calls — the first banks a corner
+  (`changed:false`, `pendingBoxCorner` set), the second completes the region.
+  Returns `{ changed, voxelCount, tool, pendingBoxCorner }`.
+- `paintVoxelFace({ faceIndex, color?, erase? })` is the original single-voxel
+  shortcut (paint or erase one voxel); still supported.
+- `voxelStudioUndo()` / `voxelStudioRedo()` step the edit history (returns
+  `{ undone|redone, voxelCount }`).
+- `bakeVoxelsToCode({ label? })` deactivates the studio, writes
   `voxels.decode(...)` to the editor, runs it, and saves a new version. Returns
   `{ versionIndex, voxelCount }` (or `{ error }` for an empty grid).
 

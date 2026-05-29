@@ -3848,8 +3848,9 @@ async function main() {
       const err = voxelPaint.activate(code, {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
+        onStateChange: () => { syncVoxelPaintUI(); },
       });
-      if (err) alert(`Voxel paint: ${err}`);
+      if (err) alert(`Voxel Studio: ${err}`);
       syncVoxelPaintUI();
     },
     deactivate: async () => {
@@ -3859,7 +3860,7 @@ async function main() {
     },
     bake: async () => {
       const result = await bakePaintedVoxelsAsVersion('painted');
-      if ('error' in result) alert(`Voxel paint: ${result.error}`);
+      if ('error' in result) alert(`Voxel Studio: ${result.error}`);
       syncVoxelPaintUI();
     },
   });
@@ -8116,6 +8117,7 @@ async function main() {
       const err = voxelPaint.activate(code, {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
+        onStateChange: () => { syncVoxelPaintUI(); },
       });
       if (err) return { error: `activateVoxelPaint: ${err}` };
       syncVoxelPaintUI();
@@ -8147,6 +8149,55 @@ async function main() {
       }
       const changed = voxelPaint.paintTriangle(opts.faceIndex);
       return { changed, voxelCount: voxelPaint.voxelCount() };
+    },
+
+    /** Select the active Voxel Studio tool: 'paint' | 'add' | 'remove' |
+     *  'bucket' | 'boxAdd' | 'boxRemove'. Returns `{ tool }` or `{ error }`. */
+    setVoxelTool(tool: import('./color/voxelPaint').VoxelTool) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      const tools = ['paint', 'add', 'remove', 'bucket', 'boxAdd', 'boxRemove'];
+      if (!tools.includes(tool as string)) return { error: `setVoxelTool: tool must be one of ${tools.join(', ')}` };
+      voxelPaint.setTool(tool);
+      syncVoxelPaintUI();
+      return { tool };
+    },
+
+    /** Apply the active tool at a clicked face (the triangle index a raycast
+     *  would return). Optionally sets the color and/or tool first. The box
+     *  tools take two calls (first banks a corner, second completes the box).
+     *  Returns `{ changed, voxelCount, tool, pendingBoxCorner }` or `{ error }`. */
+    voxelStudioApply(opts: { faceIndex: number; color?: [number, number, number] | string | number; tool?: import('./color/voxelPaint').VoxelTool }) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'voxelStudioApply requires { faceIndex }' };
+      if (!Number.isInteger(opts.faceIndex) || opts.faceIndex < 0) return { error: 'voxelStudioApply.faceIndex must be a non-negative integer' };
+      if (opts.tool !== undefined) {
+        const tools = ['paint', 'add', 'remove', 'bucket', 'boxAdd', 'boxRemove'];
+        if (!tools.includes(opts.tool as string)) return { error: `voxelStudioApply: tool must be one of ${tools.join(', ')}` };
+        voxelPaint.setTool(opts.tool);
+      }
+      if (opts.color !== undefined) {
+        try { voxelPaint.setColor(opts.color); }
+        catch (e) { return { error: (e as Error).message }; }
+      }
+      const changed = voxelPaint.applyAtTriangle(opts.faceIndex);
+      syncVoxelPaintUI();
+      return { changed, voxelCount: voxelPaint.voxelCount(), tool: voxelPaint.getTool(), pendingBoxCorner: voxelPaint.pendingBoxCorner() };
+    },
+
+    /** Undo the last Voxel Studio edit. Returns `{ undone, voxelCount }`. */
+    voxelStudioUndo() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      const undone = voxelPaint.undo();
+      syncVoxelPaintUI();
+      return { undone, voxelCount: voxelPaint.voxelCount() };
+    },
+
+    /** Redo the last undone Voxel Studio edit. Returns `{ redone, voxelCount }`. */
+    voxelStudioRedo() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      const redone = voxelPaint.redo();
+      syncVoxelPaintUI();
+      return { redone, voxelCount: voxelPaint.voxelCount() };
     },
 
     /** Bake the painted grid into `voxels.decode(...)` editor code, run it,
