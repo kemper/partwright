@@ -351,6 +351,12 @@ async function consumeGeminiStream(
     // (recommended; keeps the model's reasoning continuous across turns). This
     // covers the case where the signature streams in a chunk separate from the
     // call/text it belongs to.
+    //
+    // Only toolCalls[0] is backfilled on purpose: per Gemini's contract just
+    // the FIRST parallel function call carries (and requires) a signature —
+    // later parallel calls intentionally omit one, so assigning them the first
+    // call's signature would itself be rejected. Don't broaden this to all
+    // calls.
     if (toolCalls.length > 0) {
       if (!toolCalls[0].thoughtSignature && pendingSignature) toolCalls[0].thoughtSignature = pendingSignature;
     } else if (!answerSignature && pendingSignature) {
