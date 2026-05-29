@@ -25,7 +25,7 @@ export interface ImageVoxelModalOptions {
 // Above this the model gets heavy to mesh/render; we warn but don't block.
 const HEAVY_VOXEL_COUNT = 250_000;
 
-type Opts = Required<Omit<ImageToVoxelOptions, 'flatColor'>> & { flatColor: [number, number, number] };
+type Opts = Required<Omit<ImageToVoxelOptions, 'flatColor' | 'backgroundColor'>> & { flatColor: [number, number, number] };
 
 const DEFAULT_OPTS: Opts = {
   maxSize: 64,
@@ -37,6 +37,12 @@ const DEFAULT_OPTS: Opts = {
   alphaThreshold: 128,
   colorMode: 'original',
   flatColor: [180, 180, 180],
+  gamma: 1,
+  brightness: 0,
+  contrast: 0,
+  saturation: 0,
+  posterizeColors: 0,
+  removeBackground: false,
 };
 
 function toHex([r, g, b]: [number, number, number]): string {
@@ -59,11 +65,13 @@ function Slider(props: {
   suffix?: string;
   onChange: (v: number) => void;
 }) {
+  const step = props.step ?? 1;
+  const shown = step < 1 ? props.value.toFixed(2) : String(props.value);
   return (
     <label class="block">
       <div class="flex items-center justify-between text-[11px] text-zinc-400 mb-0.5">
         <span>{props.label}</span>
-        <span class="text-zinc-200 tabular-nums">{props.value}{props.suffix ?? ''}</span>
+        <span class="text-zinc-200 tabular-nums">{shown}{props.suffix ?? ''}</span>
       </div>
       <input
         type="range"
@@ -202,11 +210,19 @@ function ImageVoxelBody(props: { image: ImageDataLike; filename: string; state: 
                   onChange={e => set('invert', (e.target as HTMLInputElement).checked)} />
                 Invert (dark areas raised)
               </label>
+              <Slider label="Gamma (midtone curve)" value={opts.gamma} min={0.2} max={3} step={0.1}
+                onChange={v => set('gamma', v)} />
             </>
           )}
 
           <Slider label="Transparency cutoff (alpha)" value={opts.alphaThreshold} min={0} max={255}
             onChange={v => set('alphaThreshold', v)} />
+
+          <label class="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer">
+            <input type="checkbox" class="accent-blue-500" checked={opts.removeBackground}
+              onChange={e => set('removeBackground', (e.target as HTMLInputElement).checked)} />
+            Remove background (auto-detect)
+          </label>
 
           <div>
             <div class="text-[11px] text-zinc-400 mb-0.5">Color</div>
@@ -229,7 +245,38 @@ function ImageVoxelBody(props: { image: ImageDataLike; filename: string; state: 
                 />
               )}
             </div>
+            {opts.colorMode === 'original' && (
+              <label class="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer mt-1.5">
+                <input type="checkbox" class="accent-blue-500" checked={opts.posterizeColors >= 2}
+                  onChange={e => set('posterizeColors', (e.target as HTMLInputElement).checked ? 6 : 0)} />
+                Posterize
+                {opts.posterizeColors >= 2 && (
+                  <input
+                    type="range"
+                    class="flex-1 accent-blue-500 ml-1"
+                    min={2} max={12} step={1}
+                    value={opts.posterizeColors}
+                    onInput={e => set('posterizeColors', Number((e.target as HTMLInputElement).value))}
+                  />
+                )}
+                {opts.posterizeColors >= 2 && (
+                  <span class="text-zinc-200 tabular-nums">{opts.posterizeColors}</span>
+                )}
+              </label>
+            )}
           </div>
+
+          <details class="text-[11px]">
+            <summary class="text-zinc-400 cursor-pointer select-none">Image adjustments</summary>
+            <div class="flex flex-col gap-2 mt-1.5">
+              <Slider label="Brightness" value={opts.brightness} min={-1} max={1} step={0.05}
+                onChange={v => set('brightness', v)} />
+              <Slider label="Contrast" value={opts.contrast} min={-1} max={1} step={0.05}
+                onChange={v => set('contrast', v)} />
+              <Slider label="Saturation" value={opts.saturation} min={-1} max={1} step={0.05}
+                onChange={v => set('saturation', v)} />
+            </div>
+          </details>
         </div>
       </div>
 
@@ -258,6 +305,12 @@ function emitOptions(o: Opts): ImageToVoxelOptions {
     alphaThreshold: o.alphaThreshold,
     colorMode: o.colorMode,
     flatColor: o.flatColor,
+    gamma: o.gamma,
+    brightness: o.brightness,
+    contrast: o.contrast,
+    saturation: o.saturation,
+    posterizeColors: o.posterizeColors,
+    removeBackground: o.removeBackground,
   };
 }
 

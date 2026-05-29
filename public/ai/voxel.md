@@ -218,6 +218,19 @@ await partwright.importImageAsVoxels(imageUrl, { mode: 'heightmap', maxSize: 96,
   (default 128). Opaque photos (no alpha) become a full slab.
 - `colorMode` — `'original'` (default), `'grayscale'`, or `'flat'`.
 - `flatColor` — `[r, g, b]` used when `colorMode` is `'flat'`.
+- `gamma` — heightmap: midtone curve on normalized brightness (default 1 =
+  linear; >1 sinks midtones, <1 lifts them).
+- `brightness` / `contrast` / `saturation` — image adjustments applied before
+  sampling, each −1..+1 (0 = unchanged). Reuses the Relief Studio's preprocessor.
+- `posterizeColors` — quantize `original` colors to this many clusters via
+  k-means for a clean limited voxel-art palette (0 = off; the in-app modal
+  exposes 2–12).
+- `removeBackground` — drop a solid-color backdrop the alpha cutoff can't (an
+  opaque photo's background). `backgroundColor: [r, g, b]` removes that exact
+  color; omit it to auto-detect the dominant border color.
+
+The in-app modal exposes all of these (image adjustments live under an
+"Image adjustments" disclosure) with a live preview.
 
 ## Gotchas
 

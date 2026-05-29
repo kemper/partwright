@@ -125,6 +125,31 @@ test.describe('voxel engine', () => {
     expect(result.geo.isManifold).toBe(true);
   });
 
+  test('importImageAsVoxels posterize + removeBackground produce a clean manifold', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      // White border (background) with a 2×2 multi-shade green subject.
+      const canvas = document.createElement('canvas');
+      canvas.width = 4;
+      canvas.height = 4;
+      const ctx = canvas.getContext('2d')!;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, 4, 4);
+      const greens = ['#00c800', '#10d010', '#00b800', '#08c808'];
+      let n = 0;
+      for (let y = 1; y <= 2; y++) for (let x = 1; x <= 2; x++) { ctx.fillStyle = greens[n++]; ctx.fillRect(x, y, 1, 1); }
+      const url = canvas.toDataURL('image/png');
+      const imp = await pw.importImageAsVoxels(url, { removeBackground: true, posterizeColors: 2 });
+      return { imp, geo: pw.getGeometryData() };
+    });
+
+    expect(result.imp.error).toBeFalsy();
+    // Background dropped → only the 2×2 = 4 subject voxels remain (depth 1).
+    expect(result.imp.voxelCount).toBe(4);
+    expect(result.geo.isManifold).toBe(true);
+  });
+
   test('smooth surfacing rounds the mesh while staying a manifold', async ({ page }) => {
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

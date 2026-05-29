@@ -109,6 +109,59 @@ describe('imageDataToVoxelGrid — color modes', () => {
   });
 });
 
+describe('image adjustments + posterize + background', () => {
+  const GREEN: [number, number, number, number] = [0, 200, 0, 255];
+
+  it('gamma > 1 lowers heightmap heights for a midtone', () => {
+    const mid: [number, number, number, number] = [128, 128, 128, 255];
+    const linear = imageDataToVoxelGrid(img([[mid]]), { mode: 'heightmap', maxHeight: 100, baseThickness: 0 });
+    const gammad = imageDataToVoxelGrid(img([[mid]]), { mode: 'heightmap', maxHeight: 100, baseThickness: 0, gamma: 2 });
+    // pow(0.5, 2) = 0.25 → ~25 vs ~50.
+    expect(gammad.size).toBeLessThan(linear.size);
+  });
+
+  it('brightness raises a pixel above the heightmap floor', () => {
+    const dark: [number, number, number, number] = [10, 10, 10, 255];
+    const plain = imageDataToVoxelGrid(img([[dark]]), { mode: 'heightmap', maxHeight: 20, baseThickness: 0 });
+    const brighter = imageDataToVoxelGrid(img([[dark]]), { mode: 'heightmap', maxHeight: 20, baseThickness: 0, brightness: 0.8 });
+    expect(brighter.size).toBeGreaterThan(plain.size);
+  });
+
+  it('posterize collapses many colors to a small palette', () => {
+    // A row of distinct reddish/greenish shades; posterize to 2 → ≤2 colors.
+    const rows: [number, number, number, number][][] = [[
+      [200, 0, 0, 255], [210, 10, 0, 255], [0, 200, 0, 255], [0, 210, 10, 255],
+    ]];
+    const grid = imageDataToVoxelGrid(img(rows), { posterizeColors: 2 });
+    const colors = new Set<number>();
+    grid.forEach((_x, _y, _z, c) => colors.add(c));
+    expect(colors.size).toBeLessThanOrEqual(2);
+  });
+
+  it('removeBackground drops a uniform border color', () => {
+    // 3×3 white border with a green center pixel.
+    const W: [number, number, number, number] = [255, 255, 255, 255];
+    const rows: [number, number, number, number][][] = [
+      [W, W, W],
+      [W, GREEN, W],
+      [W, W, W],
+    ];
+    const grid = imageDataToVoxelGrid(img(rows), { removeBackground: true });
+    // Only the non-white center survives.
+    expect(grid.size).toBe(1);
+  });
+
+  it('default options still reproduce the plain billboard (back-compat)', () => {
+    const image = img([[RED, CLEAR], [RED, RED]]);
+    const a = imageDataToVoxelGrid(image);
+    const b = imageDataToVoxelGrid(image, {
+      gamma: 1, brightness: 0, contrast: 0, saturation: 0, posterizeColors: 0, removeBackground: false,
+    });
+    expect(a.size).toBe(3);
+    expect(b.size).toBe(3);
+  });
+});
+
 describe('computeImageVoxelLayout', () => {
   it('voxelCount equals the sum of column heights (no overlaps)', () => {
     const image = img([[WHITE, BLACK], [RED, WHITE]]);

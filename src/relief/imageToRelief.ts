@@ -377,6 +377,30 @@ function kmeansCluster(feat: Float32Array, rgb: Float32Array, count: number, k: 
   return { assign, repRGB, k: kk };
 }
 
+/** Quantize an sRGB image (byte triples, length `count*3`) to `k` colour
+ *  clusters via the shared k-means above. Returns the per-cell cluster index
+ *  and each cluster's representative sRGB (0..255). `colorSpace: 'lab'`
+ *  clusters perceptually; `'rgb'` clusters in raw sRGB. Shared by the relief
+ *  colour pipeline and the image→voxel posterize option. */
+export function quantizeColors(
+  rgb: Float32Array | Uint8Array | Uint8ClampedArray,
+  count: number,
+  k: number,
+  colorSpace: 'rgb' | 'lab',
+): ClusterResult {
+  const src = rgb instanceof Float32Array ? rgb : Float32Array.from(rgb);
+  const feat = new Float32Array(count * 3);
+  if (colorSpace === 'lab') {
+    for (let i = 0; i < count; i++) {
+      const L = rgbToLab(src[i * 3], src[i * 3 + 1], src[i * 3 + 2]);
+      feat[i * 3] = L[0]; feat[i * 3 + 1] = L[1]; feat[i * 3 + 2] = L[2];
+    }
+  } else {
+    feat.set(src);
+  }
+  return kmeansCluster(feat, src, count, Math.max(1, Math.floor(k)), 16);
+}
+
 function nearestPalette(fr: number, fg: number, fb: number, palFeat: Array<[number, number, number]>): number {
   let best = 0, bd = Infinity;
   for (let c = 0; c < palFeat.length; c++) {
@@ -393,17 +417,8 @@ function sampleQuantized(rgb: Float32Array, w: number, h: number, opts: ReliefOp
   const lab = opts.quantized.colorSpace === 'lab';
   const k = Math.max(2, Math.floor(opts.quantized.clusters));
 
-  // Cluster in the chosen colour space.
-  const feat = new Float32Array(count * 3);
-  if (lab) {
-    for (let i = 0; i < count; i++) {
-      const L = rgbToLab(rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
-      feat[i * 3] = L[0]; feat[i * 3 + 1] = L[1]; feat[i * 3 + 2] = L[2];
-    }
-  } else {
-    feat.set(rgb);
-  }
-  const { assign, repRGB, k: kk } = kmeansCluster(feat, rgb, count, k, 16);
+  // Cluster in the chosen colour space (shared with image→voxel posterize).
+  const { assign, repRGB, k: kk } = quantizeColors(rgb, count, k, lab ? 'lab' : 'rgb');
 
   // Representative sRGB palette + per-cluster height. Clusters are ordered by
   // luminance and given evenly spaced heights snapped to layer multiples, so
