@@ -17,10 +17,11 @@ that wrap window.partwright. You always operate inside the single session the
 user already has open — you cannot create, switch, or close sessions, so just
 save your work into the current session with runAndSave (do not write to
 examples/). The current modeling language is shown in the per-turn suffix
-below — write code in that language. Three languages exist:
-'manifold-js' (default, mesh kernel), 'scad' (OpenSCAD), and 'replicad'
-(BREP / OpenCASCADE — true edge fillets, chamfers, STEP import/export).
-Switch via setActiveLanguage('scad' | 'manifold-js' | 'replicad') only when
+below — write code in that language. Four languages exist:
+'manifold-js' (default, mesh kernel), 'scad' (OpenSCAD), 'replicad'
+(BREP / OpenCASCADE — true edge fillets, chamfers, STEP import/export), and
+'voxel' (blocky colored-cube modeling — pixel-art and image imports; see /ai/voxel.md).
+Switch via setActiveLanguage('scad' | 'manifold-js' | 'replicad' | 'voxel') only when
 justified. Switching is non-destructive: your in-progress draft in the
 previous language is stashed and restored on flip back, and saved versions
 are unaffected (each remembers the language it was authored in). Still
@@ -305,7 +306,9 @@ export function toggleSuffix(toggles: ChatToggles): string {
         ? ' Note: SCAD\'s revolve / linear_extrude / cylinder produce radial-fan triangle topology that is awkward to paint cleanly (every triangle radiates from the center axis). If the task involves precise painting of curved features, consider switching to manifold-js up front rather than wrestling with the fan mesh.'
         : lang === 'replicad'
           ? ' Note: BREP sessions return a BREP shape (api.BREP.box/cylinder/sphere.fillet/.chamfer/.fuse/.cut/.intersect), not a Manifold. See /ai/replicad.md for the full BREP API and STEP-export workflow. Mesh-only ops (api.Manifold.warp / .levelSet) are not exposed in BREP sessions — switch to manifold-js if you need them.'
-          : ' Tip: you can also reach for api.BREP.* inside a manifold-js session for one-off exact fillets/chamfers (then api.BREP.toManifold(shape, api.Manifold) to drop back into the mesh world) — no language switch needed unless STEP export is the goal.'
+          : lang === 'voxel'
+            ? ' Note: voxel sessions build a colored cube grid — `const v = api.voxels(); v.fillBox([x0,y0,z0],[x1,y1,z1],color); v.set(x,y,z,color); return v;`. No Manifold, no booleans, no return-a-Manifold; colors are per-voxel (hex or [r,g,b]). Also: v.cylinder/sphere/line/mirror/translate/hollow, and v.smooth() for rounded edges. See /ai/voxel.md.'
+            : ' Tip: you can also reach for api.BREP.* inside a manifold-js session for one-off exact fillets/chamfers (then api.BREP.toManifold(shape, api.Manifold) to drop back into the mesh world) — no language switch needed unless STEP export is the goal.'
     }`,
     `Model: ${model}`,
     `Auto-retry on tool error: ${toggles.autoRetry}`,
@@ -338,7 +341,7 @@ function currentLanguage(): Language {
   try {
     const w = window as unknown as { partwright?: { getActiveLanguage?: () => Language } };
     const lang = w.partwright?.getActiveLanguage?.();
-    if (lang === 'manifold-js' || lang === 'scad' || lang === 'replicad') return lang;
+    if (lang === 'manifold-js' || lang === 'scad' || lang === 'replicad' || lang === 'voxel') return lang;
     return 'manifold-js';
   } catch {
     return 'manifold-js';

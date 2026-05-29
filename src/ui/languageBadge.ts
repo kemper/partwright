@@ -18,6 +18,8 @@ export function languageBadge(language: Language | string | undefined | null): L
       return { label: 'SCAD', classes: 'text-amber-400 border-amber-400/30' };
     case 'replicad':
       return { label: 'BREP', classes: 'text-emerald-400 border-emerald-400/30' };
+    case 'voxel':
+      return { label: 'VOXEL', classes: 'text-fuchsia-400 border-fuchsia-400/30' };
     default:
       return { label: 'JS', classes: 'text-blue-400 border-blue-400/30' };
   }

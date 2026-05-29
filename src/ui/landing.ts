@@ -27,7 +27,7 @@ interface CatalogManifestEntry {
   id: string;
   name: string;
   file: string;
-  language?: 'manifold-js' | 'scad' | 'replicad';
+  language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
   description?: string;
 }
 

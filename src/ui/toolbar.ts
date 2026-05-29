@@ -25,11 +25,14 @@ export interface ToolbarCallbacks {
    *  decide visibility. */
   onExportSTEP: () => void;
   onExportSessionJSON: () => void;
+  /** "Share link…" — encode the current version into a read-only,
+   *  hash-encoded share URL and open the copy modal. */
+  onShareLink: () => void;
   onExportRawCode: () => void;
   onImportFile: (file: File) => void | Promise<void>;
   /** Re-import a blob already held in the inbox (e.g. recent-imports re-click). */
   onImportInboxEntry: (entry: ImportInboxEntry) => void | Promise<void>;
-  onLanguageSwitch: (lang: 'manifold-js' | 'scad' | 'replicad') => void;
+  onLanguageSwitch: (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => void;
   /** "?" link next to the language toggle — opens a modal explaining
    *  what each engine is best for. */
   onLanguageHelp: () => void | Promise<void>;
@@ -113,20 +116,22 @@ export function onAutoRunChange(cb: (on: boolean) => void): void { _onAutoRunCha
 let _langBtnJs: HTMLButtonElement | null = null;
 let _langBtnScad: HTMLButtonElement | null = null;
 let _langBtnBrep: HTMLButtonElement | null = null;
-let _currentLang: 'manifold-js' | 'scad' | 'replicad' = 'manifold-js';
+let _langBtnVoxel: HTMLButtonElement | null = null;
+let _currentLang: 'manifold-js' | 'scad' | 'replicad' | 'voxel' = 'manifold-js';
 
 const LANG_ACTIVE = 'px-2 py-0.5 rounded text-xs font-medium transition-colors bg-zinc-700 text-zinc-100';
 const LANG_INACTIVE = 'px-2 py-0.5 rounded text-xs font-medium transition-colors text-zinc-500 hover:text-zinc-300';
 
 function syncLangToggle() {
-  if (!_langBtnJs || !_langBtnScad || !_langBtnBrep) return;
+  if (!_langBtnJs || !_langBtnScad || !_langBtnBrep || !_langBtnVoxel) return;
   _langBtnJs.className = _currentLang === 'manifold-js' ? LANG_ACTIVE : LANG_INACTIVE;
   _langBtnScad.className = _currentLang === 'scad' ? LANG_ACTIVE : LANG_INACTIVE;
   _langBtnBrep.className = _currentLang === 'replicad' ? LANG_ACTIVE : LANG_INACTIVE;
+  _langBtnVoxel.className = _currentLang === 'voxel' ? LANG_ACTIVE : LANG_INACTIVE;
 }
 
 /** Update the toolbar language toggle from outside (e.g. when opening a session). */
-export function setToolbarLanguage(lang: 'manifold-js' | 'scad' | 'replicad'): void {
+export function setToolbarLanguage(lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): void {
   _currentLang = lang;
   syncLangToggle();
 }
@@ -219,10 +224,20 @@ export function createToolbar(
     }
   });
 
+  _langBtnVoxel = document.createElement('button');
+  _langBtnVoxel.textContent = 'VOXEL';
+  _langBtnVoxel.title = 'Voxel — blocky colored-cube modeling. Pure JS, no WASM; great for pixel-art and image imports.';
+  _langBtnVoxel.addEventListener('click', () => {
+    if (_currentLang !== 'voxel') {
+      callbacks.onLanguageSwitch('voxel');
+    }
+  });
+
   syncLangToggle();
   langGroup.appendChild(_langBtnJs);
   langGroup.appendChild(_langBtnScad);
   langGroup.appendChild(_langBtnBrep);
+  langGroup.appendChild(_langBtnVoxel);
   toolbar.appendChild(langGroup);
 
   // Help link next to the language toggle — "?" icon that opens a modal
@@ -490,8 +505,18 @@ export function createToolbar(
     callbacks.onExportRawCode();
   });
 
+  const shareOpt = createDescribedItem(
+    'Share link…',
+    'Create a public read-only link to this version. Anyone can preview and fork it — nothing is uploaded.',
+  );
+  shareOpt.addEventListener('click', () => {
+    dropdown.classList.add('hidden');
+    callbacks.onShareLink();
+  });
+
   dropdown.appendChild(sessionOpt);
   dropdown.appendChild(codeOpt);
+  dropdown.appendChild(shareOpt);
 
   // Section: Recent Exports — reuse-anything-you-just-downloaded list. Hidden when empty.
   const recentDivider = createDivider();

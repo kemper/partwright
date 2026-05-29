@@ -1,8 +1,11 @@
 // Composes the editor's single read-only flag from multiple independent
-// reasons. The color-region lock (editorLock.ts) and multi-tab viewer mode
-// (viewerMode.ts) each want the editor read-only for their own reason; routing
-// both through here means neither stomps the other — the editor is read-only if
-// ANY reason is active, regardless of the order the two modules run in.
+// reasons. The color-region lock (editorLock.ts), multi-tab viewer mode
+// (viewerMode.ts), and the shared-link preview (main.ts, reason 'shared') each
+// want the editor read-only for their own reason; routing them all through here
+// means none stomps another — the editor is read-only if ANY reason is active,
+// regardless of the order the modules run in.
+//
+// Known reasons: 'colorLock', 'viewer', 'shared'.
 
 import { setReadOnly } from './codeEditor';
 

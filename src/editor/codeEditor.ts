@@ -14,7 +14,7 @@ import { getTheme, onThemeChange, type Theme } from '../ui/theme';
  *  as JS (`api.BREP.box(...)`), but we still track them as a distinct
  *  language so callers (formatting, syntax highlighting, status badges) can
  *  branch per engine. */
-export type EditorLanguage = 'manifold-js' | 'scad' | 'replicad';
+export type EditorLanguage = 'manifold-js' | 'scad' | 'replicad' | 'voxel';
 
 let editorView: EditorView | null = null;
 let debounceTimer: number | null = null;
