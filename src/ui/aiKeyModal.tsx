@@ -34,6 +34,10 @@ interface ProviderUi {
   consoleUrl: string;
   consoleLabel: string;
   placeholder: string;
+  /** Optional extra note rendered under the intro. Used for Gemini, whose
+   *  wire protocol puts the key in the request URL (unlike the header-based
+   *  Anthropic/OpenAI), which is worth calling out. */
+  note?: string;
   validate: (key: string) => Promise<string | null>;
   reset: () => void;
 }
@@ -65,6 +69,7 @@ const PROVIDER_UI: Record<HostedProvider, ProviderUi> = {
     consoleUrl: 'https://aistudio.google.com/app/apikey',
     consoleLabel: 'Get a key at aistudio.google.com →',
     placeholder: 'AIza...',
+    note: 'Gemini’s API sends the key as a URL query parameter (not an auth header), so it can appear in browser history and proxy logs. Use a key scoped to this project and rotate it if you have concerns.',
     validate: validateGeminiKey,
     reset: resetGeminiClient,
   },
@@ -156,6 +161,9 @@ function KeyFormBody(props: {
   return (
     <>
       <p class="text-zinc-300 leading-snug">{ui.intro}</p>
+      {ui.note && (
+        <p class="rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug">{ui.note}</p>
+      )}
       <a
         href={ui.consoleUrl}
         target="_blank"

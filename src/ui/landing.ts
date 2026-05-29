@@ -575,6 +575,7 @@ function buildFooter(): HTMLElement {
     { label: 'Catalog', href: '/catalog' },
     { label: "What's new", href: '/whats-new' },
     { label: 'How it works', href: '/help' },
+    { label: 'Legal', href: '/legal' },
     { label: 'AI agent docs', href: '/ai.md' },
     { label: 'GitHub', href: 'https://github.com/kemper/mainifold', external: true },
   ];
@@ -593,7 +594,7 @@ function buildFooter(): HTMLElement {
   footer.appendChild(links);
 
   const copyright = document.createElement('div');
-  copyright.textContent = `© ${new Date().getFullYear()} Partwright. Open source.`;
+  copyright.textContent = `© ${new Date().getFullYear()} Partwright Studio. Source-available · free for non-commercial use.`;
   footer.appendChild(copyright);
 
   // Low-emphasis "start fresh" escape hatch — discoverable but well out of the
