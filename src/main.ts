@@ -5367,7 +5367,21 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       const version = await navigateVersion(direction);
       if (version) {
+        // Each version remembers the language it was authored in (since schema
+        // 1.8). Swap the engine before re-running so a JS version stepped into
+        // while another engine is active doesn't run under the wrong sandbox —
+        // e.g. a manifold-js version under the voxel/replicad engine, whose
+        // `api` has no `params` (and voxel no `Manifold`), which surfaced as
+        // "api.params is not a function" / "reading 'cube' of undefined".
+        // Mirrors loadVersion()'s language handling.
+        const versionLang = effectiveVersionLanguage(version, getState().session);
+        if (versionLang !== getActiveLanguage()) {
+          await switchLanguage(versionLang);
+        }
         setValue(version.code);
+        // Restore this version's Customizer overrides before the re-run so it
+        // renders with the values it was saved at (matches loadVersion).
+        currentParamValues = { ...(version.paramValues ?? {}) };
         await runCodeSync(version.code);
         rehydrateColorRegions(version.geometryData);
         applyVersionAnnotations(version);
