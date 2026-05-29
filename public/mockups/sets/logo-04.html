@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="robots" content="noindex"/>
+<title>Partwright — Contour stack</title>
+<style>
+@import url('../fonts.css');
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#09090b;color:#e4e4e7;font-family:'Space Grotesk',system-ui,sans-serif;padding:40px 56px 90px}
+a.back{color:#71717a;font-size:13px;text-decoration:none}
+a.back:hover{color:#e4e4e7}
+.head{margin:20px 0 6px;font:800 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.thesis{color:#a1a1aa;font-size:15px;max-width:640px;line-height:1.6;margin-bottom:34px}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
+.panel{background:#18181b;border:1px solid #27272a;border-radius:16px;padding:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;min-height:150px}
+.panel .lbl{font:600 11px 'Space Grotesk';letter-spacing:1.5px;text-transform:uppercase;color:#52525b}
+.s3{grid-column:span 3}.s5{grid-column:span 5}.s7{grid-column:span 7}
+.hero{min-height:230px}
+.lockup{display:flex;align-items:center;gap:14px}
+.lockup .wm{font:700 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.favs{display:flex;align-items:flex-end;gap:16px}
+.fav{background:#0b0b0d;border:1px solid #27272a;border-radius:8px;padding:8px;display:flex;align-items:center;justify-content:center}
+.light{background:#f4f4f5}
+.light .lbl{color:#a1a1aa}
+</style></head>
+<body>
+<a class="back" href="../">← all mockups</a>
+<div class="head">Contour stack</div>
+<div class="thesis">Calm and linear. Horizontal <em>cross-section slices</em> — the topographic contours, or the CAD Z-slices this tool exports — stack into a single rounded solid of revolution: a dome with a lifted shoulder, read as layers. One accent, teal, single-weight lines, with a gentle opacity falloff front-to-back so the form gains quiet depth without any fill. Technical and confident, never loud. At 16px it collapses to three bold slices that still read as a stacked part.</div>
+<div class="grid">
+  <div class="panel hero s5"><div class="lbl">Primary mark</div>
+    <!-- {{SVG_HERO}} -->
+    <svg width="120" height="120" viewBox="0 0 64 64" role="img" aria-label="Partwright contour-stack mark">
+      <defs>
+        <linearGradient id="h-line" x1="32" y1="8" x2="32" y2="56" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/>
+          <stop offset="0.55" stop-color="#2dd4bf"/>
+          <stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+      </defs>
+      <!-- stacked cross-section contours forming a dome / rounded part as Z-slices;
+           opacity falls off back(top)->front(bottom) for depth -->
+      <g fill="none" stroke="url(#h-line)" stroke-width="2" stroke-linecap="round">
+        <path d="M27 11.5 h10" opacity="0.40"/>
+        <ellipse cx="32" cy="18" rx="12" ry="2.4" opacity="0.50"/>
+        <ellipse cx="32" cy="24.5" rx="16.5" ry="3" opacity="0.62"/>
+        <ellipse cx="32" cy="31.5" rx="19.5" ry="3.4" opacity="0.74"/>
+        <ellipse cx="32" cy="39" rx="20.5" ry="3.5" opacity="0.86"/>
+        <ellipse cx="32" cy="46.5" rx="18" ry="3.3" opacity="0.96"/>
+        <ellipse cx="32" cy="53" rx="12.5" ry="2.8" opacity="1"/>
+      </g>
+    </svg>
+  </div>
+  <div class="panel s7"><div class="lbl">Wordmark lockup</div><div class="lockup">
+    <!-- {{SVG_MARK}} -->
+    <svg width="42" height="42" viewBox="0 0 64 64" role="img" aria-label="Partwright mark">
+      <defs>
+        <linearGradient id="m-line" x1="32" y1="8" x2="32" y2="56" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/>
+          <stop offset="0.55" stop-color="#2dd4bf"/>
+          <stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+      </defs>
+      <g fill="none" stroke="url(#m-line)" stroke-width="2.2" stroke-linecap="round">
+        <ellipse cx="32" cy="18" rx="12" ry="2.4" opacity="0.50"/>
+        <ellipse cx="32" cy="24.5" rx="16.5" ry="3" opacity="0.62"/>
+        <ellipse cx="32" cy="31.5" rx="19.5" ry="3.4" opacity="0.74"/>
+        <ellipse cx="32" cy="39" rx="20.5" ry="3.5" opacity="0.86"/>
+        <ellipse cx="32" cy="46.5" rx="18" ry="3.3" opacity="0.96"/>
+        <ellipse cx="32" cy="53" rx="12.5" ry="2.8" opacity="1"/>
+      </g>
+    </svg>
+    <span class="wm">Partwright</span></div>
+  </div>
+  <div class="panel s3"><div class="lbl">App icon</div>
+    <!-- {{SVG_APPICON}} -->
+    <svg width="104" height="104" viewBox="0 0 104 104" role="img" aria-label="Partwright app icon">
+      <defs>
+        <linearGradient id="a-bg" x1="0" y1="0" x2="104" y2="104" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#101b2e"/>
+          <stop offset="1" stop-color="#0f172a"/>
+        </linearGradient>
+        <linearGradient id="a-line" x1="52" y1="22" x2="52" y2="84" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/>
+          <stop offset="0.55" stop-color="#2dd4bf"/>
+          <stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+      </defs>
+      <rect x="0" y="0" width="104" height="104" rx="22" fill="url(#a-bg)"/>
+      <g fill="none" stroke="url(#a-line)" stroke-width="3" stroke-linecap="round" transform="translate(52 53) scale(1.16) translate(-32 -35.5)">
+        <ellipse cx="32" cy="18" rx="12" ry="2.4" opacity="0.50"/>
+        <ellipse cx="32" cy="24.5" rx="16.5" ry="3" opacity="0.62"/>
+        <ellipse cx="32" cy="31.5" rx="19.5" ry="3.4" opacity="0.74"/>
+        <ellipse cx="32" cy="39" rx="20.5" ry="3.5" opacity="0.86"/>
+        <ellipse cx="32" cy="46.5" rx="18" ry="3.3" opacity="0.96"/>
+        <ellipse cx="32" cy="53" rx="12.5" ry="2.8" opacity="1"/>
+      </g>
+    </svg>
+  </div>
+  <div class="panel s3"><div class="lbl">Favicon · 32 / 20 / 16</div><div class="favs">
+    <div class="fav">
+      <!-- {{SVG_32}} -->
+      <svg width="32" height="32" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 32">
+        <defs>
+          <linearGradient id="f32-line" x1="32" y1="14" x2="32" y2="54" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#5eead4"/>
+            <stop offset="0.55" stop-color="#2dd4bf"/>
+            <stop offset="1" stop-color="#14b8a6"/>
+          </linearGradient>
+        </defs>
+        <g fill="none" stroke="url(#f32-line)" stroke-width="3" stroke-linecap="round">
+          <ellipse cx="32" cy="19" rx="12.5" ry="2.6" opacity="0.55"/>
+          <ellipse cx="32" cy="27.5" rx="18" ry="3.3" opacity="0.70"/>
+          <ellipse cx="32" cy="36" rx="20.5" ry="3.6" opacity="0.85"/>
+          <ellipse cx="32" cy="44.5" rx="18.5" ry="3.4" opacity="0.96"/>
+          <ellipse cx="32" cy="52" rx="12.5" ry="2.9" opacity="1"/>
+        </g>
+      </svg>
+    </div>
+    <div class="fav">
+      <!-- {{SVG_20}} -->
+      <svg width="20" height="20" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 20">
+        <defs>
+          <linearGradient id="f20-line" x1="32" y1="16" x2="32" y2="50" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#5eead4"/>
+            <stop offset="1" stop-color="#14b8a6"/>
+          </linearGradient>
+        </defs>
+        <g fill="none" stroke="url(#f20-line)" stroke-width="4" stroke-linecap="round">
+          <ellipse cx="32" cy="20" rx="13" ry="3" opacity="0.62"/>
+          <ellipse cx="32" cy="30" rx="20" ry="3.8" opacity="0.80"/>
+          <ellipse cx="32" cy="40" rx="18.5" ry="3.6" opacity="0.96"/>
+          <ellipse cx="32" cy="49" rx="12" ry="3" opacity="1"/>
+        </g>
+      </svg>
+    </div>
+    <div class="fav">
+      <!-- {{SVG_16}} -->
+      <svg width="16" height="16" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 16">
+        <defs>
+          <linearGradient id="f16-line" x1="32" y1="18" x2="32" y2="50" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#5eead4"/>
+            <stop offset="1" stop-color="#14b8a6"/>
+          </linearGradient>
+        </defs>
+        <g fill="none" stroke="url(#f16-line)" stroke-width="5" stroke-linecap="round">
+          <ellipse cx="32" cy="21" rx="13" ry="3.2" opacity="0.66"/>
+          <ellipse cx="32" cy="31.5" rx="20" ry="4" opacity="0.84"/>
+          <ellipse cx="32" cy="42" rx="17.5" ry="3.8" opacity="1"/>
+        </g>
+      </svg>
+    </div>
+  </div></div>
+  <div class="panel s3"><div class="lbl">Monochrome</div>
+    <!-- {{SVG_MONO}} -->
+    <svg width="88" height="88" viewBox="0 0 64 64" role="img" aria-label="Partwright monochrome mark">
+      <g fill="none" stroke="#fafafa" stroke-width="2.2" stroke-linecap="round">
+        <ellipse cx="32" cy="18" rx="12" ry="2.4" opacity="0.45"/>
+        <ellipse cx="32" cy="24.5" rx="16.5" ry="3" opacity="0.58"/>
+        <ellipse cx="32" cy="31.5" rx="19.5" ry="3.4" opacity="0.72"/>
+        <ellipse cx="32" cy="39" rx="20.5" ry="3.5" opacity="0.85"/>
+        <ellipse cx="32" cy="46.5" rx="18" ry="3.3" opacity="0.95"/>
+        <ellipse cx="32" cy="53" rx="12.5" ry="2.8" opacity="1"/>
+      </g>
+    </svg>
+  </div>
+  <div class="panel s3 light"><div class="lbl">On light</div>
+    <!-- {{SVG_ONLIGHT}} -->
+    <svg width="88" height="88" viewBox="0 0 64 64" role="img" aria-label="Partwright mark on light">
+      <defs>
+        <linearGradient id="l-line" x1="32" y1="8" x2="32" y2="56" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#2dd4bf"/>
+          <stop offset="0.55" stop-color="#14b8a6"/>
+          <stop offset="1" stop-color="#0f766e"/>
+        </linearGradient>
+      </defs>
+      <g fill="none" stroke="url(#l-line)" stroke-width="2.2" stroke-linecap="round">
+        <ellipse cx="32" cy="18" rx="12" ry="2.4" opacity="0.55"/>
+        <ellipse cx="32" cy="24.5" rx="16.5" ry="3" opacity="0.66"/>
+        <ellipse cx="32" cy="31.5" rx="19.5" ry="3.4" opacity="0.78"/>
+        <ellipse cx="32" cy="39" rx="20.5" ry="3.5" opacity="0.88"/>
+        <ellipse cx="32" cy="46.5" rx="18" ry="3.3" opacity="0.96"/>
+        <ellipse cx="32" cy="53" rx="12.5" ry="2.8" opacity="1"/>
+      </g>
+    </svg>
+  </div>
+</div>
+</body></html>

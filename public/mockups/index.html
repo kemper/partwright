@@ -8,38 +8,56 @@
 <style>
   @import url('fonts.css');
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background:#09090b; color:#e4e4e7; font-family:'Space Grotesk',system-ui,sans-serif; min-height:100vh;
-    display:flex; flex-direction:column; align-items:center; justify-content:center; padding:48px 24px; gap:40px; }
-  h1 { font:800 34px 'Sora'; letter-spacing:-1px; }
-  .note { color:#71717a; font-size:14px; max-width:560px; text-align:center; line-height:1.6; }
+  body { background:#09090b; color:#e4e4e7; font-family:'Space Grotesk',system-ui,sans-serif; padding:48px 56px 90px; }
+  .brand { display:flex; align-items:center; gap:13px; margin-bottom:8px; }
+  .brand .wm { font:800 30px 'Sora'; letter-spacing:-1px; color:#fafafa; }
+  .note { color:#71717a; font-size:14px; max-width:640px; line-height:1.6; margin-bottom:8px; }
   .note b { color:#a1a1aa; }
-  .cards { display:grid; grid-template-columns:1fr 1fr; gap:20px; width:100%; max-width:720px; }
-  a.card { display:flex; flex-direction:column; gap:8px; padding:26px; border-radius:16px; text-decoration:none;
-    background:#18181b; border:1px solid #27272a; color:inherit; transition:border-color .15s, transform .15s; }
-  a.card:hover { border-color:#52525b; transform:translateY(-2px); }
-  a.card .t { font:700 18px 'Sora'; color:#fafafa; }
-  a.card .d { font-size:13px; color:#a1a1aa; line-height:1.5; }
-  a.card .go { margin-top:6px; font-size:13px; color:#fcd34d; font-weight:600; }
-  .brand { display:flex; align-items:center; gap:12px; }
+  h2 { font:700 13px 'Space Grotesk'; letter-spacing:2px; text-transform:uppercase; color:#52525b; margin:42px 0 16px; }
+  .grid { display:grid; gap:14px; grid-template-columns:repeat(auto-fill, minmax(250px, 1fr)); }
+  a.tile { display:flex; gap:15px; align-items:center; padding:16px; border-radius:14px; text-decoration:none; color:inherit;
+    background:#18181b; border:1px solid #27272a; transition:border-color .15s, transform .15s, background .15s; }
+  a.tile:hover { border-color:#3f3f46; transform:translateY(-2px); background:#1c1c20; }
+  .thumb { flex:0 0 auto; width:64px; height:64px; border-radius:11px; background:#0b0b0d; border:1px solid #27272a;
+    display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  .thumb img, .thumb svg { width:46px; height:46px; display:block; }
+  .meta .nm { font:600 15px 'Space Grotesk'; color:#fafafa; margin-bottom:3px; }
+  .meta .ds { font-size:12.5px; color:#a1a1aa; line-height:1.45; }
+  .wide { grid-column: span 2; }
+  @media (max-width:560px){ .wide{ grid-column: span 1; } body{ padding:32px 20px 70px; } }
+  .pill { display:inline-block; font:600 10px 'Space Grotesk'; letter-spacing:1px; text-transform:uppercase;
+    color:#5eead4; border:1px solid #134e4a; background:#0c1f1d; border-radius:999px; padding:2px 8px; margin-left:8px; vertical-align:middle; }
 </style>
 </head>
 <body>
   <div class="brand">
-    <svg width="40" height="40" viewBox="0 0 64 64"><polygon points="32,8 54,20 32,32 10,20" fill="#5eead4"/><polygon points="10,20 32,32 32,56 10,44" fill="#0d9488"/><polygon points="54,20 32,32 32,56 54,44" fill="#14b8a6"/></svg>
-    <h1>Design mockups</h1>
+    <svg width="38" height="38" viewBox="0 0 64 64"><polygon points="32,8 54,20 32,32 10,20" fill="#5eead4"/><polygon points="10,20 32,32 32,56 10,44" fill="#0d9488"/><polygon points="54,20 32,32 32,56 54,44" fill="#14b8a6"/></svg>
+    <span class="wm">Design mockups</span>
   </div>
-  <p class="note">Throwaway concept mockups for the landing-page / logo refresh — <b>not</b> wired into the app. Reference only; safe to delete the whole <code>/mockups</code> folder once a direction is chosen.</p>
-  <div class="cards">
-    <a class="card" href="hero.html">
-      <span class="t">Landing redesign →</span>
-      <span class="d">Two hero directions (Studio &amp; Generative) plus the "be the video" demo concept.</span>
-      <span class="go">Open hero.html</span>
-    </a>
-    <a class="card" href="logos.html">
-      <span class="t">Logo directions →</span>
-      <span class="d">Six marks for "a maker of parts," each shown big, in a lockup, and at favicon size.</span>
-      <span class="go">Open logos.html</span>
-    </a>
+  <p class="note">Throwaway concept mockups for the landing / logo refresh — <b>not</b> wired into the app, reference only. Click any tile for the full set. Steered toward "Iso Part," away from cross/compass shapes, with calmer landing takes.</p>
+
+  <h2>Logo &amp; icon directions <span class="pill">8 new</span></h2>
+  <div class="grid">
+    <a class="tile" href="sets/logo-01.html"><div class="thumb"><img src="sets/thumb-logo-01.svg" alt=""></div><div class="meta"><div class="nm">Iso Part — refined</div><div class="ds">The team favorite, given character: a machined part with a bore + amber rim-light.</div></div></a>
+    <a class="tile" href="sets/logo-02.html"><div class="thumb"><img src="sets/thumb-logo-02.svg" alt=""></div><div class="meta"><div class="nm">Negative-space tile</div><div class="ds">App-icon-first — a bold P knocked clean out of a solid teal tile.</div></div></a>
+    <a class="tile" href="sets/logo-03.html"><div class="thumb"><img src="sets/thumb-logo-03.svg" alt=""></div><div class="meta"><div class="nm">Wireframe → solid</div><div class="ds">Half mesh, half rendered — "describe it, and it becomes real."</div></div></a>
+    <a class="tile" href="sets/logo-04.html"><div class="thumb"><img src="sets/thumb-logo-04.svg" alt=""></div><div class="meta"><div class="nm">Contour stack</div><div class="ds">Stacked cross-section slices imply a solid of revolution. Calm, linear.</div></div></a>
+    <a class="tile" href="sets/logo-05.html"><div class="thumb"><img src="sets/thumb-logo-05.svg" alt=""></div><div class="meta"><div class="nm">Precision minimal</div><div class="ds">An iso solid + a dimension line with one teal node. Engineering restraint.</div></div></a>
+    <a class="tile" href="sets/logo-06.html"><div class="thumb"><img src="sets/thumb-logo-06.svg" alt=""></div><div class="meta"><div class="nm">Faceted solid</div><div class="ds">A low-poly cut gem catching light — premium, rendered, material.</div></div></a>
+    <a class="tile" href="sets/logo-07.html"><div class="thumb"><img src="sets/thumb-logo-07.svg" alt=""></div><div class="meta"><div class="nm">Joinery</div><div class="ds">Two parts dovetailing into one — a wright joins. Teal keys into amber.</div></div></a>
+    <a class="tile" href="sets/logo-08.html"><div class="thumb"><img src="sets/thumb-logo-08.svg" alt=""></div><div class="meta"><div class="nm">Monoline</div><div class="ds">One continuous stroke draws an iso part carrying a P. Infinitely scalable.</div></div></a>
+  </div>
+
+  <h2>Calmer landing directions <span class="pill">2 new</span></h2>
+  <div class="grid">
+    <a class="tile wide" href="sets/land-01.html"><div class="thumb"><svg viewBox="0 0 64 64" fill="none"><rect x="9" y="12" width="46" height="6" rx="2" fill="#3f3f46"/><rect x="9" y="26" width="30" height="4" rx="2" fill="#52525b"/><rect x="9" y="34" width="38" height="3" rx="1.5" fill="#3f3f46"/><rect x="9" y="44" width="16" height="7" rx="3" fill="#2dd4bf"/></svg></div><div class="meta"><div class="nm">Quiet Studio</div><div class="ds">Near-monochrome, one teal accent, lots of air. A quiet, premium hero with a calm 3-step rail.</div></div></a>
+    <a class="tile wide" href="sets/land-02.html"><div class="thumb"><svg viewBox="0 0 64 64" fill="none"><g stroke="#27272a" stroke-width="1"><path d="M0 16h64M0 32h64M0 48h64M16 0v64M32 0v64M48 0v64"/></g><rect x="22" y="22" width="20" height="14" rx="1.5" fill="none" stroke="#2dd4bf" stroke-width="2"/><path d="M22 40h20" stroke="#52525b" stroke-width="1"/></svg></div><div class="meta"><div class="nm">Blueprint</div><div class="ds">A draughtsman's graph-paper sheet — dimension lines, mono coordinates, ink restraint.</div></div></a>
+  </div>
+
+  <h2>Earlier sketches</h2>
+  <div class="grid">
+    <a class="tile wide" href="hero.html"><div class="thumb"><svg viewBox="0 0 64 64" fill="none"><rect x="8" y="14" width="48" height="36" rx="4" fill="#0c0c0f" stroke="#27272a"/><circle cx="32" cy="32" r="8" fill="#6366f1" opacity="0.6"/></svg></div><div class="meta"><div class="nm">Landing — first pass</div><div class="ds">The original two directions (Studio / Generative) + the "be the video" demo concept.</div></div></a>
+    <a class="tile wide" href="logos.html"><div class="thumb"><svg viewBox="0 0 64 64" fill="none"><rect x="14" y="14" width="16" height="16" rx="3" fill="#fbbf24"/><circle cx="38" cy="38" r="9" fill="#2dd4bf"/></svg></div><div class="meta"><div class="nm">Logos — first six sketches</div><div class="ds">The initial concept round (Boolean Union, Iso Part v1, Extruded P, …).</div></div></a>
   </div>
 </body>
 </html>

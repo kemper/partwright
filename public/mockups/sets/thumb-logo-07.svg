@@ -1,0 +1,24 @@
+<svg width="120" height="120" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright joinery mark">
+      <defs>
+        <linearGradient id="h_tealTop" x1="14" y1="13" x2="40" y2="50" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <linearGradient id="h_amberTop" x1="34" y1="13" x2="52" y2="50" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#fcd34d"/><stop offset="1" stop-color="#f59e0b"/>
+        </linearGradient>
+      </defs>
+      <!-- right side wall (extruded depth) -->
+      <polygon points="50,16 55,21 55,49 50,44" fill="#7c4a06"/>
+      <!-- bottom side wall -->
+      <polygon points="14,44 50,44 55,49 19,49" fill="#0e7065"/>
+      <!-- amber bottom front wall segment -->
+      <polygon points="33,44 50,44 55,49 38,49" fill="#a86207"/>
+      <!-- TEAL part top face: left half + dovetail tab keying right -->
+      <polygon points="14,16 33,16 33,24 39,27 33,30 33,44 14,44" fill="url(#h_tealTop)"/>
+      <!-- AMBER part top face: right half + matching dovetail socket -->
+      <polygon points="33,16 50,16 50,44 33,44 33,30 39,27 33,24" fill="url(#h_amberTop)"/>
+      <!-- seam highlight -->
+      <polyline points="33,16 33,24 39,27 33,30 33,44" fill="none" stroke="#0f172a" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+      <!-- top edge sheen -->
+      <polygon points="14,16 50,16 50,18 14,18" fill="#ffffff" opacity="0.16"/>
+    </svg>

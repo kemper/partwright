@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="robots" content="noindex"/>
+<title>Partwright — Iso Part — refined</title>
+<style>
+@import url('../fonts.css');
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#09090b;color:#e4e4e7;font-family:'Space Grotesk',system-ui,sans-serif;padding:40px 56px 90px}
+a.back{color:#71717a;font-size:13px;text-decoration:none}
+a.back:hover{color:#e4e4e7}
+.head{margin:20px 0 6px;font:800 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.thesis{color:#a1a1aa;font-size:15px;max-width:640px;line-height:1.6;margin-bottom:34px}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
+.panel{background:#18181b;border:1px solid #27272a;border-radius:16px;padding:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;min-height:150px}
+.panel .lbl{font:600 11px 'Space Grotesk';letter-spacing:1.5px;text-transform:uppercase;color:#52525b}
+.s3{grid-column:span 3}.s5{grid-column:span 5}.s7{grid-column:span 7}
+.hero{min-height:230px}
+.lockup{display:flex;align-items:center;gap:14px}
+.lockup .wm{font:700 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.favs{display:flex;align-items:flex-end;gap:16px}
+.fav{background:#0b0b0d;border:1px solid #27272a;border-radius:8px;padding:8px;display:flex;align-items:center;justify-content:center}
+.light{background:#f4f4f5}
+.light .lbl{color:#a1a1aa}
+</style></head>
+<body>
+<a class="back" href="../">← all mockups</a>
+<div class="head">Iso Part — refined</div>
+<div class="thesis">The team-favorite isometric solid, given real character. Not a plain cube but a <em>machined component</em>: a wide base slab carrying a stepped boss, bored clean through the top. Three teal face-shades light it top / left / right, and a single warm amber edge catches the highest leading corner like a rim-light. The bore + step still read at 32px; at 16px it falls back to a crisp stepped silhouette with a dark bore. A maker's part, dimensional and confident.</div>
+<div class="grid">
+  <div class="panel hero s5"><div class="lbl">Primary mark</div>
+    <!-- {{SVG_HERO}} -->
+    <svg width="120" height="120" viewBox="0 0 64 64" role="img" aria-label="Partwright">
+      <defs>
+        <linearGradient id="h-top" x1="14" y1="13" x2="48" y2="35" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <linearGradient id="h-left" x1="14" y1="28" x2="32" y2="49" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#15b3a4"/><stop offset="1" stop-color="#0c8579"/>
+        </linearGradient>
+        <linearGradient id="h-right" x1="32" y1="37" x2="50" y2="49" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6f66"/>
+        </linearGradient>
+      </defs>
+      <!-- lower slab -->
+      <path d="M32 37 L50 28 L50 40 L32 49 Z" fill="url(#h-right)"/>
+      <path d="M14 28 L32 37 L32 49 L14 40 Z" fill="url(#h-left)"/>
+      <path d="M32 19 L50 28 L32 37 L14 28 Z" fill="url(#h-top)"/>
+      <!-- stepped boss -->
+      <path d="M32 33 L42 28 L42 19.5 L32 24.5 Z" fill="#0c8579"/>
+      <path d="M22 28 L32 33 L32 24.5 L22 19.5 Z" fill="#15b3a4"/>
+      <path d="M32 14 L42 19.5 L32 25 L22 19.5 Z" fill="#5eead4"/>
+      <!-- bore through the top -->
+      <ellipse cx="32" cy="19.2" rx="4.2" ry="2.1" fill="#0a564f"/>
+      <ellipse cx="32" cy="18.4" rx="4.0" ry="2.0" fill="#06302c"/>
+      <!-- single amber rim-light on the highest leading edge -->
+      <path d="M22 19.5 L32 14" fill="none" stroke="#fcd34d" stroke-width="1.1" stroke-linecap="round"/>
+    </svg>
+  </div>
+
+  <div class="panel s7"><div class="lbl">Wordmark lockup</div><div class="lockup">
+    <!-- {{SVG_MARK}} -->
+    <svg width="42" height="42" viewBox="0 0 64 64" role="img" aria-label="Partwright mark">
+      <defs>
+        <linearGradient id="m-top" x1="14" y1="13" x2="48" y2="35" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <linearGradient id="m-left" x1="14" y1="28" x2="32" y2="49" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#15b3a4"/><stop offset="1" stop-color="#0c8579"/>
+        </linearGradient>
+        <linearGradient id="m-right" x1="32" y1="37" x2="50" y2="49" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6f66"/>
+        </linearGradient>
+      </defs>
+      <path d="M32 37 L50 28 L50 40 L32 49 Z" fill="url(#m-right)"/>
+      <path d="M14 28 L32 37 L32 49 L14 40 Z" fill="url(#m-left)"/>
+      <path d="M32 19 L50 28 L32 37 L14 28 Z" fill="url(#m-top)"/>
+      <path d="M32 33 L42 28 L42 19.5 L32 24.5 Z" fill="#0c8579"/>
+      <path d="M22 28 L32 33 L32 24.5 L22 19.5 Z" fill="#15b3a4"/>
+      <path d="M32 14 L42 19.5 L32 25 L22 19.5 Z" fill="#5eead4"/>
+      <ellipse cx="32" cy="19.2" rx="4.2" ry="2.1" fill="#0a564f"/>
+      <ellipse cx="32" cy="18.4" rx="4.0" ry="2.0" fill="#06302c"/>
+      <path d="M22 19.5 L32 14" fill="none" stroke="#fcd34d" stroke-width="1.1" stroke-linecap="round"/>
+    </svg>
+    <span class="wm">Partwright</span>
+  </div></div>
+
+  <div class="panel s3"><div class="lbl">App icon</div>
+    <!-- {{SVG_APPICON}} -->
+    <svg width="104" height="104" viewBox="0 0 104 104" role="img" aria-label="Partwright app icon">
+      <defs>
+        <linearGradient id="a-tile" x1="0" y1="0" x2="104" y2="104" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#101826"/><stop offset="1" stop-color="#0f172a"/>
+        </linearGradient>
+        <linearGradient id="a-top" x1="14" y1="13" x2="48" y2="35" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <linearGradient id="a-left" x1="14" y1="28" x2="32" y2="49" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#15b3a4"/><stop offset="1" stop-color="#0c8579"/>
+        </linearGradient>
+        <linearGradient id="a-right" x1="32" y1="37" x2="50" y2="49" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6f66"/>
+        </linearGradient>
+      </defs>
+      <rect x="0" y="0" width="104" height="104" rx="22" fill="url(#a-tile)"/>
+      <g transform="translate(20,20) scale(1.0625)">
+        <path d="M32 37 L50 28 L50 40 L32 49 Z" fill="url(#a-right)"/>
+        <path d="M14 28 L32 37 L32 49 L14 40 Z" fill="url(#a-left)"/>
+        <path d="M32 19 L50 28 L32 37 L14 28 Z" fill="url(#a-top)"/>
+        <path d="M32 33 L42 28 L42 19.5 L32 24.5 Z" fill="#0c8579"/>
+        <path d="M22 28 L32 33 L32 24.5 L22 19.5 Z" fill="#15b3a4"/>
+        <path d="M32 14 L42 19.5 L32 25 L22 19.5 Z" fill="#5eead4"/>
+        <ellipse cx="32" cy="19.2" rx="4.2" ry="2.1" fill="#0a564f"/>
+        <ellipse cx="32" cy="18.4" rx="4.0" ry="2.0" fill="#06302c"/>
+        <path d="M22 19.5 L32 14" fill="none" stroke="#fcd34d" stroke-width="1.1" stroke-linecap="round"/>
+      </g>
+    </svg>
+  </div>
+
+  <div class="panel s3"><div class="lbl">Favicon · 32 / 20 / 16</div><div class="favs">
+    <div class="fav">
+      <!-- {{SVG_32}} -->
+      <svg width="32" height="32" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 32">
+        <path d="M32 37 L50 28 L50 40 L32 49 Z" fill="#0c8579"/>
+        <path d="M14 28 L32 37 L32 49 L14 40 Z" fill="#15b3a4"/>
+        <path d="M32 19 L50 28 L32 37 L14 28 Z" fill="#2dd4bf"/>
+        <path d="M32 33 L42 28 L42 19.5 L32 24.5 Z" fill="#0c8579"/>
+        <path d="M22 28 L32 33 L32 24.5 L22 19.5 Z" fill="#15b3a4"/>
+        <path d="M32 14 L42 19.5 L32 25 L22 19.5 Z" fill="#5eead4"/>
+        <ellipse cx="32" cy="19.1" rx="4.3" ry="2.15" fill="#0a564f"/>
+        <ellipse cx="32" cy="18.4" rx="4.1" ry="2.05" fill="#072e2b"/>
+      </svg>
+    </div>
+    <div class="fav">
+      <!-- {{SVG_20}} -->
+      <svg width="20" height="20" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 20">
+        <path d="M32 37 L50 28 L50 40 L32 49 Z" fill="#0c8579"/>
+        <path d="M14 28 L32 37 L32 49 L14 40 Z" fill="#15b3a4"/>
+        <path d="M32 19 L50 28 L32 37 L14 28 Z" fill="#2dd4bf"/>
+        <path d="M32 32.5 L42 27.5 L42 19.5 L32 24.5 Z" fill="#0c8579"/>
+        <path d="M22 27.5 L32 32.5 L32 24.5 L22 19.5 Z" fill="#15b3a4"/>
+        <path d="M32 14.5 L42 19.5 L32 24.5 L22 19.5 Z" fill="#5eead4"/>
+        <ellipse cx="32" cy="19" rx="4.4" ry="2.2" fill="#0a3f3a"/>
+      </svg>
+    </div>
+    <div class="fav">
+      <!-- {{SVG_16}} -->
+      <svg width="16" height="16" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 16">
+        <!-- simplified: clean stepped silhouette + dark bore -->
+        <path d="M32 38 L51 28.5 L51 41 L32 50.5 Z" fill="#0c8579"/>
+        <path d="M13 28.5 L32 38 L32 50.5 L13 41 Z" fill="#15b3a4"/>
+        <path d="M32 19 L51 28.5 L32 38 L13 28.5 Z" fill="#2dd4bf"/>
+        <path d="M32 33 L43 27.5 L43 18.5 L32 24 Z" fill="#0c8579"/>
+        <path d="M21 27.5 L32 33 L32 24 L21 18.5 Z" fill="#15b3a4"/>
+        <path d="M32 13 L43 18.5 L32 24 L21 18.5 Z" fill="#5eead4"/>
+        <ellipse cx="32" cy="18.5" rx="4.8" ry="2.4" fill="#0a3f3a"/>
+      </svg>
+    </div>
+  </div></div>
+
+  <div class="panel s3"><div class="lbl">Monochrome</div>
+    <!-- {{SVG_MONO}} -->
+    <svg width="88" height="88" viewBox="0 0 64 64" role="img" aria-label="Partwright monochrome">
+      <!-- solid white silhouette, form carved by background-colored hairline edges -->
+      <path d="M14 28 L32 19 L32 14 L42 19.5 L42 28 L50 28 L50 40 L32 49 L14 40 Z" fill="#fafafa"/>
+      <g stroke="#18181b" stroke-width="0.9" stroke-linejoin="round" stroke-linecap="round" fill="none">
+        <path d="M14 28 L32 37 L50 28 M32 37 L32 49"/>
+        <path d="M22 19.5 L22 28 M22 28 L32 33 L42 28 M32 33 L32 25"/>
+        <path d="M22 19.5 L32 25 L42 19.5"/>
+      </g>
+      <!-- bore reads as a hole on the white top -->
+      <ellipse cx="32" cy="19" rx="4.2" ry="2.1" fill="#18181b"/>
+    </svg>
+  </div>
+
+  <div class="panel s3 light"><div class="lbl">On light</div>
+    <!-- {{SVG_ONLIGHT}} -->
+    <svg width="88" height="88" viewBox="0 0 64 64" role="img" aria-label="Partwright on light">
+      <!-- teal-forward, fills deepened so the silhouette holds against white -->
+      <path d="M32 37 L50 28 L50 40 L32 49 Z" fill="#0c8579"/>
+      <path d="M14 28 L32 37 L32 49 L14 40 Z" fill="#0f9c8e"/>
+      <path d="M32 19 L50 28 L32 37 L14 28 Z" fill="#2dd4bf"/>
+      <path d="M32 33 L42 28 L42 19.5 L32 24.5 Z" fill="#0c8579"/>
+      <path d="M22 28 L32 33 L32 24.5 L22 19.5 Z" fill="#0f9c8e"/>
+      <path d="M32 14 L42 19.5 L32 25 L22 19.5 Z" fill="#5eead4"/>
+      <ellipse cx="32" cy="19.2" rx="4.2" ry="2.1" fill="#0a564f"/>
+      <ellipse cx="32" cy="18.4" rx="4.0" ry="2.0" fill="#06302c"/>
+      <path d="M22 19.5 L32 14" fill="none" stroke="#f59e0b" stroke-width="1.1" stroke-linecap="round"/>
+    </svg>
+  </div>
+</div>
+</body></html>

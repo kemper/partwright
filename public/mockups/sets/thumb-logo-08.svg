@@ -1,0 +1,16 @@
+<svg width="120" height="120" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright monoline mark">
+      <g stroke="#2dd4bf" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <!-- isometric cube: silhouette + three interior edges, one continuous trace -->
+        <path d="M32 16.7 L47 25.4 L47 41.5 L32 50.2 L17 41.5 L17 25.4 Z"/>
+        <path d="M32 16.7 L32 32.8 M17 25.4 L32 32.8 L47 25.4"/>
+      </g>
+      <!-- the P bowl, drawn into the front-left (lit) face in the same monoline -->
+      <g stroke="#5eead4" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <path d="M24 47.6 L24 36.6 C24 33.9 29.8 33.4 29.8 37.2 C29.8 40.7 24 40.6 24 40.6"/>
+      </g>
+      <!-- companion glyphs in the same monoline language: a corner bracket + a small node -->
+      <g stroke="#3f3f46" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.9">
+        <path d="M7 12 L7 18 M7 12 L13 12"/>
+        <path d="M57 52 L57 46 M57 52 L51 52"/>
+      </g>
+    </svg>
