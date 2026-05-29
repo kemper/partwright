@@ -10,8 +10,9 @@ const glb = await partwright.exportGLBData()
 
 const stl = await partwright.exportSTLData()
 const tmf = await partwright.export3MFData()
-// Bambu-Studio variant: same geometry + color, plus project data pinning every
-// filament to PLA (otherwise Bambu guesses PLA/ABS by color-matching presets).
+// Bambu-Studio variant: a full Bambu *project* package (BambuStudio markers +
+// per-triangle paint_color segmentation + an all-PLA filament config) so Bambu
+// imports every color as PLA instead of color-matching presets to PLA/ABS.
 const tmfBambu = await partwright.export3MFBambuData()
 
 // OBJ is text-typed when the mesh has no painted color regions, otherwise a ZIP.

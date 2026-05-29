@@ -541,6 +541,6 @@ partwright.assertPaint({
 
 **Export behavior.**
 - `exportGLB()` -- vertex colors flow through automatically.
-- `export3MF()` -- regions become an `<m:colorgroup>` with per-triangle `pid`/`p1` attributes (compatible with PrusaSlicer / Bambu Studio multi-material slicing). `export3MFBambu()` writes the same geometry + colors plus Bambu project data pinning every filament to PLA (a standard 3MF carries no filament *type*, so Bambu otherwise guesses PLA/ABS by color-matching your presets).
+- `export3MF()` -- regions become an `<m:colorgroup>` with per-triangle `pid`/`p1` attributes (compatible with PrusaSlicer / Bambu Studio multi-material slicing). `export3MFBambu()` instead writes a full Bambu *project* package (BambuStudio markers + per-triangle `paint_color` segmentation + an all-PLA filament config) so Bambu recognizes it as its own project and imports every color as PLA — a standard 3MF carries no filament *type*, so Bambu otherwise guesses PLA/ABS by color-matching your presets.
 - `exportSTL()` and `exportOBJ()` -- formats don't carry color, so colors are dropped.
 
