@@ -3002,6 +3002,9 @@ async function main() {
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
     onOpenSessionList: () => showSessionList(),
+    // The rail only renders inside the editor, so the tour's spotlight targets
+    // already exist — start it directly without re-navigating.
+    onStartTour: () => { resetTour(); startTour(); },
   });
 
   // Parts rail — IDE-style list of the session's parts.
@@ -3353,6 +3356,21 @@ async function main() {
     updateDocumentTitle({ page: 'editor' });
   }
 
+  // Launch the guided tour from an entry point outside the editor (the landing
+  // CTA or the help page button): the tour spotlights editor chrome, so make
+  // sure we're in the editor with a live session before it starts.
+  async function takeGuidedTour() {
+    updateAppHistory('/editor', 'push');
+    transitionToEditor();
+    await ensureEditorReady();
+    if (!getState().session) {
+      await createSession();
+      runCode(defaultCode);
+    }
+    resetTour();
+    startTour();
+  }
+
   async function ensureLandingPage() {
     if (!landingEl) {
       landingEl = await createLandingPage(overlayContainer, {
@@ -3360,6 +3378,7 @@ async function main() {
         onOpenHelp: () => showHelp(),
         onOpenCatalog: () => { void showCatalogPage(); },
         onOpenWhatsNew: () => showWhatsNewPage(),
+        onTakeTour: () => { void takeGuidedTour(); },
         onOpenSession: openSessionFromLanding,
         onLoadCatalogEntry: handleCatalogEntryLoad,
       });
@@ -3417,17 +3436,7 @@ async function main() {
             void syncEditorFromURL();
           }
         },
-        onStartTour: async () => {
-          updateAppHistory('/editor', 'push');
-          transitionToEditor();
-          await ensureEditorReady();
-          if (!getState().session) {
-            await createSession();
-            runCode(defaultCode);
-          }
-          resetTour();
-          startTour();
-        },
+        onStartTour: () => { void takeGuidedTour(); },
       });
     }
     overlayContainer.classList.remove('hidden');
