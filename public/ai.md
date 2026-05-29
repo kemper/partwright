@@ -288,8 +288,9 @@ await partwright.listVersions()          // -> [{id, index, label, timestamp, st
 await partwright.loadVersion({index} | {id})  // Load version into editor -> {id, index, label, code, geometryData, labelsAvailable, labelCount} or {error}
 await partwright.forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) // Load + modify + validate + save atomically; carries parent colors -> {..., codeDiff, colors}
 await partwright.copyColorsFromVersion({index} | {id}) // Re-apply a prior version's colors onto the current mesh -> {source, carried, dropped}
-partwright.getGalleryUrl()               // -> URL for gallery view (human review)
-partwright.getSessionUrl()               // -> URL for this session
+await partwright.getShareLink()          // -> {url, encodedBytes} read-only share link (or {error}); the link to hand the user when done
+partwright.getGalleryUrl()               // -> URL for gallery view (local browser only)
+partwright.getSessionUrl()               // -> URL for this session (local browser only)
 await partwright.listSessions()          // -> [{id, name, updated}]
 await partwright.openSession(id)         // Open existing session
 await partwright.clearAllSessions()      // Delete all sessions & versions
@@ -1035,7 +1036,8 @@ Read the notes and version history before making changes. The notes tell you:
 3. Modify code, test with `modifyAndTest(patchFn)` or `runIsolated(code)` -- no side effects
 4. When satisfied, save: `runAndSave(modifiedCode, "v2 - improvements", assertions)` -- check the diff
 5. Use `query({sliceAt: [...], decompose: true})` for follow-up inspection without re-running
-6. Repeat. Gallery URL is in `#geometry-data` or the `runAndSave` return value.
+6. Repeat.
+7. When done, hand the user a **share link**: `const { url } = await partwright.getShareLink()`. This is a self-contained, read-only URL that encodes the whole design — anyone can open it anywhere and fork it into their own copy. Prefer it over `getSessionUrl()`/`getGalleryUrl()`, which only resolve against *your* browser's local storage and won't open for the user.
 
 ## Visual verification
 
