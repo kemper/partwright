@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="robots" content="noindex"/>
+<title>Partwright — Negative-P · double-take</title>
+<style>
+@import url('../fonts.css');
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#09090b;color:#e4e4e7;font-family:'Space Grotesk',system-ui,sans-serif;padding:40px 56px 90px}
+a.back{color:#71717a;font-size:13px;text-decoration:none}
+a.back:hover{color:#e4e4e7}
+.head{margin:20px 0 6px;font:800 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.thesis{color:#a1a1aa;font-size:15px;max-width:640px;line-height:1.6;margin-bottom:34px}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
+.panel{background:#18181b;border:1px solid #27272a;border-radius:16px;padding:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;min-height:150px}
+.panel .lbl{font:600 11px 'Space Grotesk';letter-spacing:1.5px;text-transform:uppercase;color:#52525b}
+.s3{grid-column:span 3}.s5{grid-column:span 5}.s7{grid-column:span 7}
+.hero{min-height:230px}
+.lockup{display:flex;align-items:center;gap:14px}
+.lockup .wm{font:700 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.favs{display:flex;align-items:flex-end;gap:16px}
+.fav{background:#0b0b0d;border:1px solid #27272a;border-radius:8px;padding:8px;display:flex;align-items:center;justify-content:center}
+.light{background:#f4f4f5}
+.light .lbl{color:#a1a1aa}
+</style></head>
+<body>
+<a class="back" href="../">← all mockups</a>
+<div class="head">Negative-P · double-take</div>
+<div class="thesis">The team-favorite negative-space <strong>P</strong>, given a sly optical double-meaning. The same die-cut letter is knocked into a teal tile — but the cut has <em>real isometric depth</em>: the P-shaped channel reads as a pocket bored into the block, its side-walls raked down-and-right in a darker teal. The eye flips between a flat letter and a 3D <em>part</em>. The bowl's counter survives as a crisp teal island — and at hero size a copy of it lifts clear up-and-left, a small floating chip: <em>a part being made.</em> Unmistakably a P; at 16&nbsp;px the depth flattens to a clean knockout.</div>
+<div class="grid">
+  <div class="panel hero s5"><div class="lbl">Primary mark</div>
+    <!-- HERO -->
+    <svg class="mark-dt" width="120" height="120" viewBox="0 0 64 64" role="img" aria-label="Partwright — negative-space P bored as an isometric pocket with a floating counter chip">
+      <defs>
+        <linearGradient id="h-teal" x1="8" y1="6" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="0.5" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <!-- pocket side-wall: darker teal, raked so depth reads -->
+        <linearGradient id="h-wall" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#115e59"/><stop offset="1" stop-color="#042f2e"/>
+        </linearGradient>
+        <!-- pocket floor: darkest, the bottom of the bore -->
+        <linearGradient id="h-floor" x1="20" y1="14" x2="42" y2="52" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#0b3b38"/><stop offset="1" stop-color="#04201d"/>
+        </linearGradient>
+        <!-- the floating counter chip: a lit little teal part -->
+        <linearGradient id="h-chip" x1="0" y1="0" x2="0.6" y2="1">
+          <stop offset="0" stop-color="#ccfbf1"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <!-- P MOUTH = the bored pocket opening (solid P silhouette: stem + full bowl) -->
+        <path id="h-Pmouth" d="M22 14 H38 a11.5 11.5 0 0 1 0 23 H30 V50 H22 Z"/>
+        <!-- counter shape — the teal centre of the bowl; here it's the raised BOSS that forms the P's counter -->
+        <path id="h-counter" d="M30 21 H37.6 a4.4 4.4 0 0 1 0 9 H30 Z"/>
+        <radialGradient id="h-shadow" cx="0.5" cy="0.5" r="0.5">
+          <stop offset="0" stop-color="#000" stop-opacity="0.55"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
+        </radialGradient>
+        <clipPath id="h-tileclip"><rect x="4" y="4" width="56" height="56" rx="15"/></clipPath>
+      </defs>
+
+      <!-- soft contact shadow grounding the tile -->
+      <ellipse cx="32" cy="60.5" rx="22" ry="2.6" fill="url(#h-shadow)"/>
+
+      <g clip-path="url(#h-tileclip)">
+        <!-- 1. pocket WALLS: copies of the P mouth fanned along the iso-depth vector (down-right).
+                stacking faint offsets builds a continuous extruded wall surface -->
+        <g class="walls" fill="url(#h-wall)">
+          <use href="#h-Pmouth" transform="translate(4.2 4.6)"/>
+          <use href="#h-Pmouth" transform="translate(3.6 3.95)"/>
+          <use href="#h-Pmouth" transform="translate(3.0 3.3)"/>
+          <use href="#h-Pmouth" transform="translate(2.4 2.65)"/>
+          <use href="#h-Pmouth" transform="translate(1.8 2.0)"/>
+          <use href="#h-Pmouth" transform="translate(1.2 1.35)"/>
+          <use href="#h-Pmouth" transform="translate(0.6 0.7)"/>
+        </g>
+        <!-- 2. pocket FLOOR sits at the far end of the wall fan -->
+        <use href="#h-Pmouth" transform="translate(4.6 5.05)" fill="url(#h-floor)"/>
+        <!-- ambient occlusion where the floor meets the lit front face -->
+        <use href="#h-Pmouth" transform="translate(4.6 5.05)" fill="none" stroke="#03110f" stroke-width="1.0" stroke-opacity="0.55"/>
+
+        <!-- 3. the teal TILE FACE with the P punched clean through (front-most surface) -->
+        <path fill="url(#h-teal)" fill-rule="evenodd"
+              d="M4 19 a15 15 0 0 1 15 -15 H45 a15 15 0 0 1 15 15 V45 a15 15 0 0 1 -15 15 H19 a15 15 0 0 1 -15 -15 Z
+                 M22 14 H38 a11.5 11.5 0 0 1 0 23 H30 V50 H22 Z"/>
+        <!-- crisp machined lip catching light on the front face's top-left cut edges -->
+        <use href="#h-Pmouth" fill="none" stroke="#ccfbf1" stroke-width="0.7" stroke-opacity="0.8"/>
+      </g>
+
+      <!-- 4. the COUNTER BOSS — the bowl's counter survives as a small teal part standing PROUD inside
+              the pocket: a short iso wall under it + a lit cap make it read as a raised boss (a part
+              sitting in its bored socket), without ever breaking the clean P silhouette -->
+      <g class="chip">
+        <!-- short iso wall lifting the boss off the pocket floor (down-right, matching the pocket rake) -->
+        <use href="#h-counter" transform="translate(1.0 1.1)" fill="#0d9488"/>
+        <use href="#h-counter" transform="translate(0.6 0.65)" fill="#14b8a6"/>
+        <!-- boss cap (lit, raised teal) -->
+        <use href="#h-counter" fill="url(#h-chip)"/>
+        <!-- crisp lit edge on the boss's top-left -->
+        <use href="#h-counter" fill="none" stroke="#f0fdfa" stroke-width="0.45" stroke-opacity="0.7"/>
+        <!-- tiny specular dot on the boss -->
+        <ellipse cx="33.0" cy="23.4" rx="1.15" ry="0.75" fill="#f0fdfa" opacity="0.95"/>
+        <!-- one warm amber catch on the boss's far corner — the maker's spark -->
+        <path d="M39.5 23.6 a3.0 3.0 0 0 1 0.5 3.0" fill="none" stroke="#fbbf24" stroke-width="0.9" stroke-linecap="round" opacity="0.95"/>
+      </g>
+    </svg>
+  </div>
+
+  <div class="panel s7"><div class="lbl">Wordmark lockup</div><div class="lockup">
+    <!-- MARK -->
+    <svg width="42" height="42" viewBox="0 0 64 64" role="img" aria-label="Partwright mark">
+      <defs>
+        <linearGradient id="m-teal" x1="8" y1="6" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="0.5" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <linearGradient id="m-wall" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#115e59"/><stop offset="1" stop-color="#042f2e"/>
+        </linearGradient>
+        <linearGradient id="m-chip" x1="0" y1="0" x2="0.6" y2="1">
+          <stop offset="0" stop-color="#ccfbf1"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <path id="m-Pmouth" d="M22 14 H38 a11.5 11.5 0 0 1 0 23 H30 V50 H22 Z"/>
+        <path id="m-counter" d="M30 21 H37.6 a4.4 4.4 0 0 1 0 9 H30 Z"/>
+        <clipPath id="m-tileclip"><rect x="4" y="4" width="56" height="56" rx="15"/></clipPath>
+      </defs>
+      <g clip-path="url(#m-tileclip)">
+        <g fill="url(#m-wall)">
+          <use href="#m-Pmouth" transform="translate(3.0 3.3)"/>
+          <use href="#m-Pmouth" transform="translate(2.0 2.2)"/>
+          <use href="#m-Pmouth" transform="translate(1.0 1.1)"/>
+        </g>
+        <use href="#m-Pmouth" transform="translate(3.4 3.75)" fill="#06231f"/>
+        <path fill="url(#m-teal)" fill-rule="evenodd"
+              d="M4 19 a15 15 0 0 1 15 -15 H45 a15 15 0 0 1 15 15 V45 a15 15 0 0 1 -15 15 H19 a15 15 0 0 1 -15 -15 Z
+                 M22 14 H38 a11.5 11.5 0 0 1 0 23 H30 V50 H22 Z"/>
+        <use href="#m-Pmouth" fill="none" stroke="#ccfbf1" stroke-width="0.7" stroke-opacity="0.7"/>
+      </g>
+      <!-- raised counter boss forms the P's open counter (short wall + lit cap) -->
+      <use href="#m-counter" transform="translate(0.9 1.0)" fill="#0d9488"/>
+      <use href="#m-counter" fill="url(#m-chip)"/>
+    </svg>
+    <span class="wm">Partwright</span>
+  </div></div>
+
+  <div class="panel s3"><div class="lbl">App icon</div>
+    <!-- APPICON -->
+    <svg width="104" height="104" viewBox="0 0 104 104" role="img" aria-label="Partwright app icon">
+      <defs>
+        <linearGradient id="a-bg" x1="0" y1="0" x2="104" y2="104" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#101a2b"/><stop offset="1" stop-color="#0b1220"/>
+        </linearGradient>
+        <linearGradient id="a-teal" x1="14" y1="10" x2="90" y2="96" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="0.5" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <linearGradient id="a-wall" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#115e59"/><stop offset="1" stop-color="#042f2e"/>
+        </linearGradient>
+        <linearGradient id="a-floor" x1="34" y1="24" x2="70" y2="86" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#0b3b38"/><stop offset="1" stop-color="#04201d"/>
+        </linearGradient>
+        <linearGradient id="a-chip" x1="0" y1="0" x2="0.6" y2="1">
+          <stop offset="0" stop-color="#ccfbf1"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <!-- P mouth in icon space (the 64-space P scaled ~1.625 + nudged) -->
+        <path id="a-Pmouth" d="M30 18 H58 a18.5 18.5 0 0 1 0 37 H44 V76 H30 Z"/>
+        <path id="a-counter" d="M44 29.5 H57.5 a7.2 7.2 0 0 1 0 15 H44 Z"/>
+        <clipPath id="a-tileclip"><rect x="0" y="0" width="104" height="104" rx="22"/></clipPath>
+      </defs>
+
+      <rect x="0" y="0" width="104" height="104" rx="22" fill="url(#a-bg)"/>
+      <g clip-path="url(#a-tileclip)">
+        <!-- pocket walls fanned down-right -->
+        <g fill="url(#a-wall)">
+          <use href="#a-Pmouth" transform="translate(6.4 7.0)"/>
+          <use href="#a-Pmouth" transform="translate(5.4 5.9)"/>
+          <use href="#a-Pmouth" transform="translate(4.4 4.8)"/>
+          <use href="#a-Pmouth" transform="translate(3.4 3.7)"/>
+          <use href="#a-Pmouth" transform="translate(2.4 2.6)"/>
+          <use href="#a-Pmouth" transform="translate(1.4 1.5)"/>
+        </g>
+        <use href="#a-Pmouth" transform="translate(6.8 7.45)" fill="url(#a-floor)"/>
+        <use href="#a-Pmouth" transform="translate(6.8 7.45)" fill="none" stroke="#03110f" stroke-width="1.4" stroke-opacity="0.5"/>
+
+        <!-- teal tile face, slightly inset, with the P punched through -->
+        <path fill="url(#a-teal)" fill-rule="evenodd"
+              d="M12 30 a18 18 0 0 1 18 -18 H74 a18 18 0 0 1 18 18 V74 a18 18 0 0 1 -18 18 H30 a18 18 0 0 1 -18 -18 Z
+                 M30 18 H58 a18.5 18.5 0 0 1 0 37 H44 V76 H30 Z"/>
+        <use href="#a-Pmouth" fill="none" stroke="#ccfbf1" stroke-width="1.0" stroke-opacity="0.8"/>
+      </g>
+
+      <!-- raised counter boss inside the pocket — forms the P counter, reads as a seated part -->
+      <use href="#a-counter" transform="translate(1.6 1.75)" fill="#0d9488"/>
+      <use href="#a-counter" transform="translate(1.0 1.1)" fill="#14b8a6"/>
+      <use href="#a-counter" fill="url(#a-chip)"/>
+      <use href="#a-counter" fill="none" stroke="#f0fdfa" stroke-width="0.7" stroke-opacity="0.65"/>
+      <ellipse cx="47.5" cy="33.0" rx="1.9" ry="1.2" fill="#f0fdfa" opacity="0.95"/>
+      <path d="M55.0 33.4 a4.6 4.6 0 0 1 0.7 4.6" fill="none" stroke="#fbbf24" stroke-width="1.4" stroke-linecap="round" opacity="0.95"/>
+    </svg>
+  </div>
+
+  <div class="panel s3"><div class="lbl">Favicon · 32 / 20 / 16</div><div class="favs">
+    <div class="fav">
+      <!-- 32 -->
+      <svg width="32" height="32" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 32">
+        <defs>
+          <linearGradient id="f32-teal" x1="8" y1="6" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#5eead4"/><stop offset="0.5" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+          </linearGradient>
+          <path id="f32-Pring" fill-rule="evenodd"
+                d="M22 14 H38 a11.5 11.5 0 0 1 0 23 H30 V50 H22 Z
+                   M30 21 H37.6 a4.4 4.4 0 0 1 0 9 H30 Z"/>
+          <clipPath id="f32-clip"><rect x="4" y="4" width="56" height="56" rx="15"/></clipPath>
+        </defs>
+        <g clip-path="url(#f32-clip)">
+          <!-- single darker offset = simplified pocket depth at small size -->
+          <use href="#f32-Pring" transform="translate(2.6 2.9)" fill="#0b3b38"/>
+          <path fill="url(#f32-teal)" fill-rule="evenodd"
+                d="M4 19 a15 15 0 0 1 15 -15 H45 a15 15 0 0 1 15 15 V45 a15 15 0 0 1 -15 15 H19 a15 15 0 0 1 -15 -15 Z
+                   M22 14 H38 a11.5 11.5 0 0 1 0 23 H30 V50 H22 Z
+                   M30 21 H37.6 a4.4 4.4 0 0 1 0 9 H30 Z"/>
+        </g>
+      </svg>
+    </div>
+    <div class="fav">
+      <!-- 20 -->
+      <svg width="20" height="20" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 20">
+        <defs>
+          <path id="f20-Pring" fill-rule="evenodd"
+                d="M21 13 H38 a12 12 0 0 1 0 24 H30 V51 H21 Z
+                   M30 20.5 H38 a4.5 4.5 0 0 1 0 9 H30 Z"/>
+          <clipPath id="f20-clip"><rect x="3" y="3" width="58" height="58" rx="14"/></clipPath>
+        </defs>
+        <g clip-path="url(#f20-clip)">
+          <use href="#f20-Pring" transform="translate(2.2 2.5)" fill="#0b3b38"/>
+          <path fill="#2dd4bf" fill-rule="evenodd"
+                d="M3 17 a14 14 0 0 1 14 -14 H47 a14 14 0 0 1 14 14 V47 a14 14 0 0 1 -14 14 H17 a14 14 0 0 1 -14 -14 Z
+                   M21 13 H38 a12 12 0 0 1 0 24 H30 V51 H21 Z
+                   M30 20.5 H38 a4.5 4.5 0 0 1 0 9 H30 Z"/>
+        </g>
+      </svg>
+    </div>
+    <div class="fav">
+      <!-- 16 -->
+      <svg width="16" height="16" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 16">
+        <defs>
+          <clipPath id="f16-clip"><rect x="2" y="2" width="60" height="60" rx="14"/></clipPath>
+        </defs>
+        <g clip-path="url(#f16-clip)">
+          <!-- 16px: flat clean knockout P with an open counter, no depth at all -->
+          <path fill="#2dd4bf" fill-rule="evenodd"
+                d="M2 16 a14 14 0 0 1 14 -14 H48 a14 14 0 0 1 14 14 V48 a14 14 0 0 1 -14 14 H16 a14 14 0 0 1 -14 -14 Z
+                   M20 12 H38 a12.5 12.5 0 0 1 0 25 H30 V52 H20 Z
+                   M30 20 H38 a4.8 4.8 0 0 1 0 9.5 H30 Z"/>
+        </g>
+      </svg>
+    </div>
+  </div></div>
+
+  <div class="panel s3"><div class="lbl">Monochrome</div>
+    <!-- MONO -->
+    <svg width="88" height="88" viewBox="0 0 64 64" role="img" aria-label="Partwright monochrome">
+      <defs>
+        <path id="mo-Pmouth" d="M22 14 H38 a11.5 11.5 0 0 1 0 23 H30 V50 H22 Z"/>
+        <path id="mo-counter" d="M30 21 H37.6 a4.4 4.4 0 0 1 0 9 H30 Z"/>
+        <clipPath id="mo-clip"><rect x="4" y="4" width="56" height="56" rx="15"/></clipPath>
+      </defs>
+      <g clip-path="url(#mo-clip)">
+        <!-- depth rendered as a mid-grey wall fan so the pocket reads in one ink too -->
+        <g fill="#a1a1aa">
+          <use href="#mo-Pmouth" transform="translate(3.0 3.3)"/>
+          <use href="#mo-Pmouth" transform="translate(2.0 2.2)"/>
+          <use href="#mo-Pmouth" transform="translate(1.0 1.1)"/>
+        </g>
+        <use href="#mo-Pmouth" transform="translate(3.4 3.75)" fill="#52525b"/>
+        <path fill="#fafafa" fill-rule="evenodd"
+              d="M4 19 a15 15 0 0 1 15 -15 H45 a15 15 0 0 1 15 15 V45 a15 15 0 0 1 -15 15 H19 a15 15 0 0 1 -15 -15 Z
+                 M22 14 H38 a11.5 11.5 0 0 1 0 23 H30 V50 H22 Z"/>
+      </g>
+      <!-- raised counter boss in white forms the P counter (short grey wall + white cap) -->
+      <use href="#mo-counter" transform="translate(0.9 1.0)" fill="#71717a"/>
+      <use href="#mo-counter" fill="#fafafa"/>
+    </svg>
+  </div>
+
+  <div class="panel s3 light"><div class="lbl">On light</div>
+    <!-- ONLIGHT -->
+    <svg width="88" height="88" viewBox="0 0 64 64" role="img" aria-label="Partwright on light">
+      <defs>
+        <path id="ol-Pring" fill-rule="evenodd"
+              d="M22 14 H38 a11.5 11.5 0 0 1 0 23 H30 V50 H22 Z
+                 M30 21 H37.6 a4.4 4.4 0 0 1 0 9 H30 Z"/>
+        <path id="ol-counter" d="M30 21 H37.6 a4.4 4.4 0 0 1 0 9 H30 Z"/>
+        <clipPath id="ol-clip"><rect x="4" y="4" width="56" height="56" rx="15"/></clipPath>
+      </defs>
+      <g clip-path="url(#ol-clip)">
+        <!-- deep-navy tile (the brand-tile inverse), pocket walls a touch lighter navy -->
+        <g fill="#334155">
+          <use href="#ol-Pring" transform="translate(3.0 3.3)"/>
+          <use href="#ol-Pring" transform="translate(2.0 2.2)"/>
+          <use href="#ol-Pring" transform="translate(1.0 1.1)"/>
+        </g>
+        <use href="#ol-Pring" transform="translate(3.4 3.75)" fill="#1e293b"/>
+        <path fill="#0f172a" fill-rule="evenodd"
+              d="M4 19 a15 15 0 0 1 15 -15 H45 a15 15 0 0 1 15 15 V45 a15 15 0 0 1 -15 15 H19 a15 15 0 0 1 -15 -15 Z
+                 M22 14 H38 a11.5 11.5 0 0 1 0 23 H30 V50 H22 Z
+                 M30 21 H37.6 a4.4 4.4 0 0 1 0 9 H30 Z"/>
+      </g>
+      <!-- floating chip in teal so the maker-part wink survives on light -->
+      <use href="#ol-counter" transform="translate(2.4 2.7)" fill="#020617" opacity="0.45"/>
+      <use href="#ol-counter" transform="translate(-4.8 -4.5)" fill="#0d9488"/>
+      <use href="#ol-counter" transform="translate(-5.3 -5.05)" fill="#14b8a6"/>
+    </svg>
+  </div>
+</div>
+
+<!-- ===== subtle reveal: the pocket deepens + the chip lifts clear on load, then rests ===== -->
+<style>
+@media (prefers-reduced-motion: reduce){
+  .mark-dt .walls,.mark-dt .chip{animation:none !important}
+}
+/* HERO only: walls extrude into depth, then settle */
+.mark-dt .walls{
+  transform-box: fill-box;
+  transform-origin: 30px 30px;
+  animation: dt-deepen 1.0s cubic-bezier(.2,.8,.2,1) 1 both;
+}
+@keyframes dt-deepen{
+  0%   { opacity:0; transform: translate(-2.4px,-2.6px) scale(.985); }
+  100% { opacity:1; transform: translate(0,0) scale(1); }
+}
+/* HERO only: the counter chip lifts up-left out of the pocket, then a slow float */
+.mark-dt .chip{
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: dt-lift 1.05s cubic-bezier(.2,.85,.25,1) 1 both, dt-float 5.5s ease-in-out 1.05s infinite;
+}
+@keyframes dt-lift{
+  0%   { transform: translate(6.0px,5.6px) scale(.96); opacity:.0; }
+  60%  { opacity:1; }
+  100% { transform: translate(0,0) scale(1); }
+}
+@keyframes dt-float{
+  0%,100% { transform: translate(0,0); }
+  50%     { transform: translate(-0.6px,-0.6px); }
+}
+</style>
+</body></html>

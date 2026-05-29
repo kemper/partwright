@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="robots" content="noindex"/>
+<title>Partwright — Impossible part</title>
+<style>
+@import url('../fonts.css');
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#09090b;color:#e4e4e7;font-family:'Space Grotesk',system-ui,sans-serif;padding:40px 56px 90px}
+a.back{color:#71717a;font-size:13px;text-decoration:none}
+a.back:hover{color:#e4e4e7}
+.head{margin:20px 0 6px;font:800 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.thesis{color:#a1a1aa;font-size:15px;max-width:640px;line-height:1.6;margin-bottom:34px}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
+.panel{background:#18181b;border:1px solid #27272a;border-radius:16px;padding:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;min-height:150px}
+.panel .lbl{font:600 11px 'Space Grotesk';letter-spacing:1.5px;text-transform:uppercase;color:#52525b}
+.s3{grid-column:span 3}.s5{grid-column:span 5}.s7{grid-column:span 7}
+.hero{min-height:230px}
+.lockup{display:flex;align-items:center;gap:14px}
+.lockup .wm{font:700 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.favs{display:flex;align-items:flex-end;gap:16px}
+.fav{background:#0b0b0d;border:1px solid #27272a;border-radius:8px;padding:8px;display:flex;align-items:center;justify-content:center}
+.light{background:#f4f4f5}
+.light .lbl{color:#a1a1aa}
+</style></head>
+<body>
+<a class="back" href="../">← all mockups</a>
+<div class="head">Impossible part</div>
+<div class="thesis">An <strong>impossible tri-bar</strong> built from three chunky isometric beams that loop into a part your eye can't resolve — a Penrose object engineered, not just drawn. Two teal face-shades give the beams real volume; the <strong>amber beam</strong> is the one that "shouldn't connect," carrying the <em>aha</em>. The hollow triangle the loop encloses reads as a confident counter — the bowl of a <strong>P</strong> standing on its left beam. It looks like a machined solid that the renderer almost printed, and it simplifies cleanly to a bold iso-beam silhouette at 16&nbsp;px.</div>
+<div class="grid">
+  <div class="panel hero s5"><div class="lbl">Primary mark</div>
+    <!-- {{SVG_HERO}} -->
+    <svg class="imp-hero" width="120" height="120" viewBox="0 0 64 64" role="img" aria-label="Partwright — an impossible isometric tri-bar with one amber beam">
+      <defs>
+        <!-- teal face-shades: top (lit), left side, right side -->
+        <linearGradient id="h-top" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <linearGradient id="h-left" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0e7c70"/>
+        </linearGradient>
+        <linearGradient id="h-right" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6960"/>
+        </linearGradient>
+        <!-- amber accent beam -->
+        <linearGradient id="h-atop" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/>
+        </linearGradient>
+        <linearGradient id="h-aside" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#d97e06"/><stop offset="1" stop-color="#a85b04"/>
+        </linearGradient>
+        <radialGradient id="h-shadow" cx="0.5" cy="0.5" r="0.5">
+          <stop offset="0" stop-color="#000" stop-opacity="0.5"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+
+      <!-- contact shadow grounding the solid -->
+      <ellipse cx="32" cy="60" rx="22" ry="2.6" fill="url(#h-shadow)"/>
+
+      <!-- ============================================================
+           IMPOSSIBLE TRI-BAR. Three chunky iso beams loop A→B→C→A.
+           Each beam = a parallelogram top + a vertical side face.
+           Draw order encodes the Penrose "impossible" overlap:
+           the amber (bottom) beam is drawn LAST so it passes OVER
+           the right beam that — by perspective — should be behind it.
+           Iso unit: dx=±9, dy=±5 per 9 horizontal. Beam width ~9.
+           ============================================================ -->
+
+      <!-- LEFT beam (rises up the left side) : teal -->
+      <!-- left/dark vertical face -->
+      <polygon points="14,42 14,21 23,16 23,37" fill="url(#h-left)"/>
+      <!-- top face of left beam -->
+      <polygon points="14,21 23,16 32,21 23,26" fill="url(#h-top)"/>
+      <!-- right-facing inner face of left beam (in shade) -->
+      <polygon points="23,16 23,37 32,42 32,21" fill="url(#h-right)"/>
+
+      <!-- RIGHT beam (descends from top to bottom-right) : teal -->
+      <!-- top face -->
+      <polygon points="32,21 41,16 50,21 41,26" fill="url(#h-top)"/>
+      <!-- right vertical face -->
+      <polygon points="50,21 50,42 41,47 41,26" fill="url(#h-right)"/>
+      <!-- left-facing inner face -->
+      <polygon points="41,26 41,47 32,42 32,21" fill="url(#h-left)"/>
+
+      <!-- TOP cross-beam connecting the two upper ends : teal -->
+      <!-- top face spanning across -->
+      <polygon points="23,16 32,11 41,16 32,21" fill="url(#h-top)"/>
+
+      <!-- ===== the impossible bottom beam — AMBER — drawn last ===== -->
+      <!-- It travels from the foot of the left beam to the foot of the
+           right beam, but its near end visually crosses IN FRONT of the
+           right beam's base, which the loop says should be behind it. -->
+      <!-- amber top face -->
+      <polygon points="14,42 23,37 50,52 41,57" fill="url(#h-atop)"/>
+      <!-- amber front (lower) face -->
+      <polygon points="14,42 41,57 41,52 14,37" fill="url(#h-aside)"/>
+      <!-- correction: front face uses proper base; redraw cleanly below is avoided —
+           the two polygons above already form the beam. -->
+
+      <!-- crisp navy edge lines tie the faceted solid together and sell the illusion -->
+      <g fill="none" stroke="#06201d" stroke-width="0.9" stroke-linejoin="round" stroke-linecap="round" opacity="0.55">
+        <!-- left beam silhouette -->
+        <polygon points="14,21 23,16 32,21 32,42 23,37 14,42"/>
+        <!-- right beam silhouette -->
+        <polygon points="32,21 41,16 50,21 50,42 41,47 41,26"/>
+        <!-- top crossbeam -->
+        <path d="M23,16 L32,11 L41,16"/>
+        <!-- amber beam silhouette -->
+        <polygon points="14,42 23,37 50,52 41,57"/>
+      </g>
+
+      <!-- thin lit highlight rim along the top crests -->
+      <g fill="none" stroke="#99f6e4" stroke-width="0.8" stroke-linecap="round" opacity="0.85">
+        <path d="M14,21 L23,16 L32,11 L41,16 L50,21"/>
+      </g>
+    </svg>
+  </div>
+
+  <div class="panel s7"><div class="lbl">Wordmark lockup</div><div class="lockup">
+    <!-- {{SVG_MARK}} -->
+    <svg width="42" height="42" viewBox="0 0 64 64" role="img" aria-label="Partwright impossible tri-bar mark">
+      <defs>
+        <linearGradient id="m-top" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <linearGradient id="m-left" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0e7c70"/>
+        </linearGradient>
+        <linearGradient id="m-right" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6960"/>
+        </linearGradient>
+        <linearGradient id="m-atop" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/>
+        </linearGradient>
+        <linearGradient id="m-aside" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#d97e06"/><stop offset="1" stop-color="#a85b04"/>
+        </linearGradient>
+      </defs>
+      <polygon points="14,42 14,21 23,16 23,37" fill="url(#m-left)"/>
+      <polygon points="14,21 23,16 32,21 23,26" fill="url(#m-top)"/>
+      <polygon points="23,16 23,37 32,42 32,21" fill="url(#m-right)"/>
+      <polygon points="32,21 41,16 50,21 41,26" fill="url(#m-top)"/>
+      <polygon points="50,21 50,42 41,47 41,26" fill="url(#m-right)"/>
+      <polygon points="41,26 41,47 32,42 32,21" fill="url(#m-left)"/>
+      <polygon points="23,16 32,11 41,16 32,21" fill="url(#m-top)"/>
+      <polygon points="14,42 23,37 50,52 41,57" fill="url(#m-atop)"/>
+      <polygon points="14,42 41,57 41,52 14,37" fill="url(#m-aside)"/>
+      <g fill="none" stroke="#06201d" stroke-width="1.1" stroke-linejoin="round" opacity="0.5">
+        <polygon points="14,21 23,16 32,21 32,42 23,37 14,42"/>
+        <polygon points="32,21 41,16 50,21 50,42 41,47 41,26"/>
+        <polygon points="14,42 23,37 50,52 41,57"/>
+      </g>
+    </svg>
+    <span class="wm">Partwright</span>
+  </div></div>
+
+  <div class="panel s3"><div class="lbl">App icon</div>
+    <!-- {{SVG_APPICON}} -->
+    <svg width="104" height="104" viewBox="0 0 104 104" role="img" aria-label="Partwright app icon — impossible tri-bar">
+      <defs>
+        <linearGradient id="a-tile" x1="0" y1="0" x2="104" y2="104" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#0f172a"/><stop offset="1" stop-color="#070b16"/>
+        </linearGradient>
+        <linearGradient id="a-top" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <linearGradient id="a-left" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0e7c70"/>
+        </linearGradient>
+        <linearGradient id="a-right" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6960"/>
+        </linearGradient>
+        <linearGradient id="a-atop" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/>
+        </linearGradient>
+        <linearGradient id="a-aside" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#d97e06"/><stop offset="1" stop-color="#a85b04"/>
+        </linearGradient>
+        <radialGradient id="a-vig" cx="0.5" cy="0.42" r="0.62">
+          <stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.42"/>
+        </radialGradient>
+        <clipPath id="a-tileclip"><rect x="0" y="0" width="104" height="104" rx="22"/></clipPath>
+      </defs>
+      <rect x="0" y="0" width="104" height="104" rx="22" fill="url(#a-tile)"/>
+      <g clip-path="url(#a-tileclip)">
+        <!-- tri-bar scaled & centred into the 104 tile (~1.62× of 64-space, recentred) -->
+        <g transform="translate(52,54) scale(1.62) translate(-32,-34)">
+          <polygon points="14,42 14,21 23,16 23,37" fill="url(#a-left)"/>
+          <polygon points="14,21 23,16 32,21 23,26" fill="url(#a-top)"/>
+          <polygon points="23,16 23,37 32,42 32,21" fill="url(#a-right)"/>
+          <polygon points="32,21 41,16 50,21 41,26" fill="url(#a-top)"/>
+          <polygon points="50,21 50,42 41,47 41,26" fill="url(#a-right)"/>
+          <polygon points="41,26 41,47 32,42 32,21" fill="url(#a-left)"/>
+          <polygon points="23,16 32,11 41,16 32,21" fill="url(#a-top)"/>
+          <polygon points="14,42 23,37 50,52 41,57" fill="url(#a-atop)"/>
+          <polygon points="14,42 41,57 41,52 14,37" fill="url(#a-aside)"/>
+          <g fill="none" stroke="#06201d" stroke-width="0.8" stroke-linejoin="round" opacity="0.5">
+            <polygon points="14,21 23,16 32,21 32,42 23,37 14,42"/>
+            <polygon points="32,21 41,16 50,21 50,42 41,47 41,26"/>
+            <polygon points="14,42 23,37 50,52 41,57"/>
+          </g>
+          <g fill="none" stroke="#99f6e4" stroke-width="0.7" stroke-linecap="round" opacity="0.8">
+            <path d="M14,21 L23,16 L32,11 L41,16 L50,21"/>
+          </g>
+        </g>
+        <rect x="0" y="0" width="104" height="104" rx="22" fill="url(#a-vig)"/>
+      </g>
+      <rect x="1" y="1" width="102" height="102" rx="21" fill="none" stroke="#2dd4bf" stroke-width="1" stroke-opacity="0.35"/>
+    </svg>
+  </div>
+
+  <div class="panel s3"><div class="lbl">Favicon · 32 / 20 / 16</div><div class="favs">
+    <div class="fav">
+      <!-- {{SVG_32}} -->
+      <svg width="32" height="32" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 32">
+        <defs>
+          <linearGradient id="f32-top" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+          </linearGradient>
+          <linearGradient id="f32-left" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0e7c70"/>
+          </linearGradient>
+          <linearGradient id="f32-right" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6960"/>
+          </linearGradient>
+        </defs>
+        <polygon points="14,42 14,21 23,16 23,37" fill="url(#f32-left)"/>
+        <polygon points="14,21 23,16 32,21 23,26" fill="url(#f32-top)"/>
+        <polygon points="23,16 23,37 32,42 32,21" fill="url(#f32-right)"/>
+        <polygon points="32,21 41,16 50,21 41,26" fill="url(#f32-top)"/>
+        <polygon points="50,21 50,42 41,47 41,26" fill="url(#f32-right)"/>
+        <polygon points="41,26 41,47 32,42 32,21" fill="url(#f32-left)"/>
+        <polygon points="23,16 32,11 41,16 32,21" fill="url(#f32-top)"/>
+        <polygon points="14,42 23,37 50,52 41,57" fill="#fbbf24"/>
+        <polygon points="14,42 41,57 41,52 14,37" fill="#c9760a"/>
+        <g fill="none" stroke="#06201d" stroke-width="1.1" stroke-linejoin="round" opacity="0.45">
+          <polygon points="14,21 23,16 32,21 32,42 23,37 14,42"/>
+          <polygon points="32,21 41,16 50,21 50,42 41,47 41,26"/>
+          <polygon points="14,42 23,37 50,52 41,57"/>
+        </g>
+      </svg>
+    </div>
+    <div class="fav">
+      <!-- {{SVG_20}} -->
+      <svg width="20" height="20" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 20">
+        <defs>
+          <linearGradient id="f20-left" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#0e9e8f"/>
+          </linearGradient>
+          <linearGradient id="f20-right" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6960"/>
+          </linearGradient>
+        </defs>
+        <!-- thicker beams, two shades + amber; junction simplified for 20px -->
+        <polygon points="12,44 12,20 23,14 23,38" fill="url(#f20-left)"/>
+        <polygon points="12,20 23,14 33,20 23,26" fill="#5eead4"/>
+        <polygon points="23,14 23,38 33,44 33,20" fill="url(#f20-right)"/>
+        <polygon points="33,20 43,14 52,20 43,26" fill="#5eead4"/>
+        <polygon points="52,20 52,44 43,49 43,26" fill="url(#f20-right)"/>
+        <polygon points="43,26 43,49 33,44 33,20" fill="url(#f20-left)"/>
+        <polygon points="23,14 33,8 43,14 33,20" fill="#5eead4"/>
+        <polygon points="12,44 23,38 52,53 43,59" fill="#fbbf24"/>
+        <polygon points="12,44 43,59 43,53 12,38" fill="#c9760a"/>
+      </svg>
+    </div>
+    <div class="fav">
+      <!-- {{SVG_16}} -->
+      <svg width="16" height="16" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 16">
+        <!-- 16px: bold iso-beam silhouette, three faces only, amber base -->
+        <polygon points="11,45 11,19 24,12 24,38" fill="#2dd4bf"/>
+        <polygon points="11,19 24,12 34,19 24,26" fill="#5eead4"/>
+        <polygon points="24,12 24,38 34,45 34,19" fill="#0d9488"/>
+        <polygon points="34,19 45,12 54,19 45,26" fill="#5eead4"/>
+        <polygon points="54,19 54,45 45,50 45,26" fill="#0d9488"/>
+        <polygon points="45,26 45,50 34,45 34,19" fill="#2dd4bf"/>
+        <polygon points="24,12 34,6 45,12 34,19" fill="#5eead4"/>
+        <polygon points="11,45 24,38 54,54 45,60" fill="#fbbf24"/>
+        <polygon points="11,45 45,60 45,53 11,38" fill="#c9760a"/>
+      </svg>
+    </div>
+  </div></div>
+
+  <div class="panel s3"><div class="lbl">Monochrome</div>
+    <!-- {{SVG_MONO}} -->
+    <svg width="88" height="88" viewBox="0 0 64 64" role="img" aria-label="Partwright monochrome impossible tri-bar">
+      <!-- single white ink: faces differentiated only by opacity so volume still reads -->
+      <g fill="#fafafa">
+        <polygon points="14,42 14,21 23,16 23,37" opacity="0.40"/>
+        <polygon points="14,21 23,16 32,21 23,26" opacity="0.92"/>
+        <polygon points="23,16 23,37 32,42 32,21" opacity="0.22"/>
+        <polygon points="32,21 41,16 50,21 41,26" opacity="0.92"/>
+        <polygon points="50,21 50,42 41,47 41,26" opacity="0.22"/>
+        <polygon points="41,26 41,47 32,42 32,21" opacity="0.40"/>
+        <polygon points="23,16 32,11 41,16 32,21" opacity="0.92"/>
+        <!-- amber beam → brightest white top + mid front (the accent reads as the lit base) -->
+        <polygon points="14,42 23,37 50,52 41,57" opacity="0.68"/>
+        <polygon points="14,42 41,57 41,52 14,37" opacity="0.30"/>
+      </g>
+      <g fill="none" stroke="#fafafa" stroke-width="0.9" stroke-linejoin="round" opacity="0.85">
+        <polygon points="14,21 23,16 32,21 32,42 23,37 14,42"/>
+        <polygon points="32,21 41,16 50,21 50,42 41,47 41,26"/>
+        <polygon points="14,42 23,37 50,52 41,57"/>
+        <path d="M23,16 L32,11 L41,16"/>
+      </g>
+    </svg>
+  </div>
+
+  <div class="panel s3 light"><div class="lbl">On light</div>
+    <!-- {{SVG_ONLIGHT}} -->
+    <svg width="88" height="88" viewBox="0 0 64 64" role="img" aria-label="Partwright on light impossible tri-bar">
+      <defs>
+        <linearGradient id="ol-top" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <linearGradient id="ol-left" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <linearGradient id="ol-right" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+        </linearGradient>
+      </defs>
+      <!-- light teal beams; dark navy edges carry the form on the light tile -->
+      <g>
+        <polygon points="14,42 14,21 23,16 23,37" fill="url(#ol-left)"/>
+        <polygon points="14,21 23,16 32,21 23,26" fill="url(#ol-top)"/>
+        <polygon points="23,16 23,37 32,42 32,21" fill="url(#ol-right)"/>
+        <polygon points="32,21 41,16 50,21 41,26" fill="url(#ol-top)"/>
+        <polygon points="50,21 50,42 41,47 41,26" fill="url(#ol-right)"/>
+        <polygon points="41,26 41,47 32,42 32,21" fill="url(#ol-left)"/>
+        <polygon points="23,16 32,11 41,16 32,21" fill="url(#ol-top)"/>
+        <!-- amber base beam keeps the accent on light -->
+        <polygon points="14,42 23,37 50,52 41,57" fill="#fbbf24"/>
+        <polygon points="14,42 41,57 41,52 14,37" fill="#e08a09"/>
+      </g>
+      <g fill="none" stroke="#0f172a" stroke-width="1" stroke-linejoin="round" stroke-linecap="round">
+        <polygon points="14,21 23,16 32,21 32,42 23,37 14,42"/>
+        <polygon points="32,21 41,16 50,21 50,42 41,47 41,26"/>
+        <polygon points="14,42 23,37 50,52 41,57"/>
+        <path d="M23,16 L32,11 L41,16"/>
+      </g>
+    </svg>
+  </div>
+</div>
+
+<!-- ===== subtle optional rotation: the impossible solid turns slowly in place,
+     so the loop's "wrongness" keeps catching the eye. Geometry never deforms. ===== -->
+<style>
+@media (prefers-reduced-motion: reduce){
+  .imp-hero{animation:none !important}
+}
+/* HERO only: a tiny in-place rock, never a full spin — keeps it premium, not gimmicky. */
+.imp-hero{
+  transform-origin:50% 52%;
+  animation: imp-rock 9s ease-in-out infinite;
+}
+@keyframes imp-rock{
+  0%,100% { transform: rotate(-1.4deg); }
+  50%     { transform: rotate(1.4deg); }
+}
+</style>
+</body></html>

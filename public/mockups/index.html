@@ -11,22 +11,27 @@
   body { background:#09090b; color:#e4e4e7; font-family:'Space Grotesk',system-ui,sans-serif; padding:48px 56px 90px; }
   .brand { display:flex; align-items:center; gap:13px; margin-bottom:8px; }
   .brand .wm { font:800 30px 'Sora'; letter-spacing:-1px; color:#fafafa; }
-  .note { color:#71717a; font-size:14px; max-width:640px; line-height:1.6; margin-bottom:8px; }
+  .note { color:#71717a; font-size:14px; max-width:660px; line-height:1.6; }
   .note b { color:#a1a1aa; }
-  h2 { font:700 13px 'Space Grotesk'; letter-spacing:2px; text-transform:uppercase; color:#52525b; margin:42px 0 16px; }
+  h2 { font:700 13px 'Space Grotesk'; letter-spacing:2px; text-transform:uppercase; color:#52525b; margin:42px 0 6px; }
+  .sub { color:#71717a; font-size:13px; margin-bottom:16px; max-width:640px; line-height:1.5; }
   .grid { display:grid; gap:14px; grid-template-columns:repeat(auto-fill, minmax(250px, 1fr)); }
   a.tile { display:flex; gap:15px; align-items:center; padding:16px; border-radius:14px; text-decoration:none; color:inherit;
     background:#18181b; border:1px solid #27272a; transition:border-color .15s, transform .15s, background .15s; }
   a.tile:hover { border-color:#3f3f46; transform:translateY(-2px); background:#1c1c20; }
+  a.fav { border-color:#134e4a; background:#0f1a18; }
+  a.fav:hover { border-color:#2dd4bf; }
   .thumb { flex:0 0 auto; width:64px; height:64px; border-radius:11px; background:#0b0b0d; border:1px solid #27272a;
     display:flex; align-items:center; justify-content:center; overflow:hidden; }
-  .thumb img, .thumb svg { width:46px; height:46px; display:block; }
+  .thumb img, .thumb svg { width:48px; height:48px; display:block; }
   .meta .nm { font:600 15px 'Space Grotesk'; color:#fafafa; margin-bottom:3px; }
   .meta .ds { font-size:12.5px; color:#a1a1aa; line-height:1.45; }
+  .tag { display:inline-block; font:600 9px 'Space Grotesk'; letter-spacing:.5px; text-transform:uppercase; vertical-align:middle;
+    border-radius:5px; padding:1px 6px; margin-left:7px; }
+  .tag-live { color:#fcd34d; background:#2a1f06; border:1px solid #7c5410; }
+  .tag-fav { color:#5eead4; background:#0c1f1d; border:1px solid #134e4a; }
   .wide { grid-column: span 2; }
   @media (max-width:560px){ .wide{ grid-column: span 1; } body{ padding:32px 20px 70px; } }
-  .pill { display:inline-block; font:600 10px 'Space Grotesk'; letter-spacing:1px; text-transform:uppercase;
-    color:#5eead4; border:1px solid #134e4a; background:#0c1f1d; border-radius:999px; padding:2px 8px; margin-left:8px; vertical-align:middle; }
 </style>
 </head>
 <body>
@@ -34,23 +39,37 @@
     <svg width="38" height="38" viewBox="0 0 64 64"><polygon points="32,8 54,20 32,32 10,20" fill="#5eead4"/><polygon points="10,20 32,32 32,56 10,44" fill="#0d9488"/><polygon points="54,20 32,32 32,56 54,44" fill="#14b8a6"/></svg>
     <span class="wm">Design mockups</span>
   </div>
-  <p class="note">Throwaway concept mockups for the landing / logo refresh — <b>not</b> wired into the app, reference only. Click any tile for the full set. Steered toward "Iso Part," away from cross/compass shapes, with calmer landing takes.</p>
+  <p class="note">Throwaway concept mockups for the landing / logo refresh — <b>not</b> wired into the app, reference only. Click any tile for the full set (mark · lockup · app icon · favicon 32/20/16 · mono · on-light). Several marks <b>animate</b> — open them to see the motion.</p>
 
-  <h2>Logo &amp; icon directions <span class="pill">8 new</span></h2>
+  <h2>Round 2 — bolder <span class="tag tag-fav">8 new</span></h2>
+  <p class="sub">A bolder pass: more energy, motion, and craft. Led by your favorite — the negative-space <b>P</b> — pushed three ways, plus one mark per "not boring" flavor (move · generative · clever · vivid).</p>
   <div class="grid">
-    <a class="tile" href="sets/logo-01.html"><div class="thumb"><img src="sets/thumb-logo-01.svg" alt=""></div><div class="meta"><div class="nm">Iso Part — refined</div><div class="ds">The team favorite, given character: a machined part with a bore + amber rim-light.</div></div></a>
-    <a class="tile" href="sets/logo-02.html"><div class="thumb"><img src="sets/thumb-logo-02.svg" alt=""></div><div class="meta"><div class="nm">Negative-space tile</div><div class="ds">App-icon-first — a bold P knocked clean out of a solid teal tile.</div></div></a>
-    <a class="tile" href="sets/logo-03.html"><div class="thumb"><img src="sets/thumb-logo-03.svg" alt=""></div><div class="meta"><div class="nm">Wireframe → solid</div><div class="ds">Half mesh, half rendered — "describe it, and it becomes real."</div></div></a>
-    <a class="tile" href="sets/logo-04.html"><div class="thumb"><img src="sets/thumb-logo-04.svg" alt=""></div><div class="meta"><div class="nm">Contour stack</div><div class="ds">Stacked cross-section slices imply a solid of revolution. Calm, linear.</div></div></a>
-    <a class="tile" href="sets/logo-05.html"><div class="thumb"><img src="sets/thumb-logo-05.svg" alt=""></div><div class="meta"><div class="nm">Precision minimal</div><div class="ds">An iso solid + a dimension line with one teal node. Engineering restraint.</div></div></a>
-    <a class="tile" href="sets/logo-06.html"><div class="thumb"><img src="sets/thumb-logo-06.svg" alt=""></div><div class="meta"><div class="nm">Faceted solid</div><div class="ds">A low-poly cut gem catching light — premium, rendered, material.</div></div></a>
-    <a class="tile" href="sets/logo-07.html"><div class="thumb"><img src="sets/thumb-logo-07.svg" alt=""></div><div class="meta"><div class="nm">Joinery</div><div class="ds">Two parts dovetailing into one — a wright joins. Teal keys into amber.</div></div></a>
-    <a class="tile" href="sets/logo-08.html"><div class="thumb"><img src="sets/thumb-logo-08.svg" alt=""></div><div class="meta"><div class="nm">Monoline</div><div class="ds">One continuous stroke draws an iso part carrying a P. Infinitely scalable.</div></div></a>
+    <a class="tile fav" href="sets/logo-09.html"><div class="thumb"><img src="sets/thumb-logo-09.svg" alt=""></div><div class="meta"><div class="nm">Negative-P · live<span class="tag tag-live">▶ animated</span></div><div class="ds">Your favorite, brought to life — a gentle iso-tilt reveals a beveled pocket + a light-sweep.</div></div></a>
+    <a class="tile fav" href="sets/logo-10.html"><div class="thumb"><img src="sets/thumb-logo-10.svg" alt=""></div><div class="meta"><div class="nm">Negative-P · machined</div><div class="ds">The P as a deep CNC-bored pocket in a glossy teal block — key light, inner shadow, specular.</div></div></a>
+    <a class="tile fav" href="sets/logo-11.html"><div class="thumb"><img src="sets/thumb-logo-11.svg" alt=""></div><div class="meta"><div class="nm">Negative-P · double-take</div><div class="ds">The P-cut also reads as a 3D pocket/part — an optical flip between letter and solid.</div></div></a>
+    <a class="tile" href="sets/logo-12.html"><div class="thumb"><img src="sets/thumb-logo-12.svg" alt=""></div><div class="meta"><div class="nm">Layer up<span class="tag tag-live">▶ animated</span></div><div class="ds">An iso part prints itself layer-by-layer, FDM-style, then loops. Rests on the finished part.</div></div></a>
+    <a class="tile" href="sets/logo-13.html"><div class="thumb"><img src="sets/thumb-logo-13.svg" alt=""></div><div class="meta"><div class="nm">Gyroid<span class="tag tag-live">▶ flows</span></div><div class="ds">A real TPMS gyroid surface — the signature SDF geometry no competitor's logo has.</div></div></a>
+    <a class="tile" href="sets/logo-14.html"><div class="thumb"><img src="sets/thumb-logo-14.svg" alt=""></div><div class="meta"><div class="nm">Voronoi shell</div><div class="ds">A bold P skinned in a parametric voronoi lattice — the generative "infill" aesthetic.</div></div></a>
+    <a class="tile" href="sets/logo-15.html"><div class="thumb"><img src="sets/thumb-logo-15.svg" alt=""></div><div class="meta"><div class="nm">Impossible part</div><div class="ds">A Penrose impossible tri-bar with an amber "aha" beam, its loop tracing a P.</div></div></a>
+    <a class="tile" href="sets/logo-16.html"><div class="thumb"><img src="sets/thumb-logo-16.svg" alt=""></div><div class="meta"><div class="nm">Hero render</div><div class="ds">A filleted machined boss as a premium teal→indigo studio render — specular + shadow.</div></div></a>
   </div>
 
-  <h2>Calmer landing directions <span class="pill">2 new</span></h2>
+  <h2>Round 1 — restrained</h2>
+  <p class="sub">The first, calmer pass (you felt these were a touch boring). Kept for reference — the negative-space tile is the one you flagged.</p>
   <div class="grid">
-    <a class="tile wide" href="sets/land-01.html"><div class="thumb"><svg viewBox="0 0 64 64" fill="none"><rect x="9" y="12" width="46" height="6" rx="2" fill="#3f3f46"/><rect x="9" y="26" width="30" height="4" rx="2" fill="#52525b"/><rect x="9" y="34" width="38" height="3" rx="1.5" fill="#3f3f46"/><rect x="9" y="44" width="16" height="7" rx="3" fill="#2dd4bf"/></svg></div><div class="meta"><div class="nm">Quiet Studio</div><div class="ds">Near-monochrome, one teal accent, lots of air. A quiet, premium hero with a calm 3-step rail.</div></div></a>
+    <a class="tile" href="sets/logo-02.html"><div class="thumb"><img src="sets/thumb-logo-02.svg" alt=""></div><div class="meta"><div class="nm">Negative-space tile<span class="tag tag-fav">your pick</span></div><div class="ds">App-icon-first — a bold P knocked clean out of a solid teal tile.</div></div></a>
+    <a class="tile" href="sets/logo-01.html"><div class="thumb"><img src="sets/thumb-logo-01.svg" alt=""></div><div class="meta"><div class="nm">Iso Part — refined</div><div class="ds">A machined part with a bore + amber rim-light.</div></div></a>
+    <a class="tile" href="sets/logo-03.html"><div class="thumb"><img src="sets/thumb-logo-03.svg" alt=""></div><div class="meta"><div class="nm">Wireframe → solid</div><div class="ds">Half mesh, half rendered — "describe it, it becomes real."</div></div></a>
+    <a class="tile" href="sets/logo-04.html"><div class="thumb"><img src="sets/thumb-logo-04.svg" alt=""></div><div class="meta"><div class="nm">Contour stack</div><div class="ds">Stacked cross-section slices. Calm, linear.</div></div></a>
+    <a class="tile" href="sets/logo-05.html"><div class="thumb"><img src="sets/thumb-logo-05.svg" alt=""></div><div class="meta"><div class="nm">Precision minimal</div><div class="ds">An iso solid + a dimension line with one teal node.</div></div></a>
+    <a class="tile" href="sets/logo-06.html"><div class="thumb"><img src="sets/thumb-logo-06.svg" alt=""></div><div class="meta"><div class="nm">Faceted solid</div><div class="ds">A low-poly cut gem catching light.</div></div></a>
+    <a class="tile" href="sets/logo-07.html"><div class="thumb"><img src="sets/thumb-logo-07.svg" alt=""></div><div class="meta"><div class="nm">Joinery</div><div class="ds">Two parts dovetailing into one — teal keys into amber.</div></div></a>
+    <a class="tile" href="sets/logo-08.html"><div class="thumb"><img src="sets/thumb-logo-08.svg" alt=""></div><div class="meta"><div class="nm">Monoline</div><div class="ds">One continuous stroke draws an iso part carrying a P.</div></div></a>
+  </div>
+
+  <h2>Landing directions</h2>
+  <div class="grid">
+    <a class="tile wide" href="sets/land-01.html"><div class="thumb"><svg viewBox="0 0 64 64" fill="none"><rect x="9" y="12" width="46" height="6" rx="2" fill="#3f3f46"/><rect x="9" y="26" width="30" height="4" rx="2" fill="#52525b"/><rect x="9" y="34" width="38" height="3" rx="1.5" fill="#3f3f46"/><rect x="9" y="44" width="16" height="7" rx="3" fill="#2dd4bf"/></svg></div><div class="meta"><div class="nm">Quiet Studio</div><div class="ds">Near-monochrome, one teal accent, lots of air. A calmer hero (you felt the first landing was loud).</div></div></a>
     <a class="tile wide" href="sets/land-02.html"><div class="thumb"><svg viewBox="0 0 64 64" fill="none"><g stroke="#27272a" stroke-width="1"><path d="M0 16h64M0 32h64M0 48h64M16 0v64M32 0v64M48 0v64"/></g><rect x="22" y="22" width="20" height="14" rx="1.5" fill="none" stroke="#2dd4bf" stroke-width="2"/><path d="M22 40h20" stroke="#52525b" stroke-width="1"/></svg></div><div class="meta"><div class="nm">Blueprint</div><div class="ds">A draughtsman's graph-paper sheet — dimension lines, mono coordinates, ink restraint.</div></div></a>
   </div>
 

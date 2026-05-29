@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="robots" content="noindex"/>
+<title>Partwright — Negative-P · live</title>
+<style>
+@import url('../fonts.css');
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#09090b;color:#e4e4e7;font-family:'Space Grotesk',system-ui,sans-serif;padding:40px 56px 90px}
+a.back{color:#71717a;font-size:13px;text-decoration:none}
+a.back:hover{color:#e4e4e7}
+.head{margin:20px 0 6px;font:800 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.thesis{color:#a1a1aa;font-size:15px;max-width:640px;line-height:1.6;margin-bottom:34px}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
+.panel{background:#18181b;border:1px solid #27272a;border-radius:16px;padding:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;min-height:150px}
+.panel .lbl{font:600 11px 'Space Grotesk';letter-spacing:1.5px;text-transform:uppercase;color:#52525b}
+.s3{grid-column:span 3}.s5{grid-column:span 5}.s7{grid-column:span 7}
+.hero{min-height:230px}
+.lockup{display:flex;align-items:center;gap:14px}
+.lockup .wm{font:700 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.favs{display:flex;align-items:flex-end;gap:16px}
+.fav{background:#0b0b0d;border:1px solid #27272a;border-radius:8px;padding:8px;display:flex;align-items:center;justify-content:center}
+.light{background:#f4f4f5}
+.light .lbl{color:#a1a1aa}
+
+/* ===== motion (resting/first frame is already the finished die-cut P tile) ===== */
+@media (prefers-reduced-motion: reduce){
+  .tilt-h,.tilt-a,.sheen-h,.sheen-a,.edge-h,.edge-a{animation:none !important}
+}
+
+/* HERO — gentle iso "tilt" via 2D skew+scale (robust on SVG groups in every engine),
+   so the painted pocket walls swing slightly and read as real machined depth. */
+.tilt-h{
+  transform-box: fill-box;
+  transform-origin: 32px 33px;
+  animation: tilt-h 5.2s cubic-bezier(.45,.05,.25,1) infinite;
+}
+@keyframes tilt-h{
+  0%   { transform: skewX(0deg)     skewY(0deg)    scale(1);     }
+  30%  { transform: skewX(-2.6deg)  skewY(1.1deg)  scale(1.013); }
+  58%  { transform: skewX(1.8deg)   skewY(-0.8deg) scale(1.006); }
+  100% { transform: skewX(0deg)     skewY(0deg)    scale(1);     }
+}
+
+/* HERO — soft diagonal sheen crosses the teal once, then dwells off-stage. */
+.sheen-h{ animation: sheen-h 5.2s cubic-bezier(.5,0,.4,1) infinite; }
+@keyframes sheen-h{
+  0%   { transform: translateX(0);    }
+  44%  { transform: translateX(150px);}
+  100% { transform: translateX(150px);}
+}
+
+/* HERO — lit pocket edge settles into place on load, then breathes with the counter. */
+.edge-h{
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: settle-h 1.05s cubic-bezier(.2,.8,.2,1) 1 both,
+             breathe-h 5.2s ease-in-out 1.05s infinite;
+}
+@keyframes settle-h{
+  0%   { opacity: 0;    transform: translateY(2.2px) scale(.93); }
+  100% { opacity: .72;  transform: translateY(0)     scale(1);   }
+}
+@keyframes breathe-h{
+  0%,100% { transform: scale(1);     }
+  50%     { transform: scale(1.02);  }
+}
+
+/* APP ICON — same language, a touch calmer. */
+.tilt-a{
+  transform-box: fill-box;
+  transform-origin: 52px 53px;
+  animation: tilt-a 5.2s cubic-bezier(.45,.05,.25,1) infinite;
+}
+@keyframes tilt-a{
+  0%   { transform: skewX(0deg)     skewY(0deg)    scale(1);     }
+  30%  { transform: skewX(-2.1deg)  skewY(.9deg)   scale(1.011); }
+  58%  { transform: skewX(1.4deg)   skewY(-.6deg)  scale(1.005); }
+  100% { transform: skewX(0deg)     skewY(0deg)    scale(1);     }
+}
+.sheen-a{ animation: sheen-a 5.2s cubic-bezier(.5,0,.4,1) infinite; }
+@keyframes sheen-a{
+  0%   { transform: translateX(0);    }
+  44%  { transform: translateX(250px);}
+  100% { transform: translateX(250px);}
+}
+.edge-a{
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: settle-a 1.05s cubic-bezier(.2,.8,.2,1) 1 both,
+             breathe-a 5.2s ease-in-out 1.05s infinite;
+}
+@keyframes settle-a{
+  0%   { opacity: 0;    transform: translateY(2px) scale(.93); }
+  100% { opacity: .66;  transform: translateY(0)   scale(1);   }
+}
+@keyframes breathe-a{
+  0%,100% { transform: scale(1);     }
+  50%     { transform: scale(1.016); }
+}
+</style></head>
+<body>
+<a class="back" href="../">← all mockups</a>
+<div class="head">Negative-P · live</div>
+<div class="thesis">The team's favorite — a bold geometric <strong>P</strong> knocked clean out of a solid teal rounded-square tile, the bowl's counter left as a floating teal island — now brought to life. The exact die-cut identity is the resting frame; layered over it runs one classy ~5s loop: the tile gives a gentle iso <em>tilt</em> so the cut P reads as a real beveled pocket with lit walls, a soft <em>sheen</em> sweeps diagonally across the teal, and on load the pocket's lit edge <em>settles into place</em> then breathes. Favicon, monochrome, and on-light stay perfectly static.</div>
+<div class="grid">
+  <div class="panel hero s5"><div class="lbl">Primary mark</div>
+    <!-- {{SVG_HERO}} -->
+    <svg width="120" height="120" viewBox="0 0 64 64" role="img" aria-label="Partwright — animated negative-space P tile">
+      <defs>
+        <linearGradient id="h-teal" x1="8" y1="6" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="0.5" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <!-- soft diagonal sheen band -->
+        <linearGradient id="h-sheen" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+          <stop offset="0.42" stop-color="#fff" stop-opacity="0"/>
+          <stop offset="0.5" stop-color="#fff" stop-opacity="0.5"/>
+          <stop offset="0.58" stop-color="#fff" stop-opacity="0"/>
+          <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+        </linearGradient>
+        <!-- pocket-wall vertical shade: a hint of bored depth on the cut P -->
+        <linearGradient id="h-wall" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#0f766e" stop-opacity="0.55"/>
+          <stop offset="1" stop-color="#042f2e" stop-opacity="0.7"/>
+        </linearGradient>
+        <mask id="h-cut">
+          <!-- white = keep teal, black = cut to canvas -->
+          <rect x="4" y="4" width="56" height="56" rx="15" fill="#fff"/>
+          <!-- the P, cut out -->
+          <path d="M21 15 H38 a11 11 0 0 1 0 22 H29 V49 H21 Z" fill="#000"/>
+          <!-- counter island stays teal -->
+          <path d="M29 22 H37.5 a4 4 0 0 1 0 8 H29 Z" fill="#fff"/>
+        </mask>
+        <!-- mask that keeps ONLY the cut-P region, so we can paint the pocket floor + walls there -->
+        <mask id="h-pocket">
+          <rect x="4" y="4" width="56" height="56" rx="15" fill="#000"/>
+          <path d="M21 15 H38 a11 11 0 0 1 0 22 H29 V49 H21 Z" fill="#fff"/>
+          <path d="M29 22 H37.5 a4 4 0 0 1 0 8 H29 Z" fill="#000"/>
+        </mask>
+        <clipPath id="h-tileclip"><rect x="4" y="4" width="56" height="56" rx="15"/></clipPath>
+      </defs>
+
+      <!-- whole mark tilts together → the cut reads as a beveled pocket with depth -->
+      <g class="tilt-h">
+        <!-- pocket floor (bare canvas) painted a touch darker so the cut feels recessed -->
+        <g clip-path="url(#h-tileclip)">
+          <rect x="4" y="4" width="56" height="56" rx="15" fill="#0a0a0b" mask="url(#h-pocket)"/>
+          <!-- soft wall gradient inside the pocket for the beveled look -->
+          <rect x="4" y="4" width="56" height="56" rx="15" fill="url(#h-wall)" mask="url(#h-pocket)"/>
+        </g>
+
+        <!-- the teal tile with the P knocked out -->
+        <rect x="4" y="4" width="56" height="56" rx="15" fill="url(#h-teal)" mask="url(#h-cut)"/>
+
+        <!-- crisp lit edge on the pocket's top/left walls — settles + breathes -->
+        <path class="edge-h" d="M21 15 H38 M21 15 V49 H29" fill="none" stroke="#bbf7e6" stroke-width="0.9" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.72"/>
+        <path class="edge-h" d="M29 22 H37.5 M29 22 V30" fill="none" stroke="#bbf7e6" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.55"/>
+
+        <!-- diagonal sheen, clipped to the tile and removed over the cut so it never washes the silhouette -->
+        <g clip-path="url(#h-tileclip)" mask="url(#h-cut)">
+          <g class="sheen-h">
+            <rect x="-70" y="-30" width="60" height="130" fill="url(#h-sheen)" transform="rotate(20 32 32)"/>
+          </g>
+        </g>
+      </g>
+    </svg>
+  </div>
+
+  <div class="panel s7"><div class="lbl">Wordmark lockup</div><div class="lockup">
+    <!-- {{SVG_MARK}} -->
+    <svg width="42" height="42" viewBox="0 0 64 64" role="img" aria-label="Partwright mark">
+      <defs>
+        <linearGradient id="m-teal" x1="8" y1="6" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="0.5" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <mask id="m-cut">
+          <rect x="4" y="4" width="56" height="56" rx="15" fill="#fff"/>
+          <path d="M21 15 H38 a11 11 0 0 1 0 22 H29 V49 H21 Z" fill="#000"/>
+          <path d="M29 22 H37.5 a4 4 0 0 1 0 8 H29 Z" fill="#fff"/>
+        </mask>
+      </defs>
+      <rect x="4" y="4" width="56" height="56" rx="15" fill="url(#m-teal)" mask="url(#m-cut)"/>
+    </svg>
+    <span class="wm">Partwright</span>
+  </div></div>
+
+  <div class="panel s3"><div class="lbl">App icon</div>
+    <!-- {{SVG_APPICON}} -->
+    <svg width="104" height="104" viewBox="0 0 104 104" role="img" aria-label="Partwright app icon">
+      <defs>
+        <linearGradient id="a-teal" x1="14" y1="10" x2="90" y2="96" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="0.5" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <linearGradient id="a-sheen" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+          <stop offset="0.43" stop-color="#fff" stop-opacity="0"/>
+          <stop offset="0.5" stop-color="#fff" stop-opacity="0.46"/>
+          <stop offset="0.57" stop-color="#fff" stop-opacity="0"/>
+          <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+        </linearGradient>
+        <linearGradient id="a-wall" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#0f766e" stop-opacity="0.5"/>
+          <stop offset="1" stop-color="#042f2e" stop-opacity="0.62"/>
+        </linearGradient>
+        <mask id="a-cut">
+          <rect x="0" y="0" width="104" height="104" rx="22" fill="#fff"/>
+          <g transform="translate(-5,0) scale(1.625)">
+            <path d="M21 15 H38 a11 11 0 0 1 0 22 H29 V49 H21 Z" fill="#000"/>
+            <path d="M29 22 H37.5 a4 4 0 0 1 0 8 H29 Z" fill="#fff"/>
+          </g>
+        </mask>
+        <mask id="a-pocket">
+          <rect x="0" y="0" width="104" height="104" rx="22" fill="#000"/>
+          <g transform="translate(-5,0) scale(1.625)">
+            <path d="M21 15 H38 a11 11 0 0 1 0 22 H29 V49 H21 Z" fill="#fff"/>
+            <path d="M29 22 H37.5 a4 4 0 0 1 0 8 H29 Z" fill="#000"/>
+          </g>
+        </mask>
+        <clipPath id="a-tileclip"><rect x="0" y="0" width="104" height="104" rx="22"/></clipPath>
+      </defs>
+
+      <g class="tilt-a">
+        <g clip-path="url(#a-tileclip)">
+          <rect x="0" y="0" width="104" height="104" rx="22" fill="#0a0a0b" mask="url(#a-pocket)"/>
+          <rect x="0" y="0" width="104" height="104" rx="22" fill="url(#a-wall)" mask="url(#a-pocket)"/>
+        </g>
+
+        <rect x="0" y="0" width="104" height="104" rx="22" fill="url(#a-teal)" mask="url(#a-cut)"/>
+
+        <!-- lit pocket edge, scaled to icon space (translate -5, scale 1.625) -->
+        <g transform="translate(-5,0) scale(1.625)">
+          <path class="edge-a" d="M21 15 H38 M21 15 V49 H29" fill="none" stroke="#cffaf0" stroke-width="0.6" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.66"/>
+        </g>
+
+        <g clip-path="url(#a-tileclip)" mask="url(#a-cut)">
+          <g class="sheen-a">
+            <rect x="-120" y="-50" width="105" height="210" fill="url(#a-sheen)" transform="rotate(20 52 52)"/>
+          </g>
+        </g>
+      </g>
+    </svg>
+  </div>
+
+  <div class="panel s3"><div class="lbl">Favicon · 32 / 20 / 16</div><div class="favs">
+    <div class="fav">
+      <!-- {{SVG_32}} -->
+      <svg width="32" height="32" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 32">
+        <defs><mask id="f32-cut">
+          <rect x="4" y="4" width="56" height="56" rx="15" fill="#fff"/>
+          <path d="M21 15 H38 a11 11 0 0 1 0 22 H29 V49 H21 Z" fill="#000"/>
+          <path d="M29 22 H37.5 a4 4 0 0 1 0 8 H29 Z" fill="#fff"/>
+        </mask></defs>
+        <rect x="4" y="4" width="56" height="56" rx="15" fill="#2dd4bf" mask="url(#f32-cut)"/>
+      </svg>
+    </div>
+    <div class="fav">
+      <!-- {{SVG_20}} -->
+      <svg width="20" height="20" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 20">
+        <defs><mask id="f20-cut">
+          <rect x="3" y="3" width="58" height="58" rx="14" fill="#fff"/>
+          <path d="M20 14 H38 a11.5 11.5 0 0 1 0 23 H29 V50 H20 Z" fill="#000"/>
+          <path d="M29 21.5 H37.5 a4.5 4.5 0 0 1 0 9 H29 Z" fill="#fff"/>
+        </mask></defs>
+        <rect x="3" y="3" width="58" height="58" rx="14" fill="#2dd4bf" mask="url(#f20-cut)"/>
+      </svg>
+    </div>
+    <div class="fav">
+      <!-- {{SVG_16}} -->
+      <svg width="16" height="16" viewBox="0 0 64 64" role="img" aria-label="Partwright favicon 16">
+        <defs><mask id="f16-cut">
+          <rect x="2" y="2" width="60" height="60" rx="14" fill="#fff"/>
+          <path d="M19 13 H38 a12 12 0 0 1 0 24 H29 V51 H19 Z" fill="#000"/>
+          <path d="M29 21 H37.5 a5 5 0 0 1 0 10 H29 Z" fill="#fff"/>
+        </mask></defs>
+        <rect x="2" y="2" width="60" height="60" rx="14" fill="#2dd4bf" mask="url(#f16-cut)"/>
+      </svg>
+    </div>
+  </div></div>
+
+  <div class="panel s3"><div class="lbl">Monochrome</div>
+    <!-- {{SVG_MONO}} -->
+    <svg width="88" height="88" viewBox="0 0 64 64" role="img" aria-label="Partwright monochrome">
+      <defs><mask id="mo-cut">
+        <rect x="4" y="4" width="56" height="56" rx="15" fill="#fff"/>
+        <path d="M21 15 H38 a11 11 0 0 1 0 22 H29 V49 H21 Z" fill="#000"/>
+        <path d="M29 22 H37.5 a4 4 0 0 1 0 8 H29 Z" fill="#fff"/>
+      </mask></defs>
+      <rect x="4" y="4" width="56" height="56" rx="15" fill="#fafafa" mask="url(#mo-cut)"/>
+    </svg>
+  </div>
+
+  <div class="panel s3 light"><div class="lbl">On light</div>
+    <!-- {{SVG_ONLIGHT}} -->
+    <svg width="88" height="88" viewBox="0 0 64 64" role="img" aria-label="Partwright on light">
+      <defs><mask id="ol-cut">
+        <rect x="4" y="4" width="56" height="56" rx="15" fill="#fff"/>
+        <path d="M21 15 H38 a11 11 0 0 1 0 22 H29 V49 H21 Z" fill="#000"/>
+        <path d="M29 22 H37.5 a4 4 0 0 1 0 8 H29 Z" fill="#fff"/>
+      </mask></defs>
+      <!-- deep-navy tile, pale P cut: the inverse of the brand tile -->
+      <rect x="4" y="4" width="56" height="56" rx="15" fill="#0f172a" mask="url(#ol-cut)"/>
+    </svg>
+  </div>
+</div>
+</body></html>
