@@ -46,6 +46,7 @@ import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
 import { createCatalogPage, type CatalogManifestEntry } from './ui/catalog';
+import { createWhatsNewPage } from './ui/whatsNew';
 import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
 import { createSessionBar } from './ui/sessionBar';
@@ -394,7 +395,7 @@ export type CoverageMode = typeof COVERAGE_MODES[number];
 const BASE_TITLE = 'Partwright';
 let _expectedTitle = 'Partwright — AI-Driven Parametric CAD in Your Browser';
 
-function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | '404' | 'catalog'; sessionName?: string | null }) {
+function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | '404' | 'catalog' | 'whats-new'; sessionName?: string | null }) {
   let route: RouteName;
   let titleOverride: string | undefined;
   if (context?.page === 'landing' || (context?.page === undefined && shouldShowLanding())) {
@@ -403,6 +404,8 @@ function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | 
     route = 'help';
   } else if (context?.page === 'catalog') {
     route = 'catalog';
+  } else if (context?.page === 'whats-new') {
+    route = 'whats-new';
   } else if (context?.page === '404') {
     route = '404';
   } else {
@@ -1480,10 +1483,14 @@ function shouldShowCatalog(): boolean {
   return window.location.pathname === '/catalog' && !hasShareHash();
 }
 
+function shouldShowWhatsNew(): boolean {
+  return window.location.pathname === '/whats-new';
+}
+
 function shouldShow404(): boolean {
   if (hasShareHash()) return false;
   const path = window.location.pathname;
-  return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog';
+  return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog' && path !== '/whats-new';
 }
 
 function getTabFromURL(): TabName {
@@ -2932,6 +2939,7 @@ async function main() {
     { id: 'toggle-diagnostics', title: 'Toggle diagnostic log', hint: 'View', keywords: 'errors warnings console', run: () => toggleDiagnosticsPanel() },
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
     { id: 'open-help', title: 'Open help', hint: 'Navigate', keywords: 'docs documentation guide', run: () => showHelp() },
+    { id: 'open-whats-new', title: "Open what's new", hint: 'Navigate', keywords: 'changelog recent features updates release notes', run: () => showWhatsNewPage() },
     { id: 'open-quality', title: 'Modeling quality settings', hint: 'Settings', keywords: 'resolution curve segments smoothness', run: () => showQualitySettingsModal() },
     { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); } },
   ]);
@@ -3149,7 +3157,9 @@ async function main() {
         onOpenEditor: openEditorFromLanding,
         onOpenHelp: () => showHelp(),
         onOpenCatalog: () => { void showCatalogPage(); },
+        onOpenWhatsNew: () => showWhatsNewPage(),
         onOpenSession: openSessionFromLanding,
+        onLoadCatalogEntry: handleCatalogEntryLoad,
       });
     }
     return landingEl;
@@ -3162,6 +3172,7 @@ async function main() {
     helpEl?.classList.add('hidden');
     notFoundEl?.classList.add('hidden');
     catalogEl?.classList.add('hidden');
+    whatsNewEl?.classList.add('hidden');
     page.classList.remove('hidden');
     updateDocumentTitle({ page: 'landing' });
   }
@@ -3180,6 +3191,7 @@ async function main() {
     landingEl?.classList.add('hidden');
     helpEl?.classList.add('hidden');
     catalogEl?.classList.add('hidden');
+    whatsNewEl?.classList.add('hidden');
     notFoundEl.classList.remove('hidden');
     updateDocumentTitle({ page: '404' });
   }
@@ -3219,6 +3231,7 @@ async function main() {
     if (landingEl) landingEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
     if (catalogEl) catalogEl.classList.add('hidden');
+    if (whatsNewEl) whatsNewEl.classList.add('hidden');
     helpEl.classList.remove('hidden');
     updateDocumentTitle({ page: 'help' });
   }
@@ -3249,8 +3262,40 @@ async function main() {
     if (landingEl) landingEl.classList.add('hidden');
     if (helpEl) helpEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
+    if (whatsNewEl) whatsNewEl.classList.add('hidden');
     catalogEl.classList.remove('hidden');
     updateDocumentTitle({ page: 'catalog' });
+  }
+
+  let whatsNewEl: HTMLElement | null = null;
+  let whatsNewHasAppBackTarget = false;
+  function showWhatsNewPage(options: { history?: 'push' | 'replace' | 'none' } = {}) {
+    const historyMode = options.history ?? 'push';
+    if (historyMode !== 'none') {
+      whatsNewHasAppBackTarget = currentURLPathAndSearch() !== '/whats-new';
+      updateAppHistory('/whats-new', historyMode);
+    }
+    if (!whatsNewEl) {
+      whatsNewEl = createWhatsNewPage(overlayContainer, {
+        onBack: () => {
+          if (whatsNewHasAppBackTarget) {
+            window.history.back();
+          } else {
+            updateAppHistory('/', 'replace');
+            void syncRouteFromURL();
+          }
+        },
+        onOpenEditor: openEditorFromLanding,
+      });
+    }
+    overlayContainer.classList.remove('hidden');
+    editorUI.classList.add('hidden');
+    if (landingEl) landingEl.classList.add('hidden');
+    if (helpEl) helpEl.classList.add('hidden');
+    if (catalogEl) catalogEl.classList.add('hidden');
+    if (notFoundEl) notFoundEl.classList.add('hidden');
+    whatsNewEl.classList.remove('hidden');
+    updateDocumentTitle({ page: 'whats-new' });
   }
 
   // Import a catalog entry as a fresh session and navigate to the editor.
@@ -3478,7 +3523,7 @@ async function main() {
     // Home — confusing because no editor / session is loaded to act on
     // it. /editor's own loader updates the AI session via onStateChange
     // when a session opens, so we don't need to set it explicitly here.
-    if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShow404()) {
+    if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShowWhatsNew() || shouldShow404()) {
       void setAiActiveSession(null);
     }
     // A share-link hash takes precedence over the normal editor sync on this
@@ -3492,6 +3537,8 @@ async function main() {
       showHelp({ history: 'none' });
     } else if (shouldShowCatalog()) {
       await showCatalogPage({ history: 'none' });
+    } else if (shouldShowWhatsNew()) {
+      showWhatsNewPage({ history: 'none' });
     } else if (shouldShow404()) {
       showNotFoundPage();
     } else {
@@ -3525,6 +3572,7 @@ async function main() {
   const showLanding = shouldShowLanding();
   const showHelpPage = shouldShowHelp();
   const showCatalog = shouldShowCatalog();
+  const showWhatsNew = shouldShowWhatsNew();
   const show404 = shouldShow404();
 
   if (showLanding) {
@@ -3533,6 +3581,8 @@ async function main() {
     showHelp({ history: 'none' });
   } else if (showCatalog) {
     await showCatalogPage({ history: 'none' });
+  } else if (showWhatsNew) {
+    showWhatsNewPage({ history: 'none' });
   } else if (show404) {
     showNotFoundPage();
   }
@@ -3557,6 +3607,26 @@ async function main() {
   // declares via api.params({...}). Editing a widget records the override and
   // re-runs (live preview); Reset clears all overrides back to model defaults.
   // Hidden until a run reports a parameter schema.
+  //
+  // A "Customize" toggle pill in the viewport toolbar (created below) is the
+  // discoverable open/reopen affordance: it appears only when the active model
+  // declares parameters, shows the count, and mirrors the panel's open state —
+  // so closing the panel never strands the user without a way back in.
+  const customizeBtn = document.createElement('button');
+  customizeBtn.id = 'customize-toggle';
+  customizeBtn.title = 'Tweak this model’s parameters';
+  customizeBtn.className = 'hidden'; // shown by syncCustomizeBtn once a run reports params
+  customizeBtn.addEventListener('click', () => paramsPanel?.toggle());
+  const CUSTOMIZE_BTN_BASE = 'md:px-2 md:py-1 px-3 py-2 rounded text-sm md:text-xs backdrop-blur transition-colors border';
+  const CUSTOMIZE_BTN_OPEN = `${CUSTOMIZE_BTN_BASE} bg-blue-500/30 text-blue-300 border-blue-500/50`;
+  const CUSTOMIZE_BTN_CLOSED = `${CUSTOMIZE_BTN_BASE} bg-zinc-800/80 text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 border-zinc-600/50`;
+  const syncCustomizeBtn = (state: { hasParams: boolean; open: boolean; count: number }) => {
+    customizeBtn.textContent = state.count > 0 ? `🎛 Customize (${state.count})` : '🎛 Customize';
+    customizeBtn.className = state.open ? CUSTOMIZE_BTN_OPEN : CUSTOMIZE_BTN_CLOSED;
+    // No declared parameters → no button at all (matches the panel being hidden).
+    customizeBtn.classList.toggle('hidden', !state.hasParams);
+  };
+
   paramsPanel = createParamsPanel({
     onChange: (key, value) => {
       currentParamValues = { ...currentParamValues, [key]: value };
@@ -3566,8 +3636,16 @@ async function main() {
       currentParamValues = {};
       runCode();
     },
+    onVisibilityChange: syncCustomizeBtn,
   });
   viewportPane.appendChild(paramsPanel.element);
+  // Sit the Customize pill with the other panel-toggling tools (Paint/Measure),
+  // just after the view-toggle divider — same grouping Paint/Annotate use, so it
+  // reads as a tool and stays clear of the top-left "Show code" button that the
+  // wrapping toolbar's leftmost item collides with.
+  const measureToggle = clipControls.querySelector('#measure-toggle');
+  if (measureToggle) clipControls.insertBefore(customizeBtn, measureToggle);
+  else clipControls.appendChild(customizeBtn);
 
   // Init measure tool
   initMeasureTool(getCanvas(), getCamera(), getMeshGroup(), viewportPane);
@@ -3903,7 +3981,7 @@ async function main() {
 
   // Start guided tour on first visit (after editor fully renders) — but not over
   // a shared preview, which is a read-only landing surface for an external link.
-  if (!showLanding && !showHelpPage && !showCatalog && !show404 && !hasShareHash()) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showWhatsNew && !show404 && !hasShareHash()) {
     maybeStartTour();
     maybeShowShortcutsHint();
   }
@@ -3914,7 +3992,7 @@ async function main() {
   // and degrades to a normal editable editor if the link is invalid. (The
   // editor + engine are ready here, so its internal ensureEditorReady resolves
   // immediately — no deadlock from awaiting it earlier in main().)
-  if (!showLanding && !showHelpPage && !showCatalog && !show404 && engineOk) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showWhatsNew && !show404 && engineOk) {
     if (hasShareHash()) {
       await enterSharedFromHash();
     } else {
@@ -4013,7 +4091,7 @@ async function main() {
   }
 
   // Set initial editor title if we're on the editor page
-  if (!showLanding && !showHelpPage && !showCatalog && !show404) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showWhatsNew && !show404) {
     updateDocumentTitle({ page: 'editor' });
   }
 
@@ -5396,7 +5474,21 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       const version = await navigateVersion(direction);
       if (version) {
+        // Each version remembers the language it was authored in (since schema
+        // 1.8). Swap the engine before re-running so a JS version stepped into
+        // while another engine is active doesn't run under the wrong sandbox —
+        // e.g. a manifold-js version under the voxel/replicad engine, whose
+        // `api` has no `params` (and voxel no `Manifold`), which surfaced as
+        // "api.params is not a function" / "reading 'cube' of undefined".
+        // Mirrors loadVersion()'s language handling.
+        const versionLang = effectiveVersionLanguage(version, getState().session);
+        if (versionLang !== getActiveLanguage()) {
+          await switchLanguage(versionLang);
+        }
         setValue(version.code);
+        // Restore this version's Customizer overrides before the re-run so it
+        // renders with the values it was saved at (matches loadVersion).
+        currentParamValues = { ...(version.paramValues ?? {}) };
         await runCodeSync(version.code);
         rehydrateColorRegions(version.geometryData);
         applyVersionAnnotations(version);

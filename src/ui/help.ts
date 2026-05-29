@@ -38,9 +38,16 @@ export function createHelpPage(
   content.appendChild(title);
 
   const subtitle = document.createElement('p');
-  subtitle.className = 'text-sm text-zinc-400 leading-relaxed mb-8';
+  subtitle.className = 'text-sm text-zinc-400 leading-relaxed mb-4';
   subtitle.innerHTML = 'A complete guide to the editor, viewport, painting, sessions, exports, and the in-browser AI assistant. Skim the table of contents below, or jump straight to a section.';
   content.appendChild(subtitle);
+
+  // "What's new" callout — points at the recently-shipped-features changelog.
+  const whatsNewCallout = document.createElement('a');
+  whatsNewCallout.href = '/whats-new';
+  whatsNewCallout.className = 'inline-flex items-center gap-2 mb-8 text-sm text-blue-400 hover:text-blue-300 transition-colors';
+  whatsNewCallout.innerHTML = '<span class="text-[10px] font-semibold uppercase tracking-wider rounded bg-blue-500/15 text-blue-300 px-1.5 py-0.5">New</span> See what’s shipped recently →';
+  content.appendChild(whatsNewCallout);
 
   const sections: HelpSection[] = [
     {
@@ -49,7 +56,7 @@ export function createHelpPage(
       body:
         'Partwright is a browser-based parametric CAD tool powered by <a href="https://github.com/elalish/manifold" class="text-blue-400 hover:underline">manifold-3d</a> (compiled to WebAssembly). It runs entirely in your browser — no server, no account, no data leaving your machine.<br><br>' +
         'You write code that constructs 3D geometry. The result renders live in the viewport, and you can save iterations as versions, paint colored regions for multi-material 3D printing, and export to 3MF, STL, OBJ, or GLB.<br><br>' +
-        'Partwright supports two modeling languages: <strong class="text-zinc-300">JavaScript</strong> (default, using the manifold-3d API) and <strong class="text-zinc-300">OpenSCAD</strong> (standard <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.scad</code> syntax via WASM). Switch between them with the <strong class="text-zinc-300">JS / SCAD</strong> toggle in the toolbar — your in-progress code in each language is preserved as a draft, and every saved version remembers the language it was authored in, so a single session can hold mixed JS + SCAD versions.',
+        'Partwright supports several modeling languages and engines: <strong class="text-zinc-300">JavaScript</strong> (default, using the manifold-3d mesh API), <strong class="text-zinc-300">OpenSCAD</strong> (standard <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.scad</code> syntax via WASM), <strong class="text-zinc-300">BREP</strong> (true OpenCASCADE solids via replicad, with selective fillets/chamfers and STEP export), and <strong class="text-zinc-300">voxel</strong> (build from cubes, with image and <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.vox</code> import). Switch between them with the language toggle in the toolbar — your in-progress code in each language is preserved as a draft, and every saved version remembers the language it was authored in, so a single session can hold mixed versions. See <a href="#engines" class="text-blue-400 hover:underline">Modeling engines</a> below for the full rundown.',
     },
     {
       id: 'editor',
@@ -71,6 +78,21 @@ export function createHelpPage(
         '<strong class="text-zinc-300">JavaScript:</strong> Start with primitives like <code class="text-emerald-400 bg-zinc-800 px-1 rounded">Manifold.cube()</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">Manifold.cylinder()</code>, or <code class="text-emerald-400 bg-zinc-800 px-1 rounded">Manifold.sphere()</code>. Combine them with boolean operations: <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.add()</code> (union), <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.subtract()</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.intersect()</code>.<br><br>' +
         '<strong class="text-zinc-300">OpenSCAD:</strong> Use standard primitives <code class="text-emerald-400 bg-zinc-800 px-1 rounded">cube()</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">cylinder()</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">sphere()</code> with boolean operations <code class="text-emerald-400 bg-zinc-800 px-1 rounded">difference()</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">union()</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">intersection()</code>. Note: <code class="text-emerald-400 bg-zinc-800 px-1 rounded">text()</code> is not available (fonts not loaded).<br><br>' +
         '<strong class="text-zinc-300">Coordinate system:</strong> Right-handed, <strong class="text-zinc-300">Z-up</strong>. The XY plane is the ground, Z points up. Units are arbitrary — use a consistent scale (millimetres are common for 3D printing).',
+    },
+    {
+      id: 'engines',
+      heading: 'Modeling engines & languages',
+      body:
+        'Beyond plain JavaScript and OpenSCAD, Partwright reaches several geometry kernels — each is lazy-loaded the first time you use it, so you only pay for what you reach for:' +
+        '<ul class="list-disc list-inside mt-2 space-y-1.5 text-zinc-400">' +
+        '<li><strong class="text-zinc-300">JavaScript / manifold-3d</strong> (default) — Fast mesh booleans plus <code class="text-emerald-400 bg-zinc-800 px-1 rounded">warp</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">levelSet</code>, smoothing, and curve helpers.</li>' +
+        '<li><strong class="text-zinc-300">OpenSCAD</strong> — Standard <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.scad</code> with the BOSL2 library (threaded rods, gears, rounded cuboids, and more).</li>' +
+        '<li><strong class="text-zinc-300">BREP (replicad / OpenCASCADE)</strong> — True boundary-representation solids with selective edge fillets and chamfers, exact surfaces, and <strong class="text-zinc-300">STEP</strong> import + export. Use it two ways: call <code class="text-emerald-400 bg-zinc-800 px-1 rounded">api.BREP.*</code> inside a JavaScript session for one exact feature, or switch the whole session to the BREP language. It adds <code class="text-emerald-400 bg-zinc-800 px-1 rounded">cone</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">torus</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">revolve</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">shell</code>, and linear/circular patterns.</li>' +
+        '<li><strong class="text-zinc-300">Voxel</strong> — Model from a grid of cubes. Import an image as voxels or load a <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.vox</code> file, paint individual voxels, and surface the result with rounded edges; includes cylinder, mirror, translate, and hollow operations.</li>' +
+        '</ul><br>' +
+        '<strong class="text-zinc-300">Signed-distance fields (<code class="text-emerald-400 bg-zinc-800 px-1 rounded">api.sdf</code>):</strong> Inside a JavaScript session, build organic and lattice geometry from SDF primitives and combinators — including a TPMS family (gyroid and friends), <code class="text-emerald-400 bg-zinc-800 px-1 rounded">polarRepeat</code> / <code class="text-emerald-400 bg-zinc-800 px-1 rounded">repeatN</code> tiling, and smooth boolean blends.<br><br>' +
+        '<strong class="text-zinc-300">Customizer parameters (<code class="text-emerald-400 bg-zinc-800 px-1 rounded">api.params</code>):</strong> Declare tunable parameters in your code and adjust them from a parameter panel — no need to edit the source to dial a design in.<br><br>' +
+        'Use the <strong class="text-zinc-300">?</strong> language-help button in the toolbar for a quick reference on whichever language is active.',
     },
     {
       id: 'quick-example',
@@ -127,6 +149,25 @@ export function createHelpPage(
         '<strong class="text-zinc-300">Export formats and color:</strong> 3MF carries painted regions as native materials (recommended for printing). OBJ + MTL and GLB carry per-triangle vertex colors. STL is geometry-only — no color.',
     },
     {
+      id: 'relief',
+      heading: 'Relief Studio (image → relief)',
+      body:
+        'The <strong class="text-zinc-300">Relief Studio</strong> turns a 2D image into a printable relief — a HueForge-style workflow for layered, multi-color prints. A guided wizard walks you from image to model:' +
+        '<ul class="list-disc list-inside mt-2 space-y-1.5 text-zinc-400">' +
+        '<li><strong class="text-zinc-300">Inputs</strong> — Drop in a photo, or use a flat-color tile, a silhouette tile, or an imported SVG. Crop and preprocess the image, and pick a background to drop out.</li>' +
+        '<li><strong class="text-zinc-300">Relief modes</strong> — Smooth height-map relief, or <strong class="text-zinc-300">stepped relief</strong> with Z-banded walls that print faithfully on a single nozzle (with an invert-heights toggle). A live 3D preview updates as you tune.</li>' +
+        '<li><strong class="text-zinc-300">Finishing</strong> — Add a tile chamfer and one or more freely-positioned keychain holes, then send the result into a session as a painted model with a color-swap guide.</li>' +
+        '</ul><br>' +
+        'Typeable sliders let values exceed the visual range, and the studio remembers recent imports with their settings.',
+    },
+    {
+      id: 'sharing',
+      heading: 'Sharing & multi-part sessions',
+      body:
+        '<strong class="text-zinc-300">Shareable links</strong> — Generate a link that encodes your model entirely in the URL (client-side, nothing uploaded). Anyone who opens it sees a read-only preview and can <strong class="text-zinc-300">Fork</strong> it into their own editable session.<br><br>' +
+        '<strong class="text-zinc-300">Multiple parts per session</strong> — A session can hold several separate objects, listed in the <strong class="text-zinc-300">Parts</strong> rail with a geometry preview for each. Select multiple parts (the checkboxes) to <strong class="text-zinc-300">bulk-delete</strong> them or <strong class="text-zinc-300">merge</strong> them — either combining into a new part or replacing the selection with one merged part. Imported meshes can be added as new parts too.',
+    },
+    {
       id: 'sessions',
       heading: 'Sessions & versions',
       body:
@@ -147,13 +188,14 @@ export function createHelpPage(
       id: 'import-export',
       heading: 'Importing & exporting',
       body:
-        '<strong class="text-zinc-300">Import</strong> — Open a <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.partwright.json</code> session from another machine, or load raw <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.js</code> / <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.scad</code> code. The Import dropdown also remembers your recent imports for one-click re-loading.<br><br>' +
+        '<strong class="text-zinc-300">Import</strong> — Open a <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.partwright.json</code> session from another machine, load raw <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.js</code> / <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.scad</code> code, or bring in a mesh (<code class="text-emerald-400 bg-zinc-800 px-1 rounded">.stl</code>) or a BREP solid (<code class="text-emerald-400 bg-zinc-800 px-1 rounded">.step</code>). When a session is already open, an import-target dialog lets you add the import as a new part, compose it into the current part, or start a new session. The Import dropdown also remembers your recent imports (with their settings) for one-click re-loading.<br><br>' +
         '<strong class="text-zinc-300">Export — 3D model formats:</strong>' +
         '<ul class="list-disc list-inside mt-2 space-y-1 text-zinc-400">' +
         '<li><strong class="text-zinc-300">3MF</strong> (recommended for printing) — Geometry plus native color regions. Imports cleanly into Bambu Studio and other modern slicers.</li>' +
         '<li><strong class="text-zinc-300">OBJ</strong> — Geometry plus color via an MTL sidecar. Delivered as a ZIP — extract before importing into a slicer.</li>' +
         '<li><strong class="text-zinc-300">STL</strong> — Geometry only, no color. Universal slicer support.</li>' +
         '<li><strong class="text-zinc-300">GLB</strong> — Web/preview format with vertex colors. Good for embedding online, not read by slicers.</li>' +
+        '<li><strong class="text-zinc-300">STEP</strong> — Exact BREP solids, available from BREP-language sessions. The CAD interchange format for downstream engineering tools.</li>' +
         '</ul><br>' +
         '<strong class="text-zinc-300">Export — Project formats:</strong>' +
         '<ul class="list-disc list-inside mt-2 space-y-1 text-zinc-400">' +
@@ -178,25 +220,26 @@ export function createHelpPage(
     },
     {
       id: 'ai-browser',
-      heading: 'AI assistant in the browser (Anthropic API key)',
+      heading: 'AI assistant in the browser',
       body:
-        'Partwright includes a built-in AI assistant powered by Claude. The assistant runs entirely from your browser: you provide an <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener" class="text-blue-400 hover:underline">Anthropic API key</a>, and every request goes directly from your browser to Anthropic — Partwright never sees the key or the conversation.<br><br>' +
-        '<strong class="text-zinc-300">Connecting a key:</strong>' +
+        'Partwright includes a built-in AI assistant. It runs entirely from your browser: you choose a provider and (for cloud providers) paste your own API key, and every request goes directly from your browser to that provider — Partwright never sees the key or the conversation. Four providers are supported:' +
+        '<ul class="list-disc list-inside mt-2 space-y-1 text-zinc-400">' +
+        '<li><strong class="text-zinc-300">Anthropic</strong> — Claude (Haiku / Sonnet / Opus), with prompt caching. Keys look like <code class="text-emerald-400 bg-zinc-800 px-1 rounded">sk-ant-…</code>.</li>' +
+        '<li><strong class="text-zinc-300">OpenAI</strong> — GPT and reasoning (o-series / gpt-5) models.</li>' +
+        '<li><strong class="text-zinc-300">Google Gemini</strong> — Gemini models, including thinking models with a reasoning box.</li>' +
+        '<li><strong class="text-zinc-300">Local (WebGPU)</strong> — Runs a model fully in your browser via WebLLM. No API key, no network traffic per turn; the weights download once into the browser cache (needs a WebGPU-capable browser).</li>' +
+        '</ul><br>' +
+        '<strong class="text-zinc-300">Connecting:</strong>' +
         '<ol class="list-decimal list-inside mt-2 space-y-1 text-zinc-400">' +
-        '<li>Click <strong class="text-zinc-300">Connect AI</strong> in the toolbar.</li>' +
-        '<li>Paste a key (looks like <code class="text-emerald-400 bg-zinc-800 px-1 rounded">sk-ant-…</code>) into the modal.</li>' +
-        '<li>Partwright sends a 1-token test request to verify it, then stores the key in your browser\'s IndexedDB.</li>' +
-        '<li>The toolbar button changes to <strong class="text-zinc-300">✦ AI</strong> and the chat drawer is ready to use.</li>' +
+        '<li>Click <strong class="text-zinc-300">Connect AI</strong> (or the <strong class="text-zinc-300">Use AI</strong> button) in the toolbar.</li>' +
+        '<li>Pick a provider and paste its API key — or choose <strong class="text-zinc-300">Run a local model in your browser</strong> to download a WebGPU model instead.</li>' +
+        '<li>Partwright sends a tiny test request to verify a cloud key, then stores it in your browser\'s IndexedDB.</li>' +
+        '<li>The toolbar button changes to <strong class="text-zinc-300">✦ AI</strong> and the chat panel is ready. Each provider remembers its own selected model, so switching providers keeps your previous choice.</li>' +
         '</ol><br>' +
         '<div class="rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug mb-3"><strong>Recommended:</strong> use a workspace-scoped key with a monthly spend cap. Anyone who can run code in this page (browser extensions, devtools) can read the key.</div>' +
-        '<strong class="text-zinc-300">What the assistant can do</strong> — The chat panel slides in from the right. Type a request, attach images for reference, or click <strong class="text-zinc-300">Show AI</strong> to snapshot the four isometric views and feed them to the model. Claude can write and run code, save versions to the gallery, paint colored regions, and iterate until your design is right.<br><br>' +
-        '<strong class="text-zinc-300">Models:</strong>' +
-        '<ul class="list-disc list-inside mt-2 space-y-1 text-zinc-400">' +
-        '<li><strong class="text-zinc-300">Claude Haiku</strong> — fast and cheap; good for quick fixes.</li>' +
-        '<li><strong class="text-zinc-300">Claude Sonnet</strong> (default) — balanced cost and capability for most tasks.</li>' +
-        '<li><strong class="text-zinc-300">Claude Opus</strong> — most capable; reach for it on complex multi-step geometry.</li>' +
-        '</ul><br>' +
-        '<strong class="text-zinc-300">Toggles & guardrails:</strong> At the bottom of the panel are switches for auto-rendering snapshots, allowing the model to run code, allowing it to save versions, allowing it to paint, how many tool errors to silently retry, a per-turn iteration cap (4 / 16 / 32 / 64 / ∞), and a per-turn spend cap ($0.10 / $0.50 / $2 / $10 / ∞). Use presets — <em>Minimal</em>, <em>Standard</em>, <em>Full</em> — to flip whole bundles at once.<br><br>' +
+        '<strong class="text-zinc-300">What the assistant can do</strong> — The chat panel docks on the right. Type a request, attach images for reference, or click <strong class="text-zinc-300">Show AI</strong> to snapshot the isometric views and feed them to the model. The assistant can write and run code, save versions to the gallery, paint colored regions, and iterate until your design is right. A <strong class="text-zinc-300">👁 Review</strong> button asks a <em>different</em> provider/model to critique the current design, and a <strong class="text-zinc-300">🩺 Call Log</strong> shows recent provider API calls for diagnostics.<br><br>' +
+        '<strong class="text-zinc-300">Thinking level</strong> — A 🧠 pill (off / low / medium / high) sets reasoning effort and maps to each provider\'s own thinking format; reasoning models that expose their chain of thought show it in a collapsible thinking box.<br><br>' +
+        '<strong class="text-zinc-300">Toggles & guardrails:</strong> At the bottom of the panel are switches for auto-rendering snapshots, allowing the model to run code, allowing it to save versions, allowing it to paint, how many tool errors to silently retry, a per-turn iteration cap (4 / 16 / 32 / 64 / ∞), and a per-turn spend cap ($0.10 / $0.50 / $2 / $5 / $10 / $20 / ∞). Use presets — <em>Minimal</em>, <em>Standard</em>, <em>Full</em> — to flip whole bundles at once.<br><br>' +
         '<strong class="text-zinc-300">Costs & history:</strong> The panel shows a live cost meter. The ⚙ icon opens settings with lifetime token usage, estimated spend, when the key was added, and buttons to replace or disconnect it. Chat history is saved per session in IndexedDB; use <strong class="text-zinc-300">Compact</strong> to summarize older turns and free up context when conversations get long.',
     },
     {

@@ -100,6 +100,41 @@ test.describe('Customizer parameters', () => {
     await expect.poll(() => currentXDim(page)).toBeCloseTo(100, 0);
   });
 
+  test('Customize toolbar pill toggles the panel, and close → reopen always works', async ({ page }) => {
+    const pill = page.locator('#customize-toggle');
+    const panel = page.locator('#params-panel');
+
+    // Plain model: no parameters → neither the pill nor the panel show.
+    await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code), PLAIN_MODEL);
+    await expect(pill).toBeHidden();
+    await expect(panel).toBeHidden();
+
+    // Parametric model: pill appears (with the count) and the panel opens.
+    await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code), PARAM_MODEL);
+    await expect(pill).toBeVisible();
+    await expect(pill).toContainText('Customize (4)');
+    await expect(panel).toBeVisible();
+
+    // The panel's × closes it; the pill stays visible as the way back in.
+    await panel.locator('button[aria-label="Close parameters"]').click();
+    await expect(panel).toBeHidden();
+    await expect(pill).toBeVisible();
+
+    // Re-running the SAME model (e.g. a code edit) must NOT re-pop a panel the
+    // user deliberately closed.
+    await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code), PARAM_MODEL);
+    await expect(panel).toBeHidden();
+
+    // Clicking the pill reopens it — the discoverable reopen affordance.
+    await pill.click();
+    await expect(panel).toBeVisible();
+
+    // Switching to a no-parameter model hides both again.
+    await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code), PLAIN_MODEL);
+    await expect(pill).toBeHidden();
+    await expect(panel).toBeHidden();
+  });
+
   test('getParams is always available; setParams is gated by the runCode scope and dispatches', async ({ page }) => {
     const result = await page.evaluate(async (code) => {
       const tools = await import('/src/ai/tools.ts');

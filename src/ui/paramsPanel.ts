@@ -15,6 +15,11 @@ export interface ParamsPanelOptions {
   onChange: (key: string, value: ParamValue) => void;
   /** Fired when "Reset" is clicked — main.ts clears all overrides and re-runs. */
   onReset: () => void;
+  /** Fired whenever the panel's visibility changes — when the active model
+   *  declares (or drops) parameters, and when the user opens/closes the panel.
+   *  Lets an external toggle button (the viewport "Customize" pill) mirror the
+   *  panel's state and show a parameter count. */
+  onVisibilityChange?: (state: { hasParams: boolean; open: boolean; count: number }) => void;
 }
 
 export interface ParamsPanelController {
@@ -22,6 +27,16 @@ export interface ParamsPanelController {
   /** Re-render for a new schema (or update values in place if the schema is
    *  unchanged). Pass `undefined`/empty to hide the panel. */
   update(schema: ParamSpec[] | undefined, values: ParamValues): void;
+  /** Show the panel (no-op when the active model declares no parameters). */
+  open(): void;
+  /** Hide the panel without dropping the schema — reopen via {@link open}. */
+  close(): void;
+  /** Flip open ↔ closed (no-op when there are no parameters). */
+  toggle(): void;
+  /** Whether the panel is currently visible. */
+  isOpen(): boolean;
+  /** Whether the active model declares any parameters. */
+  hasParams(): boolean;
 }
 
 const OVERLAY_BTN = 'px-2 py-0.5 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
@@ -41,19 +56,15 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   // widgets work; the panel itself is small so it doesn't block orbit much.
   root.className = 'hidden absolute bottom-2 left-2 z-10 w-60 max-w-[calc(100%-1rem)] flex flex-col rounded-lg bg-zinc-900/85 backdrop-blur border border-zinc-700 shadow-lg text-zinc-200 pointer-events-auto';
 
-  // Header: title + count, a Reset button, and a collapse caret.
+  // Header: a "Customize" title, a Reset button, and a close (×) button. Closing
+  // hides the whole panel; the viewport "Customize" toggle pill reopens it (see
+  // onVisibilityChange), so the close → reopen loop is always discoverable.
   const header = document.createElement('div');
   header.className = 'flex items-center gap-2 px-2.5 py-1.5 border-b border-zinc-700/70 select-none';
 
-  const caret = document.createElement('button');
-  caret.className = 'text-zinc-400 hover:text-zinc-200 text-xs leading-none w-3 shrink-0';
-  caret.textContent = '▾';
-  caret.title = 'Collapse parameters';
-  caret.setAttribute('aria-label', 'Collapse parameters');
-
   const title = document.createElement('span');
   title.className = 'text-xs font-medium text-zinc-300 flex-1 truncate';
-  title.textContent = 'Parameters';
+  title.textContent = 'Customize';
 
   const resetBtn = document.createElement('button');
   resetBtn.className = OVERLAY_BTN;
@@ -61,9 +72,15 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   resetBtn.title = 'Reset all parameters to their defaults';
   resetBtn.addEventListener('click', () => opts.onReset());
 
-  header.appendChild(caret);
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'text-zinc-400 hover:text-zinc-200 text-base leading-none w-5 h-5 flex items-center justify-center shrink-0 rounded hover:bg-zinc-700/60 transition-colors';
+  closeBtn.textContent = '×';
+  closeBtn.title = 'Close parameters (reopen with the Customize button)';
+  closeBtn.setAttribute('aria-label', 'Close parameters');
+
   header.appendChild(title);
   header.appendChild(resetBtn);
+  header.appendChild(closeBtn);
   root.appendChild(header);
 
   // Scrollable body holding the widgets.
@@ -71,17 +88,28 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   body.className = 'flex flex-col gap-2.5 px-2.5 py-2 overflow-y-auto max-h-[min(60vh,22rem)]';
   root.appendChild(body);
 
-  let collapsed = false;
-  caret.addEventListener('click', () => {
-    collapsed = !collapsed;
-    body.classList.toggle('hidden', collapsed);
-    caret.textContent = collapsed ? '▸' : '▾';
-    caret.title = collapsed ? 'Expand parameters' : 'Collapse parameters';
-  });
-
   let currentSig = '';
+  // Number of parameters the active model declares; 0 means none (panel + toggle
+  // both hidden). `userClosed` records an explicit close so re-runs of the *same*
+  // model don't re-pop the panel; a schema change clears it so a different
+  // model's knobs surface on their own.
+  let paramCount = 0;
+  let userClosed = false;
   // Per-key updater so we can refresh widget values without a DOM rebuild.
   const valueSetters = new Map<string, (v: ParamValue) => void>();
+
+  function notify(): void {
+    opts.onVisibilityChange?.({ hasParams: paramCount > 0, open: isOpen(), count: paramCount });
+  }
+
+  function applyVisibility(): void {
+    root.classList.toggle('hidden', !isOpen());
+    notify();
+  }
+
+  function isOpen(): boolean {
+    return paramCount > 0 && !userClosed;
+  }
 
   function rebuild(schema: ParamSpec[]): void {
     body.replaceChildren();
@@ -101,23 +129,38 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
 
   function update(schema: ParamSpec[] | undefined, values: ParamValues): void {
     if (!schema || schema.length === 0) {
-      root.classList.add('hidden');
       currentSig = '';
+      paramCount = 0;
+      userClosed = false;
       valueSetters.clear();
       body.replaceChildren();
+      applyVisibility();
       return;
     }
     const sig = schemaSignature(schema);
     if (sig !== currentSig) {
       currentSig = sig;
       rebuild(schema);
+      // A new or changed parameter set re-opens the panel so its knobs are seen.
+      userClosed = false;
     }
+    paramCount = schema.length;
     updateValues(values);
-    title.textContent = schema.length === 1 ? '1 parameter' : `${schema.length} parameters`;
-    root.classList.remove('hidden');
+    title.textContent = schema.length === 1 ? 'Customize (1)' : `Customize (${schema.length})`;
+    applyVisibility();
   }
 
-  return { element: root, update };
+  closeBtn.addEventListener('click', () => { userClosed = true; applyVisibility(); });
+
+  return {
+    element: root,
+    update,
+    open() { if (paramCount > 0) { userClosed = false; applyVisibility(); } },
+    close() { userClosed = true; applyVisibility(); },
+    toggle() { if (paramCount > 0) { userClosed = !userClosed; applyVisibility(); } },
+    isOpen,
+    hasParams() { return paramCount > 0; },
+  };
 }
 
 /** Build one labeled widget row. Returns the row plus a setter that pushes a
