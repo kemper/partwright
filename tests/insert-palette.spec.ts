@@ -100,6 +100,12 @@ test.describe('Insert palette', () => {
   });
 
   test('wrap editor selection as an operand', async ({ page }) => {
+    // The default AI-drawer-open state collapses the editor pane, hiding
+    // `.cm-content`. This test specifically needs to select text in the
+    // editor, so pin it open ahead of the page load.
+    await page.addInitScript(() => {
+      try { localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ editorCollapsed: false })); } catch { /* ignore */ }
+    });
     await gotoEditor(page);
     await page.locator('#btn-insert').click();
 
