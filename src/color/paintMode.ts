@@ -286,8 +286,17 @@ export function activate(): void {
   });
 
   const canvas = getRenderer().domElement;
+  // pointerdown is registered on the container in the CAPTURE phase, not on the
+  // canvas in bubble phase. The viewport installs a capture-phase pointerdown
+  // suppressor on the canvas that calls stopImmediatePropagation() to veto
+  // OrbitControls when the pointer is over the model — that would also kill a
+  // bubble-phase pointerdown listener on the canvas (which is how this used to
+  // break after the mouse→pointer migration). Capture flows ancestor→target, so
+  // a container capture listener runs first, starts the stroke, and the canvas
+  // suppressor still fires afterward to keep OrbitControls vetoed.
+  const container = canvas.parentElement ?? canvas;
+  container.addEventListener('pointerdown', onPointerDown, { capture: true });
   canvas.addEventListener('pointermove', onPointerMove);
-  canvas.addEventListener('pointerdown', onPointerDown);
   canvas.addEventListener('pointerup', onPointerUp);
   canvas.addEventListener('pointercancel', onPointerCancel);
   canvas.style.cursor = 'crosshair';
@@ -308,8 +317,9 @@ export function deactivate(): void {
   deactivateBoxDrag();
 
   const canvas = getRenderer().domElement;
+  const container = canvas.parentElement ?? canvas;
+  container.removeEventListener('pointerdown', onPointerDown, { capture: true } as EventListenerOptions);
   canvas.removeEventListener('pointermove', onPointerMove);
-  canvas.removeEventListener('pointerdown', onPointerDown);
   canvas.removeEventListener('pointerup', onPointerUp);
   canvas.removeEventListener('pointercancel', onPointerCancel);
   canvas.style.cursor = '';

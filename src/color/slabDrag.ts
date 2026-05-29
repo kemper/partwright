@@ -49,8 +49,12 @@ export function activate(): void {
   rebuildCuboid();
 
   const canvas = getRenderer().domElement;
+  // pointerdown on the container in CAPTURE phase so it runs before the
+  // viewport's capture-phase OrbitControls suppressor (which stops propagation
+  // on the canvas) — see the matching note in paintMode.ts.
+  const container = canvas.parentElement ?? canvas;
+  container.addEventListener('pointerdown', onPointerDown, { capture: true });
   canvas.addEventListener('pointermove', onPointerMove);
-  canvas.addEventListener('pointerdown', onPointerDown);
   canvas.addEventListener('pointerup', onPointerUp);
   canvas.addEventListener('pointercancel', onPointerCancel);
 }
@@ -64,8 +68,9 @@ export function deactivate(): void {
   hoverCoord = null;
 
   const canvas = getRenderer().domElement;
+  const container = canvas.parentElement ?? canvas;
+  container.removeEventListener('pointerdown', onPointerDown, { capture: true } as EventListenerOptions);
   canvas.removeEventListener('pointermove', onPointerMove);
-  canvas.removeEventListener('pointerdown', onPointerDown);
   canvas.removeEventListener('pointerup', onPointerUp);
   canvas.removeEventListener('pointercancel', onPointerCancel);
 

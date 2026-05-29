@@ -134,7 +134,11 @@ function onPointerDown(event: PointerEvent): void {
 
 function attachPointerHandler(): void {
   const canvas = getRenderer().domElement;
-  canvas.addEventListener('pointerdown', onPointerDown);
+  // pointerdown on the container in CAPTURE phase so it runs before the
+  // viewport's capture-phase OrbitControls suppressor (which stops propagation
+  // on the canvas) — see the matching note in paintMode.ts.
+  const container = canvas.parentElement ?? canvas;
+  container.addEventListener('pointerdown', onPointerDown, { capture: true });
   canvas.style.cursor = 'crosshair';
   // Veto OrbitControls on left-button hits over the model so paint doesn't
   // orbit. Off-model clicks fall through so the camera still rotates.
@@ -146,7 +150,8 @@ function attachPointerHandler(): void {
 
 function detachPointerHandler(): void {
   const canvas = getRenderer().domElement;
-  canvas.removeEventListener('pointerdown', onPointerDown);
+  const container = canvas.parentElement ?? canvas;
+  container.removeEventListener('pointerdown', onPointerDown, { capture: true } as EventListenerOptions);
   canvas.style.cursor = '';
   if (removeSuppressor) { removeSuppressor(); removeSuppressor = null; }
 }
