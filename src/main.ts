@@ -27,7 +27,7 @@ import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, setOnMeshUpdate, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
+import { initViewport, updateMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { generateId, getLatestVersion } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
@@ -76,7 +76,7 @@ import {
   hydrateExportInbox,
 } from './export/exportInbox';
 import {
-  registerImport,
+  registerImportSnapshot,
   classifyImportSource,
   hydrateImportInbox,
   type ImportInboxEntry,
@@ -212,6 +212,7 @@ import {
   type ExportOptions,
 } from './storage/sessionManager';
 import { isQuotaError } from './storage/quota';
+import { isolationSupported } from './geometry/isolation';
 import { acquireSession as acquireSessionLock, initSessionLeader, onOwnershipChange } from './storage/sessionLock';
 import { initViewerMode, isReadOnlyViewer } from './ui/viewerMode';
 import type { Version, Part } from './storage/db';
@@ -2120,7 +2121,9 @@ async function main() {
       }
       // IMAGE registers itself inside handleImageImport (it owns the chosen
       // voxel options + thumbnail it needs to stash for a faithful re-import).
-      if (committed && source !== 'IMAGE') registerImport(file, file.name, source);
+      // Snapshot the bytes so a later re-import doesn't depend on the original
+      // (possibly moved/dropped) OS file handle.
+      if (committed && source !== 'IMAGE') await registerImportSnapshot(file, file.name, source);
       return committed;
     } catch (e) {
       alert(`Failed to import "${file.name}": ${(e as Error).message}`);
@@ -2161,11 +2164,6 @@ async function main() {
     return ctx.getImageData(0, 0, canvas.width, canvas.height);
   }
 
-  /** Import an image as a colored voxel billboard in a new voxel session.
-   *  Transparent pixels (alpha below threshold) drop out, so logos and
-   *  sprites voxelize cleanly; opaque photos become a full extruded slab.
-   *  The grid is embedded in the generated `voxels.decode(...)` code, so the
-   *  session persists as code with no special schema. */
   /** Shared tail of every image→voxel import (drag/drop, recent re-click, and
    *  the modal-first menu): turn the modal result into a voxel session + a
    *  Recent Imports entry. `fallbackFile` seeds the source blob when the result
@@ -2186,13 +2184,20 @@ async function main() {
     // pre-loaded with these knobs. Needs the source blob to re-import later.
     if (sourceFile) {
       const meta: ImportMetadata = { importer: 'voxel', options: opts };
-      // chosenImage always originates from decodeImage*ToImageData (a real
-      // ImageData), so the ImageDataLike→ImageData narrowing is safe here.
-      registerImport(sourceFile, chosenName, 'IMAGE', meta, createThumbnailFromImageData(chosenImage as ImageData));
+      // Snapshot the file bytes (registerImportSnapshot): a later re-import must
+      // not depend on the original OS file still being readable. chosenImage
+      // always originates from decodeImage*ToImageData (a real ImageData), so
+      // the ImageDataLike→ImageData narrowing is safe here.
+      await registerImportSnapshot(sourceFile, chosenName, 'IMAGE', meta, createThumbnailFromImageData(chosenImage as ImageData));
     }
     return true;
   }
 
+  /** Import an image as a colored voxel billboard in a new voxel session.
+   *  Transparent pixels (alpha below threshold) drop out, so logos and
+   *  sprites voxelize cleanly; opaque photos become a full extruded slab.
+   *  The grid is embedded in the generated `voxels.decode(...)` code, so the
+   *  session persists as code with no special schema. */
   async function handleImageImport(file: File, initialOptions?: ImageToVoxelOptions): Promise<boolean> {
     let imageData: ImageData;
     try {
@@ -2651,6 +2656,33 @@ async function main() {
         openReliefImportFlow(file, savedOpts);
         return;
       }
+      // VOX re-imports rebuild the voxel session from the original bytes via the
+      // same handler as a fresh import. The .vox blob is binary, so the code
+      // fall-through below (which reads it as text and opens it as manifold-js)
+      // dumped garbage into the editor and never switched to the voxel language.
+      if (entry.source === 'VOX') {
+        const cur = getState();
+        if (cur.session && cur.versionCount > 0) {
+          const ok = await showInlineConfirm(
+            editorUI,
+            `Re-import "${entry.filename}" as a new session? Your current session will be kept.`,
+          );
+          if (!ok) return;
+        }
+        const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
+        await handleVoxImport(file);
+        return;
+      }
+      // STEP re-imports reopen the BREP-vs-tessellated-mesh target modal, same as
+      // a fresh STEP import; the code fall-through below would import the raw STEP
+      // text as manifold-js source.
+      if (entry.source === 'STEP') {
+        const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
+        await handleStepImport(file);
+        return;
+      }
+      // Remaining sources are raw code (JS / SCAD): read the blob as text and
+      // open it as a new session in the matching language.
       const cur = getState();
       if (cur.session && cur.versionCount > 0) {
         const ok = await showInlineConfirm(
@@ -3021,6 +3053,9 @@ async function main() {
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
     onOpenSessionList: () => showSessionList(),
+    // The rail only renders inside the editor, so the tour's spotlight targets
+    // already exist — start it directly without re-navigating.
+    onStartTour: () => { resetTour(); startTour(); },
   });
 
   // Parts rail — IDE-style list of the session's parts.
@@ -3372,6 +3407,21 @@ async function main() {
     updateDocumentTitle({ page: 'editor' });
   }
 
+  // Launch the guided tour from an entry point outside the editor (the landing
+  // CTA or the help page button): the tour spotlights editor chrome, so make
+  // sure we're in the editor with a live session before it starts.
+  async function takeGuidedTour() {
+    updateAppHistory('/editor', 'push');
+    transitionToEditor();
+    await ensureEditorReady();
+    if (!getState().session) {
+      await createSession();
+      runCode(defaultCode);
+    }
+    resetTour();
+    startTour();
+  }
+
   async function ensureLandingPage() {
     if (!landingEl) {
       landingEl = await createLandingPage(overlayContainer, {
@@ -3379,6 +3429,7 @@ async function main() {
         onOpenHelp: () => showHelp(),
         onOpenCatalog: () => { void showCatalogPage(); },
         onOpenWhatsNew: () => showWhatsNewPage(),
+        onTakeTour: () => { void takeGuidedTour(); },
         onOpenSession: openSessionFromLanding,
         onLoadCatalogEntry: handleCatalogEntryLoad,
       });
@@ -3436,17 +3487,7 @@ async function main() {
             void syncEditorFromURL();
           }
         },
-        onStartTour: async () => {
-          updateAppHistory('/editor', 'push');
-          transitionToEditor();
-          await ensureEditorReady();
-          if (!getState().session) {
-            await createSession();
-            runCode(defaultCode);
-          }
-          resetTour();
-          startTour();
-        },
+        onStartTour: () => { void takeGuidedTour(); },
       });
     }
     overlayContainer.classList.remove('hidden');
@@ -3875,14 +3916,56 @@ async function main() {
     showNotFoundPage();
   }
 
-  // Init geometry engine — wrapped in try/catch so editor/viewport still init on failure
+  // Init geometry engine — wrapped in try/catch so editor/viewport still init
+  // on failure. The WASM engines need SharedArrayBuffer, which requires
+  // cross-origin isolation (COOP+COEP). The coi-serviceworker.js shim installs
+  // those headers and reloads ONCE on a first visit to gain isolation, so a
+  // transient non-isolated state on the very first load is expected and must
+  // NOT flash the scary message — we gate on the shim having had its reload.
+  const COI_MISSING_MSG =
+    'This browser tab is not cross-origin isolated, so the WASM engine (which needs SharedArrayBuffer) can’t start. ' +
+    'This usually fixes itself on reload; if it persists, the required COOP/COEP headers aren’t reaching the page ' +
+    '(a proxy, extension, or unsupported browser can strip them).';
   setStatus(statusBar, 'loading', 'Loading WASM...');
-  try {
-    await initEngine();
-    engineOk = true;
-  } catch (e) {
-    console.error('WASM engine failed to load:', e);
-    setStatus(statusBar, 'error', 'WASM failed');
+  if (!isolationSupported()) {
+    // Has the COI shim already had a chance to reload this tab? It registers a
+    // service worker and reloads once; until a controller exists, that reload
+    // is still pending, so stay on the neutral "Loading…" message rather than
+    // alarming the user. We remember that we waited so a second non-isolated
+    // load (where the shim can't help) surfaces the explanation.
+    let coiReloadPending = false;
+    try {
+      const waited = sessionStorage.getItem('partwright-coi-waited') === '1';
+      const hasController = 'serviceWorker' in navigator && !!navigator.serviceWorker.controller;
+      coiReloadPending = !waited && !hasController && 'serviceWorker' in navigator;
+      if (coiReloadPending) sessionStorage.setItem('partwright-coi-waited', '1');
+    } catch {
+      // sessionStorage unavailable — treat as "no reload pending" and explain.
+      coiReloadPending = false;
+    }
+    if (!coiReloadPending) {
+      setStatus(statusBar, 'error', 'WASM unavailable (not cross-origin isolated)');
+      errorLog.capture({ level: 'error', source: 'engine', message: COI_MISSING_MSG });
+      showToast(COI_MISSING_MSG, { variant: 'warn', durationMs: 9000 });
+    }
+    // Either way, don't attempt initEngine — it would throw on the missing
+    // SharedArrayBuffer. engineOk stays false; the editor/viewport still init.
+  } else {
+    try {
+      await initEngine();
+      engineOk = true;
+    } catch (e) {
+      console.error('WASM engine failed to load:', e);
+      // Distinguish a genuine load failure from the COI-missing case (which we
+      // already handled above) so the message points at the right cause.
+      const coiMissing = !isolationSupported();
+      setStatus(statusBar, 'error', coiMissing ? 'WASM unavailable (not cross-origin isolated)' : 'WASM failed');
+      errorLog.capture({
+        level: 'error',
+        source: 'engine',
+        message: coiMissing ? COI_MISSING_MSG : `WASM engine failed to load: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
   }
 
   // Init viewport
@@ -3890,6 +3973,14 @@ async function main() {
   // Keep the live triangle-count readout (and high-complexity warning) in sync
   // with every displayed mesh — runs, paint strokes, simplify, clear.
   setOnMeshUpdate((mesh) => refreshTriangleCount(mesh.numTri));
+  // Surface WebGL context loss / recovery as a toast (three.js auto-restores
+  // the GL programs; the viewport just pauses + resumes its render loop).
+  setOnContextLost(() => {
+    showToast('3D view paused — the graphics context was lost. Recovering…', { variant: 'warn', durationMs: 6000 });
+  });
+  setOnContextRestored(() => {
+    showToast('3D view recovered.', { variant: 'success' });
+  });
 
   // Customizer panel — a viewport overlay that surfaces the parameters a model
   // declares via api.params({...}). Editing a widget records the override and
@@ -4004,6 +4095,41 @@ async function main() {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) autosaveDraft();
   });
+
+  // One-time low-memory heads-up. On devices reporting <= 4 GB RAM
+  // (navigator.deviceMemory), the WASM engines + Three.js can get sluggish or
+  // OOM on heavy models. Shown as a DISMISSIBLE banner (not a toast — a toast
+  // can't be persistently dismissed) with the choice remembered in
+  // localStorage. deviceMemory is undefined in Firefox/Safari, so the
+  // typeof-number guard means those browsers never see it (no false alarm).
+  const LOWMEM_DISMISS_KEY = 'partwright-lowmem-dismissed';
+  function maybeShowLowMemoryNotice(): void {
+    const dm = (navigator as unknown as { deviceMemory?: unknown }).deviceMemory;
+    if (typeof dm !== 'number' || dm > 4) return;
+    try {
+      if (localStorage.getItem(LOWMEM_DISMISS_KEY) === '1') return;
+    } catch { /* localStorage unavailable — show it anyway */ }
+
+    const banner = document.createElement('div');
+    banner.id = 'lowmem-notice';
+    banner.className = 'flex items-center gap-3 px-4 py-2 text-xs bg-amber-900/30 border-b border-amber-700/40 text-amber-200';
+    const msg = document.createElement('span');
+    msg.className = 'flex-1';
+    msg.textContent = `Heads up: this device reports ${dm} GB of memory. Large or high-detail models may render slowly or run out of memory — lower the modeling quality (⚙) or simplify the mesh if things get sluggish.`;
+    const dismiss = document.createElement('button');
+    // 44px-tall hit area for touch while staying visually compact.
+    dismiss.className = 'shrink-0 -my-2 px-3 py-3 leading-none text-amber-300 hover:text-amber-100 transition-colors';
+    dismiss.setAttribute('aria-label', 'Dismiss low-memory notice');
+    dismiss.textContent = '✕';
+    dismiss.addEventListener('click', () => {
+      banner.remove();
+      try { localStorage.setItem(LOWMEM_DISMISS_KEY, '1'); } catch { /* best-effort */ }
+    });
+    banner.appendChild(msg);
+    banner.appendChild(dismiss);
+    // Sit at the very top of the editor UI, above the toolbar.
+    editorUI.insertBefore(banner, editorUI.firstChild);
+  }
 
   // When the user changes the modeling-quality preset, re-render the
   // current code so the new segment count takes effect immediately.
@@ -4308,6 +4434,7 @@ async function main() {
   if (!showLanding && !showHelpPage && !showCatalog && !showLegalPage && !showWhatsNew && !show404 && !hasShareHash()) {
     maybeStartTour();
     maybeShowShortcutsHint();
+    maybeShowLowMemoryNotice();
   }
 
   // A `#share=…` link opens the read-only preview INSTEAD of the normal editor

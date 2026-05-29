@@ -43,6 +43,8 @@ export interface CreateLayoutOptions {
   onToggleDiagnostics?: () => void;
   /** Open the session switcher list (rail header action). */
   onOpenSessionList?: () => void;
+  /** Launch the first-visit guided tour (rail utility item). */
+  onStartTour?: () => void;
 }
 
 export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOptions = {}): LayoutElements {
@@ -193,11 +195,11 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   rail.appendChild(tabData);
 
   // === Bottom utility group ===
-  // Catalog, Settings (quality), Diagnostics, and Help move out of the top
-  // toolbar so it can slim down. `md:mt-auto` on the first item pushes the whole
-  // cluster to the bottom of the desktop rail. Element ids are preserved
-  // (btn-catalog, btn-quality, btn-diagnostics, btn-help, btn-ai) so the tour
-  // and existing tests keep finding them.
+  // Catalog, Settings (quality), Diagnostics, Help, Guided tour, and About move
+  // out of the top toolbar so it can slim down. `md:mt-auto` on the first item
+  // pushes the whole cluster to the bottom of the desktop rail. Element ids are
+  // preserved (btn-catalog, btn-quality, btn-diagnostics, btn-help, btn-tour,
+  // btn-about, btn-ai) so the tour and existing tests keep finding them.
   const railActionClass = 'flex items-center gap-2 shrink-0 whitespace-nowrap px-3 py-2.5 md:py-2 text-sm md:text-[13px] font-medium text-zinc-400 border-b-2 md:border-b-0 border-transparent [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-800/60 transition-colors';
   const makeAction = (id: string, icon: string, label: string, onClick: () => void): HTMLButtonElement => {
     const b = document.createElement('button');
@@ -233,6 +235,14 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   });
   helpNavBtn.title = 'Help';
 
+  // Guided tour — explicit entry point to (re)play the spotlight walkthrough.
+  // Sits between Help and About so it reads as part of the "learn the app"
+  // cluster. The first-visit tour fires automatically; this lets users start
+  // it again on demand.
+  const tourNavBtn = makeAction('btn-tour', '🧭', 'Guided tour', () => opts.onStartTour?.());
+  tourNavBtn.title = 'Take the guided tour of the editor';
+  tourNavBtn.setAttribute('aria-label', 'Take the guided tour');
+
   // About — build/version info (commit, branch, links) for verifying which
   // Cloudflare branch/PR deploy you're testing.
   const aboutNavBtn = makeAction(
@@ -260,6 +270,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   rail.appendChild(qualityNavBtn);
   rail.appendChild(diagNavBtn);
   rail.appendChild(helpNavBtn);
+  rail.appendChild(tourNavBtn);
   rail.appendChild(aboutNavBtn);
   rail.appendChild(aiNavBtn);
 
