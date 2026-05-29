@@ -30,6 +30,22 @@ let controls: OrbitControls;
 let meshGroup: THREE.Group;
 let animationId: number;
 
+// === WebGL context-loss recovery ===
+// The GPU can drop the WebGL context (driver reset, tab backgrounded too long,
+// OOM). Three.js auto-recompiles its programs on restore, so we must NOT
+// recreate the renderer — we only pause the render loop while lost and resume
+// it on restore. preventDefault() on the lost event is REQUIRED for the
+// browser to fire 'restored' at all.
+let contextLost = false;
+let onContextLost: (() => void) | null = null;
+let onContextRestored: (() => void) | null = null;
+
+/** Hook fired when the WebGL context is lost (recoverable) and again when it
+ *  is restored. Lets the host surface a toast without viewport importing the
+ *  toast module (mirrors setOnMeshUpdate). */
+export function setOnContextLost(fn: () => void): void { onContextLost = fn; }
+export function setOnContextRestored(fn: () => void): void { onContextRestored = fn; }
+
 // === On-demand rendering ===
 // The render loop only paints a frame when something actually changed, instead
 // of re-rendering an idle scene 60×/second. The `needsRender` flag (set by
@@ -132,6 +148,24 @@ export function initViewport(container: HTMLElement): {
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(baseDpr());
   renderer.localClippingEnabled = true;
+
+  // WebGL context-loss recovery. preventDefault() on 'lost' is what lets the
+  // browser restore the context; while lost we cancel the RAF loop so we don't
+  // spin calling render() on a dead context. On 'restored' three has already
+  // recompiled its GLSL, so we just resume the loop and force a repaint.
+  canvas.addEventListener('webglcontextlost', (event) => {
+    event.preventDefault();
+    contextLost = true;
+    if (animationId !== undefined) cancelAnimationFrame(animationId);
+    onContextLost?.();
+  }, false);
+  canvas.addEventListener('webglcontextrestored', () => {
+    contextLost = false;
+    needsRender = true;
+    onContextRestored?.();
+    // Restart the render loop (it was cancelled on loss).
+    animate();
+  }, false);
 
   controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
@@ -278,6 +312,10 @@ export function initViewport(container: HTMLElement): {
   // Animate
   const timer = new Timer();
   function animate(timestamp?: number) {
+    // While the GL context is lost, stop the loop entirely — the 'restored'
+    // handler restarts it. (Guard in addition to the cancelAnimationFrame in
+    // the lost handler in case a queued frame fires before that runs.)
+    if (contextLost) return;
     animationId = requestAnimationFrame(animate);
     timer.update(timestamp);
     const delta = timer.getDelta();

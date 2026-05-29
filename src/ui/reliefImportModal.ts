@@ -7,7 +7,7 @@
 import type { ReliefOptions, ReliefImportMode, TileOutputKind, TileShapeKind, HeightGrid, ReliefMesh, SeedRegion } from '../relief/types';
 import { DEFAULT_RELIEF_OPTIONS } from '../relief/types';
 import { sampleImageToGrid, detectBackgroundMask, bgMaskFromColor, generateRelief, generateReliefFromSvg } from '../relief/imageToRelief';
-import { registerImport, type ImportMetadata } from '../import/importInbox';
+import { registerImportSnapshot, type ImportMetadata } from '../import/importInbox';
 import { createThumbnailFromBlob } from '../import/imageThumbnail';
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
@@ -839,7 +839,9 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
         try {
           const meta: ImportMetadata = { importer: 'relief', options: structuredClone(opts) };
           const thumbnail = await createThumbnailFromBlob(pickedFile);
-          registerImport(pickedFile, pickedFile.name, svgText ? 'SVG' : 'IMAGE', meta, thumbnail);
+          // Snapshot the bytes so a later re-import doesn't depend on the
+          // original OS file still being readable (see registerImportSnapshot).
+          await registerImportSnapshot(pickedFile, pickedFile.name, svgText ? 'SVG' : 'IMAGE', meta, thumbnail);
         } catch { /* best-effort, recents are nice-to-have */ }
       }
       shell.close();
