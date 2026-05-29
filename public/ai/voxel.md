@@ -154,8 +154,8 @@ click faces on the model:
 | Add | ➕ | Place a **new** cube on the clicked face (stacks on top, extends sideways, …). |
 | Remove | ⌫ | Delete the clicked voxel. |
 | Bucket | 🪣 | Recolor the whole face-connected region that shares the clicked voxel's color. |
-| Box fill | ⬚➕ | Click two corners to fill that inclusive box with the picker color. |
-| Box subtract | ⬚⌫ | Click two corners to carve that box out (great for cutting holes). |
+| Box fill | ⬚➕ | Click two voxels to fill the inclusive box between them with the picker color (bridges gaps; use **Add** to grow outward). |
+| Box subtract | ⬚⌫ | Click two voxels to carve out the box between them (great for cutting holes). |
 
 Pick a color from the swatches or the **custom color** picker (any RGB). **↺
 Undo** / **↻ Redo** step through your edits. The editor is locked while the

@@ -51,6 +51,7 @@ let redoStack: VoxelGrid[] = [];
 let cbMeshUpdate: ((mesh: MeshData) => void) | null = null;
 let cbLockChange: ((locked: boolean) => void) | null = null;
 let cbStateChange: (() => void) | null = null;
+let removeSuppressor: (() => void) | null = null;
 
 export function isActive(): boolean { return active; }
 export function setColor(c: [number, number, number] | string | number): void {
@@ -62,8 +63,12 @@ export function setEraser(on: boolean): void { eraser = !!on; }
 
 /** The active studio tool. */
 export function getTool(): VoxelTool { return tool; }
-/** Switch the active tool. Cancels any half-finished box selection. */
+/** Switch the active tool. Switching tools cancels any half-finished box
+ *  selection; re-selecting the *same* tool is a no-op (so a caller that
+ *  re-passes the tool on every `voxelStudioApply` doesn't keep re-banking the
+ *  first box corner and never completing the box). */
 export function setTool(t: VoxelTool): void {
+  if (t === tool) return;
   tool = t;
   boxCorner = null;
   cbStateChange?.();
@@ -101,6 +106,7 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks): string |
   }
   run = r.data;
   active = true;
+  tool = 'paint';
   boxCorner = null;
   undoStack = [];
   redoStack = [];
@@ -158,6 +164,7 @@ export function applyAtTriangle(triangleIndex: number): boolean {
     case 'bucket': return mutate(() => doBucket(x, y, z));
     case 'boxAdd':
     case 'boxRemove': return applyBox(x, y, z);
+    default: { const _exhaustive: never = tool; void _exhaustive; return false; }
   }
 }
 
@@ -286,8 +293,6 @@ function attachPointerHandler(): void {
     return isPointerOverModel(event);
   });
 }
-
-let removeSuppressor: (() => void) | null = null;
 
 function detachPointerHandler(): void {
   const canvas = getRenderer().domElement;

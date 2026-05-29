@@ -76,9 +76,11 @@ test.describe('voxel studio', () => {
       // A flat 4×1×4 plate gives several distinct exposed faces to click.
       await pw.run(`return api.voxels().fillBox([0,0,0],[3,0,3], '#888888');`);
       pw.activateVoxelPaint();
-      pw.setVoxelTool('boxRemove');
-      const first = pw.voxelStudioApply({ faceIndex: 0 });
-      const second = pw.voxelStudioApply({ faceIndex: 10 });
+      // Re-pass the tool on BOTH calls — a natural AI/programmatic pattern that
+      // must not re-bank the corner (regression guard: setTool is a no-op when
+      // the tool is unchanged, so the box still completes on the second click).
+      const first = pw.voxelStudioApply({ faceIndex: 0, tool: 'boxRemove' });
+      const second = pw.voxelStudioApply({ faceIndex: 10, tool: 'boxRemove' });
       return { first, second };
     });
     // First click banks a corner: no change, a pending corner is set.
