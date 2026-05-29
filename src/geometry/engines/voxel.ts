@@ -53,6 +53,10 @@ export const voxelEngine: Engine = {
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       const isSyntaxError = e instanceof SyntaxError;
+      // The schema rides on error returns too (matching manifold-js) so a
+      // model that declared params before throwing keeps its Customizer panel
+      // live for correction. `collectSchema()` returns whatever was captured
+      // before the throw — possibly undefined, which is the right answer.
       return {
         mesh: null,
         manifold: null,
@@ -60,6 +64,7 @@ export const voxelEngine: Engine = {
         diagnostics: isSyntaxError
           ? javaScriptSyntaxDiagnostics(jsCode, msg, e)
           : runtimeDiagnostic(msg, undefined, 'JavaScript'),
+        paramsSchema: capture.collectSchema(),
       };
     }
 
@@ -70,6 +75,7 @@ export const voxelEngine: Engine = {
         manifold: null,
         error,
         diagnostics: runtimeDiagnostic(error, 'Add a final `return` that returns the grid from api.voxels().', 'JavaScript'),
+        paramsSchema: capture.collectSchema(),
       };
     }
 
@@ -81,6 +87,7 @@ export const voxelEngine: Engine = {
         manifold: null,
         error,
         diagnostics: runtimeDiagnostic(error, 'Occupy at least one voxel before returning the grid.', 'JavaScript'),
+        paramsSchema: capture.collectSchema(),
       };
     }
 
@@ -89,7 +96,7 @@ export const voxelEngine: Engine = {
       return { mesh, manifold: null, error: null, paramsSchema: capture.collectSchema() };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { mesh: null, manifold: null, error: msg, diagnostics: runtimeDiagnostic(msg, undefined, 'JavaScript') };
+      return { mesh: null, manifold: null, error: msg, diagnostics: runtimeDiagnostic(msg, undefined, 'JavaScript'), paramsSchema: capture.collectSchema() };
     }
   },
 

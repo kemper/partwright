@@ -190,11 +190,14 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
     // allocated along the way (e.g. `BREP.box(...).fillet(...)` chains whose
     // final step threw).
     disposeBrepAllocationsExcept(consumeBrepAllocations(), null);
+    // Schema rides on the error return too (matching manifold-js) so a model
+    // that declared params before failing keeps its Customizer panel live.
     return {
       mesh: null,
       manifold: null,
       error: userScriptError?.error ?? 'BREP code did not produce a shape.',
       diagnostics: userScriptError?.diagnostics,
+      paramsSchema: paramCapture.collectSchema(),
     };
   }
 
@@ -281,6 +284,7 @@ export async function runReplicadAsync(jsCode: string, paramOverrides?: Record<s
       manifold: null,
       error: `BREP tessellation failed: ${msg}`,
       diagnostics: runtimeDiagnostic(msg, undefined, 'JavaScript'),
+      paramsSchema: paramCapture.collectSchema(),
     };
   }
 }
