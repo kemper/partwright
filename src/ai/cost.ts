@@ -31,7 +31,10 @@ const CACHE_WRITE_MULTIPLIER = 1.25;
 const FALLBACK_PRICING: CatalogPricing = { input: 3.0, output: 15.0 };
 
 function pricingFor(provider: string, model: string): CatalogPricing | null {
-  if (provider === 'local') return null;
+  // Local (WebGPU) and custom (self-hosted OpenAI-compatible endpoint) turns
+  // are free at the API level — the user paid for the hardware/electricity —
+  // so they're billed at $0. The cost meter still tracks total tokens.
+  if (provider === 'local' || provider === 'custom') return null;
   // The catalog is keyed by our internal Provider type; cast through string
   // because the call sites pass `provider` as a raw string (the same way
   // the rest of the cost meter does).

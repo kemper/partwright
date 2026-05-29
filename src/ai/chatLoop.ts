@@ -14,6 +14,7 @@ import { streamTurn, buildApiMessages, type StreamCallbacks as AnthropicStreamCa
 import { streamLocalTurn, resolveLocalModel, type StreamCallbacks as LocalStreamCallbacks } from './local';
 import { streamTurn as streamTurnOpenai, type StreamCallbacks as OpenaiStreamCallbacks } from './openai';
 import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCallbacks } from './gemini';
+import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { recordEvent } from './diagnostics';
 import { buildToolList, executeTool } from './tools';
@@ -294,6 +295,23 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           history: workingHistory,
           tools,
           thinking: toggles.thinking,
+        }, streamCallbacks, signal);
+      } else if (toggles.provider === 'custom') {
+        // Generic OpenAI-compatible endpoint (e.g. a self-hosted llama.cpp
+        // server). The base URL travels on toggles (serialized into the
+        // Worker); the API key is OPTIONAL — fall back to an empty string,
+        // which makes the provider omit the Authorization header.
+        if (!toggles.customBaseUrl.trim()) throw new Error('Custom endpoint URL is required. Open AI Settings → Custom to set it.');
+        if (!toggles.customModel.trim()) throw new Error('A model id is required for the custom endpoint. Open AI Settings → Custom to set or fetch one.');
+        const customKey = apiKey ?? (await getApiKey('custom')) ?? '';
+        result = await streamTurnCustom({
+          apiKey: customKey,
+          baseUrl: toggles.customBaseUrl,
+          model: toggles.customModel,
+          systemPrompt,
+          systemSuffix: toggleSuffix(toggles),
+          history: workingHistory,
+          tools,
         }, streamCallbacks, signal);
       } else {
         if (!toggles.localModel) throw new Error('No local model is selected. Open AI settings → Local model.');

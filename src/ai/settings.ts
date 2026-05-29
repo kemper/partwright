@@ -33,6 +33,7 @@ export interface AiSettings {
     local: string | null;
     openai: string | null;
     gemini: string | null;
+    custom: string | null;
   };
   /** User-added local models. Lets the user load any MLC-compiled model
    *  from Hugging Face (or anywhere) without us shipping it in the
@@ -88,7 +89,7 @@ export interface LocalContextSettings {
 const DEFAULT_OPENAI_MODEL: OpenaiModelId = 'gpt-5-mini';
 const DEFAULT_GEMINI_MODEL: GeminiModelId = 'gemini-flash-latest';
 
-const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel'> & { anthropicModel: AnthropicModelId }> = {
+const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatToggles, 'provider' | 'anthropicModel' | 'localModel' | 'openaiModel' | 'geminiModel' | 'customModel' | 'customBaseUrl'> & { anthropicModel: AnthropicModelId }> = {
   minimal: {
     vision: { views: false, resolution: 'low', angles: 'auto' },
     scope: { runCode: true, saveVersions: true, paintFaces: false, sessionNotes: false },
@@ -134,6 +135,8 @@ const DEFAULT_TOGGLES: ChatToggles = {
   localModel: null,
   openaiModel: DEFAULT_OPENAI_MODEL,
   geminiModel: DEFAULT_GEMINI_MODEL,
+  customModel: '',
+  customBaseUrl: '',
 };
 
 const DEFAULT_SETTINGS: AiSettings = {
@@ -142,7 +145,7 @@ const DEFAULT_SETTINGS: AiSettings = {
   drawerOpen: true,
   editorCollapsed: null,
   autoCompactMode: 'off',
-  systemPromptOverrides: { anthropic: null, local: null, openai: null, gemini: null },
+  systemPromptOverrides: { anthropic: null, local: null, openai: null, gemini: null, custom: null },
   customLocalModels: [],
   localContext: { windowSizeOverride: null, sliding: false, stallTimeoutSec: 60 },
   aiPanelWidth: 420,
@@ -187,6 +190,8 @@ function cloneToggles(t: ChatToggles): ChatToggles {
     localModel: t.localModel,
     openaiModel: t.openaiModel,
     geminiModel: t.geminiModel,
+    customModel: t.customModel,
+    customBaseUrl: t.customBaseUrl,
   };
 }
 
@@ -226,12 +231,17 @@ export function reloadSettingsFromStorage(): AiSettings {
 export async function aiConnectionMode(): Promise<'disconnected' | 'cloud' | 'local'> {
   const settings = loadSettings();
   if (settings.toggles.provider === 'local' && settings.toggles.localModel) return 'local';
-  const [anthropic, openai, gemini] = await Promise.all([
+  // A configured custom endpoint counts as connected even with no key — the
+  // base URL is the real "is it set up" signal (auth is optional). Treated as
+  // 'cloud' since, like the hosted providers, it's a remote HTTP endpoint.
+  if (settings.toggles.customBaseUrl.trim().length > 0) return 'cloud';
+  const [anthropic, openai, gemini, custom] = await Promise.all([
     getKey('anthropic'),
     getKey('openai'),
     getKey('gemini'),
+    getKey('custom'),
   ]);
-  return (anthropic || openai || gemini) ? 'cloud' : 'disconnected';
+  return (anthropic || openai || gemini || custom) ? 'cloud' : 'disconnected';
 }
 
 export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
@@ -255,6 +265,8 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       localModel: settings.toggles.localModel,
       openaiModel: settings.toggles.openaiModel,
       geminiModel: settings.toggles.geminiModel,
+      customModel: settings.toggles.customModel,
+      customBaseUrl: settings.toggles.customBaseUrl,
     },
   };
 }
@@ -374,6 +386,24 @@ export function setGeminiModel(settings: AiSettings, model: string): AiSettings 
   };
 }
 
+/** Set the model id sent to the custom OpenAI-compatible endpoint. */
+export function setCustomModel(settings: AiSettings, model: string): AiSettings {
+  return {
+    ...settings,
+    preset: 'custom',
+    toggles: { ...settings.toggles, customModel: model },
+  };
+}
+
+/** Set the base URL of the custom OpenAI-compatible endpoint (trimmed). */
+export function setCustomBaseUrl(settings: AiSettings, baseUrl: string): AiSettings {
+  return {
+    ...settings,
+    preset: 'custom',
+    toggles: { ...settings.toggles, customBaseUrl: baseUrl.trim() },
+  };
+}
+
 export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggles>): AiSettings {
   const next: ChatToggles = {
     vision: { ...settings.toggles.vision, ...(partial.vision ?? {}) },
@@ -387,6 +417,8 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     localModel: partial.localModel ?? settings.toggles.localModel,
     openaiModel: partial.openaiModel ?? settings.toggles.openaiModel,
     geminiModel: partial.geminiModel ?? settings.toggles.geminiModel,
+    customModel: partial.customModel ?? settings.toggles.customModel,
+    customBaseUrl: partial.customBaseUrl ?? settings.toggles.customBaseUrl,
   };
   return { ...settings, preset: 'custom', toggles: next };
 }
@@ -466,12 +498,15 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       localModel: validLocalModel,
       openaiModel: tgls.openaiModel ?? DEFAULT_SETTINGS.toggles.openaiModel,
       geminiModel: tgls.geminiModel ?? DEFAULT_SETTINGS.toggles.geminiModel,
+      customModel: tgls.customModel ?? DEFAULT_SETTINGS.toggles.customModel,
+      customBaseUrl: tgls.customBaseUrl ?? DEFAULT_SETTINGS.toggles.customBaseUrl,
     },
     systemPromptOverrides: {
       anthropic: overrides.anthropic ?? null,
       local: overrides.local ?? null,
       openai: overrides.openai ?? null,
       gemini: overrides.gemini ?? null,
+      custom: overrides.custom ?? null,
     },
     customLocalModels: Array.isArray(partial.customLocalModels) ? partial.customLocalModels : [],
     localContext: normalizeLocalContext(partial.localContext),
@@ -629,6 +664,7 @@ export function providerLabel(provider: Provider): string {
     case 'anthropic': return 'Anthropic Claude';
     case 'openai': return 'OpenAI';
     case 'gemini': return 'Google Gemini';
+    case 'custom': return 'Custom endpoint';
     case 'local': return 'Local model';
   }
 }
