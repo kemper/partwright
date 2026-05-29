@@ -146,11 +146,11 @@ test.describe('geodesic airbrush', () => {
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
-        canvas.dispatchEvent(new MouseEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0 }));
-      fire('mousemove', cx, cy);
-      fire('mousedown', cx, cy);
-      for (let dx = 6; dx <= 24; dx += 6) fire('mousemove', cx + dx, cy);
-      fire('mouseup', cx + 24, cy);
+        canvas.dispatchEvent(new PointerEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      fire('pointermove', cx, cy);
+      fire('pointerdown', cx, cy);
+      for (let dx = 6; dx <= 24; dx += 6) fire('pointermove', cx + dx, cy);
+      fire('pointerup', cx + 24, cy);
       // The interactive brush commits through the async (worker-backed) paint
       // pipeline; wait for the subdivision job to settle.
       await pw.waitForPaint();

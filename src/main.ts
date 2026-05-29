@@ -44,7 +44,9 @@ import { mergeChatBucket } from './ai/db';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
 import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
+import { createLegalPage } from './ui/legal';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
+import { showExportConfirm, hasExportWarning, type ExportWarningInfo } from './ui/exportConfirmModal';
 import { createCatalogPage, type CatalogManifestEntry } from './ui/catalog';
 import { createWhatsNewPage } from './ui/whatsNew';
 import { createNotFoundPage } from './ui/notFound';
@@ -62,6 +64,7 @@ import { exportGLB, buildGLB } from './export/gltf';
 import { exportSTL, buildSTL } from './export/stl';
 import { exportOBJ, buildOBJ } from './export/obj';
 import { export3MF, build3MF } from './export/threemf';
+import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
 import { exportSessionJSON, exportRawCode, buildSessionJSON, buildRawCode } from './export/session';
 import { blobToBase64, downloadBlob } from './export/download';
@@ -88,12 +91,15 @@ import { parseSTL } from './import/parsers/stl';
 import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
+import { runVoxelForPaint } from './geometry/engines/voxel';
+import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
 import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type ReliefCommonOptions, type SeedRegion, type PreviewMode, type GenerateReliefResult } from './relief/types';
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
 import { setReliefSettings, getReliefSettings, updateReliefSettings, isReliefSession, getPreviewModeFor } from './relief/reliefSettings';
+import { saveReliefSource, getReliefSource } from './relief/reliefSource';
 import { listFilaments, hexToRgb } from './relief/filaments';
 import { meshBounds } from './color/slabPaint';
 import { openReliefImportModal } from './ui/reliefImportModal';
@@ -203,6 +209,7 @@ import {
   type ExportedSession,
   type ExportOptions,
 } from './storage/sessionManager';
+import { isQuotaError } from './storage/quota';
 import { acquireSession as acquireSessionLock, initSessionLeader, onOwnershipChange } from './storage/sessionLock';
 import { initViewerMode, isReadOnlyViewer } from './ui/viewerMode';
 import type { Version, Part } from './storage/db';
@@ -308,6 +315,12 @@ let paintGeneration = 0;
  *  an orphan — neither applies to an internal abort. Cleared after the
  *  cancel handler runs. */
 let pendingInternalAbort = false;
+/** Id of the most recently created brushStroke region that is still awaiting
+ *  the worker's triangle resolution. `handlePaintCancel` removes exactly this
+ *  region on a user cancel — narrowing to the id avoids wiping an unrelated
+ *  brushStroke region that legitimately resolved to zero triangles. Cleared
+ *  once the stroke's refine lands (or its cancel is handled). */
+let pendingStrokeRegionId: number | null = null;
 /** Deferred that resolves once `asyncReconcileInFlight` flips false (so any
  *  coalesced follow-ups have also drained). `partwright.waitForPaint()` and
  *  the e2e tests that drive the brush via mouse events await this to know
@@ -392,7 +405,7 @@ export type CoverageMode = typeof COVERAGE_MODES[number];
 const BASE_TITLE = 'Partwright';
 let _expectedTitle = 'Partwright — AI-Driven Parametric CAD in Your Browser';
 
-function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | '404' | 'catalog' | 'whats-new'; sessionName?: string | null }) {
+function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | '404' | 'catalog' | 'legal' | 'whats-new'; sessionName?: string | null }) {
   let route: RouteName;
   let titleOverride: string | undefined;
   if (context?.page === 'landing' || (context?.page === undefined && shouldShowLanding())) {
@@ -401,6 +414,8 @@ function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | 
     route = 'help';
   } else if (context?.page === 'catalog') {
     route = 'catalog';
+  } else if (context?.page === 'legal') {
+    route = 'legal';
   } else if (context?.page === 'whats-new') {
     route = 'whats-new';
   } else if (context?.page === '404') {
@@ -1019,7 +1034,10 @@ function paintBrushStrokeSync(
   color: [number, number, number],
   descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }>,
 ): { id: number; name: string; triangles: Set<number> } {
-  return withSyncReconcile(() => addRegion(name, color, 'paintbrush', descriptor, new Set<number>()));
+  const region = withSyncReconcile(() => addRegion(name, color, 'paintbrush', descriptor, new Set<number>()));
+  // Track this as the in-flight stroke so a user cancel removes exactly it.
+  pendingStrokeRegionId = region.id;
+  return region;
 }
 
 /** True when `a` starts with exactly the entries of `b` (by reference). */
@@ -1082,6 +1100,8 @@ async function reconcilePaintedGeometryAsyncTick(): Promise<void> {
     const newDesc = strokesNow[strokesNow.length - 1] as Extract<RegionDescriptor, { kind: 'brushStroke' }>;
     try {
       await appendStrokeRefineAsync(newDesc);
+      // The stroke resolved successfully, so it's no longer a cancel orphan.
+      pendingStrokeRegionId = null;
       // Region set may have shifted while the await was in flight (coalesced
       // changes, or an agent-API sync action via withSyncReconcile). Re-read.
       lastStrokeList = strokeDescriptors();
@@ -1275,8 +1295,16 @@ function handlePaintCancel(): void {
 
   // Real user-initiated cancel. The mesh is still pre-stroke (the worker
   // never applied a result, since the rejection happened before the apply).
-  // Drop any orphaned brushStroke regions (empty triangles → unresolved).
-  const orphans = getRegions().filter(r => r.descriptor.kind === 'brushStroke' && r.triangles.size === 0);
+  // Drop the orphaned brushStroke region (empty triangles → unresolved). We
+  // remove exactly the region this cancelled stroke added (tracked by id at
+  // creation), still requiring its triangle set to be empty — removing every
+  // zero-triangle brushStroke region would also wipe an unrelated region that
+  // legitimately resolved to zero triangles.
+  const cancelledId = pendingStrokeRegionId;
+  pendingStrokeRegionId = null;
+  const orphans = cancelledId == null
+    ? []
+    : getRegions().filter(r => r.id === cancelledId && r.descriptor.kind === 'brushStroke' && r.triangles.size === 0);
   if (orphans.length > 0) {
     suspendReconcile = true;
     try {
@@ -1458,20 +1486,27 @@ function shouldShowLanding(): boolean {
 }
 
 function shouldShowHelp(): boolean {
-  return window.location.pathname === '/help';
+  // A `/help#share=…` link must open the shared preview (editor), not Help —
+  // mirrors shouldShowLanding's share-hash exclusion.
+  return window.location.pathname === '/help' && !hasShareHash();
 }
 
 function shouldShowCatalog(): boolean {
-  return window.location.pathname === '/catalog';
+  return window.location.pathname === '/catalog' && !hasShareHash();
 }
 
 function shouldShowWhatsNew(): boolean {
   return window.location.pathname === '/whats-new';
 }
 
+function shouldShowLegal(): boolean {
+  return window.location.pathname === '/legal';
+}
+
 function shouldShow404(): boolean {
+  if (hasShareHash()) return false;
   const path = window.location.pathname;
-  return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog' && path !== '/whats-new';
+  return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog' && path !== '/legal' && path !== '/whats-new';
 }
 
 function getTabFromURL(): TabName {
@@ -1576,10 +1611,43 @@ async function main() {
     return { sessionId: session.id };
   }
 
+  // Cancel an active voxel-paint session. Its live grid + per-triangle
+  // provenance map are bound to the OUTGOING code, so it must stop before we
+  // load or import different code — otherwise a later click/bake writes into the
+  // wrong model. Safe no-op when paint isn't active.
+  function cancelVoxelPaintIfActive(): void {
+    if (voxelPaint.isActive()) {
+      voxelPaint.deactivate();
+      syncVoxelPaintUI();
+    }
+  }
+
+  // Drop the outgoing target's paint state — color regions, the model-declared
+  // color underlay, and any in-flight subdivision worker job — then re-sync the
+  // editor lock. These live in module state the session/part layer doesn't own,
+  // so a fresh target (new session, new part, freshly imported model) must wipe
+  // them or it inherits the previous one's regions: the next runCodeSync
+  // re-resolves them onto the new mesh and the editor opens locked.
+  function dropPaintState(): void {
+    // Drop any in-flight subdivision worker job before clearing regions, so a
+    // late continuation can't stamp triangle ids onto regions that no longer
+    // exist (or overwrite the freshly-loaded mesh).
+    resetPaintWorkerState();
+    clearRegions();
+    clearModelColorRegions(); // model-declared underlay is module state too
+    syncLockState();
+  }
+
   // Import a raw code payload as a new session. Shared between file drop and the AI API.
   async function importCodePayload(code: string, language: Language, sessionName?: string): Promise<{ sessionId: string }> {
     if (language !== getActiveLanguage()) await switchLanguage(language);
     const session = await createSession(sessionName, language);
+    // A freshly imported model starts unpainted. Clear the previous session's
+    // live voxel paint and color regions before running, or runCodeSync
+    // re-resolves those stale regions onto the new mesh — e.g. a painted part's
+    // colors bleeding onto image→voxel art — and the editor opens locked.
+    cancelVoxelPaintIfActive();
+    dropPaintState();
     setValue(code);
     await runCodeSync(code);
     return { sessionId: session.id };
@@ -1595,6 +1663,11 @@ async function main() {
   async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean; seedRegions?: SeedRegion[] } = { manifold: true }): Promise<{ sessionId: string }> {
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const session = await createSession(sessionName, 'manifold-js');
+    // Fresh session: drop the previous model's paint before running the import
+    // wrapper (same reason as importCodePayload). seedRegions below are added
+    // AFTER this clear, so an imported colored mesh's own seeds survive.
+    cancelVoxelPaintIfActive();
+    dropPaintState();
     setActiveImports([mesh]);
     const code = generateImportCode([mesh], { manifold: opts.manifold });
     setValue(code);
@@ -1771,7 +1844,7 @@ async function main() {
   // ImportedMesh, persist the relief settings, and open the studio. Used by
   // both the raster (createReliefFromImageData) and SVG (createReliefFromSvgText)
   // entry points so the post-generation flow stays in lockstep.
-  async function commitGeneratedRelief(result: GenerateReliefResult, opts: ReliefOptions, sourceName: string): Promise<{ sessionId: string }> {
+  async function commitGeneratedRelief(result: GenerateReliefResult, opts: ReliefOptions, sourceName: string, sourceFile: File | null = null, isSvg = false): Promise<{ sessionId: string }> {
     if (result.mesh.numTri === 0) throw new Error('Source too small to build a relief — use a larger image or SVG.');
     const mesh: ImportedMesh = {
       id: generateId(),
@@ -1802,6 +1875,11 @@ async function main() {
       previewMode: 'flat',
       options: opts,
     });
+    // Persist the source so the wizard can be reopened pre-loaded (no
+    // re-upload). Best-effort — saveReliefSource swallows storage errors.
+    if (sourceFile) {
+      await saveReliefSource(sessionId, sourceFile, sourceFile.name || `${sourceName}${isSvg ? '.svg' : '.png'}`, isSvg);
+    }
     showReliefStudio();
     return { sessionId };
   }
@@ -1822,7 +1900,7 @@ async function main() {
     return null;
   }
 
-  async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string): Promise<{ sessionId: string }> {
+  async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string, sourceFile: File | null = null): Promise<{ sessionId: string }> {
     const opts: ReliefOptions = {
       ...options,
       common: clampReliefCommon(options.common),
@@ -1832,10 +1910,10 @@ async function main() {
     const fitError = steppedReliefLayerFitError(opts);
     if (fitError) throw new Error(fitError);
     const result = generateRelief(image, opts);
-    return commitGeneratedRelief(result, opts, sourceName);
+    return commitGeneratedRelief(result, opts, sourceName, sourceFile, false);
   }
 
-  async function createReliefFromSvgText(svgText: string, options: ReliefOptions, sourceName: string): Promise<{ sessionId: string }> {
+  async function createReliefFromSvgText(svgText: string, options: ReliefOptions, sourceName: string, sourceFile: File | null = null): Promise<{ sessionId: string }> {
     const opts: ReliefOptions = {
       ...options,
       common: clampReliefCommon(options.common),
@@ -1846,7 +1924,7 @@ async function main() {
     const fitError = steppedReliefLayerFitError(opts);
     if (fitError) throw new Error(fitError);
     const result = await generateReliefFromSvg(svgText, opts);
-    return commitGeneratedRelief(result, opts, sourceName);
+    return commitGeneratedRelief(result, opts, sourceName, sourceFile, true);
   }
 
   // Seed color regions from an imported stepped-relief STL's existing Z plateaus so the
@@ -1872,7 +1950,10 @@ async function main() {
       const offset = bounds.min[2] + i * thickness;
       const tris = findSlabTriangles(currentMeshData, [0, 0, 1], offset, thickness);
       if (tris.size === 0) continue;
-      const fil = palette[i % palette.length];
+      // palette is empty if the user hid every default filament and added no
+      // custom ones; fall back to neutral grey so we colour the slab instead
+      // of throwing on `fil.hex` (palette[NaN] === undefined).
+      const fil = palette.length > 0 ? palette[i % palette.length] : { hex: '#808080' };
       addRegion(`Level ${i + 1}`, hexToRgb(fil.hex), 'slab', { kind: 'slab', normal: [0, 0, 1], offset, thickness }, tris);
     }
     refreshModelColors();
@@ -1918,13 +1999,26 @@ async function main() {
       // already shows an inline aiNote and keeps the modal open so the user
       // doesn't lose their tuned settings. Swallowing here would also let the
       // wizard think the create succeeded and close itself.
-      onCreate: async (image, opts, name) => {
-        await createReliefFromImageData(image, opts, name || 'relief');
+      onCreate: async (image, opts, name, sourceFile) => {
+        await createReliefFromImageData(image, opts, name || 'relief', sourceFile);
       },
-      onCreateSvg: async (svgText, opts, name) => {
-        await createReliefFromSvgText(svgText, opts, name || 'relief');
+      onCreateSvg: async (svgText, opts, name, sourceFile) => {
+        await createReliefFromSvgText(svgText, opts, name || 'relief', sourceFile);
       },
     });
+  }
+
+  /** Reopen the relief import wizard for an existing relief session, pre-loaded
+   *  with its saved source image + the settings it was generated with — so the
+   *  user re-tunes without re-uploading. Falls back to a blank wizard when no
+   *  source was stored (old sessions, or a storage miss). */
+  async function reopenReliefImport(sessionId: string): Promise<void> {
+    const savedOpts = getReliefSettings(sessionId)?.options;
+    // getReliefSource swallows storage errors and returns null, so a miss (old
+    // session, no stored source) just falls back to a blank picker pre-filled
+    // with the saved settings.
+    const source = await getReliefSource(sessionId);
+    openReliefImportFlow(source?.file, savedOpts);
   }
 
   function dataUrlToImageData(src: string): Promise<ImageData> {
@@ -2077,23 +2171,30 @@ async function main() {
     // committing. The modal's Cancel doubles as the back-out, so the generic
     // pre-import confirm is skipped for images (see handleImportFile).
     // `initialOptions` pre-fills the controls when re-importing a past entry.
-    const opts = await showImageVoxelImportModal({ filename: file.name, image: imageData, initialOptions });
-    if (!opts) return false;
-    const grid = imageDataToVoxelGrid(imageData, opts);
+    // The user may also swap the source image inside the modal ("Choose a
+    // different image…"), so build everything below from the RESULT's image /
+    // file / name rather than the originally-picked one.
+    const result = await showImageVoxelImportModal({ filename: file.name, image: imageData, file, initialOptions });
+    if (!result) return false;
+    const { options: opts, image: chosenImage, file: chosenFile, filename: chosenName } = result;
+    const sourceFile = chosenFile ?? file;
+    const grid = imageDataToVoxelGrid(chosenImage, opts);
     if (grid.size === 0) {
-      alert(`"${file.name}" produced no voxels at the chosen settings. Try lowering the transparency cutoff.`);
+      alert(`"${chosenName}" produced no voxels at the chosen settings. Try lowering the transparency cutoff.`);
       return false;
     }
-    const code = generateVoxelImportCode(grid, file.name);
-    const sessionName = file.name.replace(/\.(png|jpe?g|gif|webp|bmp)$/i, '');
+    const code = generateVoxelImportCode(grid, chosenName);
+    const sessionName = chosenName.replace(/\.(png|jpe?g|gif|webp|bmp)$/i, '');
     await importCodePayload(code, 'voxel', sessionName);
     // Register in Recent Imports tagged as a voxel import, with the chosen
     // settings + a thumbnail, so re-clicking it reopens THIS modal (not relief)
-    // pre-loaded with these knobs.
+    // pre-loaded with these knobs. Use the swapped-in source when present.
     const meta: ImportMetadata = { importer: 'voxel', options: opts };
-    // Snapshot the file bytes (see registerImportSnapshot): a re-import months
-    // later must not depend on the original OS file still being readable.
-    await registerImportSnapshot(file, file.name, 'IMAGE', meta, createThumbnailFromImageData(imageData));
+    // Snapshot the file bytes (see registerImportSnapshot): a re-import later
+    // must not depend on the original OS file still being readable. Use the
+    // swapped-in source when present. chosenImage always originates from
+    // decodeImage*ToImageData (a real ImageData), so the narrowing is safe.
+    await registerImportSnapshot(sourceFile, chosenName, 'IMAGE', meta, createThumbnailFromImageData(chosenImage as ImageData));
     return true;
   }
 
@@ -2323,6 +2424,14 @@ async function main() {
   /** Drop an import wrapper for `components` into the current part: set the
    *  active imports, render, and save a version that carries the mesh data. */
   async function applyImportWrapper(components: ImportedMesh[], manifold: boolean): Promise<void> {
+    // Same reset as the other import chokepoints: an import wrapper replaces the
+    // part's geometry, so the previous part's regions can't survive (compose
+    // even rebuilds topology wholesale). Callers run preserveCurrentEditsIfNeeded
+    // first, so the painted version is already saved before we drop live paint —
+    // otherwise runCodeSync re-resolves stale regions onto the new mesh and locks
+    // the editor.
+    cancelVoxelPaintIfActive();
+    dropPaintState();
     const code = generateImportCode(components, { manifold });
     setActiveImports(components);
     setValue(code);
@@ -2562,8 +2671,42 @@ async function main() {
 
   // Mesh export actions, shared by the toolbar and the command palette so the
   // guards + success/error toasts stay in one place.
+  //
+  // These UI actions gate on the pre-export safety modal (unitless / non-
+  // manifold / multi-component) — but the underlying window.partwright.export*
+  // console API stays unguarded so AI agents and e2e can drive it
+  // programmatically without a blocking modal.
+
+  /** Build the warning descriptor for the current geometry from the published
+   *  stats blob (which carries bbox dimensions, isManifold, componentCount even
+   *  for render-only imports where currentManifold is null). */
+  function exportWarningInfo(format: string): ExportWarningInfo {
+    const gd = getGeometryDataObj();
+    const bbox = gd?.boundingBox as { dimensions?: unknown } | null | undefined;
+    const rawDims = bbox?.dimensions;
+    const dimensions = Array.isArray(rawDims) && rawDims.length === 3 && rawDims.every(n => typeof n === 'number')
+      ? (rawDims as [number, number, number])
+      : null;
+    return {
+      unitless: _getUnits() === 'unitless',
+      dimensions,
+      isManifold: gd?.isManifold !== false, // treat unknown as manifold (no false alarm)
+      componentCount: typeof gd?.componentCount === 'number' ? gd.componentCount : 1,
+      format,
+    };
+  }
+
+  /** Returns true if the export should proceed: no warning, or the user
+   *  confirmed it. Only used by the UI export actions below. */
+  async function confirmExportOrProceed(format: string): Promise<boolean> {
+    const info = exportWarningInfo(format);
+    if (!hasExportWarning(info)) return true;
+    return showExportConfirm(info);
+  }
+
   const actionExportGLB = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
+    if (!(await confirmExportOrProceed('GLB'))) return;
     try {
       if (currentMeshData) assertFiniteMesh(currentMeshData);
       const filename = await exportGLB();
@@ -2572,23 +2715,49 @@ async function main() {
       showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
     }
   };
-  const actionExportSTL = () => {
+  const actionExportSTL = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) return;
+    if (!(await confirmExportOrProceed('STL'))) return;
     try { showToast(`Exported ${exportSTL(currentMeshData)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
   };
-  const actionExportOBJ = () => {
+  const actionExportOBJ = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) return;
+    if (!(await confirmExportOrProceed('OBJ'))) return;
     try { showToast(`Exported ${exportOBJ((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
   };
-  const actionExport3MF = () => {
+  const actionExport3MF = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) return;
+    if (!(await confirmExportOrProceed('3MF'))) return;
     try { showToast(`Exported ${export3MF((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
+  };
+  // The integer VoxelGrid behind a voxel session. The engine meshes in the
+  // Worker, so the grid isn't on the main thread after a normal run — re-run the
+  // current code locally to recover it (the same trick voxel paint uses), or use
+  // the live painted grid when paint is active so unbaked edits are exported.
+  const getCurrentVoxelGrid = (): VoxelGrid | null => {
+    if (getActiveLanguage() !== 'voxel') return null;
+    const painted = voxelPaint.getGrid();
+    if (painted) return painted;
+    const r = runVoxelForPaint(getValue());
+    return r.ok ? r.data.grid : null;
+  };
+  const actionExportVOX = () => {
+    if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
+    const grid = getCurrentVoxelGrid();
+    if (!grid) {
+      showToast(getActiveLanguage() === 'voxel'
+        ? 'Run a voxel model before exporting .vox.'
+        : 'Switch to the Voxel language to export .vox.', { variant: 'warn' });
+      return;
+    }
+    try { showToast(`Exported ${exportVOX(grid)}`, { variant: 'success' }); }
+    catch (e) { showToast(e instanceof Error ? e.message : 'VOX export failed', { variant: 'warn' }); }
   };
 
   // Hard cap on the encoded share string. Browsers and chat apps choke on very
@@ -2596,32 +2765,36 @@ async function main() {
   // with a toast rather than minting a link that silently won't open.
   const MAX_SHARE_ENCODED_CHARS = 1_500_000;
 
-  /** Encode the current committed version into a `#share=…` link and open the
-   *  copy modal. Saves the current buffer first (exportSession reads the SAVED
-   *  version), feature-detects CompressionStream, and trims the thumbnail if the
-   *  link is too large before giving up. */
-  const actionShareLink = async (): Promise<void> => {
+  /** Encode the current committed version into a self-contained `#share=…`
+   *  read-only link. Saves the current buffer first (exportSession reads the
+   *  SAVED version), feature-detects CompressionStream, and trims the thumbnail
+   *  if the link is too large before giving up. Returns `{ url, encodedBytes }`
+   *  on success or `{ error }` with a user-facing message. Pure builder: it does
+   *  no UI — callers decide whether to open the modal (toolbar) or just return
+   *  the string (the partwright API).
+   *
+   *  `notify` optionally surfaces the "multi-part designs share one part" toast;
+   *  the API path passes a no-op so it never pops UI out from under an agent. */
+  const buildShareLink = async (
+    notify: (msg: string) => void = () => {},
+  ): Promise<{ url: string; encodedBytes: number } | { error: string }> => {
     if (typeof CompressionStream === 'undefined') {
-      showToast('Sharing needs a newer browser', { variant: 'warn' });
-      return;
+      return { error: 'Sharing needs a newer browser' };
     }
     if (!getState().session || !engineOk) {
-      showToast('Open or create a design before sharing.', { variant: 'warn' });
-      return;
+      return { error: 'Open or create a design before sharing.' };
     }
     // exportSession reads the SAVED version from IndexedDB, so commit the current
     // buffer first — both to give a fresh /editor (currentVersion: null) a
     // version to export and to capture any unsaved edits the user is sharing.
     const saved = await saveCurrentVersion();
     if ('error' in saved) {
-      showToast(saved.error, { variant: 'warn' });
-      return;
+      return { error: saved.error };
     }
     const state = getState();
     const versionIndex = state.currentVersion?.index;
     if (versionIndex === undefined) {
-      showToast('No saved version to share yet.', { variant: 'warn' });
-      return;
+      return { error: 'No saved version to share yet.' };
     }
 
     const sessionId = state.session!.id;
@@ -2634,8 +2807,7 @@ async function main() {
       includeNotes: false,
     });
     if (!exported) {
-      showToast('Could not prepare this design for sharing.', { variant: 'warn' });
-      return;
+      return { error: 'Could not prepare this design for sharing.' };
     }
     if (state.parts.length > 1) {
       // A share link carries one version of one part. Tell the user so a
@@ -2643,7 +2815,7 @@ async function main() {
       // after the current part.
       const partName = state.currentPart?.name;
       if (partName) exported.session = { ...exported.session, name: partName };
-      showToast(`Sharing only "${partName ?? 'the current part'}" — multi-part designs share one part per link.`, { variant: 'neutral' });
+      notify(`Sharing only "${partName ?? 'the current part'}" — multi-part designs share one part per link.`);
     }
 
     try {
@@ -2659,19 +2831,27 @@ async function main() {
         encoded = await encodeShare(slimmed);
       }
       if (encoded.length > MAX_SHARE_ENCODED_CHARS) {
-        showToast('Design too large to share via link', { variant: 'warn' });
-        return;
+        return { error: 'Design too large to share via link' };
       }
-      const url = `${location.origin}/editor#share=${encoded}`;
-      openShareModal(url, encoded.length);
+      return { url: `${location.origin}/editor#share=${encoded}`, encodedBytes: encoded.length };
     } catch (e) {
       if (e instanceof ShareUnsupportedError) {
-        showToast('Sharing needs a newer browser', { variant: 'warn' });
-      } else {
-        showToast('Could not create a share link.', { variant: 'warn' });
-        errorLog.capture({ level: 'error', source: 'app', message: `share encode failed: ${e instanceof Error ? e.message : String(e)}` });
+        return { error: 'Sharing needs a newer browser' };
       }
+      errorLog.capture({ level: 'error', source: 'app', message: `share encode failed: ${e instanceof Error ? e.message : String(e)}` });
+      return { error: 'Could not create a share link.' };
     }
+  };
+
+  /** Build the share link and open the copy modal. Thin toolbar wrapper around
+   *  {@link buildShareLink}; surfaces every error path as a toast. */
+  const actionShareLink = async (): Promise<void> => {
+    const result = await buildShareLink((msg) => showToast(msg, { variant: 'neutral' }));
+    if ('error' in result) {
+      showToast(result.error, { variant: 'warn' });
+      return;
+    }
+    openShareModal(result.url, result.encodedBytes);
   };
 
   /** True when the share action can run: an active session on a ready engine. */
@@ -2688,6 +2868,7 @@ async function main() {
     onExportSTL: actionExportSTL,
     onExportOBJ: actionExportOBJ,
     onExport3MF: actionExport3MF,
+    onExportVOX: actionExportVOX,
     onExportSTEP: async () => {
       // Inlined rather than calling partwrightAPI.exportSTEP because that
       // const is defined further down main() — using it here would land in
@@ -2736,7 +2917,14 @@ async function main() {
     },
     onImportFile: async (file) => { await handleImportFile(file); },
     onImportInboxEntry: handleReimportInboxEntry,
-    onCreateRelief: () => { openReliefImportFlow(); },
+    onCreateRelief: () => {
+      // If the active session is itself a relief, reopen the wizard pre-loaded
+      // with its stored source + settings (re-tune without re-uploading);
+      // otherwise start a fresh blank import.
+      const sid = getState().session?.id ?? null;
+      if (sid && isReliefSession(sid)) void reopenReliefImport(sid);
+      else openReliefImportFlow();
+    },
     onLanguageHelp: async () => { await showLanguageHelpModal(); },
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => {
@@ -2755,18 +2943,8 @@ async function main() {
   // Reset the editor to a blank starting point for a freshly created session.
   // Shared by the session bar's "+ New Session" button and the session modal's,
   // so both clear the previous session's code instead of leaving it behind.
-  // Reset the editor to a starter snippet, dropping stale paint state. Color
-  // regions live in module state that the session/part layer doesn't own, so a
-  // fresh target must clear them here — otherwise the new (unpainted) session or
-  // part inherits the previous one's regions and is born with a locked editor.
   function resetEditorToStarter(comment: string) {
-    // Drop any in-flight subdivision worker job before clearing regions, so a
-    // late continuation can't stamp triangle ids onto regions that no longer
-    // exist (or overwrite the freshly-loaded starter mesh).
-    resetPaintWorkerState();
-    clearRegions();
-    clearModelColorRegions(); // model-declared underlay is module state too
-    syncLockState();
+    dropPaintState();
     const freshCode = `// ${comment}\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);`;
     setValue(freshCode);
     runCode(freshCode);
@@ -2907,7 +3085,22 @@ async function main() {
 
   // Global undo / redo / save shortcuts (OS-aware, focus/tool-routed).
   const saveVersionWithToast = async () => {
-    const result = await saveCurrentVersion();
+    let result;
+    try {
+      result = await saveCurrentVersion();
+    } catch (e) {
+      // An explicit Save that fails (e.g. a full quota) must surface the
+      // failure — never the "Saved" toast — so the user knows it didn't
+      // persist. No caller inspects the result, so a warn toast is the
+      // signal (we don't re-throw, which would just be an unhandled
+      // rejection through the `void` call sites).
+      if (isQuotaError(e)) {
+        showToast('Storage full — could not save this version. Free up space or export your work.', { variant: 'warn' });
+      } else {
+        showToast(e instanceof Error ? e.message : 'Save failed', { variant: 'warn' });
+      }
+      return;
+    }
     if ('error' in result) {
       showToast(result.error, { variant: 'warn' });
     } else if ('skipped' in result) {
@@ -2937,6 +3130,7 @@ async function main() {
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
+    { id: 'export-vox', title: 'Export VOX', hint: 'Export', keywords: 'download magicavoxel voxel goxel', run: actionExportVOX, enabled: () => getActiveLanguage() === 'voxel' && currentMeshData !== null },
     { id: 'share-link', title: 'Share design (copy link)', hint: 'Share', keywords: 'url public link copy fork readonly', run: () => { void actionShareLink(); }, enabled: canShare },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
     { id: 'toggle-diagnostics', title: 'Toggle diagnostic log', hint: 'View', keywords: 'errors warnings console', run: () => toggleDiagnosticsPanel() },
@@ -3044,6 +3238,8 @@ async function main() {
   const editorReadyPromise = new Promise<void>(resolve => { editorReadyResolve = resolve; });
   let engineOk = false;
   let helpHasAppBackTarget = false;
+  let legalEl: HTMLElement | null = null;
+  let legalHasAppBackTarget = false;
   let notFoundEl: HTMLElement | null = null;
   // Declared early so async callbacks (e.g. runCodeSync triggered during
   // initial syncEditorFromURL) don't hit a TDZ error before this point.
@@ -3077,6 +3273,7 @@ async function main() {
     showEditorUI(landingEl, helpEl, editorUI);
     if (notFoundEl) notFoundEl.classList.add('hidden');
     if (catalogEl) catalogEl.classList.add('hidden');
+    if (legalEl) legalEl.classList.add('hidden');
     overlayContainer.classList.add('hidden');
     window.dispatchEvent(new Event('resize'));
   }
@@ -3086,10 +3283,7 @@ async function main() {
     // live grid and provenance map are bound to the OUTGOING code, so a Bake
     // after navigation would write the wrong session's voxels into the new
     // editor. Also unlocks the editor and clears the floating panel.
-    if (voxelPaint.isActive()) {
-      voxelPaint.deactivate();
-      syncVoxelPaintUI();
-    }
+    cancelVoxelPaintIfActive();
     // Each version remembers the language it was authored in (per-version
     // since schema 1.8); fall back to the session-level hint, then to the
     // engine default. Lets a single session hold mixed JS + SCAD versions
@@ -3175,6 +3369,7 @@ async function main() {
     helpEl?.classList.add('hidden');
     notFoundEl?.classList.add('hidden');
     catalogEl?.classList.add('hidden');
+    legalEl?.classList.add('hidden');
     whatsNewEl?.classList.add('hidden');
     page.classList.remove('hidden');
     updateDocumentTitle({ page: 'landing' });
@@ -3194,6 +3389,7 @@ async function main() {
     landingEl?.classList.add('hidden');
     helpEl?.classList.add('hidden');
     catalogEl?.classList.add('hidden');
+    legalEl?.classList.add('hidden');
     whatsNewEl?.classList.add('hidden');
     notFoundEl.classList.remove('hidden');
     updateDocumentTitle({ page: '404' });
@@ -3234,9 +3430,39 @@ async function main() {
     if (landingEl) landingEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
     if (catalogEl) catalogEl.classList.add('hidden');
+    if (legalEl) legalEl.classList.add('hidden');
     if (whatsNewEl) whatsNewEl.classList.add('hidden');
     helpEl.classList.remove('hidden');
     updateDocumentTitle({ page: 'help' });
+  }
+
+  // Helper to show legal page — mirrors showHelp's history / in-page-Back pattern.
+  function showLegal(options: { history?: 'push' | 'replace' | 'none' } = {}) {
+    const historyMode = options.history ?? 'push';
+    if (historyMode !== 'none') {
+      legalHasAppBackTarget = currentURLPathAndSearch() !== '/legal';
+      updateAppHistory('/legal', historyMode);
+    }
+    if (!legalEl) {
+      legalEl = createLegalPage(overlayContainer, {
+        onBack: () => {
+          if (legalHasAppBackTarget) {
+            window.history.back();
+          } else {
+            updateAppHistory('/editor', 'replace');
+            void syncEditorFromURL();
+          }
+        },
+      });
+    }
+    overlayContainer.classList.remove('hidden');
+    editorUI.classList.add('hidden');
+    if (landingEl) landingEl.classList.add('hidden');
+    if (notFoundEl) notFoundEl.classList.add('hidden');
+    if (catalogEl) catalogEl.classList.add('hidden');
+    if (helpEl) helpEl.classList.add('hidden');
+    legalEl.classList.remove('hidden');
+    updateDocumentTitle({ page: 'legal' });
   }
 
   let catalogEl: HTMLElement | null = null;
@@ -3265,6 +3491,7 @@ async function main() {
     if (landingEl) landingEl.classList.add('hidden');
     if (helpEl) helpEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
+    if (legalEl) legalEl.classList.add('hidden');
     if (whatsNewEl) whatsNewEl.classList.add('hidden');
     catalogEl.classList.remove('hidden');
     updateDocumentTitle({ page: 'catalog' });
@@ -3378,7 +3605,11 @@ async function main() {
    *  re-firing routing. Modeled on the ?takeover=1 strip — keeps path + search,
    *  drops only the hash, so refresh / Back never re-decodes the link. */
   function stripShareHash(): void {
-    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    // Entering a shared preview always shows the editor, so normalize the path
+    // to /editor — otherwise pasting #share=… onto /catalog or /help would
+    // leave the URL claiming a non-editor page while the editor is on screen.
+    // App-generated links already use /editor#share=, so this is a no-op there.
+    window.history.replaceState(null, '', '/editor' + window.location.search);
   }
 
   /** Open a `#share=…` link as a read-only preview. Decodes + validates the
@@ -3465,6 +3696,30 @@ async function main() {
     updateDocumentTitle({ page: 'editor' });
   }
 
+  // On a session open where we land on the LATEST version (the version the
+  // user would be actively editing — the URL pins ?v=<latest> after every
+  // save, so this is the normal reopen case), prefer an autosaved draft for
+  // the active language when it exists and differs from the code we just
+  // loaded. This is what makes editor autosave recover unsaved typing across a
+  // reload / crash. It is deliberately skipped when we loaded an OLDER version
+  // (explicit history navigation), so a stale draft never shadows a version
+  // the user intentionally went back to.
+  async function restoreDraftIfNewer(): Promise<void> {
+    const sid = getState().session?.id;
+    if (!sid) return;
+    // Only at the tip: if a specific older version is loaded, don't override it.
+    const current = getState().currentVersion;
+    if (current) {
+      const versions = await listCurrentVersions();
+      const latestIndex = versions.reduce((m, v) => Math.max(m, v.index), -Infinity);
+      if (current.index !== latestIndex) return;
+    }
+    const draft = await readDraft(sid, getActiveLanguage());
+    if (draft == null || draft === getValue()) return;
+    setValue(draft);
+    await runCodeSync(draft);
+  }
+
   async function syncEditorFromURL() {
     transitionToEditor();
     const tab = getTabFromURL();
@@ -3485,6 +3740,10 @@ async function main() {
         const version = await openSession(sessionId, versionIndex ?? undefined, partId ?? undefined);
         if (version) {
           await loadVersionIntoEditor(version);
+          // restoreDraftIfNewer self-gates: it only acts when this is the
+          // latest version (the tip the user edits), not an older one they
+          // navigated back to.
+          await restoreDraftIfNewer();
           if (tab === 'gallery') refreshGallery();
           if (tab === 'versions') refreshVersions();
           return;
@@ -3495,6 +3754,7 @@ async function main() {
         // generic default example.
         if (getState().session?.id === sessionId) {
           await loadPartIntoEditor(getState().currentVersion);
+          await restoreDraftIfNewer();
           if (tab === 'gallery') refreshGallery();
           if (tab === 'versions') refreshVersions();
           return;
@@ -3522,7 +3782,7 @@ async function main() {
     // Home — confusing because no editor / session is loaded to act on
     // it. /editor's own loader updates the AI session via onStateChange
     // when a session opens, so we don't need to set it explicitly here.
-    if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShowWhatsNew() || shouldShow404()) {
+    if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShowLegal() || shouldShowWhatsNew() || shouldShow404()) {
       void setAiActiveSession(null);
     }
     // A share-link hash takes precedence over the normal editor sync on this
@@ -3536,6 +3796,8 @@ async function main() {
       showHelp({ history: 'none' });
     } else if (shouldShowCatalog()) {
       await showCatalogPage({ history: 'none' });
+    } else if (shouldShowLegal()) {
+      showLegal({ history: 'none' });
     } else if (shouldShowWhatsNew()) {
       showWhatsNewPage({ history: 'none' });
     } else if (shouldShow404()) {
@@ -3571,6 +3833,7 @@ async function main() {
   const showLanding = shouldShowLanding();
   const showHelpPage = shouldShowHelp();
   const showCatalog = shouldShowCatalog();
+  const showLegalPage = shouldShowLegal();
   const showWhatsNew = shouldShowWhatsNew();
   const show404 = shouldShow404();
 
@@ -3580,6 +3843,8 @@ async function main() {
     showHelp({ history: 'none' });
   } else if (showCatalog) {
     await showCatalogPage({ history: 'none' });
+  } else if (showLegalPage) {
+    showLegal({ history: 'none' });
   } else if (showWhatsNew) {
     showWhatsNewPage({ history: 'none' });
   } else if (show404) {
@@ -3667,17 +3932,53 @@ async function main() {
     getSwapGuide: () => (currentMeshData ? getSwapGuideFor(currentMeshData, currentLayerHeight()) : null),
     detectLevels: () => detectReliefLevels(),
     onClose: () => closeReliefStudio(),
+    onEditImage: () => {
+      const sid = getState().session?.id ?? null;
+      if (sid) void reopenReliefImport(sid);
+      else openReliefImportFlow();
+    },
   });
+
+  // Persist the editor's working buffer to the active session's draft so an
+  // accidental reload / tab-close / crash doesn't lose unsaved typing. Reads
+  // getActiveLanguage() + getValue() SYNCHRONOUSLY at fire time so the draft
+  // lands under the right (session, language) key — same key version-load and
+  // the language-toggle path use — and never writes OLD code under a NEW
+  // language. Skips when no session is open so we don't auto-create empty
+  // sessions (which would fight deleteIfEmpty on unload). Best-effort: a quota
+  // failure is swallowed with a warn toast since autosave is non-critical.
+  function autosaveDraft(): void {
+    const sid = getState().session?.id;
+    if (!sid) return;
+    const lang = getActiveLanguage();
+    const code = getValue();
+    void writeDraft(sid, lang, code).catch((e) => {
+      if (isQuotaError(e)) {
+        showToast('Storage full — could not autosave your draft. Free up space or export your work.', { variant: 'warn' });
+      }
+      // Other autosave failures are non-fatal and intentionally silent.
+    });
+  }
 
   // Init editor — only auto-run if auto-run is enabled. Auto-runs drive the
   // live preview but defer error surfacing (no panel/markers/log mid-keystroke);
   // the idle + blur hooks surface the held-back error gently once typing settles.
+  // The same idle/blur ticks autosave the draft. A programmatic setValue
+  // (version load / language switch) cancels the pending onIdle (see
+  // codeEditor.setValue), so autosave never fires for code the user didn't type.
   initEditor(editorContainer, defaultCode, (code: string) => {
     if (isAutoRun()) runCode(code, { surfaceErrors: false });
   }, 'manifold-js', {
     onEdit: () => clearEditorErrorPanel(editorErrorPanel),
-    onIdle: () => surfacePendingError(),
-    onBlur: () => surfacePendingError(),
+    onIdle: () => { surfacePendingError(); autosaveDraft(); },
+    onBlur: () => { surfacePendingError(); autosaveDraft(); },
+  });
+
+  // Autosave when the tab is hidden (switching apps, closing) — the most
+  // reliable "user is leaving" signal that still permits an async IDB write,
+  // unlike beforeunload which can't await. Singleton listener (main runs once).
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) autosaveDraft();
   });
 
   // When the user changes the modeling-quality preset, re-render the
@@ -3852,7 +4153,7 @@ async function main() {
       const err = voxelPaint.activate(code, {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
-      });
+      }, currentParamValues);
       if (err) alert(`Voxel paint: ${err}`);
       syncVoxelPaintUI();
     },
@@ -3980,7 +4281,7 @@ async function main() {
 
   // Start guided tour on first visit (after editor fully renders) — but not over
   // a shared preview, which is a read-only landing surface for an external link.
-  if (!showLanding && !showHelpPage && !showCatalog && !showWhatsNew && !show404 && !hasShareHash()) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showLegalPage && !showWhatsNew && !show404 && !hasShareHash()) {
     maybeStartTour();
     maybeShowShortcutsHint();
   }
@@ -3991,7 +4292,7 @@ async function main() {
   // and degrades to a normal editable editor if the link is invalid. (The
   // editor + engine are ready here, so its internal ensureEditorReady resolves
   // immediately — no deadlock from awaiting it earlier in main().)
-  if (!showLanding && !showHelpPage && !showCatalog && !showWhatsNew && !show404 && engineOk) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showLegalPage && !showWhatsNew && !show404 && engineOk) {
     if (hasShareHash()) {
       await enterSharedFromHash();
     } else {
@@ -4093,7 +4394,7 @@ async function main() {
   }
 
   // Set initial editor title if we're on the editor page
-  if (!showLanding && !showHelpPage && !showCatalog && !showWhatsNew && !show404) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showLegalPage && !showWhatsNew && !show404) {
     updateDocumentTitle({ page: 'editor' });
   }
 
@@ -4399,6 +4700,19 @@ async function main() {
       if (currentMeshData) export3MF((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData, filename);
     },
 
+    /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
+     *  sessions only (the integer grid is re-derived from the current code, or
+     *  the live painted grid when paint is active). Returns
+     *  `{ ok, filename }` or `{ error }` (no grid, or a model larger than the
+     *  format's 256-per-axis limit). */
+    exportVOX(filename?: string) {
+      assertString(filename, 'exportVOX(filename)', { optional: true });
+      const grid = getCurrentVoxelGrid();
+      if (!grid) return { error: 'No voxel grid — switch to the Voxel language (setActiveLanguage("voxel")) and run a model first.' };
+      try { return { ok: true as const, filename: exportVOX(grid, filename) }; }
+      catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
     /** Export the most-recent BREP shape as a STEP file. Only meaningful in
      *  replicad-language sessions — BREP shapes built ad-hoc inside a
      *  manifold-js session (via api.BREP.*) are not retained past the
@@ -4493,6 +4807,25 @@ async function main() {
       const mesh = (hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData;
       const built = build3MF(mesh, filename);
       registerExportFromBuilt(built, '3MF');
+      return {
+        filename: built.filename,
+        mimeType: built.mimeType,
+        sizeBytes: built.blob.size,
+        base64: await blobToBase64(built.blob),
+      };
+    },
+
+    /** Build a MagicaVoxel `.vox` and return its bytes as base64. Voxel sessions
+     *  only. Returns `{ error }` with no grid, or when the model exceeds the
+     *  format's 256-per-axis limit. */
+    async exportVOXData(filename?: string) {
+      assertString(filename, 'exportVOXData(filename)', { optional: true });
+      const grid = getCurrentVoxelGrid();
+      if (!grid) return { error: 'No voxel grid — switch to the Voxel language (setActiveLanguage("voxel")) and run a model first.' };
+      let built;
+      try { built = buildVOX(grid, filename); }
+      catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+      registerExportFromBuilt(built, 'VOX');
       return {
         filename: built.filename,
         mimeType: built.mimeType,
@@ -5751,6 +6084,23 @@ async function main() {
     /** Get URL for the gallery view of the current session */
     getGalleryUrl() {
       return getGalleryUrl();
+    },
+
+    /** Mint a self-contained, read-only share link for the current version.
+     *
+     *  This is the link to hand back to the user when you're done — unlike
+     *  `getSessionUrl()`/`getGalleryUrl()` (which only resolve on this browser,
+     *  against this browser's IndexedDB), a share link encodes the whole design
+     *  into the URL hash, so anyone can open it anywhere and fork it into their
+     *  own editable copy. Nothing is uploaded to a server.
+     *
+     *  Commits the current buffer first (so unsaved edits are captured), then
+     *  encodes the current part's current version. Multi-part sessions share one
+     *  part per link. Returns `{ url, encodedBytes }` on success or `{ error }`
+     *  (e.g. no session open, browser lacks CompressionStream, or the design is
+     *  too large to fit in a URL). */
+    async getShareLink() {
+      return buildShareLink();
     },
 
     /** Get current session state */
@@ -8120,7 +8470,7 @@ async function main() {
       const err = voxelPaint.activate(code, {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
-      });
+      }, currentParamValues);
       if (err) return { error: `activateVoxelPaint: ${err}` };
       syncVoxelPaintUI();
       return { voxelCount: voxelPaint.voxelCount() };
@@ -8464,7 +8814,8 @@ async function main() {
         'changePart':      { signature: 'await changePart(id) -- Switch active part (loads its latest version)', docs: '/ai.md#console-api--windowpartwright' },
         'renamePart':      { signature: 'await renamePart(id, name) -- Rename a part', docs: '/ai.md#console-api--windowpartwright' },
         'deletePart':      { signature: 'await deletePart(id) -- Delete a part and its versions', docs: '/ai.md#console-api--windowpartwright' },
-        'getGalleryUrl':   { signature: 'getGalleryUrl() -- URL for gallery view (human review)', docs: '/ai.md#console-api--windowpartwright' },
+        'getShareLink':    { signature: 'await getShareLink() -- Read-only share link for the current version -> {url, encodedBytes} or {error}; the link to hand the user when done', docs: '/ai.md#console-api--windowpartwright' },
+        'getGalleryUrl':   { signature: 'getGalleryUrl() -- URL for gallery view (local browser only)', docs: '/ai.md#console-api--windowpartwright' },
         // Notes
         'addSessionNote':  { signature: 'await addSessionNote(text) -- Add note with [PREFIX] tag', docs: '/ai.md#session-notes----tracking-design-context' },
         'listSessionNotes': { signature: 'await listSessionNotes() -- List all session notes', docs: '/ai.md#session-notes----tracking-design-context' },
@@ -8502,11 +8853,13 @@ async function main() {
         'exportSTL':       { signature: 'exportSTL() -- Download STL file', docs: '/ai.md#console-api--windowpartwright' },
         'exportOBJ':       { signature: 'exportOBJ() -- Download OBJ file', docs: '/ai.md#console-api--windowpartwright' },
         'export3MF':       { signature: 'export3MF() -- Download 3MF file', docs: '/ai.md#console-api--windowpartwright' },
+        'exportVOX':       { signature: 'exportVOX() -- Download MagicaVoxel .vox (voxel sessions)', docs: '/ai/voxel.md' },
         // AI-friendly export — return bytes over the API instead of triggering a download
         'exportGLBData':   { signature: 'await exportGLBData() -- Return GLB as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
         'exportSTLData':   { signature: 'await exportSTLData() -- Return STL as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
         'exportOBJData':   { signature: 'await exportOBJData() -- Return OBJ as {filename, mimeType, text? | base64, sizeBytes}', docs: '/ai/file-io.md' },
         'export3MFData':   { signature: 'await export3MFData() -- Return 3MF as {filename, mimeType, base64, sizeBytes}', docs: '/ai/file-io.md' },
+        'exportVOXData':   { signature: 'await exportVOXData() -- Return .vox as {filename, mimeType, base64, sizeBytes} (voxel sessions)', docs: '/ai/file-io.md' },
         'exportSessionData': { signature: 'await exportSessionData(sessionId?) -- Return parsed session JSON {filename, mimeType, data, sizeBytes}', docs: '/ai/file-io.md' },
         'exportCodeData':  { signature: 'exportCodeData() -- Return editor source as {filename, mimeType, language, text, sizeBytes}', docs: '/ai/file-io.md' },
         // AI-friendly import — bypass the file picker

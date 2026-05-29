@@ -125,6 +125,16 @@ export function showImportPreview(filename: string, summary: SessionImportSummar
     note.textContent = 'Imports as a new session — your current session is kept.';
     shell.body.appendChild(note);
 
+    // Code-execution warning. Importing a session runs each version's code in
+    // your browser (to regenerate thumbnails), so a malicious file could
+    // execute arbitrary JavaScript. Only confirm imports from sources you
+    // trust. (The window.partwright.importSessionData console API bypasses
+    // this modal — it's the programmatic path for agents/e2e.)
+    const warn = document.createElement('p');
+    warn.className = 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-[11px] text-amber-200 leading-snug';
+    warn.innerHTML = '<strong>Heads up:</strong> importing runs each version’s code in your browser to rebuild previews. Only import sessions from sources you trust.';
+    shell.body.appendChild(warn);
+
     const cancelBtn = document.createElement('button');
     cancelBtn.className = BUTTON_CANCEL;
     cancelBtn.textContent = 'Cancel';

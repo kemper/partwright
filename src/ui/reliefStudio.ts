@@ -26,6 +26,10 @@ export interface ReliefStudioDeps {
   getSwapGuide(): SwapGuide | null;
   detectLevels(): void;
   onClose(): void;
+  /** Reopen the import wizard pre-loaded with this relief's saved source image
+   *  + settings, so the user can re-tune (resolution, mode, crop, …) without
+   *  re-uploading. */
+  onEditImage(): void;
 }
 
 export interface ReliefStudioHandle {
@@ -78,6 +82,16 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
   title.className = 'text-sm font-medium text-zinc-100 flex-1';
   title.textContent = '✦ Relief Studio';
   header.appendChild(title);
+  // "Edit image" reopens the import wizard pre-loaded with this relief's saved
+  // source + settings — re-tune without re-uploading.
+  const editImageBtn = document.createElement('button');
+  editImageBtn.type = 'button';
+  editImageBtn.className =
+    'shrink-0 h-8 px-2.5 flex items-center gap-1 rounded text-[11px] font-medium text-zinc-300 hover:text-zinc-100 hover:bg-zinc-700/70 transition-colors';
+  editImageBtn.textContent = '🖼 Edit image';
+  editImageBtn.title = 'Reopen the import wizard with this image and its settings — re-tune without re-uploading';
+  editImageBtn.addEventListener('click', () => deps.onEditImage());
+  header.appendChild(editImageBtn);
   const closeBtn = document.createElement('button');
   closeBtn.className =
     'shrink-0 w-8 h-8 flex items-center justify-center rounded text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/70 transition-colors text-lg leading-none';

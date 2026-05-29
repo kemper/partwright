@@ -2,7 +2,7 @@ import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
 import { createCurvesNamespace } from '../curves';
 import { createMeshOpsNamespace } from '../meshOps';
-import { normalizeParamSchema, resolveParamValues, mergeParamSchemas, protectParamValues, type ParamSpec } from '../params';
+import { createParamCapture } from '../params';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
 import { createSdfNamespace, SdfNode } from '../sdf';
@@ -230,26 +230,17 @@ export const manifoldJsEngine: Engine = {
 
     // Customizer parameters. `api.params(schema)` declares the model's tweakable
     // knobs and returns their resolved values (the Customizer's overrides for
-    // this run, falling back to each declared default). We record every call's
-    // normalized schema so the caller can surface it to the Parameters panel; a
-    // malformed *schema* throws a clear `api.params: …` error (author bug),
-    // while bad *override values* degrade to defaults inside resolveParamValues.
-    const overrides = paramOverrides ?? {};
-    const capturedSchemas: ParamSpec[][] = [];
-    const params = (schema: unknown): Record<string, number | boolean | string> => {
-      const normalized = normalizeParamSchema(schema);
-      capturedSchemas.push(normalized);
-      // Guard the returned object so a typo'd read (p.widht) throws instead of
-      // silently injecting `undefined`/NaN into the geometry.
-      return protectParamValues(resolveParamValues(normalized, overrides));
-    };
-    const collectParamsSchema = (): ParamSpec[] | undefined =>
-      capturedSchemas.length > 0 ? mergeParamSchemas(capturedSchemas) : undefined;
+    // this run, falling back to each declared default). The shared capture
+    // records every call's normalized schema so we can surface it to the
+    // Parameters panel via `paramCapture.collectSchema()` below — the same
+    // helper the voxel and replicad JS engines use, so all three behave
+    // identically.
+    const paramCapture = createParamCapture(paramOverrides);
 
     const api = {
       Manifold,
       CrossSection,
-      params,
+      params: paramCapture.params,
       Curves: curvesNamespace,
       BREP,
       meshOps: meshOpsNamespace,
@@ -396,7 +387,7 @@ export const manifoldJsEngine: Engine = {
         error: null,
         labelMap,
         labelColors: labelColors.size > 0 ? labelColors : undefined,
-        paramsSchema: collectParamsSchema(),
+        paramsSchema: paramCapture.collectSchema(),
         renderOnly,
       };
     } catch (e: unknown) {
@@ -423,7 +414,7 @@ export const manifoldJsEngine: Engine = {
         manifold: null,
         error: msg,
         diagnostics: isSyntaxError ? javaScriptSyntaxDiagnostics(jsCode, msg, e) : runtimeDiagnostic(msg, hint, 'JavaScript'),
-        paramsSchema: collectParamsSchema(),
+        paramsSchema: paramCapture.collectSchema(),
       };
     } finally {
       // Stop tracking, then free every intermediate the run created. The value
