@@ -101,6 +101,15 @@ export interface ChatToggles {
    *  byte-for-byte — the control is opt-in. No effect on the local provider
    *  (WebLLM models do their own thing and we strip `<think>` blocks). */
   thinking: 'off' | 'low' | 'medium' | 'high';
+  /** Auto-continue mode. When ON, the agent only stops when the model calls
+   *  the `finish` sentinel tool; a turn that ends WITHOUT calling finish is
+   *  automatically resumed (a synthetic nudge is appended and the loop runs
+   *  again) so the model keeps working — bounded by the iteration + spend caps,
+   *  whichever trips first. ON by default (standard/full presets; off in the
+   *  lean minimal preset); turning it OFF reproduces the normal
+   *  one-stop-per-end_turn behavior and is remembered across reloads.
+   *  Per-session, like the other toggles. */
+  autoResume: boolean;
   /** Which backend the chat is talking to right now. */
   provider: Provider;
   /** Anthropic model for cloud chats. Plain string so dated snapshots
@@ -251,6 +260,12 @@ export interface ChatMessage {
    *  continues the agent loop from the existing history (no new user prompt).
    *  Not persisted to IndexedDB. */
   stopNotice?: { reason: TurnOutcomeReason; detail?: string; iterations: number };
+  /** Marks the synthetic user prompt the agent loop injects to auto-continue a
+   *  turn that ended without calling `finish` (auto-continue mode). Rendered as
+   *  a subtle divider rather than a normal user bubble, but persisted (and sent
+   *  to the model as a normal user turn) so the conversation stays valid across
+   *  reloads. */
+  autoResumeNudge?: boolean;
   /** Wall-clock milliseconds for this single model request/response cycle. */
   durationMs?: number;
   /** Cumulative model time in milliseconds across all API calls since the
@@ -259,7 +274,14 @@ export interface ChatMessage {
 }
 
 export type ChatBlock =
-  | { type: 'text'; text: string }
+  /** A run of assistant or user text. `thoughtSignature` is a Gemini-3-only
+   *  carrier: Gemini attaches an opaque signature to the answer text part of a
+   *  thinking turn (in streaming it can arrive on a trailing empty-text part)
+   *  and expects it echoed back on the next request to preserve reasoning
+   *  continuity. We persist it on the block so it survives reload + resume and
+   *  replays in the exact part Gemini handed it to us. Other providers never
+   *  set it and ignore it; display reads only `text`. */
+  | { type: 'text'; text: string; thoughtSignature?: string }
   | { type: 'image'; source: ImageSource }
   /** The model's reasoning / thought summary for a turn (Gemini 3 thinking
    *  models' `thought` parts, or Anthropic extended-thinking text when the
@@ -268,8 +290,9 @@ export type ChatBlock =
    *  don't bury the reply. This block is display-only and is NEVER replayed
    *  as model text by any request builder: re-feeding the prose wastes tokens.
    *  Cross-turn continuity, where a provider needs it, rides on a separate
-   *  signed payload — `thoughtSignature` on the tool call for Gemini, and the
-   *  `ChatMessage.thinkingBlocks` array for Anthropic. */
+   *  signed payload — `thoughtSignature` on the tool call (or the answer-text
+   *  block) for Gemini, and the `ChatMessage.thinkingBlocks` array for
+   *  Anthropic. */
   | { type: 'thinking'; text: string }
   /** A review produced by an alternate provider via the Review feature.
    *  Rendered with a distinct bubble in the panel; serialized as plain

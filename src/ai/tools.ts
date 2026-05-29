@@ -1054,6 +1054,14 @@ const ALL_TOOLS: ToolDefinition[] = [
       required: ['mode'],
     },
   },
+  {
+    name: 'finish',
+    description: 'Signal that the user\'s request is fully complete and you have nothing left to do. This ENDS your turn. Auto-continue is on: if you stop WITHOUT calling finish, you will be automatically resumed to keep working — so never end with a plain "all done" message; call finish instead. Call it once, only when the task is genuinely complete and verified. Optionally include a one-line summary of what you accomplished.',
+    input_schema: {
+      type: 'object',
+      properties: { summary: { type: 'string', description: 'Optional one-line summary of the completed work.' } },
+    },
+  },
 ];
 
 const ALWAYS_AVAILABLE = new Set([
@@ -1119,6 +1127,10 @@ const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStr
  *  code + stats alone. runIsolated is here because its primary value is
  *  the thumbnail; without vision it degrades to just the stats. */
 const VIEWS_GATED = new Set(['renderView', 'renderViews', 'runIsolated']);
+// `finish` only exists in auto-continue mode — it's the sentinel the model
+// calls to end a turn (otherwise the loop resumes it). Off-mode never offers
+// it, so off-mode behavior is unchanged.
+const AUTORESUME_GATED = new Set(['finish']);
 /** Gated by the Session-notes scope toggle. When off, the budget keeps the
  *  model from spending a tool round-trip writing notes the chat already holds. */
 const NOTES_GATED = new Set(['addSessionNote']);
@@ -1138,6 +1150,7 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
     if (PAINT_GATED.has(t.name)) return toggles.scope.paintFaces;
     if (NOTES_GATED.has(t.name)) return toggles.scope.sessionNotes;
     if (VIEWS_GATED.has(t.name)) return toggles.vision.views;
+    if (AUTORESUME_GATED.has(t.name)) return toggles.autoResume === true;
     return false;
   });
 }
@@ -1159,6 +1172,12 @@ function getApi(): PartwrightAPI {
  *  ToolExecResult directly. */
 export async function executeTool(name: string, input: Record<string, unknown>): Promise<ToolExecResult> {
   try {
+    // `finish` is a control sentinel, not a window.partwright call — the agent
+    // loop reads it to end the turn. Acknowledge it without touching the API.
+    if (name === 'finish') {
+      const summary = typeof input.summary === 'string' ? input.summary.trim() : '';
+      return { content: summary ? `Marked complete: ${summary}` : 'Turn marked complete.', isError: false };
+    }
     // Pre-flight: code-writing tools must match the active session
     // language. The agent loop will retry with the corrected language
     // when this errors, which is faster and clearer than letting the

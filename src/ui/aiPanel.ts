@@ -1128,6 +1128,15 @@ function renderToggleStrip(): void {
       renderToggleStrip();
     },
   ));
+  primary.appendChild(togglePill(
+    '♾ Auto-continue',
+    toggles.autoResume,
+    'Auto-continue: the agent keeps working until it calls the finish tool to declare the task done — if a turn ends without calling finish, it is automatically resumed instead of stopping. Bounded by the ⟲ iteration cap and the $ spend cap (whichever trips first). Useful for models that tend to stop early (e.g. Gemini). ON by default; turn it OFF to stop at each end_turn as usual (your choice is remembered).',
+    () => {
+      saveSettings(setToggles(loadSettings(), { autoResume: !toggles.autoResume }));
+      renderToggleStrip();
+    },
+  ));
 
   const retry = document.createElement('select');
   retry.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
@@ -1534,6 +1543,15 @@ function renderMessage(msg: ChatMessage): HTMLElement {
     return wrap;
   }
 
+  // Auto-continue nudge: a synthetic "keep going" user turn. Render a subtle
+  // centered divider instead of a normal blue user bubble so it doesn't read
+  // as something the human typed.
+  if (msg.autoResumeNudge) {
+    wrap.className = 'flex flex-col items-center gap-1';
+    wrap.appendChild(renderAutoResumeDivider());
+    return wrap;
+  }
+
   // Assistant placeholders are pushed with an empty text block during a
   // streaming turn so the live bubble exists *before* any tokens arrive —
   // otherwise the streaming scanner finds nothing to update and the user
@@ -1819,6 +1837,21 @@ async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean): Pr
   progressState.retryCount = 0;
   stalledByWatchdog = false;
   await runTurnWithStallRetry(apiKey, settings.toggles, []);
+}
+
+/** Subtle centered divider for an auto-continue nudge (the synthetic "keep
+ *  going" turn injected when the model stopped without calling `finish`). */
+function renderAutoResumeDivider(): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'text-[10px] text-zinc-500 italic flex items-center gap-1.5 py-0.5 select-none';
+  el.title = 'Auto-continue is on: the model ended its turn without calling the finish tool, so the agent resumed it automatically.';
+  const icon = document.createElement('span');
+  icon.textContent = '↻';
+  el.appendChild(icon);
+  const label = document.createElement('span');
+  label.textContent = 'auto-continued (model didn\'t call finish)';
+  el.appendChild(label);
+  return el;
 }
 
 function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: boolean): HTMLElement {
@@ -2498,6 +2531,12 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         // through onUserPersisted, so without this it would only appear after
         // a session reload. renderToolResultBubble auto-expands image-bearing
         // results, so the rendering shows without the user expanding anything.
+        upsertHistoryMessage(msg);
+        renderTranscript();
+      },
+      onAutoResume: msg => {
+        // Auto-continue injected a synthetic "keep going" turn — show it as a
+        // subtle divider so the user can see why the agent kept going.
         upsertHistoryMessage(msg);
         renderTranscript();
       },

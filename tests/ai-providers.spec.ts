@@ -94,6 +94,107 @@ test.describe('Multi-provider AI', () => {
     expect(fcPart.thoughtSignature).toBe('SIG_ABC');
   });
 
+  test('Gemini captures a text turn thoughtSignature from a trailing empty-text part', async ({ page }) => {
+    // Regression for the "Gemini stalls after thinking" bug: Gemini 3 streams a
+    // text response's thought signature on a trailing part whose text is empty.
+    // The old parser skipped empty-text parts (they matched neither the text
+    // nor the functionCall branch), dropping the signature — which silently
+    // degrades the model into a premature, tiny end_turn. The signature must be
+    // captured and surfaced as result.textThoughtSignature for a pure-text turn.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const out = await page.evaluate(async () => {
+      const gemini = await import('/src/ai/gemini.ts');
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async () => {
+        const frames = [
+          'data: {"candidates":[{"content":{"parts":[{"text":"Looks good — done."}]}}]}',
+          'data: {"candidates":[{"content":{"parts":[{"thoughtSignature":"SIG_TEXT"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}',
+        ];
+        const body = frames.join('\r\n\r\n') + '\r\n\r\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result = await gemini.streamTurn({ apiKey: 'k', model: 'gemini-flash-latest', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] });
+        return { text: result.text, sig: (result as { textThoughtSignature?: string }).textThoughtSignature, tools: result.toolCalls.length };
+      } finally {
+        window.fetch = origFetch;
+      }
+    });
+    expect(out.text).toBe('Looks good — done.');
+    expect(out.sig).toBe('SIG_TEXT');
+    expect(out.tools).toBe(0);
+  });
+
+  test('Gemini replays an answer-text thoughtSignature on the text part', async ({ page }) => {
+    // The captured text-turn signature (above) rides the persisted text block
+    // and must replay on the text part of the next request, so a resumed
+    // Gemini conversation keeps its reasoning thread.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const sentBody = await page.evaluate(async () => {
+      const gemini = await import('/src/ai/gemini.ts');
+      let captured = '';
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (_input: unknown, init: { body?: string }) => {
+        captured = String(init?.body ?? '');
+        const body = 'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}\r\n\r\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        const history = [
+          { id: 'a1', sessionId: 's', role: 'assistant', blocks: [{ type: 'text', text: 'Planning the box.', thoughtSignature: 'SIG_TEXT' }], createdAt: 0, seq: 0 },
+          { id: 'u1', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'keep going' }], createdAt: 0, seq: 1 },
+        ];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await gemini.streamTurn({ apiKey: 'k', model: 'gemini-flash-latest', systemPrompt: 'sys', systemSuffix: '', history: history as any, tools: [] });
+      } finally {
+        window.fetch = origFetch;
+      }
+      return captured;
+    });
+    const parsed = JSON.parse(sentBody);
+    const modelTurn = parsed.contents.find((c: { role: string }) => c.role === 'model');
+    const textPart = modelTurn.parts.find((p: { text?: string }) => typeof p.text === 'string');
+    expect(textPart.text).toBe('Planning the box.');
+    expect(textPart.thoughtSignature).toBe('SIG_TEXT');
+  });
+
+  test('Gemini backfills a functionCall thoughtSignature delivered in a separate chunk', async ({ page }) => {
+    // Hardening for the documented 400 ("missing thought_signature after
+    // multiple tool uses"): when the signature streams in a chunk separate from
+    // the functionCall part it belongs to, it must still attach to the call so
+    // the next request doesn't 400.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const out = await page.evaluate(async () => {
+      const gemini = await import('/src/ai/gemini.ts');
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async () => {
+        const frames = [
+          'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"getSessionContext","args":{}}}]}}]}',
+          'data: {"candidates":[{"content":{"parts":[{"thoughtSignature":"SIG_FC"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}',
+        ];
+        const body = frames.join('\r\n\r\n') + '\r\n\r\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result = await gemini.streamTurn({ apiKey: 'k', model: 'gemini-flash-latest', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] });
+        return { name: result.toolCalls[0]?.name, sig: result.toolCalls[0]?.thoughtSignature, count: result.toolCalls.length };
+      } finally {
+        window.fetch = origFetch;
+      }
+    });
+    expect(out.count).toBe(1);
+    expect(out.name).toBe('getSessionContext');
+    expect(out.sig).toBe('SIG_FC');
+  });
+
   test('Gemini validateKey tolerates a 503 and pings the models endpoint, not generateContent', async ({ page }) => {
     // Regression: validateKey used a generateContent ping on a hard-coded
     // model. When that model is overloaded Google answers 503 UNAVAILABLE
