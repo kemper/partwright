@@ -1605,10 +1605,43 @@ async function main() {
     return { sessionId: session.id };
   }
 
+  // Cancel an active voxel-paint session. Its live grid + per-triangle
+  // provenance map are bound to the OUTGOING code, so it must stop before we
+  // load or import different code — otherwise a later click/bake writes into the
+  // wrong model. Safe no-op when paint isn't active.
+  function cancelVoxelPaintIfActive(): void {
+    if (voxelPaint.isActive()) {
+      voxelPaint.deactivate();
+      syncVoxelPaintUI();
+    }
+  }
+
+  // Drop the outgoing target's paint state — color regions, the model-declared
+  // color underlay, and any in-flight subdivision worker job — then re-sync the
+  // editor lock. These live in module state the session/part layer doesn't own,
+  // so a fresh target (new session, new part, freshly imported model) must wipe
+  // them or it inherits the previous one's regions: the next runCodeSync
+  // re-resolves them onto the new mesh and the editor opens locked.
+  function dropPaintState(): void {
+    // Drop any in-flight subdivision worker job before clearing regions, so a
+    // late continuation can't stamp triangle ids onto regions that no longer
+    // exist (or overwrite the freshly-loaded mesh).
+    resetPaintWorkerState();
+    clearRegions();
+    clearModelColorRegions(); // model-declared underlay is module state too
+    syncLockState();
+  }
+
   // Import a raw code payload as a new session. Shared between file drop and the AI API.
   async function importCodePayload(code: string, language: Language, sessionName?: string): Promise<{ sessionId: string }> {
     if (language !== getActiveLanguage()) await switchLanguage(language);
     const session = await createSession(sessionName, language);
+    // A freshly imported model starts unpainted. Clear the previous session's
+    // live voxel paint and color regions before running, or runCodeSync
+    // re-resolves those stale regions onto the new mesh — e.g. a painted part's
+    // colors bleeding onto image→voxel art — and the editor opens locked.
+    cancelVoxelPaintIfActive();
+    dropPaintState();
     setValue(code);
     await runCodeSync(code);
     return { sessionId: session.id };
@@ -1624,6 +1657,11 @@ async function main() {
   async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean; seedRegions?: SeedRegion[] } = { manifold: true }): Promise<{ sessionId: string }> {
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const session = await createSession(sessionName, 'manifold-js');
+    // Fresh session: drop the previous model's paint before running the import
+    // wrapper (same reason as importCodePayload). seedRegions below are added
+    // AFTER this clear, so an imported colored mesh's own seeds survive.
+    cancelVoxelPaintIfActive();
+    dropPaintState();
     setActiveImports([mesh]);
     const code = generateImportCode([mesh], { manifold: opts.manifold });
     setValue(code);
@@ -2794,18 +2832,8 @@ async function main() {
   // Reset the editor to a blank starting point for a freshly created session.
   // Shared by the session bar's "+ New Session" button and the session modal's,
   // so both clear the previous session's code instead of leaving it behind.
-  // Reset the editor to a starter snippet, dropping stale paint state. Color
-  // regions live in module state that the session/part layer doesn't own, so a
-  // fresh target must clear them here — otherwise the new (unpainted) session or
-  // part inherits the previous one's regions and is born with a locked editor.
   function resetEditorToStarter(comment: string) {
-    // Drop any in-flight subdivision worker job before clearing regions, so a
-    // late continuation can't stamp triangle ids onto regions that no longer
-    // exist (or overwrite the freshly-loaded starter mesh).
-    resetPaintWorkerState();
-    clearRegions();
-    clearModelColorRegions(); // model-declared underlay is module state too
-    syncLockState();
+    dropPaintState();
     const freshCode = `// ${comment}\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);`;
     setValue(freshCode);
     runCode(freshCode);
@@ -3128,10 +3156,7 @@ async function main() {
     // live grid and provenance map are bound to the OUTGOING code, so a Bake
     // after navigation would write the wrong session's voxels into the new
     // editor. Also unlocks the editor and clears the floating panel.
-    if (voxelPaint.isActive()) {
-      voxelPaint.deactivate();
-      syncVoxelPaintUI();
-    }
+    cancelVoxelPaintIfActive();
     // Each version remembers the language it was authored in (per-version
     // since schema 1.8); fall back to the session-level hint, then to the
     // engine default. Lets a single session hold mixed JS + SCAD versions
