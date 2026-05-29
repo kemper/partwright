@@ -94,6 +94,7 @@ import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
 import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type ReliefCommonOptions, type SeedRegion, type PreviewMode, type GenerateReliefResult } from './relief/types';
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
 import { setReliefSettings, getReliefSettings, updateReliefSettings, isReliefSession, getPreviewModeFor } from './relief/reliefSettings';
+import { saveReliefSource, getReliefSource } from './relief/reliefSource';
 import { listFilaments, hexToRgb } from './relief/filaments';
 import { meshBounds } from './color/slabPaint';
 import { openReliefImportModal } from './ui/reliefImportModal';
@@ -1771,7 +1772,7 @@ async function main() {
   // ImportedMesh, persist the relief settings, and open the studio. Used by
   // both the raster (createReliefFromImageData) and SVG (createReliefFromSvgText)
   // entry points so the post-generation flow stays in lockstep.
-  async function commitGeneratedRelief(result: GenerateReliefResult, opts: ReliefOptions, sourceName: string): Promise<{ sessionId: string }> {
+  async function commitGeneratedRelief(result: GenerateReliefResult, opts: ReliefOptions, sourceName: string, sourceFile: File | null = null, isSvg = false): Promise<{ sessionId: string }> {
     if (result.mesh.numTri === 0) throw new Error('Source too small to build a relief — use a larger image or SVG.');
     const mesh: ImportedMesh = {
       id: generateId(),
@@ -1802,6 +1803,11 @@ async function main() {
       previewMode: 'flat',
       options: opts,
     });
+    // Persist the source so the wizard can be reopened pre-loaded (no
+    // re-upload). Best-effort — saveReliefSource swallows storage errors.
+    if (sourceFile) {
+      await saveReliefSource(sessionId, sourceFile, sourceFile.name || `${sourceName}${isSvg ? '.svg' : '.png'}`, isSvg);
+    }
     showReliefStudio();
     return { sessionId };
   }
@@ -1822,7 +1828,7 @@ async function main() {
     return null;
   }
 
-  async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string): Promise<{ sessionId: string }> {
+  async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string, sourceFile: File | null = null): Promise<{ sessionId: string }> {
     const opts: ReliefOptions = {
       ...options,
       common: clampReliefCommon(options.common),
@@ -1832,10 +1838,10 @@ async function main() {
     const fitError = steppedReliefLayerFitError(opts);
     if (fitError) throw new Error(fitError);
     const result = generateRelief(image, opts);
-    return commitGeneratedRelief(result, opts, sourceName);
+    return commitGeneratedRelief(result, opts, sourceName, sourceFile, false);
   }
 
-  async function createReliefFromSvgText(svgText: string, options: ReliefOptions, sourceName: string): Promise<{ sessionId: string }> {
+  async function createReliefFromSvgText(svgText: string, options: ReliefOptions, sourceName: string, sourceFile: File | null = null): Promise<{ sessionId: string }> {
     const opts: ReliefOptions = {
       ...options,
       common: clampReliefCommon(options.common),
@@ -1846,7 +1852,7 @@ async function main() {
     const fitError = steppedReliefLayerFitError(opts);
     if (fitError) throw new Error(fitError);
     const result = await generateReliefFromSvg(svgText, opts);
-    return commitGeneratedRelief(result, opts, sourceName);
+    return commitGeneratedRelief(result, opts, sourceName, sourceFile, true);
   }
 
   // Seed color regions from an imported stepped-relief STL's existing Z plateaus so the
@@ -1918,13 +1924,26 @@ async function main() {
       // already shows an inline aiNote and keeps the modal open so the user
       // doesn't lose their tuned settings. Swallowing here would also let the
       // wizard think the create succeeded and close itself.
-      onCreate: async (image, opts, name) => {
-        await createReliefFromImageData(image, opts, name || 'relief');
+      onCreate: async (image, opts, name, sourceFile) => {
+        await createReliefFromImageData(image, opts, name || 'relief', sourceFile);
       },
-      onCreateSvg: async (svgText, opts, name) => {
-        await createReliefFromSvgText(svgText, opts, name || 'relief');
+      onCreateSvg: async (svgText, opts, name, sourceFile) => {
+        await createReliefFromSvgText(svgText, opts, name || 'relief', sourceFile);
       },
     });
+  }
+
+  /** Reopen the relief import wizard for an existing relief session, pre-loaded
+   *  with its saved source image + the settings it was generated with — so the
+   *  user re-tunes without re-uploading. Falls back to a blank wizard when no
+   *  source was stored (old sessions, or a storage miss). */
+  async function reopenReliefImport(sessionId: string): Promise<void> {
+    const savedOpts = getReliefSettings(sessionId)?.options;
+    // getReliefSource swallows storage errors and returns null, so a miss (old
+    // session, no stored source) just falls back to a blank picker pre-filled
+    // with the saved settings.
+    const source = await getReliefSource(sessionId);
+    openReliefImportFlow(source?.file, savedOpts);
   }
 
   function dataUrlToImageData(src: string): Promise<ImageData> {
@@ -2075,21 +2094,28 @@ async function main() {
     // committing. The modal's Cancel doubles as the back-out, so the generic
     // pre-import confirm is skipped for images (see handleImportFile).
     // `initialOptions` pre-fills the controls when re-importing a past entry.
-    const opts = await showImageVoxelImportModal({ filename: file.name, image: imageData, initialOptions });
-    if (!opts) return false;
-    const grid = imageDataToVoxelGrid(imageData, opts);
+    // The user may also swap the source image inside the modal ("Choose a
+    // different image…"), so build everything below from the RESULT's image /
+    // file / name rather than the originally-picked one.
+    const result = await showImageVoxelImportModal({ filename: file.name, image: imageData, file, initialOptions });
+    if (!result) return false;
+    const { options: opts, image: chosenImage, file: chosenFile, filename: chosenName } = result;
+    const sourceFile = chosenFile ?? file;
+    const grid = imageDataToVoxelGrid(chosenImage, opts);
     if (grid.size === 0) {
-      alert(`"${file.name}" produced no voxels at the chosen settings. Try lowering the transparency cutoff.`);
+      alert(`"${chosenName}" produced no voxels at the chosen settings. Try lowering the transparency cutoff.`);
       return false;
     }
-    const code = generateVoxelImportCode(grid, file.name);
-    const sessionName = file.name.replace(/\.(png|jpe?g|gif|webp|bmp)$/i, '');
+    const code = generateVoxelImportCode(grid, chosenName);
+    const sessionName = chosenName.replace(/\.(png|jpe?g|gif|webp|bmp)$/i, '');
     await importCodePayload(code, 'voxel', sessionName);
     // Register in Recent Imports tagged as a voxel import, with the chosen
     // settings + a thumbnail, so re-clicking it reopens THIS modal (not relief)
-    // pre-loaded with these knobs.
+    // pre-loaded with these knobs. Use the swapped-in source when present.
     const meta: ImportMetadata = { importer: 'voxel', options: opts };
-    registerImport(file, file.name, 'IMAGE', meta, createThumbnailFromImageData(imageData));
+    // chosenImage always originates from decodeImage*ToImageData (a real
+    // ImageData), so the ImageDataLike→ImageData narrowing is safe here.
+    registerImport(sourceFile, chosenName, 'IMAGE', meta, createThumbnailFromImageData(chosenImage as ImageData));
     return true;
   }
 
@@ -2732,7 +2758,14 @@ async function main() {
     },
     onImportFile: async (file) => { await handleImportFile(file); },
     onImportInboxEntry: handleReimportInboxEntry,
-    onCreateRelief: () => { openReliefImportFlow(); },
+    onCreateRelief: () => {
+      // If the active session is itself a relief, reopen the wizard pre-loaded
+      // with its stored source + settings (re-tune without re-uploading);
+      // otherwise start a fresh blank import.
+      const sid = getState().session?.id ?? null;
+      if (sid && isReliefSession(sid)) void reopenReliefImport(sid);
+      else openReliefImportFlow();
+    },
     onLanguageHelp: async () => { await showLanguageHelpModal(); },
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => {
@@ -3663,6 +3696,11 @@ async function main() {
     getSwapGuide: () => (currentMeshData ? getSwapGuideFor(currentMeshData, currentLayerHeight()) : null),
     detectLevels: () => detectReliefLevels(),
     onClose: () => closeReliefStudio(),
+    onEditImage: () => {
+      const sid = getState().session?.id ?? null;
+      if (sid) void reopenReliefImport(sid);
+      else openReliefImportFlow();
+    },
   });
 
   // Init editor — only auto-run if auto-run is enabled. Auto-runs drive the

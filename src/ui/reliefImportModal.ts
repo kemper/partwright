@@ -24,10 +24,12 @@ export interface ReliefImportModalOptions {
   // Called when the user clicks "AI assist"; returns option overrides to merge.
   onAiAssist?: (image: ImageData, opts: ReliefOptions) => Promise<Partial<ReliefOptions> & { note?: string }>;
   // Called on Create with the chosen image + resolved options + a base name.
-  onCreate: (image: ImageData, opts: ReliefOptions, sourceName: string) => void | Promise<void>;
+  // `sourceFile` is the original picked/dropped File (when available) so the
+  // host can persist it and reopen the wizard pre-loaded later.
+  onCreate: (image: ImageData, opts: ReliefOptions, sourceName: string, sourceFile: File | null) => void | Promise<void>;
   // Called on Create when the chosen file is an SVG — the host parses it and
   // builds a multi-colour tile directly from the per-fill paths.
-  onCreateSvg?: (svgText: string, opts: ReliefOptions, sourceName: string) => void | Promise<void>;
+  onCreateSvg?: (svgText: string, opts: ReliefOptions, sourceName: string, sourceFile: File | null) => void | Promise<void>;
 }
 
 const PREVIEW_PX = 220;
@@ -817,9 +819,9 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     try {
       if (svgText) {
         if (!options.onCreateSvg) throw new Error('SVG imports are not enabled in this build');
-        await options.onCreateSvg(svgText, opts, baseName);
+        await options.onCreateSvg(svgText, opts, baseName, pickedFile);
       } else if (image) {
-        await options.onCreate(image, opts, baseName);
+        await options.onCreate(image, opts, baseName, pickedFile);
       }
       // Record the source file + the settings the user chose in the recent
       // imports inbox. The inbox dedupes on (filename, settings), so the same

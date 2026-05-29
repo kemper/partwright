@@ -273,5 +273,7 @@ export interface ReliefSettings {
   baseThickness: number;
   previewMode: PreviewMode;
   options?: ReliefOptions;
-  sourceImage?: string;
+  // The source image is NOT kept here — photos can exceed the localStorage
+  // quota, so it lives in IndexedDB (the `reliefSources` store, see
+  // src/relief/reliefSource.ts), keyed by session id like these settings.
 }
