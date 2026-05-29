@@ -1,0 +1,20 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`generateSceneCode > small-scene snapshot is stable 1`] = `
+"// Partwright Scene — generated from seed 1
+// 4 instances of 1 asset(s), layout: grid
+const { Manifold } = api;
+
+function buildAsset_box(p) {
+return Manifold.cube([p.s, p.s, p.s], true);
+}
+
+const baked_0 = buildAsset_box({"s": 2});
+
+const place_0 = baked_0.translate([2.5, 2.5, 0]);
+const place_1 = baked_0.translate([7.5, 2.5, 0]);
+const place_2 = baked_0.translate([2.5, 7.5, 0]);
+const place_3 = baked_0.translate([7.5, 7.5, 0]);
+
+return Manifold.compose([place_0, place_1, place_2, place_3]);"
+`;

@@ -136,6 +136,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `file-io` | Before exporting or importing programmatically — `*Data()` byte-returning methods, Recent Exports inbox, session payload shape. |
 | `annotations` | When the user has marked up the model with the Annotate tool (or you need to write annotations programmatically). |
 | `relief` | When making an image-derived part (keychain / tile / silhouette / stepped relief) via `importImageAsRelief`, or reading the single-nozzle swap guide (`getReliefSwapGuide`) / optical preview (`setReliefPreviewMode`). |
+| `scenes` | Before composing a scene — scattering many copies of a few parametric assets (forest, town, debris field) via `generateScene` / `critiqueScene`. Covers the SceneSpec shape, layout kinds, and the generate→critique→render→refine loop. |
 
 ## Common agent mistakes
 

@@ -420,13 +420,13 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'readDoc',
-    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, reference-images, file-io, annotations, relief.',
+    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, reference-images, file-io, annotations, relief, scenes.',
     input_schema: {
       type: 'object',
       properties: {
         name: {
           type: 'string',
-          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations', 'relief'],
+          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations', 'relief', 'scenes'],
           description: 'Subdoc name without the .md extension.',
         },
       },
@@ -1049,6 +1049,60 @@ const ALL_TOOLS: ToolDefinition[] = [
       required: ['mode'],
     },
   },
+  {
+    name: 'generateScene',
+    description: 'One-shot generative scene composer. Scatters many copies of a few small parametric ASSETS (trees, rocks, crates, buildings…) across a region by a layout algorithm, then commits the result as a normal version via runAndSave — it generates ordinary manifold-js code that returns one Manifold.compose([...]), so the scene exports/paints/forks/renders like any hand-coded part. Per-instance variation (params, scale, rotation) is baked into the code as literals; instances sharing identical (asset, params) are baked once and reused. Iterate by RE-CALLING with a new `seed` (re-roll) or a lower `density` (less crowding). Pair with critiqueScene + renderViews to judge the result. Read `readDoc({name:"scenes"})` for the full SceneSpec and the generate→critique→refine loop. Switches the editor to manifold-js if needed.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        seed: { type: 'integer', description: 'Deterministic seed. Same spec + seed always yields the same scene; bump it to re-roll.' },
+        assets: {
+          type: 'array',
+          description: 'The reusable objects placed across the scene. Each is built by a manifold-js code body that returns a Manifold.',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Identifier-safe (matches /^[A-Za-z_][A-Za-z0-9_]*$/) and unique across assets — used as the builder function name.' },
+              body: { type: 'string', description: 'manifold-js code run inside `function buildAsset_<id>(p) { <body> }`. MUST `return` a Manifold. `p` holds this instance\'s sampled param values.' },
+              params: { type: 'array', description: 'ParamSpec list (same shape as api.params), sampled per instance.', items: { type: 'object' } },
+              footprintRadius: { type: 'number', description: 'Approximate XY footprint radius, used for overlap rejection.' },
+              baseHeight: { type: 'number', description: 'Optional: where the asset\'s base sits relative to z=0 (used to seat it on the ground).' },
+            },
+            required: ['id', 'body', 'params', 'footprintRadius'],
+          },
+        },
+        layout: {
+          type: 'object',
+          description: 'How instances are scattered.',
+          properties: {
+            kind: { type: 'string', enum: ['grid', 'jittered-grid', 'poisson-disk', 'clustered', 'along-path'] },
+            bounds: { type: 'object', description: '{ min: [x,y], max: [x,y] } placement region.' },
+            density: { type: 'number', description: 'Higher => more candidate points.' },
+            spacing: { type: 'number', description: 'grid/jittered-grid cell pitch.' },
+            jitter: { type: 'number', description: 'jittered-grid jitter as a fraction of spacing.' },
+            clusters: { type: 'integer', description: 'clustered: number of cluster centers.' },
+            clusterSpread: { type: 'number', description: 'clustered: gaussian spread around each center.' },
+            path: { type: 'array', description: 'along-path: polyline [[x,y],...] to follow.', items: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 } },
+            pathSpacing: { type: 'number', description: 'along-path: spacing between samples.' },
+            rotationJitter: { type: 'number', description: 'Per-instance ± rotation about Z, in degrees.' },
+            scaleRange: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: '[min, max] per-instance uniform scale.' },
+            minClearance: { type: 'number', description: 'Extra clearance added to each footprint for overlap.' },
+            zones: { type: 'array', description: 'Optional sub-regions: { polygon?: [[x,y],...], assetWeights?: { id: weight } }.', items: { type: 'object' } },
+          },
+          required: ['kind', 'bounds', 'density'],
+        },
+        ground: { type: 'object', description: 'Optional ground slab: { enabled: boolean, thickness?, margin? }.' },
+        maxInstances: { type: 'integer', description: 'Cap on placed instances (default 400).' },
+        label: { type: 'string', description: 'Gallery label for the saved version.' },
+      },
+      required: ['seed', 'assets', 'layout'],
+    },
+  },
+  {
+    name: 'critiqueScene',
+    description: 'Return structured metrics for the most recently generated scene: { instanceCount, componentCount, overlapCount, scaleVariance, heightVariance, footprintCoverage, floatingCount, clippingCount }. Use after generateScene to decide how to refine — pair with renderViews for the visual verdict. Errors if no scene has been generated this session.',
+    input_schema: { type: 'object', properties: {} },
+  },
 ];
 
 const ALWAYS_AVAILABLE = new Set([
@@ -1098,10 +1152,11 @@ const ALWAYS_AVAILABLE = new Set([
   'importSvgAsRelief',
   'getReliefSwapGuide',
   'setReliefPreviewMode',
+  'critiqueScene',
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'generateScene']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -1224,7 +1279,7 @@ function detectLanguageMismatch(code: string): string | null {
  *  `tools.ts` to import the engine module statically. The function lives
  *  in `src/geometry/engine.ts` and is already loaded by the app shell at
  *  startup, so a require-style lookup via `window.partwright` is safe. */
-const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations', 'relief']);
+const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations', 'relief', 'scenes']);
 
 /** Fetch a topic subdoc by short name. Same fetch path for Anthropic and
  *  local providers — both run inside the user's browser tab, so this is
@@ -1541,6 +1596,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.getReliefSwapGuide();
     case 'setReliefPreviewMode':
       return api.setReliefPreviewMode(input.mode);
+    case 'generateScene':
+      return api.generateScene(input);
+    case 'critiqueScene':
+      return api.critiqueScene();
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

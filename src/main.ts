@@ -24,7 +24,9 @@ import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, simplifyInWorker, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
-import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
+import { resolveParamValues, pruneParamValues, normalizeParamSchema, type ParamSpec, type ParamValue } from './geometry/params';
+import { buildScene, critiqueMetrics, type ComponentBound } from './scene/scene';
+import type { SceneSpec, SceneGraph, Vec2 } from './scene/types';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, setOnMeshUpdate, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
@@ -253,6 +255,11 @@ export interface ExampleEntry {
 let currentParamSchema: ParamSpec[] | null = null;
 let currentParamValues: Record<string, ParamValue> = {};
 let paramsPanel: ParamsPanelController | null = null;
+
+// The most recently generated scene's layout graph, kept so critiqueScene can
+// re-derive structural metrics against the live geometry. Null until the first
+// generateScene call this session.
+let lastSceneGraph: SceneGraph | null = null;
 
 /** Reconcile the Customizer panel + override state with the parameter schema a
  *  model declared on its latest run. Pass `undefined` when the model declared
@@ -4585,6 +4592,124 @@ async function main() {
     };
   }
 
+  // Validate (and normalize in place) a raw generateScene spec. Throws
+  // ValidationError on any malformed field; guard() in generateScene converts
+  // that to { error } so the value-returning method never throws.
+  const SCENE_ID_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  const LAYOUT_KINDS = ['grid', 'jittered-grid', 'poisson-disk', 'clustered', 'along-path'] as const;
+
+  function validateVec2(val: unknown, name: string): Vec2 {
+    const arr = assertArray(val, name);
+    if (arr.length !== 2) throw new ValidationError(`${name} must be a [x, y] pair, got length=${arr.length}. See /ai.md#argument-validation`);
+    assertNumber(arr[0], `${name}[0]`);
+    assertNumber(arr[1], `${name}[1]`);
+    return [arr[0] as number, arr[1] as number];
+  }
+
+  function validateSceneSpec(raw: unknown): void {
+    const spec = assertObject(raw, 'generateScene(spec)')!;
+    assertNoUnknownKeys(spec, ['seed', 'assets', 'layout', 'ground', 'maxInstances', 'label'], 'generateScene(spec)');
+    assertNumber(spec.seed, 'generateScene(spec).seed', { integer: true });
+    assertString(spec.label, 'generateScene(spec).label', { optional: true });
+    assertNumber(spec.maxInstances, 'generateScene(spec).maxInstances', { optional: true, integer: true, min: 1 });
+
+    // Assets.
+    const assets = assertArray(spec.assets, 'generateScene(spec).assets');
+    if (assets.length === 0) throw new ValidationError('generateScene(spec).assets must not be empty. See /ai.md#argument-validation');
+    const seenIds = new Set<string>();
+    for (let i = 0; i < assets.length; i++) {
+      const a = assertObject(assets[i], `generateScene(spec).assets[${i}]`)!;
+      assertNoUnknownKeys(a, ['id', 'body', 'params', 'footprintRadius', 'baseHeight'], `generateScene(spec).assets[${i}]`);
+      const id = assertString(a.id, `generateScene(spec).assets[${i}].id`)!;
+      if (!SCENE_ID_RE.test(id)) throw new ValidationError(`generateScene(spec).assets[${i}].id "${id}" must be identifier-safe (match /^[A-Za-z_][A-Za-z0-9_]*$/). See /ai.md#argument-validation`);
+      if (seenIds.has(id)) throw new ValidationError(`generateScene(spec).assets[${i}].id "${id}" is a duplicate — asset ids must be unique. See /ai.md#argument-validation`);
+      seenIds.add(id);
+      assertString(a.body, `generateScene(spec).assets[${i}].body`);
+      assertNumber(a.footprintRadius, `generateScene(spec).assets[${i}].footprintRadius`, { min: 0 });
+      assertNumber(a.baseHeight, `generateScene(spec).assets[${i}].baseHeight`, { optional: true });
+      // Normalize params into ParamSpec[] using the real param-schema validator.
+      // Accept either the array-of-spec shape or the api.params map shape.
+      const rawParams = a.params;
+      let schema: ParamSpec[];
+      if (Array.isArray(rawParams)) {
+        const asMap: Record<string, unknown> = {};
+        for (const p of rawParams) {
+          const po = assertObject(p, `generateScene(spec).assets[${i}].params[]`)!;
+          const key = assertString(po.key, `generateScene(spec).assets[${i}].params[].key`)!;
+          const { key: _k, ...rest } = po as Record<string, unknown>;
+          asMap[key] = rest;
+        }
+        try {
+          schema = normalizeParamSchema(asMap);
+        } catch (e: unknown) {
+          throw new ValidationError(`generateScene(spec).assets[${i}].params: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      } else {
+        try {
+          schema = normalizeParamSchema(rawParams);
+        } catch (e: unknown) {
+          throw new ValidationError(`generateScene(spec).assets[${i}].params: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      (a as Record<string, unknown>).params = schema;
+    }
+
+    // Layout.
+    const layout = assertObject(spec.layout, 'generateScene(spec).layout')!;
+    assertNoUnknownKeys(layout, ['kind', 'bounds', 'density', 'spacing', 'jitter', 'clusters', 'clusterSpread', 'path', 'pathSpacing', 'rotationJitter', 'scaleRange', 'minClearance', 'zones'], 'generateScene(spec).layout');
+    assertEnum(layout.kind, LAYOUT_KINDS, 'generateScene(spec).layout.kind');
+    const bounds = assertObject(layout.bounds, 'generateScene(spec).layout.bounds')!;
+    assertNoUnknownKeys(bounds, ['min', 'max'], 'generateScene(spec).layout.bounds');
+    const bmin = validateVec2(bounds.min, 'generateScene(spec).layout.bounds.min');
+    const bmax = validateVec2(bounds.max, 'generateScene(spec).layout.bounds.max');
+    if (!(bmax[0] > bmin[0]) || !(bmax[1] > bmin[1])) {
+      throw new ValidationError('generateScene(spec).layout.bounds.max must be strictly greater than .min on both axes. See /ai.md#argument-validation');
+    }
+    assertNumber(layout.density, 'generateScene(spec).layout.density', { min: 0 });
+    assertNumber(layout.spacing, 'generateScene(spec).layout.spacing', { optional: true, min: 0 });
+    assertNumber(layout.jitter, 'generateScene(spec).layout.jitter', { optional: true, min: 0 });
+    assertNumber(layout.clusters, 'generateScene(spec).layout.clusters', { optional: true, integer: true, min: 1 });
+    assertNumber(layout.clusterSpread, 'generateScene(spec).layout.clusterSpread', { optional: true, min: 0 });
+    assertNumber(layout.pathSpacing, 'generateScene(spec).layout.pathSpacing', { optional: true, min: 0 });
+    assertNumber(layout.rotationJitter, 'generateScene(spec).layout.rotationJitter', { optional: true, min: 0 });
+    assertNumber(layout.minClearance, 'generateScene(spec).layout.minClearance', { optional: true, min: 0 });
+    if (layout.path !== undefined) {
+      const path = assertArray(layout.path, 'generateScene(spec).layout.path');
+      for (let i = 0; i < path.length; i++) validateVec2(path[i], `generateScene(spec).layout.path[${i}]`);
+    }
+    if (layout.scaleRange !== undefined) {
+      const sr = assertArray(layout.scaleRange, 'generateScene(spec).layout.scaleRange');
+      if (sr.length !== 2) throw new ValidationError('generateScene(spec).layout.scaleRange must be a [min, max] pair. See /ai.md#argument-validation');
+      const lo = assertNumber(sr[0], 'generateScene(spec).layout.scaleRange[0]', { min: 0 })!;
+      const hi = assertNumber(sr[1], 'generateScene(spec).layout.scaleRange[1]', { min: 0 })!;
+      if (hi < lo) throw new ValidationError(`generateScene(spec).layout.scaleRange min (${lo}) must be <= max (${hi}). See /ai.md#argument-validation`);
+    }
+    if (layout.zones !== undefined) {
+      const zones = assertArray(layout.zones, 'generateScene(spec).layout.zones');
+      for (let i = 0; i < zones.length; i++) {
+        const z = assertObject(zones[i], `generateScene(spec).layout.zones[${i}]`)!;
+        assertNoUnknownKeys(z, ['polygon', 'assetWeights'], `generateScene(spec).layout.zones[${i}]`);
+        if (z.polygon !== undefined) {
+          const poly = assertArray(z.polygon, `generateScene(spec).layout.zones[${i}].polygon`);
+          for (let k = 0; k < poly.length; k++) validateVec2(poly[k], `generateScene(spec).layout.zones[${i}].polygon[${k}]`);
+        }
+        if (z.assetWeights !== undefined) {
+          const w = assertObject(z.assetWeights, `generateScene(spec).layout.zones[${i}].assetWeights`)!;
+          for (const key of Object.keys(w)) assertNumber(w[key], `generateScene(spec).layout.zones[${i}].assetWeights.${key}`, { min: 0 });
+        }
+      }
+    }
+
+    // Ground.
+    if (spec.ground !== undefined) {
+      const g = assertObject(spec.ground, 'generateScene(spec).ground')!;
+      assertNoUnknownKeys(g, ['enabled', 'thickness', 'margin'], 'generateScene(spec).ground');
+      assertBoolean(g.enabled, 'generateScene(spec).ground.enabled');
+      assertNumber(g.thickness, 'generateScene(spec).ground.thickness', { optional: true, min: 0 });
+      assertNumber(g.margin, 'generateScene(spec).ground.margin', { optional: true, min: 0 });
+    }
+  }
+
   // === Expose window.partwright console API ===
   const partwrightAPI = {
     /** Run code string and update all views. Returns geometry data object. */
@@ -5913,6 +6038,62 @@ async function main() {
         ...(warnings.length > 0 ? { warnings } : {}),
         ...(lostLabels ? { lostLabels } : {}),
       };
+    },
+
+    /** Generate a deterministic scene — a scatter of many parametric asset
+     *  instances — as manifold-js code, then commit it through runAndSave. The
+     *  scene is ordinary generated code (one builder per asset + a baked
+     *  Manifold.compose), so it becomes a normal version. Switches to manifold-js
+     *  first if a different language is active. Returns { error } on a malformed
+     *  spec or buildScene failure (value-returning method — never throws). */
+    async generateScene(rawSpec: unknown) {
+      const check = guard(() => { validateSceneSpec(rawSpec); return true; });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      const spec = rawSpec as SceneSpec & { label?: string };
+
+      let built: { graph: SceneGraph; code: string };
+      try {
+        built = buildScene(spec);
+      } catch (e: unknown) {
+        return { error: `generateScene: ${e instanceof Error ? e.message : String(e)}` };
+      }
+
+      // Scenes are manifold-js. Mirror forkVersion's language-switch so the
+      // generated code doesn't hit the wrong engine.
+      if (getActiveLanguage() !== 'manifold-js') {
+        await switchLanguage('manifold-js');
+      }
+
+      lastSceneGraph = built.graph;
+
+      const label = spec.label ?? `scene ${spec.seed}`;
+      const result = await partwrightAPI.runAndSave(built.code, label) as Record<string, unknown>;
+      if (result && typeof result === 'object' && 'error' in result) return result;
+      const geometry = result?.geometry as Record<string, unknown> | null;
+      if (geometry && geometry.status === 'error') {
+        return { error: `generateScene: generated code failed to run: ${String(geometry.error)}`, code: built.code, seed: spec.seed };
+      }
+
+      return {
+        seed: spec.seed,
+        code: built.code,
+        graph: built.graph.stats,
+        geometry,
+        version: result?.version ?? null,
+        galleryUrl: result?.galleryUrl ?? getGalleryUrl(),
+      };
+    },
+
+    /** Structured metrics for the most recently generated scene, re-derived
+     *  against the live geometry. Returns { error } if no scene was generated
+     *  this session. */
+    critiqueScene() {
+      if (!lastSceneGraph) {
+        return { error: 'No scene generated this session. Call generateScene first.' };
+      }
+      const geometry = partwrightAPI.getGeometryData() as { componentCount?: number } | null;
+      const components = partwrightAPI.componentBounds() as ComponentBound[] | null;
+      return critiqueMetrics({ graph: lastSceneGraph, geometry, components });
     },
 
     /** Fork a prior version: load its code, apply transformFn, validate, and save as a new version.
@@ -8795,6 +8976,8 @@ async function main() {
         // Sessions
         'createSession':   { signature: 'await createSession(name?) -- Create session -> {id, url, galleryUrl}', docs: '/ai.md#console-api--windowpartwright' },
         'runAndSave':      { signature: 'await runAndSave(code, label?, assertions?) -- Assert + save version in one call', docs: '/ai.md#assert--save-in-one-call' },
+        'generateScene':   { signature: 'await generateScene({seed, assets, layout, ground?, maxInstances?, label?}) -- Scatter parametric assets into generated manifold-js code + save as a version -> {seed, code, graph, geometry, version, galleryUrl} or {error}', docs: '/ai/scenes.md' },
+        'critiqueScene':   { signature: 'critiqueScene() -- Structured metrics for the last generated scene -> {instanceCount, componentCount, overlapCount, scaleVariance, heightVariance, footprintCoverage, floatingCount, clippingCount} or {error}', docs: '/ai/scenes.md' },
         'saveVersion':     { signature: 'await saveVersion(label?) -- Save current state as version', docs: '/ai.md#console-api--windowpartwright' },
         'listVersions':    { signature: 'await listVersions() -- List all versions in session', docs: '/ai.md#console-api--windowpartwright' },
         'loadVersion':     { signature: 'await loadVersion({index} | {id}) -- Load version into editor -> {id, index, label, code, geometryData} or {error}', docs: '/ai.md#console-api--windowpartwright' },
