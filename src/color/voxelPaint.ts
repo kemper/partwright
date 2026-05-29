@@ -50,9 +50,9 @@ export function voxelCount(): number { return run?.grid.size ?? 0; }
 /** Activate voxel paint on the given code. Runs the code locally to obtain the
  *  grid + provenance, attaches a click handler, and pushes the meshed grid
  *  through `onMeshUpdate`. Returns null on success or an error string. */
-export function activate(code: string, callbacks: VoxelPaintCallbacks): string | null {
+export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOverrides?: Record<string, unknown>): string | null {
   if (active) deactivate();
-  const r = runVoxelForPaint(code);
+  const r = runVoxelForPaint(code, paramOverrides);
   if (!r.ok) return r.error;
   // Smooth surfacing moves vertices off the voxel grid, so a clicked
   // triangle's coords no longer map cleanly to a single source voxel. Refuse

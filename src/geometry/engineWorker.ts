@@ -109,7 +109,7 @@ self.onmessage = async (event: MessageEvent) => {
       let result;
       if (effectiveLang === 'voxel') {
         // Pure-JS voxel meshing — no WASM, no lazy init, synchronous.
-        result = voxelEngine.run(code as string);
+        result = voxelEngine.run(code as string, params ?? undefined);
       } else if (effectiveLang === 'scad') {
         // Ensure the OpenSCAD engine is loaded (lazy init).
         if (!openscadEngine.isReady()) await openscadEngine.init();
@@ -118,7 +118,7 @@ self.onmessage = async (event: MessageEvent) => {
         // Full replicad-language session — lazy-init OCCT then evaluate as
         // BREP. Tessellation happens inside the engine before returning.
         if (!replicadEngine.isReady()) await replicadEngine.init();
-        result = await runReplicadAsync(code as string);
+        result = await runReplicadAsync(code as string, params ?? undefined);
       } else {
         if (!manifoldReady) {
           self.postMessage({

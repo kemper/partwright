@@ -2,6 +2,7 @@ import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
 import { VoxelGrid, decodeGrid, normalizeColor } from '../voxel/grid';
 import { meshGrid, gridToMeshWithProvenance, type VoxelMesh } from '../voxel/mesher';
+import { createParamCapture, type ParamCapture } from '../params';
 
 // The `voxel` engine: user code builds a sparse VoxelGrid and returns it; we
 // mesh the exposed faces into welded `MeshData` (with per-voxel colors) that
@@ -18,11 +19,15 @@ interface VoxelsHandle {
   color(c: Parameters<typeof normalizeColor>[0]): number;
 }
 
-function createVoxelApi() {
+function createVoxelApi(params?: ParamCapture['params']) {
   const voxels = (() => new VoxelGrid()) as VoxelsHandle;
   voxels.decode = (data: string) => decodeGrid(data);
   voxels.color = (c) => normalizeColor(c);
-  return { voxels, VoxelGrid };
+  // `api.params({...})` is exposed identically across all JS-sandbox engines
+  // (manifold-js, voxel, replicad) so a Customizer-driven voxel model gets the
+  // same live slider/toggle panel. Omitted only on paths that don't capture a
+  // schema (none currently — both run paths pass it).
+  return { voxels, VoxelGrid, ...(params ? { params } : {}) };
 }
 
 function isVoxelGrid(v: unknown): v is VoxelGrid {
@@ -38,8 +43,9 @@ export const voxelEngine: Engine = {
 
   isReady() { return true; },
 
-  run(jsCode: string): MeshResult {
-    const api = createVoxelApi();
+  run(jsCode: string, paramOverrides?: Record<string, unknown>): MeshResult {
+    const capture = createParamCapture(paramOverrides);
+    const api = createVoxelApi(capture.params);
     let result: unknown;
     try {
       const fn = new Function('api', `"use strict";\n${jsCode}`);
@@ -80,7 +86,7 @@ export const voxelEngine: Engine = {
 
     try {
       const mesh = meshGrid(grid);
-      return { mesh, manifold: null, error: null };
+      return { mesh, manifold: null, error: null, paramsSchema: capture.collectSchema() };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return { mesh: null, manifold: null, error: msg, diagnostics: runtimeDiagnostic(msg, undefined, 'JavaScript') };
@@ -114,8 +120,8 @@ export interface VoxelPaintRun extends VoxelMesh { grid: VoxelGrid }
  *  Returns null and a message on error. Smooth surfacing is honored for
  *  rendering only — paint operates on the un-supersampled, block-meshed grid
  *  so triangle indices map cleanly to user-authored voxels. */
-export function runVoxelForPaint(jsCode: string): { ok: true; data: VoxelPaintRun } | { ok: false; error: string } {
-  const api = createVoxelApi();
+export function runVoxelForPaint(jsCode: string, paramOverrides?: Record<string, unknown>): { ok: true; data: VoxelPaintRun } | { ok: false; error: string } {
+  const api = createVoxelApi(createParamCapture(paramOverrides).params);
   let result: unknown;
   try {
     const fn = new Function('api', `"use strict";\n${jsCode}`);
