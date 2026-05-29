@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<style>
+  @import url('fonts.css');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background:#09090b; color:#e4e4e7; font-family:'Space Grotesk',system-ui,sans-serif; }
+  .label { font:600 12px 'Space Grotesk'; letter-spacing:2px; text-transform:uppercase; color:#f59e0b; padding:40px 56px 0; }
+  .label.b { color:#2dd4bf; }
+
+  /* ---------- shared chrome ---------- */
+  .section { position:relative; overflow:hidden; }
+  .nav { display:flex; align-items:center; justify-content:space-between; padding:22px 56px; position:relative; z-index:3; }
+  .brand { display:flex; align-items:center; gap:11px; }
+  .brand .wm { font:700 21px 'Sora'; letter-spacing:-0.5px; color:#fafafa; }
+  .navlinks { display:flex; gap:30px; font-size:14px; color:#a1a1aa; }
+  .navlinks span:hover { color:#fafafa; }
+  .btn { font:600 14px 'Space Grotesk'; border-radius:10px; padding:10px 18px; cursor:pointer; border:none; }
+  .btn-primary { color:#1c1207; background:linear-gradient(135deg,#fcd34d,#f59e0b); }
+  .btn-ghost { color:#e4e4e7; background:rgba(255,255,255,.05); border:1px solid #3f3f46; }
+
+  /* ============ DIRECTION A — STUDIO ============ */
+  .heroA { display:grid; grid-template-columns: 1.05fr 1.25fr; gap:48px; align-items:center; padding:54px 56px 80px; position:relative; z-index:2; }
+  .aurora { position:absolute; inset:0; z-index:0; pointer-events:none; }
+  .aurora::before { content:''; position:absolute; width:680px; height:680px; left:-120px; top:-220px; border-radius:50%;
+     background:radial-gradient(circle, rgba(99,102,241,.30), transparent 62%); filter:blur(20px); }
+  .aurora::after { content:''; position:absolute; width:760px; height:760px; right:-200px; bottom:-320px; border-radius:50%;
+     background:radial-gradient(circle, rgba(20,184,166,.26), transparent 60%); filter:blur(20px); }
+  .glowAmber { position:absolute; width:420px; height:420px; right:36%; top:-160px; border-radius:50%;
+     background:radial-gradient(circle, rgba(245,158,11,.18), transparent 62%); filter:blur(20px); z-index:0; }
+  .eyebrow { display:inline-flex; align-items:center; gap:8px; font-size:12.5px; color:#cbd5e1;
+     background:rgba(255,255,255,.04); border:1px solid #27272a; border-radius:999px; padding:6px 13px; margin-bottom:24px; }
+  .eyebrow b { color:#fbbf24; font-weight:600; }
+  h1 { font:800 60px/1.04 'Sora'; letter-spacing:-2px; color:#fafafa; margin-bottom:20px; }
+  h1 .grad { background:linear-gradient(115deg,#fcd34d 10%,#2dd4bf 90%); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .lede { font-size:17px; line-height:1.6; color:#a1a1aa; max-width:480px; margin-bottom:30px; }
+  .ctas { display:flex; gap:13px; align-items:center; margin-bottom:30px; }
+  .btn-lg { padding:13px 24px; font-size:15px; border-radius:12px; }
+  .play { display:inline-flex; align-items:center; gap:9px; }
+  .play .tri { width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,.08);border:1px solid #3f3f46;display:inline-flex;align-items:center;justify-content:center;color:#fcd34d;font-size:10px; }
+  .trust { display:flex; gap:22px; font-size:13px; color:#71717a; }
+  .trust b { color:#a1a1aa; font-weight:600; }
+
+  /* faux product frame */
+  .frame { border-radius:16px; overflow:hidden; border:1px solid #27272a; background:#0c0c0f;
+     box-shadow:0 40px 120px -30px rgba(20,184,166,.25), 0 30px 80px -40px rgba(99,102,241,.4); }
+  .frame .bar { display:flex; align-items:center; gap:7px; padding:11px 14px; background:#141417; border-bottom:1px solid #27272a; }
+  .dot { width:11px;height:11px;border-radius:50%; }
+  .frame .body { display:grid; grid-template-columns: 1fr 1.1fr; height:340px; }
+  .codepane { padding:16px 16px; font:400 12.5px/1.7 'JetBrains Mono'; background:#0a0a0c; border-right:1px solid #1c1c20; overflow:hidden; }
+  .k{color:#c792ea}.f{color:#82aaff}.s{color:#c3e88d}.n{color:#f78c6c}.c{color:#546e7a}.v{color:#ffcb6b}.d{color:#89ddff}
+  .viewport { position:relative; background:
+      radial-gradient(120% 90% at 50% 18%, #1a2330 0%, #0d1117 55%, #090b0f 100%); display:flex;align-items:center;justify-content:center; }
+  .vpill { position:absolute; top:12px; left:12px; font:600 11px 'Space Grotesk'; color:#34d399; background:rgba(16,185,129,.12); border:1px solid rgba(16,185,129,.3); border-radius:999px; padding:3px 10px; display:flex; align-items:center; gap:6px; }
+  .vpill::before{content:'';width:6px;height:6px;border-radius:50%;background:#34d399;}
+  .gizmo{position:absolute;bottom:12px;right:14px;font:600 10px 'JetBrains Mono';color:#52525b;}
+  .swatch{position:absolute;top:12px;right:12px;display:flex;gap:5px;}
+  .swatch i{width:16px;height:16px;border-radius:4px;display:block;border:1px solid rgba(255,255,255,.15);}
+
+  /* ============ DIRECTION B — GENERATIVE BENTO ============ */
+  .heroB { padding:56px 56px 84px; position:relative; z-index:2; }
+  .bgrid-wrap { display:grid; grid-template-columns: 1fr 1fr; gap:40px; align-items:center; }
+  h1.b { font-size:66px; letter-spacing:-2.5px; }
+  h1.b .g2 { background:linear-gradient(120deg,#818cf8,#2dd4bf,#fcd34d); -webkit-background-clip:text;background-clip:text;color:transparent; }
+  .bento { display:grid; grid-template-columns: repeat(3, 1fr); grid-auto-rows:96px; gap:12px; }
+  .cell { border-radius:14px; border:1px solid #27272a; background:#141417; display:flex;align-items:center;justify-content:center; overflow:hidden; position:relative; }
+  .cell.tall { grid-row: span 2; }
+  .cell.wide { grid-column: span 2; }
+  .cell .tag{position:absolute;bottom:7px;left:9px;font:600 10px 'Space Grotesk';color:#a1a1aa;}
+  .cellgrad1{background:radial-gradient(circle at 40% 30%, #1e293b, #0f172a);}
+  .cellgrad2{background:radial-gradient(circle at 60% 40%, #172554, #0f172a);}
+  .cellgrad3{background:radial-gradient(circle at 50% 30%, #134e4a, #0f172a);}
+  .cellgrad4{background:radial-gradient(circle at 50% 40%, #3b1d0e, #1a1208);}
+</style>
+</head>
+<body>
+
+<!-- ================= DIRECTION A ================= -->
+<div class="label">Direction A · "Studio" — cinematic, product-led (evolution of today's dark theme)</div>
+<section class="section">
+  <div class="aurora"></div><div class="glowAmber"></div>
+  <nav class="nav">
+    <div class="brand">
+      <svg width="32" height="32" viewBox="0 0 64 64"><polygon points="32,8 54,20 32,32 10,20" fill="#5eead4"/><polygon points="10,20 32,32 32,56 10,44" fill="#0d9488"/><polygon points="54,20 32,32 32,56 54,44" fill="#14b8a6"/></svg>
+      <span class="wm">Partwright</span>
+    </div>
+    <div class="navlinks"><span>Catalog</span><span>How it works</span><span>For AI agents</span><span>What's new</span></div>
+    <button class="btn btn-primary">Open editor →</button>
+  </nav>
+
+  <div class="heroA">
+    <div>
+      <div class="eyebrow">✦ <b>New</b> · Voxels, BREP solids & image relief</div>
+      <h1>Describe a part.<br>Get a <span class="grad">printable model.</span></h1>
+      <p class="lede">A browser-native parametric CAD studio with a programmatic API built for AI agents. Write JavaScript or OpenSCAD, watch it render live, export print-ready GLB / STL / 3MF. No signup, no installs.</p>
+      <div class="ctas">
+        <button class="btn btn-primary btn-lg">Open the editor</button>
+        <button class="btn btn-ghost btn-lg play"><span class="tri">▶</span> Watch the 90-sec demo</button>
+      </div>
+      <div class="trust"><span><b>0</b> installs</span><span><b>4</b> engines</span><span><b>100%</b> in-browser</span><span><b>MIT</b>-spirited</span></div>
+    </div>
+
+    <div class="frame">
+      <div class="bar"><span class="dot" style="background:#ef4444"></span><span class="dot" style="background:#f59e0b"></span><span class="dot" style="background:#22c55e"></span>
+        <span style="margin-left:10px;font:500 12px 'JetBrains Mono';color:#52525b">partwright · mounting-bracket</span></div>
+      <div class="body">
+        <div class="codepane">
+<span class="c">// parametric bracket</span><br>
+<span class="k">const</span> { <span class="d">Manifold</span> } = api;<br>
+<br>
+<span class="k">const</span> <span class="v">base</span> = <span class="d">Manifold</span>.<span class="f">cube</span>([<span class="n">40</span>,<span class="n">30</span>,<span class="n">4</span>], <span class="k">true</span>);<br>
+<span class="k">const</span> <span class="v">wall</span> = <span class="d">Manifold</span>.<span class="f">cube</span>([<span class="n">40</span>,<span class="n">4</span>,<span class="n">24</span>])<br>
+&nbsp;&nbsp;.<span class="f">translate</span>([<span class="n">0</span>,<span class="n">13</span>,<span class="n">12</span>]);<br>
+<span class="k">const</span> <span class="v">bore</span> = <span class="d">Manifold</span>.<span class="f">cylinder</span>(<span class="n">10</span>,<span class="n">4</span>,<span class="n">4</span>,<span class="n">48</span>);<br>
+<br>
+<span class="k">return</span> <span class="v">base</span>.<span class="f">add</span>(<span class="v">wall</span>)<br>
+&nbsp;&nbsp;.<span class="f">subtract</span>(<span class="v">bore</span>.<span class="f">translate</span>([<span class="n">0</span>,<span class="n">0</span>,<span class="n">4</span>]));<br>
+        </div>
+        <div class="viewport">
+          <div class="vpill">Ready · 1 component</div>
+          <div class="swatch"><i style="background:#14b8a6"></i><i style="background:#f59e0b"></i></div>
+          <!-- iso "cube minus cylinder" rendered part -->
+          <svg width="240" height="240" viewBox="0 0 240 240">
+            <defs>
+              <linearGradient id="ptop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/></linearGradient>
+              <linearGradient id="pleft" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#115e59"/></linearGradient>
+              <linearGradient id="pright" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/></linearGradient>
+              <radialGradient id="floor" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#1f2a38"/><stop offset="1" stop-color="transparent"/></radialGradient>
+            </defs>
+            <ellipse cx="120" cy="196" rx="92" ry="26" fill="url(#floor)"/>
+            <!-- cube -->
+            <polygon points="120,40 208,90 120,140 32,90" fill="url(#ptop)"/>
+            <polygon points="32,90 120,140 120,196 32,146" fill="url(#pleft)"/>
+            <polygon points="208,90 120,140 120,196 208,146" fill="url(#pright)"/>
+            <!-- bore opening on top face -->
+            <ellipse cx="120" cy="90" rx="26" ry="14" fill="#0b3b38"/>
+            <ellipse cx="120" cy="90" rx="26" ry="14" fill="none" stroke="#0d9488" stroke-width="1.5"/>
+            <!-- bore inner depth -->
+            <path d="M94 90 a26 14 0 0 0 52 0 l0 14 a26 14 0 0 1 -52 0 z" fill="#072a28"/>
+            <!-- amber rim light edge -->
+            <line x1="120" y1="40" x2="208" y2="90" stroke="#fcd34d" stroke-width="1.5" opacity="0.55"/>
+          </svg>
+          <div class="gizmo">Z ⊥  · iso</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= DIRECTION B ================= -->
+<div class="label b">Direction B · "Generative" — showcase what you can build (more daring)</div>
+<section class="section heroB">
+  <div class="bgrid-wrap">
+    <div>
+      <div class="eyebrow" style="margin-bottom:26px;">A studio for makers <span style="color:#52525b">·</span> and the agents that help them</div>
+      <h1 class="b">Anything you can<br><span class="g2">describe in code.</span></h1>
+      <p class="lede" style="margin-top:18px;">From a Lego brick to a gyroid lattice to a STEP-exported bracket — four engines, one browser tab. Prompt an AI agent or write it yourself.</p>
+      <div class="ctas">
+        <button class="btn btn-primary btn-lg">Start building</button>
+        <button class="btn btn-ghost btn-lg">Browse 74 examples →</button>
+      </div>
+    </div>
+    <div class="bento">
+      <div class="cell tall cellgrad3"><svg width="92" height="92" viewBox="0 0 64 64"><polygon points="32,10 52,21 32,32 12,21" fill="#5eead4"/><polygon points="12,21 32,32 32,54 12,43" fill="#0d9488"/><polygon points="52,21 32,32 32,54 52,43" fill="#14b8a6"/></svg><span class="tag">Iso part</span></div>
+      <div class="cell cellgrad2"><svg width="56" height="56" viewBox="0 0 64 64"><circle cx="32" cy="32" r="20" fill="none" stroke="#818cf8" stroke-width="3"/><circle cx="32" cy="32" r="9" fill="#6366f1"/></svg><span class="tag">SDF</span></div>
+      <div class="cell cellgrad4"><svg width="50" height="50" viewBox="0 0 64 64"><rect x="14" y="14" width="36" height="36" rx="5" fill="none" stroke="#fbbf24" stroke-width="3"/><rect x="24" y="24" width="16" height="16" fill="#f59e0b"/></svg><span class="tag">OpenSCAD</span></div>
+      <div class="cell wide cellgrad1"><svg width="120" height="60" viewBox="0 0 160 64"><g stroke="#64748b" stroke-width="1" fill="none" opacity="0.7"><path d="M20 40 L40 28 L60 40 L80 28 L100 40 L120 28 L140 40"/><path d="M20 50 L40 38 L60 50 L80 38 L100 50 L120 38 L140 50"/></g><polygon points="80,14 104,27 80,40 56,27" fill="#94a3b8" opacity="0.9"/></svg><span class="tag">BREP solid · STEP export</span></div>
+      <div class="cell cellgrad2"><svg width="48" height="48" viewBox="0 0 64 64"><g fill="#a5b4fc"><rect x="20" y="20" width="9" height="9"/><rect x="31" y="20" width="9" height="9"/><rect x="20" y="31" width="9" height="9"/><rect x="31" y="31" width="9" height="9" fill="#6366f1"/></g></svg><span class="tag">Voxel</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= DEMO CONCEPT ================= -->
+<div class="label" style="color:#a78bfa">The demo question · in-browser interactive &gt; embedded YouTube</div>
+<section class="section" style="padding:30px 56px 70px;">
+  <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:40px;align-items:center;">
+    <div class="frame" style="box-shadow:0 30px 90px -40px rgba(167,139,250,.4);">
+      <div class="bar"><span class="dot" style="background:#ef4444"></span><span class="dot" style="background:#f59e0b"></span><span class="dot" style="background:#22c55e"></span>
+        <span style="margin-left:10px;font:500 12px 'JetBrains Mono';color:#52525b">▶ self-playing demo · runs the real engine</span>
+        <span style="margin-left:auto;display:flex;gap:14px;font:600 11px 'Space Grotesk';color:#52525b"><span style="color:#a78bfa">● LIVE</span> Replay · Edit this</span>
+      </div>
+      <div style="height:230px;position:relative;background:radial-gradient(120% 90% at 70% 20%,#221a33,#0d0b13);display:flex;align-items:center;justify-content:center;">
+        <div style="position:absolute;left:0;top:0;bottom:0;width:42%;padding:16px;font:400 11.5px/1.7 'JetBrains Mono';color:#7c7c8a;border-right:1px solid #1c1c20;">
+          <span style="color:#546e7a">// the agent is typing…</span><br><span style="color:#c792ea">return</span> <span style="color:#82aaff">gear</span>(<span style="color:#f78c6c">12</span>).<span style="color:#82aaff">union</span>(<span style="color:#82aaff">hub</span>)<span style="background:#a78bfa;color:#a78bfa">|</span>
+        </div>
+        <svg width="150" height="150" viewBox="0 0 64 64" style="margin-left:30%;">
+          <g fill="#a78bfa"><circle cx="32" cy="32" r="17"/></g>
+          <g fill="#7c3aed"><rect x="30" y="6" width="4" height="8"/><rect x="30" y="50" width="4" height="8"/><rect x="6" y="30" width="8" height="4"/><rect x="50" y="30" width="8" height="4"/></g>
+          <circle cx="32" cy="32" r="6" fill="#0d0b13"/>
+        </svg>
+        <div style="position:absolute;bottom:10px;left:44%;height:3px;width:50%;background:#27272a;border-radius:2px;"><div style="height:3px;width:62%;background:linear-gradient(90deg,#a78bfa,#fcd34d);border-radius:2px;"></div></div>
+      </div>
+    </div>
+    <div>
+      <h2 style="font:700 26px 'Sora';letter-spacing:-1px;color:#fafafa;margin-bottom:14px;">Don't embed a video. Be the video.</h2>
+      <p style="font-size:15px;line-height:1.65;color:#a1a1aa;">The product runs in the browser already. The "demo" can be the <b style="color:#e4e4e7">real editor on autoplay</b> — a scripted session that types code, renders live, and ends on a <b style="color:#e4e4e7">"now you try"</b> button that drops the visitor straight into the loaded part. No YouTube chrome, no 6 MB MP4, and infinitely more convincing than a screencast.</p>
+      <p style="font-size:13.5px;line-height:1.6;color:#71717a;margin-top:14px;">Fallback for social cards & low-power devices: a short muted, autoplay-loop <code style="color:#fcd34d">&lt;video&gt;</code> (webm/mp4) captured from that same scripted run — self-hosted, not YouTube.</p>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>

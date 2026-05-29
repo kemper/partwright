@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<style>
+  @import url('fonts.css');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #09090b;
+    color: #e4e4e7;
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    padding: 48px;
+  }
+  h1 { font-family: 'Sora'; font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 4px; }
+  .sub { color: #71717a; font-size: 14px; margin-bottom: 40px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+  .card {
+    background: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 16px;
+    padding: 26px 24px 22px;
+    display: flex; flex-direction: column;
+  }
+  .big { height: 120px; display: flex; align-items: center; justify-content: center; margin-bottom: 18px; }
+  .lockup { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid #27272a; border-bottom: 1px solid #27272a; }
+  .lockup .wm { font-family: 'Sora'; font-weight: 700; font-size: 26px; letter-spacing: -0.8px; color: #fafafa; }
+  .row { display: flex; align-items: center; gap: 20px; margin-top: 14px; }
+  .favset { display: flex; align-items: center; gap: 12px; }
+  .favset .fav { background:#0b0b0d; border:1px solid #27272a; border-radius:7px; padding:6px; display:flex; }
+  .cap { margin-top: 16px; }
+  .name { font-weight: 700; font-size: 15px; color: #fafafa; margin-bottom: 3px; }
+  .num { font-family: 'Space Grotesk'; font-size: 11px; color: #f59e0b; font-weight: 600; letter-spacing: 1px; }
+  .why { color: #a1a1aa; font-size: 12.5px; line-height: 1.5; }
+  .lighttile { background:#fafafa; }
+</style>
+</head>
+<body>
+  <h1>Partwright — logo directions</h1>
+  <div class="sub">Six marks for "a maker of parts." Each shown big, in a wordmark lockup, and at favicon size (32 / 20 px) to test legibility.</div>
+  <div class="grid">
+
+    <!-- ============ 1. CSG BOOLEAN UNION ============ -->
+    <div class="card">
+      <div class="big">
+        <svg width="100" height="100" viewBox="0 0 64 64">
+          <defs>
+            <linearGradient id="u-warm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f97316"/></linearGradient>
+            <linearGradient id="u-cool" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#0891b2"/></linearGradient>
+          </defs>
+          <rect x="4" y="4" width="56" height="56" rx="15" fill="#0f172a"/>
+          <rect x="15" y="15" width="24" height="24" rx="4" fill="url(#u-warm)" opacity="0.92"/>
+          <circle cx="38" cy="38" r="13" fill="url(#u-cool)" opacity="0.85"/>
+        </svg>
+      </div>
+      <div class="lockup">
+        <svg width="34" height="34" viewBox="0 0 64 64"><rect x="4" y="4" width="56" height="56" rx="15" fill="#0f172a"/><rect x="15" y="15" width="24" height="24" rx="4" fill="url(#u-warm)" opacity="0.92"/><circle cx="38" cy="38" r="13" fill="url(#u-cool)" opacity="0.85"/></svg>
+        <span class="wm">Partwright</span>
+      </div>
+      <div class="favset" style="margin-top:14px;">
+        <div class="fav"><svg width="32" height="32" viewBox="0 0 64 64"><rect x="4" y="4" width="56" height="56" rx="15" fill="#0f172a"/><rect x="15" y="15" width="24" height="24" rx="4" fill="url(#u-warm)"/><circle cx="38" cy="38" r="13" fill="url(#u-cool)"/></svg></div>
+        <div class="fav"><svg width="20" height="20" viewBox="0 0 64 64"><rect x="4" y="4" width="56" height="56" rx="15" fill="#0f172a"/><rect x="15" y="15" width="24" height="24" rx="4" fill="url(#u-warm)"/><circle cx="38" cy="38" r="13" fill="url(#u-cool)"/></svg></div>
+      </div>
+      <div class="cap"><div class="num">01</div><div class="name">Boolean Union</div><div class="why">A square ∪ a circle — the core CSG/manifold operation made into a mark. Warm meets cool. Reads at any size.</div></div>
+    </div>
+
+    <!-- ============ 2. ISO BLOCK / PART ============ -->
+    <div class="card">
+      <div class="big">
+        <svg width="100" height="100" viewBox="0 0 64 64">
+          <defs>
+            <linearGradient id="c-top" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/></linearGradient>
+            <linearGradient id="c-left" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0f766e"/></linearGradient>
+            <linearGradient id="c-right" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/></linearGradient>
+          </defs>
+          <!-- isometric cube with a notch cut from the top -->
+          <polygon points="32,8 54,20 32,32 10,20" fill="url(#c-top)"/>
+          <polygon points="10,20 32,32 32,56 10,44" fill="url(#c-left)"/>
+          <polygon points="54,20 32,32 32,56 54,44" fill="url(#c-right)"/>
+          <!-- notch / machined detail on the top face -->
+          <polygon points="32,15 41,20 32,25 23,20" fill="#0f172a" opacity="0.35"/>
+        </svg>
+      </div>
+      <div class="lockup">
+        <svg width="34" height="34" viewBox="0 0 64 64"><polygon points="32,8 54,20 32,32 10,20" fill="url(#c-top)"/><polygon points="10,20 32,32 32,56 10,44" fill="url(#c-left)"/><polygon points="54,20 32,32 32,56 54,44" fill="url(#c-right)"/><polygon points="32,15 41,20 32,25 23,20" fill="#0f172a" opacity="0.35"/></svg>
+        <span class="wm">Partwright</span>
+      </div>
+      <div class="favset" style="margin-top:14px;">
+        <div class="fav"><svg width="32" height="32" viewBox="0 0 64 64"><polygon points="32,8 54,20 32,32 10,20" fill="url(#c-top)"/><polygon points="10,20 32,32 32,56 10,44" fill="url(#c-left)"/><polygon points="54,20 32,32 32,56 54,44" fill="url(#c-right)"/></svg></div>
+        <div class="fav"><svg width="20" height="20" viewBox="0 0 64 64"><polygon points="32,8 54,20 32,32 10,20" fill="url(#c-top)"/><polygon points="10,20 32,32 32,56 10,44" fill="url(#c-left)"/><polygon points="54,20 32,32 32,56 54,44" fill="url(#c-right)"/></svg></div>
+      </div>
+      <div class="cap"><div class="num">02</div><div class="name">Iso Part</div><div class="why">A single isometric block with a machined notch. Says "3D / printable part" instantly; the most literal & scalable.</div></div>
+    </div>
+
+    <!-- ============ 3. EXTRUDED P MONOGRAM ============ -->
+    <div class="card">
+      <div class="big">
+        <svg width="100" height="100" viewBox="0 0 64 64">
+          <defs>
+            <linearGradient id="p-face" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/></linearGradient>
+          </defs>
+          <rect x="4" y="4" width="56" height="56" rx="15" fill="#0f172a"/>
+          <!-- extrude shadow -->
+          <g transform="translate(3.5,3.5)" opacity="0.9">
+            <path d="M20 16 h13 a11 11 0 0 1 0 22 h-5 v10 h-8 z" fill="#7c4a02"/>
+          </g>
+          <!-- face P -->
+          <path d="M20 16 h13 a11 11 0 0 1 0 22 h-5 v10 h-8 z" fill="url(#p-face)"/>
+          <!-- bowl hole -->
+          <circle cx="33" cy="27" r="4.5" fill="#0f172a"/>
+        </svg>
+      </div>
+      <div class="lockup">
+        <svg width="34" height="34" viewBox="0 0 64 64"><rect x="4" y="4" width="56" height="56" rx="15" fill="#0f172a"/><g transform="translate(3.5,3.5)" opacity="0.9"><path d="M20 16 h13 a11 11 0 0 1 0 22 h-5 v10 h-8 z" fill="#7c4a02"/></g><path d="M20 16 h13 a11 11 0 0 1 0 22 h-5 v10 h-8 z" fill="url(#p-face)"/><circle cx="33" cy="27" r="4.5" fill="#0f172a"/></svg>
+        <span class="wm">Partwright</span>
+      </div>
+      <div class="favset" style="margin-top:14px;">
+        <div class="fav"><svg width="32" height="32" viewBox="0 0 64 64"><rect x="4" y="4" width="56" height="56" rx="15" fill="#0f172a"/><g transform="translate(3.5,3.5)" opacity="0.9"><path d="M20 16 h13 a11 11 0 0 1 0 22 h-5 v10 h-8 z" fill="#7c4a02"/></g><path d="M20 16 h13 a11 11 0 0 1 0 22 h-5 v10 h-8 z" fill="url(#p-face)"/><circle cx="33" cy="27" r="4.5" fill="#0f172a"/></svg></div>
+        <div class="fav"><svg width="20" height="20" viewBox="0 0 64 64"><rect x="4" y="4" width="56" height="56" rx="15" fill="#0f172a"/><path d="M20 16 h13 a11 11 0 0 1 0 22 h-5 v10 h-8 z" fill="url(#p-face)"/><circle cx="33" cy="27" r="4.5" fill="#0f172a"/></svg></div>
+      </div>
+      <div class="cap"><div class="num">03</div><div class="name">Extruded P</div><div class="why">A bold monogram with real extrude depth — a "P" you could 3D-print. App-icon friendly, ownable letterform.</div></div>
+    </div>
+
+    <!-- ============ 4. CODE BRACKETS + SOLID ============ -->
+    <div class="card">
+      <div class="big">
+        <svg width="100" height="100" viewBox="0 0 64 64">
+          <defs>
+            <linearGradient id="b-cube" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#818cf8"/><stop offset="1" stop-color="#6366f1"/></linearGradient>
+          </defs>
+          <!-- brackets -->
+          <path d="M22 14 q-9 0 -9 9 v9 q0 0 -4 0 q4 0 4 0 v9 q0 9 9 9" fill="none" stroke="#52525b" stroke-width="3.5" stroke-linecap="round"/>
+          <path d="M42 14 q9 0 9 9 v9 q0 0 4 0 q-4 0 -4 0 v9 q0 9 -9 9" fill="none" stroke="#52525b" stroke-width="3.5" stroke-linecap="round"/>
+          <!-- iso cube nucleus -->
+          <polygon points="32,18 44,25 32,32 20,25" fill="#a5b4fc"/>
+          <polygon points="20,25 32,32 32,46 20,39" fill="#6366f1"/>
+          <polygon points="44,25 32,32 32,46 44,39" fill="#818cf8"/>
+        </svg>
+      </div>
+      <div class="lockup">
+        <svg width="34" height="34" viewBox="0 0 64 64"><path d="M22 14 q-9 0 -9 9 v9 q0 0 -4 0 q4 0 4 0 v9 q0 9 9 9" fill="none" stroke="#52525b" stroke-width="3.5" stroke-linecap="round"/><path d="M42 14 q9 0 9 9 v9 q0 0 4 0 q-4 0 -4 0 v9 q0 9 -9 9" fill="none" stroke="#52525b" stroke-width="3.5" stroke-linecap="round"/><polygon points="32,18 44,25 32,32 20,25" fill="#a5b4fc"/><polygon points="20,25 32,32 32,46 20,39" fill="#6366f1"/><polygon points="44,25 32,32 32,46 44,39" fill="#818cf8"/></svg>
+        <span class="wm">Partwright</span>
+      </div>
+      <div class="favset" style="margin-top:14px;">
+        <div class="fav"><svg width="32" height="32" viewBox="0 0 64 64"><path d="M22 14 q-9 0 -9 9 v9 q0 0 -4 0 q4 0 4 0 v9 q0 9 9 9" fill="none" stroke="#71717a" stroke-width="4" stroke-linecap="round"/><path d="M42 14 q9 0 9 9 v9 q0 0 4 0 q-4 0 -4 0 v9 q0 9 -9 9" fill="none" stroke="#71717a" stroke-width="4" stroke-linecap="round"/><polygon points="32,18 44,25 32,32 20,25" fill="#a5b4fc"/><polygon points="20,25 32,32 32,46 20,39" fill="#6366f1"/><polygon points="44,25 32,32 32,46 44,39" fill="#818cf8"/></svg></div>
+        <div class="fav"><svg width="20" height="20" viewBox="0 0 64 64"><polygon points="32,18 44,25 32,32 20,25" fill="#a5b4fc"/><polygon points="20,25 32,32 32,46 20,39" fill="#6366f1"/><polygon points="44,25 32,32 32,46 44,39" fill="#818cf8"/></svg></div>
+      </div>
+      <div class="cap"><div class="num">04</div><div class="name">Code → Part</div><div class="why">Brackets cradling a solid: "programmatic geometry." Speaks to the window.partwright + AI-agent identity.</div></div>
+    </div>
+
+    <!-- ============ 5. REFINED WRIGHT COMPASS ============ -->
+    <div class="card">
+      <div class="big">
+        <svg width="100" height="100" viewBox="0 0 64 64">
+          <defs>
+            <linearGradient id="w-star" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fcd34d"/><stop offset="1" stop-color="#f59e0b"/></linearGradient>
+            <radialGradient id="w-bg" cx="0.4" cy="0.35" r="0.8"><stop offset="0" stop-color="#1e293b"/><stop offset="1" stop-color="#0f172a"/></radialGradient>
+          </defs>
+          <circle cx="32" cy="32" r="26" fill="url(#w-bg)" stroke="#334155" stroke-width="1.5"/>
+          <path d="M32 9 l5 18 18 5 -18 5 -5 18 -5 -18 -18 -5 18 -5z" fill="url(#w-star)"/>
+          <path d="M32 20v24M20 32h24" stroke="#2dd4bf" stroke-width="2.5" stroke-linecap="round" opacity="0.9"/>
+          <circle cx="32" cy="32" r="3.4" fill="#f8fafc"/>
+        </svg>
+      </div>
+      <div class="lockup">
+        <svg width="34" height="34" viewBox="0 0 64 64"><circle cx="32" cy="32" r="26" fill="url(#w-bg)" stroke="#334155" stroke-width="1.5"/><path d="M32 9 l5 18 18 5 -18 5 -5 18 -5 -18 -18 -5 18 -5z" fill="url(#w-star)"/><path d="M32 20v24M20 32h24" stroke="#2dd4bf" stroke-width="2.5" stroke-linecap="round"/><circle cx="32" cy="32" r="3.4" fill="#f8fafc"/></svg>
+        <span class="wm">Partwright</span>
+      </div>
+      <div class="favset" style="margin-top:14px;">
+        <div class="fav"><svg width="32" height="32" viewBox="0 0 64 64"><circle cx="32" cy="32" r="26" fill="url(#w-bg)" stroke="#334155" stroke-width="1.5"/><path d="M32 9 l5 18 18 5 -18 5 -5 18 -5 -18 -18 -5 18 -5z" fill="url(#w-star)"/><path d="M32 20v24M20 32h24" stroke="#2dd4bf" stroke-width="2.5" stroke-linecap="round"/><circle cx="32" cy="32" r="3.4" fill="#f8fafc"/></svg></div>
+        <div class="fav"><svg width="20" height="20" viewBox="0 0 64 64"><circle cx="32" cy="32" r="28" fill="url(#w-bg)"/><path d="M32 9 l5 18 18 5 -18 5 -5 18 -5 -18 -18 -5 18 -5z" fill="url(#w-star)"/></svg></div>
+      </div>
+      <div class="cap"><div class="num">05</div><div class="name">Wright Compass v2</div><div class="why">An evolution, not a reboot — refines today's mark: cleaner star, radial depth, brighter accents. Lowest-risk.</div></div>
+    </div>
+
+    <!-- ============ 6. SPARK-FORGED ============ -->
+    <div class="card">
+      <div class="big">
+        <svg width="100" height="100" viewBox="0 0 64 64">
+          <defs>
+            <linearGradient id="s-cube" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#34d399"/><stop offset="1" stop-color="#0d9488"/></linearGradient>
+            <linearGradient id="s-spark" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fde68a"/><stop offset="1" stop-color="#f59e0b"/></linearGradient>
+          </defs>
+          <!-- iso cube -->
+          <polygon points="30,20 50,31 30,42 10,31" fill="#5eead4"/>
+          <polygon points="10,31 30,42 30,58 10,47" fill="#0d9488"/>
+          <polygon points="50,31 30,42 30,58 50,47" fill="#14b8a6"/>
+          <!-- AI spark, 4-point -->
+          <path d="M46 8 l3 9 9 3 -9 3 -3 9 -3 -9 -9 -3 9 -3z" fill="url(#s-spark)"/>
+        </svg>
+      </div>
+      <div class="lockup">
+        <svg width="34" height="34" viewBox="0 0 64 64"><polygon points="30,20 50,31 30,42 10,31" fill="#5eead4"/><polygon points="10,31 30,42 30,58 10,47" fill="#0d9488"/><polygon points="50,31 30,42 30,58 50,47" fill="#14b8a6"/><path d="M46 8 l3 9 9 3 -9 3 -3 9 -3 -9 -9 -3 9 -3z" fill="url(#s-spark)"/></svg>
+        <span class="wm">Partwright</span>
+      </div>
+      <div class="favset" style="margin-top:14px;">
+        <div class="fav"><svg width="32" height="32" viewBox="0 0 64 64"><polygon points="30,20 50,31 30,42 10,31" fill="#5eead4"/><polygon points="10,31 30,42 30,58 10,47" fill="#0d9488"/><polygon points="50,31 30,42 30,58 50,47" fill="#14b8a6"/><path d="M46 8 l3 9 9 3 -9 3 -3 9 -3 -9 -9 -3 9 -3z" fill="url(#s-spark)"/></svg></div>
+        <div class="fav"><svg width="20" height="20" viewBox="0 0 64 64"><polygon points="30,20 50,31 30,42 10,31" fill="#5eead4"/><polygon points="10,31 30,42 30,58 10,47" fill="#0d9488"/><polygon points="50,31 30,42 30,58 50,47" fill="#14b8a6"/><path d="M46 8 l3 9 9 3 -9 3 -3 9 -3 -9 -9 -3 9 -3z" fill="url(#s-spark)"/></svg></div>
+      </div>
+      <div class="cap"><div class="num">06</div><div class="name">Spark-Forged</div><div class="why">An iso part + the ✦ spark the app already uses for AI. Ties the mark to the "AI-driven" story directly.</div></div>
+    </div>
+
+  </div>
+</body>
+</html>
