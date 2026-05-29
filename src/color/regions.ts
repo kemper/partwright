@@ -8,7 +8,7 @@ export interface ColorRegion {
   id: number;
   name: string;
   color: [number, number, number]; // RGB 0..1
-  source: 'face-pick' | 'slab' | 'subtree' | 'paintbrush';
+  source: 'face-pick' | 'slab' | 'subtree' | 'paintbrush' | 'model';
   descriptor: RegionDescriptor;
   order: number;
   visible: boolean;
@@ -74,6 +74,15 @@ type ChangeListener = () => void;
 
 let regions: ColorRegion[] = [];
 let nextOrder = 1;
+// Model-declared color underlay — rebuilt from `api.label(shape, name, { color })`
+// declarations on every run (see setModelColorRegions). Kept SEPARATE from the
+// user `regions` array on purpose: these colors come from code, so they must
+// NOT lock the editor (the lock keys on hasRegions()), must NOT be serialized
+// into the paint sidecar (serialize() only walks `regions`), and must NOT show
+// up in the paint region list / undo stack. They render and export by
+// compositing UNDERNEATH the user's paint in buildTriColors — so manual paint
+// always wins and stays an optional override.
+let modelRegions: ColorRegion[] = [];
 // Monotonic, session-unique region id source. Deliberately never reset (not
 // even on clearRegions) so an id can't collide with a region still held in an
 // undo snapshot. Ids are runtime-only — the rehydrate path assigns fresh ones
@@ -288,6 +297,41 @@ export function clearRegions(): void {
   notifyClearSnapshot();
 }
 
+/** Replace the model-declared color underlay. Called once per run with the
+ *  colors declared via `api.label(shape, name, { color })`, already resolved to
+ *  triangle sets against that run's labelMap. Pass `[]` (or run code that
+ *  declares no colors) to clear the layer. Does NOT notify — the run path drives
+ *  a single re-render after setting these. */
+export function setModelColorRegions(
+  decls: ReadonlyArray<{ name: string; color: [number, number, number]; triangles: Set<number> }>,
+): void {
+  modelRegions = decls.map((d, i) => ({
+    id: -(i + 1), // negative ids never collide with the positive user-region ids
+    name: d.name,
+    color: d.color,
+    source: 'model' as const,
+    descriptor: { kind: 'byLabel' as const, label: d.name },
+    order: i + 1, // order within the model band; the user paint layer sits above
+    visible: true,
+    triangles: d.triangles,
+  }));
+}
+
+export function hasModelColorRegions(): boolean {
+  return modelRegions.length > 0;
+}
+
+export function getModelRegions(): readonly ColorRegion[] {
+  return modelRegions;
+}
+
+/** Drop the model-declared underlay (e.g. on session/part teardown). The next
+ *  run repopulates it; clearing here avoids a stale color flashing onto a
+ *  freshly-loaded mesh whose triangle indices differ. */
+export function clearModelColorRegions(): void {
+  modelRegions = [];
+}
+
 /** Build triColors (Uint8Array, numTri*3 RGB) from current regions.
  *  Higher-order regions win on overlap. Returns null if no regions.
  *
@@ -295,38 +339,41 @@ export function clearRegions(): void {
  *  so the viewport reflects per-region eye-toggle state. Exports leave it false
  *  so a hidden-in-UI region still ships in the GLB/3MF. */
 export function buildTriColors(numTri: number, respectPerRegionVisibility = false): Uint8Array | null {
-  if (regions.length === 0) return null;
+  if (regions.length === 0 && modelRegions.length === 0) return null;
 
-  const buf = new Uint8Array(numTri * 3); // default 0,0,0 — will be ignored for unpainted tris
+  const buf = new Uint8Array(numTri * 3); // default 0,0,0 — ignored for un-colored tris
+  // `painted[t] === 1` once ANY layer colors triangle `t`. Tracked separately
+  // from order so a region can legitimately paint pure black (and so the
+  // model-color base layer counts as painted even though it sits below paint).
+  const painted = new Uint8Array(numTri);
 
-  // Track which triangles are painted and with what priority
-  const triOrder = new Int32Array(numTri); // 0 = unpainted
-  triOrder.fill(0);
-
-  // Sort by order ascending so higher-order regions overwrite lower.
-  const eligible = respectPerRegionVisibility ? regions.filter(r => r.visible) : regions;
-  const sorted = [...eligible].sort((a, b) => a.order - b.order);
-
-  for (const region of sorted) {
-    const r = Math.round(region.color[0] * 255);
-    const g = Math.round(region.color[1] * 255);
-    const b = Math.round(region.color[2] * 255);
-    for (const tri of region.triangles) {
-      if (tri >= 0 && tri < numTri && region.order >= triOrder[tri]) {
-        buf[tri * 3] = r;
-        buf[tri * 3 + 1] = g;
-        buf[tri * 3 + 2] = b;
-        triOrder[tri] = region.order;
+  // Stamp one layer of regions onto buf, higher `order` winning WITHIN the
+  // layer. Layers are applied in call order, so a later layer overwrites an
+  // earlier one wherever they overlap.
+  const stampLayer = (layer: ColorRegion[]) => {
+    const eligible = respectPerRegionVisibility ? layer.filter(r => r.visible) : layer;
+    const sorted = [...eligible].sort((a, b) => a.order - b.order);
+    const layerOrder = new Int32Array(numTri).fill(-1); // -1 = untouched in this layer
+    for (const region of sorted) {
+      const r = Math.round(region.color[0] * 255);
+      const g = Math.round(region.color[1] * 255);
+      const b = Math.round(region.color[2] * 255);
+      for (const tri of region.triangles) {
+        if (tri >= 0 && tri < numTri && region.order >= layerOrder[tri]) {
+          buf[tri * 3] = r;
+          buf[tri * 3 + 1] = g;
+          buf[tri * 3 + 2] = b;
+          layerOrder[tri] = region.order;
+          painted[tri] = 1;
+        }
       }
     }
-  }
+  };
 
-  // Mark which triangles are painted (any with order > 0)
-  // We use a separate flag array to distinguish "painted black" from "unpainted"
-  const painted = new Uint8Array(numTri);
-  for (let i = 0; i < numTri; i++) {
-    if (triOrder[i] > 0) painted[i] = 1;
-  }
+  // Model-declared colors are the base; the user's manual paint composites on
+  // top and always wins (it's an optional override of the code's colors).
+  stampLayer(modelRegions);
+  stampLayer(regions);
 
   // Store the painted mask on the result for the renderer
   (buf as Uint8Array & { _painted?: Uint8Array })._painted = painted;

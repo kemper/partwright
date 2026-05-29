@@ -75,6 +75,25 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'getParams',
+    description: 'Read the current model\'s Customizer parameters — the tweakable knobs it declares via `api.params({...})`. Returns `{ schema, values }`: `schema` lists each parameter (key, type, default, min/max/options) and `values` its current resolved value. Returns empty arrays/objects when the model declares none. Call before setParams to discover what can be tweaked without re-reading the code.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'setParams',
+    description: 'Tweak one or more Customizer parameters and re-run the model — the same effect as the user dragging the Parameters panel\'s sliders, but driven from code. Pass an object of `{ paramKey: value }`. Out-of-range or wrong-type values are clamped / fall back to the default (never errors on a bad value); unknown keys are ignored. Returns the updated geometry stats and resolved parameter values. Prefer this over rewriting the code when you only need to change a declared dimension/option — it\'s cheaper and preserves the model. Errors only if the model declares no parameters.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        values: {
+          type: 'object',
+          description: 'Map of parameter key → new value, e.g. { "width": 50, "rows": 3, "rounded": false }.',
+        },
+      },
+      required: ['values'],
+    },
+  },
+  {
     name: 'runCode',
     description: 'Run the given code (or the editor contents if `code` is omitted) and return the resulting geometry stats. Does NOT save a version. Use for quick iteration before committing.',
     input_schema: {
@@ -928,6 +947,7 @@ const ALWAYS_AVAILABLE = new Set([
   'setActiveLanguage',
   'getCode',
   'setCode',
+  'getParams',
   'getGeometryData',
   'getMeshSummary',
   'getFeatureCentroids',
@@ -967,7 +987,7 @@ const ALWAYS_AVAILABLE = new Set([
   'paintInCylinder',
 ]);
 
-const RUN_GATED = new Set(['runCode']);
+const RUN_GATED = new Set(['runCode', 'setParams']);
 const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
@@ -1245,6 +1265,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.run(input.code as string | undefined);
     case 'runAndSave':
       return api.runAndSave(input.code as string, input.label as string | undefined, input.assertions as Record<string, unknown> | undefined);
+    case 'getParams':
+      return api.getParams();
+    case 'setParams':
+      return api.setParams(input.values as Record<string, unknown>);
     case 'getGeometryData':
       return api.getGeometryData();
     case 'getMeshSummary':
