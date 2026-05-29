@@ -22,6 +22,8 @@ export interface LandingCallbacks {
   onOpenHelp: () => void;
   onOpenCatalog: () => void;
   onOpenWhatsNew: () => void;
+  /** Open the editor and launch the first-visit guided tour. */
+  onTakeTour: () => void;
   onOpenSession: (sessionId: string) => void;
   /** Load a single catalog entry straight into the editor as a fresh session. */
   onLoadCatalogEntry: (entry: CatalogManifestEntry, payload: ExportedSession) => void | Promise<void>;
@@ -129,6 +131,12 @@ function buildHero(callbacks: LandingCallbacks): HTMLElement {
   help.textContent = 'How does this work?';
   help.addEventListener('click', callbacks.onOpenHelp);
   ctas.appendChild(help);
+
+  const tour = document.createElement('button');
+  tour.className = 'px-6 py-2.5 rounded-lg bg-transparent hover:bg-zinc-800 text-zinc-400 text-sm font-medium transition-colors';
+  tour.textContent = 'Take the guided tour';
+  tour.addEventListener('click', callbacks.onTakeTour);
+  ctas.appendChild(tour);
 
   hero.appendChild(ctas);
 

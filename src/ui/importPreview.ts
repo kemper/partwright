@@ -2,65 +2,17 @@
 // it to IndexedDB. Built on the shared modalShell so Escape, click-outside,
 // and listener cleanup behave identically to the other AI / export dialogs.
 
-import type { ExportedSession } from '../storage/sessionManager';
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 import { escapeHtml } from './htmlUtils';
+import { languageBadge } from './languageBadge';
+import { summarizeSessionImport, type SessionImportSummary } from './importSummary';
 
-export interface SessionImportSummary {
-  sessionName: string;
-  schemaVersion: string;
-  versionCount: number;
-  noteCount: number;
-  annotationCount: number;
-  referenceSides: string[];
-  language: string;
-  createdAt: number | null;
-  updatedAt: number | null;
-}
-
-/** Build a SessionImportSummary from a parsed .partwright.json payload. */
-export function summarizeSessionImport(data: ExportedSession): SessionImportSummary {
-  // Build a list of image labels for the import preview. Handle three shapes:
-  //   - current: array of {id, src, label?}
-  //   - pre-unification: array of {id, angle, src, label?} — fall back to angle
-  //   - pre-array: object map {front: 'url', ...} — use the keys
-  // Items with no label and no angle are listed as "(unlabeled)".
-  const imgs = data.session.images ?? data.session.referenceImages ?? null;
-  const referenceSides: string[] = [];
-  if (Array.isArray(imgs)) {
-    for (const item of imgs) {
-      const it = item as { label?: string; angle?: string };
-      const label = (it.label ?? '').trim() || (it.angle ? it.angle : '');
-      referenceSides.push(label || '(unlabeled)');
-    }
-  } else if (imgs && typeof imgs === 'object') {
-    for (const k of ['front', 'right', 'back', 'left', 'top', 'perspective'] as const) {
-      if ((imgs as Record<string, unknown>)[k]) referenceSides.push(k);
-    }
-  }
-  // Annotations live per-version since schema 1.3, but 1.2 files put them at
-  // the top level. Sum across both locations so the preview is accurate
-  // regardless of which schema the file was exported with. Versions can be
-  // absent for chat/notes-only exports — fall back to an empty list.
-  const versions = Array.isArray(data.versions) ? data.versions : [];
-  const perVersionAnnotations = versions.reduce(
-    (sum, v) => sum + (v.annotations?.length ?? 0),
-    0,
-  );
-  const topLevelAnnotations = data.annotations?.length ?? 0;
-  return {
-    sessionName: data.session.name || '(unnamed)',
-    schemaVersion: data.partwright ?? data.mainifold ?? 'unknown',
-    versionCount: versions.length,
-    noteCount: data.notes?.length ?? 0,
-    annotationCount: perVersionAnnotations + topLevelAnnotations,
-    referenceSides,
-    language: data.session.language ?? 'manifold-js',
-    createdAt: data.session.created ?? null,
-    updatedAt: data.session.updated ?? null,
-  };
-}
+// The pure summary logic lives in the DOM-free importSummary module so it can
+// be unit-tested without pulling in modalShell/document. Re-exported here so
+// existing importers (main.ts) keep a single import site for the feature.
+export { summarizeSessionImport };
+export type { SessionImportSummary };
 
 function formatTimestamp(ts: number | null): string {
   if (!ts) return '—';
@@ -113,7 +65,10 @@ export function showImportPreview(filename: string, summary: SessionImportSummar
       grid.appendChild(v);
     }
     addRow('Versions', String(summary.versionCount));
-    addRow('Language', summary.language);
+    addRow(
+      summary.languages.length > 1 ? 'Languages' : 'Language',
+      summary.languages.map((l) => languageBadge(l).label).join(', '),
+    );
     addRow('Notes', String(summary.noteCount));
     addRow('Annotations', String(summary.annotationCount));
     addRow('Reference images', summary.referenceSides.length ? summary.referenceSides.join(', ') : 'none');

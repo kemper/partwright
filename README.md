@@ -160,7 +160,7 @@ The app deploys via [Cloudflare Pages](https://pages.cloudflare.com/). Three bra
 
 1. Open a feature branch off `main` and PR it into `main`. The push deploys the main preview immediately (pre-test, so it may be red).
 2. On every push to `main`, a GitHub Action ([`staging-gate.yml`](.github/workflows/staging-gate.yml)) runs the build, unit tests, and e2e tests. Only if all pass does it fast-forward `staging` to that commit — which Cloudflare deploys to the known-good staging preview. A red gate leaves `staging` on the last good commit.
-3. Once validated on the staging preview, PR from `staging` → `production` to release. PRs into `main` also get a fast pre-merge check (build + unit) via [`pr-checks.yml`](.github/workflows/pr-checks.yml).
+3. Once validated on the staging preview, PR from `staging` → `production` to release. PRs into `main` also get pre-merge checks (build + unit + the e2e shards) via [`pr-checks.yml`](.github/workflows/pr-checks.yml), which run on every push — drafts included.
 
 ## Architecture
 

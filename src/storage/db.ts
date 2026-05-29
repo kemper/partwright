@@ -132,7 +132,7 @@ const DB_NAME = 'partwright';
 const LEGACY_DB_NAME = 'mainifold';
 const LEGACY_MIGRATION_KEY = 'partwright-migrated-mainifold-db';
 const PARTS_MIGRATION_KEY = 'partwright-migrated-parts';
-const DB_VERSION = 7;
+const DB_VERSION = 8;
 
 /** Opens the partwright IndexedDB. Exposed so the AI subsystem can attach
  *  its own stores (`aiKeys`, `aiChats`) without duplicating the connection. */
@@ -218,6 +218,19 @@ function openDB(): Promise<IDBDatabase> {
       // the session-delete cascade can drop it with a direct key delete.
       if (!db.objectStoreNames.contains('reliefSources')) {
         db.createObjectStore('reliefSources', { keyPath: 'sessionId' });
+      }
+      // v8: persisted recent-imports / recent-exports inboxes. Each holds the
+      // last N files the user imported / exported (with the underlying Blob) so
+      // the toolbar's Recent lists survive a page refresh. The newest-first
+      // order and the 10-entry cap are enforced by the in-memory ring buffers
+      // (src/import/importInbox.ts, src/export/exportInbox.ts) — these stores
+      // just mirror each mutation. Keyed by the entry id so a dedupe/overflow
+      // eviction maps to a direct key delete.
+      if (!db.objectStoreNames.contains('importInbox')) {
+        db.createObjectStore('importInbox', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('exportInbox')) {
+        db.createObjectStore('exportInbox', { keyPath: 'id' });
       }
     };
     req.onsuccess = () => {
@@ -977,5 +990,52 @@ export async function deleteReliefSourceRecord(sessionId: string): Promise<void>
   if (!db.objectStoreNames.contains('reliefSources')) return;
   const txn = db.transaction('reliefSources', 'readwrite');
   txn.objectStore('reliefSources').delete(sessionId);
+  await txComplete(txn);
+}
+
+// === Recent-imports / recent-exports inboxes (persisted ring buffers) ===
+//
+// Storage primitives for the import/export inboxes. The ring-buffer semantics
+// (dedupe, newest-first ordering, 10-entry cap) live in the inbox modules;
+// db.ts only mirrors the resulting mutations to IndexedDB so the lists survive
+// a refresh. Records are stored by their `id` and carry a Blob (structured-
+// clone handles it). Stores only exist from v8, so every accessor guards on
+// `objectStoreNames.contains` like the v7 reliefSources accessors above.
+
+export type InboxStore = 'importInbox' | 'exportInbox';
+
+/** All persisted entries for an inbox, used to rehydrate the in-memory buffer
+ *  on boot. Order isn't guaranteed by IndexedDB; the caller re-sorts. */
+export async function getInboxRecords<T>(store: InboxStore): Promise<T[]> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains(store)) return [];
+  const txn = db.transaction(store, 'readonly');
+  const records = await reqToPromise(txn.objectStore(store).getAll()) as T[];
+  await txComplete(txn);
+  return records;
+}
+
+/** Apply one ring-buffer mutation in a single transaction: drop the ids evicted
+ *  by a dedupe or overflow, then put the freshly-added entry. */
+export async function applyInboxMutation<T extends { id: string }>(
+  store: InboxStore,
+  put: T | null,
+  deleteIds: string[],
+): Promise<void> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains(store)) return;
+  const txn = db.transaction(store, 'readwrite');
+  const os = txn.objectStore(store);
+  for (const id of deleteIds) os.delete(id);
+  if (put) os.put(put);
+  await txComplete(txn);
+}
+
+/** Empty an inbox store (backs the toolbar's "Clear" action). */
+export async function clearInboxStore(store: InboxStore): Promise<void> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains(store)) return;
+  const txn = db.transaction(store, 'readwrite');
+  txn.objectStore(store).clear();
   await txComplete(txn);
 }
