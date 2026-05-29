@@ -407,7 +407,7 @@ const ALL_TOOLS: ToolDefinition[] = [
       properties: {
         name: {
           type: 'string',
-          enum: ['curves', 'bosl2', 'replicad', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations'],
+          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations'],
           description: 'Subdoc name without the .md extension.',
         },
       },

@@ -2641,6 +2641,14 @@ async function main() {
   }
 
   async function loadVersionIntoEditor(version: Version) {
+    // Cancel any active voxel paint before loading a different version — its
+    // live grid and provenance map are bound to the OUTGOING code, so a Bake
+    // after navigation would write the wrong session's voxels into the new
+    // editor. Also unlocks the editor and clears the floating panel.
+    if (voxelPaint.isActive()) {
+      voxelPaint.deactivate();
+      syncVoxelPaintUI();
+    }
     // Each version remembers the language it was authored in (per-version
     // since schema 1.8); fall back to the session-level hint, then to the
     // engine default. Lets a single session hold mixed JS + SCAD versions
@@ -3302,19 +3310,36 @@ async function main() {
       syncVoxelPaintUI();
     },
     bake: async () => {
-      if (!voxelPaint.isActive()) return;
-      const code = voxelPaint.bakeToCode('painted');
-      if (!code) return;
-      voxelPaint.deactivate();
-      setValue(code);
-      await runCodeSync(code);
-      const thumbnail = await captureThumbnail();
-      const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
-      await saveVersion(code, geometryData, thumbnail, 'painted');
+      const result = await bakePaintedVoxelsAsVersion('painted');
+      if ('error' in result) alert(`Voxel paint: ${result.error}`);
       syncVoxelPaintUI();
     },
   });
   setVoxelPaintAvailable(getActiveLanguage() === 'voxel');
+
+  // Single source of truth for "commit the painted voxel grid as a new
+  // version" — called both from the UI Bake button and the partwright API.
+  // Centralising avoids the bake-with-empty-grid / no-session bugs that two
+  // separate implementations introduced.
+  async function bakePaintedVoxelsAsVersion(label: string): Promise<{ versionIndex: number | null; voxelCount: number } | { error: string }> {
+    if (!voxelPaint.isActive()) return { error: 'voxel paint is not active.' };
+    const count = voxelPaint.voxelCount();
+    if (count === 0) return { error: 'The painted grid is empty — paint or keep at least one voxel before baking.' };
+    const code = voxelPaint.bakeToCode('painted');
+    if (!code) return { error: 'voxel paint has no grid to bake.' };
+    voxelPaint.deactivate();
+    setValue(code);
+    await runCodeSync(code);
+    // Mirror the runAndSave auto-create pattern so callers don't have to wrap
+    // bake with a manual createSession.
+    if (!getState().session) {
+      await createSession(label, getActiveLanguage());
+    }
+    const thumbnail = await captureThumbnail();
+    const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
+    const v = await saveVersion(code, geometryData, thumbnail, label);
+    return { versionIndex: v?.index ?? null, voxelCount: count };
+  }
   initSimplifyUI(clipControls, simplifyHandlers);
   initMeasureToggle(clipControls);
   initOrbitLockToggle(clipControls);
@@ -7369,7 +7394,7 @@ async function main() {
      *  locked (read-only) so auto-run can't clobber edits, and clicks on the
      *  3D model set or erase voxels in the live grid. Call
      *  `bakeVoxelsToCode()` to commit; `deactivateVoxelPaint()` to cancel.
-     *  Returns `{ ok: true, voxelCount }` or `{ error }`. */
+     *  Returns `{ voxelCount }` or `{ error }`. */
     activateVoxelPaint() {
       if (getActiveLanguage() !== 'voxel') {
         return { error: 'activateVoxelPaint is only available in voxel sessions — call setActiveLanguage("voxel") first.' };
@@ -7380,17 +7405,19 @@ async function main() {
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
       });
       if (err) return { error: `activateVoxelPaint: ${err}` };
-      return { ok: true as const, voxelCount: voxelPaint.voxelCount() };
+      syncVoxelPaintUI();
+      return { voxelCount: voxelPaint.voxelCount() };
     },
 
     /** Cancel voxel paint mode without committing — the editor unlocks and the
      *  next auto-run / Run rebuilds the mesh from the (unchanged) code. */
     deactivateVoxelPaint() {
-      if (!voxelPaint.isActive()) return { ok: false as const, error: 'voxel paint is not active' };
+      if (!voxelPaint.isActive()) return { error: 'voxel paint is not active' };
       voxelPaint.deactivate();
       // Trigger a fresh render so the viewport returns to the code's output.
       runCode(getValue());
-      return { ok: true as const };
+      syncVoxelPaintUI();
+      return { ok: true };
     },
 
     /** Click on a face during voxel paint: set the underlying voxel's color
@@ -7414,24 +7441,10 @@ async function main() {
      *  Auto-creates a session if none exists. Returns `{ versionIndex,
      *  voxelCount }` or `{ error }`. */
     async bakeVoxelsToCode(opts: { label?: string } = {}) {
-      if (!voxelPaint.isActive()) return { error: 'voxel paint is not active.' };
-      const count = voxelPaint.voxelCount();
-      if (count === 0) return { error: 'The painted grid is empty — paint or keep at least one voxel before baking.' };
-      const code = voxelPaint.bakeToCode('painted');
-      if (!code) return { error: 'voxel paint has no grid to bake.' };
       const label = typeof opts.label === 'string' && opts.label ? opts.label : 'painted';
-      voxelPaint.deactivate();
-      setValue(code);
-      await runCodeSync(code);
-      // Mirror the runAndSave auto-create pattern so AI/console callers don't
-      // need to wrap bake with a manual createSession.
-      if (!getState().session) {
-        await createSession(label, getActiveLanguage());
-      }
-      const thumbnail = await captureThumbnail();
-      const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
-      const v = await saveVersion(code, geometryData, thumbnail, label);
-      return { versionIndex: v?.index ?? null, voxelCount: count };
+      const result = await bakePaintedVoxelsAsVersion(label);
+      syncVoxelPaintUI();
+      return result;
     },
 
     paintByLabel(opts: { label: string; color: [number, number, number]; name?: string; topOnly?: boolean; normalCone?: { axis: [number, number, number]; angleDeg: number } }) {

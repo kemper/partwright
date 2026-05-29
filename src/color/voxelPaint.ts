@@ -14,7 +14,7 @@
 // local — no Worker round-trip, no rebuild from scratch.
 
 import type { MeshData } from '../geometry/types';
-import { VoxelGrid, normalizeColor } from '../geometry/voxel/grid';
+import { normalizeColor } from '../geometry/voxel/grid';
 import { gridToMeshWithProvenance } from '../geometry/voxel/mesher';
 import { runVoxelForPaint, type VoxelPaintRun } from '../geometry/engines/voxel';
 import { generateVoxelImportCode } from '../import/imageToVoxel';
@@ -35,13 +35,8 @@ let eraser = false;
 let cbMeshUpdate: ((mesh: MeshData) => void) | null = null;
 let cbLockChange: ((locked: boolean) => void) | null = null;
 let removeSuppressor: (() => void) | null = null;
-let dirty = false;
 
 export function isActive(): boolean { return active; }
-/** True when at least one paint/erase has happened since activation. Lets the
- *  UI dim the Bake button until something's actually been painted. */
-export function isDirty(): boolean { return dirty; }
-export function getColor(): [number, number, number] { return [...color] as [number, number, number]; }
 export function setColor(c: [number, number, number] | string | number): void {
   const rgb = normalizeColor(c, 'setColor(color)');
   color = [(rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff];
@@ -59,9 +54,22 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks): string |
   if (active) deactivate();
   const r = runVoxelForPaint(code);
   if (!r.ok) return r.error;
+  // Smooth surfacing moves vertices off the voxel grid, so a clicked
+  // triangle's coords no longer map cleanly to a single source voxel. Refuse
+  // here with a clear, actionable message rather than silently dropping the
+  // user's `.smooth()` and showing them a blocky model.
+  if (r.data.grid.surfacing().mode === 'smooth') {
+    return 'Voxel paint cannot run on a smooth-surfaced grid (per-voxel picking only works on hard cube faces). Call `.blocky()` before returning, paint, then re-apply `.smooth()` afterward.';
+  }
+  // Soft cap: paint re-meshes on every click on the main thread, so very
+  // large grids tank interactivity. The blocky-art / image-import range is
+  // far below this; refuse at the door with a useful number.
+  const MAX_PAINT_VOXELS = 200_000;
+  if (r.data.grid.size > MAX_PAINT_VOXELS) {
+    return `Voxel paint is capped at ${MAX_PAINT_VOXELS.toLocaleString()} voxels for responsiveness; this model has ${r.data.grid.size.toLocaleString()}. Reduce the grid before painting.`;
+  }
   run = r.data;
   active = true;
-  dirty = false;
   cbMeshUpdate = callbacks.onMeshUpdate;
   cbLockChange = callbacks.onLockChange ?? null;
   attachPointerHandler();
@@ -78,7 +86,6 @@ export function deactivate(): void {
   cbLockChange = null;
   cbMeshUpdate = null;
   run = null;
-  dirty = false;
 }
 
 /** Paint or erase the voxel that owns the given triangle. Returns true iff
@@ -99,7 +106,6 @@ export function paintTriangle(triangleIndex: number): boolean {
     run.grid.set(x, y, z, color);
   }
   remeshAndPush();
-  dirty = true;
   return true;
 }
 
@@ -109,10 +115,6 @@ export function bakeToCode(filename = 'painted'): string | null {
   if (!run) return null;
   return generateVoxelImportCode(run.grid, filename);
 }
-
-/** Snapshot of the live grid — for tests and AI introspection. Returns the
- *  grid itself (not a copy); callers must not mutate it across runs. */
-export function currentGrid(): VoxelGrid | null { return run?.grid ?? null; }
 
 // ── internal ───────────────────────────────────────────────────────────────
 

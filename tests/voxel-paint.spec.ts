@@ -44,7 +44,7 @@ test.describe('voxel paint mode', () => {
       return { act, paint, erase, baked, before, after, code, initialGeo, finalGeo };
     });
 
-    expect(result.act.ok).toBe(true);
+    expect(result.act.error).toBeFalsy();
     expect(result.act.voxelCount).toBe(1);
     expect(result.paint.changed).toBe(true);
     expect(result.erase.changed).toBe(true);
@@ -108,8 +108,41 @@ test.describe('voxel paint mode', () => {
       const code = pw.getCode();
       return { cancel, code };
     });
-    expect(result.cancel.ok).toBe(true);
+    expect(result.cancel.error).toBeFalsy();
     // Editor still holds the original procedural code, not voxels.decode(...).
     expect(result.code).not.toContain('voxels.decode(');
+  });
+
+  test('refuses smooth-surfaced grids with a clear message', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().fillBox([0,0,0],[3,3,3],'#fff').smooth();`);
+      return pw.activateVoxelPaint();
+    });
+    expect(result.error).toMatch(/smooth-surfaced/);
+  });
+
+  test('cross-session: loading a different version cancels active paint', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      const v1 = await pw.runAndSave(`return api.voxels().set(0,0,0,'#fff');`, 'first');
+      const v2 = await pw.runAndSave(`return api.voxels().set(0,0,0,'#fff').set(1,0,0,'#fff');`, 'second');
+      // Activate paint while v2 is loaded, then jump back to v1.
+      pw.activateVoxelPaint();
+      const activeBefore = pw.activateVoxelPaint().error; // already-active path
+      await pw.loadVersion({ index: v1.version.index });
+      // Paint should now be off; activating again should succeed (no leftover state).
+      const reactivate = pw.activateVoxelPaint();
+      return { reactivate, activeBefore };
+    });
+    // The second activate while already active is a no-op activate (calls
+    // deactivate first); the reactivate after loadVersion succeeds with the
+    // v1 grid (1 voxel).
+    expect(result.reactivate.error).toBeFalsy();
+    expect(result.reactivate.voxelCount).toBe(1);
   });
 });
