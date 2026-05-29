@@ -10,7 +10,7 @@
 // to decide whether to re-roll / lower density / widen scaleRange / fix
 // floating or clipping. No WASM/DOM here — main.ts supplies the live numbers.
 
-import type { SceneGraph, SceneSpec, Vec2 } from './types';
+import type { SceneGraph, SceneInstance, SceneSpec, Vec2 } from './types';
 import { generateSceneGraph } from './layout';
 import { discsOverlap } from './layout';
 import { generateSceneCode } from './codegen';
@@ -60,6 +60,15 @@ export interface SceneMetrics {
 
 const Z_EPS = 1e-3;
 
+/** Physical XY footprint radius of a placed instance (base radius × scale).
+ *  Falls back to scale alone for graphs that predate the carried radius. */
+function footprintOf(inst: SceneInstance): number {
+  const base = typeof inst.footprintRadius === 'number' && inst.footprintRadius > 0
+    ? inst.footprintRadius
+    : 1;
+  return base * inst.scale;
+}
+
 function variance(values: number[]): number {
   if (values.length === 0) return 0;
   const mean = values.reduce((a, b) => a + b, 0) / values.length;
@@ -71,21 +80,18 @@ export function critiqueMetrics(input: CritiqueInput): SceneMetrics {
   const { graph, geometry, components } = input;
   const instances = graph.instances;
 
-  // Overlap count: re-derive from the placed footprint discs (effective radius
-  // = footprintRadius would require the asset; the graph stores position+scale,
-  // so we approximate with a per-instance disc whose radius is the scaled
-  // footprint encoded indirectly — fall back to a small constant when unknown).
-  // We use the layout-independent test: any two instances closer than the sum
-  // of their (scale-weighted) unit radii. The graph doesn't carry footprint,
-  // so we treat scale as the radius proxy (monotonic), which still flags the
-  // crowding the layout's own rejection missed.
+  // Overlap count: re-derive from the placed footprint discs. Each instance
+  // carries its source asset's base footprintRadius, so the physical footprint
+  // radius is footprintRadius * scale — the same geometry layout.ts uses for
+  // overlap rejection. Counting pairs whose footprints overlap surfaces real
+  // crowding (it should be ~0 when the layout's no-overlap pass did its job).
   let overlapCount = 0;
   for (let i = 0; i < instances.length; i++) {
     for (let j = i + 1; j < instances.length; j++) {
       const a = instances[i];
       const b = instances[j];
-      const ra = a.scale;
-      const rb = b.scale;
+      const ra = footprintOf(a);
+      const rb = footprintOf(b);
       if (discsOverlap(a.position as Vec2, ra, b.position as Vec2, rb)) overlapCount++;
     }
   }
@@ -105,12 +111,12 @@ export function critiqueMetrics(input: CritiqueInput): SceneMetrics {
     }
   }
 
-  // Footprint coverage: sum of disc areas (radius = scale proxy) over bounds.
+  // Footprint coverage: sum of physical footprint disc areas over bounds area.
   const { min, max } = graph.stats.bounds;
   const boundsArea = Math.max(1e-9, (max[0] - min[0]) * (max[1] - min[1]));
   let footprintSum = 0;
   for (const inst of instances) {
-    const r = inst.scale;
+    const r = footprintOf(inst);
     footprintSum += Math.PI * r * r;
   }
   const footprintCoverage = footprintSum / boundsArea;

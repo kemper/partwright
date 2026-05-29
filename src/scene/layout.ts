@@ -22,6 +22,18 @@ import { makeRng, type Rng } from './prng';
 import { sampleParams, sampleScale, sampleRotation } from './sampling';
 
 const DEFAULT_MAX_INSTANCES = 400;
+// Hard ceiling on placed instances, independent of the requested maxInstances.
+// Bounds the O(n^2) critique pass and the size of the Manifold.compose() the
+// generated code builds, so a huge cap can't wedge the engine.
+const HARD_MAX_INSTANCES = 5000;
+// Cap on *candidate* points any generator materializes. Candidate arrays are
+// built synchronously on the main thread before any WASM runs, so without this
+// a pathological density/bounds (tiny spacing over huge bounds) would freeze or
+// OOM the tab long before maxInstances (which only caps placement) applies.
+const MAX_CANDIDATES = 50000;
+// Cap on the Poisson background-grid allocation (gw*gh) to avoid a giant
+// new Array() for tiny radii over huge bounds.
+const MAX_POISSON_CELLS = 1_000_000;
 
 /** Ray-casting point-in-polygon (even-odd rule). Points on the boundary are
  *  treated inclusively enough for placement use. */
@@ -85,8 +97,8 @@ function gridPoints(layout: LayoutControl): Vec2[] {
   const { min, max } = layout.bounds;
   const step = spacingFromDensity(layout);
   const out: Vec2[] = [];
-  for (let y = min[1] + step / 2; y <= max[1]; y += step) {
-    for (let x = min[0] + step / 2; x <= max[0]; x += step) {
+  for (let y = min[1] + step / 2; y <= max[1] && out.length < MAX_CANDIDATES; y += step) {
+    for (let x = min[0] + step / 2; x <= max[0] && out.length < MAX_CANDIDATES; x += step) {
       out.push([x, y]);
     }
   }
@@ -98,8 +110,8 @@ function jitteredGridPoints(layout: LayoutControl, rng: Rng): Vec2[] {
   const step = spacingFromDensity(layout);
   const jitter = (layout.jitter ?? 0.5) * step;
   const out: Vec2[] = [];
-  for (let y = min[1] + step / 2; y <= max[1]; y += step) {
-    for (let x = min[0] + step / 2; x <= max[0]; x += step) {
+  for (let y = min[1] + step / 2; y <= max[1] && out.length < MAX_CANDIDATES; y += step) {
+    for (let x = min[0] + step / 2; x <= max[0] && out.length < MAX_CANDIDATES; x += step) {
       const jx = x + rng.range(-jitter / 2, jitter / 2);
       const jy = y + rng.range(-jitter / 2, jitter / 2);
       out.push([clamp(jx, min[0], max[0]), clamp(jy, min[1], max[1])]);
@@ -114,9 +126,16 @@ function poissonDiskPoints(layout: LayoutControl, rng: Rng, radius: number): Vec
   const w = max[0] - min[0];
   const h = max[1] - min[1];
   if (w <= 0 || h <= 0 || radius <= 0) return [];
-  const cell = radius / Math.SQRT2;
+  let cell = radius / Math.SQRT2;
+  // Enlarge the cell if the background grid would allocate too many buckets
+  // (tiny radius over huge bounds). The neighbor search below uses a reach
+  // derived from radius/cell, so widening the cell stays correct.
+  if (w * h / (cell * cell) > MAX_POISSON_CELLS) {
+    cell = Math.sqrt((w * h) / MAX_POISSON_CELLS);
+  }
   const gw = Math.max(1, Math.ceil(w / cell));
   const gh = Math.max(1, Math.ceil(h / cell));
+  const reach = Math.max(2, Math.ceil(radius / cell) + 1);
   const grid: Array<Vec2 | null> = new Array(gw * gh).fill(null);
   const samples: Vec2[] = [];
   const active: Vec2[] = [];
@@ -131,8 +150,8 @@ function poissonDiskPoints(layout: LayoutControl, rng: Rng, radius: number): Vec
     if (p[0] < min[0] || p[0] > max[0] || p[1] < min[1] || p[1] > max[1]) return false;
     const cx = Math.min(gw - 1, Math.floor((p[0] - min[0]) / cell));
     const cy = Math.min(gh - 1, Math.floor((p[1] - min[1]) / cell));
-    for (let yy = Math.max(0, cy - 2); yy <= Math.min(gh - 1, cy + 2); yy++) {
-      for (let xx = Math.max(0, cx - 2); xx <= Math.min(gw - 1, cx + 2); xx++) {
+    for (let yy = Math.max(0, cy - reach); yy <= Math.min(gh - 1, cy + reach); yy++) {
+      for (let xx = Math.max(0, cx - reach); xx <= Math.min(gw - 1, cx + reach); xx++) {
         const s = grid[yy * gw + xx];
         if (s) {
           const dx = s[0] - p[0];
@@ -149,7 +168,7 @@ function poissonDiskPoints(layout: LayoutControl, rng: Rng, radius: number): Vec
   active.push(first);
   grid[gridIndex(first)] = first;
 
-  while (active.length > 0) {
+  while (active.length > 0 && samples.length < MAX_CANDIDATES) {
     const idx = rng.int(0, active.length - 1);
     const origin = active[idx];
     let found = false;
@@ -179,7 +198,7 @@ function clusteredPoints(layout: LayoutControl, rng: Rng): Vec2[] {
   const clusters = Math.max(1, Math.floor(layout.clusters ?? 4));
   const spread = layout.clusterSpread ?? Math.min(w, h) / 8;
   const area = Math.max(1e-6, w * h);
-  const target = Math.max(clusters, Math.round(layout.density * area));
+  const target = Math.min(MAX_CANDIDATES, Math.max(clusters, Math.round(layout.density * area)));
   const perCluster = Math.max(1, Math.ceil(target / clusters));
   const centers: Vec2[] = [];
   for (let c = 0; c < clusters; c++) {
@@ -198,9 +217,18 @@ function clusteredPoints(layout: LayoutControl, rng: Rng): Vec2[] {
 
 function alongPathPoints(layout: LayoutControl): Vec2[] {
   const path = layout.path ?? [];
-  const spacing = layout.pathSpacing && layout.pathSpacing > 0
+  let spacing = layout.pathSpacing && layout.pathSpacing > 0
     ? layout.pathSpacing
     : spacingFromDensity(layout);
+  // Bound the sample count: enlarge spacing if a tiny step over a long path
+  // would emit more than MAX_CANDIDATES points.
+  let totalLen = 0;
+  for (let i = 1; i < path.length; i++) {
+    totalLen += Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
+  }
+  if (spacing > 0 && totalLen / spacing > MAX_CANDIDATES) {
+    spacing = totalLen / MAX_CANDIDATES;
+  }
   return polylineResample(path, spacing);
 }
 
@@ -300,9 +328,12 @@ function resolveZone(
 export function generateSceneGraph(spec: SceneSpec): SceneGraph {
   const { layout, assets } = spec;
   const rng = makeRng(spec.seed);
-  const maxInstances = spec.maxInstances && spec.maxInstances > 0
-    ? Math.floor(spec.maxInstances)
-    : DEFAULT_MAX_INSTANCES;
+  const maxInstances = Math.min(
+    HARD_MAX_INSTANCES,
+    spec.maxInstances && spec.maxInstances > 0
+      ? Math.floor(spec.maxInstances)
+      : DEFAULT_MAX_INSTANCES,
+  );
   const minClearance = layout.minClearance ?? 0;
   const maxFoot = maxFootprint(assets);
 
@@ -362,6 +393,7 @@ export function generateSceneGraph(spec: SceneSpec): SceneGraph {
       position: [cand[0], cand[1]],
       rotationZ,
       scale,
+      footprintRadius: asset.footprintRadius,
     });
   }
 

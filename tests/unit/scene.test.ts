@@ -139,20 +139,63 @@ describe('generateSceneGraph', () => {
     expect(g3.instances).not.toEqual(g1.instances);
   });
 
-  it('every placed pair is non-overlapping by scaled footprint', () => {
-    const g = generateSceneGraph(gridSpec({
-      layout: { kind: 'poisson-disk', bounds: { min: [0, 0], max: [60, 60] }, density: 0.05, scaleRange: [1, 1], minClearance: 0 },
-    }));
-    const asset = treeAsset();
-    for (let i = 0; i < g.instances.length; i++) {
-      for (let j = i + 1; j < g.instances.length; j++) {
-        const a = g.instances[i];
-        const b = g.instances[j];
-        const ra = asset.footprintRadius * a.scale;
-        const rb = asset.footprintRadius * b.scale;
-        expect(discsOverlap(a.position, ra, b.position, rb)).toBe(false);
+  it('no placed pair overlaps by scaled footprint, for every layout kind', () => {
+    const bounds = { min: [0, 0] as [number, number], max: [60, 60] as [number, number] };
+    const kinds = [
+      { kind: 'grid' as const, spacing: 9 },
+      { kind: 'jittered-grid' as const, spacing: 9, jitter: 0.3 },
+      { kind: 'poisson-disk' as const },
+      { kind: 'clustered' as const, clusters: 3, clusterSpread: 8 },
+      { kind: 'along-path' as const, path: [[5, 5], [55, 55]] as [number, number][], pathSpacing: 9 },
+    ];
+    for (const k of kinds) {
+      const g = generateSceneGraph(gridSpec({
+        layout: { bounds, density: 0.05, scaleRange: [1, 1], minClearance: 0, ...k },
+      }));
+      for (let i = 0; i < g.instances.length; i++) {
+        for (let j = i + 1; j < g.instances.length; j++) {
+          const a = g.instances[i];
+          const b = g.instances[j];
+          const ra = a.footprintRadius * a.scale;
+          const rb = b.footprintRadius * b.scale;
+          expect(discsOverlap(a.position, ra, b.position, rb)).toBe(false);
+        }
       }
     }
+  });
+
+  it('caps candidate generation so a pathological density cannot hang', () => {
+    // Tiny spacing over huge bounds would be ~1e12 grid cells without the cap.
+    const start = Date.now();
+    const g = generateSceneGraph(gridSpec({
+      maxInstances: 50,
+      layout: { kind: 'grid', bounds: { min: [0, 0], max: [1_000_000, 1_000_000] }, density: 1000, scaleRange: [1, 1], minClearance: 0 },
+    }));
+    expect(Date.now() - start).toBeLessThan(2000);
+    expect(g.stats.requested).toBeLessThanOrEqual(50_000);
+    expect(g.instances.length).toBeLessThanOrEqual(50);
+  });
+
+  it('caps a tiny-radius poisson grid over huge bounds', () => {
+    const start = Date.now();
+    const g = generateSceneGraph(gridSpec({
+      assets: [{ ...treeAsset(), footprintRadius: 0.001 }],
+      maxInstances: 50,
+      layout: { kind: 'poisson-disk', bounds: { min: [0, 0], max: [100_000, 100_000] }, density: 1, scaleRange: [1, 1], minClearance: 0 },
+    }));
+    expect(Date.now() - start).toBeLessThan(2000);
+    expect(g.instances.length).toBeLessThanOrEqual(50);
+  });
+
+  it('hard-caps placed instances regardless of requested maxInstances', () => {
+    // Small footprint + spacing 1 => candidates don't overlap, so placement is
+    // bounded only by the hard cap, not by overlap rejection.
+    const g = generateSceneGraph(gridSpec({
+      assets: [{ ...treeAsset(), footprintRadius: 0.1 }],
+      maxInstances: 100000,
+      layout: { kind: 'grid', bounds: { min: [0, 0], max: [10000, 10000] }, density: 0.01, spacing: 1, scaleRange: [1, 1], minClearance: 0 },
+    }));
+    expect(g.instances.length).toBe(5000);
   });
 
   it('grid count matches a regular lattice', () => {
@@ -321,9 +364,9 @@ describe('critiqueMetrics', () => {
     const graph = {
       seed: 1,
       instances: [
-        { assetId: 'a', paramValues: {}, position: [0, 0] as [number, number], rotationZ: 0, scale: 1 },
-        { assetId: 'a', paramValues: {}, position: [1, 0] as [number, number], rotationZ: 0, scale: 1 },
-        { assetId: 'a', paramValues: {}, position: [10, 10] as [number, number], rotationZ: 0, scale: 2 },
+        { assetId: 'a', paramValues: {}, position: [0, 0] as [number, number], rotationZ: 0, scale: 1, footprintRadius: 2 },
+        { assetId: 'a', paramValues: {}, position: [1, 0] as [number, number], rotationZ: 0, scale: 1, footprintRadius: 2 },
+        { assetId: 'a', paramValues: {}, position: [10, 10] as [number, number], rotationZ: 0, scale: 2, footprintRadius: 2 },
       ],
       stats: { requested: 3, placed: 3, rejectedOverlap: 0, bounds: { min: [0, 0] as [number, number], max: [10, 10] as [number, number] } },
     };
@@ -335,13 +378,15 @@ describe('critiqueMetrics', () => {
     const m = critiqueMetrics({ graph, geometry: { componentCount: 3 }, components });
     expect(m.instanceCount).toBe(3);
     expect(m.componentCount).toBe(3);
-    // discs at (0,0) r1 and (1,0) r1 overlap (dist 1 < 2); (10,10) r2 isolated.
+    // Footprint radii = footprintRadius*scale = [2, 2, 4]. Discs at (0,0) r2 and
+    // (1,0) r2 overlap (dist 1 < 4); (10,10) r4 is isolated (dist ~14 > 6).
     expect(m.overlapCount).toBe(1);
     expect(m.floatingCount).toBe(1);
     expect(m.clippingCount).toBe(1);
     // scales [1,1,2]: mean 4/3, variance = ((1-4/3)^2*2 + (2-4/3)^2)/3
     expect(m.scaleVariance).toBeCloseTo(((1 / 3) ** 2 * 2 + (2 / 3) ** 2) / 3, 6);
-    expect(m.footprintCoverage).toBeGreaterThan(0);
+    // Coverage = sum(pi*r^2) / boundsArea = pi*(4+4+16)/100 = 24pi/100.
+    expect(m.footprintCoverage).toBeCloseTo((24 * Math.PI) / 100, 6);
   });
 
   it('handles null components gracefully', () => {

@@ -21,9 +21,10 @@ export type LayoutKind = 'grid' | 'jittered-grid' | 'poisson-disk' | 'clustered'
  *  `function buildAsset_<id>(p) { <body> }` wrapper and must `return` a
  *  Manifold. `p` holds the per-instance sampled parameter values (one literal
  *  object per call). `footprintRadius` is the planar (XY) clearance radius used
- *  for overlap rejection; `baseHeight` (optional) is how far the asset's lowest
- *  geometry sits below z=0 in its own local frame, used by critique to flag
- *  floating/clipping. */
+ *  for overlap rejection; `baseHeight` (optional) is a vertical offset added to
+ *  each instance's Z (scaled per instance, applied as `translate([…, …, baseHeight*scale])`)
+ *  — positive lifts the asset above z=0 — used to seat assets on the ground and
+ *  by critique guidance to fix floating/clipping. */
 export interface AssetSpec {
   id: string;
   body: string;
@@ -67,6 +68,10 @@ export interface SceneInstance {
   position: Vec2;
   rotationZ: number;
   scale: number;
+  /** The source asset's base (pre-scale) footprint radius, carried so critique
+   *  can measure real footprint overlap/coverage (= footprintRadius * scale)
+   *  without needing the original AssetSpec. */
+  footprintRadius: number;
 }
 
 /** The deterministic result of laying out a scene — what codegen consumes. */
