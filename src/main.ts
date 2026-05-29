@@ -2144,13 +2144,13 @@ async function main() {
   const actionExportOBJ = () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) return;
-    try { showToast(`Exported ${exportOBJ(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
+    try { showToast(`Exported ${exportOBJ((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
   };
   const actionExport3MF = () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) return;
-    try { showToast(`Exported ${export3MF(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
+    try { showToast(`Exported ${export3MF((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
   };
 
@@ -3792,13 +3792,13 @@ async function main() {
     /** Export current model as OBJ download. Optional filename override. */
     exportOBJ(filename?: string) {
       assertString(filename, 'exportOBJ(filename)', { optional: true });
-      if (currentMeshData) exportOBJ(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData, filename);
+      if (currentMeshData) exportOBJ((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData, filename);
     },
 
     /** Export current model as 3MF download. Optional filename override. */
     export3MF(filename?: string) {
       assertString(filename, 'export3MF(filename)', { optional: true });
-      if (currentMeshData) export3MF(hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData, filename);
+      if (currentMeshData) export3MF((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData, filename);
     },
 
     /** Export the most-recent BREP shape as a STEP file. Only meaningful in
@@ -3874,7 +3874,7 @@ async function main() {
     async exportOBJData(filename?: string) {
       assertString(filename, 'exportOBJData(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      const mesh = hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData;
+      const mesh = (hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData;
       const built = buildOBJ(mesh, filename);
       registerExportFromBuilt(built, 'OBJ');
       const isText = built.mimeType === 'text/plain';
@@ -3892,7 +3892,7 @@ async function main() {
     async export3MFData(filename?: string) {
       assertString(filename, 'export3MFData(filename)', { optional: true });
       if (!currentMeshData) return { error: 'No geometry loaded' };
-      const mesh = hasColorRegions() ? applyTriColors(currentMeshData) : currentMeshData;
+      const mesh = (hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData;
       const built = build3MF(mesh, filename);
       registerExportFromBuilt(built, '3MF');
       return {

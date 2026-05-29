@@ -104,4 +104,29 @@ test.describe('Model-declared color', () => {
     // Painting a user region locks the editor, exactly as before this feature.
     await expect(page.locator('#editor-lock-overlay')).toHaveCount(1);
   });
+
+  test('model-declared colors flow into OBJ/3MF export (not only the live GLB scene)', async ({ page }) => {
+    const out = await page.evaluate(async (code) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run(code); // model-declared colors, NO manual paint
+      const obj = await pw.exportOBJData();
+      const tmf = await pw.export3MFData();
+      return {
+        objMime: obj.mimeType as string,
+        objFile: obj.filename as string,
+        objColored: !!obj.base64 && obj.text === undefined,
+        tmfBytes: (tmf.sizeBytes as number) ?? 0,
+      };
+    }, COLOR_MODEL);
+
+    // With colors declared in code and no manual paint, OBJ must export the
+    // colored bundle (.obj + .mtl ZIP) — the regression the export gate used to
+    // miss was emitting a plain, uncolored .obj here.
+    expect(out.objMime).toBe('application/zip');
+    expect(out.objFile.endsWith('.zip')).toBe(true);
+    expect(out.objColored).toBe(true);
+    // 3MF shares the same gate and is always a ZIP — assert it built.
+    expect(out.tmfBytes).toBeGreaterThan(0);
+  });
 });
