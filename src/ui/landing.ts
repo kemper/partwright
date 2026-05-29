@@ -21,6 +21,8 @@ export interface LandingCallbacks {
   onOpenHelp: () => void;
   onOpenCatalog: () => void;
   onOpenSession: (sessionId: string) => void;
+  /** Load a single catalog entry straight into the editor as a fresh session. */
+  onLoadCatalogEntry: (entry: CatalogManifestEntry, payload: ExportedSession) => void | Promise<void>;
 }
 
 interface CatalogManifestEntry {
@@ -224,7 +226,7 @@ async function buildFeaturedCatalog(callbacks: LandingCallbacks): Promise<HTMLEl
   section.className = 'w-full max-w-5xl px-6 py-12 border-t border-zinc-800';
 
   const header = document.createElement('div');
-  header.className = 'flex items-baseline justify-between mb-6';
+  header.className = 'flex items-center justify-between mb-6';
 
   const heading = document.createElement('h2');
   heading.id = 'catalog-heading';
@@ -233,7 +235,7 @@ async function buildFeaturedCatalog(callbacks: LandingCallbacks): Promise<HTMLEl
   header.appendChild(heading);
 
   const browseAll = document.createElement('button');
-  browseAll.className = 'text-xs text-blue-400 hover:text-blue-300 transition-colors';
+  browseAll.className = 'shrink-0 inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-sm font-medium border border-blue-500/60 text-blue-300 hover:bg-blue-500/10 hover:border-blue-400 transition-colors';
   browseAll.textContent = 'Browse the full catalog →';
   browseAll.addEventListener('click', callbacks.onOpenCatalog);
   header.appendChild(browseAll);
@@ -255,9 +257,27 @@ async function buildFeaturedCatalog(callbacks: LandingCallbacks): Promise<HTMLEl
   }
 
   for (const entry of entries) {
-    grid.appendChild(buildCatalogTile(entry, callbacks.onOpenCatalog));
+    grid.appendChild(buildCatalogTile(entry, () => { void loadFeaturedCatalogEntry(entry.manifest, callbacks); }));
   }
   return section;
+}
+
+/**
+ * Fetch a featured catalog entry's session payload and hand it to the editor.
+ * Mirrors the catalog page's load path so clicking a landing tile opens the
+ * item directly instead of routing through the full catalog.
+ */
+async function loadFeaturedCatalogEntry(manifest: CatalogManifestEntry, callbacks: LandingCallbacks): Promise<void> {
+  try {
+    const res = await fetch(`/catalog/${manifest.file}`, { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json() as ExportedSession;
+    await callbacks.onLoadCatalogEntry(manifest, payload);
+  } catch {
+    // If the entry can't be loaded directly, fall back to the full catalog
+    // page so the user still has a path to the content.
+    callbacks.onOpenCatalog();
+  }
 }
 
 async function loadFeaturedCatalogEntries(): Promise<FeaturedCatalogEntry[]> {
