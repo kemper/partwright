@@ -17,16 +17,25 @@
 // (no `paint_color` attribute) prints with the object's default extruder (1),
 // so state 1 needs no attribute at all.
 
+/** The most filaments Bambu Studio supports (AMS slots). Color slots beyond
+ *  this can't be represented, and the single-nibble escape below only holds
+ *  (state-3) ≤ 15, so we cap here and fail loudly rather than silently wrap. */
+export const BAMBU_MAX_FILAMENTS = 16;
+
 /** Encode a single uniformly-painted (non-subdivided) triangle's extruder
  *  `state` into Bambu/Orca's `paint_color` hex string. Returns '' for state ≤ 1
  *  (the default extruder needs no attribute). Valid for the 1–16 filament range
- *  Bambu supports (state ≤ 16 ⇒ at most one trailing nibble). */
+ *  Bambu supports (state ≤ 16 ⇒ at most one trailing nibble); throws above that
+ *  so an over-many-colors model fails loudly instead of mis-coloring. */
 export function encodePaintColor(state: number): string {
   if (!Number.isInteger(state) || state <= 1) return '';
+  if (state > BAMBU_MAX_FILAMENTS) {
+    throw new Error(`Bambu 3MF export supports at most ${BAMBU_MAX_FILAMENTS} filaments (colors); got extruder ${state}. Reduce the number of distinct colors.`);
+  }
   if (state === 2) return '8';
   // state ≥ 3: escape nibble 'C' (split 00 + state-bits 11), then (state-3).
   // For Bambu's ≤16 extruders, (state-3) ≤ 13 → a single hex nibble.
-  return 'C' + ((state - 3) & 0xf).toString(16).toUpperCase();
+  return 'C' + (state - 3).toString(16).toUpperCase();
 }
 
 /** Map a material/colorgroup slot index (0 = the base/default color, 1+ =

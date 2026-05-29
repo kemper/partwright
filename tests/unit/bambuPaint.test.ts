@@ -22,6 +22,12 @@ describe('encodePaintColor', () => {
     expect(encodePaintColor(16)).toBe('CD');
   });
 
+  it('throws past Bambu\'s 16-filament limit instead of silently wrapping', () => {
+    // Before the guard, (state-3) & 0xf made state 19 collide with state 3.
+    expect(() => encodePaintColor(17)).toThrow(/at most 16 filaments/);
+    expect(() => encodePaintColor(19)).toThrow(/at most 16 filaments/);
+  });
+
   it('ignores non-integer input', () => {
     expect(encodePaintColor(2.5)).toBe('');
     expect(encodePaintColor(NaN)).toBe('');
