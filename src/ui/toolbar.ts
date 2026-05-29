@@ -20,6 +20,9 @@ export interface ToolbarCallbacks {
   onExportSTL: () => void;
   onExportOBJ: () => void;
   onExport3MF: () => void;
+  /** Voxel-only — silently hidden from the menu unless the active language is
+   *  'voxel' (gated at menu-open time, like {@link onExportSTEP}). */
+  onExportVOX: () => void;
   /** BREP-only — silently hidden from the menu when the active language is
    *  not 'replicad'. Toolbar pings `getActiveLanguage` at menu-open time to
    *  decide visibility. */
@@ -528,11 +531,23 @@ export function createToolbar(
     callbacks.onExportSTEP();
   });
 
+  // VOX — voxel-only; gated in the open-menu handler like STEP. Round-trips
+  // through our .vox importer and opens in MagicaVoxel / Goxel.
+  const voxOpt = createDescribedItem(
+    'VOX',
+    'MagicaVoxel voxel grid — palette + cells, opens in MagicaVoxel / Goxel. Voxel sessions only.',
+  );
+  voxOpt.addEventListener('click', () => {
+    dropdown.classList.add('hidden');
+    callbacks.onExportVOX();
+  });
+
   dropdown.appendChild(threemfOpt);
   dropdown.appendChild(objOpt);
   dropdown.appendChild(stlOpt);
   dropdown.appendChild(glbOpt);
   dropdown.appendChild(stepOpt);
+  dropdown.appendChild(voxOpt);
 
   // Section: project / source — for sharing between users or working with the code directly
   dropdown.appendChild(createDivider());
@@ -644,10 +659,11 @@ export function createToolbar(
   btnExport.addEventListener('click', () => {
     // Refresh relative timestamps each time the dropdown opens.
     renderRecent();
-    // STEP is BREP-only — show/hide based on the language toggle's current
-    // state. Putting this on open (rather than wiring a setter) keeps the
-    // menu logic local; a language switch closes the menu first anyway.
+    // STEP is BREP-only and VOX is voxel-only — show/hide based on the language
+    // toggle's current state. Putting this on open (rather than wiring a setter)
+    // keeps the menu logic local; a language switch closes the menu first anyway.
     stepOpt.classList.toggle('hidden', _currentLang !== 'replicad');
+    voxOpt.classList.toggle('hidden', _currentLang !== 'voxel');
     dropdown.classList.toggle('hidden');
   });
 

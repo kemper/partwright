@@ -251,4 +251,47 @@ test.describe('voxel engine', () => {
     expect(result.error).toBeFalsy();
     expect(result.isManifold).toBe(true);
   });
+
+  test('exportVOXData round-trips a voxel model back through the parser', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`
+        const { voxels } = api;
+        const v = voxels();
+        v.fillBox([0,0,0],[2,0,0], '#ff0000'); // 3 red
+        v.set(0,0,1,'#00ff00');                // 1 green
+        return v;
+      `);
+      const data = await pw.exportVOXData();
+      // Decode the returned base64 and re-parse it with the production importer,
+      // proving the bytes we wrote are a valid, readable .vox file.
+      const bin = atob(data.base64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const { parseVox } = await import('/src/import/parsers/vox');
+      const grid = parseVox(bytes);
+      const colors = new Set<number>();
+      grid.forEach((_x: number, _y: number, _z: number, c: number) => colors.add(c));
+      return { data, size: grid.size, colors: [...colors].sort((a, b) => a - b) };
+    });
+
+    expect(result.data.error).toBeFalsy();
+    expect(result.data.filename).toMatch(/\.vox$/);
+    expect(result.data.mimeType).toBe('application/octet-stream');
+    expect(result.data.sizeBytes).toBeGreaterThan(0);
+    expect(result.size).toBe(4);
+    expect(result.colors).toEqual([0x00ff00, 0xff0000]);
+  });
+
+  test('exportVOXData reports a clear error outside a voxel session', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('manifold-js');
+      return await pw.exportVOXData();
+    });
+    expect(result.error).toMatch(/voxel/i);
+  });
 });

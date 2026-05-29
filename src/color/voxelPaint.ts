@@ -14,7 +14,7 @@
 // local — no Worker round-trip, no rebuild from scratch.
 
 import type { MeshData } from '../geometry/types';
-import { normalizeColor } from '../geometry/voxel/grid';
+import { normalizeColor, type VoxelGrid } from '../geometry/voxel/grid';
 import { gridToMeshWithProvenance } from '../geometry/voxel/mesher';
 import { runVoxelForPaint, type VoxelPaintRun } from '../geometry/engines/voxel';
 import { generateVoxelImportCode } from '../import/imageToVoxel';
@@ -46,6 +46,10 @@ export function setEraser(on: boolean): void { eraser = !!on; }
 
 /** Voxel count in the live grid, or 0 when paint isn't active. */
 export function voxelCount(): number { return run?.grid.size ?? 0; }
+
+/** The live painted grid, or null when paint isn't active. Lets callers (e.g.
+ *  `.vox` export) capture unbaked paint edits without re-running the code. */
+export function getGrid(): VoxelGrid | null { return run?.grid ?? null; }
 
 /** Activate voxel paint on the given code. Runs the code locally to obtain the
  *  grid + provenance, attaches a click handler, and pushes the meshed grid

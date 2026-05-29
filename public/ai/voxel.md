@@ -142,6 +142,35 @@ to MagicaVoxel's default 256-color palette.
 (Multi-model `.vox` files: only the first model is imported. Open the others
 in separate sessions or open them separately for now.)
 
+## MagicaVoxel `.vox` export
+
+In a voxel session, **Export → VOX** writes the grid back out as a MagicaVoxel
+`.vox` file (the option appears only when the active language is `voxel`). It's
+the inverse of the importer, so a `.vox` round-trips: cells and per-voxel colors
+are preserved, and the file opens in MagicaVoxel, Goxel, and other tools that
+read the format. The other 3D formats (GLB / 3MF / OBJ / STL) still work too —
+they export the *meshed* voxels with vertex colors — but `.vox` is the only one
+that keeps the editable voxel grid intact.
+
+Programmatic / AI equivalent:
+
+```js
+partwright.exportVOX();              // browser download -> { ok, filename } | { error }
+await partwright.exportVOXData();     // bytes over the API (see /ai/file-io.md)
+// -> { filename, mimeType: "application/octet-stream", base64, sizeBytes }
+```
+
+Both read the current grid (re-derived from the editor code, or the live grid
+when voxel paint is active). Format limits, surfaced as a clear `{ error }`:
+
+- **256 voxels per axis.** `.vox` coordinates are single bytes, so one model
+  spans at most 256³. Larger grids are rejected — keep the model within 256 per
+  axis, or export GLB / 3MF for an arbitrarily large mesh.
+- **255 colors.** The palette holds 255 entries. A grid with more distinct
+  colors is reduced to the 255 most-frequent, with the rest snapped to the
+  nearest kept color — no voxel is ever dropped. `.smooth()` surfacing doesn't
+  affect the export; `.vox` always stores the underlying blocky cells.
+
 ## Voxel paint
 
 Click on the **🎨 Voxel paint** button (appears in voxel sessions only,
