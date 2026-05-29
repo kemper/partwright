@@ -4032,6 +4032,9 @@ async function main() {
           await syncRouteFromURL();
         },
         mountInto: appRow,
+        // Never auto-open the drawer when the app boots on the landing page —
+        // the remembered open state only applies once the user is in the editor.
+        suppressAutoOpen: shouldShowLanding(),
       });
       const cur = getState();
       await setAiActiveSession(cur.session?.id ?? null);
