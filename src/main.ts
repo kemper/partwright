@@ -2638,6 +2638,33 @@ async function main() {
         openReliefImportFlow(file, savedOpts);
         return;
       }
+      // VOX re-imports rebuild the voxel session from the original bytes via the
+      // same handler as a fresh import. The .vox blob is binary, so the code
+      // fall-through below (which reads it as text and opens it as manifold-js)
+      // dumped garbage into the editor and never switched to the voxel language.
+      if (entry.source === 'VOX') {
+        const cur = getState();
+        if (cur.session && cur.versionCount > 0) {
+          const ok = await showInlineConfirm(
+            editorUI,
+            `Re-import "${entry.filename}" as a new session? Your current session will be kept.`,
+          );
+          if (!ok) return;
+        }
+        const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
+        await handleVoxImport(file);
+        return;
+      }
+      // STEP re-imports reopen the BREP-vs-tessellated-mesh target modal, same as
+      // a fresh STEP import; the code fall-through below would import the raw STEP
+      // text as manifold-js source.
+      if (entry.source === 'STEP') {
+        const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
+        await handleStepImport(file);
+        return;
+      }
+      // Remaining sources are raw code (JS / SCAD): read the blob as text and
+      // open it as a new session in the matching language.
       const cur = getState();
       if (cur.session && cur.versionCount > 0) {
         const ok = await showInlineConfirm(
