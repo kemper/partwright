@@ -19,16 +19,19 @@ export type TileOutputKind =
   /** Flat tile cut to the image's subject silhouette (background removed). */
   | 'silhouette';
 
-/** How a stepped-relief output assigns colour to the mesh. Only relevant for
- *  `output: 'relief'`; flat/silhouette tiles paint the top surface 1:1 from
- *  the cluster map. */
+/** Whether a stepped-relief output is validated for single-nozzle printing.
+ *  Both modes produce the SAME per-cluster relief geometry (a continuous
+ *  quantized-height relief, each cluster owning its top + side walls); this knob
+ *  no longer changes the mesh. It only gates the downstream swap-guide layer-fit
+ *  validation. Only relevant for `output: 'relief'`; flat/silhouette tiles paint
+ *  the top surface 1:1 from the cluster map. */
 export type PaintingMode =
-  /** Per-cluster regions — each cluster owns its top + side walls. AMS-friendly
-   *  (a multi-material printer can switch filament across XY). */
+  /** AMS-friendly — no single-nozzle layer-fit check (a multi-material printer
+   *  can switch filament across XY, so any colour layout is printable). */
   | 'multi-color'
-  /** Z-banded regions — every triangle is grouped by the Z-layer containing its
-   *  centroid, so a single horizontal slice of the print is one colour.
-   *  Matches what a single-nozzle filament-swap print actually deposits. */
+  /** Single-nozzle — enables the swap-guide layer-fit validation that checks
+   *  each colour can be reproduced by horizontal filament swaps. Geometry is
+   *  identical to 'multi-color'. */
   | 'single-nozzle';
 
 /** Optional crop applied to the source image before sampling. Coordinates are
@@ -114,8 +117,9 @@ export interface QuantizedOptions {
    *  the outermost ring of top-surface vertices to topZ - chamferMm, giving the
    *  perimeter a soft beveled lip rather than a sharp corner. */
   chamferMm: number;
-  /** How `output: 'relief'` paints the mesh — per-cluster regions (multi-color,
-   *  AMS-friendly) or per-Z-layer regions (single-nozzle, slicer-faithful).
+  /** Whether `output: 'relief'` runs the single-nozzle layer-fit validation.
+   *  Both values produce the same per-cluster relief geometry; 'single-nozzle'
+   *  additionally gates the swap-guide check, 'multi-color' skips it.
    *  Ignored for `output: 'flat'` and `output: 'silhouette'`. */
   paintingMode: PaintingMode;
   /** When true, flips the cluster→height assignment so DARKER colours land

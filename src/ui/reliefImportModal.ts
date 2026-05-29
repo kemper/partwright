@@ -232,10 +232,11 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   ]);
   sliderControl(tileSection.grid, 'Corner radius', 'mm', () => opts.quantized.cornerRadiusMm, v => (opts.quantized.cornerRadiusMm = v), { min: 0, max: 20, step: 0.5 });
   sliderControl(tileSection.grid, 'Top-edge chamfer', 'mm', () => opts.quantized.chamferMm, v => (opts.quantized.chamferMm = v), { min: 0, max: 2, step: 0.05 });
-  // Stepped-relief painting mode — single-nozzle (Z-banded, slicer-faithful)
-  // vs multi-color (per-cluster, AMS-friendly). Hidden when output != 'relief'.
+  // Stepped-relief painting mode. Both values build the same per-cluster relief
+  // geometry; single-nozzle additionally gates the layer-fit validation, while
+  // multi-color (AMS-friendly) skips it. Hidden when output != 'relief'.
   const paintingModeRow = selectControl<'single-nozzle' | 'multi-color'>(tileSection.grid, 'Painting mode', () => opts.quantized.paintingMode, v => (opts.quantized.paintingMode = v), [
-    { value: 'single-nozzle', label: 'Single-nozzle (Z-banded)' },
+    { value: 'single-nozzle', label: 'Single-nozzle (layer-swap)' },
     { value: 'multi-color', label: 'Multi-colour (AMS)' },
   ]);
   // "Invert heights" — flips the cluster→height map so DARKER colours are
@@ -243,11 +244,11 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   // default (bright = tall) makes the background occlude the figure from a
   // top-down view; turning this on raises the subject instead.
   const invertHeightsRow = checkboxControl(tileSection.grid, 'Invert (dark = tall)', () => opts.quantized.invertHeights, v => (opts.quantized.invertHeights = v));
-  // Inline hint: single-nozzle prints need one Z-band per cluster. If
-  // maxHeight < (clusters - 1) × layerHeight, two clusters land in the same
-  // band and the slicer has to swap mid-layer. Surface the required
-  // minimum so the user can fix it without having to read the error after
-  // hitting Create.
+  // Inline hint: a single-nozzle swap print needs one printable layer band per
+  // cluster. If maxHeight < (clusters - 1) × layerHeight, two clusters land in
+  // the same band and the slicer would have to swap mid-layer. Surface the
+  // required minimum so the user can fix it without having to read the error
+  // after hitting Create.
   const layerFitHint = document.createElement('div');
   layerFitHint.className = 'hidden col-span-2 text-[10px] leading-snug px-2 py-1.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-200';
   tileSection.grid.appendChild(layerFitHint);
@@ -606,10 +607,17 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     const fy = (e.clientY - rect.top) / rect.height;
     const widthMm = opts.common.widthMm;
     const halfW = widthMm / 2;
-    // Use the source image aspect to guess heightMm (the geometry uses the
-    // same aspect via grid H/W). Falls back to square when there's no image.
-    const aspect = image ? image.height / Math.max(1, image.width)
-      : svgText ? 1 : 1;
+    // Use the *realized tile* aspect to map the click to model-space, matching
+    // the mesh builder and computePreviewKeepMask (both use grid H/W). For
+    // raster images this means the CROPPED sampled grid — using the full source
+    // image aspect would land holes at the wrong vertical position when a crop
+    // is active. SVG tiles keep the square fallback (they can't be re-parsed
+    // synchronously here, and SVG hole placement was square-aspect before too).
+    let aspect = 1;
+    if (image) {
+      const grid = sampleImageToGrid(image, opts);
+      aspect = grid.height / Math.max(1, grid.width);
+    }
     const heightMm = widthMm * aspect;
     const halfH = heightMm / 2;
     const cxMm = -halfW + fx * widthMm;
@@ -1046,8 +1054,8 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     // Same gating for the invert-heights toggle — it only changes the
     // cluster→Z mapping for stepped reliefs.
     invertHeightsRow.classList.toggle('hidden', !showPaintingMode);
-    // Layer-fit hint — visible only when single-nozzle stepped relief would
-    // pile two clusters into one Z-band given the current settings. syncEnabled
+    // Layer-fit hint — visible only when a single-nozzle stepped relief can't
+    // fit one printable layer band per cluster given the current settings. syncEnabled
     // is what actually toggles createBtn.disabled; here we just paint the
     // amber explainer.
     const showFit = showPaintingMode && opts.quantized.paintingMode === 'single-nozzle';

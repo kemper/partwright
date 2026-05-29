@@ -69,6 +69,10 @@ function QualityBody(props: { state: Signal<QualityState>; noteVersion: Signal<n
     state.value = { ...state.value, customSegments: next };
     saveQualitySettings({ quality: 'custom', customSegments: next });
     noteVersion.value++;
+    // The field is uncontrolled (defaultValue), so re-sync its displayed text to
+    // the clamped value here on blur — re-binding `value` every keystroke fights
+    // the cursor and snaps partial/out-of-range input as the user types.
+    if (customRef.current) customRef.current.value = String(next);
   }
 
   const customDisabled = state.value.quality !== 'custom';
@@ -125,7 +129,7 @@ function QualityBody(props: { state: Signal<QualityState>; noteVersion: Signal<n
                 max={MAX_CUSTOM_SEGMENTS}
                 step={1}
                 disabled={customDisabled}
-                value={String(state.value.customSegments)}
+                defaultValue={String(state.value.customSegments)}
                 class="w-24 px-2 py-1 rounded bg-zinc-900 border border-zinc-700 text-sm text-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed focus:border-blue-500 focus:outline-none"
                 onInput={e => onInput((e.currentTarget as HTMLInputElement).value)}
                 onChange={e => onBlur((e.currentTarget as HTMLInputElement).value)}

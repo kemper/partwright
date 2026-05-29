@@ -286,10 +286,19 @@ export function activate(): void {
   });
 
   const canvas = getRenderer().domElement;
-  canvas.addEventListener('mousemove', onMouseMove);
-  canvas.addEventListener('mousedown', onMouseDown);
-  canvas.addEventListener('mouseup', onMouseUp);
-  canvas.addEventListener('mouseleave', onMouseLeave);
+  // pointerdown is registered on the container in the CAPTURE phase, not on the
+  // canvas in bubble phase. The viewport installs a capture-phase pointerdown
+  // suppressor on the canvas that calls stopImmediatePropagation() to veto
+  // OrbitControls when the pointer is over the model — that would also kill a
+  // bubble-phase pointerdown listener on the canvas (which is how this used to
+  // break after the mouse→pointer migration). Capture flows ancestor→target, so
+  // a container capture listener runs first, starts the stroke, and the canvas
+  // suppressor still fires afterward to keep OrbitControls vetoed.
+  const container = canvas.parentElement ?? canvas;
+  container.addEventListener('pointerdown', onPointerDown, { capture: true });
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointercancel', onPointerCancel);
   canvas.style.cursor = 'crosshair';
 
   if (currentTool === 'slab') activateSlabDrag();
@@ -308,10 +317,11 @@ export function deactivate(): void {
   deactivateBoxDrag();
 
   const canvas = getRenderer().domElement;
-  canvas.removeEventListener('mousemove', onMouseMove);
-  canvas.removeEventListener('mousedown', onMouseDown);
-  canvas.removeEventListener('mouseup', onMouseUp);
-  canvas.removeEventListener('mouseleave', onMouseLeave);
+  const container = canvas.parentElement ?? canvas;
+  container.removeEventListener('pointerdown', onPointerDown, { capture: true } as EventListenerOptions);
+  canvas.removeEventListener('pointermove', onPointerMove);
+  canvas.removeEventListener('pointerup', onPointerUp);
+  canvas.removeEventListener('pointercancel', onPointerCancel);
   canvas.style.cursor = '';
   clearHighlight();
   clearBrushRing();
@@ -324,9 +334,9 @@ export function deactivate(): void {
 // geometry rebuild; on a dense mesh that's far too heavy to run on every native
 // mousemove (they fire much faster than the display refreshes). Coalesce to at
 // most one run per animation frame, always using the latest pointer position.
-let pendingMoveEvent: MouseEvent | null = null;
+let pendingMoveEvent: PointerEvent | null = null;
 let moveRaf = 0;
-function onMouseMove(event: MouseEvent): void {
+function onPointerMove(event: PointerEvent): void {
   pendingMoveEvent = event;
   if (moveRaf) return;
   moveRaf = requestAnimationFrame(() => {
@@ -423,13 +433,13 @@ function processMouseMove(event: MouseEvent): void {
   else if (currentTool === 'brush') clearBrushRing();
 }
 
-function onMouseDown(event: MouseEvent): void {
+function onPointerDown(event: PointerEvent): void {
   cancelPendingMove();
   if (!adjacency || !currentMesh) return;
   if (event.button !== 0) return;
   if (currentTool === 'slab' || currentTool === 'box') return;
 
-  // Off-model click → OrbitControls is rotating; remember so mouseup doesn't
+  // Off-model click → OrbitControls is rotating; remember so pointerup doesn't
   // paint if the user happens to release over the model after a rotation.
   const result = pickFace(event);
   if (!result) {
@@ -443,6 +453,9 @@ function onMouseDown(event: MouseEvent): void {
     brushSession = new Set<number>();
     strokeSamples = [];
     recordStrokeSample(result.point);
+    // Capture the pointer so a brush drag keeps tracking (and pointerup still
+    // fires here) even if the finger/cursor leaves the canvas mid-stroke.
+    try { (event.target as Element)?.setPointerCapture?.(event.pointerId); } catch { /* capture is best-effort */ }
     if (brushWillSubdivide()) {
       // Smooth: commit resolves from stroke samples, so skip the footprint scan
       // and show the smooth fill instead of the covered triangles. clearHighlight
@@ -697,8 +710,9 @@ function clearBrushPrism(): void {
   brushPrismKey = '';
 }
 
-function onMouseUp(event: MouseEvent): void {
+function onPointerUp(event: PointerEvent): void {
   cancelPendingMove();
+  try { (event.target as Element)?.releasePointerCapture?.(event.pointerId); } catch { /* ignore */ }
   if (!adjacency || !currentMesh) return;
   if (event.button !== 0) return;
   if (currentTool === 'slab' || currentTool === 'box') return;
@@ -748,8 +762,11 @@ function onMouseUp(event: MouseEvent): void {
   if (onRegionPainted) onRegionPainted();
 }
 
-function onMouseLeave(): void {
+function onPointerCancel(event: PointerEvent): void {
   cancelPendingMove();
+  try { (event.target as Element)?.releasePointerCapture?.(event.pointerId); } catch { /* ignore */ }
+  // The pointer stream was cancelled (e.g. the OS took over the gesture);
+  // commit whatever stroke is in progress, mirroring the old mouseleave edge.
   if (currentTool === 'brush' && hasActiveStroke()) {
     commitBrushStroke();
   }

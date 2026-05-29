@@ -125,7 +125,7 @@ function remeshAndPush(): void {
   cbMeshUpdate?.(mesh);
 }
 
-function onPointerDown(event: MouseEvent): void {
+function onPointerDown(event: PointerEvent): void {
   if (!active || event.button !== 0) return;
   const hit = pickFace(event);
   if (!hit) return;
@@ -134,7 +134,11 @@ function onPointerDown(event: MouseEvent): void {
 
 function attachPointerHandler(): void {
   const canvas = getRenderer().domElement;
-  canvas.addEventListener('mousedown', onPointerDown);
+  // pointerdown on the container in CAPTURE phase so it runs before the
+  // viewport's capture-phase OrbitControls suppressor (which stops propagation
+  // on the canvas) — see the matching note in paintMode.ts.
+  const container = canvas.parentElement ?? canvas;
+  container.addEventListener('pointerdown', onPointerDown, { capture: true });
   canvas.style.cursor = 'crosshair';
   // Veto OrbitControls on left-button hits over the model so paint doesn't
   // orbit. Off-model clicks fall through so the camera still rotates.
@@ -146,7 +150,8 @@ function attachPointerHandler(): void {
 
 function detachPointerHandler(): void {
   const canvas = getRenderer().domElement;
-  canvas.removeEventListener('mousedown', onPointerDown);
+  const container = canvas.parentElement ?? canvas;
+  container.removeEventListener('pointerdown', onPointerDown, { capture: true } as EventListenerOptions);
   canvas.style.cursor = '';
   if (removeSuppressor) { removeSuppressor(); removeSuppressor = null; }
 }
