@@ -3134,6 +3134,7 @@ async function main() {
         onOpenCatalog: () => { void showCatalogPage(); },
         onOpenWhatsNew: () => showWhatsNewPage(),
         onOpenSession: openSessionFromLanding,
+        onLoadCatalogEntry: handleCatalogEntryLoad,
       });
     }
     return landingEl;
