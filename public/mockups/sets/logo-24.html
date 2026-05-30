@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="robots" content="noindex"/>
+<title>Partwright — Spur gear · print</title>
+<style>
+@import url('../fonts.css');
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#09090b;color:#e4e4e7;font-family:'Space Grotesk',system-ui,sans-serif;padding:40px 56px 90px}
+a.back{color:#71717a;font-size:13px;text-decoration:none}
+a.back:hover{color:#e4e4e7}
+.head{margin:20px 0 6px;font:800 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.thesis{color:#a1a1aa;font-size:15px;max-width:640px;line-height:1.6;margin-bottom:34px}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
+.panel{background:#18181b;border:1px solid #27272a;border-radius:16px;padding:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;min-height:150px}
+.panel .lbl{font:600 11px 'Space Grotesk';letter-spacing:1.5px;text-transform:uppercase;color:#52525b}
+.s3{grid-column:span 3}.s5{grid-column:span 5}.s7{grid-column:span 7}
+.hero{min-height:230px}
+.lockup{display:flex;align-items:center;gap:14px}
+.lockup .wm{font:700 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.favs{display:flex;align-items:flex-end;gap:16px}
+.fav{background:#0b0b0d;border:1px solid #27272a;border-radius:8px;padding:8px;display:flex;align-items:center;justify-content:center}
+.light{background:#f4f4f5}
+.light .lbl{color:#a1a1aa}
+</style></head>
+<body>
+<a class="back" href="../">← all mockups</a>
+<div class="head">Spur gear · print</div>
+<div class="thesis">The spur gear is one of the oldest and most fundamental mechanical forms — a disc ringed with precise rectangular teeth that has transferred rotational force since antiquity, from water mills to clockwork to modern transmissions. Here it prints itself: each FDM layer deposits tooth-by-tooth, building the disc body up from the plate while the deposition glow traces the live edge, until the finished precision part holds complete in teal on its dark build surface.</div>
+<div class="grid">
+
+  <!-- ===== HERO (animated) ===== -->
+  <div class="panel hero s5"><div class="lbl">Primary mark</div>
+    <svg class="hero-mark" width="120" height="120" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright — isometric spur gear printing layer by layer">
+      <defs>
+        <linearGradient id="h-top" x1="12" y1="18" x2="52" y2="42" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <linearGradient id="h-right" x1="32" y1="24" x2="54" y2="52" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+        </linearGradient>
+        <linearGradient id="h-left" x1="10" y1="24" x2="32" y2="52" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0b6b62"/>
+        </linearGradient>
+        <linearGradient id="h-tooth-top" x1="12" y1="14" x2="52" y2="30" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#6ef8e4"/><stop offset="1" stop-color="#38d9c4"/>
+        </linearGradient>
+        <radialGradient id="h-shadow" cx="0.5" cy="0.5" r="0.5">
+          <stop offset="0" stop-color="#000" stop-opacity="0.5"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
+        </radialGradient>
+        <linearGradient id="h-plate" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#1f2937"/><stop offset="1" stop-color="#0f172a"/>
+        </linearGradient>
+      </defs>
+
+      <!-- contact shadow -->
+      <ellipse cx="32" cy="57.5" rx="24" ry="3.2" fill="url(#h-shadow)"/>
+
+      <!-- build plate -->
+      <g class="plate">
+        <path d="M54 45.8 L32 57.2 L10 45.8 L32 34.4 Z" fill="#111827"/>
+        <path d="M10 45.8 L32 57.2 L32 59 L10 47.6 Z" fill="url(#h-plate)"/>
+        <path d="M54 45.8 L32 57.2 L32 59 L54 47.6 Z" fill="#0b1220"/>
+        <path d="M54 45.8 L32 57.2 L10 45.8" fill="none" stroke="#14b8a6" stroke-width="0.6" stroke-opacity="0.4" stroke-linejoin="round"/>
+      </g>
+
+      <!-- ===== GEAR LAYERS (bottom-up, 8 layers) =====
+           Disc body: left side x=10..32, right side x=32..54
+           Each layer is 2.4px tall in SVG space.
+           Teeth are rectangular bumps on the side walls.
+
+           Disc rim Y positions (top of each layer seam, counting from plate up):
+           Plate top: y=45.8 → left=45.8, right=45.8
+           Layer seams at: 45.8, 43.4, 41.0, 38.6, 36.2, 33.8, 31.4, 29.0, 26.6
+           (each step: -2.4py on left peak, -1.2px on x for iso, but disc is symmetric)
+
+           Iso disc faces: left wall goes from (10, yLow) to (32, yLow+11.4) to (32, yHigh+11.4) to (10, yHigh)
+           Right wall: (54, yLow) to (32, yLow+11.4) to (32, yHigh+11.4) to (54, yHigh)
+
+           Teeth on LEFT side wall (y shifts ±1.5 from disc edge):
+           Tooth bumps: at y_seam ± tooth_width, protruding left by 3px
+
+           Teeth on RIGHT side wall: protruding right by 3px
+
+           Top face diamond (at the top layer): x=10..54, y= 26.6 .. 37.0 .. 26.6
+           with tooth lozenges protruding around the perimeter
+
+           Center bore: dark diamond at center of top face
+      -->
+
+      <!-- Layer 0 — bottommost disc body slice -->
+      <g class="ly ly0">
+        <!-- left side wall segment -->
+        <path d="M10 43.4 L32 54.8 L32 57.2 L10 45.8 Z" fill="url(#h-left)"/>
+        <!-- right side wall segment -->
+        <path d="M54 43.4 L32 54.8 L32 57.2 L54 45.8 Z" fill="url(#h-right)"/>
+        <!-- layer seam line -->
+        <path class="seam" d="M10 43.4 L32 54.8 L54 43.4" fill="none" stroke="#0b3b38" stroke-width="0.5" stroke-opacity="0.35"/>
+        <!-- flash glow diamond at this layer top -->
+        <path class="flash" d="M10 43.4 L32 54.8 L54 43.4 L32 32 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+
+      <!-- Layer 1 -->
+      <g class="ly ly1">
+        <path d="M10 41.0 L32 52.4 L32 54.8 L10 43.4 Z" fill="url(#h-left)"/>
+        <path d="M54 41.0 L32 52.4 L32 54.8 L54 43.4 Z" fill="url(#h-right)"/>
+        <path class="seam" d="M10 41.0 L32 52.4 L54 41.0" fill="none" stroke="#0b3b38" stroke-width="0.5" stroke-opacity="0.35"/>
+        <path class="flash" d="M10 41.0 L32 52.4 L54 41.0 L32 29.6 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+
+      <!-- Layer 2 — teeth begin to appear on side walls -->
+      <g class="ly ly2">
+        <!-- main disc wall (recessed from tooth tips) -->
+        <path d="M10 38.6 L32 50.0 L32 52.4 L10 41.0 Z" fill="url(#h-left)"/>
+        <path d="M54 38.6 L32 50.0 L32 52.4 L54 41.0 Z" fill="url(#h-right)"/>
+        <!-- LEFT teeth bumps: 3 teeth visible on left face, protruding outward (leftward) -->
+        <!-- Tooth 1 left (front-left tooth) -->
+        <path d="M14.5 40.4 L18.5 42.8 L18.5 40.4 L14.5 38.0 Z" fill="#0b6b62"/>
+        <path d="M14.5 40.4 L18.5 38.0 L14.5 35.6 Z" fill="#0a5c56"/>
+        <!-- Tooth 2 left -->
+        <path d="M21.5 43.8 L25.5 46.2 L25.5 43.8 L21.5 41.4 Z" fill="#0b6b62"/>
+        <!-- RIGHT teeth bumps on right face -->
+        <path d="M49.5 40.4 L45.5 42.8 L45.5 40.4 L49.5 38.0 Z" fill="#0d9488"/>
+        <path d="M42.5 43.8 L38.5 46.2 L38.5 43.8 L42.5 41.4 Z" fill="#0d9488"/>
+        <path class="seam" d="M10 38.6 L32 50.0 L54 38.6" fill="none" stroke="#0b3b38" stroke-width="0.5" stroke-opacity="0.35"/>
+        <path class="flash" d="M10 38.6 L32 50.0 L54 38.6 L32 27.2 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+
+      <!-- Layer 3 -->
+      <g class="ly ly3">
+        <path d="M10 36.2 L32 47.6 L32 50.0 L10 38.6 Z" fill="url(#h-left)"/>
+        <path d="M54 36.2 L32 47.6 L32 50.0 L54 38.6 Z" fill="url(#h-right)"/>
+        <!-- tooth bump top faces on left side -->
+        <path d="M14.5 38.0 L18.5 40.4 L18.5 38.0 L14.5 35.6 Z" fill="#0b6b62"/>
+        <path d="M21.5 41.4 L25.5 43.8 L25.5 41.4 L21.5 39.0 Z" fill="#0b6b62"/>
+        <!-- tooth bump top faces on right side -->
+        <path d="M49.5 38.0 L45.5 40.4 L45.5 38.0 L49.5 35.6 Z" fill="#0d9488"/>
+        <path d="M42.5 41.4 L38.5 43.8 L38.5 41.4 L42.5 39.0 Z" fill="#0d9488"/>
+        <path class="seam" d="M10 36.2 L32 47.6 L54 36.2" fill="none" stroke="#0b3b38" stroke-width="0.5" stroke-opacity="0.35"/>
+        <path class="flash" d="M10 36.2 L32 47.6 L54 36.2 L32 24.8 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+
+      <!-- Layer 4 -->
+      <g class="ly ly4">
+        <path d="M10 33.8 L32 45.2 L32 47.6 L10 36.2 Z" fill="url(#h-left)"/>
+        <path d="M54 33.8 L32 45.2 L32 47.6 L54 36.2 Z" fill="url(#h-right)"/>
+        <path d="M14.5 35.6 L18.5 38.0 L18.5 35.6 L14.5 33.2 Z" fill="#0b6b62"/>
+        <path d="M21.5 39.0 L25.5 41.4 L25.5 39.0 L21.5 36.6 Z" fill="#0b6b62"/>
+        <path d="M49.5 35.6 L45.5 38.0 L45.5 35.6 L49.5 33.2 Z" fill="#0d9488"/>
+        <path d="M42.5 39.0 L38.5 41.4 L38.5 39.0 L42.5 36.6 Z" fill="#0d9488"/>
+        <path class="seam" d="M10 33.8 L32 45.2 L54 33.8" fill="none" stroke="#0b3b38" stroke-width="0.5" stroke-opacity="0.35"/>
+        <path class="flash" d="M10 33.8 L32 45.2 L54 33.8 L32 22.4 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+
+      <!-- Layer 5 -->
+      <g class="ly ly5">
+        <path d="M10 31.4 L32 42.8 L32 45.2 L10 33.8 Z" fill="url(#h-left)"/>
+        <path d="M54 31.4 L32 42.8 L32 45.2 L54 33.8 Z" fill="url(#h-right)"/>
+        <path d="M14.5 33.2 L18.5 35.6 L18.5 33.2 L14.5 30.8 Z" fill="#0b6b62"/>
+        <path d="M21.5 36.6 L25.5 39.0 L25.5 36.6 L21.5 34.2 Z" fill="#0b6b62"/>
+        <path d="M49.5 33.2 L45.5 35.6 L45.5 33.2 L49.5 30.8 Z" fill="#0d9488"/>
+        <path d="M42.5 36.6 L38.5 39.0 L38.5 36.6 L42.5 34.2 Z" fill="#0d9488"/>
+        <path class="seam" d="M10 31.4 L32 42.8 L54 31.4" fill="none" stroke="#0b3b38" stroke-width="0.5" stroke-opacity="0.35"/>
+        <path class="flash" d="M10 31.4 L32 42.8 L54 31.4 L32 20.0 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+
+      <!-- Layer 6 -->
+      <g class="ly ly6">
+        <path d="M10 29.0 L32 40.4 L32 42.8 L10 31.4 Z" fill="url(#h-left)"/>
+        <path d="M54 29.0 L32 40.4 L32 42.8 L54 31.4 Z" fill="url(#h-right)"/>
+        <path d="M14.5 30.8 L18.5 33.2 L18.5 30.8 L14.5 28.4 Z" fill="#0b6b62"/>
+        <path d="M21.5 34.2 L25.5 36.6 L25.5 34.2 L21.5 31.8 Z" fill="#0b6b62"/>
+        <path d="M49.5 30.8 L45.5 33.2 L45.5 30.8 L49.5 28.4 Z" fill="#0d9488"/>
+        <path d="M42.5 34.2 L38.5 36.6 L38.5 34.2 L42.5 31.8 Z" fill="#0d9488"/>
+        <path class="seam" d="M10 29.0 L32 40.4 L54 29.0" fill="none" stroke="#0b3b38" stroke-width="0.5" stroke-opacity="0.35"/>
+        <path class="flash" d="M10 29.0 L32 40.4 L54 29.0 L32 17.6 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+
+      <!-- Layer 7 — topmost: full top face + teeth on top + bore -->
+      <g class="ly ly7">
+        <!-- side walls (top segment) -->
+        <path d="M10 26.6 L32 38.0 L32 40.4 L10 29.0 Z" fill="url(#h-left)"/>
+        <path d="M54 26.6 L32 38.0 L32 40.4 L54 29.0 Z" fill="url(#h-right)"/>
+        <!-- final side tooth bumps -->
+        <path d="M14.5 28.4 L18.5 30.8 L18.5 28.4 L14.5 26.0 Z" fill="#0b6b62"/>
+        <path d="M21.5 31.8 L25.5 34.2 L25.5 31.8 L21.5 29.4 Z" fill="#0b6b62"/>
+        <path d="M49.5 28.4 L45.5 30.8 L45.5 28.4 L49.5 26.0 Z" fill="#0d9488"/>
+        <path d="M42.5 31.8 L38.5 34.2 L38.5 31.8 L42.5 29.4 Z" fill="#0d9488"/>
+
+        <!-- ===== TOP FACE (the disc top with teeth) =====
+             Main disc top diamond: corners at L(10,26.6) Front(32,38) R(54,26.6) Back(32,15.2)
+             Teeth on top: 6 rectangular lozenges protruding from disc edge
+             Arranged: 2 on front-left, 2 on front-right edges, 1 top-left, 1 top-right -->
+
+        <!-- Disc top face (main body, minus tooth areas) -->
+        <path d="M10 26.6 L32 38.0 L54 26.6 L32 15.2 Z" fill="url(#h-top)"/>
+
+        <!-- Top teeth: small rectangular lozenges along the disc edge -->
+        <!-- Tooth T1: front-right lower -->
+        <path d="M38 35.5 L44 32.5 L47 34.0 L41 37.0 Z" fill="url(#h-tooth-top)"/>
+        <!-- Tooth T2: front-right upper -->
+        <path d="M44 32.5 L50 29.5 L53 31.0 L47 34.0 Z" fill="url(#h-tooth-top)"/>
+        <!-- Tooth T3: right side -->
+        <path d="M52 26.6 L58 23.6 L58 26.0 L52 29.0 Z" fill="url(#h-tooth-top)"/>
+        <!-- Tooth T4: front-left lower -->
+        <path d="M26 35.5 L20 32.5 L17 34.0 L23 37.0 Z" fill="url(#h-tooth-top)"/>
+        <!-- Tooth T5: front-left upper -->
+        <path d="M20 32.5 L14 29.5 L11 31.0 L17 34.0 Z" fill="url(#h-tooth-top)"/>
+        <!-- Tooth T6: left side -->
+        <path d="M12 26.6 L6 23.6 L6 26.0 L12 29.0 Z" fill="url(#h-tooth-top)"/>
+        <!-- Tooth T7: back-right -->
+        <path d="M44 19.5 L50 16.5 L48 15.2 L42 18.2 Z" fill="url(#h-tooth-top)"/>
+        <!-- Tooth T8: back-left -->
+        <path d="M20 19.5 L14 16.5 L16 15.2 L22 18.2 Z" fill="url(#h-tooth-top)"/>
+
+        <!-- Bright lit front edge of the disc top -->
+        <path d="M10 26.6 L32 38.0 L54 26.6" fill="none" stroke="#ccfbf1" stroke-width="0.7" stroke-opacity="0.8" stroke-linejoin="round"/>
+
+        <!-- Center bore — dark diamond/ellipse in center of top face -->
+        <ellipse cx="32" cy="26.6" rx="4.5" ry="2.2" fill="#062520"/>
+        <ellipse cx="32" cy="26.0" rx="3.8" ry="1.8" fill="#030f0e"/>
+
+        <!-- Amber catch-light on topmost tooth edge (maker's spark) -->
+        <path d="M44 32.5 L50 29.5" fill="none" stroke="#fbbf24" stroke-width="1.1" stroke-linecap="round" opacity="0.92"/>
+
+        <path class="flash" d="M10 26.6 L32 38.0 L54 26.6 L32 15.2 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+    </svg>
+  </div>
+
+  <!-- ===== WORDMARK LOCKUP (static finished gear) ===== -->
+  <div class="panel s7"><div class="lbl">Wordmark lockup</div><div class="lockup">
+    <svg width="42" height="42" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright mark">
+      <defs>
+        <linearGradient id="m-top" x1="12" y1="18" x2="52" y2="42" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <linearGradient id="m-right" x1="32" y1="24" x2="54" y2="52" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+        </linearGradient>
+        <linearGradient id="m-left" x1="10" y1="24" x2="32" y2="52" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0b6b62"/>
+        </linearGradient>
+        <linearGradient id="m-th" x1="12" y1="14" x2="52" y2="30" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#6ef8e4"/><stop offset="1" stop-color="#38d9c4"/>
+        </linearGradient>
+      </defs>
+      <!-- disc body walls -->
+      <path d="M10 26.6 L32 38.0 L32 57.2 L10 45.8 Z" fill="url(#m-left)"/>
+      <path d="M54 26.6 L32 38.0 L32 57.2 L54 45.8 Z" fill="url(#m-right)"/>
+      <!-- side teeth left -->
+      <path d="M14.5 28.4 L18.5 30.8 L18.5 40.8 L14.5 38.4 Z" fill="#0b6b62"/>
+      <path d="M21.5 31.8 L25.5 34.2 L25.5 44.2 L21.5 41.8 Z" fill="#0b6b62"/>
+      <!-- side teeth right -->
+      <path d="M49.5 28.4 L45.5 30.8 L45.5 40.8 L49.5 38.4 Z" fill="#0d9488"/>
+      <path d="M42.5 31.8 L38.5 34.2 L38.5 44.2 L42.5 41.8 Z" fill="#0d9488"/>
+      <!-- top face -->
+      <path d="M10 26.6 L32 38.0 L54 26.6 L32 15.2 Z" fill="url(#m-top)"/>
+      <!-- top teeth -->
+      <path d="M38 35.5 L44 32.5 L47 34.0 L41 37.0 Z" fill="url(#m-th)"/>
+      <path d="M44 32.5 L50 29.5 L53 31.0 L47 34.0 Z" fill="url(#m-th)"/>
+      <path d="M26 35.5 L20 32.5 L17 34.0 L23 37.0 Z" fill="url(#m-th)"/>
+      <path d="M20 32.5 L14 29.5 L11 31.0 L17 34.0 Z" fill="url(#m-th)"/>
+      <path d="M44 19.5 L50 16.5 L48 15.2 L42 18.2 Z" fill="url(#m-th)"/>
+      <path d="M20 19.5 L14 16.5 L16 15.2 L22 18.2 Z" fill="url(#m-th)"/>
+      <!-- bore -->
+      <ellipse cx="32" cy="26.6" rx="4.5" ry="2.2" fill="#062520"/>
+      <ellipse cx="32" cy="26.0" rx="3.8" ry="1.8" fill="#030f0e"/>
+      <!-- lit front edge -->
+      <path d="M10 26.6 L32 38.0 L54 26.6" fill="none" stroke="#ccfbf1" stroke-width="0.6" stroke-opacity="0.8" stroke-linejoin="round"/>
+      <!-- layer seams -->
+      <g stroke="#0b3b38" stroke-width="0.4" stroke-opacity="0.35" fill="none">
+        <path d="M10 29.0 L32 40.4 L54 29.0"/>
+        <path d="M10 31.4 L32 42.8 L54 31.4"/>
+        <path d="M10 33.8 L32 45.2 L54 33.8"/>
+        <path d="M10 36.2 L32 47.6 L54 36.2"/>
+        <path d="M10 38.6 L32 50.0 L54 38.6"/>
+        <path d="M10 41.0 L32 52.4 L54 41.0"/>
+        <path d="M10 43.4 L32 54.8 L54 43.4"/>
+      </g>
+    </svg>
+    <span class="wm">Partwright</span>
+  </div></div>
+
+  <!-- ===== APP ICON ===== -->
+  <div class="panel s3"><div class="lbl">App icon</div>
+    <svg class="icon-mark" width="104" height="104" viewBox="0 0 104 104" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright app icon">
+      <defs>
+        <linearGradient id="a-bg" x1="0" y1="0" x2="104" y2="104" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#101a2b"/><stop offset="1" stop-color="#0b1220"/>
+        </linearGradient>
+        <linearGradient id="a-top" x1="12" y1="18" x2="52" y2="42" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <linearGradient id="a-right" x1="32" y1="24" x2="54" y2="52" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+        </linearGradient>
+        <linearGradient id="a-left" x1="10" y1="24" x2="32" y2="52" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0b6b62"/>
+        </linearGradient>
+        <linearGradient id="a-th" x1="12" y1="14" x2="52" y2="30" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#6ef8e4"/><stop offset="1" stop-color="#38d9c4"/>
+        </linearGradient>
+        <clipPath id="a-clip"><rect x="0" y="0" width="104" height="104" rx="22"/></clipPath>
+      </defs>
+      <rect x="0" y="0" width="104" height="104" rx="22" fill="url(#a-bg)"/>
+      <g clip-path="url(#a-clip)">
+        <!-- gear scaled/centered into tile: translate so gear center ~52,52, scale 1.1 -->
+        <g transform="translate(4 -1) scale(1.52)">
+          <!-- disc walls -->
+          <path d="M10 26.6 L32 38.0 L32 57.2 L10 45.8 Z" fill="url(#a-left)"/>
+          <path d="M54 26.6 L32 38.0 L32 57.2 L54 45.8 Z" fill="url(#a-right)"/>
+          <!-- side teeth left -->
+          <path d="M14.5 28.4 L18.5 30.8 L18.5 40.8 L14.5 38.4 Z" fill="#0b6b62"/>
+          <path d="M21.5 31.8 L25.5 34.2 L25.5 44.2 L21.5 41.8 Z" fill="#0b6b62"/>
+          <!-- side teeth right -->
+          <path d="M49.5 28.4 L45.5 30.8 L45.5 40.8 L49.5 38.4 Z" fill="#0d9488"/>
+          <path d="M42.5 31.8 L38.5 34.2 L38.5 44.2 L42.5 41.8 Z" fill="#0d9488"/>
+          <!-- top face -->
+          <path d="M10 26.6 L32 38.0 L54 26.6 L32 15.2 Z" fill="url(#a-top)"/>
+          <!-- top teeth -->
+          <path d="M38 35.5 L44 32.5 L47 34.0 L41 37.0 Z" fill="url(#a-th)"/>
+          <path d="M44 32.5 L50 29.5 L53 31.0 L47 34.0 Z" fill="url(#a-th)"/>
+          <path d="M26 35.5 L20 32.5 L17 34.0 L23 37.0 Z" fill="url(#a-th)"/>
+          <path d="M20 32.5 L14 29.5 L11 31.0 L17 34.0 Z" fill="url(#a-th)"/>
+          <path d="M44 19.5 L50 16.5 L48 15.2 L42 18.2 Z" fill="url(#a-th)"/>
+          <path d="M20 19.5 L14 16.5 L16 15.2 L22 18.2 Z" fill="url(#a-th)"/>
+          <!-- bore -->
+          <ellipse cx="32" cy="26.6" rx="4.5" ry="2.2" fill="#062520"/>
+          <ellipse cx="32" cy="26.0" rx="3.8" ry="1.8" fill="#030f0e"/>
+          <!-- lit edge -->
+          <path d="M10 26.6 L32 38.0 L54 26.6" fill="none" stroke="#ccfbf1" stroke-width="0.55" stroke-opacity="0.85" stroke-linejoin="round"/>
+          <!-- amber spark -->
+          <path d="M44 32.5 L50 29.5" fill="none" stroke="#fbbf24" stroke-width="0.9" stroke-linecap="round" opacity="0.92"/>
+        </g>
+      </g>
+    </svg>
+  </div>
+
+  <!-- ===== FAVICONS ===== -->
+  <div class="panel s3"><div class="lbl">Favicon · 32 / 20 / 16</div><div class="favs">
+    <div class="fav">
+      <svg width="32" height="32" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright favicon 32">
+        <defs>
+          <linearGradient id="f32-top" x1="12" y1="18" x2="52" y2="42" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+          </linearGradient>
+          <linearGradient id="f32-r" x1="32" y1="24" x2="54" y2="52" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+          </linearGradient>
+          <linearGradient id="f32-l" x1="10" y1="24" x2="32" y2="52" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0b6b62"/>
+          </linearGradient>
+          <linearGradient id="f32-th" x1="12" y1="14" x2="52" y2="30" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#6ef8e4"/><stop offset="1" stop-color="#38d9c4"/>
+          </linearGradient>
+        </defs>
+        <path d="M10 26.6 L32 38.0 L32 57.2 L10 45.8 Z" fill="url(#f32-l)"/>
+        <path d="M54 26.6 L32 38.0 L32 57.2 L54 45.8 Z" fill="url(#f32-r)"/>
+        <path d="M10 26.6 L32 38.0 L54 26.6 L32 15.2 Z" fill="url(#f32-top)"/>
+        <path d="M38 35.5 L44 32.5 L47 34.0 L41 37.0 Z" fill="url(#f32-th)"/>
+        <path d="M44 32.5 L50 29.5 L53 31.0 L47 34.0 Z" fill="url(#f32-th)"/>
+        <path d="M26 35.5 L20 32.5 L17 34.0 L23 37.0 Z" fill="url(#f32-th)"/>
+        <path d="M20 32.5 L14 29.5 L11 31.0 L17 34.0 Z" fill="url(#f32-th)"/>
+        <path d="M44 19.5 L50 16.5 L48 15.2 L42 18.2 Z" fill="url(#f32-th)"/>
+        <path d="M20 19.5 L14 16.5 L16 15.2 L22 18.2 Z" fill="url(#f32-th)"/>
+        <ellipse cx="32" cy="26.6" rx="4.5" ry="2.2" fill="#062520"/>
+        <ellipse cx="32" cy="26.0" rx="3.8" ry="1.8" fill="#030f0e"/>
+      </svg>
+    </div>
+    <div class="fav">
+      <svg width="20" height="20" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright favicon 20">
+        <defs>
+          <linearGradient id="f20-top" x1="12" y1="18" x2="52" y2="42" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+          </linearGradient>
+          <linearGradient id="f20-r" x1="32" y1="24" x2="54" y2="52" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+          </linearGradient>
+          <linearGradient id="f20-l" x1="10" y1="24" x2="32" y2="52" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0b6b62"/>
+          </linearGradient>
+        </defs>
+        <!-- simplified at 20px: clean disc body + top face, 4 tooth hints, bore -->
+        <path d="M10 26.6 L32 38.0 L32 57.2 L10 45.8 Z" fill="url(#f20-l)"/>
+        <path d="M54 26.6 L32 38.0 L32 57.2 L54 45.8 Z" fill="url(#f20-r)"/>
+        <path d="M10 26.6 L32 38.0 L54 26.6 L32 15.2 Z" fill="url(#f20-top)"/>
+        <!-- simplified teeth hints at 20px -->
+        <path d="M42 33.5 L50 29.5 L54 31.5 L46 35.5 Z" fill="#38d9c4"/>
+        <path d="M22 33.5 L14 29.5 L10 31.5 L18 35.5 Z" fill="#38d9c4"/>
+        <ellipse cx="32" cy="26.5" rx="4" ry="2" fill="#041513"/>
+      </svg>
+    </div>
+    <div class="fav">
+      <svg width="16" height="16" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright favicon 16">
+        <!-- 16px: bold flat tones, gear silhouette with 2 tooth bumps per side -->
+        <path d="M10 26.6 L32 38.0 L32 57.2 L10 45.8 Z" fill="#0d9488"/>
+        <path d="M54 26.6 L32 38.0 L32 57.2 L54 45.8 Z" fill="#14b8a6"/>
+        <path d="M10 26.6 L32 38.0 L54 26.6 L32 15.2 Z" fill="#2dd4bf"/>
+        <path d="M42 32.5 L52 27.5 L55 29.5 L45 34.5 Z" fill="#5eead4"/>
+        <path d="M22 32.5 L12 27.5 L9 29.5 L19 34.5 Z" fill="#5eead4"/>
+        <ellipse cx="32" cy="26.5" rx="4.5" ry="2.2" fill="#041513"/>
+      </svg>
+    </div>
+  </div></div>
+
+  <!-- ===== MONOCHROME ===== -->
+  <div class="panel s3"><div class="lbl">Monochrome</div>
+    <svg width="88" height="88" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright monochrome">
+      <!-- three greys: top=light, right=mid, left=dark -->
+      <path d="M10 26.6 L32 38.0 L32 57.2 L10 45.8 Z" fill="#71717a"/>
+      <path d="M54 26.6 L32 38.0 L32 57.2 L54 45.8 Z" fill="#a1a1aa"/>
+      <!-- side teeth grey -->
+      <path d="M14.5 28.4 L18.5 30.8 L18.5 40.8 L14.5 38.4 Z" fill="#52525b"/>
+      <path d="M21.5 31.8 L25.5 34.2 L25.5 44.2 L21.5 41.8 Z" fill="#52525b"/>
+      <path d="M49.5 28.4 L45.5 30.8 L45.5 40.8 L49.5 38.4 Z" fill="#8a8a96"/>
+      <path d="M42.5 31.8 L38.5 34.2 L38.5 44.2 L42.5 41.8 Z" fill="#8a8a96"/>
+      <!-- top face -->
+      <path d="M10 26.6 L32 38.0 L54 26.6 L32 15.2 Z" fill="#fafafa"/>
+      <!-- top teeth -->
+      <path d="M38 35.5 L44 32.5 L47 34.0 L41 37.0 Z" fill="#e4e4e7"/>
+      <path d="M44 32.5 L50 29.5 L53 31.0 L47 34.0 Z" fill="#e4e4e7"/>
+      <path d="M26 35.5 L20 32.5 L17 34.0 L23 37.0 Z" fill="#e4e4e7"/>
+      <path d="M20 32.5 L14 29.5 L11 31.0 L17 34.0 Z" fill="#e4e4e7"/>
+      <path d="M44 19.5 L50 16.5 L48 15.2 L42 18.2 Z" fill="#e4e4e7"/>
+      <path d="M20 19.5 L14 16.5 L16 15.2 L22 18.2 Z" fill="#e4e4e7"/>
+      <!-- bore -->
+      <ellipse cx="32" cy="26.6" rx="4.5" ry="2.2" fill="#3f3f46"/>
+      <!-- layer seams -->
+      <g stroke="#3f3f46" stroke-width="0.4" stroke-opacity="0.5" fill="none">
+        <path d="M10 29.0 L32 40.4 L54 29.0"/>
+        <path d="M10 33.8 L32 45.2 L54 33.8"/>
+        <path d="M10 38.6 L32 50.0 L54 38.6"/>
+        <path d="M10 43.4 L32 54.8 L54 43.4"/>
+      </g>
+    </svg>
+  </div>
+
+  <!-- ===== ON LIGHT ===== -->
+  <div class="panel s3 light"><div class="lbl">On light</div>
+    <svg width="88" height="88" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright on light">
+      <!-- deep-navy faces so the silhouette holds, teal top -->
+      <path d="M10 26.6 L32 38.0 L32 57.2 L10 45.8 Z" fill="#0f172a"/>
+      <path d="M54 26.6 L32 38.0 L32 57.2 L54 45.8 Z" fill="#1e293b"/>
+      <!-- side teeth navy -->
+      <path d="M14.5 28.4 L18.5 30.8 L18.5 40.8 L14.5 38.4 Z" fill="#0b1120"/>
+      <path d="M21.5 31.8 L25.5 34.2 L25.5 44.2 L21.5 41.8 Z" fill="#0b1120"/>
+      <path d="M49.5 28.4 L45.5 30.8 L45.5 40.8 L49.5 38.4 Z" fill="#162032"/>
+      <path d="M42.5 31.8 L38.5 34.2 L38.5 44.2 L42.5 41.8 Z" fill="#162032"/>
+      <!-- teal top face -->
+      <path d="M10 26.6 L32 38.0 L54 26.6 L32 15.2 Z" fill="#0d9488"/>
+      <!-- top teeth teal -->
+      <path d="M38 35.5 L44 32.5 L47 34.0 L41 37.0 Z" fill="#2dd4bf"/>
+      <path d="M44 32.5 L50 29.5 L53 31.0 L47 34.0 Z" fill="#2dd4bf"/>
+      <path d="M26 35.5 L20 32.5 L17 34.0 L23 37.0 Z" fill="#2dd4bf"/>
+      <path d="M20 32.5 L14 29.5 L11 31.0 L17 34.0 Z" fill="#2dd4bf"/>
+      <path d="M44 19.5 L50 16.5 L48 15.2 L42 18.2 Z" fill="#2dd4bf"/>
+      <path d="M20 19.5 L14 16.5 L16 15.2 L22 18.2 Z" fill="#2dd4bf"/>
+      <!-- bore -->
+      <ellipse cx="32" cy="26.6" rx="4.5" ry="2.2" fill="#062520"/>
+      <!-- lit front edge teal -->
+      <path d="M10 26.6 L32 38.0 L54 26.6" fill="none" stroke="#5eead4" stroke-width="0.65" stroke-opacity="0.9" stroke-linejoin="round"/>
+    </svg>
+  </div>
+
+</div>
+
+<!-- ===== motion: spur gear prints layer-by-layer, holds, dissolves, loops.
+     Resting / frame-0 state = finished gear, so any still looks polished.
+     Same exact keyframe technique as logo-12: shared 4.6s loop IN PHASE,
+     0% and 100% = finished, stagger lives inside each layer's keyframes.
+     Layers un-print top-first (12–24%), clear, re-print bottom-up (30–84%). -->
+<style>
+@media (prefers-reduced-motion: reduce){
+  .ly,.flash,.plate{animation:none !important}
+  .ly{opacity:1 !important;transform:none !important}
+  .flash{stroke-opacity:0 !important}
+}
+
+.ly{ animation-duration:4.6s; animation-timing-function:cubic-bezier(.4,.72,.3,1); animation-iteration-count:infinite; }
+.ly0{ animation-name:lay0; }
+.ly1{ animation-name:lay1; }
+.ly2{ animation-name:lay2; }
+.ly3{ animation-name:lay3; }
+.ly4{ animation-name:lay4; }
+.ly5{ animation-name:lay5; }
+.ly6{ animation-name:lay6; }
+.ly7{ animation-name:lay7; }
+
+/* layer 0 = bottom (last to leave, first to return) … layer 7 = top face + teeth */
+@keyframes lay0{ 0%,21.8%{opacity:1;transform:translateY(0)} 27.8%,30%{opacity:0;transform:translateY(3.5px)} 40.6%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay1{ 0%,20.4%{opacity:1;transform:translateY(0)} 26.4%,36.2%{opacity:0;transform:translateY(3.5px)} 46.9%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay2{ 0%,19%{opacity:1;transform:translateY(0)} 25%,42.5%{opacity:0;transform:translateY(3.5px)} 53.1%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay3{ 0%,17.6%{opacity:1;transform:translateY(0)} 23.6%,48.8%{opacity:0;transform:translateY(3.5px)} 59.4%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay4{ 0%,16.2%{opacity:1;transform:translateY(0)} 22.2%,55%{opacity:0;transform:translateY(3.5px)} 65.6%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay5{ 0%,14.8%{opacity:1;transform:translateY(0)} 20.8%,61.2%{opacity:0;transform:translateY(3.5px)} 71.9%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay6{ 0%,13.4%{opacity:1;transform:translateY(0)} 19.4%,67.5%{opacity:0;transform:translateY(3.5px)} 78.1%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay7{ 0%,12%{opacity:1;transform:translateY(0)} 18%,73.8%{opacity:0;transform:translateY(3.5px)} 84.4%,100%{opacity:1;transform:translateY(0)} }
+
+/* flash glow blips on each layer's top face as it deposits */
+.ly .flash{ stroke-opacity:0; animation:4.6s linear infinite; }
+.ly0 .flash{ animation-name:blip0; }
+.ly1 .flash{ animation-name:blip1; }
+.ly2 .flash{ animation-name:blip2; }
+.ly3 .flash{ animation-name:blip3; }
+.ly4 .flash{ animation-name:blip4; }
+.ly5 .flash{ animation-name:blip5; }
+.ly6 .flash{ animation-name:blip6; }
+.ly7 .flash{ animation-name:blip7; }
+@keyframes blip0{ 0%,30%{stroke-opacity:0} 35%{stroke-opacity:.9} 44%{stroke-opacity:0} 100%{stroke-opacity:0} }
+@keyframes blip1{ 0%,36%{stroke-opacity:0} 41%{stroke-opacity:.9} 50%{stroke-opacity:0} 100%{stroke-opacity:0} }
+@keyframes blip2{ 0%,42%{stroke-opacity:0} 47%{stroke-opacity:.9} 56%{stroke-opacity:0} 100%{stroke-opacity:0} }
+@keyframes blip3{ 0%,48%{stroke-opacity:0} 53%{stroke-opacity:.9} 62%{stroke-opacity:0} 100%{stroke-opacity:0} }
+@keyframes blip4{ 0%,55%{stroke-opacity:0} 60%{stroke-opacity:.9} 69%{stroke-opacity:0} 100%{stroke-opacity:0} }
+@keyframes blip5{ 0%,61%{stroke-opacity:0} 66%{stroke-opacity:.9} 75%{stroke-opacity:0} 100%{stroke-opacity:0} }
+@keyframes blip6{ 0%,67%{stroke-opacity:0} 72%{stroke-opacity:.9} 81%{stroke-opacity:0} 100%{stroke-opacity:0} }
+@keyframes blip7{ 0%,74%{stroke-opacity:0} 79%{stroke-opacity:.9} 88%{stroke-opacity:0} 100%{stroke-opacity:0} }
+
+/* build-plate datum pulse while part is printing */
+.plate{ animation:plate 4.6s ease-in-out infinite; }
+@keyframes plate{
+  0%,12%,100% { opacity:1; }
+  24%,30%     { opacity:.72; }
+}
+</style>
+</body></html>
