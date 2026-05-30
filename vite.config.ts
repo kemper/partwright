@@ -1,6 +1,9 @@
 import { defineConfig, type Plugin, type Connect } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
 import { execSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { buildSitemapXml } from './src/seo/sitemap';
 
 // Set charset=utf-8 on .md and .txt files served from public/ during dev.
 // Prevents em-dashes and other UTF-8 chars from rendering as mojibake.
@@ -48,6 +51,28 @@ function absoluteUrls(): Plugin {
           /("url"\s*:\s*")(\/[^"]*)(")/g,
           (_, pre, path, post) => `${pre}${siteUrl}${path}${post}`
         );
+    },
+  };
+}
+
+// Generate dist/sitemap.xml at build time with absolute <loc> URLs derived
+// from SITE_URL (or CF_PAGES_URL), using the same precedence as absoluteUrls.
+// absoluteUrls is transformIndexHtml-only and can't touch a static file in
+// public/, so this is a separate closeBundle plugin. closeBundle runs AFTER
+// Vite copies public/ into dist, so writing here overwrites any stale copy —
+// which is why public/sitemap.xml has been removed (it would clobber this).
+function dynamicSitemap(): Plugin {
+  let outDir = 'dist';
+  return {
+    name: 'partwright-dynamic-sitemap',
+    apply: 'build',
+    configResolved(config) {
+      outDir = config.build.outDir;
+    },
+    closeBundle() {
+      const siteUrl = (process.env.SITE_URL || process.env.CF_PAGES_URL || '').replace(/\/$/, '');
+      const xml = buildSitemapXml(siteUrl);
+      writeFileSync(resolve(outDir, 'sitemap.xml'), xml, 'utf8');
     },
   };
 }
@@ -116,7 +141,7 @@ export default defineConfig({
   define: {
     __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
   },
-  plugins: [tailwindcss(), absoluteUrls(), markdownCharset(), catalogSnapshot()],
+  plugins: [tailwindcss(), absoluteUrls(), markdownCharset(), catalogSnapshot(), dynamicSitemap()],
   esbuild: {
     // .tsx files compile JSX via preact/jsx-runtime — keeps the bundle on
     // Preact without pulling in React. Vanilla .ts files in the rest of
@@ -138,11 +163,13 @@ export default defineConfig({
       'Cross-Origin-Embedder-Policy': 'require-corp',
       // Mirror the production CSP (public/_headers) so an accidental new
       // external call surfaces here in dev instead of slipping through to
-      // production. The ONLY intentional delta is in connect-src: dev also
-      // allows the localhost WebSocket that Vite uses for HMR/live-reload,
-      // which production has no equivalent of. Keep the host allowlist below
-      // in sync with public/_headers.
-      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:* https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://raw.githubusercontent.com; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
+      // production. connect-src allows `https:` + http://localhost / 127.0.0.1
+      // so a user-configured Custom (OpenAI-compatible) endpoint — e.g. a
+      // self-hosted llama.cpp server — works (matches _headers). The dev-only
+      // delta is the localhost WebSocket Vite uses for HMR/live-reload, which
+      // production has no equivalent of. Keep the host allowlist in sync with
+      // public/_headers.
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:* https: http://localhost:* http://127.0.0.1:* https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://raw.githubusercontent.com; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
     },
     fs: {
       // Relax strict fs access for WASM files in node_modules

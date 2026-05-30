@@ -1,7 +1,13 @@
+# connect-src below intentionally allows `https:` and http://localhost / 127.0.0.1
+# so a user-configured Custom (OpenAI-compatible) AI endpoint — e.g. a self-hosted
+# llama.cpp server — is reachable from the browser. The named hosts that follow are
+# the first-party cloud APIs + model CDN; they're subsumed by `https:` but kept as
+# documentation of expected traffic. Plain-HTTP LAN addresses still won't load on the
+# hosted HTTPS site (browser mixed-content rule) — only HTTPS endpoints or localhost.
 /*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://raw.githubusercontent.com; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' https: http://localhost:* http://127.0.0.1:* https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://raw.githubusercontent.com; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'
 
 /*.md
   Content-Type: text/markdown; charset=utf-8

@@ -152,6 +152,37 @@ test.describe('voxel studio', () => {
     expect(r.redone.voxelCount).toBe(3); // the whole stroke restored at once
   });
 
+  test('touch pointer events drive the studio (mobile path)', async ({ page }) => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      // A chunky centered cube so a tap at the canvas center reliably hits it.
+      await pw.run(`return api.voxels().fillBox([-3,-3,0],[3,3,6], '#cccccc');`);
+      pw.activateVoxelPaint();
+      pw.setVoxelTool('boxAdd');
+
+      const canvas = document.querySelector('canvas')!;
+      const rect = canvas.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const touch = (type: string, buttons: number) => new PointerEvent(type, {
+        pointerId: 1, pointerType: 'touch', isPrimary: true, button: 0, buttons,
+        clientX: cx, clientY: cy, bubbles: true, cancelable: true, composed: true,
+      });
+      // A real touch tap over the model — this is the path that was swallowed by
+      // the viewport's capture-phase OrbitControls suppressor before the fix.
+      canvas.dispatchEvent(touch('pointerdown', 1));
+      canvas.dispatchEvent(touch('pointerup', 0));
+
+      const panelText = document.getElementById('voxel-paint-panel')?.textContent ?? '';
+      return { panelText };
+    });
+    // The first box tap banked a corner — proving the touch pointerdown reached
+    // the studio handler (not eaten by the suppressor) and a face was hit.
+    expect(r.panelText).toContain('opposite corner');
+  });
+
   test('image-import voxel blob is editable: import → add → bake', async ({ page }) => {
     const r = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

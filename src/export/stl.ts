@@ -15,13 +15,23 @@ export function buildSTL(meshData: MeshData, customName?: string): BuiltExport {
   const buffer = new ArrayBuffer(bufferSize);
   const view = new DataView(buffer);
 
-  // Header (80 bytes) — include session name if available. The header must be
-  // plain ASCII: setUint8 truncates each code unit to one byte, so a multi-byte
-  // char (e.g. the em-dash getExportTitle puts between "name — label") would
-  // otherwise write garbage. Normalize dashes and drop other non-ASCII.
-  const header = getExportTitle()
+  // Header (80 bytes) — include session name if available, plus a Partwright
+  // attribution suffix when it fits. The header must be plain ASCII: setUint8
+  // truncates each code unit to one byte, so a multi-byte char (e.g. the
+  // em-dash getExportTitle puts between "name — label") would otherwise write
+  // garbage. Normalize dashes and drop other non-ASCII.
+  //
+  // CRITICAL: the header is fixed at 80 bytes and byte 80 holds the triangle
+  // count — the header must NEVER exceed 80 bytes or the count is corrupted.
+  // The attribution is only appended when the title + suffix still fits; the
+  // loop below caps at 80 as a final backstop regardless.
+  const title = getExportTitle()
     .replace(/[‒-―]/g, '-')
     .replace(/[^\x20-\x7E]/g, '?');
+  const ATTRIBUTION = 'Partwright partwrightstudio.com';
+  const header = (title.length + 3 + ATTRIBUTION.length <= 80)
+    ? `${title} - ${ATTRIBUTION}`
+    : title;
   for (let i = 0; i < Math.min(header.length, 80); i++) {
     view.setUint8(i, header.charCodeAt(i));
   }

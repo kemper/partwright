@@ -8,6 +8,51 @@ import { test, expect } from 'playwright/test';
 // run would error) — so these assertions are the real-WASM proof the mesher is
 // correct. Also exercises the image → voxel import through the DOM decode path.
 
+/** Hand-build a tiny binary MagicaVoxel .vox (MAIN > SIZE + XYZI, default
+ *  palette) so the .vox re-import test needs no fixture file. Mirrors the
+ *  byte layout in tests/unit/vox.test.ts. */
+function buildVoxBlob(): Buffer {
+  const size = { x: 2, y: 2, z: 1 };
+  const voxels = [
+    { x: 0, y: 0, z: 0, i: 1 },
+    { x: 1, y: 0, z: 0, i: 1 },
+    { x: 0, y: 1, z: 0, i: 1 },
+  ];
+
+  const sizeChunk = new Uint8Array(24);
+  const sdv = new DataView(sizeChunk.buffer);
+  sizeChunk.set([0x53, 0x49, 0x5a, 0x45]); // "SIZE"
+  sdv.setUint32(4, 12, true);
+  sdv.setUint32(12, size.x, true);
+  sdv.setUint32(16, size.y, true);
+  sdv.setUint32(20, size.z, true);
+
+  const xyziContent = 4 + voxels.length * 4;
+  const xyziChunk = new Uint8Array(12 + xyziContent);
+  const xdv = new DataView(xyziChunk.buffer);
+  xyziChunk.set([0x58, 0x59, 0x5a, 0x49]); // "XYZI"
+  xdv.setUint32(4, xyziContent, true);
+  xdv.setUint32(12, voxels.length, true);
+  voxels.forEach((v, k) => {
+    const off = 16 + k * 4;
+    xyziChunk[off] = v.x; xyziChunk[off + 1] = v.y; xyziChunk[off + 2] = v.z; xyziChunk[off + 3] = v.i;
+  });
+
+  const childrenBytes = sizeChunk.length + xyziChunk.length;
+  const mainChunk = new Uint8Array(12);
+  mainChunk.set([0x4d, 0x41, 0x49, 0x4e]); // "MAIN"
+  new DataView(mainChunk.buffer).setUint32(8, childrenBytes, true);
+
+  const header = new Uint8Array(8);
+  header.set([0x56, 0x4f, 0x58, 0x20]); // "VOX "
+  new DataView(header.buffer).setUint32(4, 150, true);
+
+  const out = new Uint8Array(header.length + mainChunk.length + childrenBytes);
+  let off = 0;
+  for (const chunk of [header, mainChunk, sizeChunk, xyziChunk]) { out.set(chunk, off); off += chunk.length; }
+  return Buffer.from(out);
+}
+
 test.describe('voxel engine', () => {
   test.beforeEach(async ({ page }) => {
     // Dismiss the product tour up front so its backdrop can't intercept the
@@ -59,6 +104,45 @@ test.describe('voxel engine', () => {
     await recent.click();
     await expect(page.getByText('Image → Voxel', { exact: true })).toBeVisible({ timeout: 5000 });
     await expect(page.getByText('Make a part from an image', { exact: true })).toHaveCount(0);
+  });
+
+  test('re-importing a .vox file from Recent Imports reopens it as a voxel session', async ({ page }) => {
+    // Reads { language, editor code } from the live partwright API in one hop.
+    const readState = () => page.evaluate(() => {
+      const pw = (window as unknown as { partwright: { getActiveLanguage(): string; getCode(): string } }).partwright;
+      return { lang: pw.getActiveLanguage(), code: pw.getCode() };
+    });
+
+    // Import a real binary .vox through the shared file input → voxel session.
+    await page.locator('#import-wrapper input[type="file"]').first()
+      .setInputFiles({ name: 'cube.vox', mimeType: 'application/octet-stream', buffer: buildVoxBlob() });
+
+    // It lands as a voxel session whose code rebuilds the grid via voxels.decode(...).
+    // Poll on the code (not the language): importCodePayload flips the engine
+    // language before it sets the editor buffer, so the code is the reliable
+    // "import finished" signal.
+    await expect.poll(async () => (await readState()).code, { timeout: 10_000 }).toContain('voxels.decode');
+    expect((await readState()).lang).toBe('voxel');
+
+    // Switch to a manifold-js buffer so the re-import has to switch the language
+    // BACK — proving the re-click does the full voxel-import flow, not a no-op.
+    await page.evaluate(() => (window as unknown as { partwright: { setActiveLanguage(l: string): Promise<void> } })
+      .partwright.setActiveLanguage('manifold-js'));
+    await expect.poll(async () => (await readState()).lang).toBe('manifold-js');
+
+    // Re-click the VOX entry in Recent Imports (no version saved yet, so no
+    // "keep current session?" confirm fires).
+    await page.locator('#btn-import').click();
+    const recent = page.locator('#import-recent-list button', { hasText: 'cube.vox' }).first();
+    await expect(recent).toBeVisible();
+    await expect(recent.getByText('VOX', { exact: true })).toBeVisible();
+    await recent.click();
+
+    // The regression: it switches BACK to the voxel language and rebuilds the grid
+    // via voxels.decode(...). Before the fix it stayed on manifold-js with the raw
+    // binary .vox bytes read as text and dumped into the editor as garbage.
+    await expect.poll(async () => (await readState()).code, { timeout: 10_000 }).toContain('voxels.decode');
+    expect((await readState()).lang).toBe('voxel');
   });
 
   test('switching to voxel renders a watertight, colored, manifold mesh', async ({ page }) => {
@@ -250,5 +334,48 @@ test.describe('voxel engine', () => {
     });
     expect(result.error).toBeFalsy();
     expect(result.isManifold).toBe(true);
+  });
+
+  test('exportVOXData round-trips a voxel model back through the parser', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`
+        const { voxels } = api;
+        const v = voxels();
+        v.fillBox([0,0,0],[2,0,0], '#ff0000'); // 3 red
+        v.set(0,0,1,'#00ff00');                // 1 green
+        return v;
+      `);
+      const data = await pw.exportVOXData();
+      // Decode the returned base64 and re-parse it with the production importer,
+      // proving the bytes we wrote are a valid, readable .vox file.
+      const bin = atob(data.base64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const { parseVox } = await import('/src/import/parsers/vox');
+      const grid = parseVox(bytes);
+      const colors = new Set<number>();
+      grid.forEach((_x: number, _y: number, _z: number, c: number) => colors.add(c));
+      return { data, size: grid.size, colors: [...colors].sort((a, b) => a - b) };
+    });
+
+    expect(result.data.error).toBeFalsy();
+    expect(result.data.filename).toMatch(/\.vox$/);
+    expect(result.data.mimeType).toBe('application/octet-stream');
+    expect(result.data.sizeBytes).toBeGreaterThan(0);
+    expect(result.size).toBe(4);
+    expect(result.colors).toEqual([0x00ff00, 0xff0000]);
+  });
+
+  test('exportVOXData reports a clear error outside a voxel session', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('manifold-js');
+      return await pw.exportVOXData();
+    });
+    expect(result.error).toMatch(/voxel/i);
   });
 });

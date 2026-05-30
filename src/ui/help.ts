@@ -222,11 +222,12 @@ export function createHelpPage(
       id: 'ai-browser',
       heading: 'AI assistant in the browser',
       body:
-        'Partwright includes a built-in AI assistant. It runs entirely from your browser: you choose a provider and (for cloud providers) paste your own API key, and every request goes directly from your browser to that provider — Partwright never sees the key or the conversation. Four providers are supported:' +
+        'Partwright includes a built-in AI assistant. It runs entirely from your browser: you choose a provider and (for cloud providers) paste your own API key, and every request goes directly from your browser to that provider — Partwright never sees the key or the conversation. Five providers are supported:' +
         '<ul class="list-disc list-inside mt-2 space-y-1 text-zinc-400">' +
         '<li><strong class="text-zinc-300">Anthropic</strong> — Claude (Haiku / Sonnet / Opus), with prompt caching. Keys look like <code class="text-emerald-400 bg-zinc-800 px-1 rounded">sk-ant-…</code>.</li>' +
         '<li><strong class="text-zinc-300">OpenAI</strong> — GPT and reasoning (o-series / gpt-5) models.</li>' +
         '<li><strong class="text-zinc-300">Google Gemini</strong> — Gemini models, including thinking models with a reasoning box.</li>' +
+        '<li><strong class="text-zinc-300">Custom (OpenAI-compatible)</strong> — Point at any self-hosted OpenAI-compatible endpoint (a <code>llama.cpp</code> server, vLLM, LM Studio, …) by setting its base URL and model. The API key is optional; turns are free at the API level.</li>' +
         '<li><strong class="text-zinc-300">Local (WebGPU)</strong> — Runs a model fully in your browser via WebLLM. No API key, no network traffic per turn; the weights download once into the browser cache (needs a WebGPU-capable browser).</li>' +
         '</ul><br>' +
         '<strong class="text-zinc-300">Connecting:</strong>' +
@@ -267,8 +268,8 @@ export function createHelpPage(
           '2. Build a standard 2x4 Lego brick (approximately 31.8mm x 15.8mm x 11.4mm with studs on top and hollow underside with tubes)\n' +
           '3. Save each major step as a version (e.g. v1 - base block, v2 - add studs, v3 - hollow underside with tubes)\n' +
           '4. Use assertions to verify each version is a valid manifold with maxComponents: 1\n' +
-          '5. Give me the gallery URL when done so I can review the versions</code></pre>' +
-          'The agent should read <code class="text-emerald-400 bg-zinc-800 px-1 rounded">ai.md</code>, create a named session, iterate through versions, and hand back a gallery link for review.';
+          '5. Give me a share link (partwright.getShareLink()) when done so I can open the design</code></pre>' +
+          'The agent should read <code class="text-emerald-400 bg-zinc-800 px-1 rounded">ai.md</code>, create a named session, iterate through versions, and hand back a read-only share link for review.';
       })(),
     },
     {

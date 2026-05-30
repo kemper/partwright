@@ -1,6 +1,7 @@
 import { partwrightMarkSvg } from './brand';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
 import { downloadBlob } from '../export/download';
+import { getUnits, setUnits, type UnitSystem } from '../geometry/units';
 import {
   listExports,
   clearExports,
@@ -20,6 +21,9 @@ export interface ToolbarCallbacks {
   onExportSTL: () => void;
   onExportOBJ: () => void;
   onExport3MF: () => void;
+  /** Voxel-only — silently hidden from the menu unless the active language is
+   *  'voxel' (gated at menu-open time, like {@link onExportSTEP}). */
+  onExportVOX: () => void;
   /** BREP-only — silently hidden from the menu when the active language is
    *  not 'replicad'. Toolbar pings `getActiveLanguage` at menu-open time to
    *  decide visibility. */
@@ -477,6 +481,45 @@ export function createToolbar(
   // Section: 3D model formats
   dropdown.appendChild(createSectionHeader('3D model'));
 
+  // Units selector — declares what the model's numbers mean (metadata only,
+  // no coordinate transform). Drives export filenames + the 3MF unit
+  // attribute, and the unitless-export confirmation. Default stays 'unitless'.
+  const unitsRow = document.createElement('div');
+  unitsRow.className = 'flex items-center justify-between gap-2 px-3 py-1.5';
+  const unitsLabel = document.createElement('label');
+  unitsLabel.className = 'text-xs text-zinc-400';
+  unitsLabel.textContent = 'Units';
+  unitsLabel.htmlFor = 'export-units-select';
+  const unitsSelect = document.createElement('select');
+  unitsSelect.id = 'export-units-select';
+  unitsSelect.className = 'text-xs bg-zinc-900 border border-zinc-600 rounded px-2 py-1 text-zinc-200 focus:outline-none focus:border-blue-500';
+  unitsSelect.title = 'Declares what the model dimensions mean. Affects export metadata only — never scales geometry.';
+  const UNIT_LABELS: Record<UnitSystem, string> = {
+    mm: 'Millimeters (mm)',
+    cm: 'Centimeters (cm)',
+    in: 'Inches (in)',
+    unitless: 'Unitless',
+  };
+  for (const u of ['mm', 'cm', 'in', 'unitless'] as const) {
+    const opt = document.createElement('option');
+    opt.value = u;
+    opt.textContent = UNIT_LABELS[u];
+    unitsSelect.appendChild(opt);
+  }
+  // Reflect the persisted value, and refresh on each menu open (below) in case
+  // the console API changed it.
+  unitsSelect.value = getUnits();
+  unitsSelect.addEventListener('change', () => {
+    setUnits(unitsSelect.value as UnitSystem);
+  });
+  // Stop clicks on the select from bubbling to the document click-outside
+  // handler that closes the dropdown.
+  unitsRow.addEventListener('click', (e) => e.stopPropagation());
+  unitsRow.appendChild(unitsLabel);
+  unitsRow.appendChild(unitsSelect);
+  dropdown.appendChild(unitsRow);
+  dropdown.appendChild(createDivider());
+
   const threemfOpt = createDescribedItem(
     '3MF',
     'Geometry + color. Native format for Bambu Studio multi-color prints.',
@@ -528,11 +571,23 @@ export function createToolbar(
     callbacks.onExportSTEP();
   });
 
+  // VOX — voxel-only; gated in the open-menu handler like STEP. Round-trips
+  // through our .vox importer and opens in MagicaVoxel / Goxel.
+  const voxOpt = createDescribedItem(
+    'VOX',
+    'MagicaVoxel voxel grid — palette + cells, opens in MagicaVoxel / Goxel. Voxel sessions only.',
+  );
+  voxOpt.addEventListener('click', () => {
+    dropdown.classList.add('hidden');
+    callbacks.onExportVOX();
+  });
+
   dropdown.appendChild(threemfOpt);
   dropdown.appendChild(objOpt);
   dropdown.appendChild(stlOpt);
   dropdown.appendChild(glbOpt);
   dropdown.appendChild(stepOpt);
+  dropdown.appendChild(voxOpt);
 
   // Section: project / source — for sharing between users or working with the code directly
   dropdown.appendChild(createDivider());
@@ -644,10 +699,13 @@ export function createToolbar(
   btnExport.addEventListener('click', () => {
     // Refresh relative timestamps each time the dropdown opens.
     renderRecent();
-    // STEP is BREP-only — show/hide based on the language toggle's current
-    // state. Putting this on open (rather than wiring a setter) keeps the
-    // menu logic local; a language switch closes the menu first anyway.
+    // STEP is BREP-only and VOX is voxel-only — show/hide based on the language
+    // toggle's current state. Putting this on open (rather than wiring a setter)
+    // keeps the menu logic local; a language switch closes the menu first anyway.
     stepOpt.classList.toggle('hidden', _currentLang !== 'replicad');
+    voxOpt.classList.toggle('hidden', _currentLang !== 'voxel');
+    // Reflect the current unit (the console API can change it out-of-band).
+    unitsSelect.value = getUnits();
     dropdown.classList.toggle('hidden');
   });
 

@@ -132,7 +132,7 @@ const DB_NAME = 'partwright';
 const LEGACY_DB_NAME = 'mainifold';
 const LEGACY_MIGRATION_KEY = 'partwright-migrated-mainifold-db';
 const PARTS_MIGRATION_KEY = 'partwright-migrated-parts';
-const DB_VERSION = 6;
+const DB_VERSION = 8;
 
 /** Opens the partwright IndexedDB. Exposed so the AI subsystem can attach
  *  its own stores (`aiKeys`, `aiChats`) without duplicating the connection. */
@@ -210,6 +210,27 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('drafts')) {
         const store = db.createObjectStore('drafts', { keyPath: 'id' });
         store.createIndex('sessionId', 'sessionId', { unique: false });
+      }
+      // v7: source-image store for relief imports. One row per relief session
+      // holds the original picked image/SVG blob so the import wizard can be
+      // reopened (Relief Studio "Edit image", or the Import → relief entry)
+      // pre-loaded with the source — no re-upload needed. Keyed by sessionId so
+      // the session-delete cascade can drop it with a direct key delete.
+      if (!db.objectStoreNames.contains('reliefSources')) {
+        db.createObjectStore('reliefSources', { keyPath: 'sessionId' });
+      }
+      // v8: persisted recent-imports / recent-exports inboxes. Each holds the
+      // last N files the user imported / exported (with the underlying Blob) so
+      // the toolbar's Recent lists survive a page refresh. The newest-first
+      // order and the 10-entry cap are enforced by the in-memory ring buffers
+      // (src/import/importInbox.ts, src/export/exportInbox.ts) — these stores
+      // just mirror each mutation. Keyed by the entry id so a dedupe/overflow
+      // eviction maps to a direct key delete.
+      if (!db.objectStoreNames.contains('importInbox')) {
+        db.createObjectStore('importInbox', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('exportInbox')) {
+        db.createObjectStore('exportInbox', { keyPath: 'id' });
       }
     };
     req.onsuccess = () => {
@@ -547,8 +568,13 @@ export async function deleteSession(id: string): Promise<void> {
   // NotFoundError when the upgrade hasn't run yet.
   const stores = ['sessions', 'versions', 'notes', 'parts', 'aiChats'];
   if (db.objectStoreNames.contains('drafts')) stores.push('drafts');
+  // `reliefSources` only exists from v7 — guard like `drafts` above.
+  if (db.objectStoreNames.contains('reliefSources')) stores.push('reliefSources');
   const txn = db.transaction(stores, 'readwrite');
   txn.objectStore('sessions').delete(id);
+  // The relief source blob is keyed by sessionId, so a direct key delete clears
+  // it (no index walk needed). No-op for non-relief sessions.
+  if (db.objectStoreNames.contains('reliefSources')) txn.objectStore('reliefSources').delete(id);
   // Delete all versions, notes, parts, AI chat messages, and editor drafts
   // belonging to this session. Chats are keyed by id but indexed by sessionId,
   // so they're swept here too — otherwise the transcript is orphaned in
@@ -882,6 +908,7 @@ export async function clearAllData(): Promise<void> {
   const db = await openDB();
   const stores = ['sessions', 'versions', 'notes', 'parts', 'aiChats'];
   if (db.objectStoreNames.contains('drafts')) stores.push('drafts');
+  if (db.objectStoreNames.contains('reliefSources')) stores.push('reliefSources');
   const txn = db.transaction(stores, 'readwrite');
   txn.objectStore('sessions').clear();
   txn.objectStore('versions').clear();
@@ -892,6 +919,7 @@ export async function clearAllData(): Promise<void> {
   // left for the Uninstall modal's per-category wipe.
   txn.objectStore('aiChats').clear();
   if (db.objectStoreNames.contains('drafts')) txn.objectStore('drafts').clear();
+  if (db.objectStoreNames.contains('reliefSources')) txn.objectStore('reliefSources').clear();
   await txComplete(txn);
 }
 
@@ -925,4 +953,89 @@ export async function listDrafts(sessionId: string): Promise<SessionDraft[]> {
   const store = await tx('drafts', 'readonly');
   const index = store.index('sessionId');
   return reqToPromise(index.getAll(IDBKeyRange.only(sessionId))) as Promise<SessionDraft[]>;
+}
+
+// === Relief source images (per session) ===
+
+/** The original image/SVG a relief session was generated from, kept so the
+ *  import wizard can be reopened pre-loaded with the source (no re-upload).
+ *  Keyed by sessionId. Cascade-deleted in {@link deleteSession}. */
+export interface ReliefSourceRecord {
+  sessionId: string;
+  blob: Blob;
+  filename: string;
+  /** True when the source was an SVG (the wizard routes SVGs differently). */
+  isSvg: boolean;
+  timestamp: number;
+}
+
+export async function getReliefSourceRecord(sessionId: string): Promise<ReliefSourceRecord | null> {
+  const db = await openDB();
+  // Store only exists from v7 — older connections shouldn't throw.
+  if (!db.objectStoreNames.contains('reliefSources')) return null;
+  const store = db.transaction('reliefSources', 'readonly').objectStore('reliefSources');
+  return (await reqToPromise(store.get(sessionId)) as ReliefSourceRecord | undefined) ?? null;
+}
+
+export async function setReliefSourceRecord(record: ReliefSourceRecord): Promise<void> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains('reliefSources')) return;
+  const txn = db.transaction('reliefSources', 'readwrite');
+  txn.objectStore('reliefSources').put(record);
+  await txComplete(txn);
+}
+
+export async function deleteReliefSourceRecord(sessionId: string): Promise<void> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains('reliefSources')) return;
+  const txn = db.transaction('reliefSources', 'readwrite');
+  txn.objectStore('reliefSources').delete(sessionId);
+  await txComplete(txn);
+}
+
+// === Recent-imports / recent-exports inboxes (persisted ring buffers) ===
+//
+// Storage primitives for the import/export inboxes. The ring-buffer semantics
+// (dedupe, newest-first ordering, 10-entry cap) live in the inbox modules;
+// db.ts only mirrors the resulting mutations to IndexedDB so the lists survive
+// a refresh. Records are stored by their `id` and carry a Blob (structured-
+// clone handles it). Stores only exist from v8, so every accessor guards on
+// `objectStoreNames.contains` like the v7 reliefSources accessors above.
+
+export type InboxStore = 'importInbox' | 'exportInbox';
+
+/** All persisted entries for an inbox, used to rehydrate the in-memory buffer
+ *  on boot. Order isn't guaranteed by IndexedDB; the caller re-sorts. */
+export async function getInboxRecords<T>(store: InboxStore): Promise<T[]> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains(store)) return [];
+  const txn = db.transaction(store, 'readonly');
+  const records = await reqToPromise(txn.objectStore(store).getAll()) as T[];
+  await txComplete(txn);
+  return records;
+}
+
+/** Apply one ring-buffer mutation in a single transaction: drop the ids evicted
+ *  by a dedupe or overflow, then put the freshly-added entry. */
+export async function applyInboxMutation<T extends { id: string }>(
+  store: InboxStore,
+  put: T | null,
+  deleteIds: string[],
+): Promise<void> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains(store)) return;
+  const txn = db.transaction(store, 'readwrite');
+  const os = txn.objectStore(store);
+  for (const id of deleteIds) os.delete(id);
+  if (put) os.put(put);
+  await txComplete(txn);
+}
+
+/** Empty an inbox store (backs the toolbar's "Clear" action). */
+export async function clearInboxStore(store: InboxStore): Promise<void> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains(store)) return;
+  const txn = db.transaction(store, 'readwrite');
+  txn.objectStore(store).clear();
+  await txComplete(txn);
 }

@@ -18,6 +18,9 @@ test.describe('feedback + a11y', () => {
   test('exporting surfaces a success toast', async ({ page }) => {
     await openEditor(page);
     await page.click('#btn-export');
+    // Pick a real unit first so the unitless safety-confirmation modal doesn't
+    // intercept the export — this test asserts the success-toast live region.
+    await page.locator('#export-units-select').selectOption('mm');
     await page.locator('#export-dropdown').getByText('STL', { exact: true }).click();
     await expect(
       page.locator('div[role="status"]').filter({ hasText: /Exported .*\.stl/ }),

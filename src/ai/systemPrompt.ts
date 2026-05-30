@@ -329,6 +329,10 @@ export function toggleSuffix(toggles: ChatToggles): string {
     `- Session notes: ${onOff(toggles.scope.sessionNotes)}`,
     `- Auto-render (renderView / renderViews): ${onOff(toggles.vision.views)}`,
   ];
+  if (toggles.autoResume) {
+    lines.push('');
+    lines.push('**Auto-continue is ON.** Keep working until the user\'s request is fully complete. Do NOT end your turn with a plain "all done" message and wait for the user — either call a tool to make progress, or, when the task is genuinely finished and verified, call the `finish` tool (the only clean way to end your turn). If you stop without calling `finish`, you will be automatically resumed to continue, so stopping early just wastes a round-trip. This is bounded by the iteration and spend caps above, so don\'t pad with busy-work — call `finish` as soon as the task is actually done.');
+  }
   if (offGuidance.length > 0) {
     lines.push('');
     lines.push('Reminders for the capabilities that are OFF:');

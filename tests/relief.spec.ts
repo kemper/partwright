@@ -654,4 +654,129 @@ test.describe('Relief Studio', () => {
     // Create button re-enables so the user can fix knobs and retry.
     await expect(createBtn).toBeEnabled();
   });
+
+  test('remembers the relief source image and reopens the wizard pre-loaded', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    // Build a real gradient PNG in-page so the relief sampler has valid pixels.
+    const dataUrl = await page.evaluate(() => {
+      const c = document.createElement('canvas');
+      c.width = 64; c.height = 48;
+      const x = c.getContext('2d')!;
+      for (let i = 0; i < 64; i++) { const v = Math.floor((i / 63) * 255); x.fillStyle = `rgb(${v},${v},${v})`; x.fillRect(i, 0, 1, 48); }
+      return c.toDataURL('image/png');
+    });
+    const buffer = Buffer.from(dataUrl.split(',')[1], 'base64');
+
+    // Drive the real modal so pickedFile is set and the source gets persisted.
+    await page.locator('#btn-import').click();
+    await page.getByText('Image → keychain / tile / relief…').click();
+    await expect(page.getByText('Make a part from an image', { exact: true })).toBeVisible();
+    await page.locator('input[type="file"][accept*="image"]').setInputFiles({ name: 'remembered.png', mimeType: 'image/png', buffer });
+    await expect(page.locator('text=/Preview · \\d+×\\d+ · \\d+ clusters/').first()).toBeVisible({ timeout: 5000 });
+    await page.getByRole('button', { name: 'Create tile' }).click();
+    // The studio opens only AFTER the source is persisted (commitGeneratedRelief
+    // saves the source, then shows the studio), so this also gates the read.
+    await expect(page.locator('#relief-studio')).toBeVisible({ timeout: 15_000 });
+    await expect.poll(
+      async () => page.evaluate(() => (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } | null } }).partwright.getGeometryData()?.triangleCount ?? 0),
+      { timeout: 15_000 },
+    ).toBeGreaterThan(0);
+
+    // The source blob is now persisted in IndexedDB, keyed by the session.
+    const stored = await page.evaluate(async () => {
+      const sm = await import('/src/storage/sessionManager.ts');
+      const rs = await import('/src/relief/reliefSource.ts');
+      const sid = sm.getState().session?.id;
+      if (!sid) return { sid: null as string | null, name: null as string | null, size: 0 };
+      const src = await rs.getReliefSource(sid);
+      return { sid, name: src?.file.name ?? null, size: src?.file.size ?? 0, isSvg: src?.isSvg ?? null };
+    });
+    expect(stored.sid).toBeTruthy();
+    expect(stored.name).toBe('remembered.png');
+    expect(stored.size).toBeGreaterThan(0);
+    expect(stored.isSvg).toBe(false);
+
+    // "Edit image" in the Relief Studio reopens the wizard PRE-LOADED — the
+    // preview stat appears with no re-pick, and the source label shows the name.
+    await page.getByRole('button', { name: /Edit image/ }).click();
+    await expect(page.getByText('Make a part from an image', { exact: true })).toBeVisible();
+    await expect(page.locator('text=/Preview · \\d+×\\d+ · \\d+ clusters/').first()).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(/remembered — \d+×\d+/)).toBeVisible();
+    // Create stays enabled without any new upload — proving the image is loaded.
+    await expect(page.getByRole('button', { name: /Create/ })).toBeEnabled();
+  });
+
+  test('relief-source store CRUD + cascade delete on session removal', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const res = await page.evaluate(async () => {
+      const rs = await import('/src/relief/reliefSource.ts');
+      const db = await import('/src/storage/db.ts');
+      const sid = `relief-src-test-${Date.now()}`;
+      const blob = new Blob([new Uint8Array([1, 2, 3, 4, 5])], { type: 'image/png' });
+      await rs.saveReliefSource(sid, blob, 'pic.png', false);
+      const got = await rs.getReliefSource(sid);
+      const afterSave = { name: got?.file.name ?? null, size: got?.file.size ?? 0, isSvg: got?.isSvg ?? null };
+      // Cascade: deleting the session must drop the stored source.
+      await db.deleteSession(sid);
+      const afterDelete = await rs.getReliefSource(sid);
+      return { afterSave, afterDeleteIsNull: afterDelete === null };
+    });
+    expect(res.afterSave.name).toBe('pic.png');
+    expect(res.afterSave.size).toBe(5);
+    expect(res.afterSave.isSvg).toBe(false);
+    expect(res.afterDeleteIsNull).toBe(true);
+  });
+
+  test('voxel import modal swaps the source image while keeping settings', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    // Two solid PNGs so the swap is observable; both built in-page for validity.
+    const [smallUrl, bigUrl] = await page.evaluate(() => {
+      const make = (size: number, color: string) => {
+        const c = document.createElement('canvas');
+        c.width = size; c.height = size;
+        const x = c.getContext('2d')!;
+        x.fillStyle = color;
+        x.fillRect(0, 0, size, size);
+        return c.toDataURL('image/png');
+      };
+      return [make(8, '#00ff00'), make(32, '#ff0000')];
+    });
+    const smallPng = Buffer.from(smallUrl.split(',')[1], 'base64');
+    const bigBuf = Buffer.from(bigUrl.split(',')[1], 'base64');
+
+    await page.locator('#btn-import').click();
+    await page.getByText('Image → voxel…').click();
+    // The first image is provided by the host (toolbar picker) before the modal
+    // opens — set it on the toolbar's single import file input.
+    await page.locator('#import-wrapper input[type="file"]').setInputFiles({ name: 'small.png', mimeType: 'image/png', buffer: smallPng });
+    const dialog = page.getByRole('dialog');
+    await expect(page.getByText('Image → Voxel', { exact: true })).toBeVisible();
+
+    // Swap the source in-modal. The "Choose a different image…" button triggers
+    // a hidden file input scoped inside the dialog — set files on it directly.
+    await expect(dialog.getByRole('button', { name: 'Choose a different image…' })).toBeVisible();
+    await dialog.locator('input[type="file"]').setInputFiles({ name: 'big.png', mimeType: 'image/png', buffer: bigBuf });
+
+    // Filename caption updates to the swapped image, and the import builds from it.
+    await expect(dialog.getByText('big.png')).toBeVisible({ timeout: 5000 });
+    await dialog.getByRole('button', { name: 'Import' }).click();
+
+    // A voxel session is created from the swapped image (geometry present) and
+    // the session is named after big.png.
+    await expect.poll(
+      async () => page.evaluate(() => (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } | null } }).partwright.getGeometryData()?.triangleCount ?? 0),
+      { timeout: 15_000 },
+    ).toBeGreaterThan(0);
+    const name = await page.evaluate(async () => {
+      const sm = await import('/src/storage/sessionManager.ts');
+      return sm.getState().session?.name ?? null;
+    });
+    expect(name).toBe('big');
+  });
 });

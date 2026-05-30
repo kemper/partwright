@@ -123,6 +123,10 @@ export function pendingBoxCorner(): [number, number, number] | null {
   return boxCorner ? [...boxCorner] : null;
 }
 
+/** The live edited grid, or null when the studio isn't active. Lets callers
+ *  (e.g. `.vox` export) capture unbaked edits without re-running the code. */
+export function getGrid(): VoxelGrid | null { return run?.grid ?? null; }
+
 // ── Stroke transactions ────────────────────────────────────────────────────
 // A click-drag stroke (or a programmatic begin/apply…/end) collapses into a
 // single undo step: snapshot once at begin, mutate in place per sample, push
@@ -154,9 +158,9 @@ export function endStroke(): void {
 /** Activate the studio on the given code. Runs the code locally to obtain the
  *  grid + provenance, attaches a click handler, and pushes the meshed grid
  *  through `onMeshUpdate`. Returns null on success or an error string. */
-export function activate(code: string, callbacks: VoxelPaintCallbacks): string | null {
+export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOverrides?: Record<string, unknown>): string | null {
   if (active) deactivate();
-  const r = runVoxelForPaint(code);
+  const r = runVoxelForPaint(code, paramOverrides);
   if (!r.ok) return r.error;
   // Smooth surfacing moves vertices off the voxel grid, so a clicked
   // triangle's coords no longer map cleanly to a single source voxel. Refuse
@@ -370,8 +374,8 @@ function sameVoxel(a: [number, number, number] | null, b: [number, number, numbe
 }
 
 // Pointer Events (not mouse) so click-drag strokes work for mouse, touch, and
-// stylus alike (per the project's mobile-drag guideline). The active drag
-// pointer is captured so moves keep flowing even if it leaves the canvas.
+// stylus alike. The active drag pointer is captured so moves keep flowing even
+// if it leaves the canvas.
 let capturedPointerId: number | null = null;
 
 function onPointerDown(event: PointerEvent): void {
@@ -413,10 +417,16 @@ function onPointerUp(): void {
 
 function attachPointerHandler(): void {
   const canvas = getRenderer().domElement;
-  canvas.addEventListener('pointerdown', onPointerDown);
-  canvas.addEventListener('pointermove', onPointerMove);
-  // End the stroke on release even if the pointer left the canvas first.
-  window.addEventListener('pointerup', onPointerUp);
+  // pointerdown + pointermove on the CONTAINER in capture phase so they run
+  // before the viewport's capture-phase OrbitControls suppressor, which calls
+  // stopImmediatePropagation on the canvas for model hits (that's what swallows
+  // a canvas-level pointerdown — the bug that broke touch/pointer painting).
+  // pointerup on window (capture) so a release is never missed even when the
+  // suppressor or pointer-capture retargets the event. See paintMode.ts.
+  const container = canvas.parentElement ?? canvas;
+  container.addEventListener('pointerdown', onPointerDown, { capture: true });
+  container.addEventListener('pointermove', onPointerMove, { capture: true });
+  window.addEventListener('pointerup', onPointerUp, { capture: true });
   canvas.style.cursor = 'crosshair';
   canvas.style.touchAction = 'none'; // claim the gesture so touch-drag paints
   // Veto OrbitControls on primary-button hits over the model so editing
@@ -429,9 +439,10 @@ function attachPointerHandler(): void {
 
 function detachPointerHandler(): void {
   const canvas = getRenderer().domElement;
-  canvas.removeEventListener('pointerdown', onPointerDown);
-  canvas.removeEventListener('pointermove', onPointerMove);
-  window.removeEventListener('pointerup', onPointerUp);
+  const container = canvas.parentElement ?? canvas;
+  container.removeEventListener('pointerdown', onPointerDown, { capture: true } as EventListenerOptions);
+  container.removeEventListener('pointermove', onPointerMove, { capture: true } as EventListenerOptions);
+  window.removeEventListener('pointerup', onPointerUp, { capture: true } as EventListenerOptions);
   canvas.style.cursor = '';
   canvas.style.touchAction = '';
   if (capturedPointerId !== null) {

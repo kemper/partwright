@@ -155,6 +155,11 @@ What BREP **doesn't** do:
 
 ## The shape API
 
+> **Customizer:** `api.params({...})` is available in BREP-language sessions too,
+> identical to manifold-js — declare tweakable dimensions at the top (e.g.
+> `const p = api.params({ r: { type: 'number', default: 10, min: 2, max: 40 } });`)
+> and the live Parameters panel drives them. See the Customizer section in `/ai.md`.
+
 ```js
 const { BREP } = api;
 
