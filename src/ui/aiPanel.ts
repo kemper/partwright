@@ -17,6 +17,8 @@ import { showAiKeyModal } from './aiKeyModal';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
+import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
+import { starterChipIdeas } from '../ideas/ideas';
 import { showAiLocalModal } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { showCompactConfirmModal } from './aiCompactModal';
@@ -301,6 +303,18 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
 export function toggleAiPanel(): void {
   if (state.open) hideDrawer();
   else showDrawer();
+}
+
+/** Open the AI panel (if closed) and drop `text` into the chat input without
+ *  sending it — the user reads/tweaks it and hits send themselves. Used by the
+ *  prompt library and the /ideas page so picking a prompt lands here. */
+export function prefillAiInput(text: string): void {
+  if (!state.open) showDrawer(false);
+  if (!inputEl) return;
+  inputEl.value = text;
+  inputEl.focus();
+  const end = text.length;
+  inputEl.setSelectionRange(end, end);
 }
 
 /** Re-render everything that an AI-settings change (provider / model / key)
@@ -630,6 +644,13 @@ function buildDrawer(): void {
   clearBtn.title = 'Clear the chat history for the current session. The conversation is removed from your browser; saved versions and notes are untouched.';
   clearBtn.addEventListener('click', () => { void clearCurrentChat(); });
   header.appendChild(clearBtn);
+
+  const promptsBtn = createIconButton('Prompt library', '💡');
+  promptsBtn.title = 'Prompt library — example prompts to try. Pick one to drop it into the chat box (you can edit it before sending).';
+  promptsBtn.addEventListener('click', () => {
+    showAiPromptLibraryModal({ onSelect: (idea) => prefillAiInput(idea.prompt ?? '') });
+  });
+  header.appendChild(promptsBtn);
 
   const diagBtn = createIconButton('AI Call Log', '🩺');
   diagBtn.title = 'AI Call Log — recent provider API calls: request shape, stop reason, token usage, full error messages. Open this when a turn ends with a confusing status.';
@@ -1561,6 +1582,48 @@ function formatDuration(ms: number): string {
 
 // === Transcript rendering ===
 
+/** Empty-state shown when a chat has no messages yet. Beyond the one-line
+ *  hint, it surfaces a few tappable starter-prompt chips (and a link to the
+ *  full prompt library) so a user who doesn't know what to ask for can get
+ *  going in one click — populate, don't send. */
+function renderEmptyState(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex-1 flex flex-col items-center justify-center gap-3 text-center px-6';
+
+  const hint = document.createElement('p');
+  hint.className = 'text-zinc-500 text-xs';
+  hint.textContent = state.sessionId === GLOBAL_CHAT_BUCKET
+    ? 'Open a session and ask the AI to model something — or start with one of these:'
+    : 'Ask the AI to model, modify, or describe this session — or start with one of these:';
+  wrap.appendChild(hint);
+
+  const chips = document.createElement('div');
+  chips.className = 'flex flex-wrap items-center justify-center gap-1.5';
+  for (const idea of starterChipIdeas(4)) {
+    chips.appendChild(buildPromptChip(`${idea.emoji} ${idea.title}`, idea.title, () => {
+      prefillAiInput(idea.prompt ?? '');
+    }));
+  }
+  // "More…" opens the full prompt library.
+  chips.appendChild(buildPromptChip('More ideas…', 'Browse the prompt library', () => {
+    showAiPromptLibraryModal({ onSelect: (idea) => prefillAiInput(idea.prompt ?? '') });
+  }));
+  wrap.appendChild(chips);
+
+  return wrap;
+}
+
+/** A small pill button used in the empty-state suggestion row. */
+function buildPromptChip(label: string, title: string, onClick: () => void): HTMLButtonElement {
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = 'px-2.5 py-1 rounded-full text-[11px] text-zinc-300 bg-zinc-800 border border-zinc-700 hover:border-zinc-500 hover:text-zinc-100 transition-colors';
+  chip.textContent = label;
+  chip.title = title;
+  chip.addEventListener('click', onClick);
+  return chip;
+}
+
 function renderTranscript(): void {
   if (!transcriptEl) return;
   // Measure before replaceChildren — clearing children clamps scrollTop, so
@@ -1570,12 +1633,7 @@ function renderTranscript(): void {
   const hasHistory = state.history.length > 0;
   const hasQueue = state.queuedBlocks.length > 0;
   if (!hasHistory && !hasQueue) {
-    const empty = document.createElement('div');
-    empty.className = 'flex-1 flex items-center justify-center text-zinc-600 text-xs text-center px-6';
-    empty.textContent = state.sessionId === GLOBAL_CHAT_BUCKET
-      ? 'Open a session and ask the AI to model something. Try: "Build a coffee mug, 80mm tall."'
-      : 'Ask the AI to model, modify, or describe this session.';
-    transcriptEl.appendChild(empty);
+    transcriptEl.appendChild(renderEmptyState());
     return;
   }
   for (const msg of state.history) {
