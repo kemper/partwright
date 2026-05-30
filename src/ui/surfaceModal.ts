@@ -83,7 +83,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   const span = modelSpan(api);
   const painted = (() => { try { return api.modelHasColor(); } catch { return false; } })();
 
-  const backdrop = el('div', 'fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-3');
+  // Right-aligned, matching the Paint / Relief panels (which dock to the right
+  // edge) rather than floating dead-center over the viewport.
+  const backdrop = el('div', 'fixed inset-0 z-[60] bg-black/60 flex items-center justify-end p-3');
   const panel = el('div', 'bg-zinc-900 text-zinc-100 rounded-lg border border-zinc-700 shadow-xl w-[min(94vw,440px)] max-h-[90vh] overflow-auto p-5');
   backdrop.append(panel);
 
@@ -193,19 +195,18 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   if (painted) panel.append(colorRow);
   panel.append(status);
 
-  // Footer: Cancel | Preview | Apply.
+  // Footer: Cancel | Apply. (Preview is automatic — it updates live as controls
+  // change, so there's no explicit Preview button.)
   const footer = el('div', 'flex justify-end gap-2 mt-2');
   const cancelBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs', 'Cancel');
-  const previewBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-100 text-xs', 'Preview');
   const applyBtn = el('button', 'px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium', 'Apply');
-  footer.append(cancelBtn, previewBtn, applyBtn);
+  footer.append(cancelBtn, applyBtn);
   panel.append(footer);
 
   const close = () => { clearPreviewIfDirty(); backdrop.remove(); openModal = null; };
   closeBtn.addEventListener('click', close);
   cancelBtn.addEventListener('click', close);
   backdrop.addEventListener('click', e => { if (e.target === backdrop) close(); });
-  previewBtn.addEventListener('click', () => { if (previewTimer !== undefined) clearTimeout(previewTimer); runPreview(); });
 
   applyBtn.addEventListener('click', async () => {
     // The preview swapped the displayed mesh; clear it so the apply re-runs from
@@ -225,15 +226,6 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         status.textContent = `Error: ${err}`;
         applyBtn.disabled = false;
         applyBtn.textContent = prev;
-        return;
-      }
-      const dropped = (result as { colorsDropped?: number })?.colorsDropped ?? 0;
-      if (dropped > 0) {
-        // Apply succeeded but some regions couldn't be carried; tell the user
-        // rather than silently losing paint.
-        status.textContent = `Applied. ${dropped} color region(s) couldn't be preserved.`;
-        applyBtn.textContent = 'Done';
-        window.setTimeout(close, 1400);
         return;
       }
       close();

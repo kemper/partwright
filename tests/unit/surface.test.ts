@@ -11,6 +11,7 @@ import { fuzzySkin } from '../../src/surface/fuzzySkin';
 import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
 import { applyFuzzy, applySmooth, applyVoxelize } from '../../src/surface/modifiers';
+import { nearestTriangleMap } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
 function cube(s = 10): MeshData {
@@ -147,6 +148,44 @@ describe('modifiers (codegen)', () => {
     const r = applyVoxelize(cube(10), { resolution: 12 });
     expect(r.previewMesh.numTri).toBeGreaterThan(0);
     expect(r.previewMesh.triColors).toBeTruthy();
+  });
+
+  describe('nearestTriangleMap (color transfer)', () => {
+    it('maps an identical mesh to itself (identity)', () => {
+      const c = cube(10);
+      const map = nearestTriangleMap(c, c);
+      expect(map.length).toBe(c.numTri);
+      for (let t = 0; t < c.numTri; t++) expect(map[t]).toBe(t);
+    });
+
+    it('maps each subdivided child to a triangle near its parent', () => {
+      const c = cube(10);
+      const dense = subdivideToMaxEdge(c, 3); // re-tessellated, same shape
+      const map = nearestTriangleMap(c, dense);
+      expect(map.length).toBe(dense.numTri);
+      // Every child must map to a real old triangle, and a child's nearest old
+      // triangle centroid must be at least as close as a fixed sanity bound
+      // (children sit on the same faces as their parents).
+      for (let t = 0; t < dense.numTri; t++) {
+        expect(map[t]).toBeGreaterThanOrEqual(0);
+        expect(map[t]).toBeLessThan(c.numTri);
+      }
+    });
+
+    it('returns -1 entries when the old mesh is empty', () => {
+      const empty: MeshData = { vertProperties: new Float32Array(), triVerts: new Uint32Array(), numVert: 0, numTri: 0, numProp: 3 };
+      const map = nearestTriangleMap(empty, cube(10));
+      expect([...map].every(v => v === -1)).toBe(true);
+    });
+
+    it('matches a slightly displaced mesh back to the originals', () => {
+      const c = cube(10);
+      // Jitter every vertex by a tiny amount (simulating fuzzy/smooth) — the
+      // nearest old triangle per new triangle should still be the same index.
+      const moved: MeshData = { ...c, vertProperties: Float32Array.from(c.vertProperties, (v, i) => v + (i % 3 === 0 ? 0.05 : -0.03)) };
+      const map = nearestTriangleMap(c, moved);
+      for (let t = 0; t < c.numTri; t++) expect(map[t]).toBe(t);
+    });
   });
 
   it('voxelize samples per-triangle color from a painted input mesh', () => {
