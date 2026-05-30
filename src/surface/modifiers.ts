@@ -16,6 +16,7 @@ import type { MeshData } from '../geometry/types';
 import { fuzzySkin, type FuzzySkinOptions } from './fuzzySkin';
 import { smoothSurface, type SmoothOptions } from './smoothSurface';
 import { voxelizeMesh, type VoxelizeOptions } from './voxelizeMesh';
+import { extractPositions, bboxOf } from './meshSubdivide';
 import { encodeGrid } from '../geometry/voxel/grid';
 
 export type SurfaceModifierId = 'fuzzy' | 'smooth' | 'voxelize';
@@ -41,6 +42,23 @@ export type ModifierResult = ModifierManifoldResult | ModifierVoxelResult;
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+/** Bounding-box diagonal of a mesh — the basis for size-relative defaults. */
+export function modelDiagonal(mesh: MeshData): number {
+  const { size } = bboxOf(extractPositions(mesh));
+  return Math.hypot(size[0], size[1], size[2]);
+}
+
+/** Size-relative starting parameters for fuzzy skin (subtle ~1% displacement). */
+export function defaultFuzzyOptions(mesh: MeshData): Required<FuzzySkinOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  return { amplitude: d * 0.01, scale: d * 0.04, octaves: 2, seed: 1, subdivide: true };
+}
+
+/** Starting parameters for the smooth/round modifier. */
+export function defaultSmoothOptions(): Required<Omit<SmoothOptions, 'maxEdge'>> {
+  return { iterations: 4, subdivide: true };
 }
 
 /** Wrapper code for a baked manifold result. Mirrors the STL-import codegen:
