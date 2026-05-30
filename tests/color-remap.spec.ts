@@ -63,4 +63,27 @@ test.describe('Colors remap tool', () => {
     expect(hexes).not.toContain('#ff0000');
     expect(hexes).not.toContain('#00ff00');
   });
+
+  test('auto-closes when code is re-run (no stale colors)', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEditorReady(page);
+    await page.waitForFunction(() => !!(window as unknown as Win).partwright?.runAndSave, { timeout: 20_000 });
+
+    await page.evaluate(async () => {
+      await (window as unknown as Win).partwright.runAndSave(
+        "return api.label(api.Manifold.cube([10,10,10], true), 'a', { color: '#ff0000' });",
+        'one-color', { isManifold: true });
+    });
+
+    const panel = page.locator('#colors-panel');
+    await page.locator('#colors-toggle').dispatchEvent('click');
+    await expect(panel).toBeVisible();
+
+    // Re-running replaces the mesh — the panel's enumerated colors would be
+    // stale, so it must close itself.
+    await page.evaluate(async () => {
+      await (window as unknown as Win).partwright.runAndSave('return api.Manifold.sphere(8);', 'plain', { isManifold: true });
+    });
+    await expect(panel).toBeHidden();
+  });
 });

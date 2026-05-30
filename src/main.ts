@@ -150,7 +150,7 @@ import { restoreView as restoreAnnotationViewById } from './annotations/selectMo
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
 import { loadPalette } from './color/palette';
-import { initColorRemapUI } from './color/colorRemapUI';
+import { initColorRemapUI, forceCloseColorRemap, isColorRemapOpen } from './color/colorRemapUI';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
@@ -3733,6 +3733,7 @@ async function main() {
     setReadOnlyReason('shared', true);
     disableRun();
     if (isPaintOpen()) closePaintMenu();
+    forceCloseColorRemap();
     setControlNeutralized('paint-toggle', true);
     setControlNeutralized('btn-save-version', true);
     setControlNeutralized('lang-toggle', true);
@@ -4279,6 +4280,7 @@ async function main() {
       if (userInitiated) {
         // Don't let two overlay panels share the top-right slot.
         if (isPaintOpen()) closePaintMenu();
+        forceCloseColorRemap();
         if (isAnnotateOpen()) closeAnnotateMenu();
         closeMeasureIfActive();
       }
@@ -9992,6 +9994,10 @@ async function main() {
       // against the previous base mesh — discards its result instead of stamping
       // a refined mesh built from the OLD base over result.mesh.
       resetPaintWorkerState();
+      // A fresh run replaces the mesh, so the Colors panel's enumerated colors
+      // (keyed to the old triangle indices) are stale — close it. Reopening
+      // re-enumerates against the new geometry.
+      forceCloseColorRemap();
       currentMeshData = result.mesh;
       // A fresh run is the new pristine base for any subsequent smooth-brush
       // subdivision; rehydrating a saved version rebuilds the refined mesh from
@@ -10205,6 +10211,7 @@ async function main() {
       let closed = false;
       if (isAnnotateOpen()) { closeAnnotateMenu(); closed = true; }
       if (isPaintOpen()) { closePaintMenu(); closed = true; }
+      if (isColorRemapOpen()) { forceCloseColorRemap(); closed = true; }
       if (isSimplifyOpen()) { closeSimplifyMenu(); closed = true; }
       if (closeMeasureIfActive()) closed = true;
       if (getClipState().enabled) { setClipping(false); syncClipUI(); closed = true; }

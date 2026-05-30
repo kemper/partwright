@@ -142,7 +142,10 @@ function recompute(): void {
   const byHex = new Map<string, SourceColor>();
   for (let t = 0; t < mesh.numTri; t++) {
     const hex = triColorHex(baked.buf, t);
-    if (hex === DEFAULT_COLOR_HEX) continue; // unpainted face
+    // Skip unpainted faces. (triColorHex returns this same sentinel for a region
+    // painted the exact default blue #4a9eff, so such a region is left untouched
+    // by the remap — an acceptable corner, and it isn't one of the palette colors.)
+    if (hex === DEFAULT_COLOR_HEX) continue;
     let s = byHex.get(hex);
     if (!s) {
       const rgb = hexToRgb(hex) ?? [0, 0, 0];

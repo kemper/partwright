@@ -442,7 +442,9 @@ function sampleQuantized(rgb: Float32Array, w: number, h: number, opts: ReliefOp
   const palette: Array<[number, number, number]> = [];
   for (let c = 0; c < kk; c++) palette.push([clamp255(repRGB[c * 3]), clamp255(repRGB[c * 3 + 1]), clamp255(repRGB[c * 3 + 2])]);
   // Constrain to the user's filament palette: snap each cluster's color to the
-  // nearest filament (best match). Colors only — cluster heights are untouched.
+  // nearest filament (best match). The per-cluster height VALUES and terrace
+  // count are unchanged — only colors change (so the luminance-based height
+  // ordering below may reorder if a snap flips two clusters' relative brightness).
   const snap = opts.quantized.snapPalette;
   if (snap && snap.length > 0) {
     for (let c = 0; c < kk; c++) palette[c] = nearestRgb255(palette[c], snap);
