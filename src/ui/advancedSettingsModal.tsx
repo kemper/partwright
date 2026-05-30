@@ -14,6 +14,7 @@ import {
   APP_CONFIG_DEFAULTS,
   type AppConfig,
 } from '../config/appConfig';
+import { showUninstallModal } from './uninstallModal';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -397,6 +398,22 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={0} max={2000} integer
           onChange={v => set('ui', 'tooltipDelayMs', v)}
         />
+      </Section>
+
+      <Section title="Data">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="text-xs font-medium text-zinc-300">Uninstall / start fresh</div>
+            <div class="text-xs text-zinc-500 mt-0.5">Delete sessions, AI keys, settings, or other local browser data.</div>
+          </div>
+          <button
+            type="button"
+            class="ml-4 shrink-0 px-3 py-1.5 rounded text-xs font-medium text-red-400 border border-red-400/30 hover:bg-red-400/10 transition-colors"
+            onClick={() => showUninstallModal()}
+          >
+            Uninstall…
+          </button>
+        </div>
       </Section>
 
       {hasAnyOverride.value && (
