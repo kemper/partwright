@@ -7,7 +7,7 @@
 // the path it's given (which is fine — the browser resolves relative URLs
 // against the current origin, and unfurl bots fetch each route fresh).
 
-export type RouteName = 'landing' | 'editor' | 'help' | 'catalog' | 'legal' | 'whats-new' | '404';
+export type RouteName = 'landing' | 'editor' | 'help' | 'catalog' | 'ideas' | 'legal' | 'whats-new' | '404';
 
 interface RouteMeta {
   title: string;
@@ -45,6 +45,13 @@ const ROUTE_META: Record<RouteName, RouteMeta> = {
     description:
       'Browse a curated catalog of example Partwright sessions: vases, gears, chess pieces, holiday ornaments and more. One click loads any example into the editor for inspection or remixing.',
     path: '/catalog',
+    ogImage: '/og-image.png',
+  },
+  ideas: {
+    title: `Ideas — ${BASE_TITLE}`,
+    description:
+      'Ideas to get you started with Partwright: ready-made AI prompts to drop into the chat, technique showcases (implicit surfaces, true CAD fillets, voxels), and interactive flows that turn your own photo into a voxel portrait or a smooth relief.',
+    path: '/ideas',
     ogImage: '/og-image.png',
   },
   legal: {

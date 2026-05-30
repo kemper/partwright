@@ -24,6 +24,7 @@ export interface LandingCallbacks {
   onOpenEditor: () => void;
   onOpenHelp: () => void;
   onOpenCatalog: () => void;
+  onOpenIdeas: () => void;
   onOpenWhatsNew: () => void;
   /** Open the editor and launch the first-visit guided tour. */
   onTakeTour: () => void;
@@ -112,6 +113,7 @@ function buildNav(callbacks: LandingCallbacks): HTMLElement {
   const links = document.createElement('nav');
   links.className = 'hidden md:flex items-center gap-7 text-sm text-zinc-400';
   const navItems: { label: string; onClick: () => void }[] = [
+    { label: 'Ideas', onClick: callbacks.onOpenIdeas },
     { label: 'Catalog', onClick: callbacks.onOpenCatalog },
     { label: 'How it works', onClick: callbacks.onOpenHelp },
     { label: 'For AI agents', onClick: scrollToAgentSection },

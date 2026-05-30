@@ -311,6 +311,7 @@ The app uses path-based routing for top-level pages and query parameters for vie
 - `/` — Landing page (hero + recent sessions grid)
 - `/editor` — Editor view (code + viewport)
 - `/catalog` — Curated catalog of premade sessions
+- `/ideas` — Ideas/showcase page: starter prompts, technique showcases, and interactive "use your own photo" flows. Backed by the `src/ideas/ideas.ts` dataset, which also powers the AI panel's 💡 prompt library + empty-state chips. Starter/technique tiles drop a prompt into the AI panel (populate, don't send — `prefillAiInput`); interactive tiles reuse the image→voxel and Relief import flows.
 - `/help` — Help/docs page
 
 **Query parameters** (on `/editor`):
