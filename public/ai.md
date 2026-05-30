@@ -151,6 +151,9 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 - **Passing a bare index or id instead of `{index}` / `{id}`** -- `loadVersion` and `forkVersion` take an object with exactly one of `{index: number}` or `{id: string}`, e.g. `loadVersion({index: 2})` or `loadVersion({id: "Kx3Pq9mA2wEr"})`. Bare `loadVersion(2)` will return `{error: "...target must be { index: number } or { id: string }..."}`.
 - **Passing the wrong object shape to `setImages`, `setReferenceGeometry`, `query`, `runAndAssert`, etc.** -- the API rejects unknown keys and wrong-type values. See [Argument validation](#argument-validation).
 - **Doing `setCode` then `run` when you meant `runAndSave`.** `setCode` doesn't auto-run, `run` doesn't save and doesn't validate, and the gallery won't see the version. `runAndSave(code, label, assertions)` does all three atomically -- prefer it for committed iterations. See also [`runAndSave` is for committed iterations; `runIsolated` is for sanity checks](#runandsave-is-for-committed-iterations-runisolated-is-for-sanity-checks).
+- **Passing a short stub to `runAndSave` intending to "save current state".** `runAndSave(code, ...)` is **authoritative**: it overwrites the editor with `code`, runs it, and saves the result. Passing anything other than the full intended code will replace the editor and save a broken version. To snapshot the editor as-is (e.g. after painting), call `saveVersion(label?)` instead — it captures the current code + geometry + colors without re-running.
+- **Querying stale geometry after `setCode`.** `setCode` updates the editor but does NOT re-run. Calling `getGeometryData()` or `query()` after `setCode` (without a subsequent `runAndSave`/`run`) returns the geometry from the previous execution. The result now includes `stale: true` when the editor code hash doesn't match the last-run hash — treat this as a signal to run first.
+- **No "fork from current editor" path.** `forkVersion({index}, ...)` forks a *saved* version. If your best code is unsaved in the editor, first call `await saveVersion("checkpoint")` to commit it as a version, then `forkVersion({index: <that index>}, ...)` from there. `listVersions()` shows the new index.
 
 ## Argument validation
 
@@ -374,12 +377,18 @@ await partwright.getSessionContext()     // -> {session, versions[], notes[], cu
 }
 ```
 
+Extra fields that appear conditionally:
+- **`containedComponents: N`** — present when N components are fully enclosed inside another solid (e.g. sealed interior voids in a voxel shell). These are excluded from `maxComponents` assertion checks and from the floater warning, since they can't detach in print. Use `runAndExplain(code)` to inspect them individually.
+- **`stale: true`** — present when the editor code has changed since the last execution (e.g. `setCode` was called without a subsequent run). Stats reflect the *previous* run. Call `runAndSave`/`run` before relying on component counts or other metrics.
+- **`warnings: string[]`** — present when the geometry has printability issues (non-manifold, free-floating components, etc.).
+
 On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}`
 
 ### Common errors
 - `Code must return a Manifold object` -- forgot `return` statement
 - `function _Cylinder called with N arguments` -- wrong arg count
 - Geometry looks wrong -- check `isManifold` and `componentCount` (failed booleans = extra components)
+- `componentCount > 1` with `containedComponents` present -- the extra components are sealed interior voids, not true floaters. No fix needed for printing; use `runAndExplain` if you need to inspect them.
 
 ## Writing model code (manifold-js)
 

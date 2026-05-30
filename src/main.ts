@@ -4885,9 +4885,17 @@ async function main() {
 
     /** Get current geometry stats without re-running */
     getGeometryData(): Record<string, unknown> {
-      const geo = JSON.parse(geometryDataEl.textContent || '{}');
+      const geo = JSON.parse(geometryDataEl.textContent || '{}') as Record<string, unknown>;
       const warnings = geometryWarnings(geo);
-      return warnings.length > 0 ? { ...geo, warnings } : geo;
+      // Flag stale results: setCode() doesn't re-run, so the cached geometry may
+      // reflect a previous version of the code. Callers should run or runAndSave
+      // before relying on component counts or other stats.
+      const stale = typeof geo.codeHash === 'string' && simpleHash(getValue()) !== geo.codeHash;
+      return {
+        ...geo,
+        ...(stale ? { stale: true } : {}),
+        ...(warnings.length > 0 ? { warnings } : {}),
+      };
     },
 
     /** Get current editor code */
@@ -6823,8 +6831,13 @@ async function main() {
         } catch { /* ignore */ }
       }
 
-      // Include current stats for convenience
-      result.stats = JSON.parse(geometryDataEl.textContent || '{}');
+      // Include current stats for convenience, with a stale flag when the editor
+      // code doesn't match the last-executed code (setCode was called without run).
+      const rawStats = JSON.parse(geometryDataEl.textContent || '{}') as Record<string, unknown>;
+      const stale = typeof rawStats.codeHash === 'string' && simpleHash(getValue()) !== rawStats.codeHash;
+      if (stale) rawStats.stale = true;
+      result.stats = rawStats;
+      if (stale) result.stale = true;
 
       return result;
     },
@@ -9809,27 +9822,41 @@ async function main() {
     }
     if (typeof geo.componentCount === 'number' && geo.componentCount > 1) {
       const cc = geo.componentCount;
-      // Partwright exists to produce printable parts, so a multi-component
-      // result is almost always a failed union rather than a deliberate
-      // assembly. Frame it as a print defect and point at the exact tool that
-      // diagnoses it, instead of inviting the model to shrug it off.
-      let msg =
-        `componentCount: ${cc} — the model is ${cc} disconnected solids. ` +
-        `For 3D printing that means ${cc} separate pieces: any part not connected ` +
-        `to the main body floats free and will detach (or print in mid-air). ` +
-        `Unless you deliberately intend a multi-part assembly, the pieces must ` +
-        `volumetrically OVERLAP by ≥ 0.5 units to fuse into one solid — a shared ` +
-        `face or a point/edge touch is NOT enough.`;
-      msg += isBrep
-        ? ' In BREP this bites often: OCCT leaves non-overlapping or thinly-touching ' +
-          'shapes as a disconnected compound even after fuse / fuseAll (e.g. a thin ' +
-          'annular sliver of overlap frequently fails to bond). Call ' +
-          'runAndExplain(code) to list every component with a per-floater overlap ' +
-          'suggestion, then seat the piece a few units deeper into its neighbour and ' +
-          're-run until componentCount is 1.'
-        : ' Call runAndExplain(code) to see which pieces are disconnected and get a ' +
-          'concrete .translate() overlap suggestion for each floater.';
-      warnings.push(msg);
+      const enclosed = typeof geo.containedComponents === 'number' ? geo.containedComponents : 0;
+      const floating = cc - enclosed;
+      // Only warn about true floaters — fully-enclosed interior components (e.g.
+      // sealed voids inside voxel shells) won't detach in print and shouldn't
+      // block a single-piece assertion.
+      if (floating > 1) {
+        // Partwright exists to produce printable parts, so a multi-component
+        // result is almost always a failed union rather than a deliberate
+        // assembly. Frame it as a print defect and point at the exact tool that
+        // diagnoses it, instead of inviting the model to shrug it off.
+        let msg =
+          `componentCount: ${cc}${enclosed > 0 ? ` (${enclosed} enclosed interior void${enclosed > 1 ? 's' : ''} excluded)` : ''} — ` +
+          `the model has ${floating} disconnected solid${floating > 1 ? 's' : ''}. ` +
+          `For 3D printing that means ${floating} separate piece${floating > 1 ? 's' : ''}: any part not connected ` +
+          `to the main body floats free and will detach (or print in mid-air). ` +
+          `Unless you deliberately intend a multi-part assembly, the pieces must ` +
+          `volumetrically OVERLAP by ≥ 0.5 units to fuse into one solid — a shared ` +
+          `face or a point/edge touch is NOT enough.`;
+        msg += isBrep
+          ? ' In BREP this bites often: OCCT leaves non-overlapping or thinly-touching ' +
+            'shapes as a disconnected compound even after fuse / fuseAll (e.g. a thin ' +
+            'annular sliver of overlap frequently fails to bond). Call ' +
+            'runAndExplain(code) to list every component with a per-floater overlap ' +
+            'suggestion, then seat the piece a few units deeper into its neighbour and ' +
+            're-run until componentCount is 1.'
+          : ' Call runAndExplain(code) to see which pieces are disconnected and get a ' +
+            'concrete .translate() overlap suggestion for each floater.';
+        warnings.push(msg);
+      } else if (enclosed > 0) {
+        // All extra components are sealed interior voids — informational only
+        warnings.push(
+          `componentCount: ${cc} — ${enclosed} component${enclosed > 1 ? 's are' : ' is'} a sealed interior void fully enclosed within another solid. ` +
+          `These won't detach in print. Call runAndExplain(code) to inspect each component individually.`,
+        );
+      }
     }
     // Surface color regions that no longer resolve to any triangles on
     // the freshly-run mesh — descriptors are still serialized (so the

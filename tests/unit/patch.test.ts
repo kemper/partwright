@@ -31,6 +31,26 @@ describe('applyLiteralPatch', () => {
     expect(applyLiteralPatch('cost = PRICE;', 'PRICE', '$5')).toBe('cost = $5;');
     expect(applyLiteralPatch('a = TOKEN;', 'TOKEN', '$&b')).toBe('a = $&b;');
   });
+
+  test('falls back to whitespace-normalized match when exact fails', () => {
+    // Auto-formatter collapsed multi-line declaration to one line; patch find
+    // still has the original whitespace.
+    const code = 'const a = 1, b = 2;';
+    const find = 'const a = 1,\n  b = 2;';
+    expect(applyLiteralPatch(code, find, 'const a = 3, b = 4;')).toBe('const a = 3, b = 4;');
+  });
+
+  test('whitespace fallback still errors when normalized find is absent', () => {
+    expect(() => applyLiteralPatch('const a = 1;', 'const b = 2;', 'const b = 3;'))
+      .toThrow(/not present/);
+  });
+
+  test('whitespace fallback still errors when normalized find is ambiguous', () => {
+    // Two occurrences even after normalization
+    const code = 'const x = 1;\nconst x = 1;';
+    expect(() => applyLiteralPatch(code, 'const\nx = 1;', 'const x = 2;'))
+      .toThrow(/not present|matches \d+ places/);
+  });
 });
 
 describe('applyPatches', () => {
