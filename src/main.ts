@@ -2312,40 +2312,11 @@ async function main() {
     return true;
   }
 
-  /** Resolve a Wikipedia/Wikimedia "File:…" page URL to the actual media URL.
-   *  These pages serve HTML and block CORS; the /w/api.php endpoint supports
-   *  origin=* so the browser can fetch it. Returns url unchanged if the input
-   *  isn't a File: page, or silently falls back to url on any API error. */
-  async function resolveWikimediaFilePageUrl(url: string): Promise<string> {
-    let parsed: URL;
-    try { parsed = new URL(url); } catch { return url; }
-    const match = parsed.pathname.match(/^\/wiki\/(File:.+)$/i);
-    if (!match) return url;
-    if (!/\.wikipedia\.org$|\.wikimedia\.org$/.test(parsed.hostname)) return url;
-    const title = decodeURIComponent(match[1]);
-    const apiUrl = `${parsed.protocol}//${parsed.hostname}/w/api.php?` +
-      `action=query&titles=${encodeURIComponent(title)}&prop=imageinfo&iiprop=url&format=json&origin=*`;
-    try {
-      const res = await fetch(apiUrl);
-      if (!res.ok) return url;
-      const data = await res.json() as {
-        query?: { pages?: Record<string, { imageinfo?: Array<{ url?: string }> }> }
-      };
-      const pages = data?.query?.pages ?? {};
-      const page = Object.values(pages)[0];
-      const mediaUrl = page?.imageinfo?.[0]?.url;
-      return typeof mediaUrl === 'string' && mediaUrl.startsWith('https://') ? mediaUrl : url;
-    } catch {
-      return url;
-    }
-  }
-
   /** Fetch a remote http(s) file with a timeout + size cap, wrap it in a File,
    *  and route it through the existing import pipeline (handleImportFile, which
    *  itself routes JSON → the session-import path). Never evals fetched content.
    *  Throws a human-readable message on any failure. */
   async function importFromRemoteUrl(url: string): Promise<void> {
-    url = await resolveWikimediaFilePageUrl(url);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REMOTE_FETCH_TIMEOUT_MS);
     let res: Response;
@@ -2354,7 +2325,7 @@ async function main() {
     } catch (e) {
       clearTimeout(timer);
       if ((e as Error).name === 'AbortError') throw new Error('The request timed out.');
-      throw new Error('Could not fetch that URL (network error or blocked by the remote server).');
+      throw new Error('Could not fetch that URL. The server may block cross-origin requests, or the URL may point to a page rather than a direct file — try finding the direct file URL, or download and upload instead.');
     }
     if (!res.ok) {
       clearTimeout(timer);
