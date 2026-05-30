@@ -95,9 +95,12 @@ test.describe('Filament color palette', () => {
     await waitForEditorReady(page);
 
     const modal = await openPaletteModal(page);
-    // Add a color but leave enforcement off.
+    // Add two colors but leave enforcement off. Both default to the same hex —
+    // a regression guard that the manual list isn't deduped on save (the UI,
+    // localStorage, and getColorPalette must all agree on two rows).
     await modal.getByRole('button', { name: '+ Add color' }).click();
-    await expect(modal.locator('input[type="color"]')).toHaveCount(1);
+    await modal.getByRole('button', { name: '+ Add color' }).click();
+    await expect(modal.locator('input[type="color"]')).toHaveCount(2);
 
     const directive = await page.evaluate(async () => {
       const m = await import('/src/color/palette.ts');
@@ -105,11 +108,12 @@ test.describe('Filament color palette', () => {
     });
     expect(directive).toBeNull();
 
-    // getColorPalette still reports it as configured-but-not-enforced.
+    // getColorPalette reports it configured-but-not-enforced, with both rows.
     const api = await page.evaluate(() => (window as unknown as {
-      partwright: { getColorPalette: () => { configured: boolean; enforce: boolean } };
+      partwright: { getColorPalette: () => { configured: boolean; enforce: boolean; colors: unknown[] } };
     }).partwright.getColorPalette());
     expect(api.configured).toBe(true);
     expect(api.enforce).toBe(false);
+    expect(api.colors).toHaveLength(2);
   });
 });

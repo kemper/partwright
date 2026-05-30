@@ -119,8 +119,9 @@ function PaletteBody(props: {
   const p = palette.value;
 
   function commit(next: ColorPaletteSettings) {
-    palette.value = next;
-    savePalette(next);
+    // Reflect exactly what was persisted (savePalette sanitizes) so the UI,
+    // localStorage, and the cache the AI reads can never drift apart.
+    palette.value = savePalette(next);
   }
   function updateColor(id: string, patch: Partial<Pick<FilamentColor, 'name' | 'hex'>>) {
     commit({ ...p, colors: p.colors.map(c => (c.id === id ? { ...c, ...patch } : c)) });

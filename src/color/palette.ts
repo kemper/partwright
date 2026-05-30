@@ -46,7 +46,6 @@ const DEFAULT_SETTINGS: ColorPaletteSettings = {
 };
 
 let cached: ColorPaletteSettings | null = null;
-const listeners = new Set<(s: ColorPaletteSettings) => void>();
 
 /** Round + clamp an arbitrary value to a valid simultaneous-color count. */
 export function clampMaxSimultaneous(n: unknown): number {
@@ -94,8 +93,13 @@ export function dedupeColors(colors: FilamentColor[]): FilamentColor[] {
  *  (parsing localStorage) AND on save (so stored data is always clean). */
 export function mergeWithDefaults(partial: Partial<ColorPaletteSettings> | null | undefined): ColorPaletteSettings {
   if (!partial || typeof partial !== 'object') return { ...DEFAULT_SETTINGS };
+  // Don't dedupe here — this is the manual-edit persistence path, and silently
+  // collapsing two rows the user is editing (e.g. a freshly-added entry still
+  // on its default color) is worse than tolerating a transient duplicate.
+  // Dedupe happens only where it's actually wanted: parseFilamentColors (the
+  // model's reply) and addProposed (merging a proposal into the existing list).
   const colors = Array.isArray(partial.colors)
-    ? dedupeColors(partial.colors.map(sanitizeColor).filter((c): c is FilamentColor => c !== null))
+    ? partial.colors.map(sanitizeColor).filter((c): c is FilamentColor => c !== null)
     : [];
   return {
     colors,
@@ -124,7 +128,10 @@ export function loadPalette(): ColorPaletteSettings {
   return cached;
 }
 
-export function savePalette(next: ColorPaletteSettings): void {
+/** Persist the palette and return the sanitized value actually stored — so a
+ *  caller can sync its own state to exactly what landed in localStorage and the
+ *  in-memory cache the AI reads, with no chance of drift. */
+export function savePalette(next: ColorPaletteSettings): ColorPaletteSettings {
   const sanitized = mergeWithDefaults(next);
   cached = sanitized;
   try {
@@ -133,19 +140,7 @@ export function savePalette(next: ColorPaletteSettings): void {
     // localStorage may be full or disabled (private browsing). Settings
     // remain applied for this session; we don't surface the failure.
   }
-  for (const fn of listeners) fn(sanitized);
-}
-
-export function onPaletteChange(fn: (s: ColorPaletteSettings) => void): () => void {
-  listeners.add(fn);
-  return () => { listeners.delete(fn); };
-}
-
-/** Test seam: drop the in-memory cache so the next `loadPalette()` re-reads
- *  localStorage. Mirrors the AI-settings reload helper. */
-export function reloadPaletteFromStorage(): ColorPaletteSettings {
-  cached = null;
-  return loadPalette();
+  return sanitized;
 }
 
 /**

@@ -80,6 +80,12 @@ describe('mergeWithDefaults', () => {
   it('treats enforce:true literally', () => {
     expect(mergeWithDefaults({ enforce: true }).enforce).toBe(true);
   });
+  it('preserves duplicate hexes (the manual list is not deduped on save)', () => {
+    // Regression: deduping here silently dropped a freshly-added row still on
+    // its default color, diverging the UI from what the AI / a reload saw.
+    const merged = mergeWithDefaults({ colors: [fc('#ff0000', 'a'), fc('#ff0000', 'b')] });
+    expect(merged.colors).toHaveLength(2);
+  });
 });
 
 describe('parseFilamentColors', () => {
