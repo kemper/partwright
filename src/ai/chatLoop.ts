@@ -17,7 +17,7 @@ import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCal
 import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool } from './tools';
+import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
@@ -173,6 +173,10 @@ export interface RunTurnCallbacks {
   onAborted?: () => void;
   /** Unrecoverable error — the loop stops here. */
   onError?: (err: Error) => void;
+  /** Called before executing a tool that requires explicit user permission
+   *  (import tools). Return true to allow, false to decline. If absent, all
+   *  tools execute without a prompt. */
+  confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
 }
 
 /** Run one user turn through the agent loop. Returns the final history. */
@@ -647,6 +651,20 @@ async function executeAllWithRetry(
       callbacks.onToolResult?.(tc.id, tc.name, aborted);
       onEachResult?.(aborted, i);
       continue;
+    }
+    if (CONFIRM_REQUIRED_TOOLS.has(tc.name) && callbacks.confirmTool) {
+      const allowed = await callbacks.confirmTool(tc.name, tc.input);
+      if (!allowed) {
+        const declined: PersistedToolResult = {
+          toolUseId: tc.id,
+          content: '[Declined by user — only call import tools when the user has explicitly requested an import]',
+          isError: true,
+        };
+        results.push(declined);
+        callbacks.onToolResult?.(tc.id, tc.name, declined);
+        onEachResult?.(declined, i);
+        continue;
+      }
     }
     let attempt = 0;
     let result = await timedExecuteTool(tc.name, tc.input, executeToolFn);
