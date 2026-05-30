@@ -361,3 +361,43 @@ describe('generateVoxelImportCode', () => {
     expect(gridsEqual(runVoxelCode(code), grid)).toBe(true);
   });
 });
+
+describe('loop codegen (repeated sequences → for loops)', () => {
+  it('collapses an evenly-spaced run of identical voxels into one loop', () => {
+    const grid = new VoxelGrid();
+    for (let z = 0; z <= 8; z += 2) grid.set(0, 0, z, '#ffffff'); // 5 dots, step 2
+    const code = generateVoxelImportCode(grid, 'dots.png', { style: 'calls' });
+    expect(code).toContain('for (let i = 0;');
+    expect((code.match(/v\.set\(/g) ?? []).length).toBe(1); // one loop, not five sets
+    expect(countVoxelBuilderCalls(grid)).toBe(1);
+    expect(gridsEqual(runVoxelCode(code), grid)).toBe(true);
+  });
+
+  it('collapses evenly-spaced identical boxes (a stripe pattern) into one loop', () => {
+    const grid = new VoxelGrid();
+    for (let x = 0; x <= 12; x += 3) grid.fillBox([x, 0, 0], [x, 0, 5], '#33aaff'); // 5 columns
+    const code = generateVoxelImportCode(grid, 'stripes.png', { style: 'calls' });
+    expect(code).toContain('for (let i = 0;');
+    expect((code.match(/v\.fillBox\(\[/g) ?? []).length).toBe(1);
+    expect(gridsEqual(runVoxelCode(code), grid)).toBe(true);
+  });
+
+  it('does not loop fewer than three repeats', () => {
+    const grid = new VoxelGrid();
+    grid.set(0, 0, 0, '#fff');
+    grid.set(0, 0, 2, '#fff'); // only two → stays as plain set calls
+    const code = generateVoxelImportCode(grid, 'two.png', { style: 'calls' });
+    expect(code).not.toContain('for (let i = 0;');
+    expect(gridsEqual(runVoxelCode(code), grid)).toBe(true);
+  });
+
+  it('handles mixed loopable + irregular boxes, round-tripping exactly', () => {
+    const grid = new VoxelGrid();
+    for (let x = 0; x <= 10; x += 2) grid.set(x, 0, 0, '#ff0000'); // loopable run of 6
+    grid.fillBox([0, 0, 3], [4, 0, 3], '#00ff00');                  // a separate box
+    grid.set(7, 0, 5, '#0000ff');                                    // a lone voxel
+    const code = generateVoxelImportCode(grid, 'mix.png', { style: 'calls' });
+    expect(code).toContain('for (let i = 0;');
+    expect(gridsEqual(runVoxelCode(code), grid)).toBe(true);
+  });
+});

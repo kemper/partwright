@@ -371,16 +371,123 @@ function hexOf(rgb: number): string {
   return '#' + (rgb & 0xffffff).toString(16).padStart(6, '0');
 }
 
+/** One decomposed same-color box (inclusive corners). A single voxel has equal
+ *  min/max corners. */
+interface BoxOp { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number; c: number }
+
+/** A run of identical boxes (same color + size) stepping by a constant amount
+ *  along one axis — collapsible into a single `for` loop. */
+interface BoxRun { idxs: number[]; base: BoxOp; step: number; axis: 'x' | 'y' | 'z'; n: number }
+
+/** Minimum repeated boxes before a `for` loop pays for itself (one loop line
+ *  replaces N call lines, so 3 is the first net win). */
+const LOOP_MIN_RUN = 3;
+
+function axisPos(o: BoxOp, axis: 'x' | 'y' | 'z'): number {
+  return axis === 'x' ? o.x0 : axis === 'y' ? o.y0 : o.z0;
+}
+
+/** Find runs of identical boxes spaced at a constant step along `axis`. Boxes
+ *  are grouped by color + size + the two off-axis start coords, then each group
+ *  is scanned for maximal constant-step arithmetic runs. */
+function findAxisRuns(ops: BoxOp[], axis: 'x' | 'y' | 'z'): BoxRun[] {
+  const groups = new Map<string, number[]>();
+  for (let i = 0; i < ops.length; i++) {
+    const o = ops[i];
+    const size = `${o.x1 - o.x0},${o.y1 - o.y0},${o.z1 - o.z0}`;
+    const fixed = axis === 'x' ? `${o.y0},${o.z0}` : axis === 'y' ? `${o.x0},${o.z0}` : `${o.x0},${o.y0}`;
+    const k = `${o.c}|${size}|${fixed}`;
+    let arr = groups.get(k);
+    if (!arr) { arr = []; groups.set(k, arr); }
+    arr.push(i);
+  }
+  const runs: BoxRun[] = [];
+  for (const idxs of groups.values()) {
+    if (idxs.length < LOOP_MIN_RUN) continue;
+    idxs.sort((a, b) => axisPos(ops[a], axis) - axisPos(ops[b], axis));
+    let s = 0;
+    while (s + 1 < idxs.length) {
+      const step = axisPos(ops[idxs[s + 1]], axis) - axisPos(ops[idxs[s]], axis);
+      let e = s + 1;
+      while (e + 1 < idxs.length && axisPos(ops[idxs[e + 1]], axis) - axisPos(ops[idxs[e]], axis) === step) e++;
+      const runIdxs = idxs.slice(s, e + 1);
+      if (step > 0 && runIdxs.length >= LOOP_MIN_RUN) {
+        runs.push({ idxs: runIdxs, base: ops[runIdxs[0]], step, axis, n: runIdxs.length });
+        s = e + 1;
+      } else {
+        s++;
+      }
+    }
+  }
+  return runs;
+}
+
+/** `base + i*d`, dropping the term when the step is 0 (a coordinate that
+ *  doesn't move with the loop). */
+function axisExpr(base: number, d: number): string {
+  if (d === 0) return `${base}`;
+  return d > 0 ? `${base} + i * ${d}` : `${base} - i * ${-d}`;
+}
+
+function singleLine(o: BoxOp): string {
+  const hex = hexOf(o.c);
+  return o.x0 === o.x1 && o.y0 === o.y1 && o.z0 === o.z1
+    ? `v.set(${o.x0}, ${o.y0}, ${o.z0}, '${hex}');`
+    : `v.fillBox([${o.x0}, ${o.y0}, ${o.z0}], [${o.x1}, ${o.y1}, ${o.z1}], '${hex}');`;
+}
+
+function loopLine(run: BoxRun): string {
+  const o = run.base;
+  const dx = run.axis === 'x' ? run.step : 0;
+  const dy = run.axis === 'y' ? run.step : 0;
+  const dz = run.axis === 'z' ? run.step : 0;
+  const hex = hexOf(o.c);
+  const min = `${axisExpr(o.x0, dx)}, ${axisExpr(o.y0, dy)}, ${axisExpr(o.z0, dz)}`;
+  if (o.x0 === o.x1 && o.y0 === o.y1 && o.z0 === o.z1) {
+    return `for (let i = 0; i < ${run.n}; i++) v.set(${min}, '${hex}');`;
+  }
+  const max = `${axisExpr(o.x1, dx)}, ${axisExpr(o.y1, dy)}, ${axisExpr(o.z1, dz)}`;
+  return `for (let i = 0; i < ${run.n}; i++) v.fillBox([${min}], [${max}], '${hex}');`;
+}
+
+/** Emit builder-call lines for the decomposed boxes, collapsing axis-aligned
+ *  arithmetic runs of identical boxes into `for` loops (so a repeated pattern —
+ *  dots, stripes, a grid — costs one line instead of many). Greedily takes the
+ *  longest non-overlapping runs first; every box is emitted exactly once. */
+function emitBuilderLines(ops: BoxOp[]): string[] {
+  const runs = [...findAxisRuns(ops, 'x'), ...findAxisRuns(ops, 'y'), ...findAxisRuns(ops, 'z')]
+    .sort((a, b) => b.idxs.length - a.idxs.length);
+  const runOf = new Map<number, BoxRun>();
+  const consumed = new Set<number>();
+  for (const run of runs) {
+    if (run.idxs.some(i => consumed.has(i))) continue;
+    for (const i of run.idxs) { consumed.add(i); runOf.set(i, run); }
+  }
+  const emitted = new Set<BoxRun>();
+  const lines: string[] = [];
+  for (let i = 0; i < ops.length; i++) {
+    const run = runOf.get(i);
+    if (run) {
+      if (!emitted.has(run)) { emitted.add(run); lines.push(loopLine(run)); }
+    } else {
+      lines.push(singleLine(ops[i]));
+    }
+  }
+  return lines;
+}
+
+
 /** Decompose a grid into a small set of same-color axis-aligned boxes via
- *  greedy growth (X, then Y, then Z) and emit `v.fillBox(...)` / `v.set(...)`
- *  builder calls in canonical x→y→z order. Each cell is covered exactly once.
+ *  greedy growth (X, then Y, then Z), then emit `v.fillBox(...)` / `v.set(...)`
+ *  builder calls — collapsing repeated, evenly-spaced identical boxes into `for`
+ *  loops (see {@link emitBuilderLines}). Each cell is covered exactly once.
  *  Returns null for an empty grid. */
 function gridToBuilderCalls(grid: VoxelGrid): string[] | null {
   const b = grid.bounds();
   if (!b) return null;
   const visited = new Set<number>();
   const key = (x: number, y: number, z: number) => VoxelGrid.keyOf(x, y, z);
-  const lines: string[] = [];
+  const ops: BoxOp[] = [];
   for (let x = b.min[0]; x <= b.max[0]; x++) {
     for (let y = b.min[1]; y <= b.max[1]; y++) {
       for (let z = b.min[2]; z <= b.max[2]; z++) {
@@ -408,14 +515,11 @@ function gridToBuilderCalls(grid: VoxelGrid): string[] | null {
         for (let xi = x; xi <= x1; xi++)
           for (let yi = y; yi <= y1; yi++)
             for (let zi = z; zi <= z1; zi++) visited.add(key(xi, yi, zi));
-        const hex = hexOf(c);
-        lines.push(x === x1 && y === y1 && z === z1
-          ? `v.set(${x}, ${y}, ${z}, '${hex}');`
-          : `v.fillBox([${x}, ${y}, ${z}], [${x1}, ${y1}, ${z1}], '${hex}');`);
+        ops.push({ x0: x, y0: y, z0: z, x1, y1, z1, c });
       }
     }
   }
-  return lines;
+  return emitBuilderLines(ops);
 }
 
 /** How many builder calls the `'calls'` codegen would emit for this grid (0 for

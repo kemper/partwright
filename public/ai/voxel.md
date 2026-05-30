@@ -282,10 +282,12 @@ await partwright.importImageAsVoxels(imageUrl, {
   from the image) to start from the image's own colors, then tweak.
 - `codeStyle` — `'decode'` (default) writes the compact `voxels.decode("…")`
   blob; `'calls'` writes human-readable `v.fillBox(…)` / `v.set(…)` builder
-  calls you can hand-edit (same-color blocks are merged into boxes via greedy
-  run-length grouping). Very large or very colorful grids automatically fall
-  back to `'decode'` so the editor stays responsive — limit the palette or
-  lower the resolution to keep the output editable.
+  calls you can hand-edit. Same-color blocks are merged into boxes via greedy
+  run-length grouping, and evenly-spaced repeats of an identical box (dots,
+  stripes, grids) collapse further into a single `for` loop — so a repeated
+  pattern costs one line instead of many. Very large or very colorful grids
+  automatically fall back to `'decode'` so the editor stays responsive — limit
+  the palette or lower the resolution to keep the output editable.
 - `removeBackground` — drop a solid-color backdrop the alpha cutoff can't (an
   opaque photo's background). `backgroundColor: [r, g, b]` removes that exact
   color; omit it to auto-detect the dominant border color.
