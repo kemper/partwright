@@ -404,6 +404,15 @@ Subject is imperative and lowercase after the prefix: `feat: add light/dark mode
 
 Anything unlabeled lands in "Other Changes." That's fine for occasional internal cleanup, but features and fixes should always be labeled.
 
+### Agent working discipline (git, PRs, tool output)
+
+Guardrails for automated work, learned the hard way:
+
+- **Irreversible GitHub actions stand alone, after an explicit decision.** Closing or merging a PR, deleting a branch, or force-pushing is outward-facing and hard to undo. Never batch such a call in the same tool block as other work (a sibling call fires even if the call meant to gate it errored or was never answered), and never infer the go-ahead — issue it as its own step only when the user explicitly asked for it. A PR close/merge is never a default or a guess. (A `PreToolUse` hook in `.claude/settings.json` also pauses for confirmation before `merge_pull_request` and a `state: closed` `update_pull_request`, as a backstop.)
+- **A failed or unreadable tool result is not a success.** If a call errors (e.g. an `AskUserQuestion` that didn't validate) or its output comes back garbled / empty / out-of-order, re-run or re-verify state before proceeding — never act on an answer you didn't actually receive, and never treat a laggy/garbled shell as ground truth.
+- **Git is single-writer.** The working tree and index are shared mutable state. Don't run git mutations while a subagent is also touching the same checkout. Resolve merges/rebases inline yourself; if you must delegate git work to a subagent, give it an isolated worktree (`isolation: "worktree"`).
+- **Verify state between destructive git steps.** After a merge / rebase / reset, confirm `git status` and HEAD, and that local HEAD matches what you pushed, before moving on.
+
 ### After Opening a PR
 
 Opening the **draft** PR (see [the standing instruction](#pull-requests--open-a-draft-when-the-work-looks-good) above) isn't the finish line — it's the start of the verification phase. PR-checks runs the full suite — build + unit, then the 3 e2e shards — on every push, draft or ready, so the draft gets full signal immediately. The task is done when every shard is green; marking the PR ready for review (step 6 below) is the final step, a review-readiness signal rather than a CI trigger.
