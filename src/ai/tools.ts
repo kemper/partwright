@@ -942,7 +942,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'importImageAsRelief',
-    description: 'Generate a colour-printable Part from a raster image. By default produces a FLAT colour tile (keychain-style — paint regions on a thin tile, AMS-friendly). Pass quantized.output="silhouette" to cut the tile to the image\'s subject outline (background removed), or quantized.output="relief" for a stepped-height relief (each cluster gets its own Z layer). Pass mode="luminance" for a tonal embossment with no colour clusters. `src` is a data: or http(s) image URL. After creation, paint, then read getReliefSwapGuide() for the single-nozzle swap plan if relevant.',
+    description: 'Generate a colour-printable Part from a raster image. REQUIRES USER CONFIRMATION — only call when the user has explicitly asked to import an image. By default produces a FLAT colour tile (keychain-style — paint regions on a thin tile, AMS-friendly). Pass quantized.output="silhouette" to cut the tile to the image\'s subject outline (background removed), or quantized.output="relief" for a stepped-height relief (each cluster gets its own Z layer). Pass mode="luminance" for a tonal embossment with no colour clusters. `src` is a data: or http(s) image URL. After creation, paint, then read getReliefSwapGuide() for the single-nozzle swap plan if relevant.',
     input_schema: {
       type: 'object',
       properties: {
@@ -993,7 +993,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'importSvgAsRelief',
-    description: 'Generate a multi-colour tile Part from raw SVG text. Each `<path fill>` becomes one seed colour region with CRISP boundaries — no k-means clustering, so the SVG\'s exact colours and shapes are preserved. Vastly better than importImageAsRelief for vector logos, icons, and illustrations. Tile geometry knobs (output/shape/hole) work the same as importImageAsRelief; default output is "silhouette" so the tile takes the SVG\'s overall outline.',
+    description: 'Generate a multi-colour tile Part from raw SVG text. REQUIRES USER CONFIRMATION — only call when the user has explicitly asked to import an SVG. Each `<path fill>` becomes one seed colour region with CRISP boundaries — no k-means clustering, so the SVG\'s exact colours and shapes are preserved. Vastly better than importImageAsRelief for vector logos, icons, and illustrations. Tile geometry knobs (output/shape/hole) work the same as importImageAsRelief; default output is "silhouette" so the tile takes the SVG\'s overall outline.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1111,6 +1111,13 @@ const ALWAYS_AVAILABLE = new Set([
   'importSvgAsRelief',
   'getReliefSwapGuide',
   'setReliefPreviewMode',
+]);
+
+/** Tools that require explicit user confirmation before executing.
+ *  The UI shows a blocking prompt and the model receives an error if declined. */
+export const CONFIRM_REQUIRED_TOOLS = new Set([
+  'importImageAsRelief',
+  'importSvgAsRelief',
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);

@@ -8,16 +8,9 @@ import type { MeshData } from '../geometry/types';
 import type { ColorRegion } from '../color/regions';
 import type { Filament, HeightBand, SwapGuide, SwapInstruction } from './types';
 import { analyzeHeightBands } from './heightBands';
+import { getConfig } from '../config/appConfig';
 
 type RGB = [number, number, number];
-
-// Max RGB Euclidean distance (channels 0..1) for a band colour to claim a
-// library filament's name. ~0.18 ≈ a perceptibly close match without forcing
-// distant colours onto an unrelated filament.
-const FILAMENT_MATCH_THRESHOLD = 0.18;
-
-// Bands below this confidence get a horizontal-variation warning.
-const CONFIDENCE_WARN = 0.9;
 
 function hexToRgb(hex: string): RGB | null {
   const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
@@ -47,7 +40,7 @@ function matchFilament(color: RGB, filaments: readonly Filament[] | undefined): 
       bestName = f.name;
     }
   }
-  return bestDist <= FILAMENT_MATCH_THRESHOLD ? bestName : undefined;
+  return bestDist <= getConfig().import.filamentMatchThreshold ? bestName : undefined;
 }
 
 function sameColor(a: RGB, b: RGB): boolean {
@@ -88,7 +81,7 @@ export function buildSwapGuide(
       prevColor = band.color;
     }
 
-    if (band.confidence < CONFIDENCE_WARN) {
+    if (band.confidence < getConfig().import.filamentConfidenceWarnThreshold) {
       warnings.push(
         `Layers ${band.layerStart}–${band.layerEnd} mix colors at the same height; ` +
           `a single nozzle can't reproduce this — use AMS or constrain paint to Z-slabs.`,

@@ -27,6 +27,7 @@ import type { LocalModelId, LocalModelInfo } from './localModels';
 import { isWebGpuAvailable, LOCAL_MODELS } from './localModels';
 import { loadSettings, type CustomLocalModel } from './settings';
 import { buildFallbackLadder, getCachedCeiling, getModelCeiling } from './modelMetadata';
+import { getConfig } from '../config/appConfig';
 
 // We can't statically type-import from @mlc-ai/web-llm without forcing it
 // into the main bundle, so we keep the engine handle untyped here and rely
@@ -77,13 +78,13 @@ function resolveCustomContextWindow(modelId: string): number | null {
  *  the actual prompt text; bump the constants in `buildLocalSystemPrompt` /
  *  `appendPromptToolDocs` if you change those. */
 function computeAttentionSink(info: LocalModelInfo): number {
-  const promptBudget = info.promptTier === 'medium' ? 1300 : 600;
+  const cfg = getConfig();
+  const promptBudget = info.promptTier === 'medium' ? cfg.ai.localPromptBudgetMedium : cfg.ai.localPromptBudgetSlim;
   // Native callers use the `tools` API field, not a system-prompt block,
   // so need minimal sink budget. Other models append a ~400-token compact
   // tool-docs block.
-  const toolsBudget = info.officialToolCalling ? 100 : 500;
-  const safetyMargin = 200;
-  return Math.min(2048, promptBudget + toolsBudget + safetyMargin);
+  const toolsBudget = info.officialToolCalling ? cfg.ai.localToolsBudgetNative : cfg.ai.localToolsBudgetPromptEngineered;
+  return Math.min(cfg.ai.localAttentionSinkMax, promptBudget + toolsBudget + cfg.ai.localAttentionSinkMargin);
 }
 
 function buildCustomModelEntries(webllm: typeof import('@mlc-ai/web-llm')): import('@mlc-ai/web-llm').ModelRecord[] {

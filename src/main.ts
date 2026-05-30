@@ -93,7 +93,6 @@ import {
   classifyRemoteResource,
   ensureExtensionForSource,
   MAX_REMOTE_BYTES,
-  REMOTE_FETCH_TIMEOUT_MS,
 } from './import/urlImport';
 import { showImportTargetModal } from './ui/importTargetModal';
 import { showImageVoxelImportModal, type ImageVoxelModalResult } from './ui/imageVoxelImportModal';
@@ -110,6 +109,9 @@ import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
+import { applyFuzzy, applySmooth, applyVoxelize, defaultFuzzyOptions, defaultSmoothOptions, type ModifierResult } from './surface/modifiers';
+import { nearestTriangleMap } from './surface/colorTransfer';
+import { initSurfaceUI } from './ui/surfaceModal';
 import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
 import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type ReliefCommonOptions, type SeedRegion, type PreviewMode, type GenerateReliefResult } from './relief/types';
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
@@ -564,7 +566,6 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
  *  the GPU readback never settles the callback. A thumbnail is non-essential, so
  *  we cap the wait and let the save proceed without it rather than hang forever
  *  (which silently blocked saving a painted version). */
-const THUMBNAIL_TIMEOUT_MS = 4000;
 
 function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob | null> {
   if (!mesh) return Promise.resolve(null);
@@ -588,7 +589,7 @@ function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob
     };
     // Bound the wait: if toBlob never calls back, resolve null so the caller
     // (save / snapshot) still completes.
-    const timer = setTimeout(() => finish(null), THUMBNAIL_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(null), getConfig().renderer.thumbnailTimeoutMs);
     try {
       canvas.toBlob(b => finish(b), 'image/png');
     } catch {
@@ -2348,7 +2349,7 @@ async function main() {
    *  Throws a human-readable message on any failure. */
   async function importFromRemoteUrl(url: string): Promise<void> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REMOTE_FETCH_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), getConfig().import.remoteFetchTimeoutMs);
     let res: Response;
     try {
       res = await fetch(url, { signal: controller.signal, redirect: 'follow' });
@@ -4062,9 +4063,7 @@ async function main() {
     return landingEl;
   }
 
-  function showLandingPage() {
-    // Remove the inline static landing page now that the JS version is ready.
-    document.getElementById('landing-inline')?.remove();
+  async function showLandingPage() {
     const page = ensureLandingPage();
     overlayContainer.classList.remove('hidden');
     editorUI.classList.add('hidden');
@@ -4076,6 +4075,18 @@ async function main() {
     whatsNewEl?.classList.add('hidden');
     page.classList.remove('hidden');
     updateDocumentTitle({ page: 'landing' });
+    // Build and render the JS page behind the static overlay, then remove the
+    // overlay only after fonts are settled — both pages then share the same
+    // metrics, making the swap invisible. Copy scroll position so the user's
+    // reading position is preserved if they scrolled before JS finished.
+    await document.fonts.ready;
+    requestAnimationFrame(() => {
+      const li = document.getElementById('landing-inline');
+      if (li) {
+        page.scrollTop = li.scrollTop;
+        li.remove();
+      }
+    });
   }
 
   function showNotFoundPage() {
@@ -5504,8 +5515,226 @@ async function main() {
     };
   }
 
+  // === Surface modifiers (fuzzy skin / smooth / voxelize) ===
+  // Post-hoc operations on the current model that commit a new version, mirroring
+  // the STL-import path (applyImportWrapper): bake the result onto an imported
+  // mesh and emit a `Manifold.ofMesh(...)` wrapper (manifold modifiers), or emit a
+  // self-contained `voxels.decode(...)` program (voxelize). Then switch to the
+  // right engine, run, and save. Declared here as hoisted functions so the
+  // partwrightAPI methods below can call them.
+  function requireCurrentMeshForModifier(): MeshData {
+    if (!currentMeshData || currentMeshData.numTri === 0) {
+      throw new Error('No model to modify — run or open a model first.');
+    }
+    return currentMeshData;
+  }
+
+  /** The mesh a modifier should consume. When `preserveColor` is on and the
+   *  model is painted, bake the visible colors into `triColors` so a modifier
+   *  that resamples color (voxelize) inherits the paint; manifold modifiers
+   *  ignore `triColors` (they re-resolve paint regions after the run instead). */
+  function meshForModifier(preserveColor: boolean): MeshData {
+    const mesh = requireCurrentMeshForModifier();
+    if (preserveColor && (hasColorRegions() || hasModelColorRegions())) {
+      return applyTriColors(mesh);
+    }
+    return mesh;
+  }
+
+  /** True if the active model carries any paint (manual or model-declared). */
+  function modelHasColor(): boolean {
+    return hasColorRegions() || hasModelColorRegions();
+  }
+
+  // Non-destructive preview: swap the viewport mesh to the modifier's result
+  // WITHOUT running the engine or saving a version. Cleared by reverting to the
+  // current model's mesh (clearSurfacePreview). Mirrors the relief preview path.
+  // Colors are carried through subdivision in buildSurfaceModifier, so result.mesh
+  // already has the correct per-triangle colors — no post-hoc transfer needed.
+  function previewSurfaceModifier(result: ModifierResult, _preserveColor: boolean): void {
+    const previewMesh = result.kind === 'manifold' ? result.mesh : result.previewMesh;
+    if (previewMesh.numTri === 0) return;
+    updateMesh(previewMesh, { skipAutoFrame: true });
+  }
+
+  function clearSurfacePreview(): void {
+    if (!currentMeshData) return;
+    const restored = modelHasColor() ? applyTriColorsIfVisible(currentMeshData) : currentMeshData;
+    updateMesh(restored, { skipAutoFrame: true });
+  }
+
+  // Carry paint from the pre-modifier mesh onto a re-tessellated manifold result
+  // by nearest-triangle transfer. Region descriptors (coplanar/slab/…) re-resolve
+  // by geometry and collapse to nothing once fuzzy/smooth perturb the surface, so
+  // we instead snapshot the composited colors (paint + model colors, via
+  // buildTriColors) and map them onto the new mesh by centroid proximity, grouped
+  // into one `{ kind: 'triangles' }` region per distinct color. Those persist
+  // because the import→ofMesh pipeline is deterministic — the raw triangle ids
+  // stay valid across reloads. Returns the regions to rehydrate, or [] if nothing
+  // was painted. `transferredTris` reports coverage for the UI.
+  function buildCarriedColorRegions(
+    oldMesh: MeshData,
+    oldColors: Uint8Array,
+    newMesh: MeshData,
+  ): { regions: SerializedColorRegion[]; transferredTris: number } {
+    const painted = (oldColors as Uint8Array & { _painted?: Uint8Array })._painted;
+    const nearest = nearestTriangleMap(oldMesh, newMesh);
+    const groups = new Map<number, number[]>(); // packed rgb → new triangle ids
+    let transferredTris = 0;
+    for (let t = 0; t < newMesh.numTri; t++) {
+      const o = nearest[t];
+      if (o < 0) continue;
+      if (painted && !painted[o]) continue; // skip triangles that weren't painted
+      const r = oldColors[o * 3], g = oldColors[o * 3 + 1], b = oldColors[o * 3 + 2];
+      const rgb = (r << 16) | (g << 8) | b;
+      let arr = groups.get(rgb);
+      if (!arr) { arr = []; groups.set(rgb, arr); }
+      arr.push(t);
+      transferredTris++;
+    }
+    const regions: SerializedColorRegion[] = [];
+    let i = 0;
+    for (const [rgb, ids] of groups) {
+      regions.push({
+        name: `Surface color ${++i}`,
+        // ColorRegion.color is RGB in 0..1 (buildTriColors multiplies by 255);
+        // the packed rgb here is 0..255 bytes, so normalize each channel.
+        color: [((rgb >> 16) & 0xff) / 255, ((rgb >> 8) & 0xff) / 255, (rgb & 0xff) / 255],
+        source: 'face-pick',
+        descriptor: { kind: 'triangles', ids },
+        visible: true,
+      } as SerializedColorRegion);
+    }
+    return { regions, transferredTris };
+  }
+
+  async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean): Promise<Record<string, unknown>> {
+    // For manifold results the modifier already baked colors into its input and
+    // carried them through subdivision — result.mesh.triColors has the correct
+    // per-triangle paint (dense mesh, same shape as the engine output). We use
+    // that as the color source rather than the pre-modifier coarse mesh, which
+    // avoids the coarse→dense centroid-mapping errors that cause wrong colors.
+    const colorMesh = (preserveColor && result.kind === 'manifold' && result.mesh.triColors != null)
+      ? result.mesh : null;
+    cancelVoxelPaintIfActive();
+    dropPaintState();
+    if (result.kind === 'manifold') {
+      if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+      const comp: ImportedMesh = {
+        id: crypto.randomUUID(),
+        filename: result.label,
+        format: 'stl',
+        vertProperties: result.mesh.vertProperties,
+        triVerts: result.mesh.triVerts,
+        numVert: result.mesh.numVert,
+        numTri: result.mesh.numTri,
+        numProp: 3,
+      };
+      setActiveImports([comp]);
+      setValue(result.code);
+      const ok = await runCodeSync(result.code);
+      if (!ok) return { error: `Failed to apply ${result.label}` };
+      let geoData = getGeometryDataObj();
+      let carried = 0;
+      if (colorMesh && currentMeshData && geoData) {
+        const { regions, transferredTris } = buildCarriedColorRegions(colorMesh, colorMesh.triColors!, currentMeshData);
+        if (regions.length > 0) {
+          rehydrateColorRegions({ ...geoData, colorRegions: regions });
+          carried = transferredTris;
+          geoData = enrichGeometryDataWithColors(getGeometryDataObj());
+        }
+      }
+      const thumbnail = await captureThumbnail();
+      await saveVersion(result.code, geoData, thumbnail, result.label, undefined, {
+        force: true,
+        importedMeshes: [comp],
+      });
+      return { ok: true, label: result.label, geometry: getGeometryDataObj(), colorsCarried: carried };
+    }
+    // Voxel result: a self-contained `voxels.decode(...)` program, no imports.
+    // Color (when preserved) is baked into the grid at voxelize time, so it
+    // rides the emitted code — nothing extra to persist here.
+    if (getActiveLanguage() !== 'voxel') await switchLanguage('voxel');
+    setActiveImports([]);
+    setValue(result.code);
+    const ok = await runCodeSync(result.code);
+    if (!ok) return { error: `Failed to apply ${result.label}` };
+    const thumbnail = await captureThumbnail();
+    await saveVersion(result.code, getGeometryDataObj(), thumbnail, result.label, undefined, { force: true });
+    return { ok: true, label: result.label, geometry: getGeometryDataObj() };
+  }
+
+  // Build a modifier result from an id + options (shared by apply and preview).
+  // All three modifiers receive the color-baked mesh when preserveColor is on:
+  // fuzzy/smooth carry triColors (with _painted) through subdivision so the
+  // result already has correct per-triangle paint — no post-hoc transfer needed.
+  function buildSurfaceModifier(
+    id: 'fuzzy' | 'smooth' | 'voxelize',
+    opts: Record<string, unknown> | undefined,
+    preserveColor: boolean,
+  ): ModifierResult {
+    if (id === 'fuzzy') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultFuzzyOptions(mesh);
+      return applyFuzzy(mesh, {
+        amplitude: (opts?.amplitude as number) ?? base.amplitude,
+        scale: (opts?.scale as number) ?? base.scale,
+        octaves: (opts?.octaves as number) ?? base.octaves,
+        seed: (opts?.seed as number) ?? base.seed,
+      });
+    }
+    if (id === 'smooth') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultSmoothOptions();
+      return applySmooth(mesh, {
+        iterations: (opts?.iterations as number) ?? base.iterations,
+        subdivide: (opts?.subdivide as boolean) ?? base.subdivide,
+      });
+    }
+    // voxelize: feed the color-baked mesh when preserving so per-voxel color is sampled.
+    return applyVoxelize(meshForModifier(preserveColor), {
+      resolution: (opts?.resolution as number) ?? 32,
+      smooth: (opts?.smooth as boolean) ?? false,
+    });
+  }
+
   // === Expose window.partwright console API ===
   const partwrightAPI = {
+    /** Whether the current model carries paint (so the UI can warn before a
+     *  color-clearing modifier, or offer "preserve colors"). */
+    modelHasColor(): boolean { return modelHasColor(); },
+    /** Non-destructive viewport preview of a surface modifier (no version saved).
+     *  Call clearSurfacePreview() / re-run to restore. id: 'fuzzy'|'smooth'|'voxelize'. */
+    previewSurfaceModifier(id: 'fuzzy' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
+      try {
+        previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor), preserveColor);
+        return { ok: true };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Discard a live surface preview and restore the current model's mesh. */
+    clearSurfacePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
+    /** Apply a fuzzy-skin surface texture to the current model; saves a new version.
+     *  `preserveColor` (default true) re-resolves paint regions onto the new mesh. */
+    async applyFuzzySkin(opts?: { amplitude?: number; scale?: number; octaves?: number; seed?: number; preserveColor?: boolean }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('fuzzy', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Smooth/round the current model (Taubin λ/μ); saves a new version. */
+    async smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('smooth', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Voxelize the current model into the voxel engine; saves a new version. */
+    async voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('voxelize', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
     /** Run code string and update all views. Returns geometry data object. */
     async run(code?: string): Promise<Record<string, unknown>> {
       assertString(code, 'run(code)', { optional: true, allowEmpty: false });
@@ -10067,6 +10296,9 @@ async function main() {
   const apiWindow = window as unknown as Record<string, unknown>;
   apiWindow.partwright = partwrightAPI;
   apiWindow.mainifold = partwrightAPI;
+
+  // Surface modifiers UI (viewport ✦ Surface button + command-palette entries).
+  initSurfaceUI(partwrightAPI as unknown as Parameters<typeof initSurfaceUI>[0]);
 
   // Log API availability for AI agents
   console.info('Partwright: AI agents should use window.partwright -- start with partwright.help(). window.mainifold remains as a legacy alias. See /llms.txt');

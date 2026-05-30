@@ -10,6 +10,7 @@ import { manifoldApiCompletion } from './apiCompletions';
 import type { SourceDiagnostic } from '../geometry/types';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
 import { readPerTabPref, writePerTabPref } from '../storage/perTabPref';
+import { getConfig } from '../config/appConfig';
 
 /** Replicad/BREP sessions reuse the JavaScript editor since they're written
  *  as JS (`api.BREP.box(...)`), but we still track them as a distinct
@@ -22,8 +23,6 @@ let debounceTimer: number | null = null;
 let idleTimer: number | null = null;
 let activeDiagnostics: Diagnostic[] = [];
 
-/** How long typing must be idle before deferred error UI is surfaced. */
-const ERROR_IDLE_MS = 800;
 let currentLanguage: EditorLanguage = 'manifold-js';
 // Per-tab (with a shared seed for fresh tabs) so toggling auto-format in one
 // window doesn't flip it in another open window.
@@ -176,7 +175,7 @@ export function initEditor(
           if (idleTimer !== null) clearTimeout(idleTimer);
           idleTimer = window.setTimeout(() => {
             hooks.onIdle?.(getValue());
-          }, ERROR_IDLE_MS);
+          }, getConfig().ui.codeEditorErrorIdleMs);
         }
       }),
       EditorView.domEventHandlers({

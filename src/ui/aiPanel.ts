@@ -2708,6 +2708,53 @@ function formatTurnOutcome(o: TurnOutcome): string {
  *  streamLocalTurn throws "Local model … is not loaded" even when the weights
  *  are cached and the model is resident in GPU on the main thread. Running the
  *  loop here reunites streamLocalTurn (and interruptLocal) with that engine. */
+/** Show a blocking overlay asking the user to allow or decline an AI-initiated
+ *  import. Resolves true (allow) or false (decline). */
+function showToolConfirmation(toolName: string): Promise<boolean> {
+  return new Promise(resolve => {
+    const label = toolName === 'importImageAsRelief'
+      ? 'import an image as a 3D relief'
+      : toolName === 'importSvgAsRelief'
+      ? 'import an SVG as a 3D relief tile'
+      : `run "${toolName}"`;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60';
+
+    const card = document.createElement('div');
+    card.className = 'bg-zinc-800 rounded-lg p-5 max-w-sm mx-4 shadow-xl border border-zinc-600';
+
+    const msg = document.createElement('p');
+    msg.className = 'text-sm text-zinc-200 mb-4';
+    msg.textContent = `The AI wants to ${label}. Allow this?`;
+
+    const btns = document.createElement('div');
+    btns.className = 'flex gap-2 justify-end';
+
+    const declineBtn = document.createElement('button');
+    declineBtn.className = 'px-3 py-1.5 text-sm rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors';
+    declineBtn.textContent = 'Decline';
+
+    const allowBtn = document.createElement('button');
+    allowBtn.className = 'px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white transition-colors';
+    allowBtn.textContent = 'Allow';
+
+    btns.appendChild(declineBtn);
+    btns.appendChild(allowBtn);
+    card.appendChild(msg);
+    card.appendChild(btns);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+
+    const done = (allowed: boolean) => {
+      overlay.remove();
+      resolve(allowed);
+    };
+    allowBtn.addEventListener('click', () => done(true));
+    declineBtn.addEventListener('click', () => done(false));
+  });
+}
+
 function runTurn(input: RunTurnInput, callbacks?: RunTurnCallbacks): Promise<ChatMessage[]> {
   return input.toggles.provider === 'local'
     ? runTurnOnMainThread(input, callbacks)
@@ -2828,6 +2875,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         renderTranscript();
         renderCostMeter();
       },
+      confirmTool: (toolName) => showToolConfirmation(toolName),
       onToolResult: (_id, _name, result) => {
         if (result.isError) setTransientStatus('A tool errored. The agent will retry or surface the issue.');
       },

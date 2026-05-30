@@ -17,7 +17,7 @@ import { streamTurn as streamTurnGemini, type StreamCallbacks as GeminiStreamCal
 import { streamTurn as streamTurnCustom } from './custom';
 import { getKey, recordUsage, putMessages } from './db';
 import { recordEvent } from './diagnostics';
-import { buildToolList, executeTool } from './tools';
+import { buildToolList, executeTool, CONFIRM_REQUIRED_TOOLS } from './tools';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd, toggleSuffix } from './systemPrompt';
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
@@ -174,6 +174,10 @@ export interface RunTurnCallbacks {
   onAborted?: () => void;
   /** Unrecoverable error — the loop stops here. */
   onError?: (err: Error) => void;
+  /** Called before executing a tool that requires explicit user permission
+   *  (import tools). Return true to allow, false to decline. If absent, all
+   *  tools execute without a prompt. */
+  confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
 }
 
 /** Run one user turn through the agent loop. Returns the final history. */
@@ -254,7 +258,8 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     return workingHistory;
   }
 
-  for (let iter = 0; Number.isFinite(maxIter) ? iter < maxIter : true; iter++) {
+  let iter = 0;
+  for (; Number.isFinite(maxIter) ? iter < maxIter : true; iter++) {
     // Give the browser a frame between iterations so an agent running
     // many tool round-trips doesn't lock up the page.
     if (iter > 0) await yieldToBrowser();
@@ -619,8 +624,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   // and exits via end_turn / error / abort; under auto-continue the end_turn
   // exit is reached once the no-progress ceiling trips (so even infinity caps
   // can't spin forever on a model that never calls `finish`).
-  const reached = Number.isFinite(maxIter) ? maxIter : totalToolCalls;
-  callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'iteration_cap', iterations: reached });
+  callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'iteration_cap', iterations: iter });
   return workingHistory;
 }
 
@@ -648,6 +652,20 @@ async function executeAllWithRetry(
       callbacks.onToolResult?.(tc.id, tc.name, aborted);
       onEachResult?.(aborted, i);
       continue;
+    }
+    if (CONFIRM_REQUIRED_TOOLS.has(tc.name) && callbacks.confirmTool) {
+      const allowed = await callbacks.confirmTool(tc.name, tc.input);
+      if (!allowed) {
+        const declined: PersistedToolResult = {
+          toolUseId: tc.id,
+          content: '[Declined by user — only call import tools when the user has explicitly requested an import]',
+          isError: true,
+        };
+        results.push(declined);
+        callbacks.onToolResult?.(tc.id, tc.name, declined);
+        onEachResult?.(declined, i);
+        continue;
+      }
     }
     let attempt = 0;
     let result = await timedExecuteTool(tc.name, tc.input, executeToolFn);

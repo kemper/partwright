@@ -48,6 +48,26 @@ export interface AppConfig {
     charsPerToken: number;
     /** Estimated tokens per image block at standard resolution. */
     imageTokenEstimate: number;
+    /** Geometry execution timeout for the manifold-js (mesh) engine (ms). */
+    geometryTimeoutManifoldMs: number;
+    /** Geometry execution timeout for the OpenSCAD engine (ms). SCAD compiles
+     *  BOSL2-style libraries from source per call — complex gear/thread models
+     *  can exceed a minute on slow hardware. */
+    geometryTimeoutScadMs: number;
+    /** Geometry execution timeout for the replicad/BREP (OpenCASCADE) engine (ms). */
+    geometryTimeoutReplicadMs: number;
+    /** Token budget for the system-prompt block in local (WebLLM) medium-tier models. */
+    localPromptBudgetMedium: number;
+    /** Token budget for the system-prompt block in local (WebLLM) slim-tier models. */
+    localPromptBudgetSlim: number;
+    /** Token budget for native tool-calling schemas in local models. */
+    localToolsBudgetNative: number;
+    /** Token budget for prompt-engineered tool schemas in local models. */
+    localToolsBudgetPromptEngineered: number;
+    /** Safety-margin tokens added to the attention-sink context window budget. */
+    localAttentionSinkMargin: number;
+    /** Hard cap on attention-sink tokens for local models. */
+    localAttentionSinkMax: number;
   };
   renderer: {
     /** Three.js camera field-of-view in degrees. Takes effect on page reload. */
@@ -60,6 +80,28 @@ export interface AppConfig {
     gridSize: number;
     /** Number of grid divisions. Takes effect on page reload. */
     gridDivisions: number;
+    /** Orientation gizmo canvas size in CSS pixels. */
+    gizmoSizePx: number;
+    /** Orientation gizmo corner margin in CSS pixels. */
+    gizmoMarginPx: number;
+    /** Gizmo label hit-detection radius in orthographic units (0–2 range). */
+    gizmoHitRadius: number;
+    /** Gizmo snap-to-face animation duration in seconds. */
+    gizmoSnapDurationSec: number;
+    /** OrbitControls damping factor — lower is snappier, higher is smoother. */
+    orbitDampingFactor: number;
+    /** Ambient light intensity in the 3D viewport (0–2 range). */
+    ambientLightIntensity: number;
+    /** Primary directional light intensity (0–2 range). */
+    primaryLightIntensity: number;
+    /** Secondary fill light intensity (0–2 range). */
+    secondaryLightIntensity: number;
+    /** Idle time (ms) before an unused offscreen multi-view renderer is disposed. */
+    offscreenIdleDisposeMs: number;
+    /** Pointer activity grace window (ms) that keeps on-demand rendering active. */
+    pointerGraceMs: number;
+    /** Max time (ms) to wait for thumbnail generation before giving up. */
+    thumbnailTimeoutMs: number;
   };
   import: {
     /** Vertex-weld tolerance for STL imports (world units). */
@@ -70,12 +112,32 @@ export interface AppConfig {
     voxelHeavyThreshold: number;
     /** Max image resolution (pixels per side) when importing for relief. */
     reliefMaxResolution: number;
+    /** Timeout (ms) for fetching a remote file by URL in the import-from-URL flow. */
+    remoteFetchTimeoutMs: number;
+    /** Color-distance threshold for matching swapped filament colors (0–1, lower = stricter). */
+    filamentMatchThreshold: number;
+    /** Confidence score below which the filament swap guide shows a warning (0–1). */
+    filamentConfidenceWarnThreshold: number;
   };
   ui: {
     /** How long toast notifications stay on screen (ms). */
     toastDurationMs: number;
     /** Hover-tooltip show delay (ms). */
     tooltipDelayMs: number;
+    /** Idle delay (ms) after the last keystroke before error annotations appear in the code editor. */
+    codeEditorErrorIdleMs: number;
+    /** Debounce delay (ms) for the surface-modifier live preview. */
+    surfacePreviewDebounceMs: number;
+    /** Debounce delay (ms) for the relief import 2D preview. */
+    reliefPreviewDebounceMs: number;
+    /** Debounce delay (ms) for the relief import 3D preview. */
+    reliefPreview3dDebounceMs: number;
+    /** Delay (ms) before the progress modal appears (hides fast operations). */
+    progressModalShowDelayMs: number;
+    /** Heartbeat interval (ms) for the cross-tab session leader lock. */
+    sessionLockHeartbeatMs: number;
+    /** Time (ms) after which a session lock heartbeat is considered stale. */
+    sessionLockStaleMs: number;
   };
 }
 
@@ -98,6 +160,15 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     maxOutputTokensGemini: 32768,
     charsPerToken: 4,
     imageTokenEstimate: 1500,
+    geometryTimeoutManifoldMs: 60_000,
+    geometryTimeoutScadMs: 180_000,
+    geometryTimeoutReplicadMs: 180_000,
+    localPromptBudgetMedium: 1300,
+    localPromptBudgetSlim: 600,
+    localToolsBudgetNative: 100,
+    localToolsBudgetPromptEngineered: 500,
+    localAttentionSinkMargin: 200,
+    localAttentionSinkMax: 2048,
   },
   renderer: {
     fov: 50,
@@ -105,16 +176,37 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     interactionRenderScale: 0.6,
     gridSize: 40,
     gridDivisions: 40,
+    gizmoSizePx: 128,
+    gizmoMarginPx: 8,
+    gizmoHitRadius: 0.4,
+    gizmoSnapDurationSec: 0.4,
+    orbitDampingFactor: 0.1,
+    ambientLightIntensity: 0.6,
+    primaryLightIntensity: 0.8,
+    secondaryLightIntensity: 0.3,
+    offscreenIdleDisposeMs: 10_000,
+    pointerGraceMs: 350,
+    thumbnailTimeoutMs: 4000,
   },
   import: {
     stlWeldTolerance: 1e-5,
     voxelDefaultMaxSize: 64,
     voxelHeavyThreshold: 250_000,
     reliefMaxResolution: 512,
+    remoteFetchTimeoutMs: 15_000,
+    filamentMatchThreshold: 0.18,
+    filamentConfidenceWarnThreshold: 0.9,
   },
   ui: {
     toastDurationMs: 2200,
     tooltipDelayMs: 150,
+    codeEditorErrorIdleMs: 800,
+    surfacePreviewDebounceMs: 250,
+    reliefPreviewDebounceMs: 120,
+    reliefPreview3dDebounceMs: 250,
+    progressModalShowDelayMs: 250,
+    sessionLockHeartbeatMs: 3000,
+    sessionLockStaleMs: 8000,
   },
 };
 

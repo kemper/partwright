@@ -508,7 +508,7 @@ function buildCatalogTile(entry: FeaturedCatalogEntry, onOpen: () => void): HTML
   info.appendChild(name);
   if (entry.manifest.description) {
     const desc = document.createElement('div');
-    desc.className = 'text-[11px] text-zinc-400 mt-0.5 line-clamp-2 leading-snug';
+    desc.className = 'text-[11px] text-zinc-400 mt-0.5 line-clamp-1 leading-snug';
     desc.textContent = entry.manifest.description;
     info.appendChild(desc);
   }

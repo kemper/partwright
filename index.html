@@ -112,6 +112,11 @@
   <meta name="theme-color" content="#18181b" />
   <link rel="manifest" href="/manifest.json" />
   <link rel="stylesheet" href="/src/style.css" />
+  <!-- Preload landing-page fonts so they're ready before the JS handoff -->
+  <link rel="preload" href="/fonts/spacegrotesk-400.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/spacegrotesk-600.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/sora-700.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/sora-800.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
   <script src="coi-serviceworker.js"></script>
   <link rel="ai-instructions" href="ai.md" type="text/markdown" />
   <meta name="ai-instructions" content="See /llms.txt" />
@@ -146,12 +151,15 @@
   <!-- Inline landing page — rendered immediately on / before any JS loads.
        Removed by main.ts once the JS-built landing page is ready.
        Hidden by the sync script below on all non-landing routes. -->
-  <div id="landing-inline" style="position:fixed;inset:0;z-index:50;overflow-y:auto;background:#18181b;color:#fafafa;font-family:system-ui,-apple-system,sans-serif">
+  <div id="landing-inline" style="position:fixed;inset:0;z-index:50;overflow-y:auto;background:#18181b;color:#fafafa;font-family:'Space Grotesk',system-ui,-apple-system,sans-serif">
     <style>
       #li-hero{display:grid;grid-template-columns:1fr 1.1fr;gap:48px;align-items:center}
       @media(max-width:767px){#li-hero{grid-template-columns:1fr}#li-frame,#li-nav-links{display:none!important}}
       @keyframes li-pulse{0%,100%{opacity:1}50%{opacity:.45}}
       .li-sk{animation:li-pulse 2s ease-in-out infinite}
+      /* Match JS landing: text-5xl (3rem) below md, text-6xl (3.75rem) at md+ */
+      #li-h1{font-size:3rem}
+      @media(min-width:768px){#li-h1{font-size:3.75rem}}
     </style>
     <div style="display:flex;flex-direction:column;align-items:center;min-height:100%">
 
@@ -213,7 +221,7 @@
             </g></g>
             <rect x="1" y="1" width="102" height="102" rx="23" fill="none" stroke="#f59e0b" stroke-width="1.4" stroke-opacity="0.45"/>
           </svg>
-          <span style="font-weight:700;font-size:18px;letter-spacing:-0.025em;color:#fafafa">Partwright</span>
+          <span style="font-weight:700;font-size:18px;letter-spacing:-0.025em;color:#fafafa;font-family:'Sora',system-ui,sans-serif">Partwright</span>
         </div>
         <nav id="li-nav-links" style="display:flex;align-items:center;gap:28px;font-size:14px">
           <a href="/ideas" style="color:#a1a1aa;text-decoration:none">Ideas</a>
@@ -237,7 +245,7 @@
               <span>Voxels, BREP solids &amp; image relief</span>
               <span style="color:#71717a">&#8594;</span>
             </div>
-            <h1 style="font-weight:800;font-size:clamp(2.5rem,5vw,3.75rem);line-height:1.03;letter-spacing:-0.025em;margin:0 0 20px;color:#fafafa">
+            <h1 id="li-h1" style="font-weight:800;line-height:1.03;letter-spacing:-0.025em;margin:0 0 20px;color:#fafafa;font-family:'Sora',system-ui,sans-serif">
               Describe a part.<br>Get a <span style="background:linear-gradient(115deg,#fcd34d 8%,#2dd4bf 92%);-webkit-background-clip:text;background-clip:text;color:transparent">printable model.</span>
             </h1>
             <p style="font-size:18px;color:#a1a1aa;line-height:1.65;max-width:576px;margin:0 0 28px">
@@ -260,10 +268,10 @@
               <span style="width:11px;height:11px;border-radius:50%;background:#ef4444;display:inline-block"></span>
               <span style="width:11px;height:11px;border-radius:50%;background:#f59e0b;display:inline-block"></span>
               <span style="width:11px;height:11px;border-radius:50%;background:#22c55e;display:inline-block"></span>
-              <span style="margin-left:8px;font-size:12px;color:#52525b;font-family:monospace">partwright &middot; mounting-bracket</span>
+              <span style="margin-left:8px;font-size:12px;color:#52525b;font-family:'JetBrains Mono',ui-monospace,monospace">partwright &middot; mounting-bracket</span>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1.1fr;height:320px">
-              <div style="padding:16px;font-size:12.5px;line-height:1.7;background:#0a0a0c;border-right:1px solid #1c1c20;overflow:hidden;font-family:monospace">
+              <div style="padding:16px;font-size:12.5px;line-height:1.7;background:#0a0a0c;border-right:1px solid #1c1c20;overflow:hidden;font-family:'JetBrains Mono',ui-monospace,monospace">
                 <span style="color:#546e7a">// parametric bracket</span><br>
                 <span style="color:#c792ea">const</span> { <span style="color:#89ddff">Manifold</span> } = api;<br><br>
                 <span style="color:#c792ea">const</span> <span style="color:#ffcb6b">base</span> = <span style="color:#89ddff">Manifold</span>.<span style="color:#82aaff">cube</span>([<span style="color:#f78c6c">40</span>,<span style="color:#f78c6c">30</span>,<span style="color:#f78c6c">4</span>], <span style="color:#c792ea">true</span>);<br>
@@ -302,17 +310,17 @@
         <p style="text-align:center;font-size:12px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 40px">How it works</p>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:24px">
           <div style="background:rgba(39,39,42,0.4);border:1px solid #27272a;border-radius:12px;padding:24px">
-            <div style="font-size:12px;color:#2dd4bf;margin-bottom:12px;font-family:monospace">01</div>
+            <div style="font-size:12px;color:#2dd4bf;margin-bottom:12px;font-family:'JetBrains Mono',ui-monospace,monospace">01</div>
             <h3 style="font-size:15px;font-weight:600;color:#f4f4f5;margin:0 0 8px">Write or prompt</h3>
             <p style="font-size:14px;color:#a1a1aa;line-height:1.6;margin:0">Type code in the editor, or let an AI agent drive it. Both engines (manifold-js, OpenSCAD) work the same way.</p>
           </div>
           <div style="background:rgba(39,39,42,0.4);border:1px solid #27272a;border-radius:12px;padding:24px">
-            <div style="font-size:12px;color:#2dd4bf;margin-bottom:12px;font-family:monospace">02</div>
+            <div style="font-size:12px;color:#2dd4bf;margin-bottom:12px;font-family:'JetBrains Mono',ui-monospace,monospace">02</div>
             <h3 style="font-size:15px;font-weight:600;color:#f4f4f5;margin:0 0 8px">Render live</h3>
             <p style="font-size:14px;color:#a1a1aa;line-height:1.6;margin:0">Geometry compiles in WebAssembly and renders in a Three.js viewport with cross-sections and on-demand multi-angle snapshots.</p>
           </div>
           <div style="background:rgba(39,39,42,0.4);border:1px solid #27272a;border-radius:12px;padding:24px">
-            <div style="font-size:12px;color:#2dd4bf;margin-bottom:12px;font-family:monospace">03</div>
+            <div style="font-size:12px;color:#2dd4bf;margin-bottom:12px;font-family:'JetBrains Mono',ui-monospace,monospace">03</div>
             <h3 style="font-size:15px;font-weight:600;color:#f4f4f5;margin:0 0 8px">Verify &amp; export</h3>
             <p style="font-size:14px;color:#a1a1aa;line-height:1.6;margin:0">Sessions track every iteration with thumbnails and stats. Export GLB, STL, OBJ, or 3MF when ready.</p>
           </div>
