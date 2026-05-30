@@ -40,6 +40,7 @@ import type {
 import type { ToolDefinition } from './tools';
 import { readSseStream } from './sse';
 import { getCapabilities } from './catalog';
+import { getConfig } from '../config/appConfig';
 
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const CHAT_URL = `${OPENAI_BASE}/chat/completions`;
@@ -234,7 +235,7 @@ async function streamTurnResponses(
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
 ): Promise<StreamResult> {
-  const maxOutputTokens = spec.maxTokens ?? 8192;
+  const maxOutputTokens = spec.maxTokens ?? getConfig().ai.maxOutputTokensOpenai;
 
   const tools: ResponsesToolDef[] = spec.tools.map(t => ({
     type: 'function',
@@ -521,7 +522,7 @@ async function streamTurnChat(
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
 ): Promise<StreamResult> {
-  const maxCompletionTokens = spec.maxTokens ?? 8192;
+  const maxCompletionTokens = spec.maxTokens ?? getConfig().ai.maxOutputTokensOpenai;
 
   const tools: OpenAIToolDef[] = spec.tools.map(t => ({
     type: 'function',

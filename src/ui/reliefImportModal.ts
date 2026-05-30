@@ -12,6 +12,7 @@ import { createThumbnailFromBlob } from '../import/imageThumbnail';
 import { createModalShell } from './modalShell';
 import { BUTTON_PRIMARY, BUTTON_CANCEL } from './styleConstants';
 import * as THREE from 'three';
+import { getConfig } from '../config/appConfig';
 
 export interface ReliefImportModalOptions {
   aiAvailable: boolean;
@@ -34,7 +35,7 @@ export interface ReliefImportModalOptions {
 
 const PREVIEW_PX = 220;
 const DEBOUNCE_MS = 120;
-const MAX_RESOLUTION = 512;
+function getMaxResolution(): number { return getConfig().import.reliefMaxResolution; }
 // 3D preview rebuilds use a downscaled grid — mesh generation is fast at this
 // size and the wizard's static thumbnail doesn't benefit from print-quality
 // fidelity. Quality previews happen in the studio after Create.
@@ -194,7 +195,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   numberControl(commonSection.grid, 'Layer height', 'mm', () => opts.common.layerHeight, v => (opts.common.layerHeight = v), { min: 0.02, max: 1, step: 0.01 });
   numberControl(commonSection.grid, 'Base thickness', 'mm', () => opts.common.baseThickness, v => (opts.common.baseThickness = v), { min: 0, max: 20, step: 0.1 });
   numberControl(commonSection.grid, 'Max height', 'mm', () => opts.common.maxHeight, v => (opts.common.maxHeight = v), { min: 0.1, max: 50, step: 0.1 });
-  sliderControl(commonSection.grid, 'Resolution', 'cols', () => opts.common.resolution, v => (opts.common.resolution = v), { min: 8, max: MAX_RESOLUTION, step: 1, int: true });
+  sliderControl(commonSection.grid, 'Resolution', 'cols', () => opts.common.resolution, v => (opts.common.resolution = v), { min: 8, max: getMaxResolution(), step: 1, int: true });
   sliderControl(commonSection.grid, 'Smoothing', 'px', () => opts.common.smoothing, v => (opts.common.smoothing = v), { min: 0, max: 10, step: 1, int: true });
 
   // Luminance knobs — luminance + ai modes.

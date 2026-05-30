@@ -311,6 +311,7 @@ The app uses path-based routing for top-level pages and query parameters for vie
 - `/` — Landing page (hero + recent sessions grid)
 - `/editor` — Editor view (code + viewport)
 - `/catalog` — Curated catalog of premade sessions
+- `/ideas` — Ideas/showcase page: starter prompts, technique showcases, and interactive "use your own photo" flows. Backed by the `src/ideas/ideas.ts` dataset, which also powers the AI panel's 💡 prompt library + empty-state chips. Starter/technique tiles drop a prompt into the AI panel (populate, don't send — `prefillAiInput`); interactive tiles reuse the image→voxel and Relief import flows.
 - `/help` — Help/docs page
 
 **Query parameters** (on `/editor`):
@@ -370,6 +371,17 @@ Concretely, when adding a feature:
 - **App-level preferences that used to be one shared localStorage key should be per-tab** (units, render quality, editor auto-format). Use `readPerTabPref`/`writePerTabPref` (`src/storage/perTabPref.ts`): the live value is per-tab (sessionStorage) with a localStorage seed so a *fresh* tab still inherits the last choice, but already-open tabs never adopt a peer's change. Don't attach a `storage` listener that live-mirrors them.
 - **`storage`-event and `BroadcastChannel` handlers must scope to the receiving tab's own session** before acting — gate on `msg.sessionId === currentState.session?.id` (see `tabSync.ts` consumers and `sessionLock.ts`, which guards on its own session's leader-token key). Never adopt a peer's provider/model/toggles live.
 - **Truly-global state is the exception, and must be additive, not last-write-wins.** Custom local models and system-prompt overrides are shared across tabs on purpose; keep such writes merge-friendly so a peer tab's blob write can't clobber another tab's addition.
+
+### Numeric Constants and App Config
+
+Never hardcode numeric tuning constants — timeouts, limits, thresholds, budgets, quality knobs — directly in source files. Instead:
+
+1. **Add the constant to `src/config/appConfig.ts`** — pick the right section (`ai`, `renderer`, `import`, or `ui`), add a typed field to `AppConfig`, a default in `APP_CONFIG_DEFAULTS`, and a JSDoc comment explaining what it controls.
+2. **Read it with `getConfig().<section>.<field>`** at the call site rather than storing it in a module-level `const`. This lets the user's saved override take effect immediately.
+3. **Expose it in `src/ui/advancedSettingsModal.tsx`** — add a `<Field>` inside the matching `<Section>` with `label`, `hint`, `defaultValue`, `min`, `max`, and an `onChange` that calls `set(section, key, v)`.
+4. **Worker context**: `getConfig()` in a Worker returns static defaults (no `localStorage`). If the value must be live for a Worker, thread it through the relevant message (e.g. `toolCallTimeoutMs` is passed via the `run_turn` message in `agentWorkerClient.ts`).
+
+The only exceptions are values that are truly structural constants (array indices, enum values, magic bytes) rather than tunable knobs.
 
 ### Dead Code
 

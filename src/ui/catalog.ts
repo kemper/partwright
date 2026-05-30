@@ -28,6 +28,8 @@ export interface CatalogCallbacks {
   onBack: () => void;
   /** Called with the parsed session payload when a tile is clicked. */
   onLoadEntry: (entry: CatalogManifestEntry, payload: ExportedSession) => void | Promise<void>;
+  /** Optional: open the /ideas page (reciprocal cross-link in the header). */
+  onOpenIdeas?: () => void;
 }
 
 interface LoadedEntry {
@@ -136,6 +138,13 @@ export async function createCatalogPage(
   const intro = document.createElement('p');
   intro.className = 'w-full max-w-5xl px-6 -mt-4 mb-6 text-sm text-zinc-400 leading-relaxed';
   intro.textContent = 'Curated premade models, grouped by what makes each one tick — parametric, JavaScript, implicit-surface (SDF), OpenSCAD, and solid-CAD (BREP). Click a tile to import it as a fresh session you can edit.';
+  if (callbacks.onOpenIdeas) {
+    const ideasLink = document.createElement('button');
+    ideasLink.className = 'ml-1 text-teal-300 hover:text-teal-200 underline decoration-dotted';
+    ideasLink.textContent = 'Looking for ideas to try? →';
+    ideasLink.addEventListener('click', () => callbacks.onOpenIdeas!());
+    intro.appendChild(ideasLink);
+  }
   page.appendChild(intro);
 
   // Body: grid (loading / empty / error states handled below).

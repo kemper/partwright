@@ -5,15 +5,12 @@
 // uploaded twice doesn't create two rows.
 
 import { openPartwrightDB } from '../storage/db';
+import { getConfig } from '../config/appConfig';
 import type { ImageSource } from './types';
 
 const STORE = 'aiAttachments';
 
-/** Hard ceiling on rows kept in the store. Pruned oldest-first when
- *  putAttachment crosses the limit. Twenty thumbnails comfortably fit in
- *  a single modal scroll and bound IndexedDB usage at ~100 MB worst case
- *  (5 MB Anthropic per-image cap × 20). */
-const MAX_ATTACHMENTS = 20;
+function getMaxAttachments(): number { return getConfig().ai.maxAttachments; }
 
 export interface RecentAttachment {
   /** SHA-256 hex of the image bytes — also serves as the keyPath. */
@@ -69,7 +66,7 @@ export async function listRecentAttachments(): Promise<RecentAttachment[]> {
 }
 
 /** Write or refresh an attachment. Returns the stored row's id so callers
- *  can re-fetch later. Prunes oldest rows past MAX_ATTACHMENTS. */
+ *  can re-fetch later. Prunes oldest rows past getMaxAttachments(). */
 export async function putAttachment(img: ImageSource): Promise<string> {
   const id = await sha256Hex(img.data);
   const now = Date.now();
@@ -111,10 +108,10 @@ export async function putAttachment(img: ImageSource): Promise<string> {
     const allReq = store.getAll();
     allReq.onsuccess = () => {
       const all = allReq.result as RecentAttachment[];
-      if (all.length > MAX_ATTACHMENTS) {
+      if (all.length > getMaxAttachments()) {
         const oldest = all
           .sort((a, b) => a.lastUsedAt - b.lastUsedAt)
-          .slice(0, all.length - MAX_ATTACHMENTS);
+          .slice(0, all.length - getMaxAttachments());
         for (const drop of oldest) store.delete(drop.id);
       }
     };

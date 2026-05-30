@@ -9,6 +9,7 @@ import { useMemo, useRef, useEffect } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { mountPreactModal } from './preact/mount';
 import { BUTTON_CANCEL, BUTTON_PRIMARY } from './styleConstants';
+import { getConfig } from '../config/appConfig';
 import {
   computeImageVoxelLayout,
   extractImagePalette,
@@ -61,7 +62,7 @@ async function decodeFileToImageData(file: File): Promise<ImageData> {
 }
 
 // Above this the model gets heavy to mesh/render; we warn but don't block.
-const HEAVY_VOXEL_COUNT = 250_000;
+function getHeavyVoxelCount(): number { return getConfig().import.voxelHeavyThreshold; }
 
 type Opts = Required<Omit<ImageToVoxelOptions, 'flatColor' | 'backgroundColor' | 'palette'>> & {
   flatColor: [number, number, number];
@@ -72,6 +73,28 @@ type Opts = Required<Omit<ImageToVoxelOptions, 'flatColor' | 'backgroundColor' |
 /** Default number of colors to extract when the user switches on the custom
  *  palette (and the posterize default). */
 const DEFAULT_COLOR_COUNT = 6;
+
+function getDefaultOpts(): Opts {
+  return {
+    maxSize: getConfig().import.voxelDefaultMaxSize,
+    mode: 'billboard',
+    depth: 1,
+    maxHeight: 16,
+    baseThickness: 1,
+    invert: false,
+    alphaThreshold: 128,
+    colorMode: 'original',
+    flatColor: [180, 180, 180],
+    gamma: 1,
+    brightness: 0,
+    contrast: 0,
+    saturation: 0,
+    posterizeColors: 0,
+    palette: null,
+    removeBackground: false,
+    codeStyle: 'decode',
+  };
+}
 
 const DEFAULT_OPTS: Opts = {
   maxSize: 64,
@@ -98,9 +121,10 @@ const DEFAULT_OPTS: Opts = {
  *  the modal has no control for — auto-detect is used when removeBackground is
  *  on). */
 function seedOpts(init?: ImageToVoxelOptions): Opts {
-  if (!init) return { ...DEFAULT_OPTS };
+  if (!init) return getDefaultOpts();
+  const defaults = getDefaultOpts();
   return {
-    maxSize: init.maxSize ?? DEFAULT_OPTS.maxSize,
+    maxSize: init.maxSize ?? defaults.maxSize,
     mode: init.mode ?? DEFAULT_OPTS.mode,
     depth: init.depth ?? DEFAULT_OPTS.depth,
     maxHeight: init.maxHeight ?? DEFAULT_OPTS.maxHeight,
@@ -367,7 +391,7 @@ function ImageVoxelBody(props: {
     ctx.putImageData(img, 0, 0);
   }, [layout, opts.mode]);
 
-  const heavy = layout.voxelCount > HEAVY_VOXEL_COUNT;
+  const heavy = layout.voxelCount > getHeavyVoxelCount();
   const empty = layout.voxelCount === 0;
 
   // Modal-first: no image picked yet. Show just the "Choose image…" call to

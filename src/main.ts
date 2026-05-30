@@ -39,7 +39,7 @@ import { registerCommands } from './ui/commandPalette';
 import { showQualitySettingsModal } from './ui/qualitySettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
-import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar } from './ui/aiPanel';
+import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput } from './ui/aiPanel';
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
@@ -49,6 +49,8 @@ import { createLegalPage } from './ui/legal';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
 import { showExportConfirm, hasExportWarning, type ExportWarningInfo } from './ui/exportConfirmModal';
 import { createCatalogPage, type CatalogManifestEntry } from './ui/catalog';
+import { createIdeasPage } from './ui/ideasPage';
+import type { Idea } from './ideas/ideas';
 import { createWhatsNewPage } from './ui/whatsNew';
 import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
@@ -249,6 +251,7 @@ import {
   checkAssertions,
   type GeometryAssertions,
 } from './geometry/statsComputation';
+import { getConfig } from './config/appConfig';
 
 // Load examples as raw text — JS and SCAD
 const jsExampleModules = import.meta.glob('../examples/*.js', { query: '?raw', import: 'default' });
@@ -419,7 +422,7 @@ export type CoverageMode = typeof COVERAGE_MODES[number];
 const BASE_TITLE = 'Partwright';
 let _expectedTitle = 'Partwright — AI-Driven Parametric CAD in Your Browser';
 
-function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | '404' | 'catalog' | 'legal' | 'whats-new'; sessionName?: string | null }) {
+function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | '404' | 'catalog' | 'ideas' | 'legal' | 'whats-new'; sessionName?: string | null }) {
   let route: RouteName;
   let titleOverride: string | undefined;
   if (context?.page === 'landing' || (context?.page === undefined && shouldShowLanding())) {
@@ -428,6 +431,8 @@ function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | 
     route = 'help';
   } else if (context?.page === 'catalog') {
     route = 'catalog';
+  } else if (context?.page === 'ideas') {
+    route = 'ideas';
   } else if (context?.page === 'legal') {
     route = 'legal';
   } else if (context?.page === 'whats-new') {
@@ -1509,6 +1514,10 @@ function shouldShowCatalog(): boolean {
   return window.location.pathname === '/catalog' && !hasShareHash();
 }
 
+function shouldShowIdeas(): boolean {
+  return window.location.pathname === '/ideas' && !hasShareHash();
+}
+
 function shouldShowWhatsNew(): boolean {
   return window.location.pathname === '/whats-new';
 }
@@ -1520,7 +1529,7 @@ function shouldShowLegal(): boolean {
 function shouldShow404(): boolean {
   if (hasShareHash()) return false;
   const path = window.location.pathname;
-  return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog' && path !== '/legal' && path !== '/whats-new';
+  return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog' && path !== '/ideas' && path !== '/legal' && path !== '/whats-new';
 }
 
 /** True when the editor view is the active page. Editor-scoped command-palette
@@ -2325,7 +2334,7 @@ async function main() {
     } catch (e) {
       clearTimeout(timer);
       if ((e as Error).name === 'AbortError') throw new Error('The request timed out.');
-      throw new Error('Could not fetch that URL (network error or blocked by the remote server).');
+      throw new Error('Could not fetch that URL. The server may block cross-origin requests, or the URL may point to a page rather than a direct file — try finding the direct file URL, or download and upload instead.');
     }
     if (!res.ok) {
       clearTimeout(timer);
@@ -2726,7 +2735,7 @@ async function main() {
       : 0;
     const scaleTolerance = Math.max(diag * 5e-6, 1e-6);
 
-    const tolerances = [1e-5, 1e-4, 1e-3, scaleTolerance];
+    const tolerances = [getConfig().import.stlWeldTolerance, 1e-4, 1e-3, scaleTolerance];
     let bestMesh = probe;
     let maxTried = 0;
     let manifoldError: string | null = null;
@@ -3767,6 +3776,7 @@ async function main() {
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
     { id: 'toggle-diagnostics', title: 'Toggle diagnostic log', hint: 'View', keywords: 'errors warnings console', run: () => toggleDiagnosticsPanel() },
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
+    { id: 'open-ideas', title: 'Open ideas', hint: 'Navigate', keywords: 'prompts examples inspiration showcase what can i do', run: () => { showIdeasPage(); } },
     { id: 'open-help', title: 'Open help', hint: 'Navigate', keywords: 'docs documentation guide', run: () => showHelp() },
     { id: 'open-whats-new', title: "Open what's new", hint: 'Navigate', keywords: 'changelog recent features updates release notes', run: () => showWhatsNewPage() },
     { id: 'open-quality', title: 'Modeling quality settings', hint: 'Settings', keywords: 'resolution curve segments smoothness', run: () => showQualitySettingsModal() },
@@ -3910,6 +3920,7 @@ async function main() {
     showEditorUI(landingEl, helpEl, editorUI);
     if (notFoundEl) notFoundEl.classList.add('hidden');
     if (catalogEl) catalogEl.classList.add('hidden');
+    if (ideasEl) ideasEl.classList.add('hidden');
     if (legalEl) legalEl.classList.add('hidden');
     overlayContainer.classList.add('hidden');
     window.dispatchEvent(new Event('resize'));
@@ -4012,6 +4023,7 @@ async function main() {
         onOpenEditor: openEditorFromLanding,
         onOpenHelp: () => showHelp(),
         onOpenCatalog: () => { void showCatalogPage(); },
+        onOpenIdeas: () => { showIdeasPage(); },
         onOpenWhatsNew: () => showWhatsNewPage(),
         onTakeTour: () => { void takeGuidedTour(); },
         onOpenSession: openSessionFromLanding,
@@ -4028,6 +4040,7 @@ async function main() {
     helpEl?.classList.add('hidden');
     notFoundEl?.classList.add('hidden');
     catalogEl?.classList.add('hidden');
+    ideasEl?.classList.add('hidden');
     legalEl?.classList.add('hidden');
     whatsNewEl?.classList.add('hidden');
     page.classList.remove('hidden');
@@ -4048,6 +4061,7 @@ async function main() {
     landingEl?.classList.add('hidden');
     helpEl?.classList.add('hidden');
     catalogEl?.classList.add('hidden');
+    ideasEl?.classList.add('hidden');
     legalEl?.classList.add('hidden');
     whatsNewEl?.classList.add('hidden');
     notFoundEl.classList.remove('hidden');
@@ -4079,6 +4093,7 @@ async function main() {
     if (landingEl) landingEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
     if (catalogEl) catalogEl.classList.add('hidden');
+    if (ideasEl) ideasEl.classList.add('hidden');
     if (legalEl) legalEl.classList.add('hidden');
     if (whatsNewEl) whatsNewEl.classList.add('hidden');
     helpEl.classList.remove('hidden');
@@ -4109,6 +4124,7 @@ async function main() {
     if (landingEl) landingEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
     if (catalogEl) catalogEl.classList.add('hidden');
+    if (ideasEl) ideasEl.classList.add('hidden');
     if (helpEl) helpEl.classList.add('hidden');
     legalEl.classList.remove('hidden');
     updateDocumentTitle({ page: 'legal' });
@@ -4133,6 +4149,7 @@ async function main() {
           }
         },
         onLoadEntry: handleCatalogEntryLoad,
+        onOpenIdeas: () => { showIdeasPage(); },
       });
     }
     overlayContainer.classList.remove('hidden');
@@ -4142,6 +4159,7 @@ async function main() {
     if (notFoundEl) notFoundEl.classList.add('hidden');
     if (legalEl) legalEl.classList.add('hidden');
     if (whatsNewEl) whatsNewEl.classList.add('hidden');
+    if (ideasEl) ideasEl.classList.add('hidden');
     catalogEl.classList.remove('hidden');
     updateDocumentTitle({ page: 'catalog' });
   }
@@ -4172,6 +4190,7 @@ async function main() {
     if (landingEl) landingEl.classList.add('hidden');
     if (helpEl) helpEl.classList.add('hidden');
     if (catalogEl) catalogEl.classList.add('hidden');
+    if (ideasEl) ideasEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
     whatsNewEl.classList.remove('hidden');
     updateDocumentTitle({ page: 'whats-new' });
@@ -4191,6 +4210,84 @@ async function main() {
     if (!engineOk) return;
     await importSessionPayload(payload);
     updateDocumentTitle({ page: 'editor' });
+  }
+
+  // === Ideas page handlers ===
+
+  /** Enter the editor with a live session, ready for a hand-off. Used by the
+   *  ideas-page actions: they all start by getting the user into the editor
+   *  (pushing the history entry BEFORE any session mutation, same reason as
+   *  handleCatalogEntryLoad). */
+  async function enterEditorForIdea(): Promise<void> {
+    updateAppHistory('/editor', 'push');
+    transitionToEditor();
+    await ensureEditorReady();
+  }
+
+  // A starter/technique idea — drop its prompt into the AI panel (don't send).
+  async function handleIdeaUsePrompt(idea: Idea): Promise<void> {
+    await enterEditorForIdea();
+    if (window.location.pathname !== '/editor') return;
+    if (!getState().session) {
+      await createSession();
+      setStatus(statusBar, 'ready', 'Ready');
+      runCode(defaultCode);
+    }
+    updateDocumentTitle({ page: 'editor' });
+    prefillAiInput(idea.prompt ?? '');
+  }
+
+  // An interactive idea: turn the user's photo into a colored voxel session
+  // (reuses the existing image→voxel import flow, modal and all).
+  async function handleIdeaPhotoToVoxel(file: File): Promise<void> {
+    await enterEditorForIdea();
+    if (window.location.pathname !== '/editor') return;
+    await handleImageImport(file);
+    updateDocumentTitle({ page: 'editor' });
+  }
+
+  // An interactive idea: emboss the user's photo as a smooth relief tile
+  // (reuses the existing Relief import wizard).
+  async function handleIdeaPhotoToRelief(file: File): Promise<void> {
+    await enterEditorForIdea();
+    if (window.location.pathname !== '/editor') return;
+    openReliefImportFlow(file);
+    updateDocumentTitle({ page: 'editor' });
+  }
+
+  let ideasEl: HTMLElement | null = null;
+  let ideasHasAppBackTarget = false;
+  function showIdeasPage(options: { history?: 'push' | 'replace' | 'none' } = {}) {
+    const historyMode = options.history ?? 'push';
+    if (historyMode !== 'none') {
+      ideasHasAppBackTarget = currentURLPathAndSearch() !== '/ideas';
+      updateAppHistory('/ideas', historyMode);
+    }
+    if (!ideasEl) {
+      ideasEl = createIdeasPage(overlayContainer, {
+        onBack: () => {
+          if (ideasHasAppBackTarget) {
+            window.history.back();
+          } else {
+            updateAppHistory('/', 'replace');
+            void syncRouteFromURL();
+          }
+        },
+        onUsePrompt: handleIdeaUsePrompt,
+        onPhotoToVoxel: handleIdeaPhotoToVoxel,
+        onPhotoToRelief: handleIdeaPhotoToRelief,
+      });
+    }
+    overlayContainer.classList.remove('hidden');
+    editorUI.classList.add('hidden');
+    if (landingEl) landingEl.classList.add('hidden');
+    if (helpEl) helpEl.classList.add('hidden');
+    if (notFoundEl) notFoundEl.classList.add('hidden');
+    if (legalEl) legalEl.classList.add('hidden');
+    if (catalogEl) catalogEl.classList.add('hidden');
+    if (whatsNewEl) whatsNewEl.classList.add('hidden');
+    ideasEl.classList.remove('hidden');
+    updateDocumentTitle({ page: 'ideas' });
   }
 
   // === Shared-link preview mode (read-only) ===
@@ -4435,7 +4532,7 @@ async function main() {
     // Home — confusing because no editor / session is loaded to act on
     // it. /editor's own loader updates the AI session via onStateChange
     // when a session opens, so we don't need to set it explicitly here.
-    if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShowLegal() || shouldShowWhatsNew() || shouldShow404()) {
+    if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShowIdeas() || shouldShowLegal() || shouldShowWhatsNew() || shouldShow404()) {
       void setAiActiveSession(null);
     }
     // A share-link hash takes precedence over the normal editor sync on this
@@ -4449,6 +4546,8 @@ async function main() {
       showHelp({ history: 'none' });
     } else if (shouldShowCatalog()) {
       await showCatalogPage({ history: 'none' });
+    } else if (shouldShowIdeas()) {
+      showIdeasPage({ history: 'none' });
     } else if (shouldShowLegal()) {
       showLegal({ history: 'none' });
     } else if (shouldShowWhatsNew()) {
@@ -4486,6 +4585,7 @@ async function main() {
   const showLanding = shouldShowLanding();
   const showHelpPage = shouldShowHelp();
   const showCatalog = shouldShowCatalog();
+  const showIdeas = shouldShowIdeas();
   const showLegalPage = shouldShowLegal();
   const showWhatsNew = shouldShowWhatsNew();
   const show404 = shouldShow404();
@@ -4496,6 +4596,8 @@ async function main() {
     showHelp({ history: 'none' });
   } else if (showCatalog) {
     await showCatalogPage({ history: 'none' });
+  } else if (showIdeas) {
+    showIdeasPage({ history: 'none' });
   } else if (showLegalPage) {
     showLegal({ history: 'none' });
   } else if (showWhatsNew) {
@@ -5045,7 +5147,7 @@ async function main() {
 
   // Start guided tour on first visit (after editor fully renders) — but not over
   // a shared preview, which is a read-only landing surface for an external link.
-  if (!showLanding && !showHelpPage && !showCatalog && !showLegalPage && !showWhatsNew && !show404 && !hasShareHash()) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showIdeas && !showLegalPage && !showWhatsNew && !show404 && !hasShareHash()) {
     maybeStartTour();
     maybeShowShortcutsHint();
     maybeShowLowMemoryNotice();
@@ -5056,7 +5158,7 @@ async function main() {
   // never createSession()s + runs default code on this path; it strips the hash
   // and degrades to a normal editable editor if the link is invalid. (The
   // editor is ready here; ensureEngineStarted is awaited inside each path.)
-  if (!showLanding && !showHelpPage && !showCatalog && !showLegalPage && !showWhatsNew && !show404) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showIdeas && !showLegalPage && !showWhatsNew && !show404) {
     if (hasShareHash()) {
       await enterSharedFromHash();
     } else {
@@ -5171,7 +5273,7 @@ async function main() {
   }
 
   // Set initial editor title if we're on the editor page
-  if (!showLanding && !showHelpPage && !showCatalog && !showLegalPage && !showWhatsNew && !show404) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showIdeas && !showLegalPage && !showWhatsNew && !show404) {
     updateDocumentTitle({ page: 'editor' });
   }
 
