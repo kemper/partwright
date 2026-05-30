@@ -9,7 +9,7 @@
 import type { Provider } from './types';
 import { getConfig } from '../config/appConfig';
 
-export type DiagnosticKind = 'streamTurn' | 'summarize' | 'validateKey' | 'review';
+export type DiagnosticKind = 'streamTurn' | 'summarize' | 'validateKey' | 'review' | 'filament';
 export type DiagnosticStatus = 'ok' | 'error' | 'aborted';
 
 export interface DiagnosticEvent {

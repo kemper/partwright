@@ -377,6 +377,11 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'getColorPalette',
+    description: 'Read the user\'s configured filament color palette: the real filament colors they can print with (name + hex), how many can be loaded at once (maxSimultaneous), and whether enforcement is on. Returns { configured, enforce, maxSimultaneous, colors: [{name, hex}] }. When enforce is true you MUST restrict ALL coloring — api.label colors, voxel colors, and paint tools — to these colors, and use at most maxSimultaneous distinct colors. Even when enforce is false, prefer these colors if the user asks to match their filament.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'listVersions',
     description: 'List versions in the current session: { id, index, label, timestamp, status }.',
     input_schema: { type: 'object', properties: {} },
@@ -1069,6 +1074,7 @@ const ALWAYS_AVAILABLE = new Set([
   'getMeshSummary',
   'getFeatureCentroids',
   'getSessionContext',
+  'getColorPalette',
   'listVersions',
   // loadVersion is intentionally NOT here — it's listed in SAVE_GATED so
   // the model can't rewind state when the user has paused commits.
@@ -1412,6 +1418,8 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.getMeshSummary(input);
     case 'getSessionContext':
       return api.getSessionContext();
+    case 'getColorPalette':
+      return api.getColorPalette();
     case 'listVersions':
       return api.listVersions();
     case 'loadVersion':

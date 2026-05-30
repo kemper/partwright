@@ -159,6 +159,8 @@ import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontS
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
+import { loadPalette } from './color/palette';
+import { initColorRemapUI, forceCloseColorRemap, isColorRemapOpen } from './color/colorRemapUI';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
@@ -4210,6 +4212,7 @@ async function main() {
     setReadOnlyReason('shared', true);
     disableRun();
     if (isPaintOpen()) closePaintMenu();
+    forceCloseColorRemap();
     setControlNeutralized('paint-toggle', true);
     setControlNeutralized('btn-save-version', true);
     setControlNeutralized('lang-toggle', true);
@@ -4756,6 +4759,7 @@ async function main() {
       if (userInitiated) {
         // Don't let two overlay panels share the top-right slot.
         if (isPaintOpen()) closePaintMenu();
+        forceCloseColorRemap();
         if (isAnnotateOpen()) closeAnnotateMenu();
         closeMeasureIfActive();
       }
@@ -4874,6 +4878,15 @@ async function main() {
   initDimensionsToggle(clipControls);
   initAnnotateUI(clipControls);
   initPaintUI(clipControls);
+  initColorRemapUI(clipControls, {
+    getMesh: () => currentMeshData,
+    preview: (triColors) => {
+      // Temporary recolor for the live preview; null restores real colors.
+      if (triColors && currentMeshData) updateMesh({ ...currentMeshData, triColors }, { skipAutoFrame: true });
+      else paintedColorRefresh();
+    },
+    onOpen: () => { closePaintMenu(); },
+  });
   initVoxelPaintUI(clipControls, {
     activate: async () => {
       const code = getValue();
@@ -5367,6 +5380,20 @@ async function main() {
     /** Get current editor code */
     getCode(): string {
       return getValue();
+    },
+
+    /** Read the user's configured filament color palette: the filaments they
+     *  can print with (name + hex), how many load at once (maxSimultaneous),
+     *  and whether AI enforcement is on. Mirrors what the AI sees in its
+     *  per-turn prompt, exposed so console / MCP callers can read it too. */
+    getColorPalette(): { configured: boolean; enforce: boolean; maxSimultaneous: number; colors: { name: string; hex: string }[] } {
+      const p = loadPalette();
+      return {
+        configured: p.colors.length > 0,
+        enforce: p.enforce,
+        maxSimultaneous: p.maxSimultaneous,
+        colors: p.colors.map(c => ({ name: c.name, hex: c.hex })),
+      };
     },
 
     /** Set editor code (does not auto-run — call .run() after) */
@@ -10476,6 +10503,10 @@ async function main() {
       // against the previous base mesh — discards its result instead of stamping
       // a refined mesh built from the OLD base over result.mesh.
       resetPaintWorkerState();
+      // A fresh run replaces the mesh, so the Colors panel's enumerated colors
+      // (keyed to the old triangle indices) are stale — close it. Reopening
+      // re-enumerates against the new geometry.
+      forceCloseColorRemap();
       currentMeshData = result.mesh;
       // A fresh run is the new pristine base for any subsequent smooth-brush
       // subdivision; rehydrating a saved version rebuilds the refined mesh from
@@ -10689,6 +10720,7 @@ async function main() {
       let closed = false;
       if (isAnnotateOpen()) { closeAnnotateMenu(); closed = true; }
       if (isPaintOpen()) { closePaintMenu(); closed = true; }
+      if (isColorRemapOpen()) { forceCloseColorRemap(); closed = true; }
       if (isSimplifyOpen()) { closeSimplifyMenu(); closed = true; }
       if (closeMeasureIfActive()) closed = true;
       if (getClipState().enabled) { setClipping(false); syncClipUI(); closed = true; }

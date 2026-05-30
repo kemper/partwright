@@ -127,6 +127,11 @@ export interface QuantizedOptions {
    *  background, where the default ("bright = tall") buries the subject
    *  inside a taller background. */
   invertHeights: boolean;
+  /** When set (non-empty), snap each cluster's representative color to the
+   *  nearest color in this filament palette (0..255 RGB) — "constrain to my
+   *  filament palette", limiting tile colors to the best match. Heights are
+   *  unaffected. Null / omitted = keep the raw k-means cluster colors. */
+  snapPalette?: [number, number, number][] | null;
   /** All circular keychain holes on the tile. Each is centred at (cxMm, cyMm)
    *  in model coords. Empty = no holes. */
   holes: TileHole[];

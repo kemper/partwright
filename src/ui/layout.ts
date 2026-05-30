@@ -219,6 +219,15 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   qualityNavBtn.title = 'Modeling quality (default curve resolution)';
   qualityNavBtn.setAttribute('aria-label', 'Modeling quality settings');
 
+  // Filament palette — your printable colors, used by the paint picker, the
+  // Colors remap tool, and (when enforced) AI sessions. Lazy-imported so the
+  // modal's AI-provider deps stay out of the core layout chunk.
+  const paletteNavBtn = makeAction('btn-palette', '🧵', 'Palette', () => {
+    void import('./paletteModal').then(m => m.showPaletteModal());
+  });
+  paletteNavBtn.title = 'Filament palette — your printable colors (+ AI photo auto-fill)';
+  paletteNavBtn.setAttribute('aria-label', 'Filament palette');
+
   const diagNavBtn = makeAction('btn-diagnostics', '⚠', 'Diagnostics', () => opts.onToggleDiagnostics?.());
   diagNavBtn.classList.add('relative');
   diagNavBtn.title = 'Diagnostic log — errors and warnings';
@@ -268,6 +277,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
 
   rail.appendChild(catalogNavBtn);
   rail.appendChild(qualityNavBtn);
+  rail.appendChild(paletteNavBtn);
   rail.appendChild(diagNavBtn);
   rail.appendChild(helpNavBtn);
   rail.appendChild(tourNavBtn);

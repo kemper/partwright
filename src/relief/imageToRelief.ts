@@ -271,6 +271,19 @@ function clamp255(v: number): number {
   return r;
 }
 
+/** The palette entry (0..255 RGB) closest to `c` by squared Euclidean distance.
+ *  Returns `c` unchanged when the palette is empty. */
+function nearestRgb255(c: [number, number, number], palette: [number, number, number][]): [number, number, number] {
+  let best = c;
+  let bestD = Infinity;
+  for (const p of palette) {
+    const dr = p[0] - c[0], dg = p[1] - c[1], db = p[2] - c[2];
+    const d = dr * dr + dg * dg + db * db;
+    if (d < bestD) { bestD = d; best = p; }
+  }
+  return best;
+}
+
 // sRGB byte triple -> CIE L*a*b*, for perceptual clustering (the 'lab' option).
 export function rgbToLab(r: number, g: number, b: number): [number, number, number] {
   const lin = (c: number) => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
@@ -428,6 +441,14 @@ function sampleQuantized(rgb: Float32Array, w: number, h: number, opts: ReliefOp
   // each colour reads as one clean flat terrace (darkest sits lowest).
   const palette: Array<[number, number, number]> = [];
   for (let c = 0; c < kk; c++) palette.push([clamp255(repRGB[c * 3]), clamp255(repRGB[c * 3 + 1]), clamp255(repRGB[c * 3 + 2])]);
+  // Constrain to the user's filament palette: snap each cluster's color to the
+  // nearest filament (best match). The per-cluster height VALUES and terrace
+  // count are unchanged — only colors change (so the luminance-based height
+  // ordering below may reorder if a snap flips two clusters' relative brightness).
+  const snap = opts.quantized.snapPalette;
+  if (snap && snap.length > 0) {
+    for (let c = 0; c < kk; c++) palette[c] = nearestRgb255(palette[c], snap);
+  }
   const order = palette.map((_, i) => i).sort((a, b) => luminance255(palette[a][0], palette[a][1], palette[a][2]) - luminance255(palette[b][0], palette[b][1], palette[b][2]));
   // `invertHeights` flips the cluster → height map so DARKER colours land
   // TALLER. Useful when an image's background is the lightest cluster: with

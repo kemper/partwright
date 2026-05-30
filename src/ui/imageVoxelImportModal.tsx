@@ -21,6 +21,7 @@ import {
   type ImageVoxelMode,
   type ImageVoxelColorMode,
 } from '../import/imageToVoxel';
+import { loadPalette } from '../color/palette';
 
 export interface ImageVoxelModalOptions {
   filename?: string;
@@ -247,9 +248,26 @@ function PaletteEditor(props: {
     set('palette', next.length ? next : [[180, 180, 180]]);
   };
   const addSwatch = () => set('palette', [...palette, palette[palette.length - 1] ?? [180, 180, 180]]);
+  // Constrain to the user's filament palette: replace the swatches with the
+  // filament colors they own, so every pixel snaps to the nearest one (best
+  // match). Reuses the existing nearest-palette snapping in imageToVoxel.
+  const filamentColors = loadPalette().colors;
+  const useFilamentPalette = () => {
+    if (filamentColors.length === 0) return;
+    set('palette', filamentColors.map(c => fromHex(c.hex)));
+    set('posterizeColors', Math.max(2, filamentColors.length));
+  };
 
   return (
     <div class="flex flex-col gap-1.5 mt-1.5">
+      {filamentColors.length > 0 && (
+        <button
+          type="button"
+          class="self-start px-2 py-1 rounded text-[11px] font-medium bg-zinc-700 hover:bg-zinc-600 text-zinc-100"
+          title="Constrain colors to your filament palette — each pixel snaps to the nearest filament you own."
+          onClick={useFilamentPalette}
+        >🧵 Use my filament palette ({filamentColors.length})</button>
+      )}
       <div class="flex flex-wrap items-center gap-1.5">
         {palette.map((c, i) => (
           <div class="relative">

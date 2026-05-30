@@ -23,6 +23,8 @@ partwright.clearColors()    // remove ALL regions — destructive, prefer the tw
 
 **Per-region visibility vs. delete.** `setRegionVisibility(id, false)` (or `hideRegion(id)`) toggles a region off in the *viewport* — the painted triangles render unpainted while the region is hidden, but the region itself stays in `listRegions()` and the `visible` flag is persisted across save/load. This is the right tool for "I want to see what the model looks like without this region" or "compare paint vs. no-paint." GLB / 3MF exports always include hidden regions — visibility is a viewer-state flag, not an export filter. Use `removeRegion(id)` when you actually want to delete a region permanently.
 
+**Respect the user's filament palette.** If the user has configured a filament palette with enforcement on, you must color models using only the colors they own and stay within their loaded-at-once limit. Call `getColorPalette()` — `{ configured, enforce, maxSimultaneous, colors: [{ name, hex }] }` — and when `enforce` is `true`, restrict every color you assign (in-code `api.label`/voxel colors and every `paint*` tool) to `colors`, using at most `maxSimultaneous` distinct ones. The same constraint is mirrored into your per-turn instructions while enforcement is on. When `enforce` is `false` it's advisory — only prefer those colors if the user asks to match their filament.
+
 
 **Preview before commit (default workflow).** `paintPreview()` accepts
 the same selector args as `paintInBox` / `paintNear` / `paintFaces` but

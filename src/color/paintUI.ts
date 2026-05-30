@@ -67,29 +67,14 @@ import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/t
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
 import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, setShapeType, getShapeType, getShapeVisible, setShapeVisible, onShapeVisibilityChange, type BoxMode, type ShapeType } from './boxDrag';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
+import { forceCloseColorRemap } from './colorRemapUI';
+import { loadPalette, hexToRgb, onPaletteChange, DEFAULT_PAINT_PRESETS } from './palette';
 
-const PRESET_COLORS: [number, number, number][] = [
-  // Warm
-  [0.92, 0.26, 0.21], // red
-  [1.00, 0.60, 0.00], // orange
-  [1.00, 0.76, 0.03], // yellow
-  [0.55, 0.36, 0.22], // brown
-  // Cool
-  [0.55, 0.85, 0.20], // lime
-  [0.30, 0.69, 0.31], // green
-  [0.00, 0.74, 0.83], // teal
-  [0.13, 0.59, 0.95], // blue
-  // Purples / pinks
-  [0.10, 0.20, 0.55], // navy
-  [0.61, 0.15, 0.69], // purple
-  [0.93, 0.05, 0.65], // magenta
-  [0.91, 0.12, 0.39], // pink
-  // Neutrals
-  [1.00, 1.00, 1.00], // white
-  [0.75, 0.75, 0.75], // light gray
-  [0.35, 0.35, 0.35], // dark gray
-  [0.00, 0.00, 0.00], // black
-];
+// The picker's swatches come from the user's filament palette (src/color/
+// palette.ts), which defaults to the 16 named colors this picker used to
+// hardcode — so out of the box it looks identical, but editing the palette
+// (rail → 🧵 Palette) reflows these swatches. The custom-color input below is
+// always available as a freehand escape hatch.
 
 let paintBtn: HTMLButtonElement | null = null;
 let pickerPanel: HTMLElement | null = null;
@@ -162,6 +147,7 @@ function togglePaintMode(): void {
     forceDeactivateAnnotateText();
     forceDeactivateAnnotateSelect();
     closeSimplifyMenu();
+    forceCloseColorRemap();
     activate();
     updateButtonState(true);
     pickerPanel?.classList.remove('hidden');
@@ -248,19 +234,37 @@ function createPickerPanel(): HTMLElement {
   const grid = document.createElement('div');
   grid.className = 'grid grid-cols-4 gap-1.5 mb-2';
 
-  for (const color of PRESET_COLORS) {
-    const swatch = document.createElement('button');
-    swatch.className = 'w-6 h-6 rounded border-2 border-transparent hover:border-white/50 transition-colors';
-    swatch.style.backgroundColor = rgbToCSS(color);
-    swatch.title = rgbToHex(color);
-    swatch.addEventListener('click', () => {
-      setColor(color);
-      updateActiveSwatch(grid, swatch);
-    });
-    grid.appendChild(swatch);
-  }
-  const first = grid.children[0] as HTMLElement;
-  if (first) first.classList.add('border-white/80', 'ring-1', 'ring-white/30');
+  // Swatches are sourced from the filament palette; falls back to the built-in
+  // 16 if the user has emptied their palette, so paint always has colors.
+  const renderSwatches = (): void => {
+    grid.replaceChildren();
+    const palette = loadPalette().colors;
+    const swatches: { rgb: [number, number, number]; label: string }[] = palette.length > 0
+      ? palette.map(c => {
+          const rgb = (hexToRgb(c.hex) ?? [0, 0, 0]) as [number, number, number];
+          return { rgb, label: c.name ? `${c.name} · ${c.hex}` : c.hex };
+        })
+      : DEFAULT_PAINT_PRESETS.map(p => {
+          const rgb: [number, number, number] = [p.rgb[0], p.rgb[1], p.rgb[2]];
+          return { rgb, label: `${p.name} · ${rgbToHex(rgb)}` };
+        });
+    for (const { rgb, label } of swatches) {
+      const swatch = document.createElement('button');
+      swatch.className = 'w-6 h-6 rounded border-2 border-transparent hover:border-white/50 transition-colors';
+      swatch.style.backgroundColor = rgbToCSS(rgb);
+      swatch.title = label;
+      swatch.addEventListener('click', () => {
+        setColor(rgb);
+        updateActiveSwatch(grid, swatch);
+      });
+      grid.appendChild(swatch);
+    }
+    const first = grid.children[0] as HTMLElement | undefined;
+    if (first) first.classList.add('border-white/80', 'ring-1', 'ring-white/30');
+  };
+  renderSwatches();
+  // Live-refresh when the palette is edited (add / remove / reset).
+  onPaletteChange(() => renderSwatches());
   content.appendChild(grid);
 
   const customRow = document.createElement('div');
@@ -268,7 +272,7 @@ function createPickerPanel(): HTMLElement {
 
   const colorInput = document.createElement('input');
   colorInput.type = 'color';
-  colorInput.value = rgbToHex(PRESET_COLORS[0]);
+  colorInput.value = loadPalette().colors[0]?.hex ?? rgbToHex([0.92, 0.26, 0.21]);
   colorInput.className = 'w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent';
   colorInput.title = 'Custom color';
   colorInput.addEventListener('input', () => {
