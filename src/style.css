@@ -5,15 +5,15 @@
    already permits these — no header change needed. The editor keeps the
    default system sans / mono; these only apply where opted in via the
    .font-display / .font-body utilities or .pw-codemock. */
-@font-face { font-family:'Space Grotesk'; font-style:normal; font-weight:400; font-display:swap; src:url(/fonts/spacegrotesk-400.woff2) format('woff2'); }
-@font-face { font-family:'Space Grotesk'; font-style:normal; font-weight:500; font-display:swap; src:url(/fonts/spacegrotesk-500.woff2) format('woff2'); }
-@font-face { font-family:'Space Grotesk'; font-style:normal; font-weight:600; font-display:swap; src:url(/fonts/spacegrotesk-600.woff2) format('woff2'); }
-@font-face { font-family:'Space Grotesk'; font-style:normal; font-weight:700; font-display:swap; src:url(/fonts/spacegrotesk-700.woff2) format('woff2'); }
-@font-face { font-family:'Sora'; font-style:normal; font-weight:600; font-display:swap; src:url(/fonts/sora-600.woff2) format('woff2'); }
-@font-face { font-family:'Sora'; font-style:normal; font-weight:700; font-display:swap; src:url(/fonts/sora-700.woff2) format('woff2'); }
-@font-face { font-family:'Sora'; font-style:normal; font-weight:800; font-display:swap; src:url(/fonts/sora-800.woff2) format('woff2'); }
-@font-face { font-family:'JetBrains Mono'; font-style:normal; font-weight:400; font-display:swap; src:url(/fonts/jetbrainsmono-400.woff2) format('woff2'); }
-@font-face { font-family:'JetBrains Mono'; font-style:normal; font-weight:500; font-display:swap; src:url(/fonts/jetbrainsmono-500.woff2) format('woff2'); }
+@font-face { font-family:'Space Grotesk'; font-style:normal; font-weight:400; font-display:fallback; src:url(/fonts/spacegrotesk-400.woff2) format('woff2'); }
+@font-face { font-family:'Space Grotesk'; font-style:normal; font-weight:500; font-display:fallback; src:url(/fonts/spacegrotesk-500.woff2) format('woff2'); }
+@font-face { font-family:'Space Grotesk'; font-style:normal; font-weight:600; font-display:fallback; src:url(/fonts/spacegrotesk-600.woff2) format('woff2'); }
+@font-face { font-family:'Space Grotesk'; font-style:normal; font-weight:700; font-display:fallback; src:url(/fonts/spacegrotesk-700.woff2) format('woff2'); }
+@font-face { font-family:'Sora'; font-style:normal; font-weight:600; font-display:fallback; src:url(/fonts/sora-600.woff2) format('woff2'); }
+@font-face { font-family:'Sora'; font-style:normal; font-weight:700; font-display:fallback; src:url(/fonts/sora-700.woff2) format('woff2'); }
+@font-face { font-family:'Sora'; font-style:normal; font-weight:800; font-display:fallback; src:url(/fonts/sora-800.woff2) format('woff2'); }
+@font-face { font-family:'JetBrains Mono'; font-style:normal; font-weight:400; font-display:fallback; src:url(/fonts/jetbrainsmono-400.woff2) format('woff2'); }
+@font-face { font-family:'JetBrains Mono'; font-style:normal; font-weight:500; font-display:fallback; src:url(/fonts/jetbrainsmono-500.woff2) format('woff2'); }
 
 /* New Tailwind font utilities: .font-display (Sora) and .font-body (Space
    Grotesk). Deliberately NOT overriding --font-sans / --font-mono so the

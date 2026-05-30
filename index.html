@@ -157,6 +157,9 @@
       @media(max-width:767px){#li-hero{grid-template-columns:1fr}#li-frame,#li-nav-links{display:none!important}}
       @keyframes li-pulse{0%,100%{opacity:1}50%{opacity:.45}}
       .li-sk{animation:li-pulse 2s ease-in-out infinite}
+      /* Match JS landing: text-5xl (3rem) below md, text-6xl (3.75rem) at md+ */
+      #li-h1{font-size:3rem}
+      @media(min-width:768px){#li-h1{font-size:3.75rem}}
     </style>
     <div style="display:flex;flex-direction:column;align-items:center;min-height:100%">
 
@@ -242,7 +245,7 @@
               <span>Voxels, BREP solids &amp; image relief</span>
               <span style="color:#71717a">&#8594;</span>
             </div>
-            <h1 style="font-weight:800;font-size:clamp(2.5rem,5vw,3.75rem);line-height:1.03;letter-spacing:-0.025em;margin:0 0 20px;color:#fafafa;font-family:'Sora',system-ui,sans-serif">
+            <h1 id="li-h1" style="font-weight:800;line-height:1.03;letter-spacing:-0.025em;margin:0 0 20px;color:#fafafa;font-family:'Sora',system-ui,sans-serif">
               Describe a part.<br>Get a <span style="background:linear-gradient(115deg,#fcd34d 8%,#2dd4bf 92%);-webkit-background-clip:text;background-clip:text;color:transparent">printable model.</span>
             </h1>
             <p style="font-size:18px;color:#a1a1aa;line-height:1.65;max-width:576px;margin:0 0 28px">

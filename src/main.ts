@@ -4038,9 +4038,7 @@ async function main() {
     return landingEl;
   }
 
-  function showLandingPage() {
-    // Remove the inline static landing page now that the JS version is ready.
-    document.getElementById('landing-inline')?.remove();
+  async function showLandingPage() {
     const page = ensureLandingPage();
     overlayContainer.classList.remove('hidden');
     editorUI.classList.add('hidden');
@@ -4052,6 +4050,18 @@ async function main() {
     whatsNewEl?.classList.add('hidden');
     page.classList.remove('hidden');
     updateDocumentTitle({ page: 'landing' });
+    // Build and render the JS page behind the static overlay, then remove the
+    // overlay only after fonts are settled — both pages then share the same
+    // metrics, making the swap invisible. Copy scroll position so the user's
+    // reading position is preserved if they scrolled before JS finished.
+    await document.fonts.ready;
+    requestAnimationFrame(() => {
+      const li = document.getElementById('landing-inline');
+      if (li) {
+        page.scrollTop = li.scrollTop;
+        li.remove();
+      }
+    });
   }
 
   function showNotFoundPage() {
