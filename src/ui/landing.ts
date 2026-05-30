@@ -17,7 +17,7 @@ import { partwrightMarkSvg } from './brand';
 import { languageBadge } from './languageBadge';
 import { showUninstallModal } from './uninstallModal';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
-import { canInstall, isAppInstalled, isIOSInstallable, onInstallStateChange, promptInstall } from './installPrompt';
+import { canInstall, isAppInstalled, isInstallSupported, isIOSInstallable, onInstallStateChange, promptInstall } from './installPrompt';
 import type { ExportedSession } from '../storage/sessionManager';
 import type { CatalogManifestEntry } from './catalog';
 
@@ -248,12 +248,16 @@ function buildHero(callbacks: LandingCallbacks): HTMLElement {
  * optional convenience — Partwright runs fully in the browser without it — so
  * the button carries a clarifying tooltip and a persistent "optional" note.
  *
- * The button advertises itself only when the app is actually installable:
- *   - Chrome/Edge/Android: a live `beforeinstallprompt` is held -> click runs
- *     the native install dialog (installs it as a Chrome/desktop app).
- *   - iOS Safari: no programmatic prompt exists -> click reveals the manual
- *     "Share -> Add to Home Screen" hint.
- *   - Otherwise (already installed, Firefox, in-app standalone): stays hidden.
+ * The button is shown on EVERY load wherever install is possible (not just
+ * while a live `beforeinstallprompt` is held), so it remains a re-install entry
+ * point even after the native prompt has been dismissed:
+ *   - Chrome/Edge/Android with a live prompt -> click runs the native install
+ *     dialog (installs it as a Chrome/desktop app).
+ *   - Chrome/Edge/Android without a live prompt (dismissed, or not yet fired)
+ *     -> click reveals manual "address-bar icon / browser menu" instructions.
+ *   - iOS Safari -> click reveals the manual "Share -> Add to Home Screen" hint.
+ *   - Hidden only when already installed/standalone or on browsers with no
+ *     install path at all (e.g. desktop Firefox).
  */
 function buildInstallCta(): { button: HTMLButtonElement; note: HTMLElement; hint: HTMLElement } {
   const button = document.createElement('button');
@@ -271,29 +275,50 @@ function buildInstallCta(): { button: HTMLButtonElement; note: HTMLElement; hint
 
   const hint = document.createElement('p');
   hint.className = 'hidden text-xs text-zinc-400 mt-2 max-w-sm';
-  hint.innerHTML =
+
+  // Instruction text shown when we can't fire the native dialog (the prompt was
+  // already dismissed, or hasn't fired yet) — keyed by platform.
+  const IOS_HINT =
     'To install on iPhone or iPad: tap the <span class="text-zinc-200 font-medium">Share</span> button, ' +
     'then <span class="text-zinc-200 font-medium">&ldquo;Add to Home Screen.&rdquo;</span>';
+  const DESKTOP_HINT =
+    'To install: click the install icon ' +
+    '(<span class="text-zinc-200 font-medium">⊕</span> or a monitor-with-arrow) in your browser’s address bar, ' +
+    'or open the browser menu and choose <span class="text-zinc-200 font-medium">&ldquo;Install Partwright.&rdquo;</span>';
 
   const sync = () => {
-    const installable = canInstall();
-    const ios = !installable && isIOSInstallable();
-    const show = !isAppInstalled() && (installable || ios);
+    // Show the button on every load wherever install is possible — not only
+    // while we hold a live prompt — so it persists as a re-install entry point
+    // even after the native prompt has been dismissed.
+    const promptable = canInstall();
+    const ios = isIOSInstallable();
+    const chromium = isInstallSupported();
+    const show = !isAppInstalled() && (chromium || ios);
     button.classList.toggle('hidden', !show);
     button.classList.toggle('flex', show);
     // The "optional" note rides with the button's visibility.
     note.classList.toggle('hidden', !show);
-    // `mode` drives the click handler; clear the iOS hint whenever it no longer applies.
-    button.dataset.mode = installable ? 'prompt' : ios ? 'ios' : '';
-    if (!ios) hint.classList.add('hidden');
+    // Click behavior: native dialog when we hold a live event, otherwise reveal
+    // the platform-appropriate manual instructions.
+    button.dataset.mode = promptable ? 'prompt' : ios ? 'ios' : 'manual';
+    // If a freshly-arrived prompt makes the native dialog available again, drop
+    // any stale manual instructions.
+    if (promptable) hint.classList.add('hidden');
   };
 
-  button.addEventListener('click', () => {
+  button.addEventListener('click', async () => {
     if (button.dataset.mode === 'prompt') {
-      void promptInstall();
-    } else if (button.dataset.mode === 'ios') {
-      hint.classList.toggle('hidden');
+      // If the event was consumed between render and click, fall back to manual.
+      const outcome = await promptInstall();
+      if (outcome === 'unavailable') {
+        hint.innerHTML = isIOSInstallable() ? IOS_HINT : DESKTOP_HINT;
+        hint.classList.remove('hidden');
+      }
+      return;
     }
+    // No live prompt — toggle the platform's manual instructions.
+    hint.innerHTML = button.dataset.mode === 'ios' ? IOS_HINT : DESKTOP_HINT;
+    hint.classList.toggle('hidden');
   });
 
   sync();

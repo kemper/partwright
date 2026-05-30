@@ -65,6 +65,22 @@ export function canInstall(): boolean {
   return deferredPrompt !== null && !isStandalone();
 }
 
+/**
+ * True on Chromium browsers (Chrome / Edge / Brave / Opera, desktop + Android)
+ * that support the programmatic install flow — detected via the presence of the
+ * `onbeforeinstallprompt` handler, which Firefox and desktop Safari lack.
+ *
+ * This is deliberately broader than `canInstall()`: it stays true even when we
+ * DON'T currently hold a `beforeinstallprompt` event (e.g. Chrome stops firing
+ * it after the user dismisses the prompt once). That lets the CTA persist on
+ * every page load and fall back to manual instructions, instead of vanishing
+ * the moment the native prompt is dismissed.
+ */
+export function isInstallSupported(): boolean {
+  if (typeof window === 'undefined') return false;
+  return 'onbeforeinstallprompt' in window;
+}
+
 function isIOS(): boolean {
   if (typeof navigator === 'undefined') return false;
   const ua = navigator.userAgent;
