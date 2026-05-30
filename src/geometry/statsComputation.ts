@@ -82,16 +82,15 @@ export function computeGeometryStats(
       if (parts.length > 1) {
         // Identify enclosed components (fully inside another solid, or negative-volume
         // artifacts). These won't detach in print and shouldn't trip floater warnings.
-        // Capped at 20 to bound intersection-check cost on large voxel models.
-        const LIMIT = Math.min(parts.length, 20);
+        // The two fast pre-filters (volume comparison + bbox containment) reject the
+        // vast majority of pairs cheaply, so the expensive WASM intersect() call is
+        // only reached for plausible containment candidates — safe without a count cap.
         interface PartInfo { vol: number; bb: { min: number[]; max: number[] } | null; m: Manifold }
-        const infos: PartInfo[] = [];
-        for (let i = 0; i < LIMIT; i++) {
-          const p = parts[i];
+        const infos: PartInfo[] = parts.map((p: Manifold) => {
           const bb = getBoundingBox(p);
           const vol = (() => { try { return p.volume() as number; } catch { return 0; } })();
-          infos.push({ vol, bb, m: p });
-        }
+          return { vol, bb, m: p };
+        });
         for (let j = 0; j < infos.length; j++) {
           const smaller = infos[j];
           if (smaller.vol <= 0) { containedComponents++; continue; }
