@@ -1,0 +1,58 @@
+<svg width="120" height="120" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright — isometric L-bracket">
+  <defs>
+    <linearGradient id="h-top" x1="10" y1="15" x2="54" y2="45" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+    </linearGradient>
+    <linearGradient id="h-right" x1="38" y1="20" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+    </linearGradient>
+    <linearGradient id="h-left" x1="10" y1="20" x2="30" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a7a72"/>
+    </linearGradient>
+    <radialGradient id="h-shadow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#000" stop-opacity="0.45"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="h-plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f2937"/><stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+  </defs>
+
+  <!-- contact shadow grounding the build plate -->
+  <ellipse cx="22" cy="63" rx="20" ry="2.2" fill="url(#h-shadow)"/>
+
+  <!-- build plate: thin dark iso slab matching the L footprint -->
+  <g>
+    <path d="M4 46 L11 42 L21.5 48 L35.5 56 L28.5 60 L14.5 54 Z" fill="#111827"/>
+    <path d="M4 46 L4 48.2 L14.5 56.2 L28.5 62.2 L28.5 60 L14.5 54 Z" fill="url(#h-plate)" opacity="0.5"/>
+    <path d="M11 42 L21.5 48 L35.5 56 L28.5 60 L14.5 54 L4 48" fill="none" stroke="#14b8a6" stroke-width="0.6" stroke-opacity="0.4" stroke-linejoin="round"/>
+  </g>
+
+  <!-- finished static bracket — same geometry as the hero SVG in logo-25.html -->
+  <!-- vert arm front (full height z=0..8) -->
+  <path d="M11 44 L21.5 50 L21.5 19.6 L11 13.6 Z" fill="url(#h-left)"/>
+  <!-- base arm front (z=0..2) -->
+  <path d="M21.5 50 L35.5 58 L35.5 50.4 L21.5 42.4 Z" fill="url(#h-right)"/>
+  <!-- base arm right side -->
+  <path d="M35.5 58 L28.5 62 L28.5 54.4 L35.5 50.4 Z" fill="url(#h-left)"/>
+  <!-- base arm top shoulder (z=2) -->
+  <path d="M21.5 42.4 L35.5 50.4 L28.5 54.4 L14.5 46.4 Z" fill="url(#h-top)"/>
+  <path d="M11 36.4 L21.5 42.4 L14.5 46.4 L4 40.4 Z" fill="url(#h-top)"/>
+  <!-- vert arm inner right face (x=3, above base arm) -->
+  <path d="M21.5 42.4 L14.5 46.4 L14.5 23.6 L21.5 19.6 Z" fill="url(#h-right)"/>
+  <!-- vert arm top face -->
+  <path d="M11 13.6 L21.5 19.6 L14.5 23.6 L4 17.6 Z" fill="url(#h-top)"/>
+  <!-- layer seams -->
+  <g stroke="#0b3b38" stroke-width="0.45" stroke-opacity="0.4" fill="none">
+    <path d="M11 40.2 L21.5 46.2 L35.5 54.2"/>
+    <path d="M11 36.4 L21.5 42.4 L35.5 50.4"/>
+    <path d="M11 32.6 L21.5 38.6"/>
+    <path d="M11 28.8 L21.5 34.8"/>
+    <path d="M11 25.0 L21.5 31.0"/>
+    <path d="M11 21.2 L21.5 27.2"/>
+    <path d="M11 17.4 L21.5 23.4"/>
+  </g>
+  <!-- crisp lit front edge of the top -->
+  <path d="M11 13.6 L21.5 19.6" fill="none" stroke="#ccfbf1" stroke-width="0.8" stroke-opacity="0.9" stroke-linecap="round"/>
+  <!-- warm amber specular catch on the highest edge -->
+  <path d="M13 14.5 L20 18.5" fill="none" stroke="#fbbf24" stroke-width="1.2" stroke-linecap="round" opacity="0.92"/>
+</svg>
