@@ -2,7 +2,7 @@
 
 Partwright is a browser-based parametric CAD tool with four modeling engines: **manifold-js** (default, JavaScript DSL with manifold-3d API + a `Curves` helper namespace), **OpenSCAD** (SCAD language via WASM, with BOSL2 bundled), **BREP / replicad** (JavaScript with `api.BREP.*` — OpenCASCADE B-rep for exact fillets/chamfers and STEP export), and **voxel** (JavaScript — blocky colored-cube modeling for pixel-art and image-derived models; see `/ai/voxel.md`). You write code that constructs 3D geometry, which renders live. All interaction is via the `window.partwright` programmatic API -- do not drive the app through clicks or keystrokes. `window.mainifold` remains available as a legacy alias for older prompts.
 
-**Coordinate system:** Right-handed, Z-up. XY plane is the ground. Units are arbitrary.
+**Coordinate system:** Right-handed, Z-up. XY plane is the ground. **Front = +Y, back = −Y** — the default Front view camera sits on the +Y side looking in the −Y direction, so build models with their intended front face pointing in the +Y direction (normal toward +Y). Right = +X, left = −X. Units are arbitrary.
 
 ## Contents
 
@@ -137,6 +137,11 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `file-io` | Before exporting or importing programmatically — `*Data()` byte-returning methods, Recent Exports inbox, session payload shape. |
 | `annotations` | When the user has marked up the model with the Annotate tool (or you need to write annotations programmatically). |
 | `relief` | When making an image-derived part (keychain / tile / silhouette / stepped relief) via `importImageAsRelief`, or reading the single-nozzle swap guide (`getReliefSwapGuide`) / optical preview (`setReliefPreviewMode`). |
+| `iteration-workflow` | Before calling `runAndSave`, `forkVersion`, `modifyAndTest`, `createSessionWithVersions`, or managing session notes — the full versioning and iteration workflow. |
+| `gotchas` | When something looks wrong — boolean overlap requirements, disconnected components, `paintRegion` on smooth surfaces, `probeRay` normals, `rotate` direction, painting locking the editor. |
+| `visual-verification` | Before declaring a build done — all-faces check, edge overlay options, feature-specific checks, stat-based validation. |
+| `spending` | To understand the user's compute budget and what each mode enforces or advises. |
+| `manifold-api` | Quick reference for Manifold/CrossSection constructor and instance method signatures. |
 
 ## Common agent mistakes
 
@@ -145,6 +150,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 - **Hand-rolling curve math instead of using helpers** -- if you need a smooth surface or curve, check the verb table above. `Curves.loft` / BOSL2 `skin()` are far more reliable than a hand-written polygon-sampling loop.
 - **Not saving versions** -- a session is always open for you; save your work with `runAndSave` so the user can review it in the gallery.
 - **Skipping visual verification** -- stats alone can't catch visual defects. After structural changes, call `renderViews()`; `renderViews({views: "box"})` is the only set that shows the back, left, and bottom faces.
+- **Placing the front face on the wrong side** — "Front" in Partwright means the +Y face. The default Front view camera is at +Y looking toward −Y, so a door, a character's face, a screen, or any feature intended to face the viewer must have its outward normal pointing in the +Y direction. If `renderViews()` shows the back of your model in the "Front" tile, rotate the model 180° around Z (`model.rotate([0,0,180])`).
 - **Flush boolean placement** -- shapes must overlap by at least 0.5 units to union correctly. Merely touching at a face produces disconnected components.
 - **Tapering to a near-point on printed geometry** -- `scaleTop=[0.01, 0.01]` or chamfers that collapse the top to sub-millimeter area look fine in `geometry-data` but FDM slicers silently drop sub-extrusion-width layers, so the cap disappears on the print. See [/ai/print-safety.md](/ai/print-safety.md).
 - **Not reading session context before modifying** -- when resuming work in an established session, call `getSessionContext()` first and read the notes/version history before making changes. See [Resuming a session](#resuming-a-session).
@@ -152,6 +158,9 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 - **Passing a bare index or id instead of `{index}` / `{id}`** -- `loadVersion` and `forkVersion` take an object with exactly one of `{index: number}` or `{id: string}`, e.g. `loadVersion({index: 2})` or `loadVersion({id: "Kx3Pq9mA2wEr"})`. Bare `loadVersion(2)` will return `{error: "...target must be { index: number } or { id: string }..."}`.
 - **Passing the wrong object shape to `setImages`, `setReferenceGeometry`, `query`, `runAndAssert`, etc.** -- the API rejects unknown keys and wrong-type values. See [Argument validation](#argument-validation).
 - **Doing `setCode` then `run` when you meant `runAndSave`.** `setCode` doesn't auto-run, `run` doesn't save and doesn't validate, and the gallery won't see the version. `runAndSave(code, label, assertions)` does all three atomically -- prefer it for committed iterations. See also [`runAndSave` is for committed iterations; `runIsolated` is for sanity checks](#runandsave-is-for-committed-iterations-runisolated-is-for-sanity-checks).
+- **Passing a short stub to `runAndSave` intending to "save current state".** `runAndSave(code, ...)` is **authoritative**: it overwrites the editor with `code`, runs it, and saves the result. Passing anything other than the full intended code will replace the editor and save a broken version. To snapshot the editor as-is (e.g. after painting), call `saveVersion(label?)` instead — it captures the current code + geometry + colors without re-running.
+- **Querying stale geometry after `setCode`.** `setCode` updates the editor but does NOT re-run. Calling `getGeometryData()` or `query()` after `setCode` (without a subsequent `runAndSave`/`run`) returns the geometry from the previous execution. The result now includes `stale: true` when the editor code hash doesn't match the last-run hash — treat this as a signal to run first.
+- **No "fork from current editor" path.** `forkVersion({index}, ...)` forks a *saved* version. If your best code is unsaved in the editor, first call `await saveVersion("checkpoint")` to commit it as a version, then `forkVersion({index: <that index>}, ...)` from there. `listVersions()` shows the new index.
 
 ## Argument validation
 
@@ -181,16 +190,11 @@ await partwright.query({ sliceAt: 5 })            // returns { error: "... .slic
 
 When you see a validation error, fix the call -- don't pattern-match around it.
 
-## How to use this tool
-
-1. Open `/editor` (or any session URL) -- you drive the tool programmatically, not through the tabs
-2. Use `window.partwright` in the browser console to interact programmatically
-3. Call `partwright.help()` for a full method list, or `partwright.help('methodName')` for a specific method
-4. Use `partwright.getGeometryData()` to read current geometry stats programmatically
-
 ## Console API -- window.partwright
 
 <a id="console-api--windowmainifold"></a>
+
+Call `partwright.help()` for a full method list, or `partwright.help('methodName')` for a specific method.
 
 ```js
 partwright.run(code?)          // Run code, update views, return geometry stats
@@ -267,16 +271,13 @@ partwright.removeImage(id)                  // remove by id; returns true if rem
 partwright.clearImages()
 partwright.getImages()                      // -> [{id, src, label?}, ...]
 
-// Annotations & color regions -- see /ai/annotations.md and /ai/colors.md
+// Color regions (~30 paint methods) — call readDoc("colors") for the full picker decision tree.
+partwright.paintRegion({point, normal, color, name?, tolerance?})  // coplanar flood-fill (flat faces)
+partwright.paintNear({point, radius, color, name?})                // sphere selector (curved surfaces)
+partwright.listRegions() / clearColors() / undoLastPaint() / redoLastPaint()
 
-partwright.paintRegion({point, normal, color, name?, tolerance?})
-partwright.listRegions()
-partwright.clearColors()
-
-partwright.listAnnotations()
-partwright.listTextAnnotations()
-partwright.addTextAnnotation({anchor, text})
-partwright.clearAnnotations()
+// Annotations — see readDoc("annotations")
+partwright.listAnnotations() / addTextAnnotation({anchor, text}) / clearAnnotations()
 
 // Sessions -- save/compare design iterations.
 // NOTE: the in-app chat agent is scoped to the ONE session already open and
@@ -375,6 +376,11 @@ await partwright.getSessionContext()     // -> {session, versions[], notes[], cu
 }
 ```
 
+Extra fields that appear conditionally:
+- **`containedComponents: N`** — present when N components are fully enclosed inside another solid (e.g. sealed interior voids in a voxel shell). These are excluded from `maxComponents` assertion checks and from the floater warning, since they can't detach in print. Use `runAndExplain(code)` to inspect them individually.
+- **`stale: true`** — present when the editor code has changed since the last execution (e.g. `setCode` was called without a subsequent run). Stats reflect the *previous* run. Call `runAndSave`/`run` before relying on component counts or other metrics.
+- **`warnings: string[]`** — present when the geometry has printability issues (non-manifold, free-floating components, etc.).
+
 On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}`
 
 `partwright.run()` and `partwright.getGeometryData()` also include a `printability` field — see [Printability](#printability).
@@ -383,6 +389,7 @@ On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}
 - `Code must return a Manifold object` -- forgot `return` statement
 - `function _Cylinder called with N arguments` -- wrong arg count
 - Geometry looks wrong -- check `isManifold` and `componentCount` (failed booleans = extra components)
+- `componentCount > 1` with `containedComponents` present -- the extra components are sealed interior voids, not true floaters. No fix needed for printing; use `runAndExplain` if you need to inspect them.
 
 ## Writing model code (manifold-js)
 
@@ -478,29 +485,9 @@ Segments: OMIT the segment argument so curves inherit the user's quality
 
 **Default segment count:** Partwright seeds `setCircularSegments()` (and `$fn` for OpenSCAD) from the user's Modeling Quality preset (gear icon in the toolbar) before each run. Presets are Low (16) / Medium (32) / High (64) / Very High (128, the default) / Ultra (1024), plus a **Custom** option for an exact count (3–4096). So curves render smooth out of the box without any explicit configuration — and a user who wants ultra-smooth output picks **Ultra** (or a Custom value) once and it persists. **An explicit segments argument always overrides this preset for that primitive**, so leave it off unless you specifically want a different resolution than the user chose. The current preset is reported in the per-turn "Session toggle state" suffix; honor it. You can still call `setCircularSegments(n)` or pass an explicit count to override on a per-script or per-call basis when a design genuinely needs it.
 
-### All constructors
+### Constructors and instance methods
 
-```
-Manifold: cube, sphere, cylinder, tetrahedron, extrude, revolve,
-          union, difference, intersection, hull, compose, smooth, levelSet, ofMesh
-CrossSection: square, circle, ofPolygons (CCW outer, CW holes),
-              compose, union, difference, intersection, hull
-Curves: arc, bezier, naca4, polyline, loft, sweep, revolveAxis,
-        fillet, chamfer, ringCopy, linearCopy, mirrorCopy   (see /ai/curves.md)
-sdf: sphere, ellipsoid, box, roundedBox, cylinder, roundedCylinder,
-     torus, capsule,
-     gyroid/schwarzP/diamond/lidinoid + their graded* variants (TPMS),
-     union/subtract/intersect, smoothUnion/Subtract/Intersect,
-     .translate/.rotate/.scale/.mirror, .shell/.round/.twist/.bend/.taper,
-     .polarArray/.polarRepeat/.mirrorPair/.repeat/.repeatN,
-     .label(name), .build({edgeLength?, bounds?})        (see /ai/sdf.md)
-meshOps (flat on api): intersects, contains, pointInside, bbox,
-                       componentBounds, volumeDelta,
-                       alignTo, placeOn, mirrorAcross, mirrorCopy,
-                       linearPattern, circularPattern, spiralPattern,
-                       expectUnion, expectDifference, expectComponents,
-                       heal                                     (see below)
-```
+`readDoc({name: "manifold-api"})` for the full constructor list (Manifold, CrossSection, Curves, sdf, meshOps) and Manifold/CrossSection instance method signatures.
 
 ### Mesh-operations helpers (`api.meshOps`, also flat as `api.*`)
 
@@ -580,33 +567,6 @@ const after = body.subtract(carveout);
 if (api.volumeDelta(body, after) === 0) throw new Error("subtract did nothing");
 ```
 
-### Manifold instance methods
-
-```
-Booleans:   .add(other)  .subtract(other)  .intersect(other)  .hull()
-Transforms: .translate([x,y,z])  .rotate([rx,ry,rz]) (degrees, applied X->Y->Z)
-            .scale(s) or .scale([x,y,z])  .mirror([nx,ny,nz]) (plane normal)
-            .warp(fn)  .transform(mat4)
-Mesh ops:   .refine(n)  .simplify(tolerance)  .smoothOut(minSharpAngle?, minSmoothness?)
-            .calculateNormals(idx, angle?)
-Queries:    .volume()  .surfaceArea()  .genus()  .numVert()  .numTri()  .isEmpty()
-            .boundingBox()  .status() (0=valid)  .decompose()
-Slicing:    .slice(z)  .project()  .trimByPlane(n,off)  .splitByPlane(n,off)
-Output:     .getMesh() -> {vertProperties, triVerts, numVert, numTri, numProp}
-```
-
-### CrossSection instance methods
-
-```
-2D->3D:      .extrude(h, nDiv?, twist?, scaleTop?, center?)  .revolve(n?, degrees?)
-Transforms: .translate([x,y])  .rotate(degrees)  .scale(s or [x,y])
-            .mirror([nx,ny])  .warp(fn)  .transform(mat3)
-Booleans:   .add(other)  .subtract(other)  .intersect(other)  .hull()
-Modify:     .offset(delta, joinType?, miterLimit?, segments?)  .simplify(epsilon?)
-Queries:    .area()  .isEmpty()  .numVert()  .numContour()  .bounds()
-Output:     .toPolygons()  .decompose()  .delete()
-```
-
 For smooth curve helpers (`loft`, `sweep`, `naca4`, `bezier`, `polyline` with fillet, etc.), see **[/ai/curves.md](/ai/curves.md)**.
 
 ## Writing OpenSCAD code
@@ -670,42 +630,9 @@ partwright.healCurrent()                              // simplify + rebuild curr
 
 These are engine-agnostic — call them after a SCAD render to debug cavities, find leaked components, or clean up a problematic boolean result.
 
-## Common pitfalls for boolean operations
+## Common pitfalls & gotchas
 
-### Always use volumetric overlap, never flush placement
-Shapes that merely touch at a face will NOT union correctly -- they stay as separate components. Offset joining geometry by at least 0.5 units along the joining axis.
-```js
-// BAD -- merlon sits exactly on wall top, stays disconnected
-merlon.translate([x, y, wallTopZ])
-
-// GOOD -- merlon overlaps 0.5 units into wall body
-merlon.translate([x, y, wallTopZ - 0.5])
-```
-
-### Spires on hollow shapes need a base wider than the inner void
-A cone on top of a hollow cylinder/box floats inside the void unless its base radius exceeds the inner hollow radius, ensuring it intersects the wall material.
-```js
-// Keep outer half-width = 10, inner hollow half-width = 8
-// Spire base radius must be > 8 to touch wall ring
-Manifold.cylinder(spireH, 11, 0, 24).translate([0, 0, keepH - 0.5])
-```
-
-### Flag poles on cone tips need to start inside the cone body
-A cylinder placed at the exact tip of a cone (where radius = 0) has nothing to union with. Start the pole 1-2 units below the tip so it overlaps solid cone geometry.
-
-### Debugging disconnected components
-When `componentCount > 1`, use `runAndExplain(code)` to identify which pieces are floating:
-```js
-const r = await partwright.runAndExplain(code);
-// r.components = [
-//   { index: 0, volume: 14800, centroid: [0, 0, 9], boundingBox: {...} },
-//   { index: 1, volume: 12,    centroid: [29, 29, 26], boundingBox: {...} },
-// ]
-// r.hints = [
-//   "1 tiny disconnected component(s) detected -- likely floating attachments...",
-//   "Components 0 and 1 share a face or near-touch (gap: 0.00) -- need volumetric overlap"
-// ]
-```
+`readDoc({name: "gotchas"})` — boolean overlap requirements, disconnected components, `paintRegion` bimodal on smooth surfaces, trusting `probeRay` normals, `rotate` direction convention, painting locking the editor, and `runAndSave` vs `runIsolated`.
 
 ## Printability
 
@@ -748,107 +675,6 @@ The paint helpers are exposed both as tool calls (`paintRegion`, `paintFaces`, `
 
 Before painting anything substantial, **call `readDoc({name: "colors"})`** for the picker decision tree (which `paint*` for which intent), the labelled-construction workflow, vision-driven painting with `probePixel`/`paintConnected`, undo/redo, and export behavior.
 
-### `paintStroke` — smooth, rounded painted edges (use sparingly)
-
-All the other selectors paint whole existing triangles, so a painted edge follows the tessellation (stair-stepped on coarse meshes). `paintStroke` instead **subdivides the mesh under the stroke** so the painted region's outline is rounded — the smooth-brush equivalent of dragging a paintbrush. It is the only paint tool that changes the triangle count, so it costs more (a mesh rebuild) than the region selectors.
-
-Reach for it **only when a visibly rounded painted edge matters** (a curved stripe, a soft-edged patch). For ordinary fills, `paintNear` / `paintInBox` / `paintConnected` / `paintRegion` are cheaper and sufficient.
-
-Drive it by vision, not by guessing coordinates: render a view, pick pixels along the desired path, `probePixel` each to get world-space surface points, then pass them as `points`:
-
-```js
-// Render → probe a few pixels along the stroke → paint a smooth stroke through them.
-const a = await partwright.probePixel({ pixel: [120, 90],  view: { elevation: 30, azimuth: 45 } });
-const b = await partwright.probePixel({ pixel: [160, 110], view: { elevation: 30, azimuth: 45 } });
-partwright.paintStroke({ points: [a.point, b.point], radius: 3, resolution: 256, color: [0.9, 0.2, 0.2] });
-```
-
-`resolution` is the smoothness detail (target triangle edge = radius / resolution; higher = smoother + more triangles), default **256**, range 2–1024. For absolute control pass `maxEdge` instead (target edge in mesh units, e.g. `maxEdge: 0.1` for crisp 0.1-unit edges) — it overrides resolution. A single point stamps a rounded dot.
-
-`paintSlab` and `paintInOrientedBox` share the same subdivision pipeline: their analytic boundary (slab planes / box faces) is **smoothed by default**, so a slab band or box patch gets a clean edge across coarse faces and reconstructs deterministically on reload. Same knobs — `smooth` (default true), `resolution` (model bbox diagonal / resolution, default 256), and `maxEdge` (absolute override). Pass `smooth: false` for the old blocky behavior. The id-baking selectors (`paintInBox`, `paintNear`, `paintInCylinder`, `paintFaces`, …) can't be smoothed — they lock onto existing triangles; refine the model mesh first if you need a finer edge from them.
-
-## Common gotchas
-
-These are the traps that previously cost an agent multiple turns of trial and error. Read once, save the next agent the same loop.
-
-### `paintRegion` flood-fill is bimodal on smooth surfaces
-
-On capsules, hulled spheres, and other smooth (no-edge) geometry, the bend angle between adjacent triangles is roughly the angular subdivision (e.g. 7.5° for a 48-segment cylinder, ≈ cos 7.5° = 0.991). Any tolerance > 0.991 paints almost nothing; any tolerance ≤ 0.99 paints almost everything. There is no useful middle.
-
-**Fix:** use `paintNear` (sphere selector) or `paintInBox` (AABB selector) for organic geometry. Both filter by world coordinates — predictable and bounded:
-
-```js
-// Don't:
-partwright.paintRegion({ point: [...], normal: [...], color, tolerance: 0.95 }); // floods entire finger
-
-// Do:
-partwright.paintNear({ point: [...], radius: 4, color });               // bounded by radius
-partwright.paintInBox({ box: { min, max }, normalCone: { axis, angleDeg: 25 }, color });
-```
-
-`paintRegion` is still the right tool for flat plates with crisp 90° edges (e.g. a cube face). For curved surfaces, prefer the position-based primitives.
-
-### Trust `probeRay`'s hit normal — don't derive your own
-
-`paintRegion`'s seed-resolution requires the seed normal to align with an actual triangle's normal within `tolerance`. Computed normals (e.g. derived from your construction math) are slightly off from the post-boolean-union mesh normals — they look right but won't match. The fix is one line:
-
-```js
-// Don't:
-const dorsal = [0, -Math.cos(P), Math.sin(P)];                          // looks correct...
-partwright.paintRegion({ point: derivedPoint, normal: dorsal, ... });   // ...silently misses
-
-// Do:
-const hit = partwright.probeRay(start, dir).hits[0];
-partwright.paintRegion({ point: hit.point, normal: hit.normal, tolerance: 0.999, ... });
-```
-
-`probeRay` returns the same data the resolver looks at internally; using it eliminates an entire class of "no matching face found" failures.
-
-### Manifold's `rotate` direction
-
-Manifold uses `rotate([degX, degY, degZ])` applied X→Y→Z. The convention follows the standard right-hand rule about each axis. Quick verification snippet:
-
-```js
-const cube = api.Manifold.cube([2, 4, 4], false);          // x∈[0,2], y∈[0,4], z∈[0,4]
-const rotated = cube.rotate([90, 0, 0]);                   // rotate +90° about X
-// After rotation: y∈[-4,0], z∈[0,4]. (0,1,0) → (0,0,1) → (0,-1,0).
-```
-
-If your rotated geometry looks mirrored, negate the angle. This burned 10+ minutes of debugging in earlier sessions — the test snippet above runs in `runIsolated` and resolves it in seconds.
-
-### Painting locks the editor — `clearColors()` to iterate
-
-Once any region exists, the editor's Run button is disabled in the UI (re-running would change the triangle indices the colors were painted against). The programmatic `runAndSave` is *not* blocked, but re-running new geometry with colors still in memory leaves them resolved against the old triangles. So to change the geometry mid-session, call `partwright.clearColors()` first, *then* run new code — or use `forkVersion(...)`, which re-resolves the parent's colors onto the new geometry by descriptor (pass `carryColors: false` for an uncolored child).
-
-### Verify before you commit
-
-`paintPreview` is count-only by default — call it before any non-trivial paint as a free sanity check on selector geometry. If the count is surprising, opt into the visual:
-
-```js
-const dry = partwright.paintPreview({ point: [...], radius: 4 });
-// dry.triangleCount > 0? if happy, call paintNear with the same args to commit.
-// If the count is wildly off, add withImage: true to see what got selected:
-partwright.paintPreview({ point: [...], radius: 4, withImage: true, view: { ortho: true, size: 240 } });
-```
-
-Use `assertPaint` to verify regions stayed where you expected after a re-render or version load:
-
-```js
-partwright.assertPaint({ region: 'Index nail', expectedTriangleCount: { min: 15, max: 60 } });
-```
-
-### `runAndSave` is for committed iterations; `runIsolated` is for sanity checks
-
-`runAndSave` writes a version to the gallery (and the lock state, and the diff, etc.). For "does this code produce 1 component or 7" questions, prefer `runIsolated(code)` — it returns `{ geometryData, thumbnail }` without mutating anything.
-
-```js
-const r = await partwright.runIsolated(`
-  const { Manifold } = api;
-  return Manifold.cube([1, 1, 1], true).hull();
-`);
-// r.geometryData.componentCount, r.thumbnail (data URL)
-```
-
 ## AI-friendly file I/O
 
 The standard `exportGLB()` / `exportSTL()` / `exportOBJ()` / `export3MF()` methods trigger a browser download — an AI agent can't observe what landed in the user's Downloads folder. Use the `*Data()` siblings (`exportGLBData()`, `exportSTLData()`, …) to get the bytes back as base64 over the API instead, and `importSessionData()` to import a session payload without touching the OS file picker.
@@ -863,38 +689,7 @@ The user can attach reference photos via `partwright.setImages([...])`; they app
 
 ## Iteration workflow
 
-### Testing without side effects
-
-Use `runIsolated` to test code variations without changing the editor or viewport:
-```js
-const r = await partwright.runIsolated(code);
-// r.geometryData = full stats (same schema as #geometry-data)
-// r.thumbnail = data:image/png base64 string (4 isometric views)
-```
-
-### Assertions -- structured validation
-
-Check geometry against expectations in one call:
-```js
-const r = await partwright.runAndAssert(code, {
-  minVolume: 1000,      // volume bounds
-  maxVolume: 50000,
-  isManifold: true,     // must be valid manifold
-  maxComponents: 1,     // detect failed booleans
-  genus: 0,             // exact topological genus (0 = solid, N = N holes)
-  minGenus: 1,          // genus range -- useful when exact count is unpredictable
-  maxGenus: 20,
-  minBounds: [10,10,5], // minimum bounding box dimensions [X,Y,Z]
-  maxBounds: [50,50,30],
-  minTriangles: 100,    // mesh complexity bounds
-  maxTriangles: 50000,
-  boundsRatio: { widthToDepth: [1.2, 1.8], widthToHeight: [1.5, 2.5] },  // proportion ranges
-  notes: "Design rationale or context for this version",  // optional: attached to saved version
-});
-// r.passed = true/false
-// r.failures = ["volume 500.0 < minVolume 1000"] (only if failed)
-// r.stats = full geometry stats
-```
+`readDoc({name: "iteration-workflow"})` — `runAndSave`, `runIsolated`, `runAndAssert`, `modifyAndTest`, `forkVersion`, `createSessionWithVersions`, `copyColorsFromVersion`, session notes (with prefix conventions), resuming a session with `getSessionContext()`, and the recommended step-by-step pattern.
 
 ### Assert + save in one call
 
@@ -1082,132 +877,18 @@ Read the notes and version history before making changes. The notes tell you:
 ### Recommended iteration pattern
 
 1. Write initial code, assert+save in one call: `runAndSave(code, "v1 - base", {isManifold: true, maxComponents: 1})`
-2. **Visually verify** -- call `renderViews()` (cheap) to catch obvious errors; before declaring done, do an all-faces pass with `renderViews({ views: "box" })`.
-3. Modify code, test with `modifyAndTest(patchFn)` or `runIsolated(code)` -- no side effects
-4. When satisfied, save: `runAndSave(modifiedCode, "v2 - improvements", assertions)` -- check the diff
-5. Use `query({sliceAt: [...], decompose: true})` for follow-up inspection without re-running
-6. Repeat.
-7. When done, briefly say what you built — it's already saved as a version, so you don't need to produce any link.
-   - **In-app chat assistant:** do NOT mint or paste a share/export URL into the conversation. The encoded share link is enormous and pasting it just burns the user's tokens, and the user already has a **Share** button (↗) in the toolbar that builds one on demand. Just confirm the work is saved.
-   - **External / console agents** (driving Partwright from outside the browser, e.g. via the console or Claude Code) have no toolbar to click, so hand the user a **share link**: `const { url } = await partwright.getShareLink()` — a self-contained, read-only URL that encodes the whole design so anyone can open and fork it. Prefer it over `getSessionUrl()`/`getGalleryUrl()`, which only resolve against *your* browser's local storage and won't open for the user.
 
 ## Visual verification
 
-**CRITICAL: Stats alone cannot catch visual defects.** A roof can be mangled, a spire twisted,
-or proportions wrong -- all while volume, componentCount, and genus look correct. You see the
-model only by rendering it (there is no live screenshot), so call the render tools after every
-structural change:
+**Stats alone cannot catch visual defects.** Always call `renderViews({views: "box"})` before declaring done — it shows all six orthographic faces including back, left, and bottom where mistakes hide.
 
-1. **Iterate cheap with `renderViews()`** -- one composite PNG of several labeled angles. The
-   default `views: "auto"` picks angles from the bounding box; keep `size` small while iterating.
-```js
-await partwright.renderViews()                       // auto angle set, cheap
-await partwright.renderViews({ views: "tri" })       // front + top + iso
-```
-2. **Do a guaranteed all-faces check before declaring done with `views: "box"`.** It renders all
-   six orthographic faces -- front, back, left, right, top, AND bottom. `auto`/`tri`/`all` never
-   show the back, left, or bottom, which is exactly where an unseen mistake hides. Bump `size` for
-   a sharper final read:
-```js
-await partwright.renderViews({ views: "box", size: 640 })   // final all-faces inspection
-```
-3. **Target specific angles** -- pass an explicit `angles` list to `renderViews`, or use
-   `renderView()` for a single angle:
-```js
-await partwright.renderViews({ angles: [               // any custom set in one composite
-  { elevation: 0, azimuth: 180, ortho: true, label: "back" },
-  { elevation: -90, ortho: true, label: "underside" },
-] })
-partwright.renderView({ elevation: 0, azimuth: 0, ortho: true })   // front elevation
-partwright.renderView({ elevation: 90, ortho: true })             // top-down plan view
-partwright.renderView({ elevation: 30, azimuth: 315 })            // isometric (default)
-```
-4. **Use `sliceAtZVisual(z)` for cross-section thumbnails:**
-```js
-const s = partwright.sliceAtZVisual(10);  // returns {svg, area, contours}
-// svg = visual rendering of the cross-section profile at z=10
-```
-5. **Feature-specific checks:**
-   - Added a roof? Check side elevation -- should be a clean triangle/gable profile.
-   - Cut a door/window? Check front elevation -- opening should be visible.
-   - Added a tower? Check top-down -- should be circular, properly positioned.
-   - Made something hollow? Slice at mid-height -- should show wall ring, not solid fill.
-   - Anything asymmetric front-to-back or left-to-right? Use `views: "box"` -- the back and left
-     faces are invisible to every other preset.
-
-### Edge overlay (`edges`)
-
-Both `renderView` and `renderViews` take an `edges` option controlling what is drawn
-on top of the shaded surface:
-
-- **`'crease'`** (default for uncolored models) -- only feature edges: corners and the
-  silhouette. Sharpens shape-reading without spraying facet noise across tessellated
-  curves. This is what you want almost always.
-- **`'none'`** -- plain shaded surface, no overlay. Default for painted models, since an
-  overlay competes with the colors you're checking. Use it on uncolored models too when you
-  want the cleanest read of form and surface.
-- **`'wireframe'`** -- every triangle edge (full topology). Reach for this only to inspect
-  tessellation density or debug a failed boolean (stray edges, non-manifold artifacts); on a
-  dense mesh it compounds into a dark mass, so it's the wrong default for shape verification.
-
-```js
-await partwright.renderViews({ views: "box", edges: "none" })       // cleanest shape read
-partwright.renderView({ elevation: 30, azimuth: 315, edges: "wireframe" })  // inspect topology
-```
-
-### Render tiers
-
-- **While iterating:** `renderViews()` (auto) or `renderView()` at the default size -- cheap.
-- **Final check:** `renderViews({ views: "box", size: 512-768 })` -- every face, high resolution.
-  More angles x larger size = more input tokens, so spend it on the final pass, not every turn.
+`readDoc({name: "visual-verification"})` — render tiers, edge overlay (`edges: 'crease'|'none'|'wireframe'`), feature-specific checks, and stat-based validation.
 
 ## Spending mode
 
-The user sets a **budget** that controls how much compute/tokens the AI agent
-should spend. **Read it at the start of a session and respect it:**
+Read `partwright.getSpendingMode()` at session start and honor the user's budget (`cheap`/`balanced`/`expensive`/`custom`). Also in `getSessionContext().agentHints.spending`.
 
-```js
-partwright.getSpendingMode()
-// -> { mode: "balanced", thinking: "off", verifyWithImages: true,
-//      renderResolution: "medium", renderResolutionPx: 384,
-//      verificationAngles: "auto", painting: false, sessionNotes: true,
-//      maxIterations: "medium", maxSpendUsd: 2 }
-```
-
-`mode` is `"cheap"`, `"balanced"`, `"expensive"`, or `"custom"` (the user
-hand-tuned the toggles). It maps to the in-app AI presets Minimal / Standard /
-Full. It's also included in `getSessionContext().agentHints.spending`.
-
-`setSpendingMode("cheap"|"balanced"|"expensive")` applies a preset — it sets
-thinking, image verification, painting, session notes, and the iteration/spend
-caps in one shot. The user can also adjust each knob individually in the AI
-panel's toggle strip.
-
-**Enforced by the app — you don't have to do anything, but know the limits:**
-
-- **`renderResolution`** sets the **default** pixel `size` for `renderView()` /
-  `renderViews()` (low=256, medium=384, high=512) when you don't pass one. Keep
-  routine checks at the default; pass a larger `size` only for a deliberate
-  final high-res inspection. (The hard budget guard is the USD spend cap.)
-- **`painting`** — when `false`, the paint tools are removed from your tool list
-  and the paint console API returns an error. Don't try to paint; tell the user
-  to raise the budget if they want color.
-- **`sessionNotes`** — when `false`, `addSessionNote` is removed from your tool
-  list. The chat transcript already records your reasoning, so this just saves a
-  round-trip; don't work around it.
-
-**Advisory — adjust your own behavior to match:**
-
-- **`thinking`** (`off`/`low`/`medium`/`high`) — when `off`, keep reasoning
-  minimal and act directly.
-- **`verifyWithImages`** — when `false`, reason from stats/code alone; render
-  images sparingly only when the user explicitly needs a visual check.
-- **`verificationAngles`** (`auto`/`tri`/`all`) — the default angle set for
-  `renderViews()`; lower means fewer image tokens per check.
-- **`maxIterations`** / **`maxSpendUsd`** — hard caps; the turn stops when either
-  trips. Pace your tool calls so you finish useful work before the cap.
-
-Honor the budget unless the user overrides it for a specific request.
+`readDoc({name: "spending"})` for what each mode enforces (painting toggle, render resolution, session notes) and what you should adjust (thinking level, image verification frequency, pacing).
 
 ## Annotations
 
@@ -1215,10 +896,3 @@ Users can mark up the model surface with the **Annotate** tool (✏️ in the vi
 
 **Call `readDoc({name: "annotations"})`** when the user has placed annotations and you want to read them, or when you need to write annotations programmatically — covers the `getAnnotations` / `setAnnotations` shape and the persistence model.
 
-## Stat-based verification
-
-1. Read `#geometry-data` -- check `status:"ok"`, volume, dimensions, componentCount, isManifold
-2. Check `crossSections` quartiles (z25/z50/z75) for expected profile
-3. Use `partwright.sliceAtZ(z)` for specific heights
-4. Use `partwright.validate(code)` for quick syntax checks
-5. Use `partwright.runAndAssert(code, assertions)` for structured validation

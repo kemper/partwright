@@ -14,6 +14,7 @@ import { ingestEvent, type DiagnosticEvent } from './diagnostics';
 import type { RunTurnInput, RunTurnCallbacks } from './chatLoop';
 import type { ChatBlock, ChatMessage, PersistedToolResult } from './types';
 import type { AgentWorkerInput } from './agentWorker';
+import { getConfig } from '../config/appConfig';
 
 let worker: Worker | null = null;
 let currentCallbacks: RunTurnCallbacks | null = null;
@@ -151,12 +152,15 @@ export async function runTurn(
   }
 
   // Strip non-serialisable fields before sending across the thread boundary.
+  // toolCallTimeoutMs is read here (main thread has localStorage) and passed to
+  // the Worker which has no localStorage access.
   const workerInput: AgentWorkerInput = {
-    apiKey:      input.apiKey,
-    toggles:     input.toggles,
-    sessionId:   input.sessionId,
-    history:     input.history,
-    userBlocks:  input.userBlocks,
+    apiKey:             input.apiKey,
+    toggles:            input.toggles,
+    sessionId:          input.sessionId,
+    history:            input.history,
+    userBlocks:         input.userBlocks,
+    toolCallTimeoutMs:  getConfig().ai.toolCallTimeoutMs,
   };
 
   return new Promise<ChatMessage[]>((resolve, reject) => {

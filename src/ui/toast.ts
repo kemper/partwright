@@ -2,6 +2,8 @@
 // bottom-center of the viewport — used for save confirmations and the
 // agent-UI warning.
 
+import { getConfig } from '../config/appConfig';
+
 export type ToastVariant = 'neutral' | 'success' | 'warn';
 
 const VARIANT_STYLE: Record<ToastVariant, string> = {
@@ -14,7 +16,7 @@ export function showToast(
   message: string,
   opts: { variant?: ToastVariant; durationMs?: number } = {},
 ): void {
-  const { variant = 'neutral', durationMs = 2200 } = opts;
+  const { variant = 'neutral', durationMs = getConfig().ui.toastDurationMs } = opts;
   const toast = document.createElement('div');
   toast.textContent = message;
   toast.setAttribute('role', 'status');

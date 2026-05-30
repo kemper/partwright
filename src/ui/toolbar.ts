@@ -34,6 +34,8 @@ export interface ToolbarCallbacks {
   onShareLink: () => void;
   onExportRawCode: () => void;
   onImportFile: (file: File) => void | Promise<void>;
+  /** Open the "Import from URL…" modal (share link or remote file URL). */
+  onImportFromURL: () => void;
   /** Re-import a blob already held in the inbox (e.g. recent-imports re-click). */
   onImportInboxEntry: (entry: ImportInboxEntry) => void | Promise<void>;
   /** Open the image → keychain / tile / stepped-relief import wizard. */
@@ -333,6 +335,16 @@ export function createToolbar(
     importInput.click();
   });
   importDropdown.appendChild(chooseFileOpt);
+
+  const fromUrlOpt = createDescribedItem(
+    'Import from URL…',
+    'Paste a Partwright share link, or an http(s) link to a session, mesh, or image file.',
+  );
+  fromUrlOpt.addEventListener('click', () => {
+    importDropdown.classList.add('hidden');
+    callbacks.onImportFromURL();
+  });
+  importDropdown.appendChild(fromUrlOpt);
 
   importDropdown.appendChild(createDivider());
   importDropdown.appendChild(createSectionHeader('Create'));

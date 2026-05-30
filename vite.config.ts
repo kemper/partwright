@@ -165,7 +165,9 @@ export default defineConfig({
       // external call surfaces here in dev instead of slipping through to
       // production. connect-src allows `https:` + http://localhost / 127.0.0.1
       // so a user-configured Custom (OpenAI-compatible) endpoint — e.g. a
-      // self-hosted llama.cpp server — works (matches _headers). The dev-only
+      // self-hosted llama.cpp server — works (matches _headers). That same
+      // `https:` allowance also backs "Import from URL…" (fetching a remote
+      // file over https). The dev-only
       // delta is the localhost WebSocket Vite uses for HMR/live-reload, which
       // production has no equivalent of. Keep the host allowlist in sync with
       // public/_headers.

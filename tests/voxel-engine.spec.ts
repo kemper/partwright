@@ -86,9 +86,14 @@ test.describe('voxel engine', () => {
     await page.locator('#import-wrapper input[type="file"]').first()
       .setInputFiles({ name: 'logo.png', mimeType: 'image/png', buffer });
 
+    // The generic image import now asks relief-or-voxel first — pick Voxel.
+    await page.locator('button[data-kind="voxel"]').click();
+
     // The voxel modal (not the relief wizard) opens; commit it.
     await expect(page.getByText('Image → Voxel', { exact: true })).toBeVisible({ timeout: 5000 });
     await page.getByRole('button', { name: 'Import', exact: true }).click();
+    // The fresh editor's only part is an expendable starter, so the import lands
+    // directly as a new voxel session — no import-target modal to dismiss.
     await expect.poll(async () => page.evaluate(
       () => (window as any).partwright.getActiveLanguage(), // eslint-disable-line @typescript-eslint/no-explicit-any
     ), { timeout: 10_000 }).toBe('voxel');
@@ -117,6 +122,8 @@ test.describe('voxel engine', () => {
     await page.locator('#import-wrapper input[type="file"]').first()
       .setInputFiles({ name: 'cube.vox', mimeType: 'application/octet-stream', buffer: buildVoxBlob() });
 
+    // The fresh editor's only part is an expendable starter, so the import lands
+    // directly as a new voxel session — no import-target modal to dismiss.
     // It lands as a voxel session whose code rebuilds the grid via voxels.decode(...).
     // Poll on the code (not the language): importCodePayload flips the engine
     // language before it sets the editor buffer, so the code is the reliable
@@ -130,13 +137,18 @@ test.describe('voxel engine', () => {
       .partwright.setActiveLanguage('manifold-js'));
     await expect.poll(async () => (await readState()).lang).toBe('manifold-js');
 
-    // Re-click the VOX entry in Recent Imports (no version saved yet, so no
-    // "keep current session?" confirm fires).
+    // Re-click the VOX entry in Recent Imports.
     await page.locator('#btn-import').click();
     const recent = page.locator('#import-recent-list button', { hasText: 'cube.vox' }).first();
     await expect(recent).toBeVisible();
     await expect(recent.getByText('VOX', { exact: true })).toBeVisible();
     await recent.click();
+
+    // Switching to manifold-js left the editor on a JS stub (non-starter), so the
+    // current part is no longer an expendable starter — the import-target modal
+    // appears. Pick a fresh part so the re-import lands as clean voxel code (not
+    // composed into the prior part).
+    await page.getByRole('dialog').locator('[data-target="new-part"]').click();
 
     // The regression: it switches BACK to the voxel language and rebuilds the grid
     // via voxels.decode(...). Before the fix it stayed on manifold-js with the raw

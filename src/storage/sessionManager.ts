@@ -1552,7 +1552,10 @@ export async function exportSession(
 
 export async function importSession(
   data: ExportedSession,
-  regenerateThumbnail?: (code: string) => Promise<Blob | null>,
+  regenerateThumbnail?: (
+    code: string,
+    importedMeshes: ImportedMesh[] | undefined,
+  ) => Promise<Blob | null>,
   onWarning?: (message: string) => void,
 ): Promise<Session> {
   const warning = getSchemaCompatibilityWarning(data);
@@ -1636,13 +1639,21 @@ export async function importSession(
         geometryData = { ...(geometryData ?? {}), colorRegions: regions };
       }
 
+      // This version's imported meshes (base64 buffers → ImportedMesh). Needed
+      // both for persistence below AND for the regenerate path: code like
+      // `Manifold.ofMesh(api.imports[0])` only reproduces this version's
+      // geometry if the active-imports register holds these meshes when the
+      // callback runs it — otherwise the run (and its captured thumbnail)
+      // reflects whatever was last in the register (a stale, wrong part).
+      const importedMeshes = deserializeImportedMeshes(v.importedMeshes);
+
       // Prefer an embedded thumbnail (schema 1.3+) — avoids re-running WASM
       // and gives us the exact image the exporter saw. Fall back to
       // regenerating from code when the field is absent.
       let thumbnail: Blob | null = null;
       if (v.thumbnail) thumbnail = dataURLToBlob(v.thumbnail);
       if (!thumbnail && regenerateThumbnail) {
-        thumbnail = await regenerateThumbnail(v.code);
+        thumbnail = await regenerateThumbnail(v.code, importedMeshes);
       }
 
       // Annotations: prefer the per-version field (1.3+). Fall back to the
@@ -1662,7 +1673,7 @@ export async function importSession(
         v.notes,
         v.timestamp,
         versionAnnotations,
-        deserializeImportedMeshes(v.importedMeshes),
+        importedMeshes,
         // Per-version language (schema 1.8+). Pre-1.8 files omit it; the
         // read path falls back to session-level via effectiveVersionLanguage.
         // Run unknown values through `asLanguage` so a malformed export
@@ -1725,4 +1736,145 @@ export async function importSession(
   // can land mid-render and produce a frame that misses the annotations.
 
   return refreshedSession;
+}
+
+export interface MergePartsResult {
+  /** Parts appended to the current session. */
+  addedParts: Part[];
+  /** Total versions copied across all appended parts. */
+  versionCount: number;
+}
+
+/**
+ * Merge the parts of an exported session into the CURRENTLY OPEN session,
+ * appending each as a brand-new part (originals untouched, no navigation away).
+ *
+ * Each imported part's versions are copied across preserving `code`,
+ * per-version `language`, `colorRegions`, `annotations`, `thumbnail`,
+ * `geometryData`, `importedMeshes` (base64 mesh buffers), and `paramValues`.
+ * Part and version ids are freshly minted by the db layer (dbCreatePart /
+ * dbSaveVersion), so there are no id collisions with the host session.
+ *
+ * Mirrors {@link importSession}'s reconstruction (legacy single-part files
+ * with no `parts[]` collapse into one part; the same color-region and
+ * top-level-annotation back-compat fallbacks apply) but writes into the
+ * existing session instead of a fresh one. Returns null if no session is open.
+ */
+export async function importSessionPartsIntoActive(
+  data: ExportedSession,
+  regenerateThumbnail?: (
+    code: string,
+    importedMeshes: ImportedMesh[] | undefined,
+  ) => Promise<Blob | null>,
+): Promise<MergePartsResult | null> {
+  if (!currentState.session) return null;
+  if (!data.session || typeof data.session !== 'object') {
+    throw new Error('Invalid session file: missing "session" data.');
+  }
+  const sessionId = currentState.session.id;
+
+  const versions = Array.isArray(data.versions) ? data.versions : [];
+  if (versions.length === 0) {
+    // A chat/notes-only export carries no parts to merge — nothing to append.
+    throw new Error('That file has no parts to merge.');
+  }
+
+  // Same top-level-annotation back-compat target as importSession: schema 1.2
+  // attached annotations to whichever version was most recent at export.
+  const latestExportedIndex = versions.reduce((m, v) => Math.max(m, v.index), -Infinity);
+
+  // Reconstruct part definitions (legacy files with no `parts[]` collapse into
+  // one default part) and group versions by their owning part's `order`.
+  const partDefs = (Array.isArray(data.parts) && data.parts.length > 0)
+    ? [...data.parts].sort((a, b) => a.order - b.order)
+    : [{ name: DEFAULT_PART_NAME, order: 0 }];
+
+  const versionsByOrder = new Map<number, ExportedSession['versions']>();
+  for (const v of versions) {
+    const order = v.part ?? 0;
+    const arr = versionsByOrder.get(order) ?? [];
+    arr.push(v);
+    versionsByOrder.set(order, arr);
+  }
+
+  // Append after whatever parts the host session already has, preserving the
+  // imported parts' relative order.
+  let nextOrder = currentState.parts.reduce((m, p) => Math.max(m, p.order), -1) + 1;
+  const addedParts: Part[] = [];
+  let copiedVersions = 0;
+
+  for (let i = 0; i < partDefs.length; i++) {
+    const def = partDefs[i];
+    const partVersions = versionsByOrder.get(def.order) ?? [];
+    // Skip an imported part that carries no versions — nothing to seed it with.
+    if (partVersions.length === 0) continue;
+
+    const part = await dbCreatePart(
+      sessionId,
+      (def.name && def.name.trim()) || `Part ${i + 1}`,
+      nextOrder++,
+    );
+    addedParts.push(part);
+
+    const sorted = [...partVersions].sort((a, b) => a.index - b.index);
+    for (const v of sorted) {
+      // Color regions: prefer the explicit (1.1+) field; fall back to the legacy
+      // nested location. Mirror back into geometryData so read paths find them.
+      const explicitRegions = v.colorRegions;
+      const nestedRegions = extractColorRegions(v.geometryData);
+      const regions = explicitRegions ?? nestedRegions;
+
+      let geometryData = v.geometryData;
+      if (regions && (!geometryData || !Array.isArray((geometryData as Record<string, unknown>).colorRegions))) {
+        geometryData = { ...(geometryData ?? {}), colorRegions: regions };
+      }
+
+      // The imported meshes for this version (base64 buffers → ImportedMesh).
+      // Needed both for persistence AND for the regenerate path: code like
+      // `Manifold.ofMesh(api.imports[0])` only reproduces this version's
+      // geometry if the active-imports register holds *this* version's meshes
+      // when the regen callback runs it. Without them the callback would run
+      // against whatever was last in the register (the host/previous part), so
+      // the captured thumbnail would show the wrong — stale — geometry.
+      const importedMeshes = deserializeImportedMeshes(v.importedMeshes);
+
+      // Prefer the embedded thumbnail (1.3+); fall back to regenerating.
+      let thumbnail: Blob | null = null;
+      if (v.thumbnail) thumbnail = dataURLToBlob(v.thumbnail);
+      if (!thumbnail && regenerateThumbnail) thumbnail = await regenerateThumbnail(v.code, importedMeshes);
+
+      // Annotations: per-version (1.3+) preferred; else top-level (1.2) on the
+      // latest exported version only.
+      let versionAnnotations: SerializedAnnotation[] | undefined = v.annotations;
+      if (!versionAnnotations && data.annotations && data.annotations.length > 0 && v.index === latestExportedIndex) {
+        versionAnnotations = data.annotations;
+      }
+
+      // dbSaveVersion mints a fresh version id and assigns the next per-part
+      // index, so the copied sequence preserves order without colliding.
+      await dbSaveVersion(
+        part.id,
+        sessionId,
+        v.code,
+        geometryData,
+        thumbnail,
+        v.label,
+        v.notes,
+        v.timestamp,
+        versionAnnotations,
+        importedMeshes,
+        asLanguage(v.language),
+        v.paramValues && typeof v.paramValues === 'object' ? v.paramValues : undefined,
+      );
+      copiedVersions++;
+    }
+  }
+
+  // Re-read the host session so the parts rail and counts reflect the appended
+  // parts. We deliberately stay on the current part/version — the merge adds
+  // parts alongside, it doesn't navigate away.
+  await reloadCurrentSessionFromDB();
+  broadcastPartChange();
+
+  return { addedParts, versionCount: copiedVersions };
 }

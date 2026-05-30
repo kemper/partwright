@@ -5,7 +5,7 @@
 // attribute, and shows a styled bubble after a short delay — restoring the
 // attribute on leave so accessibility tools still see it.
 
-const SHOW_DELAY_MS = 150;
+import { getConfig } from '../config/appConfig';
 
 let initialized = false;
 let bubble: HTMLElement | null = null;
@@ -49,7 +49,7 @@ function onPointerOver(e: PointerEvent): void {
   activeEl = el;
   stashedTitle = title;
   el.removeAttribute('title'); // suppress the native (slow) tooltip
-  showTimer = setTimeout(() => show(el, title), SHOW_DELAY_MS);
+  showTimer = setTimeout(() => show(el, title), getConfig().ui.tooltipDelayMs);
 }
 
 function onPointerOut(e: PointerEvent): void {

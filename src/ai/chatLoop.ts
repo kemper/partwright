@@ -22,6 +22,7 @@ import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt
 import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
 import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
+import { getConfig } from '../config/appConfig';
 
 /** Look up the stored API key for a hosted provider. Returns null when
  *  no key is stored; chatLoop turns that into an "open AI Settings to
@@ -66,7 +67,7 @@ function yieldToBrowser(): Promise<void> {
  *  the console so we can pinpoint the slow op if the page freezes — the
  *  most common culprits are commitPaintFromSet (re-renders all 4 iso
  *  views per call) and Manifold boolean ops on complex meshes. */
-const SLOW_TOOL_MS = 250;
+function getSlowToolMs(): number { return getConfig().ai.slowToolMs; }
 
 /** The sentinel tool the model calls to end its turn in auto-continue mode.
  *  Defined here (not imported from tools.ts) so chatLoop stays the single
@@ -89,7 +90,7 @@ const AUTO_RESUME_PROMPT =
  *  without limiting a genuinely productive long run (which keeps calling
  *  tools). Hitting it just falls through to the normal end_turn outcome (a
  *  resumable Keep-going notice), never an infinite loop. */
-const MAX_CONSECUTIVE_AUTO_RESUMES = 8;
+function getMaxConsecutiveAutoResumes(): number { return getConfig().ai.maxConsecutiveAutoResumes; }
 
 export interface RunTurnInput {
   /** Hosted-provider API key. Required only when toggles.provider === 'anthropic'. */
@@ -483,7 +484,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       // (checked above), and the no-progress ceiling, so it can't run away.
       // Only end_turn is auto-resumed; max_tokens / refusal keep their own
       // handling + Keep-going notice.
-      if (autoResume && result.stopReason === 'end_turn' && consecutiveNudges < MAX_CONSECUTIVE_AUTO_RESUMES) {
+      if (autoResume && result.stopReason === 'end_turn' && consecutiveNudges < getMaxConsecutiveAutoResumes()) {
         // Preserve user/assistant alternation: an empty assistant turn
         // (empty_final — the model said nothing) is dropped by every provider's
         // request builder, which would leave the prior tool-result user turn
@@ -680,13 +681,14 @@ async function timedExecuteTool(
   const t0 = performance.now();
   const result = await (fn ?? executeTool)(name, input);
   const elapsed = performance.now() - t0;
-  if (elapsed > SLOW_TOOL_MS) {
+  const slowMs = getSlowToolMs();
+  if (elapsed > slowMs) {
     // Visible only in dev tools — meant for diagnosing the
     // "page unresponsive" case. We don't surface this in the UI to
     // avoid alarming users when the warning is benign (a Manifold
     // boolean op on a complex mesh is just genuinely slow).
     // eslint-disable-next-line no-console
-    console.warn(`[AI tool] ${name} took ${Math.round(elapsed)}ms (threshold ${SLOW_TOOL_MS}ms).`);
+    console.warn(`[AI tool] ${name} took ${Math.round(elapsed)}ms (threshold ${slowMs}ms).`);
   }
   return result;
 }
@@ -701,8 +703,7 @@ function nextSeq(history: ChatMessage[]): number {
  *  the first turn, and per-turn cost is dominated by the recent messages
  *  plus output. */
 export function estimateCachedPrefixTokens(systemPromptChars: number): number {
-  // ~4 chars per token average
-  return Math.round(systemPromptChars / 4);
+  return Math.round(systemPromptChars / getConfig().ai.charsPerToken);
 }
 
 /** Sum the total chars in a chat message's blocks for rough token estimation. */
@@ -720,9 +721,9 @@ export function messageChars(msg: ChatMessage): number {
 export function totalTokensEstimate(history: ChatMessage[], systemPromptChars: number): number {
   let chars = systemPromptChars;
   for (const m of history) chars += messageChars(m);
-  // Image blocks: ~1500 tokens each at standard res for a mid-size image.
+  const cfg = getConfig().ai;
   const imageBlocks = history.flatMap(m => m.blocks.filter(b => b.type === 'image')).length;
-  return Math.round(chars / 4) + imageBlocks * 1500;
+  return Math.round(chars / cfg.charsPerToken) + imageBlocks * cfg.imageTokenEstimate;
 }
 
 /** Sum of all assistant-turn costs in the given history. */

@@ -10,6 +10,7 @@ import { initDimensionLines, updateDimensionLines, disposeDimensionLines, setDim
 import { initAnnotationOverlay, setLiveResolution as setAnnotationResolution } from '../annotations/annotationOverlay';
 import { configureSessionPlane } from '../annotations/sessionPlane';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
+import { getConfig } from '../config/appConfig';
 
 const VIEWPORT_BG = { dark: 0x1a1a2e, light: 0xededed } as const;
 const GRID_COLORS = { dark: { major: 0x444444, minor: 0x333333 }, light: { major: 0xb0b0b0, minor: 0xc8c8c8 } } as const;
@@ -62,13 +63,11 @@ const POINTER_GRACE_MS = 350;
 // while actively orbiting/panning/zooming, where the lower fragment count keeps
 // interaction smooth on dense meshes and the softer image is invisible mid-
 // motion. Restored to full res the instant interaction ends.
-const MAX_PIXEL_RATIO = 2;
-const INTERACTION_RENDER_SCALE = 0.6;
 let interacting = false;
 let cssWidth = 0;
 let cssHeight = 0;
 function baseDpr(): number {
-  return Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
+  return Math.min(window.devicePixelRatio || 1, getConfig().renderer.maxPixelRatio);
 }
 function applyRenderScale(scale: number): void {
   if (!renderer) return;
@@ -137,7 +136,7 @@ export function initViewport(container: HTMLElement): {
   scene.background = new THREE.Color(bgFor(getTheme()));
 
   camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
-  camera.position.set(15, -15, 15);
+  camera.position.set(15, 15, 15);
   camera.up.set(0, 0, 1);
 
   const canvas = document.createElement('canvas');
@@ -178,7 +177,7 @@ export function initViewport(container: HTMLElement): {
   controls.addEventListener('change', () => { needsRender = true; });
   controls.addEventListener('start', () => {
     interacting = true;
-    applyRenderScale(INTERACTION_RENDER_SCALE);
+    applyRenderScale(getConfig().renderer.interactionRenderScale);
     needsRender = true;
   });
   controls.addEventListener('end', () => {
@@ -294,7 +293,7 @@ export function initViewport(container: HTMLElement): {
     if (width === 0 || height === 0) return;
     cssWidth = width;
     cssHeight = height;
-    applyRenderScale(interacting ? INTERACTION_RENDER_SCALE : 1);
+    applyRenderScale(interacting ? getConfig().renderer.interactionRenderScale : 1);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
     setAnnotationResolution(width * window.devicePixelRatio, height * window.devicePixelRatio);
