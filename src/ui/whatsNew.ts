@@ -30,6 +30,65 @@ interface WeekEntry {
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 const WEEKS: WeekEntry[] = [
   {
+    range: 'May 30, 2026',
+    headline: 'Surface modifiers, Ideas library, and landing page performance',
+    groups: [
+      {
+        label: 'Modeling',
+        items: [
+          {
+            title: 'Surface modifiers',
+            body: 'Apply post-processing effects to any model: fuzzy skin adds randomized surface noise (mimicking FDM printed texture), smooth rounds out faceted geometry, and voxelize converts the surface to a cube grid. All three are available from the command palette, the viewport overlay, and the window.partwright API. Paint carries through the modifier via nearest-triangle transfer, and each apply creates an undoable new version with a live preview before committing.',
+          },
+        ],
+      },
+      {
+        label: 'AI assistant',
+        items: [
+          {
+            title: 'Ideas page and in-pane prompt library',
+            body: 'A new /ideas page showcases starter prompts and technique ideas. In the AI panel, clicking 💡 opens a searchable prompt library — pick a tile to populate the input without sending. Empty-state chips suggest quick starts when the chat is blank.',
+          },
+          {
+            title: 'Printability feedback',
+            body: 'The AI now sees printability data (overhangs, thin walls, floating parts, non-manifold status) in its tool responses. The viewport shows a live printability indicator after each successful render.',
+          },
+          {
+            title: 'Import confirmation',
+            body: 'The AI must now show a confirmation dialog before importing files into a session — you see exactly what it intends to import and can accept or cancel.',
+          },
+        ],
+      },
+      {
+        label: 'Relief Studio',
+        items: [
+          {
+            title: 'Remove background, double-sided, and mirror',
+            body: 'Three new import options: automatic background removal (reads the alpha channel when available, pre-quantization RGB otherwise), a double-sided toggle for wall-hung reliefs, and a mirror axis selector.',
+          },
+        ],
+      },
+      {
+        label: 'Settings',
+        items: [
+          {
+            title: 'Advanced Settings overhaul',
+            body: '30 new configurable fields across AI, renderer, import, and UI — each with a ? tooltip explaining what it controls. The start-fresh / uninstall action moved from the landing page into Advanced Settings.',
+          },
+        ],
+      },
+      {
+        label: 'Performance',
+        items: [
+          {
+            title: 'Landing page speed and stability',
+            body: 'The landing page now renders from static HTML before JavaScript loads, eliminating black-screen flash and layout shift on first visit. Skeleton ghost loaders fill catalog and session tiles while data arrives; fonts use fallback rendering to prevent reflow; WASM loads are deferred until the editor actually opens.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'May 29 – 30, 2026',
     headline: 'AI slash commands, custom endpoints, and auto-continue',
     groups: [

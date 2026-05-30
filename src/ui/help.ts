@@ -127,6 +127,7 @@ export function createHelpPage(
         '<li><strong class="text-zinc-300">Annotate</strong> — Draw freehand strokes or drop pinned text labels on the model. Annotations are saved per version and survive export to <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.partwright.json</code>.</li>' +
         '<li><strong class="text-zinc-300">Paint</strong> — Color regions of the model for multi-material printing (full details below).</li>' +
         '<li><strong class="text-zinc-300">Simplify</strong> — Reduce the model\'s triangle count. Drag the slider or type a max-triangle target, then click "Apply" to run the reduction (a progress bar tracks heavy models); exports then use the reduced mesh. "Save as version" bakes the lighter mesh into a new saved version, while "Reset" restores full detail.</li>' +
+        '<li><strong class="text-zinc-300">Surface modifiers</strong> — Post-process the current model with one of three effects: <strong class="text-zinc-300">Fuzzy skin</strong> adds randomized surface noise that mimics FDM printed texture; <strong class="text-zinc-300">Smooth</strong> rounds faceted geometry; <strong class="text-zinc-300">Voxelize</strong> converts the surface to a cube grid. A live preview renders in the viewport before you commit; applying saves a new undoable version. Paint regions carry through the modifier automatically. Also reachable from the command palette and <code class="text-emerald-400 bg-zinc-800 px-1 rounded">window.partwright.applySurfaceModifier()</code>.</li>' +
         '</ul>',
     },
     {
@@ -180,9 +181,10 @@ export function createHelpPage(
     },
     {
       id: 'catalog',
-      heading: 'Catalog of premade models',
+      heading: 'Catalog & Ideas',
       body:
-        'Click <strong class="text-zinc-300">☰ Catalog</strong> in the toolbar to browse a gallery of premade models — twisted vase, retro rocket, chess rook, Christmas tree, desk organizer, spur gear, and more. Each tile shows a thumbnail, the language it\'s written in, and a short description. Click a tile to preview, then <strong class="text-zinc-300">Import</strong> to load it as a fresh session — a great starting point for learning the API or remixing into your own designs.',
+        'Click <strong class="text-zinc-300">☰ Catalog</strong> in the toolbar to browse a gallery of premade models — twisted vase, retro rocket, chess rook, Christmas tree, desk organizer, spur gear, and more. Each tile shows a thumbnail, the language it\'s written in, and a short description. Click a tile to preview, then <strong class="text-zinc-300">Import</strong> to load it as a fresh session — a great starting point for learning the API or remixing into your own designs.<br><br>' +
+        'The <strong class="text-zinc-300">Ideas</strong> page (<a href="/ideas" class="text-blue-400 hover:underline">/ideas</a>) is a separate collection of starter prompts and technique showcases. Clicking a tile populates the AI panel input — ready to send, or edit first. The same library is available inside the AI panel via the 💡 button.',
     },
     {
       id: 'import-export',
