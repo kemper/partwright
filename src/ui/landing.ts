@@ -258,7 +258,7 @@ function buildHero(callbacks: LandingCallbacks): HTMLElement {
 function buildInstallCta(): { button: HTMLButtonElement; note: HTMLElement; hint: HTMLElement } {
   const button = document.createElement('button');
   button.className =
-    'px-6 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold transition-colors hidden items-center gap-2';
+    'px-6 py-3 rounded-xl bg-teal-500/10 hover:bg-teal-500/20 text-teal-200 text-sm font-semibold transition-colors border border-teal-500/40 hidden items-center gap-2';
   button.title = 'Optional — install Partwright as an app for one-click launch. The app runs fully in your browser either way.';
   button.innerHTML = '<span aria-hidden="true">⬇</span><span>Install as app</span>';
 
