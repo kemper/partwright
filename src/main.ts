@@ -2334,7 +2334,7 @@ async function main() {
     } catch (e) {
       clearTimeout(timer);
       if ((e as Error).name === 'AbortError') throw new Error('The request timed out.');
-      throw new Error('Could not fetch that URL (network error or blocked by the remote server).');
+      throw new Error('Could not fetch that URL. The server may block cross-origin requests, or the URL may point to a page rather than a direct file — try finding the direct file URL, or download and upload instead.');
     }
     if (!res.ok) {
       clearTimeout(timer);
