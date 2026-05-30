@@ -78,8 +78,11 @@ type RawCatalog = Record<string, RawProvider>;
 
 const CATALOG = catalogJson as unknown as RawCatalog;
 
-/** models.dev publishes Gemini models under the 'google' provider id. */
-const CATALOG_PROVIDER_ID: Record<Exclude<Provider, 'local'>, string> = {
+/** models.dev publishes Gemini models under the 'google' provider id.
+ *  'local' (WebLLM) and 'custom' (a user-supplied OpenAI-compatible endpoint)
+ *  have no catalog entry, so they're excluded here and `rawProvider` returns
+ *  null for them — callers then fall back to their per-provider defaults. */
+const CATALOG_PROVIDER_ID: Record<Exclude<Provider, 'local' | 'custom'>, string> = {
   anthropic: 'anthropic',
   openai: 'openai',
   gemini: 'google',
@@ -152,7 +155,7 @@ export interface ModelOption {
 }
 
 function rawProvider(provider: Provider): RawProvider | null {
-  if (provider === 'local') return null;
+  if (provider === 'local' || provider === 'custom') return null;
   return CATALOG[CATALOG_PROVIDER_ID[provider]] ?? null;
 }
 

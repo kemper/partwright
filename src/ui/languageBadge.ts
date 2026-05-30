@@ -10,7 +10,7 @@ export interface LanguageBadge {
 }
 
 /** One source of truth for the per-language badge label + colour. Consumed by
- *  `sessionBar`, `sessionList`, `landing`, `catalog` — keeping it here means
+ *  `sessionBar`, `sessionList`, `landing`, `catalog`, `versionTile` — keeping it here means
  *  adding a new language updates every grid/list at once. */
 export function languageBadge(language: Language | string | undefined | null): LanguageBadge {
   switch (language) {

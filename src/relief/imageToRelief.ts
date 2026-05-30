@@ -272,7 +272,7 @@ function clamp255(v: number): number {
 }
 
 // sRGB byte triple -> CIE L*a*b*, for perceptual clustering (the 'lab' option).
-function rgbToLab(r: number, g: number, b: number): [number, number, number] {
+export function rgbToLab(r: number, g: number, b: number): [number, number, number] {
   const lin = (c: number) => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
   const R = lin(r), G = lin(g), B = lin(b);
   const X = (R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047;
@@ -401,7 +401,10 @@ export function quantizeColors(
   return kmeansCluster(feat, src, count, Math.max(1, Math.floor(k)), 16);
 }
 
-function nearestPalette(fr: number, fg: number, fb: number, palFeat: Array<[number, number, number]>): number {
+/** Index of the palette entry (feature triples in the same colour space as the
+ *  query) closest to `(fr,fg,fb)` by squared distance. Shared by the relief
+ *  dithering path and the image→voxel fixed-palette snapping. */
+export function nearestPalette(fr: number, fg: number, fb: number, palFeat: Array<[number, number, number]>): number {
   let best = 0, bd = Infinity;
   for (let c = 0; c < palFeat.length; c++) {
     const dx = fr - palFeat[c][0], dy = fg - palFeat[c][1], dz = fb - palFeat[c][2];

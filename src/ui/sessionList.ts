@@ -12,17 +12,23 @@ import {
   type Session,
   type ExportedSession,
 } from '../storage/sessionManager';
+import type { ImportedMesh } from '../import/importedMesh';
 import { getSessionLatestVersion, getSessionVersionCount } from '../storage/db';
 import { languageBadge } from './languageBadge';
 
 let modalEl: HTMLElement | null = null;
 let onLoadVersion: ((code: string) => void | Promise<void>) | null = null;
-let regenerateThumbnailFn: ((code: string) => Promise<Blob | null>) | null = null;
+type RegenerateThumbnailFn = (
+  code: string,
+  importedMeshes: ImportedMesh[] | undefined,
+) => Promise<Blob | null>;
+
+let regenerateThumbnailFn: RegenerateThumbnailFn | null = null;
 let onNewSessionFn: (() => void) | null = null;
 
 export function initSessionList(
   loadCode: (code: string) => void | Promise<void>,
-  regenerateThumbnail?: (code: string) => Promise<Blob | null>,
+  regenerateThumbnail?: RegenerateThumbnailFn,
   onNewSession?: () => void,
 ): void {
   onLoadVersion = loadCode;

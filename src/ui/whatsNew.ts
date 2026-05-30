@@ -30,6 +30,56 @@ interface WeekEntry {
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 const WEEKS: WeekEntry[] = [
   {
+    range: 'May 29 – 30, 2026',
+    headline: 'AI slash commands, custom endpoints, and auto-continue',
+    groups: [
+      {
+        label: 'AI assistant',
+        items: [
+          {
+            title: 'Slash commands',
+            body: 'Type / in the AI chat input to get a pop-up menu of quick commands (keyboard-navigable, floats above the input, only fires when the selection is unambiguous).',
+          },
+          {
+            title: 'Custom OpenAI-compatible endpoint',
+            body: 'Point the built-in AI at any self-hosted OpenAI-compatible server — llama.cpp, vLLM, LM Studio, and similar — by setting a base URL and model name. The API key is optional; the CSP now passes traffic through to custom origins.',
+          },
+          {
+            title: 'Auto-continue (♾)',
+            body: 'A new ♾ toggle makes the agent keep working across multiple turns until it explicitly calls a finish tool, instead of stopping at every end_turn. On by default in Standard and Full presets; bounded by the existing iteration and spend caps. Toggle state is remembered across reloads.',
+          },
+        ],
+      },
+      {
+        label: 'Import',
+        items: [
+          {
+            title: 'Import session from URL',
+            body: 'Paste a URL that resolves to a .partwright.json and it loads directly — no download-then-upload step. The import target modal (new part / add to current / new session) applies as usual.',
+          },
+        ],
+      },
+      {
+        label: 'Voxel',
+        items: [
+          {
+            title: 'Improved image import',
+            body: 'The voxel image-import wizard is now modal-first with a custom palette picker and editable JavaScript codegen — tweak the generated code before it lands in the editor. Repeated voxel groups collapse into compact for-loops automatically.',
+          },
+        ],
+      },
+      {
+        label: 'Branding',
+        items: [
+          {
+            title: 'New voxel-P logo and landing theme',
+            body: 'A pixel-art voxel P mark replaces the old logo across the app; the landing page now uses a calmer, studio-style theme.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'May 25 – 29, 2026',
     headline: 'New modeling engines, image relief, and sharing',
     groups: [

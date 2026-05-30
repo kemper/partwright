@@ -12,6 +12,7 @@
 //   { type: 'importSTEPToBrep',  callId, bytes, filename }
 //   { type: 'importSTEPToMesh',  callId, bytes }
 //   { type: 'clearBrepImports',  callId }
+//   { type: 'clearBrepShape',    callId }
 //   { type: 'simplify',          callId, mesh, targetTriangles, maxTolerance }
 //   { type: 'simplify_cancel',   callId }
 //
@@ -23,6 +24,7 @@
 //   { type: 'importSTEPToBrep_result', callId, filename, error }
 //   { type: 'importSTEPToMesh_result', callId, mesh, error }
 //   { type: 'clearBrepImports_result', callId, error }
+//   { type: 'clearBrepShape_result',   callId, error }
 //   { type: 'simplify_progress',       callId, fraction }
 //   { type: 'simplify_result',         callId, mesh, triangleCount, tolerance, cancelled, error }
 //   { type: 'error',                   callId, message }
@@ -32,7 +34,7 @@
 
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
 import { runScadAsync, openscadEngine } from './engines/openscad';
-import { runReplicadAsync, replicadEngine, getLastBrepShape } from './engines/replicad';
+import { runReplicadAsync, replicadEngine, getLastBrepShape, clearLastBrepShape } from './engines/replicad';
 import { voxelEngine } from './engines/voxel';
 import { ensureBrepLoaded, sourceUsesBrep, parseStepBlob, pushPendingBrepImport, clearPendingBrepImports } from './brepRuntime';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
@@ -432,6 +434,26 @@ self.onmessage = async (event: MessageEvent) => {
     } catch (err) {
       self.postMessage({
         type: 'clearBrepImports_result',
+        callId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
+  // ── clearBrepShape ───────────────────────────────────────────────────────
+  // Drop (and free) the retained STEP-export shape from the most recent
+  // replicad run. Called when leaving a replicad session (switch/close) or
+  // switching the active language away from replicad, so exportSTEP can't
+  // return a stale shape that belongs to a different session.
+  if (msg.type === 'clearBrepShape') {
+    const { callId } = msg as unknown as { callId: string };
+    try {
+      clearLastBrepShape();
+      self.postMessage({ type: 'clearBrepShape_result', callId, error: null });
+    } catch (err) {
+      self.postMessage({
+        type: 'clearBrepShape_result',
         callId,
         error: err instanceof Error ? err.message : String(err),
       });

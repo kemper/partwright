@@ -752,31 +752,37 @@ test.describe('Relief Studio', () => {
 
     await page.locator('#btn-import').click();
     await page.getByText('Image → voxel…').click();
-    // The first image is provided by the host (toolbar picker) before the modal
-    // opens — set it on the toolbar's single import file input.
-    await page.locator('#import-wrapper input[type="file"]').setInputFiles({ name: 'small.png', mimeType: 'image/png', buffer: smallPng });
     const dialog = page.getByRole('dialog');
-    await expect(page.getByText('Image → Voxel', { exact: true })).toBeVisible();
+    await expect(page.getByText('Image → Voxel', { exact: true })).toBeVisible({ timeout: 10_000 });
+
+    // Modal-first: pick the first image inside the modal via its hidden file
+    // input (the "Choose image…" button triggers it).
+    await expect(dialog.getByRole('button', { name: 'Choose image…' })).toBeVisible({ timeout: 10_000 });
+    await dialog.locator('input[type="file"]').setInputFiles({ name: 'small.png', mimeType: 'image/png', buffer: smallPng });
 
     // Swap the source in-modal. The "Choose a different image…" button triggers
-    // a hidden file input scoped inside the dialog — set files on it directly.
-    await expect(dialog.getByRole('button', { name: 'Choose a different image…' })).toBeVisible();
+    // the same hidden file input — set files on it directly. (Generous timeout:
+    // it appears only after the picked image decodes, which can lag under CI load.)
+    await expect(dialog.getByRole('button', { name: 'Choose a different image…' })).toBeVisible({ timeout: 10_000 });
     await dialog.locator('input[type="file"]').setInputFiles({ name: 'big.png', mimeType: 'image/png', buffer: bigBuf });
 
     // Filename caption updates to the swapped image, and the import builds from it.
-    await expect(dialog.getByText('big.png')).toBeVisible({ timeout: 5000 });
+    await expect(dialog.getByText('big.png')).toBeVisible({ timeout: 10_000 });
     await dialog.getByRole('button', { name: 'Import' }).click();
 
-    // A voxel session is created from the swapped image (geometry present) and
-    // the session is named after big.png.
+    // A voxel session is created from the swapped image, named after big.png.
+    // Poll the session NAME, not geometry: the starter cube already has
+    // triangles, so a triangleCount check can pass before the import swaps the
+    // session in. The import is finished once the active session is "big".
     await expect.poll(
-      async () => page.evaluate(() => (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } | null } }).partwright.getGeometryData()?.triangleCount ?? 0),
+      async () => page.evaluate(async () => {
+        const sm = await import('/src/storage/sessionManager.ts');
+        return sm.getState().session?.name ?? null;
+      }),
       { timeout: 15_000 },
-    ).toBeGreaterThan(0);
-    const name = await page.evaluate(async () => {
-      const sm = await import('/src/storage/sessionManager.ts');
-      return sm.getState().session?.name ?? null;
-    });
-    expect(name).toBe('big');
+    ).toBe('big');
+    // …and it produced real voxel geometry.
+    const tris = await page.evaluate(() => (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } | null } }).partwright.getGeometryData()?.triangleCount ?? 0);
+    expect(tris).toBeGreaterThan(0);
   });
 });
