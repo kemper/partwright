@@ -93,6 +93,7 @@ const pendingStepExports = new Map<string, { resolve: (blob: Blob | null) => voi
 const pendingStepBrepImports = new Map<string, { resolve: (filename: string) => void; reject: (e: Error) => void }>();
 const pendingStepMeshImports = new Map<string, { resolve: (mesh: MeshData) => void; reject: (e: Error) => void }>();
 const pendingClearBrepImports = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
+const pendingClearBrepShapes = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
 const pendingSimplifies  = new Map<string, {
   resolve: (r: SimplifyWorkerResult | null) => void;
   reject: (e: Error) => void;
@@ -126,6 +127,7 @@ function rejectAllPending(err: Error): void {
   for (const p of pendingStepBrepImports.values()) p.reject(err);
   for (const p of pendingStepMeshImports.values()) p.reject(err);
   for (const p of pendingClearBrepImports.values()) p.reject(err);
+  for (const p of pendingClearBrepShapes.values()) p.reject(err);
   for (const p of pendingSimplifies.values()) p.reject(err);
   pendingExecutions.clear();
   pendingValidations.clear();
@@ -133,6 +135,7 @@ function rejectAllPending(err: Error): void {
   pendingStepBrepImports.clear();
   pendingStepMeshImports.clear();
   pendingClearBrepImports.clear();
+  pendingClearBrepShapes.clear();
   pendingSimplifies.clear();
 }
 
@@ -274,6 +277,17 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     return;
   }
 
+  if (msg.type === 'clearBrepShape_result') {
+    const callId = msg.callId as string;
+    const pending = pendingClearBrepShapes.get(callId);
+    if (!pending) return;
+    pendingClearBrepShapes.delete(callId);
+    const error = msg.error as string | null;
+    if (error) { pending.reject(new Error(error)); return; }
+    pending.resolve();
+    return;
+  }
+
   if (msg.type === 'simplify_progress') {
     const callId = msg.callId as string;
     const pending = pendingSimplifies.get(callId);
@@ -320,6 +334,8 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingStepMeshImports.delete(callId ?? '');
       pendingClearBrepImports.get(callId)?.reject(err);
       pendingClearBrepImports.delete(callId ?? '');
+      pendingClearBrepShapes.get(callId)?.reject(err);
+      pendingClearBrepShapes.delete(callId ?? '');
       pendingSimplifies.get(callId)?.reject(err);
       pendingSimplifies.delete(callId ?? '');
     }
@@ -512,6 +528,28 @@ export async function clearBrepImports(): Promise<void> {
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
     engineWorker!.postMessage({ type: 'clearBrepImports', callId });
+  });
+}
+
+/** Drop (and free) the retained STEP-export shape from the most recent
+ *  replicad run. Called when leaving a replicad session (switch/close) or
+ *  switching the active language away from replicad, so a later exportSTEP
+ *  can't return a stale shape that belongs to a different session. */
+export async function clearBrepShape(): Promise<void> {
+  initEngineWorker();
+  await workerReady;
+  const callId = `clearbrepshape-${++callIdCounter}`;
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (pendingClearBrepShapes.has(callId)) {
+        restartEngineWorker('clearBrepShape timed out');
+      }
+    }, EXECUTE_TIMEOUT_MS.replicad);
+    pendingClearBrepShapes.set(callId, {
+      resolve: () => { clearTimeout(timer); resolve(); },
+      reject: (e) => { clearTimeout(timer); reject(e); },
+    });
+    engineWorker!.postMessage({ type: 'clearBrepShape', callId });
   });
 }
 
