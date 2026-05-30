@@ -4006,9 +4006,9 @@ async function main() {
     startTour();
   }
 
-  async function ensureLandingPage() {
+  function ensureLandingPage() {
     if (!landingEl) {
-      landingEl = await createLandingPage(overlayContainer, {
+      landingEl = createLandingPage(overlayContainer, {
         onOpenEditor: openEditorFromLanding,
         onOpenHelp: () => showHelp(),
         onOpenCatalog: () => { void showCatalogPage(); },
@@ -4021,8 +4021,8 @@ async function main() {
     return landingEl;
   }
 
-  async function showLandingPage() {
-    const page = await ensureLandingPage();
+  function showLandingPage() {
+    const page = ensureLandingPage();
     overlayContainer.classList.remove('hidden');
     editorUI.classList.add('hidden');
     helpEl?.classList.add('hidden');
@@ -4444,7 +4444,7 @@ async function main() {
     if (hasShareHash()) {
       await enterSharedFromHash();
     } else if (shouldShowLanding()) {
-      await showLandingPage();
+      showLandingPage();
     } else if (shouldShowHelp()) {
       showHelp({ history: 'none' });
     } else if (shouldShowCatalog()) {

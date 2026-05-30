@@ -54,10 +54,10 @@ function shuffleArray<T>(arr: T[]): T[] {
   return copy;
 }
 
-export async function createLandingPage(
+export function createLandingPage(
   container: HTMLElement,
   callbacks: LandingCallbacks,
-): Promise<HTMLElement> {
+): HTMLElement {
   const page = document.createElement('div');
   page.id = 'landing-page';
   page.className = 'flex flex-col items-center w-full h-full overflow-auto bg-zinc-900 text-zinc-100 relative font-body';
@@ -65,13 +65,22 @@ export async function createLandingPage(
   page.appendChild(buildNav(callbacks));
   page.appendChild(buildHero(callbacks));
   page.appendChild(buildHowItWorks());
-  page.appendChild(await buildFeaturedCatalog(callbacks));
+
+  // Catalog and recent sessions load from IndexedDB — use placeholders so the
+  // shell renders immediately and the sections pop in once data is ready.
+  const catalogSlot = document.createElement('div');
+  page.appendChild(catalogSlot);
   page.appendChild(buildAgentSection());
-  page.appendChild(await buildRecentSessions(callbacks));
+  const sessionsSlot = document.createElement('div');
+  page.appendChild(sessionsSlot);
   page.appendChild(buildBuiltOn());
   page.appendChild(buildFooter());
 
   container.appendChild(page);
+
+  void buildFeaturedCatalog(callbacks).then(el => catalogSlot.replaceWith(el));
+  void buildRecentSessions(callbacks).then(el => sessionsSlot.replaceWith(el));
+
   return page;
 }
 
