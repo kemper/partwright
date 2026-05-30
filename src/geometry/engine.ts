@@ -7,6 +7,7 @@ import { replicadEngine } from './engines/replicad';
 import { voxelEngine } from './engines/voxel';
 import { getActiveImports } from '../import/importedMesh';
 import { getDefaultCircularSegments } from './qualitySettings';
+import { getConfig } from '../config/appConfig';
 
 export type { Language };
 export { isLanguage, DEFAULT_LANGUAGE };
@@ -93,6 +94,7 @@ const pendingStepExports = new Map<string, { resolve: (blob: Blob | null) => voi
 const pendingStepBrepImports = new Map<string, { resolve: (filename: string) => void; reject: (e: Error) => void }>();
 const pendingStepMeshImports = new Map<string, { resolve: (mesh: MeshData) => void; reject: (e: Error) => void }>();
 const pendingClearBrepImports = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
+const pendingClearBrepShapes = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
 const pendingSimplifies  = new Map<string, {
   resolve: (r: SimplifyWorkerResult | null) => void;
   reject: (e: Error) => void;
@@ -106,18 +108,13 @@ const pendingSimplifies  = new Map<string, {
 // SCAD compiles BOSL2-style libraries from source per call, and complex
 // real-thread / gear-tooth math can comfortably push past a minute on a
 // slow CI runner — so it gets a much longer ceiling.
-const EXECUTE_TIMEOUT_MS: Record<Language, number> = {
-  'manifold-js': 60_000,
-  'scad':        180_000,
-  // BREP/replicad: OCCT booleans on complex parts (e.g. STEP-imported
-  // assemblies) can rival SCAD's worst cases, so use the same 3-minute
-  // ceiling as SCAD rather than the mesh kernel's tighter bound.
-  'replicad':    180_000,
-  // Voxel meshing is pure JS (no WASM); large grids are the only slow case,
-  // and the mesher is linear in occupied voxels — the manifold-js ceiling is
-  // ample headroom.
-  'voxel':       60_000,
-};
+function getExecuteTimeoutMs(lang: Language): number {
+  const cfg = getConfig();
+  if (lang === 'scad') return cfg.ai.geometryTimeoutScadMs;
+  if (lang === 'replicad') return cfg.ai.geometryTimeoutReplicadMs;
+  // manifold-js and voxel share the same ceiling
+  return cfg.ai.geometryTimeoutManifoldMs;
+}
 
 function rejectAllPending(err: Error): void {
   for (const p of pendingExecutions.values()) p.reject(err);
@@ -126,6 +123,7 @@ function rejectAllPending(err: Error): void {
   for (const p of pendingStepBrepImports.values()) p.reject(err);
   for (const p of pendingStepMeshImports.values()) p.reject(err);
   for (const p of pendingClearBrepImports.values()) p.reject(err);
+  for (const p of pendingClearBrepShapes.values()) p.reject(err);
   for (const p of pendingSimplifies.values()) p.reject(err);
   pendingExecutions.clear();
   pendingValidations.clear();
@@ -133,6 +131,7 @@ function rejectAllPending(err: Error): void {
   pendingStepBrepImports.clear();
   pendingStepMeshImports.clear();
   pendingClearBrepImports.clear();
+  pendingClearBrepShapes.clear();
   pendingSimplifies.clear();
 }
 
@@ -274,6 +273,17 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     return;
   }
 
+  if (msg.type === 'clearBrepShape_result') {
+    const callId = msg.callId as string;
+    const pending = pendingClearBrepShapes.get(callId);
+    if (!pending) return;
+    pendingClearBrepShapes.delete(callId);
+    const error = msg.error as string | null;
+    if (error) { pending.reject(new Error(error)); return; }
+    pending.resolve();
+    return;
+  }
+
   if (msg.type === 'simplify_progress') {
     const callId = msg.callId as string;
     const pending = pendingSimplifies.get(callId);
@@ -320,6 +330,8 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingStepMeshImports.delete(callId ?? '');
       pendingClearBrepImports.get(callId)?.reject(err);
       pendingClearBrepImports.delete(callId ?? '');
+      pendingClearBrepShapes.get(callId)?.reject(err);
+      pendingClearBrepShapes.delete(callId ?? '');
       pendingSimplifies.get(callId)?.reject(err);
       pendingSimplifies.delete(callId ?? '');
     }
@@ -351,7 +363,7 @@ export async function executeCodeAsync(source: string, lang?: Language, paramOve
     triVerts:       m.triVerts.slice(),
   }));
 
-  const timeoutMs = EXECUTE_TIMEOUT_MS[l];
+  const timeoutMs = getExecuteTimeoutMs(l);
   return new Promise<MeshResult>((resolve, reject) => {
     // A hung WASM evaluation never posts a result back. Without a timeout the
     // promise (and the UI's "Running…" state) would wait forever.
@@ -401,7 +413,7 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
     initEngineWorker();
     await workerReady;
     const callId = `val-${++callIdCounter}`;
-    const timeoutMs = EXECUTE_TIMEOUT_MS[l];
+    const timeoutMs = getExecuteTimeoutMs(l);
     return new Promise<ValidateResult>((resolve, reject) => {
       // A hung validate never posts a result back. Mirror executeCodeAsync's
       // timeout so a stuck OpenSCAD parse restarts the worker (which rejects all
@@ -439,7 +451,7 @@ export async function exportLastBrepAsSTEP(): Promise<Blob | null> {
       if (pendingStepExports.has(callId)) {
         restartEngineWorker('STEP export timed out');
       }
-    }, EXECUTE_TIMEOUT_MS.replicad);
+    }, getExecuteTimeoutMs('replicad'));
     pendingStepExports.set(callId, {
       resolve: (b) => { clearTimeout(timer); resolve(b); },
       reject: (e) => { clearTimeout(timer); reject(e); },
@@ -463,7 +475,7 @@ export async function importSTEPToBrep(blob: Blob, filename: string): Promise<st
       if (pendingStepBrepImports.has(callId)) {
         restartEngineWorker('STEP→BREP import timed out');
       }
-    }, EXECUTE_TIMEOUT_MS.replicad);
+    }, getExecuteTimeoutMs('replicad'));
     pendingStepBrepImports.set(callId, {
       resolve: (n) => { clearTimeout(timer); resolve(n); },
       reject: (e) => { clearTimeout(timer); reject(e); },
@@ -486,7 +498,7 @@ export async function importSTEPToMesh(blob: Blob): Promise<MeshData> {
       if (pendingStepMeshImports.has(callId)) {
         restartEngineWorker('STEP→mesh import timed out');
       }
-    }, EXECUTE_TIMEOUT_MS.replicad);
+    }, getExecuteTimeoutMs('replicad'));
     pendingStepMeshImports.set(callId, {
       resolve: (m) => { clearTimeout(timer); resolve(m); },
       reject: (e) => { clearTimeout(timer); reject(e); },
@@ -506,12 +518,34 @@ export async function clearBrepImports(): Promise<void> {
       if (pendingClearBrepImports.has(callId)) {
         restartEngineWorker('clearBrepImports timed out');
       }
-    }, EXECUTE_TIMEOUT_MS.replicad);
+    }, getExecuteTimeoutMs('replicad'));
     pendingClearBrepImports.set(callId, {
       resolve: () => { clearTimeout(timer); resolve(); },
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
     engineWorker!.postMessage({ type: 'clearBrepImports', callId });
+  });
+}
+
+/** Drop (and free) the retained STEP-export shape from the most recent
+ *  replicad run. Called when leaving a replicad session (switch/close) or
+ *  switching the active language away from replicad, so a later exportSTEP
+ *  can't return a stale shape that belongs to a different session. */
+export async function clearBrepShape(): Promise<void> {
+  initEngineWorker();
+  await workerReady;
+  const callId = `clearbrepshape-${++callIdCounter}`;
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (pendingClearBrepShapes.has(callId)) {
+        restartEngineWorker('clearBrepShape timed out');
+      }
+    }, getExecuteTimeoutMs('replicad'));
+    pendingClearBrepShapes.set(callId, {
+      resolve: () => { clearTimeout(timer); resolve(); },
+      reject: (e) => { clearTimeout(timer); reject(e); },
+    });
+    engineWorker!.postMessage({ type: 'clearBrepShape', callId });
   });
 }
 

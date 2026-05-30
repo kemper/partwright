@@ -9,11 +9,12 @@
 //  • Forward abort: listen on input.signal and send { type: 'abort' }.
 //  • Expose pushQueuedBlocks() so aiPanel can relay mid-turn queued input.
 
-import { executeTool } from './tools';
+import { executeTool, CONFIRM_REQUIRED_TOOLS } from './tools';
 import { ingestEvent, type DiagnosticEvent } from './diagnostics';
 import type { RunTurnInput, RunTurnCallbacks } from './chatLoop';
 import type { ChatBlock, ChatMessage, PersistedToolResult } from './types';
 import type { AgentWorkerInput } from './agentWorker';
+import { getConfig } from '../config/appConfig';
 
 let worker: Worker | null = null;
 let currentCallbacks: RunTurnCallbacks | null = null;
@@ -58,6 +59,20 @@ async function handleMessage(event: MessageEvent): Promise<void> {
       name: string;
       input: Record<string, unknown>;
     };
+    if (CONFIRM_REQUIRED_TOOLS.has(name) && currentCallbacks?.confirmTool) {
+      const allowed = await currentCallbacks.confirmTool(name, input);
+      if (!allowed) {
+        getWorker().postMessage({
+          type: 'tool_result',
+          callId,
+          result: {
+            content: '[Declined by user — only call import tools when the user has explicitly requested an import]',
+            isError: true,
+          },
+        });
+        return;
+      }
+    }
     const result = await executeTool(name, input);
     getWorker().postMessage({ type: 'tool_result', callId, result });
     return;
@@ -151,12 +166,15 @@ export async function runTurn(
   }
 
   // Strip non-serialisable fields before sending across the thread boundary.
+  // toolCallTimeoutMs is read here (main thread has localStorage) and passed to
+  // the Worker which has no localStorage access.
   const workerInput: AgentWorkerInput = {
-    apiKey:      input.apiKey,
-    toggles:     input.toggles,
-    sessionId:   input.sessionId,
-    history:     input.history,
-    userBlocks:  input.userBlocks,
+    apiKey:             input.apiKey,
+    toggles:            input.toggles,
+    sessionId:          input.sessionId,
+    history:            input.history,
+    userBlocks:         input.userBlocks,
+    toolCallTimeoutMs:  getConfig().ai.toolCallTimeoutMs,
   };
 
   return new Promise<ChatMessage[]>((resolve, reject) => {

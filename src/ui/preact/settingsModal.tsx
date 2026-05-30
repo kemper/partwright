@@ -15,10 +15,11 @@
 import { useEffect, useRef } from 'preact/hooks';
 import { signal, useSignal, type Signal } from '@preact/signals';
 
-import { deleteKey, getKey } from '../../ai/db';
+import { deleteKey, getKey, putKey } from '../../ai/db';
 import { resetClient, listModels as listAnthropicModels } from '../../ai/anthropic';
 import { resetClient as resetOpenaiClient, listModels as listOpenaiModels } from '../../ai/openai';
 import { resetClient as resetGeminiClient, listModels as listGeminiModels } from '../../ai/gemini';
+import { listModels as listCustomModels, validateConnection as validateCustomConnection } from '../../ai/custom';
 import { formatUsd } from '../../ai/cost';
 import { providerKeyMeta, validateAndStoreKey, type HostedProvider } from '../aiKeyModal';
 import { renderLocalPicker } from '../aiLocalModal';
@@ -31,6 +32,8 @@ import {
   setAnthropicModel,
   setOpenaiModel,
   setGeminiModel,
+  setCustomModel,
+  setCustomBaseUrl,
   providerLabel,
   AUTO_COMPACT_OPTIONS,
   ANTHROPIC_MODEL_OPTIONS,
@@ -56,6 +59,7 @@ const TABS = [
   { id: 'anthropic' as const, label: 'Anthropic (cloud)' },
   { id: 'openai' as const, label: 'OpenAI (cloud)' },
   { id: 'gemini' as const, label: 'Gemini (cloud)' },
+  { id: 'custom' as const, label: 'Custom (OpenAI)' },
   { id: 'local' as const, label: 'Local (WebGPU)' },
 ];
 
@@ -86,7 +90,9 @@ export function SettingsModalBody(props: {
         <EnableRow viewedTab={tab.value} cb={cb} />
         {tab.value === 'local'
           ? <LocalTab cb={cb} close={close} />
-          : <HostedTab provider={tab.value} cb={cb} close={close} switchTab={t => { tab.value = t; }} />}
+          : tab.value === 'custom'
+            ? <CustomTab cb={cb} close={close} />
+            : <HostedTab provider={tab.value} cb={cb} close={close} switchTab={t => { tab.value = t; }} />}
       </div>
       <Divider />
       <ApiTimeoutSection cb={cb} />
@@ -111,7 +117,11 @@ function EnableRow(props: { viewedTab: Provider; cb: AiSettingsCallbacks }) {
   const hasKey = useSignal<boolean | null>(null);
 
   useEffect(() => {
+    // local is always "ready"; custom's readiness is the base URL (a setting,
+    // read synchronously below) not a stored key — skip the getKey probe for
+    // both. Cloud providers gate Enable on a stored key.
     if (viewedTab === 'local') { hasKey.value = true; return; }
+    if (viewedTab === 'custom') { hasKey.value = null; return; }
     let cancelled = false;
     hasKey.value = null;
     void getKey(viewedTab).then(k => { if (!cancelled) hasKey.value = !!k; });
@@ -121,7 +131,11 @@ function EnableRow(props: { viewedTab: Provider; cb: AiSettingsCallbacks }) {
   const settings = settingsSignal.value;
   const isActive = settings.toggles.provider === viewedTab;
   const label = providerLabel(viewedTab);
-  const ready = hasKey.value === true;
+  // Custom is enableable once its endpoint URL is set (the API key is
+  // optional); every cloud provider needs a stored key.
+  const ready = viewedTab === 'custom'
+    ? settings.toggles.customBaseUrl.trim().length > 0
+    : hasKey.value === true;
 
   // For local, `hasKey` is forced true above, so the "Connect your … key"
   // branch never fires for local; that's why there's no local-specific
@@ -130,7 +144,9 @@ function EnableRow(props: { viewedTab: Provider; cb: AiSettingsCallbacks }) {
     ? 'Chat turns are sent to this provider.'
     : ready
       ? `Viewing settings only — click Enable to send chat turns through ${label}.`
-      : `Connect your ${label} key below to enable it.`;
+      : viewedTab === 'custom'
+        ? 'Set the endpoint URL below to enable it.'
+        : `Connect your ${label} key below to enable it.`;
 
   return (
     <div class={'flex items-center justify-between gap-3 rounded border px-3 py-2 ' + (
@@ -150,7 +166,9 @@ function EnableRow(props: { viewedTab: Provider; cb: AiSettingsCallbacks }) {
           disabled={!ready}
           title={ready
             ? `Switch the active provider to ${label}. You can switch back any time.`
-            : `Connect your ${label} key before enabling it.`}
+            : viewedTab === 'custom'
+              ? 'Set the endpoint URL before enabling it.'
+              : `Connect your ${label} key before enabling it.`}
           onClick={() => {
             setSettings(setProvider(loadSettings(), viewedTab));
             cb.onChange();
@@ -488,6 +506,177 @@ function LoadModelsRow(props: {
   );
 }
 
+// === Custom (OpenAI-compatible) tab ===
+
+/** A generic OpenAI-compatible endpoint — a self-hosted llama.cpp / vLLM /
+ *  LM Studio server, etc. Base URL + model id persist to settings (so they
+ *  serialize into the agent Worker); the OPTIONAL API key lives in the aiKeys
+ *  store keyed by 'custom'. */
+function CustomTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
+  const { cb, close } = props;
+  const settings = settingsSignal.value;
+
+  const url = useSignal(settings.toggles.customBaseUrl);
+  const model = useSignal(settings.toggles.customModel);
+  const keyVal = useSignal('');
+  const hasKey = useSignal<boolean | null>(null);
+  const models = useSignal<{ id: string; label: string }[]>([]);
+  const status = useSignal('');
+  const statusErr = useSignal(false);
+  const busy = useSignal(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getKey('custom').then(k => { if (!cancelled) hasKey.value = !!k; });
+    return () => { cancelled = true; };
+  }, [keyVersion.value]);
+
+  // Effective key for test/fetch: the just-typed value wins, else the stored one.
+  async function effectiveKey(): Promise<string> {
+    if (keyVal.value.trim()) return keyVal.value.trim();
+    return (await getKey('custom'))?.apiKey ?? '';
+  }
+
+  function persistUrl(): void { setSettings(setCustomBaseUrl(loadSettings(), url.value)); cb.onChange(); }
+  function persistModel(id: string): void {
+    model.value = id;
+    setSettings(setCustomModel(loadSettings(), id.trim()));
+    cb.onChange();
+  }
+
+  async function testConnection(): Promise<void> {
+    busy.value = true; status.value = 'Testing…'; statusErr.value = false;
+    persistUrl();
+    const err = await validateCustomConnection(url.value, await effectiveKey());
+    busy.value = false;
+    statusErr.value = !!err;
+    status.value = err ?? 'Connected — endpoint reachable.';
+  }
+
+  async function fetchModels(): Promise<void> {
+    busy.value = true; status.value = 'Loading models…'; statusErr.value = false;
+    persistUrl();
+    try {
+      const list = await listCustomModels(url.value, await effectiveKey());
+      models.value = list;
+      statusErr.value = false;
+      status.value = list.length ? `${list.length} model(s) found.` : 'Endpoint reported no models.';
+      // Auto-select when the server serves exactly one and nothing's chosen.
+      if (!model.value.trim() && list.length === 1) persistModel(list[0].id);
+    } catch (err) {
+      statusErr.value = true;
+      status.value = err instanceof Error ? err.message : String(err);
+    } finally {
+      busy.value = false;
+    }
+  }
+
+  async function saveKey(): Promise<void> {
+    const k = keyVal.value.trim();
+    if (!k) return;
+    const existing = await getKey('custom');
+    await putKey({
+      provider: 'custom',
+      apiKey: k,
+      createdAt: existing?.createdAt ?? Date.now(),
+      lastUsed: Date.now(),
+      totalInputTokens: existing?.totalInputTokens ?? 0,
+      totalOutputTokens: existing?.totalOutputTokens ?? 0,
+      totalCostUsd: existing?.totalCostUsd ?? 0,
+    });
+    keyVal.value = '';
+    bumpKeyVersion();
+    cb.onChange();
+  }
+
+  async function removeKey(): Promise<void> {
+    await deleteKey('custom');
+    bumpKeyVersion();
+    cb.onChange();
+  }
+
+  return (
+    <>
+      <Section label="About">
+        {/* eslint-disable-next-line react/no-danger */}
+        <p class="text-[11px] text-zinc-300 leading-snug" dangerouslySetInnerHTML={{ __html: 'Point Partwright at any <strong>OpenAI-compatible</strong> chat endpoint — a self-hosted <code>llama.cpp</code> server, vLLM, LM Studio, or similar. Requests use the <code>/v1/chat/completions</code> shape with the full <code>ai.md</code> system prompt; turns are billed at $0 (you run the hardware). The optional API key is stored only in this browser.' }} />
+        {/* eslint-disable-next-line react/no-danger */}
+        <div class="rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-[11px] text-amber-200 leading-snug" dangerouslySetInnerHTML={{ __html: '<strong>Connectivity:</strong> the endpoint must allow this site via <strong>CORS</strong>. When Partwright is served over HTTPS, the endpoint must be HTTPS too (browsers block <code>https→http</code>) — except <code>http://localhost</code>, which is exempt. For llama.cpp, run <code>llama-server</code> and pass <code>--api-key</code> only if you want auth.' }} />
+      </Section>
+      <Divider />
+      <Section label="Endpoint">
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-zinc-400">Base URL</span>
+          <input
+            type="text"
+            placeholder="http://localhost:8080/v1"
+            class="w-full px-3 py-2 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-sm font-mono placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+            spellcheck={false}
+            value={url.value}
+            onInput={e => { url.value = (e.currentTarget as HTMLInputElement).value; }}
+            onChange={persistUrl}
+          />
+          <span class="text-[10px] text-zinc-500">Include the version path (most servers serve under <code>/v1</code>). We append <code>/chat/completions</code> and <code>/models</code>.</span>
+        </label>
+        <div class="flex items-center gap-2 flex-wrap">
+          <SecondaryButton label="Test connection" size="sm" disabled={busy.value} onClick={() => { void testConnection(); }} />
+          <SecondaryButton label="Fetch models" size="sm" disabled={busy.value} onClick={() => { void fetchModels(); }} />
+          {status.value && <span class={'text-[10px] ' + (statusErr.value ? 'text-red-400' : 'text-emerald-400')}>{status.value}</span>}
+        </div>
+      </Section>
+      <Divider />
+      <Section label="Model">
+        <label class="flex flex-col gap-1">
+          <span class="text-xs text-zinc-400">Model id</span>
+          <input
+            type="text"
+            placeholder="e.g. llama-3.3-70b-instruct"
+            class="w-full px-3 py-2 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-sm font-mono placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+            spellcheck={false}
+            value={model.value}
+            onInput={e => { model.value = (e.currentTarget as HTMLInputElement).value; }}
+            onChange={() => persistModel(model.value)}
+          />
+        </label>
+        {models.value.length > 0 && (
+          <div class="flex flex-wrap gap-1">
+            {models.value.map(m => (
+              <Pill key={m.id} active={model.value === m.id} label={m.label} onClick={() => persistModel(m.id)} />
+            ))}
+          </div>
+        )}
+        <span class="text-[10px] text-zinc-500">Use <strong>Fetch models</strong> above to list what the endpoint serves, or type the id directly.</span>
+      </Section>
+      <Divider />
+      <Section label="API key (optional)">
+        {hasKey.value === true ? (
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-[11px] text-emerald-300">A key is stored for this endpoint.</span>
+            <button type="button" class="text-[11px] text-red-300 hover:text-red-200 underline" onClick={() => { void removeKey(); }}>Remove key</button>
+          </div>
+        ) : (
+          <div class="flex items-center gap-2">
+            <input
+              type="password"
+              placeholder="leave blank if the endpoint needs no auth"
+              class="flex-1 px-3 py-2 rounded bg-zinc-900 border border-zinc-600 text-zinc-100 text-sm font-mono placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+              spellcheck={false}
+              autocomplete="off"
+              value={keyVal.value}
+              onInput={e => { keyVal.value = (e.currentTarget as HTMLInputElement).value; }}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void saveKey(); } }}
+            />
+            <SecondaryButton label="Save key" size="sm" disabled={!keyVal.value.trim()} onClick={() => { void saveKey(); }} />
+          </div>
+        )}
+        <span class="text-[10px] text-zinc-500">Sent as <code>Authorization: Bearer …</code>. Many home servers run with no key — leave this blank then.</span>
+      </Section>
+      <Divider />
+      <SystemPromptSection provider="custom" close={close} cb={cb} />
+    </>
+  );
+}
+
 // === Local tab ===
 
 function LocalTab(props: { cb: AiSettingsCallbacks; close: () => void }) {
@@ -684,9 +873,13 @@ function SystemPromptSection(props: { provider: Provider; close: () => void; cb:
     ? (override !== null
       ? '<strong>Custom prompt active</strong> — your override is sent to local models instead of the built-in tier.'
       : '<strong>Built-in</strong> — a compact prompt tuned for local models, with the <code>readDoc</code> tool to pull in detailed subdocs on demand. The exact tier (Slim ~700 tok / Medium ~1.1K tok) depends on the active model; click to view or pin a different tier.')
-    : (override !== null
-      ? '<strong>Custom prompt active</strong> — your override is sent to Claude instead of the full <code>ai.md</code>.'
-      : '<strong>Built-in</strong> — the full <code>public/ai.md</code> (~12.5K tokens) cached on Anthropic\'s side. Subdocs are fetched on demand via the <code>readDoc</code> tool.');
+    : provider === 'custom'
+      ? (override !== null
+        ? '<strong>Custom prompt active</strong> — your override is sent to the endpoint instead of the full <code>ai.md</code>.'
+        : '<strong>Built-in</strong> — the full <code>public/ai.md</code> (~12.5K tokens) is sent to your endpoint, with subdocs fetched on demand via the <code>readDoc</code> tool. If your model has a small context window, click to trim or replace it.')
+      : (override !== null
+        ? '<strong>Custom prompt active</strong> — your override is sent to Claude instead of the full <code>ai.md</code>.'
+        : '<strong>Built-in</strong> — the full <code>public/ai.md</code> (~12.5K tokens) cached on Anthropic\'s side. Subdocs are fetched on demand via the <code>readDoc</code> tool.');
 
   return (
     <Section label="System prompt">

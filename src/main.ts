@@ -22,7 +22,7 @@
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, simplifyInWorker, type Language } from './geometry/engine';
+import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
@@ -40,10 +40,10 @@ import { showQualitySettingsModal } from './ui/qualitySettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { initOfflineIndicator } from './ui/offlineIndicator';
-import { ensurePersistentStorage } from './storage/persist';
 import { registerServiceWorker } from './registerSW';
-import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar } from './ui/aiPanel';
-import { mergeChatBucket } from './ai/db';
+import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput } from './ui/aiPanel';
+import { getKey, mergeChatBucket } from './ai/db';
+import { requestPersistentStorage } from './storage/persist';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
 import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
@@ -51,6 +51,8 @@ import { createLegalPage } from './ui/legal';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
 import { showExportConfirm, hasExportWarning, type ExportWarningInfo } from './ui/exportConfirmModal';
 import { createCatalogPage, type CatalogManifestEntry } from './ui/catalog';
+import { createIdeasPage } from './ui/ideasPage';
+import type { Idea } from './ideas/ideas';
 import { createWhatsNewPage } from './ui/whatsNew';
 import { createNotFoundPage } from './ui/notFound';
 import { applyRouteMeta, routeTitle, type RouteName } from './seo/meta';
@@ -70,7 +72,7 @@ import { export3MF, build3MF } from './export/threemf';
 import { exportVOX, buildVOX } from './export/vox';
 import { assertFiniteMesh } from './export/meshClean';
 import { exportSessionJSON, exportRawCode, buildSessionJSON, buildRawCode } from './export/session';
-import { blobToBase64, downloadBlob } from './export/download';
+import { blobToBase64, downloadBlob, getExportFilename } from './export/download';
 import {
   listExports as listInboxExports,
   getExport as getInboxExport,
@@ -87,8 +89,16 @@ import {
 } from './import/importInbox';
 import { createThumbnailFromImageData } from './import/imageThumbnail';
 import { showImportPreview, summarizeSessionImport } from './ui/importPreview';
+import { showImportUrlModal } from './ui/importUrlModal';
+import {
+  filenameFromUrl,
+  classifyRemoteResource,
+  ensureExtensionForSource,
+  MAX_REMOTE_BYTES,
+} from './import/urlImport';
 import { showImportTargetModal } from './ui/importTargetModal';
-import { showImageVoxelImportModal } from './ui/imageVoxelImportModal';
+import { showImageVoxelImportModal, type ImageVoxelModalResult } from './ui/imageVoxelImportModal';
+import { showImageImportKindModal } from './ui/imageImportKindModal';
 import { showStepImportTargetModal } from './ui/stepImportTargetModal';
 import { showLanguageHelpModal } from './ui/languageHelpModal';
 import { showMergePartsModal } from './ui/mergePartsModal';
@@ -100,6 +110,9 @@ import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
+import { applyFuzzy, applySmooth, applyVoxelize, defaultFuzzyOptions, defaultSmoothOptions, type ModifierResult } from './surface/modifiers';
+import { nearestTriangleMap } from './surface/colorTransfer';
+import { initSurfaceUI } from './ui/surfaceModal';
 import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
 import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type ReliefCommonOptions, type SeedRegion, type PreviewMode, type GenerateReliefResult } from './relief/types';
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
@@ -197,6 +210,7 @@ import {
   getGalleryUrl,
   exportSession,
   importSession,
+  importSessionPartsIntoActive,
   clearAllSessions,
   saveImages as persistImages,
   getImagesFromSession,
@@ -238,9 +252,11 @@ import {
   bboxFromMesh,
   computeGeometryStats,
   computeStatDiff,
+  computePrintability,
   checkAssertions,
   type GeometryAssertions,
 } from './geometry/statsComputation';
+import { getConfig } from './config/appConfig';
 
 // Load examples as raw text — JS and SCAD
 const jsExampleModules = import.meta.glob('../examples/*.js', { query: '?raw', import: 'default' });
@@ -356,6 +372,8 @@ let currentLostLabels: string[] | null = null;
 
 // #geometry-data element — always-updated machine-readable state
 let geometryDataEl: HTMLElement;
+// Viewport overlay pill — shows printability issues after each successful run.
+let printabilityIndicatorEl: HTMLElement | null = null;
 
 // === Shared-link preview mode ===
 //
@@ -411,7 +429,7 @@ export type CoverageMode = typeof COVERAGE_MODES[number];
 const BASE_TITLE = 'Partwright';
 let _expectedTitle = 'Partwright — AI-Driven Parametric CAD in Your Browser';
 
-function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | '404' | 'catalog' | 'legal' | 'whats-new'; sessionName?: string | null }) {
+function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | '404' | 'catalog' | 'ideas' | 'legal' | 'whats-new'; sessionName?: string | null }) {
   let route: RouteName;
   let titleOverride: string | undefined;
   if (context?.page === 'landing' || (context?.page === undefined && shouldShowLanding())) {
@@ -420,6 +438,8 @@ function updateDocumentTitle(context?: { page?: 'landing' | 'editor' | 'help' | 
     route = 'help';
   } else if (context?.page === 'catalog') {
     route = 'catalog';
+  } else if (context?.page === 'ideas') {
+    route = 'ideas';
   } else if (context?.page === 'legal') {
     route = 'legal';
   } else if (context?.page === 'whats-new') {
@@ -530,6 +550,15 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
   // can't form a watertight manifold). computeGeometryStats degrades gracefully.
   const data = withSessionContext(computeGeometryStats(currentManifold, currentMeshData, executionTimeMs, sourceCode));
   geometryDataEl.textContent = JSON.stringify(data, null, 2);
+  if (printabilityIndicatorEl) {
+    const { printable, issues } = computePrintability(data);
+    if (printable) {
+      printabilityIndicatorEl.style.display = 'none';
+    } else {
+      printabilityIndicatorEl.textContent = '⚠ ' + issues.join(' · ');
+      printabilityIndicatorEl.style.display = '';
+    }
+  }
 }
 
 /** How long to wait for `canvas.toBlob` before giving up on the thumbnail.
@@ -538,7 +567,6 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
  *  the GPU readback never settles the callback. A thumbnail is non-essential, so
  *  we cap the wait and let the save proceed without it rather than hang forever
  *  (which silently blocked saving a painted version). */
-const THUMBNAIL_TIMEOUT_MS = 4000;
 
 function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob | null> {
   if (!mesh) return Promise.resolve(null);
@@ -562,7 +590,7 @@ function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob
     };
     // Bound the wait: if toBlob never calls back, resolve null so the caller
     // (save / snapshot) still completes.
-    const timer = setTimeout(() => finish(null), THUMBNAIL_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(null), getConfig().renderer.thumbnailTimeoutMs);
     try {
       canvas.toBlob(b => finish(b), 'image/png');
     } catch {
@@ -1501,6 +1529,10 @@ function shouldShowCatalog(): boolean {
   return window.location.pathname === '/catalog' && !hasShareHash();
 }
 
+function shouldShowIdeas(): boolean {
+  return window.location.pathname === '/ideas' && !hasShareHash();
+}
+
 function shouldShowWhatsNew(): boolean {
   return window.location.pathname === '/whats-new';
 }
@@ -1512,7 +1544,16 @@ function shouldShowLegal(): boolean {
 function shouldShow404(): boolean {
   if (hasShareHash()) return false;
   const path = window.location.pathname;
-  return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog' && path !== '/legal' && path !== '/whats-new';
+  return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog' && path !== '/ideas' && path !== '/legal' && path !== '/whats-new';
+}
+
+/** True when the editor view is the active page. Editor-scoped command-palette
+ *  actions (tab switches, the guided tour) gate on this so they don't fire from
+ *  the landing / help / catalog pages — which would rewrite the URL to
+ *  `/editor?…` and toggle hidden panes without ever transitioning into the
+ *  editor. A `#share=…` link also lands in the editor, so it counts too. */
+function isEditorActive(): boolean {
+  return window.location.pathname === '/editor' || hasShareHash();
 }
 
 function getTabFromURL(): TabName {
@@ -1561,11 +1602,6 @@ async function main() {
   // offline. No-op in dev (the server provides the headers there).
   registerServiceWorker();
 
-  // Ask the browser to make our IndexedDB + cached model weights durable
-  // (exempt from automatic eviction under storage pressure). Fire-and-forget —
-  // it never throws and the app works regardless of the outcome.
-  void ensurePersistentStorage();
-
   // Surface an "offline" pill when the network drops. Additive and hidden
   // while online, so it never affects normal use (or tests, which run online).
   initOfflineIndicator();
@@ -1577,8 +1613,25 @@ async function main() {
   void hydrateImportInbox();
   void hydrateExportInbox();
 
-  // Remove loading splash as soon as JS takes over
+  // If the user already has a saved API key, ask the browser to make storage
+  // persistent so it isn't evicted under storage pressure (mobile browsers,
+  // iOS Safari ITP especially, evict best-effort IndexedDB and wipe the key).
+  // New saves request this from putKey; this covers installs keyed before that
+  // shipped. Gated on having a key so we don't prompt (Firefox) unprompted users.
+  void (async () => {
+    const keyed = await Promise.all(
+      (['anthropic', 'openai', 'gemini', 'custom'] as const).map((p) => getKey(p)),
+    );
+    if (keyed.some(Boolean)) void requestPersistentStorage();
+  })();
+
+  // Remove loading overlays as soon as JS takes over.
+  // landing-inline stays visible on the landing route until showLandingPage()
+  // replaces it with the JS-built version; remove it immediately on all other routes.
   document.getElementById('loading-splash')?.remove();
+  if (!shouldShowLanding()) {
+    document.getElementById('landing-inline')?.remove();
+  }
 
   const app = document.getElementById('app')!;
   geometryDataEl = createGeometryDataElement();
@@ -1595,7 +1648,7 @@ async function main() {
   // Wrapper for the main editor UI (toolbar + session bar + layout)
   const editorUI = document.createElement('div');
   editorUI.id = 'editor-ui';
-  editorUI.className = 'flex flex-col flex-1 min-h-0 w-full';
+  editorUI.className = 'flex flex-col flex-1 min-h-0 w-full hidden';
 
   let landingEl: HTMLElement | null = null;
   let helpEl: HTMLElement | null = null;
@@ -1630,7 +1683,14 @@ async function main() {
   // Import an already-parsed session payload. Used by both file import and the
   // window.partwright.importSessionData() API so AI agents can bypass the file picker.
   async function importSessionPayload(data: ExportedSession): Promise<{ sessionId: string }> {
-    const session = await importSession(data, async (code) => {
+    // Seed the active-imports register with each version's own meshes before
+    // running its code: `Manifold.ofMesh(api.imports[0])` only reproduces this
+    // version's geometry (and thus a correct thumbnail) if the register holds
+    // these meshes — otherwise the run captures a stale, previously-loaded part.
+    // importSession resets the register to the latest version's imports when it
+    // finishes, so no manual restore is needed here.
+    const session = await importSession(data, async (code, importedMeshes) => {
+      setActiveImports(importedMeshes ?? []);
       await runCodeSync(code);
       return captureThumbnail();
     });
@@ -1663,6 +1723,13 @@ async function main() {
     resetPaintWorkerState();
     clearRegions();
     clearModelColorRegions(); // model-declared underlay is module state too
+    // Annotations are module state too, scoped to the outgoing version — wipe
+    // them here so an editor reset (new part / new session / fresh import) is
+    // self-contained rather than relying on the session manager clearing them
+    // first via loadAnnotations([]). clearAll() early-returns when already
+    // empty, so this is a no-op in the common case and won't disturb the
+    // per-version annotation swap on version navigation.
+    clearAllAnnotations();
     syncLockState();
   }
 
@@ -1679,6 +1746,18 @@ async function main() {
     setValue(code);
     await runCodeSync(code);
     return { sessionId: session.id };
+  }
+
+  // Seed pre-computed colour regions (relief's per-colour bands, or a coloured
+  // mesh import's own regions) onto the just-run mesh and repaint. Shared by the
+  // mesh-placement helpers so relief's colours survive into whatever
+  // part/session the import-target modal sends them to.
+  function seedImportRegions(seedRegions: SeedRegion[] | undefined): void {
+    if (!seedRegions || seedRegions.length === 0) return;
+    for (const seed of seedRegions) {
+      addRegion(seed.name, seed.color, 'subtree', { kind: 'triangles', ids: seed.triangleIds }, new Set(seed.triangleIds));
+    }
+    if (currentMeshData) updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
   }
 
   // Import a parsed mesh (STL today) as a new session.
@@ -1700,12 +1779,7 @@ async function main() {
     const code = generateImportCode([mesh], { manifold: opts.manifold });
     setValue(code);
     await runCodeSync(code);
-    if (opts.seedRegions && opts.seedRegions.length > 0) {
-      for (const seed of opts.seedRegions) {
-        addRegion(seed.name, seed.color, 'subtree', { kind: 'triangles', ids: seed.triangleIds }, new Set(seed.triangleIds));
-      }
-      if (currentMeshData) updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
-    }
+    seedImportRegions(opts.seedRegions);
     const thumbnail = await captureThumbnail();
     const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
     const label = opts.manifold ? 'imported' : 'imported (render-only)';
@@ -1853,6 +1927,8 @@ async function main() {
       paintingMode: q.paintingMode === 'multi-color' ? 'multi-color' : 'single-nozzle',
       invertHeights: !!q.invertHeights,
       manualBackground: q.manualBackground,
+      doubleSided: !!q.doubleSided,
+      backMirror: q.backMirror !== false,
     };
   }
 
@@ -1865,6 +1941,7 @@ async function main() {
       maxHeight: Math.max(0.1, Math.min(100, num(c.maxHeight, 3))),
       resolution: Math.max(8, Math.min(512, Math.floor(num(c.resolution, 200)))),
       smoothing: Math.max(0, Math.min(20, num(c.smoothing, 0))),
+      removeBackground: !!c.removeBackground,
     };
   }
 
@@ -1872,7 +1949,7 @@ async function main() {
   // ImportedMesh, persist the relief settings, and open the studio. Used by
   // both the raster (createReliefFromImageData) and SVG (createReliefFromSvgText)
   // entry points so the post-generation flow stays in lockstep.
-  async function commitGeneratedRelief(result: GenerateReliefResult, opts: ReliefOptions, sourceName: string, sourceFile: File | null = null, isSvg = false): Promise<{ sessionId: string }> {
+  async function commitGeneratedRelief(result: GenerateReliefResult, opts: ReliefOptions, sourceName: string, sourceFile: File | null = null, isSvg = false, interactive = false): Promise<{ sessionId: string }> {
     if (result.mesh.numTri === 0) throw new Error('Source too small to build a relief — use a larger image or SVG.');
     const mesh: ImportedMesh = {
       id: generateId(),
@@ -1892,10 +1969,46 @@ async function main() {
     // downstream booleans/slice.
     const hasSeeds = !!(result.seedRegions && result.seedRegions.length > 0);
     const useManifold = result.mesh.watertight && !hasSeeds;
-    const { sessionId } = await importMeshPayload(mesh, sourceName, {
-      manifold: useManifold,
-      seedRegions: result.seedRegions,
-    });
+    const seedRegions = result.seedRegions;
+    // Honor the import-target choice (new part / current part / new session)
+    // exactly like STL/STEP/voxel imports — relief used to always spawn a fresh
+    // session via importMeshPayload, silently wiping the open part. Only the
+    // INTERACTIVE wizard path shows the modal; the console/AI path
+    // (importImageAsRelief/importSvgAsRelief) stays modal-free so agents — and
+    // tests that import twice in one page.evaluate — never block on a click,
+    // matching how voxel/image console imports already behave. Skip the modal
+    // too when there's no real work to protect (no session, or an expendable
+    // starter); then a fresh session is the right, non-destructive default
+    // (today's behavior, and what keeps a fresh-/editor relief import
+    // modal-free). The per-colour seed regions ride through new-part and
+    // new-session unchanged (single-mesh order preserved). "Add to current
+    // part" is disabled here: relief's seed-region triangle ids are indexed
+    // against the relief mesh's own triangle order, which compose-into would
+    // scramble — same out-of-scope call BREP imports make.
+    let sessionId: string;
+    if (!interactive || !getState().session || currentPartIsExpendable()) {
+      ({ sessionId } = await importMeshPayload(mesh, sourceName, { manifold: useManifold, seedRegions }));
+    } else {
+      const target = await showImportTargetModal({
+        title: 'Import relief',
+        filename: `${sourceName}.relief`,
+        currentPartName: getState().currentPart?.name ?? null,
+        canAddToCurrent: false,
+        addDisabledReason: 'Relief colours are keyed to this mesh, so it can only become its own part or session.',
+        recommend: 'new-part',
+      });
+      // Cancel: leave the current part untouched and skip relief-state persistence.
+      if (!target) return { sessionId: getState().session?.id ?? '' };
+      if (target === 'new-session') {
+        ({ sessionId } = await importMeshPayload(mesh, sourceName, { manifold: useManifold, seedRegions }));
+      } else {
+        // 'new-part' (default; 'current-part' is disabled above so never reached).
+        // seedNewPartWithMesh runs + saves the import wrapper as the new part's
+        // v1; seed the relief colours onto that version so they persist with it.
+        await seedNewPartWithMesh(mesh, `${sourceName}.relief`, useManifold, seedRegions);
+        sessionId = getState().session?.id ?? '';
+      }
+    }
     setReliefSettings(sessionId, {
       isRelief: true,
       layerHeight: opts.common.layerHeight,
@@ -1928,7 +2041,7 @@ async function main() {
     return null;
   }
 
-  async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string, sourceFile: File | null = null): Promise<{ sessionId: string }> {
+  async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string, sourceFile: File | null = null, interactive = false): Promise<{ sessionId: string }> {
     const opts: ReliefOptions = {
       ...options,
       common: clampReliefCommon(options.common),
@@ -1938,10 +2051,10 @@ async function main() {
     const fitError = steppedReliefLayerFitError(opts);
     if (fitError) throw new Error(fitError);
     const result = generateRelief(image, opts);
-    return commitGeneratedRelief(result, opts, sourceName, sourceFile, false);
+    return commitGeneratedRelief(result, opts, sourceName, sourceFile, false, interactive);
   }
 
-  async function createReliefFromSvgText(svgText: string, options: ReliefOptions, sourceName: string, sourceFile: File | null = null): Promise<{ sessionId: string }> {
+  async function createReliefFromSvgText(svgText: string, options: ReliefOptions, sourceName: string, sourceFile: File | null = null, interactive = false): Promise<{ sessionId: string }> {
     const opts: ReliefOptions = {
       ...options,
       common: clampReliefCommon(options.common),
@@ -1952,7 +2065,7 @@ async function main() {
     const fitError = steppedReliefLayerFitError(opts);
     if (fitError) throw new Error(fitError);
     const result = await generateReliefFromSvg(svgText, opts);
-    return commitGeneratedRelief(result, opts, sourceName, sourceFile, true);
+    return commitGeneratedRelief(result, opts, sourceName, sourceFile, true, interactive);
   }
 
   // Seed color regions from an imported stepped-relief STL's existing Z plateaus so the
@@ -2028,10 +2141,12 @@ async function main() {
       // doesn't lose their tuned settings. Swallowing here would also let the
       // wizard think the create succeeded and close itself.
       onCreate: async (image, opts, name, sourceFile) => {
-        await createReliefFromImageData(image, opts, name || 'relief', sourceFile);
+        // interactive: true → the wizard is the only entry point that may show
+        // the import-target modal (console/AI imports stay modal-free).
+        await createReliefFromImageData(image, opts, name || 'relief', sourceFile, true);
       },
       onCreateSvg: async (svgText, opts, name, sourceFile) => {
-        await createReliefFromSvgText(svgText, opts, name || 'relief', sourceFile);
+        await createReliefFromSvgText(svgText, opts, name || 'relief', sourceFile, true);
       },
     });
   }
@@ -2081,11 +2196,15 @@ async function main() {
       alert(`"${filename}" doesn't look like a Partwright session file.`);
       return false;
     }
-    const summary = summarizeSessionImport(data);
-    const ok = await showImportPreview(filename, summary);
-    if (!ok) return false;
-    await importSessionPayload(data);
-    return true;
+    // Show the destination chooser (new session vs merge) and import. The merge
+    // option is only offered when a session is open (gated inside
+    // importValidatedSession). A failure surfaces as a toast and returns false.
+    try {
+      return await importValidatedSession(data, filename);
+    } catch (e) {
+      showToast(`Import failed: ${(e as Error).message}`, { variant: 'warn' });
+      return false;
+    }
   }
 
   // Import a .partwright.json session, a raw .js / .scad file, or an .stl mesh
@@ -2094,7 +2213,7 @@ async function main() {
   async function handleImportFile(file: File, options: { skipPreActiveConfirm?: boolean } = {}): Promise<boolean> {
     const source = classifyImportSource(file.name);
     if (!source) {
-      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl, .step / .stp, .vox, .png / .jpg / .gif / .webp`);
+      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl, .step / .stp, .vox, .svg, .png / .jpg / .gif / .webp / .avif`);
       return false;
     }
 
@@ -2103,7 +2222,7 @@ async function main() {
     // confirmation; STL and STEP imports skip it because their target modals let
     // the user choose where the import should go; IMAGE imports skip it because
     // the image→voxel parameter modal (with its own Cancel) serves the same role.
-    if (!options.skipPreActiveConfirm && source !== 'JSON' && source !== 'STL' && source !== 'STEP' && source !== 'IMAGE') {
+    if (!options.skipPreActiveConfirm && source !== 'JSON' && source !== 'STL' && source !== 'STEP' && source !== 'IMAGE' && source !== 'SVG') {
       const cur = getState();
       if (cur.session && cur.versionCount > 0) {
         const ok = await showInlineConfirm(
@@ -2133,9 +2252,29 @@ async function main() {
       } else if (source === 'STEP') {
         committed = await handleStepImport(file);
       } else if (source === 'IMAGE') {
+        // This is the GENERIC image import path (toolbar "Choose file…" or
+        // drag-and-drop), where the user hasn't expressed an intent — so first
+        // ask whether to build a relief or voxels. The explicit "Image → voxel…"
+        // and "Image → relief…" menu items bypass handleImportFile entirely
+        // (openVoxelImportFlow / openReliefImportFlow), and the console API
+        // (importImageAsVoxels) skips this too. Cancel aborts cleanly (no
+        // session mutation); each branch owns its own Recent-Imports entry.
+        const kind = await showImageImportKindModal({ filename: file.name });
+        if (!kind) return false;
+        if (kind === 'relief') {
+          openReliefImportFlow(file);
+          return true;
+        }
         committed = await handleImageImport(file);
       } else if (source === 'VOX') {
         committed = await handleVoxImport(file);
+      } else if (source === 'SVG') {
+        // SVG has no standalone mesh importer — it's a Relief Studio source.
+        // Open the relief wizard pre-loaded with the dropped file (its own
+        // Create registers the Recent-Imports entry + thumbnail), so a dropped
+        // .svg lands somewhere sensible instead of silently doing nothing.
+        openReliefImportFlow(file);
+        return true;
       }
       // IMAGE registers itself inside handleImageImport (it owns the chosen
       // voxel options + thumbnail it needs to stash for a faithful re-import).
@@ -2147,6 +2286,200 @@ async function main() {
       alert(`Failed to import "${file.name}": ${(e as Error).message}`);
       return false;
     }
+  }
+
+  // === Import from URL ===
+
+  /** Decode + import a Partwright share link or raw `#share=…` hash WITHOUT any
+   *  network. Mirrors the decode+validate chain in enterSharedFromHash/onFork:
+   *  decodeShare → validateSessionPayload → validateSharePayloadShape, then runs
+   *  it through the same new-session / merge destination chooser as a file
+   *  import. Throws a human-readable message on any failure (the modal surfaces
+   *  it inline). */
+  async function importFromShareHash(hash: string): Promise<void> {
+    let payload: ExportedSession;
+    try {
+      const parsed = await decodeShare(hash);
+      const branded = validateSessionPayload(parsed);
+      if (!branded) throw new Error('not a Partwright payload');
+      payload = validateSharePayloadShape(branded);
+    } catch (e) {
+      if (e instanceof ShareUnsupportedError) {
+        throw new Error('That share link was made by a newer version of Partwright.');
+      }
+      throw new Error('That share link is invalid or corrupted.');
+    }
+    await importValidatedSession(payload, 'shared link');
+  }
+
+  /** Show the destination chooser (new session vs merge, the latter only when a
+   *  session is open) for an already-validated session payload, then import.
+   *  Returns whether the import committed (false when the user cancelled). */
+  async function importValidatedSession(data: ExportedSession, filename: string): Promise<boolean> {
+    const summary = summarizeSessionImport(data);
+    const cur = getState();
+    const mergeTargetName = cur.session
+      ? (cur.session.name?.trim() || 'current session')
+      : undefined;
+    const choice = await showImportPreview(filename, summary, { mergeTargetName });
+    if (choice === 'cancel') return false;
+    if (choice === 'merge') {
+      // The regen callback runs each imported version's code to snapshot a
+      // thumbnail. Code like `Manifold.ofMesh(api.imports[0])` reads the active-
+      // imports register, so we must seed it with *that* version's meshes
+      // before running — otherwise the run produces the host (previously
+      // selected) part's geometry and the captured thumbnail is stale. Restore
+      // the host's own imports afterwards so the closing re-render is correct.
+      const hostImports = getActiveImports();
+      const result = await importSessionPartsIntoActive(data, async (code, importedMeshes) => {
+        setActiveImports(importedMeshes ?? []);
+        await runCodeSync(code);
+        return captureThumbnail();
+      });
+      setActiveImports(hostImports);
+      if (result) {
+        // Merging an imported version with no embedded thumbnail runs that
+        // version's code through runCodeSync to capture one — which leaves the
+        // viewport showing the last imported geometry while the editor still
+        // shows the active version's code. Re-render the active version so the
+        // editor text and viewport agree again.
+        const st = getState();
+        if (st.currentVersion) await runCodeSync(st.currentVersion.code);
+        const partWord = result.addedParts.length === 1 ? 'part' : 'parts';
+        showToast(`Merged ${result.addedParts.length} ${partWord} into this session.`, { variant: 'success' });
+        return true;
+      }
+    }
+    await importSessionPayload(data);
+    return true;
+  }
+
+  /** Fetch a remote http(s) file with a timeout + size cap, wrap it in a File,
+   *  and route it through the existing import pipeline (handleImportFile, which
+   *  itself routes JSON → the session-import path). Never evals fetched content.
+   *  Throws a human-readable message on any failure. */
+  async function importFromRemoteUrl(url: string): Promise<void> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), getConfig().import.remoteFetchTimeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: controller.signal, redirect: 'follow' });
+    } catch (e) {
+      clearTimeout(timer);
+      if ((e as Error).name === 'AbortError') throw new Error('The request timed out.');
+      throw new Error('Could not fetch that URL. The server may block cross-origin requests, or the URL may point to a page rather than a direct file — try finding the direct file URL, or download and upload instead.');
+    }
+    if (!res.ok) {
+      clearTimeout(timer);
+      throw new Error(`The server responded ${res.status} ${res.statusText}.`);
+    }
+
+    // Defense-in-depth: parseImportUrlInput only vetted the *initial* URL's
+    // scheme. With redirect: 'follow', the final URL could in theory be a
+    // non-http(s) scheme; browsers already block http(s)→file:/data: redirects,
+    // but re-check the resolved URL before touching the body just in case.
+    if (res.url) {
+      let finalProtocol: string;
+      try {
+        finalProtocol = new URL(res.url).protocol;
+      } catch {
+        clearTimeout(timer);
+        controller.abort();
+        throw new Error('The remote server redirected to an invalid URL.');
+      }
+      if (finalProtocol !== 'http:' && finalProtocol !== 'https:') {
+        clearTimeout(timer);
+        controller.abort();
+        throw new Error(`The remote server redirected to an unsupported URL (got "${finalProtocol}").`);
+      }
+    }
+
+    // Up-front size guard from Content-Length when present.
+    const declared = Number(res.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > MAX_REMOTE_BYTES) {
+      clearTimeout(timer);
+      controller.abort();
+      throw new Error(`That file is too large (${(declared / 1048576).toFixed(1)} MB; limit 25 MB).`);
+    }
+
+    const contentType = res.headers.get('content-type');
+    const filename = filenameFromUrl(url);
+
+    // Classify before buffering so we can reject unsupported types early. The
+    // filename extension is authoritative; fall back to Content-Type.
+    const source = classifyRemoteResource(filename, contentType);
+    if (!source) {
+      clearTimeout(timer);
+      controller.abort();
+      throw new Error('Unsupported file type. Supported: .partwright.json, .stl, .step / .stp, .svg, .vox, or an image.');
+    }
+
+    // Stream the body with a hard byte cap as a backstop for servers that omit
+    // or under-report Content-Length.
+    let bytes: Uint8Array;
+    try {
+      bytes = await readBodyCapped(res, MAX_REMOTE_BYTES, controller);
+    } catch (e) {
+      clearTimeout(timer);
+      if ((e as Error).name === 'AbortError') throw new Error('The request timed out.');
+      throw e;
+    }
+    clearTimeout(timer);
+
+    const safeName = ensureExtensionForSource(filename, source);
+    const file = new File([bytes], safeName, { type: contentType ?? '' });
+    const ok = await handleImportFile(file);
+    if (!ok) {
+      // handleImportFile surfaces its own alert on hard failure; a soft "false"
+      // (e.g. user cancelled a sub-modal) shouldn't be reported as an error.
+      throw new Error('Import was cancelled or the file could not be read.');
+    }
+  }
+
+  /** Read a fetch Response body into a Uint8Array, aborting once the streamed
+   *  total exceeds `cap`. Falls back to a plain arrayBuffer() read (still cap-
+   *  checked) when the body isn't a readable stream. */
+  async function readBodyCapped(res: Response, cap: number, controller: AbortController): Promise<Uint8Array> {
+    const body = res.body;
+    if (!body || typeof body.getReader !== 'function') {
+      const buf = new Uint8Array(await res.arrayBuffer());
+      if (buf.byteLength > cap) throw new Error(`That file is too large (limit 25 MB).`);
+      return buf;
+    }
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        total += value.byteLength;
+        if (total > cap) {
+          controller.abort();
+          try { await reader.cancel(); } catch { /* ignore */ }
+          throw new Error('That file is too large (limit 25 MB).');
+        }
+        chunks.push(value);
+      }
+    }
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const c of chunks) { out.set(c, offset); offset += c.byteLength; }
+    return out;
+  }
+
+  /** Open the "Import from URL…" modal and route the user's input to either the
+   *  local share decode or the size-capped remote fetch. */
+  function openImportFromUrl(): void {
+    showImportUrlModal({
+      onSubmit: async (parsed) => {
+        if (parsed.kind === 'share') {
+          await importFromShareHash(parsed.hash);
+        } else {
+          await importFromRemoteUrl(parsed.url);
+        }
+      },
+    });
   }
 
   /** Decode an image File/Blob into ImageData via an offscreen canvas. */
@@ -2182,6 +2515,47 @@ async function main() {
     return ctx.getImageData(0, 0, canvas.width, canvas.height);
   }
 
+  /** Shared tail of every image→voxel import (drag/drop, recent re-click, and
+   *  the modal-first menu): turn the modal result into a voxel session + a
+   *  Recent Imports entry. `fallbackFile` seeds the source blob when the result
+   *  didn't carry one (the picker flows always do). */
+  async function finishVoxelImport(result: ImageVoxelModalResult, fallbackFile?: File): Promise<boolean> {
+    const { options: opts, image: chosenImage, file: chosenFile, filename: chosenName } = result;
+    const sourceFile = chosenFile ?? fallbackFile ?? null;
+    const grid = imageDataToVoxelGrid(chosenImage, opts);
+    if (grid.size === 0) {
+      alert(`"${chosenName}" produced no voxels at the chosen settings. Try lowering the transparency cutoff.`);
+      return false;
+    }
+    const code = generateVoxelImportCode(grid, chosenName, { style: opts.codeStyle });
+    const sessionName = chosenName.replace(/\.[^.]+$/, '');
+    // With a session open (and real work to protect), let the user pick
+    // new-part / current-part / new-session (default new-part). A fresh /
+    // expendable starter or no session forces a fresh session named after the
+    // file (handled inside placeImportedCode).
+    const placed = await placeImportedCode({
+      code,
+      language: 'voxel',
+      sessionName,
+      filename: chosenName,
+      title: 'Import voxels',
+      composable: true,
+    });
+    if (!placed) return false;
+    // Register in Recent Imports tagged as a voxel import, with the chosen
+    // settings + a thumbnail, so re-clicking it reopens THIS modal (not relief)
+    // pre-loaded with these knobs. Needs the source blob to re-import later.
+    if (sourceFile) {
+      const meta: ImportMetadata = { importer: 'voxel', options: opts };
+      // Snapshot the file bytes (registerImportSnapshot): a later re-import must
+      // not depend on the original OS file still being readable. chosenImage
+      // always originates from decodeImage*ToImageData (a real ImageData), so
+      // the ImageDataLike→ImageData narrowing is safe here.
+      await registerImportSnapshot(sourceFile, chosenName, 'IMAGE', meta, createThumbnailFromImageData(chosenImage as ImageData));
+    }
+    return true;
+  }
+
   /** Import an image as a colored voxel billboard in a new voxel session.
    *  Transparent pixels (alpha below threshold) drop out, so logos and
    *  sprites voxelize cleanly; opaque photos become a full extruded slab.
@@ -2200,30 +2574,19 @@ async function main() {
     // pre-import confirm is skipped for images (see handleImportFile).
     // `initialOptions` pre-fills the controls when re-importing a past entry.
     // The user may also swap the source image inside the modal ("Choose a
-    // different image…"), so build everything below from the RESULT's image /
-    // file / name rather than the originally-picked one.
+    // different image…"), so build everything from the RESULT's image / file /
+    // name rather than the originally-picked one.
     const result = await showImageVoxelImportModal({ filename: file.name, image: imageData, file, initialOptions });
     if (!result) return false;
-    const { options: opts, image: chosenImage, file: chosenFile, filename: chosenName } = result;
-    const sourceFile = chosenFile ?? file;
-    const grid = imageDataToVoxelGrid(chosenImage, opts);
-    if (grid.size === 0) {
-      alert(`"${chosenName}" produced no voxels at the chosen settings. Try lowering the transparency cutoff.`);
-      return false;
-    }
-    const code = generateVoxelImportCode(grid, chosenName);
-    const sessionName = chosenName.replace(/\.(png|jpe?g|gif|webp|bmp)$/i, '');
-    await importCodePayload(code, 'voxel', sessionName);
-    // Register in Recent Imports tagged as a voxel import, with the chosen
-    // settings + a thumbnail, so re-clicking it reopens THIS modal (not relief)
-    // pre-loaded with these knobs. Use the swapped-in source when present.
-    const meta: ImportMetadata = { importer: 'voxel', options: opts };
-    // Snapshot the file bytes (see registerImportSnapshot): a re-import later
-    // must not depend on the original OS file still being readable. Use the
-    // swapped-in source when present. chosenImage always originates from
-    // decodeImage*ToImageData (a real ImageData), so the narrowing is safe.
-    await registerImportSnapshot(sourceFile, chosenName, 'IMAGE', meta, createThumbnailFromImageData(chosenImage as ImageData));
-    return true;
+    return finishVoxelImport(result, file);
+  }
+
+  /** Modal-first entry for Import → "Image → voxel…": open the voxel modal with
+   *  no image and let the user pick one inside (mirrors the relief wizard). */
+  async function openVoxelImportFlow(): Promise<boolean> {
+    const result = await showImageVoxelImportModal({});
+    if (!result) return false;
+    return finishVoxelImport(result);
   }
 
   /** Import a MagicaVoxel `.vox` file as a voxel session. Mirrors the image
@@ -2244,8 +2607,16 @@ async function main() {
     }
     const code = generateVoxelImportCode(grid, file.name);
     const sessionName = file.name.replace(/\.vox$/i, '');
-    await importCodePayload(code, 'voxel', sessionName);
-    return true;
+    // With a session open, let the user pick new-part / current-part /
+    // new-session (default new-part). With none open, force a fresh session.
+    return placeImportedCode({
+      code,
+      language: 'voxel',
+      sessionName,
+      filename: file.name,
+      title: 'Import voxels',
+      composable: true,
+    });
   }
 
   interface ParsedSTL {
@@ -2269,22 +2640,81 @@ async function main() {
 
     const baseName = file.name.replace(/\.(step|stp)$/i, '');
     if (target === 'brep') {
-      // Lazy-loads OCCT on the first call; subsequent imports are instant.
-      try {
-        await importSTEPToBrep(file, file.name);
-      } catch (e) {
-        alert(`Failed to parse STEP file: ${(e as Error).message}`);
-        return false;
-      }
-      // Switch the editor to the BREP language, open a fresh session named
-      // after the file, and seed the editor with the canonical "return the
-      // import" form so the user can iterate immediately. switchLanguage
-      // resets the editor to a stub starter; we overwrite that.
-      if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
-      await createSession(baseName, 'replicad');
+      // The canonical "return the import" starter so the user can iterate
+      // immediately.
       const starter = `// Imported from ${file.name}\n// api.imports[0] is the BREP shape parsed from the STEP file.\nconst { BREP } = api;\nreturn api.imports[0];\n`;
+      // Push this file's shape into the worker's pending-imports list. Drop any
+      // previously-imported BREP shapes first — otherwise the list accumulates
+      // and the seeded `return api.imports[0]` would render the *first* file.
+      // (Belt-and-suspenders with the session-change clear when a new session
+      // is created; the sole guard when importing into the active session.)
+      const pushBrepShape = async (): Promise<boolean> => {
+        try {
+          await clearBrepImports();
+          await importSTEPToBrep(file, file.name);
+          return true;
+        } catch (e) {
+          alert(`Failed to parse STEP file: ${(e as Error).message}`);
+          return false;
+        }
+      };
+
+      // No session open (or the user picks "new session"): open a fresh BREP
+      // session named after the file. Switch the editor to the BREP language
+      // FIRST so the session-change listener's clearBrepImports/clearBrepShape
+      // fires (and is enqueued on the worker) before we push this file's shape —
+      // otherwise it would wipe the just-imported shape. switchLanguage resets
+      // the editor to a stub starter; we overwrite that below.
+      const openInNewSession = async (): Promise<boolean> => {
+        if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
+        await createSession(baseName, 'replicad');
+        if (!(await pushBrepShape())) return false;
+        setValue(starter);
+        runCode(starter);
+        return true;
+      };
+
+      // No session, or the only part is an expendable starter: open a fresh BREP
+      // session named after the file (legacy behavior). The target modal only
+      // exists to protect real work, and a fresh/expendable editor has none.
+      if (!state.session || currentPartIsExpendable()) return openInNewSession();
+
+      // A session is open: offer new-part / new-session (current-part is out of
+      // scope — composing an exact BREP shape into a mesh part isn't supported).
+      const choice = await showImportTargetModal({
+        title: 'Import STEP (BREP)',
+        filename: file.name,
+        currentPartName: state.currentPart?.name ?? null,
+        canAddToCurrent: false,
+        addDisabledReason: 'A BREP shape can’t be combined into an existing part — choose a new part or session.',
+        recommend: 'new-part',
+      });
+      if (!choice) return false;
+      if (choice === 'new-session') return openInNewSession();
+
+      // new-part: add a BREP part to the current session, seed the starter, run
+      // it, and save v1 tagged `replicad`. preserveCurrentEditsIfNeeded first so
+      // the current part's unsaved work isn't lost. Parse the STEP shape BEFORE
+      // creating the part — a parse failure must not leave a freshly-created
+      // empty part orphaned as the current part.
+      await preserveCurrentEditsIfNeeded();
+      if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
+      if (!(await pushBrepShape())) return false;
+      const part = await createPart(baseName);
+      if (!part) return false;
+      // Wipe the outgoing part's paint state (color regions, model-color
+      // underlay, annotations) BEFORE running/saving the new part — otherwise
+      // the leftover regions are re-resolved onto the imported mesh and
+      // serialized into the new part's version, so it "inherits" the previous
+      // part's colors. (The mesh path does this via applyImportWrapper; the
+      // voxel path via applyCodeToCurrentPart — this hand-written BREP branch
+      // was the one path that missed it.)
+      cancelVoxelPaintIfActive();
+      dropPaintState();
       setValue(starter);
-      runCode(starter);
+      await runCodeSync(starter);
+      const thumbnail = await captureThumbnail();
+      await saveVersion(starter, getGeometryDataObj(), thumbnail, 'imported', undefined, { force: true });
       return true;
     }
 
@@ -2306,7 +2736,7 @@ async function main() {
     // the OCCT mesh isn't watertight.
     const trial = tryConstructManifold(mesh);
     const parsed: ParsedSTL = {
-      mesh: toImportedMesh(file.name, mesh),
+      mesh: toImportedMesh(file.name, mesh, 'step'),
       isManifold: trial.ok,
     };
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
@@ -2338,7 +2768,7 @@ async function main() {
       : 0;
     const scaleTolerance = Math.max(diag * 5e-6, 1e-6);
 
-    const tolerances = [1e-5, 1e-4, 1e-3, scaleTolerance];
+    const tolerances = [getConfig().import.stlWeldTolerance, 1e-4, 1e-3, scaleTolerance];
     let bestMesh = probe;
     let maxTried = 0;
     let manifoldError: string | null = null;
@@ -2373,11 +2803,11 @@ async function main() {
     return { mesh: toImportedMesh(file.name, bestMesh), isManifold: false };
   }
 
-  function toImportedMesh(filename: string, mesh: MeshData): ImportedMesh {
+  function toImportedMesh(filename: string, mesh: MeshData, format: ImportedMesh['format'] = 'stl'): ImportedMesh {
     return {
       id: generateId(),
       filename,
-      format: 'stl',
+      format,
       vertProperties: mesh.vertProperties,
       triVerts: mesh.triVerts,
       numVert: mesh.numVert,
@@ -2451,7 +2881,7 @@ async function main() {
 
   /** Drop an import wrapper for `components` into the current part: set the
    *  active imports, render, and save a version that carries the mesh data. */
-  async function applyImportWrapper(components: ImportedMesh[], manifold: boolean): Promise<void> {
+  async function applyImportWrapper(components: ImportedMesh[], manifold: boolean, seedRegions?: SeedRegion[]): Promise<void> {
     // Same reset as the other import chokepoints: an import wrapper replaces the
     // part's geometry, so the previous part's regions can't survive (compose
     // even rebuilds topology wholesale). Callers run preserveCurrentEditsIfNeeded
@@ -2460,12 +2890,20 @@ async function main() {
     // the editor.
     cancelVoxelPaintIfActive();
     dropPaintState();
+    // The import wrapper is manifold-js code; runCodeSync and saveVersion both
+    // key off the active language, so switch before running/saving — otherwise
+    // composing into a SCAD/BREP/voxel part would run the wrapper through the
+    // wrong engine and persist the version tagged with the wrong language.
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const code = generateImportCode(components, { manifold });
     setActiveImports(components);
     setValue(code);
     await runCodeSync(code);
+    // Seed any pre-computed colour regions (relief bands) AFTER the live-paint
+    // reset above, so the import's own colours survive into the saved version.
+    seedImportRegions(seedRegions);
     const thumbnail = await captureThumbnail();
-    const geometryData = getGeometryDataObj();
+    const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
     const label = manifold ? 'imported' : 'imported (render-only)';
     await saveVersion(code, geometryData, thumbnail, label, undefined, {
       force: true,
@@ -2479,10 +2917,16 @@ async function main() {
   async function bakePartComponents(partId: string, label: string): Promise<ImportedMesh[] | null> {
     const version = await getLatestVersion(partId);
     if (!version) return null;
+    // Bake the part under the language it was authored in, not the globally
+    // active engine. Without the explicit lang arg executeCodeAsync falls back
+    // to pickLang(undefined) = the active language, so merging/composing a SCAD
+    // or BREP part while a manifold-js part is open ran its code through the
+    // wrong engine and produced no usable geometry ("No geometry data").
+    const lang = effectiveVersionLanguage(version, getState().session);
     const saved = getActiveImports();
     try {
       setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
-      const result = await executeCodeAsync(version.code);
+      const result = await executeCodeAsync(version.code, lang);
       if (result.error || !result.mesh) return null;
       return [toImportedMesh(label, result.mesh)];
     } finally {
@@ -2490,11 +2934,122 @@ async function main() {
     }
   }
 
-  /** Add the imported mesh as a brand-new part (becomes current). */
-  async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean): Promise<void> {
-    const part = await createPart(filename.replace(/\.stl$/i, ''));
+  /** Add the imported mesh as a brand-new part (becomes current). Optional
+   *  seedRegions (relief's per-colour bands) are painted onto the saved v1. */
+  async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean, seedRegions?: SeedRegion[]): Promise<void> {
+    const part = await createPart(filename.replace(/\.[^.]+$/, ''));
     if (!part) return;
-    await applyImportWrapper([mesh], manifold);
+    await applyImportWrapper([mesh], manifold, seedRegions);
+  }
+
+  /** Run `code` under `language` in the current part and save it as a version.
+   *  The language is switched BEFORE running and saving so the engine runs the
+   *  right kernel and saveVersion (which snapshots getActiveLanguage()) tags the
+   *  version correctly — a voxel part must read back as `voxel`, a BREP part as
+   *  `replicad` (per-version language). */
+  async function applyCodeToCurrentPart(code: string, language: Language): Promise<void> {
+    // An import replaces the part's geometry, so the previous part's regions /
+    // live paint can't survive — clear them before running, or runCodeSync
+    // re-resolves stale regions onto the new mesh and locks the editor.
+    cancelVoxelPaintIfActive();
+    dropPaintState();
+    if (getActiveLanguage() !== language) await switchLanguage(language);
+    setValue(code);
+    await runCodeSync(code);
+    const thumbnail = await captureThumbnail();
+    const geometryData = getGeometryDataObj();
+    await saveVersion(code, geometryData, thumbnail, 'imported', undefined, { force: true });
+  }
+
+  /** Add code (voxel / BREP starter) as a brand-new part's first version.
+   *  Mirrors seedNewPartWithMesh but for editor code + a language tag instead
+   *  of a parsed mesh. */
+  async function seedNewPartWithCode(code: string, name: string, language: Language): Promise<void> {
+    const part = await createPart(name);
+    if (!part) return;
+    await applyCodeToCurrentPart(code, language);
+  }
+
+  /** Run `code` under `language` off-editor and capture its geometry as a single
+   *  compose component, so a code-based import (voxel) can be composed into a
+   *  mesh part. Returns null when the code produced no usable mesh. */
+  async function bakeCodeComponent(code: string, language: Language, label: string): Promise<ImportedMesh[] | null> {
+    const saved = getActiveImports();
+    try {
+      setActiveImports([]);
+      const result = await executeCodeAsync(code, language);
+      if (result.error || !result.mesh) return null;
+      return [toImportedMesh(label, result.mesh)];
+    } finally {
+      setActiveImports(saved);
+    }
+  }
+
+  /** Decide where freshly-generated import code (voxel today, BREP starter)
+   *  lands. With no session open it creates one (legacy behavior); otherwise the
+   *  import-target modal lets the user pick a new part, the current part, or a
+   *  new session. `composable` controls whether the current-part choice can
+   *  compose into an existing mesh part (voxel: yes via bake; BREP: no). */
+  async function placeImportedCode(opts: {
+    code: string;
+    language: Language;
+    sessionName: string;
+    filename: string;
+    title: string;
+    composable: boolean;
+    composeDisabledReason?: string;
+  }): Promise<boolean> {
+    const { code, language, sessionName, filename, title } = opts;
+    const state = getState();
+    // No session, or the only part is an expendable starter: import as before —
+    // a fresh session named after the file. The target modal only exists to
+    // protect real work, and a fresh/expendable editor has none to protect.
+    if (!state.session || currentPartIsExpendable()) {
+      await importCodePayload(code, language, sessionName);
+      return true;
+    }
+
+    // Past this point the current part holds real work (not an expendable
+    // starter), so the current-part choice can only compose-into — and only
+    // when the import is composable (voxel bakes to a mesh; a BREP starter
+    // can't compose into a mesh part).
+    const canAddToCurrent = !!state.currentPart && opts.composable;
+    const target = await showImportTargetModal({
+      title,
+      filename,
+      currentPartName: state.currentPart?.name ?? null,
+      canAddToCurrent,
+      addDisabledReason: !opts.composable ? opts.composeDisabledReason : undefined,
+      recommend: 'new-part',
+    });
+    if (!target) return false;
+
+    if (target === 'new-session') {
+      await importCodePayload(code, language, sessionName);
+      return true;
+    }
+    if (target === 'new-part') {
+      await preserveCurrentEditsIfNeeded();
+      await seedNewPartWithCode(code, sessionName, language);
+      return true;
+    }
+    // current-part: compose the import's baked mesh into the existing part
+    // (composable imports only).
+    await preserveCurrentEditsIfNeeded();
+    const baked = await bakeCodeComponent(code, language, sessionName);
+    if (!baked) {
+      showToast('Couldn’t read the imported geometry to combine.', { variant: 'warn' });
+      return false;
+    }
+    const cur = getState().currentPart;
+    if (!cur) return false;
+    const curBaked = await bakePartComponents(cur.id, cur.name);
+    if (!curBaked) {
+      showToast('Couldn’t read the current part’s geometry to combine.', { variant: 'warn' });
+      return false;
+    }
+    await applyImportWrapper([...curBaked, ...baked], true);
+    return true;
   }
 
   /** Compose the imported mesh with the current part's existing geometry. */
@@ -2514,14 +3069,26 @@ async function main() {
    *  creates one (legacy behavior); otherwise the import-target modal lets the
    *  user pick a new part, the current part, or a new session. */
   async function placeImportedMesh(parsed: ParsedSTL, filename: string): Promise<boolean> {
-    const sessionName = filename.replace(/\.stl$/i, '');
+    // Mesh imports always produce a `Manifold.ofMesh(...)` / `Manifold.compose(...)`
+    // wrapper, which is manifold-js code. saveVersion snapshots the active
+    // language, so switch before any version is written — otherwise importing
+    // into an active SCAD/BREP/voxel session tags the version with the wrong
+    // language and the engine switches wrong on reload. (The STEP→mesh path
+    // already switches before calling here; do it unconditionally so every
+    // entry point — STL, STEP, re-import — is safe.)
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+    const sessionName = filename.replace(/\.[^.]+$/, '');
     const state = getState();
-    if (!state.session) {
+    // No session, or the only part is an expendable starter: import as before —
+    // a fresh session named after the file. The target modal only exists to
+    // protect real work, and a fresh/expendable editor has none to protect.
+    if (!state.session || currentPartIsExpendable()) {
       await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
       return true;
     }
 
-    const expendable = currentPartIsExpendable();
+    // Past this point the current part holds real work (not an expendable
+    // starter), so "current part" always means compose-into, never replace.
     const target = await showImportTargetModal({
       filename,
       currentPartName: state.currentPart?.name ?? null,
@@ -2529,8 +3096,9 @@ async function main() {
       addDisabledReason: !parsed.isManifold
         ? 'Render-only meshes can’t be combined into an existing part.'
         : undefined,
-      recommend: expendable ? 'current-part' : 'new-part',
-      addReplacesStarter: expendable,
+      // Default to a new part so an import never silently overwrites the
+      // current part's real work.
+      recommend: 'new-part',
     });
     if (!target) return false;
 
@@ -2543,11 +3111,7 @@ async function main() {
       await seedNewPartWithMesh(parsed.mesh, filename, parsed.isManifold);
       return true;
     }
-    // current-part: seed an expendable starter, else compose into real work.
-    if (expendable) {
-      await applyImportWrapper([parsed.mesh], parsed.isManifold);
-      return true;
-    }
+    // current-part: compose the imported mesh into the existing real work.
     await preserveCurrentEditsIfNeeded();
     return composeMeshIntoCurrentPart(parsed.mesh);
   }
@@ -2560,6 +3124,10 @@ async function main() {
   /** Build a new part holding the composed geometry of `components`. Probes the
    *  combine first so a failure surfaces as a toast instead of a broken part. */
   async function createCombinedPart(components: ImportedMesh[], name: string): Promise<boolean> {
+    // The compose wrapper is manifold-js; merging while a SCAD/BREP/voxel part
+    // is active would probe + run + save it through the wrong engine. Switch
+    // first so the probe, runCodeSync, and the saved version are all manifold-js.
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const code = generateImportCode(components, { manifold: true });
     const saved = getActiveImports();
     setActiveImports(components);
@@ -2660,15 +3228,9 @@ async function main() {
       // same handler as a fresh import. The .vox blob is binary, so the code
       // fall-through below (which reads it as text and opens it as manifold-js)
       // dumped garbage into the editor and never switched to the voxel language.
+      // handleVoxImport now shows the import-target modal (new part / current
+      // part / new session) when a session is open, so no separate confirm here.
       if (entry.source === 'VOX') {
-        const cur = getState();
-        if (cur.session && cur.versionCount > 0) {
-          const ok = await showInlineConfirm(
-            editorUI,
-            `Re-import "${entry.filename}" as a new session? Your current session will be kept.`,
-          );
-          if (!ok) return;
-        }
         const file = new File([entry.blob], entry.filename, { type: entry.blob.type });
         await handleVoxImport(file);
         return;
@@ -2705,8 +3267,10 @@ async function main() {
   // the lifetime of the document — no cleanup needed. If editor teardown is
   // ever added, store these handlers and pair with removeEventListener().
   function isImportableFile(file: File): boolean {
-    const n = file.name.toLowerCase();
-    return n.endsWith('.json') || n.endsWith('.js') || n.endsWith('.scad') || n.endsWith('.stl');
+    // Reuse the single classifier so drag-and-drop accepts exactly the same set
+    // as the Import button (IMPORT_ACCEPT) — STEP, VOX, images, and SVG too,
+    // not just the original JSON/JS/SCAD/STL.
+    return classifyImportSource(file.name) !== null;
   }
 
   document.addEventListener('dragover', (e) => {
@@ -2759,12 +3323,37 @@ async function main() {
     return showExportConfirm(info);
   }
 
+  // One standardized "nothing to export" toast for every mesh export action, so
+  // the feedback is consistent instead of some formats silently no-op'ing and
+  // others (GLB) producing a bogus empty file.
+  const noGeometryToast = () => showToast('No geometry to export — run a model first.', { variant: 'warn' });
+
+  /** The MeshData to feed an export: bakes ALL color regions when any are
+   *  present (independent of viewport paint visibility) so every format ships
+   *  the same colors; otherwise the mesh as-is. */
+  const coloredMeshForExport = (mesh: MeshData): MeshData =>
+    (hasColorRegions() || hasModelColorRegions()) ? applyTriColors(mesh) : mesh;
+
+  /** Non-blocking heads-up that a multi-part session exports only the active
+   *  part (mesh exports consume the single `currentMeshData`). Mirrors the
+   *  share-link warning so users aren't silently handed one part of an
+   *  assembly. */
+  const notifyMultiPartExport = () => {
+    const parts = getState().parts;
+    if (parts.length > 1) {
+      const partName = getState().currentPart?.name ?? 'the current part';
+      showToast(`Exporting only "${partName}" — ${parts.length} parts in this session. Merge parts first to export them together.`, { variant: 'neutral' });
+    }
+  };
+
   const actionExportGLB = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
+    if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('GLB'))) return;
     try {
-      if (currentMeshData) assertFiniteMesh(currentMeshData);
-      const filename = await exportGLB();
+      assertFiniteMesh(currentMeshData);
+      notifyMultiPartExport();
+      const filename = await exportGLB(undefined, coloredMeshForExport(currentMeshData));
       showToast(`Exported ${filename}`, { variant: 'success' });
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'GLB export failed', { variant: 'warn' });
@@ -2772,23 +3361,26 @@ async function main() {
   };
   const actionExportSTL = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
-    if (!currentMeshData) return;
+    if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('STL'))) return;
+    notifyMultiPartExport();
     try { showToast(`Exported ${exportSTL(currentMeshData)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
   };
   const actionExportOBJ = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
-    if (!currentMeshData) return;
+    if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('OBJ'))) return;
-    try { showToast(`Exported ${exportOBJ((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
+    notifyMultiPartExport();
+    try { showToast(`Exported ${exportOBJ(coloredMeshForExport(currentMeshData))}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
   };
   const actionExport3MF = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
-    if (!currentMeshData) return;
+    if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
-    try { showToast(`Exported ${export3MF((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData)}`, { variant: 'success' }); }
+    notifyMultiPartExport();
+    try { showToast(`Exported ${export3MF(coloredMeshForExport(currentMeshData))}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
   };
   // The integer VoxelGrid behind a voxel session. The engine meshes in the
@@ -2813,6 +3405,36 @@ async function main() {
     }
     try { showToast(`Exported ${exportVOX(grid)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'VOX export failed', { variant: 'warn' }); }
+  };
+  // STEP — BREP (replicad) sessions only. Shared by the toolbar callback and the
+  // command palette so the worker round-trip + download convention live in one
+  // place. (The partwrightAPI.exportSTEP const is defined further down main(), so
+  // inlining the worker call here avoids a TDZ on toolbar build.)
+  const actionExportSTEP = async () => {
+    if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
+    try {
+      // The retained shape is cleared on session/language change, but guard the
+      // active language too so a stale shape can never be served outside a
+      // replicad session (defense-in-depth — the toolbar item and palette entry
+      // are already gated on replicad).
+      if (getActiveLanguage() !== 'replicad') {
+        showToast('STEP export is only available in BREP mode. Switch to BREP and run a model first.', { variant: 'warn' });
+        return;
+      }
+      const blob = await exportLastBrepAsSTEP();
+      if (!blob) {
+        showToast('No BREP shape available. Run a model in BREP mode first.', { variant: 'warn' });
+        return;
+      }
+      // Route through the shared download helper so STEP gets the same filename
+      // convention (date/unit suffix, sanitization), unified revoke, and a
+      // Recent Exports entry as every other format.
+      const filename = getExportFilename('step');
+      downloadBlob(blob, filename, 'STEP');
+      showToast(`Exported ${filename}`, { variant: 'success' });
+    } catch (e) {
+      showToast(`STEP export failed: ${e instanceof Error ? e.message : String(e)}`, { variant: 'warn' });
+    }
   };
 
   // Hard cap on the encoded share string. Browsers and chat apps choke on very
@@ -2924,32 +3546,7 @@ async function main() {
     onExportOBJ: actionExportOBJ,
     onExport3MF: actionExport3MF,
     onExportVOX: actionExportVOX,
-    onExportSTEP: async () => {
-      // Inlined rather than calling partwrightAPI.exportSTEP because that
-      // const is defined further down main() — using it here would land in
-      // the TDZ on toolbar-build (and TS would flag a "used before
-      // declaration" anyway). The underlying worker round-trip is the same.
-      try {
-        const blob = await exportLastBrepAsSTEP();
-        if (!blob) {
-          showToast('No BREP shape available. Run a model in BREP mode first.', { variant: 'warn' });
-          return;
-        }
-        const state = getState();
-        const base = state.session?.name ?? 'model';
-        const versionLabel = state.currentVersion?.label;
-        const name = `${base}${versionLabel ? '_' + versionLabel : ''}.step`;
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = name;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-        showToast(`Exported ${name}`, { variant: 'success' });
-      } catch (e) {
-        showToast(`STEP export failed: ${e instanceof Error ? e.message : String(e)}`, { variant: 'warn' });
-      }
-    },
+    onExportSTEP: actionExportSTEP,
     onExportSessionJSON: async () => {
       if (!getState().session) {
         alert('No active session to export. Save a version first.');
@@ -2971,6 +3568,7 @@ async function main() {
       exportRawCode(getValue(), getActiveLanguage());
     },
     onImportFile: async (file) => { await handleImportFile(file); },
+    onImportFromURL: () => { openImportFromUrl(); },
     onImportInboxEntry: handleReimportInboxEntry,
     onCreateRelief: () => {
       // If the active session is itself a relief, reopen the wizard pre-loaded
@@ -2980,6 +3578,7 @@ async function main() {
       if (sid && isReliefSession(sid)) void reopenReliefImport(sid);
       else openReliefImportFlow();
     },
+    onCreateVoxel: () => { void openVoxelImportFlow(); },
     onLanguageHelp: async () => { await showLanguageHelpModal(); },
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => {
@@ -3018,10 +3617,20 @@ async function main() {
 
   // Load a part's active version into the editor, or reset to a blank part when
   // the part has no saved versions yet.
+  //
+  // A saved version carries its own language and `loadVersionIntoEditor` swaps
+  // the engine to match. A version-less part falls back to the manifold-js
+  // starter, so the engine MUST be on manifold-js before we seed + run it —
+  // otherwise the starter's `Manifold.cube(...)` runs under whatever engine the
+  // previously-active part left behind (e.g. voxel, where `api.Manifold` is
+  // undefined) and throws "Cannot read properties of undefined (reading
+  // 'cube')". This is the mixed-language case a JSON merge creates: a voxel
+  // Part 2 alongside the default unsaved manifold-js Part 1.
   async function loadPartIntoEditor(version: Version | null) {
     if (version) {
       await loadVersionIntoEditor(version);
     } else {
+      if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
       startNewPartInEditor();
     }
   }
@@ -3056,6 +3665,14 @@ async function main() {
     // already exist — start it directly without re-navigating.
     onStartTour: () => { resetTour(); startTour(); },
   });
+
+  // Printability indicator pill — shown in the viewport overlay when the model
+  // has structural issues that would prevent 3D printing (non-manifold or
+  // disconnected components). Hidden when the model is printable.
+  printabilityIndicatorEl = document.createElement('span');
+  printabilityIndicatorEl.className = 'absolute top-8 left-2 z-20 text-xs text-amber-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-amber-700/60 pointer-events-none';
+  printabilityIndicatorEl.style.display = 'none';
+  viewportPane.appendChild(printabilityIndicatorEl);
 
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
@@ -3177,26 +3794,34 @@ async function main() {
     { id: 'format', title: 'Format code', hint: 'Editor', shortcut: combo(SHIFT_LABEL, ALT_LABEL, 'F'), keywords: 'prettify beautify indent', run: () => formatCode() },
     { id: 'new-session', title: 'New session', hint: 'Session', keywords: 'create blank', run: () => startNewSessionInEditor() },
     { id: 'open-sessions', title: 'Open session…', hint: 'Session', keywords: 'switch list recent', run: () => showSessionList() },
-    { id: 'tab-interactive', title: 'Go to 3D view', hint: 'Tab', keywords: 'interactive viewport model', run: () => switchTab('interactive') },
-    { id: 'tab-gallery', title: 'Go to Gallery (read-only)', hint: 'Tab', keywords: 'thumbnails versions visual grid', run: () => switchTab('gallery') },
-    { id: 'tab-versions', title: 'Go to Versions', hint: 'Tab', keywords: 'history rename delete', run: () => switchTab('versions') },
-    { id: 'tab-images', title: 'Go to Reference images', hint: 'Tab', keywords: 'photos reference', run: () => switchTab('images') },
-    { id: 'tab-diff', title: 'Go to Diff', hint: 'Tab', keywords: 'compare changes', run: () => switchTab('diff') },
-    { id: 'tab-notes', title: 'Go to Notes', hint: 'Tab', keywords: 'session notes', run: () => switchTab('notes') },
-    { id: 'tab-data', title: 'Go to Data', hint: 'Tab', keywords: 'storage browser indexeddb inventory', run: () => switchTab('data') },
+    { id: 'tab-interactive', title: 'Go to 3D view', hint: 'Tab', keywords: 'interactive viewport model', run: () => switchTab('interactive'), enabled: isEditorActive },
+    { id: 'tab-gallery', title: 'Go to Gallery (read-only)', hint: 'Tab', keywords: 'thumbnails versions visual grid', run: () => switchTab('gallery'), enabled: isEditorActive },
+    { id: 'tab-versions', title: 'Go to Versions', hint: 'Tab', keywords: 'history rename delete', run: () => switchTab('versions'), enabled: isEditorActive },
+    { id: 'tab-images', title: 'Go to Reference images', hint: 'Tab', keywords: 'photos reference', run: () => switchTab('images'), enabled: isEditorActive },
+    { id: 'tab-diff', title: 'Go to Diff', hint: 'Tab', keywords: 'compare changes', run: () => switchTab('diff'), enabled: isEditorActive },
+    { id: 'tab-notes', title: 'Go to Notes', hint: 'Tab', keywords: 'session notes', run: () => switchTab('notes'), enabled: isEditorActive },
+    { id: 'tab-data', title: 'Go to Data', hint: 'Tab', keywords: 'storage browser indexeddb inventory', run: () => switchTab('data'), enabled: isEditorActive },
     { id: 'export-glb', title: 'Export GLB', hint: 'Export', keywords: 'download gltf 3d', run: () => { void actionExportGLB(); }, enabled: () => currentMeshData !== null },
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
-    { id: 'export-vox', title: 'Export VOX', hint: 'Export', keywords: 'download magicavoxel voxel goxel', run: actionExportVOX, enabled: () => getActiveLanguage() === 'voxel' && currentMeshData !== null },
+    // VOX exports the voxel grid (getCurrentVoxelGrid), not currentMeshData, so
+    // gate on the active language — the grid is re-derived on demand inside the
+    // action, which also toasts if there's nothing to export. (Re-running the
+    // model inside an `enabled` predicate would be far too heavy.)
+    { id: 'export-vox', title: 'Export VOX', hint: 'Export', keywords: 'download magicavoxel voxel goxel', run: actionExportVOX, enabled: () => getActiveLanguage() === 'voxel' },
+    // STEP exports the retained BREP shape, only available in replicad sessions
+    // (mirrors the toolbar's STEP gating); the action toasts if no shape exists.
+    { id: 'export-step', title: 'Export STEP', hint: 'Export', keywords: 'download brep cad solidworks fusion freecad', run: () => { void actionExportSTEP(); }, enabled: () => getActiveLanguage() === 'replicad' },
     { id: 'share-link', title: 'Share design (copy link)', hint: 'Share', keywords: 'url public link copy fork readonly', run: () => { void actionShareLink(); }, enabled: canShare },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
     { id: 'toggle-diagnostics', title: 'Toggle diagnostic log', hint: 'View', keywords: 'errors warnings console', run: () => toggleDiagnosticsPanel() },
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
+    { id: 'open-ideas', title: 'Open ideas', hint: 'Navigate', keywords: 'prompts examples inspiration showcase what can i do', run: () => { showIdeasPage(); } },
     { id: 'open-help', title: 'Open help', hint: 'Navigate', keywords: 'docs documentation guide', run: () => showHelp() },
     { id: 'open-whats-new', title: "Open what's new", hint: 'Navigate', keywords: 'changelog recent features updates release notes', run: () => showWhatsNewPage() },
     { id: 'open-quality', title: 'Modeling quality settings', hint: 'Settings', keywords: 'resolution curve segments smoothness', run: () => showQualitySettingsModal() },
-    { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); } },
+    { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); }, enabled: isEditorActive },
   ]);
 
   // Init gallery — `loadVersion` (in gallery.ts) has already updated state to
@@ -3268,7 +3893,10 @@ async function main() {
       setValue(code);
       runCode(code);
     },
-    async (code: string) => {
+    async (code: string, importedMeshes) => {
+      // Seed this version's imported meshes so `api.imports[0]` resolves to its
+      // own geometry when the thumbnail is regenerated (else a stale capture).
+      setActiveImports(importedMeshes ?? []);
       await runCodeSync(code);
       return captureThumbnail();
     },
@@ -3295,6 +3923,8 @@ async function main() {
   let editorReadyResolve: (() => void) = () => {};
   const editorReadyPromise = new Promise<void>(resolve => { editorReadyResolve = resolve; });
   let engineOk = false;
+  let engineLoadPromise: Promise<void> | null = null;
+  let engineLoadingOverlay: HTMLElement | null = null;
   let helpHasAppBackTarget = false;
   let legalEl: HTMLElement | null = null;
   let legalHasAppBackTarget = false;
@@ -3331,9 +3961,11 @@ async function main() {
     showEditorUI(landingEl, helpEl, editorUI);
     if (notFoundEl) notFoundEl.classList.add('hidden');
     if (catalogEl) catalogEl.classList.add('hidden');
+    if (ideasEl) ideasEl.classList.add('hidden');
     if (legalEl) legalEl.classList.add('hidden');
     overlayContainer.classList.add('hidden');
     window.dispatchEvent(new Event('resize'));
+    void ensureEngineStarted();
   }
 
   async function loadVersionIntoEditor(version: Version) {
@@ -3381,6 +4013,8 @@ async function main() {
     transitionToEditor();
     await ensureEditorReady();
     if (window.location.pathname !== '/editor') return;
+    await ensureEngineStarted();
+    if (!engineOk) return;
     await createSession();
     updateDocumentTitle({ page: 'editor' });
     setStatus(statusBar, 'ready', 'Ready');
@@ -3391,6 +4025,8 @@ async function main() {
     updateAppHistory(`/editor?session=${sid}`, 'push');
     transitionToEditor();
     await ensureEditorReady();
+    await ensureEngineStarted();
+    if (!engineOk) return;
     if (getSessionIdFromURL() !== sid) return;
     const version = await openSession(sid);
     if (version) {
@@ -3413,6 +4049,7 @@ async function main() {
     updateAppHistory('/editor', 'push');
     transitionToEditor();
     await ensureEditorReady();
+    await ensureEngineStarted();
     if (!getState().session) {
       await createSession();
       runCode(defaultCode);
@@ -3421,12 +4058,13 @@ async function main() {
     startTour();
   }
 
-  async function ensureLandingPage() {
+  function ensureLandingPage() {
     if (!landingEl) {
-      landingEl = await createLandingPage(overlayContainer, {
+      landingEl = createLandingPage(overlayContainer, {
         onOpenEditor: openEditorFromLanding,
         onOpenHelp: () => showHelp(),
         onOpenCatalog: () => { void showCatalogPage(); },
+        onOpenIdeas: () => { showIdeasPage(); },
         onOpenWhatsNew: () => showWhatsNewPage(),
         onTakeTour: () => { void takeGuidedTour(); },
         onOpenSession: openSessionFromLanding,
@@ -3437,16 +4075,29 @@ async function main() {
   }
 
   async function showLandingPage() {
-    const page = await ensureLandingPage();
+    const page = ensureLandingPage();
     overlayContainer.classList.remove('hidden');
     editorUI.classList.add('hidden');
     helpEl?.classList.add('hidden');
     notFoundEl?.classList.add('hidden');
     catalogEl?.classList.add('hidden');
+    ideasEl?.classList.add('hidden');
     legalEl?.classList.add('hidden');
     whatsNewEl?.classList.add('hidden');
     page.classList.remove('hidden');
     updateDocumentTitle({ page: 'landing' });
+    // Build and render the JS page behind the static overlay, then remove the
+    // overlay only after fonts are settled — both pages then share the same
+    // metrics, making the swap invisible. Copy scroll position so the user's
+    // reading position is preserved if they scrolled before JS finished.
+    await document.fonts.ready;
+    requestAnimationFrame(() => {
+      const li = document.getElementById('landing-inline');
+      if (li) {
+        page.scrollTop = li.scrollTop;
+        li.remove();
+      }
+    });
   }
 
   function showNotFoundPage() {
@@ -3463,6 +4114,7 @@ async function main() {
     landingEl?.classList.add('hidden');
     helpEl?.classList.add('hidden');
     catalogEl?.classList.add('hidden');
+    ideasEl?.classList.add('hidden');
     legalEl?.classList.add('hidden');
     whatsNewEl?.classList.add('hidden');
     notFoundEl.classList.remove('hidden');
@@ -3494,6 +4146,7 @@ async function main() {
     if (landingEl) landingEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
     if (catalogEl) catalogEl.classList.add('hidden');
+    if (ideasEl) ideasEl.classList.add('hidden');
     if (legalEl) legalEl.classList.add('hidden');
     if (whatsNewEl) whatsNewEl.classList.add('hidden');
     helpEl.classList.remove('hidden');
@@ -3524,6 +4177,7 @@ async function main() {
     if (landingEl) landingEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
     if (catalogEl) catalogEl.classList.add('hidden');
+    if (ideasEl) ideasEl.classList.add('hidden');
     if (helpEl) helpEl.classList.add('hidden');
     legalEl.classList.remove('hidden');
     updateDocumentTitle({ page: 'legal' });
@@ -3548,6 +4202,7 @@ async function main() {
           }
         },
         onLoadEntry: handleCatalogEntryLoad,
+        onOpenIdeas: () => { showIdeasPage(); },
       });
     }
     overlayContainer.classList.remove('hidden');
@@ -3557,6 +4212,7 @@ async function main() {
     if (notFoundEl) notFoundEl.classList.add('hidden');
     if (legalEl) legalEl.classList.add('hidden');
     if (whatsNewEl) whatsNewEl.classList.add('hidden');
+    if (ideasEl) ideasEl.classList.add('hidden');
     catalogEl.classList.remove('hidden');
     updateDocumentTitle({ page: 'catalog' });
   }
@@ -3587,6 +4243,7 @@ async function main() {
     if (landingEl) landingEl.classList.add('hidden');
     if (helpEl) helpEl.classList.add('hidden');
     if (catalogEl) catalogEl.classList.add('hidden');
+    if (ideasEl) ideasEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
     whatsNewEl.classList.remove('hidden');
     updateDocumentTitle({ page: 'whats-new' });
@@ -3602,8 +4259,88 @@ async function main() {
     updateAppHistory('/editor', 'push');
     transitionToEditor();
     await ensureEditorReady();
+    await ensureEngineStarted();
+    if (!engineOk) return;
     await importSessionPayload(payload);
     updateDocumentTitle({ page: 'editor' });
+  }
+
+  // === Ideas page handlers ===
+
+  /** Enter the editor with a live session, ready for a hand-off. Used by the
+   *  ideas-page actions: they all start by getting the user into the editor
+   *  (pushing the history entry BEFORE any session mutation, same reason as
+   *  handleCatalogEntryLoad). */
+  async function enterEditorForIdea(): Promise<void> {
+    updateAppHistory('/editor', 'push');
+    transitionToEditor();
+    await ensureEditorReady();
+  }
+
+  // A starter/technique idea — drop its prompt into the AI panel (don't send).
+  async function handleIdeaUsePrompt(idea: Idea): Promise<void> {
+    await enterEditorForIdea();
+    if (window.location.pathname !== '/editor') return;
+    if (!getState().session) {
+      await createSession();
+      setStatus(statusBar, 'ready', 'Ready');
+      runCode(defaultCode);
+    }
+    updateDocumentTitle({ page: 'editor' });
+    prefillAiInput(idea.prompt ?? '');
+  }
+
+  // An interactive idea: turn the user's photo into a colored voxel session
+  // (reuses the existing image→voxel import flow, modal and all).
+  async function handleIdeaPhotoToVoxel(file: File): Promise<void> {
+    await enterEditorForIdea();
+    if (window.location.pathname !== '/editor') return;
+    await handleImageImport(file);
+    updateDocumentTitle({ page: 'editor' });
+  }
+
+  // An interactive idea: emboss the user's photo as a smooth relief tile
+  // (reuses the existing Relief import wizard).
+  async function handleIdeaPhotoToRelief(file: File): Promise<void> {
+    await enterEditorForIdea();
+    if (window.location.pathname !== '/editor') return;
+    openReliefImportFlow(file);
+    updateDocumentTitle({ page: 'editor' });
+  }
+
+  let ideasEl: HTMLElement | null = null;
+  let ideasHasAppBackTarget = false;
+  function showIdeasPage(options: { history?: 'push' | 'replace' | 'none' } = {}) {
+    const historyMode = options.history ?? 'push';
+    if (historyMode !== 'none') {
+      ideasHasAppBackTarget = currentURLPathAndSearch() !== '/ideas';
+      updateAppHistory('/ideas', historyMode);
+    }
+    if (!ideasEl) {
+      ideasEl = createIdeasPage(overlayContainer, {
+        onBack: () => {
+          if (ideasHasAppBackTarget) {
+            window.history.back();
+          } else {
+            updateAppHistory('/', 'replace');
+            void syncRouteFromURL();
+          }
+        },
+        onUsePrompt: handleIdeaUsePrompt,
+        onPhotoToVoxel: handleIdeaPhotoToVoxel,
+        onPhotoToRelief: handleIdeaPhotoToRelief,
+      });
+    }
+    overlayContainer.classList.remove('hidden');
+    editorUI.classList.add('hidden');
+    if (landingEl) landingEl.classList.add('hidden');
+    if (helpEl) helpEl.classList.add('hidden');
+    if (notFoundEl) notFoundEl.classList.add('hidden');
+    if (legalEl) legalEl.classList.add('hidden');
+    if (catalogEl) catalogEl.classList.add('hidden');
+    if (whatsNewEl) whatsNewEl.classList.add('hidden');
+    ideasEl.classList.remove('hidden');
+    updateDocumentTitle({ page: 'ideas' });
   }
 
   // === Shared-link preview mode (read-only) ===
@@ -3688,6 +4425,7 @@ async function main() {
     switchTab('interactive', { history: 'none' });
     updateDocumentTitle({ page: 'editor' });
     await ensureEditorReady();
+    await ensureEngineStarted();
     if (!engineOk) return;
 
     // Decode + validate. ANY failure → graceful fallback to a blank editor.
@@ -3790,6 +4528,7 @@ async function main() {
     switchTab(tab, { history: 'none' });
     updateDocumentTitle({ page: 'editor' });
     await ensureEditorReady();
+    await ensureEngineStarted();
     if (!engineOk) return;
 
     const sessionId = getSessionIdFromURL();
@@ -3846,7 +4585,7 @@ async function main() {
     // Home — confusing because no editor / session is loaded to act on
     // it. /editor's own loader updates the AI session via onStateChange
     // when a session opens, so we don't need to set it explicitly here.
-    if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShowLegal() || shouldShowWhatsNew() || shouldShow404()) {
+    if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShowIdeas() || shouldShowLegal() || shouldShowWhatsNew() || shouldShow404()) {
       void setAiActiveSession(null);
     }
     // A share-link hash takes precedence over the normal editor sync on this
@@ -3855,11 +4594,13 @@ async function main() {
     if (hasShareHash()) {
       await enterSharedFromHash();
     } else if (shouldShowLanding()) {
-      await showLandingPage();
+      showLandingPage();
     } else if (shouldShowHelp()) {
       showHelp({ history: 'none' });
     } else if (shouldShowCatalog()) {
       await showCatalogPage({ history: 'none' });
+    } else if (shouldShowIdeas()) {
+      showIdeasPage({ history: 'none' });
     } else if (shouldShowLegal()) {
       showLegal({ history: 'none' });
     } else if (shouldShowWhatsNew()) {
@@ -3897,6 +4638,7 @@ async function main() {
   const showLanding = shouldShowLanding();
   const showHelpPage = shouldShowHelp();
   const showCatalog = shouldShowCatalog();
+  const showIdeas = shouldShowIdeas();
   const showLegalPage = shouldShowLegal();
   const showWhatsNew = shouldShowWhatsNew();
   const show404 = shouldShow404();
@@ -3907,6 +4649,8 @@ async function main() {
     showHelp({ history: 'none' });
   } else if (showCatalog) {
     await showCatalogPage({ history: 'none' });
+  } else if (showIdeas) {
+    showIdeasPage({ history: 'none' });
   } else if (showLegalPage) {
     showLegal({ history: 'none' });
   } else if (showWhatsNew) {
@@ -3915,62 +4659,86 @@ async function main() {
     showNotFoundPage();
   }
 
-  // Init geometry engine — wrapped in try/catch so editor/viewport still init
-  // on failure. The WASM engines need SharedArrayBuffer, which requires
-  // cross-origin isolation (COOP+COEP). Those headers come from the server, but
-  // as a fallback for hosts that strip them the offline service worker
-  // (src/sw.ts + registerSW.ts) reloads ONCE on a first visit to serve a
-  // stamped, isolated document — so a transient non-isolated state on the very
-  // first load is expected and must NOT flash the scary message; we gate on
-  // that one reload having had its chance.
+  // Geometry engine initialisation — deferred until the user first opens the
+  // editor. WASM is never loaded on landing / catalog / help page visits.
   const COI_MISSING_MSG =
-    'This browser tab is not cross-origin isolated, so the WASM engine (which needs SharedArrayBuffer) can’t start. ' +
-    'This usually fixes itself on reload; if it persists, the required COOP/COEP headers aren’t reaching the page ' +
+    "This browser tab is not cross-origin isolated, so the WASM engine (which needs SharedArrayBuffer) can't start. " +
+    "This usually fixes itself on reload; if it persists, the required COOP/COEP headers aren't reaching the page " +
     '(a proxy, extension, or unsupported browser can strip them).';
-  setStatus(statusBar, 'loading', 'Loading WASM...');
-  if (!isolationSupported()) {
-    // Has the service worker already had a chance to reload this tab for
-    // isolation? It registers and reloads once; until a controller exists, that
-    // reload is still pending, so stay on the neutral "Loading…" message rather
-    // than alarming the user. We remember that we waited so a second non-isolated
-    // load (where the worker can't help) surfaces the explanation.
-    let coiReloadPending = false;
-    try {
-      const waited = sessionStorage.getItem('partwright-coi-waited') === '1';
-      const hasController = 'serviceWorker' in navigator && !!navigator.serviceWorker.controller;
-      coiReloadPending = !waited && !hasController && 'serviceWorker' in navigator;
-      if (coiReloadPending) sessionStorage.setItem('partwright-coi-waited', '1');
-    } catch {
-      // sessionStorage unavailable — treat as "no reload pending" and explain.
-      coiReloadPending = false;
+
+  function ensureEngineStarted(): Promise<void> {
+    if (engineLoadPromise) return engineLoadPromise;
+    setStatus(statusBar, 'loading', 'Loading WASM...');
+    engineLoadingOverlay?.classList.remove('hidden');
+    if (!isolationSupported()) {
+      // Has the service worker already had a chance to reload this tab for
+      // isolation? It registers and reloads once; until a controller exists,
+      // that reload is still pending, so stay on the neutral "Loading…" message
+      // rather than alarming the user. We remember that we waited so a second
+      // non-isolated load (where the worker can't help) surfaces the explanation.
+      let coiReloadPending = false;
+      try {
+        const waited = sessionStorage.getItem('partwright-coi-waited') === '1';
+        const hasController = 'serviceWorker' in navigator && !!navigator.serviceWorker.controller;
+        coiReloadPending = !waited && !hasController && 'serviceWorker' in navigator;
+        if (coiReloadPending) sessionStorage.setItem('partwright-coi-waited', '1');
+      } catch {
+        coiReloadPending = false;
+      }
+      if (!coiReloadPending) {
+        setStatus(statusBar, 'error', 'WASM unavailable (not cross-origin isolated)');
+        errorLog.capture({ level: 'error', source: 'engine', message: COI_MISSING_MSG });
+        showToast(COI_MISSING_MSG, { variant: 'warn', durationMs: 9000 });
+      }
+      engineLoadingOverlay?.classList.add('hidden');
+      engineLoadPromise = Promise.resolve();
+    } else {
+      engineLoadPromise = (async () => {
+        try {
+          await initEngine();
+          engineOk = true;
+        } catch (e) {
+          console.error('WASM engine failed to load:', e);
+          const coiMissing = !isolationSupported();
+          setStatus(statusBar, 'error', coiMissing ? 'WASM unavailable (not cross-origin isolated)' : 'WASM failed');
+          errorLog.capture({
+            level: 'error',
+            source: 'engine',
+            message: coiMissing ? COI_MISSING_MSG : `WASM engine failed to load: ${e instanceof Error ? e.message : String(e)}`,
+          });
+        } finally {
+          engineLoadingOverlay?.classList.add('hidden');
+        }
+      })();
     }
-    if (!coiReloadPending) {
-      setStatus(statusBar, 'error', 'WASM unavailable (not cross-origin isolated)');
-      errorLog.capture({ level: 'error', source: 'engine', message: COI_MISSING_MSG });
-      showToast(COI_MISSING_MSG, { variant: 'warn', durationMs: 9000 });
-    }
-    // Either way, don't attempt initEngine — it would throw on the missing
-    // SharedArrayBuffer. engineOk stays false; the editor/viewport still init.
-  } else {
-    try {
-      await initEngine();
-      engineOk = true;
-    } catch (e) {
-      console.error('WASM engine failed to load:', e);
-      // Distinguish a genuine load failure from the COI-missing case (which we
-      // already handled above) so the message points at the right cause.
-      const coiMissing = !isolationSupported();
-      setStatus(statusBar, 'error', coiMissing ? 'WASM unavailable (not cross-origin isolated)' : 'WASM failed');
-      errorLog.capture({
-        level: 'error',
-        source: 'engine',
-        message: coiMissing ? COI_MISSING_MSG : `WASM engine failed to load: ${e instanceof Error ? e.message : String(e)}`,
-      });
-    }
+    return engineLoadPromise;
   }
 
   // Init viewport
   initViewport(viewportPane);
+
+  // Indeterminate progress bar shown over the viewport while WASM loads on
+  // first editor open. Hidden by ensureEngineStarted's finally block.
+  {
+    const style = document.createElement('style');
+    style.textContent = '@keyframes pw-bar{0%{left:0;width:30%}50%{left:35%;width:30%}100%{left:70%;width:30%}}';
+    document.head.appendChild(style);
+    engineLoadingOverlay = document.createElement('div');
+    engineLoadingOverlay.className = 'absolute inset-0 flex flex-col items-center justify-center z-10 pointer-events-none hidden';
+    const loadingText = document.createElement('div');
+    loadingText.className = 'text-xs text-zinc-400 mb-3 font-mono';
+    loadingText.textContent = 'Loading engine…';
+    const progressTrack = document.createElement('div');
+    progressTrack.className = 'relative w-48 h-1 bg-zinc-700 rounded-full overflow-hidden';
+    const progressBar = document.createElement('div');
+    progressBar.className = 'absolute h-full bg-blue-500 rounded-full';
+    progressBar.style.animation = 'pw-bar 1.5s ease-in-out infinite';
+    progressTrack.appendChild(progressBar);
+    engineLoadingOverlay.appendChild(loadingText);
+    engineLoadingOverlay.appendChild(progressTrack);
+    viewportPane.appendChild(engineLoadingOverlay);
+  }
+
   // Keep the live triangle-count readout (and high-complexity warning) in sync
   // with every displayed mesh — runs, paint strokes, simplify, clear.
   setOnMeshUpdate((mesh) => refreshTriangleCount(mesh.numTri));
@@ -4432,7 +5200,7 @@ async function main() {
 
   // Start guided tour on first visit (after editor fully renders) — but not over
   // a shared preview, which is a read-only landing surface for an external link.
-  if (!showLanding && !showHelpPage && !showCatalog && !showLegalPage && !showWhatsNew && !show404 && !hasShareHash()) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showIdeas && !showLegalPage && !showWhatsNew && !show404 && !hasShareHash()) {
     maybeStartTour();
     maybeShowShortcutsHint();
     maybeShowLowMemoryNotice();
@@ -4442,9 +5210,8 @@ async function main() {
   // load. enterSharedFromHash must run before syncEditorFromURL so the latter
   // never createSession()s + runs default code on this path; it strips the hash
   // and degrades to a normal editable editor if the link is invalid. (The
-  // editor + engine are ready here, so its internal ensureEditorReady resolves
-  // immediately — no deadlock from awaiting it earlier in main().)
-  if (!showLanding && !showHelpPage && !showCatalog && !showLegalPage && !showWhatsNew && !show404 && engineOk) {
+  // editor is ready here; ensureEngineStarted is awaited inside each path.)
+  if (!showLanding && !showHelpPage && !showCatalog && !showIdeas && !showLegalPage && !showWhatsNew && !show404) {
     if (hasShareHash()) {
       await enterSharedFromHash();
     } else {
@@ -4462,8 +5229,21 @@ async function main() {
   // disabled, with a "Take over" banner).
   initViewerMode();
 
+  // Track the active session id so BREP worker state (pending STEP imports +
+  // the retained STEP-export shape) can be flushed when the session changes —
+  // both live module-global in the worker and would otherwise bleed across
+  // sessions (a second STEP-as-BREP import accumulating in `api.imports`, or
+  // exportSTEP serializing a previous session's shape).
+  let lastBrepSessionId: string | null = getState().session?.id ?? null;
+
   // Update document title when session state changes (create, open, close, rename)
   onStateChange((state) => {
+    const sid = state.session?.id ?? null;
+    if (sid !== lastBrepSessionId) {
+      lastBrepSessionId = sid;
+      void clearBrepImports().catch(() => {});
+      void clearBrepShape().catch(() => {});
+    }
     updateDocumentTitle({ page: 'editor', sessionName: state.session?.name ?? null });
     // Re-bind the AI panel to the current session so chat history follows.
     void setAiActiveSession(state.session?.id ?? null);
@@ -4546,7 +5326,7 @@ async function main() {
   }
 
   // Set initial editor title if we're on the editor page
-  if (!showLanding && !showHelpPage && !showCatalog && !showLegalPage && !showWhatsNew && !show404) {
+  if (!showLanding && !showHelpPage && !showCatalog && !showIdeas && !showLegalPage && !showWhatsNew && !show404) {
     updateDocumentTitle({ page: 'editor' });
   }
 
@@ -4580,6 +5360,11 @@ async function main() {
    *  only updated on session creation or by an explicit AI/console call. */
   async function applyEngineLanguage(lang: Language) {
     if (lang === getActiveLanguage()) return;
+    // Leaving a replicad session: drop the retained STEP-export shape so a
+    // later exportSTEP can't serialize a stale shape that belonged to the
+    // previous BREP model (it's module-global in the worker and only replaced
+    // by the next replicad run).
+    if (getActiveLanguage() === 'replicad') void clearBrepShape().catch(() => {});
     setActiveLanguage(lang);
     setEditorLanguage(lang);
     setToolbarLanguage(lang);
@@ -4741,8 +5526,226 @@ async function main() {
     };
   }
 
+  // === Surface modifiers (fuzzy skin / smooth / voxelize) ===
+  // Post-hoc operations on the current model that commit a new version, mirroring
+  // the STL-import path (applyImportWrapper): bake the result onto an imported
+  // mesh and emit a `Manifold.ofMesh(...)` wrapper (manifold modifiers), or emit a
+  // self-contained `voxels.decode(...)` program (voxelize). Then switch to the
+  // right engine, run, and save. Declared here as hoisted functions so the
+  // partwrightAPI methods below can call them.
+  function requireCurrentMeshForModifier(): MeshData {
+    if (!currentMeshData || currentMeshData.numTri === 0) {
+      throw new Error('No model to modify — run or open a model first.');
+    }
+    return currentMeshData;
+  }
+
+  /** The mesh a modifier should consume. When `preserveColor` is on and the
+   *  model is painted, bake the visible colors into `triColors` so a modifier
+   *  that resamples color (voxelize) inherits the paint; manifold modifiers
+   *  ignore `triColors` (they re-resolve paint regions after the run instead). */
+  function meshForModifier(preserveColor: boolean): MeshData {
+    const mesh = requireCurrentMeshForModifier();
+    if (preserveColor && (hasColorRegions() || hasModelColorRegions())) {
+      return applyTriColors(mesh);
+    }
+    return mesh;
+  }
+
+  /** True if the active model carries any paint (manual or model-declared). */
+  function modelHasColor(): boolean {
+    return hasColorRegions() || hasModelColorRegions();
+  }
+
+  // Non-destructive preview: swap the viewport mesh to the modifier's result
+  // WITHOUT running the engine or saving a version. Cleared by reverting to the
+  // current model's mesh (clearSurfacePreview). Mirrors the relief preview path.
+  // Colors are carried through subdivision in buildSurfaceModifier, so result.mesh
+  // already has the correct per-triangle colors — no post-hoc transfer needed.
+  function previewSurfaceModifier(result: ModifierResult, _preserveColor: boolean): void {
+    const previewMesh = result.kind === 'manifold' ? result.mesh : result.previewMesh;
+    if (previewMesh.numTri === 0) return;
+    updateMesh(previewMesh, { skipAutoFrame: true });
+  }
+
+  function clearSurfacePreview(): void {
+    if (!currentMeshData) return;
+    const restored = modelHasColor() ? applyTriColorsIfVisible(currentMeshData) : currentMeshData;
+    updateMesh(restored, { skipAutoFrame: true });
+  }
+
+  // Carry paint from the pre-modifier mesh onto a re-tessellated manifold result
+  // by nearest-triangle transfer. Region descriptors (coplanar/slab/…) re-resolve
+  // by geometry and collapse to nothing once fuzzy/smooth perturb the surface, so
+  // we instead snapshot the composited colors (paint + model colors, via
+  // buildTriColors) and map them onto the new mesh by centroid proximity, grouped
+  // into one `{ kind: 'triangles' }` region per distinct color. Those persist
+  // because the import→ofMesh pipeline is deterministic — the raw triangle ids
+  // stay valid across reloads. Returns the regions to rehydrate, or [] if nothing
+  // was painted. `transferredTris` reports coverage for the UI.
+  function buildCarriedColorRegions(
+    oldMesh: MeshData,
+    oldColors: Uint8Array,
+    newMesh: MeshData,
+  ): { regions: SerializedColorRegion[]; transferredTris: number } {
+    const painted = (oldColors as Uint8Array & { _painted?: Uint8Array })._painted;
+    const nearest = nearestTriangleMap(oldMesh, newMesh);
+    const groups = new Map<number, number[]>(); // packed rgb → new triangle ids
+    let transferredTris = 0;
+    for (let t = 0; t < newMesh.numTri; t++) {
+      const o = nearest[t];
+      if (o < 0) continue;
+      if (painted && !painted[o]) continue; // skip triangles that weren't painted
+      const r = oldColors[o * 3], g = oldColors[o * 3 + 1], b = oldColors[o * 3 + 2];
+      const rgb = (r << 16) | (g << 8) | b;
+      let arr = groups.get(rgb);
+      if (!arr) { arr = []; groups.set(rgb, arr); }
+      arr.push(t);
+      transferredTris++;
+    }
+    const regions: SerializedColorRegion[] = [];
+    let i = 0;
+    for (const [rgb, ids] of groups) {
+      regions.push({
+        name: `Surface color ${++i}`,
+        // ColorRegion.color is RGB in 0..1 (buildTriColors multiplies by 255);
+        // the packed rgb here is 0..255 bytes, so normalize each channel.
+        color: [((rgb >> 16) & 0xff) / 255, ((rgb >> 8) & 0xff) / 255, (rgb & 0xff) / 255],
+        source: 'face-pick',
+        descriptor: { kind: 'triangles', ids },
+        visible: true,
+      } as SerializedColorRegion);
+    }
+    return { regions, transferredTris };
+  }
+
+  async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean): Promise<Record<string, unknown>> {
+    // For manifold results the modifier already baked colors into its input and
+    // carried them through subdivision — result.mesh.triColors has the correct
+    // per-triangle paint (dense mesh, same shape as the engine output). We use
+    // that as the color source rather than the pre-modifier coarse mesh, which
+    // avoids the coarse→dense centroid-mapping errors that cause wrong colors.
+    const colorMesh = (preserveColor && result.kind === 'manifold' && result.mesh.triColors != null)
+      ? result.mesh : null;
+    cancelVoxelPaintIfActive();
+    dropPaintState();
+    if (result.kind === 'manifold') {
+      if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+      const comp: ImportedMesh = {
+        id: crypto.randomUUID(),
+        filename: result.label,
+        format: 'stl',
+        vertProperties: result.mesh.vertProperties,
+        triVerts: result.mesh.triVerts,
+        numVert: result.mesh.numVert,
+        numTri: result.mesh.numTri,
+        numProp: 3,
+      };
+      setActiveImports([comp]);
+      setValue(result.code);
+      const ok = await runCodeSync(result.code);
+      if (!ok) return { error: `Failed to apply ${result.label}` };
+      let geoData = getGeometryDataObj();
+      let carried = 0;
+      if (colorMesh && currentMeshData && geoData) {
+        const { regions, transferredTris } = buildCarriedColorRegions(colorMesh, colorMesh.triColors!, currentMeshData);
+        if (regions.length > 0) {
+          rehydrateColorRegions({ ...geoData, colorRegions: regions });
+          carried = transferredTris;
+          geoData = enrichGeometryDataWithColors(getGeometryDataObj());
+        }
+      }
+      const thumbnail = await captureThumbnail();
+      await saveVersion(result.code, geoData, thumbnail, result.label, undefined, {
+        force: true,
+        importedMeshes: [comp],
+      });
+      return { ok: true, label: result.label, geometry: getGeometryDataObj(), colorsCarried: carried };
+    }
+    // Voxel result: a self-contained `voxels.decode(...)` program, no imports.
+    // Color (when preserved) is baked into the grid at voxelize time, so it
+    // rides the emitted code — nothing extra to persist here.
+    if (getActiveLanguage() !== 'voxel') await switchLanguage('voxel');
+    setActiveImports([]);
+    setValue(result.code);
+    const ok = await runCodeSync(result.code);
+    if (!ok) return { error: `Failed to apply ${result.label}` };
+    const thumbnail = await captureThumbnail();
+    await saveVersion(result.code, getGeometryDataObj(), thumbnail, result.label, undefined, { force: true });
+    return { ok: true, label: result.label, geometry: getGeometryDataObj() };
+  }
+
+  // Build a modifier result from an id + options (shared by apply and preview).
+  // All three modifiers receive the color-baked mesh when preserveColor is on:
+  // fuzzy/smooth carry triColors (with _painted) through subdivision so the
+  // result already has correct per-triangle paint — no post-hoc transfer needed.
+  function buildSurfaceModifier(
+    id: 'fuzzy' | 'smooth' | 'voxelize',
+    opts: Record<string, unknown> | undefined,
+    preserveColor: boolean,
+  ): ModifierResult {
+    if (id === 'fuzzy') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultFuzzyOptions(mesh);
+      return applyFuzzy(mesh, {
+        amplitude: (opts?.amplitude as number) ?? base.amplitude,
+        scale: (opts?.scale as number) ?? base.scale,
+        octaves: (opts?.octaves as number) ?? base.octaves,
+        seed: (opts?.seed as number) ?? base.seed,
+      });
+    }
+    if (id === 'smooth') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultSmoothOptions();
+      return applySmooth(mesh, {
+        iterations: (opts?.iterations as number) ?? base.iterations,
+        subdivide: (opts?.subdivide as boolean) ?? base.subdivide,
+      });
+    }
+    // voxelize: feed the color-baked mesh when preserving so per-voxel color is sampled.
+    return applyVoxelize(meshForModifier(preserveColor), {
+      resolution: (opts?.resolution as number) ?? 32,
+      smooth: (opts?.smooth as boolean) ?? false,
+    });
+  }
+
   // === Expose window.partwright console API ===
   const partwrightAPI = {
+    /** Whether the current model carries paint (so the UI can warn before a
+     *  color-clearing modifier, or offer "preserve colors"). */
+    modelHasColor(): boolean { return modelHasColor(); },
+    /** Non-destructive viewport preview of a surface modifier (no version saved).
+     *  Call clearSurfacePreview() / re-run to restore. id: 'fuzzy'|'smooth'|'voxelize'. */
+    previewSurfaceModifier(id: 'fuzzy' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
+      try {
+        previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor), preserveColor);
+        return { ok: true };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Discard a live surface preview and restore the current model's mesh. */
+    clearSurfacePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
+    /** Apply a fuzzy-skin surface texture to the current model; saves a new version.
+     *  `preserveColor` (default true) re-resolves paint regions onto the new mesh. */
+    async applyFuzzySkin(opts?: { amplitude?: number; scale?: number; octaves?: number; seed?: number; preserveColor?: boolean }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('fuzzy', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Smooth/round the current model (Taubin λ/μ); saves a new version. */
+    async smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('smooth', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Voxelize the current model into the voxel engine; saves a new version. */
+    async voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('voxelize', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
     /** Run code string and update all views. Returns geometry data object. */
     async run(code?: string): Promise<Record<string, unknown>> {
       assertString(code, 'run(code)', { optional: true, allowEmpty: false });
@@ -4752,14 +5755,24 @@ async function main() {
       if (!applied) {
         return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
       }
-      return JSON.parse(geometryDataEl.textContent || '{}');
+      const geo = JSON.parse(geometryDataEl.textContent || '{}');
+      return { ...geo, printability: computePrintability(geo) };
     },
 
     /** Get current geometry stats without re-running */
     getGeometryData(): Record<string, unknown> {
-      const geo = JSON.parse(geometryDataEl.textContent || '{}');
+      const geo = JSON.parse(geometryDataEl.textContent || '{}') as Record<string, unknown>;
       const warnings = geometryWarnings(geo);
-      return warnings.length > 0 ? { ...geo, warnings } : geo;
+      // Flag stale results: setCode() doesn't re-run, so the cached geometry may
+      // reflect a previous version of the code. Callers should run or runAndSave
+      // before relying on component counts or other stats.
+      const stale = typeof geo.codeHash === 'string' && simpleHash(getValue()) !== geo.codeHash;
+      return {
+        ...geo,
+        printability: computePrintability(geo),
+        ...(stale ? { stale: true } : {}),
+        ...(warnings.length > 0 ? { warnings } : {}),
+      };
     },
 
     /** Get current editor code */
@@ -4830,26 +5843,30 @@ async function main() {
     /** Export current model as GLB download. Optional filename override. */
     async exportGLB(filename?: string) {
       assertString(filename, 'exportGLB(filename)', { optional: true });
-      if (currentMeshData) assertFiniteMesh(currentMeshData);
-      await exportGLB(filename);
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      assertFiniteMesh(currentMeshData);
+      await exportGLB(filename, coloredMeshForExport(currentMeshData));
     },
 
     /** Export current model as STL download. Optional filename override. */
     exportSTL(filename?: string) {
       assertString(filename, 'exportSTL(filename)', { optional: true });
-      if (currentMeshData) exportSTL(currentMeshData, filename);
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      exportSTL(currentMeshData, filename);
     },
 
     /** Export current model as OBJ download. Optional filename override. */
     exportOBJ(filename?: string) {
       assertString(filename, 'exportOBJ(filename)', { optional: true });
-      if (currentMeshData) exportOBJ((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData, filename);
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      exportOBJ(coloredMeshForExport(currentMeshData), filename);
     },
 
     /** Export current model as 3MF download. Optional filename override. */
     export3MF(filename?: string) {
       assertString(filename, 'export3MF(filename)', { optional: true });
-      if (currentMeshData) export3MF((hasColorRegions() || hasModelColorRegions()) ? applyTriColors(currentMeshData) : currentMeshData, filename);
+      if (!currentMeshData) return { error: 'No geometry loaded' };
+      export3MF(coloredMeshForExport(currentMeshData), filename);
     },
 
     /** Export the current voxel grid as a MagicaVoxel `.vox` download. Voxel
@@ -4874,22 +5891,21 @@ async function main() {
     async exportSTEP(filename?: string) {
       assertString(filename, 'exportSTEP(filename)', { optional: true });
       try {
+        // The retained shape is cleared on session/language change; guard the
+        // active language too so a stale shape can never be served outside a
+        // replicad session.
+        if (getActiveLanguage() !== 'replicad') {
+          return { ok: false as const, error: 'No BREP shape available. STEP export requires BREP mode — switch with setActiveLanguage("replicad") and run a model first.' };
+        }
         const blob = await exportLastBrepAsSTEP();
         if (!blob) {
           return { ok: false as const, error: 'No BREP shape available. Switch to BREP language (setActiveLanguage("replicad")) and run a model first.' };
         }
-        const state = getState();
-        const base = state.session?.name ?? 'model';
-        const versionLabel = state.currentVersion?.label;
-        const name = filename ?? `${base}${versionLabel ? '_' + versionLabel : ''}.step`;
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = name;
-        a.click();
-        // Revoke after a tick so Safari/older browsers actually finish the
-        // download. Matches the pattern used by exportGLB/exportSTL.
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        // Route through the shared download helper so STEP gets the standard
+        // filename convention, unified revoke, and a Recent Exports entry like
+        // every other format.
+        const name = getExportFilename('step', filename);
+        downloadBlob(blob, name, 'STEP');
         return { ok: true as const, filename: name, sizeBytes: blob.size };
       } catch (e) {
         return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
@@ -5078,8 +6094,11 @@ async function main() {
      *  per-column height from pixel brightness (with an optional `baseThickness`
      *  backing, and `invert` to raise dark areas). `colorMode` keeps the
      *  original color, converts to `grayscale`, or paints a single `flatColor`.
-     *  Transparent pixels below `alphaThreshold` drop out. Returns
-     *  `{ sessionId, voxelCount }` or `{ error }`. */
+     *  Transparent pixels below `alphaThreshold` drop out. `palette` (an array
+     *  of `[r,g,b]` triples) snaps each `original`-mode pixel to its nearest
+     *  entry (overrides `posterizeColors`); `codeStyle: 'calls'` emits editable
+     *  `v.fillBox(...)` builder code instead of the compact `voxels.decode(...)`
+     *  blob. Returns `{ sessionId, voxelCount }` or `{ error }`. */
     async importImageAsVoxels(imageUrl: string, opts: ImageToVoxelOptions = {}) {
       const check = guard(() => {
         assertString(imageUrl, 'importImageAsVoxels(imageUrl)', { allowEmpty: false });
@@ -5101,6 +6120,14 @@ async function main() {
         if (opts.contrast !== undefined) assertNumber(opts.contrast, 'importImageAsVoxels(opts.contrast)', { min: -1, max: 1 });
         if (opts.saturation !== undefined) assertNumber(opts.saturation, 'importImageAsVoxels(opts.saturation)', { min: -1, max: 1 });
         if (opts.posterizeColors !== undefined) assertNumber(opts.posterizeColors, 'importImageAsVoxels(opts.posterizeColors)', { min: 0, integer: true });
+        if (opts.palette !== undefined && opts.palette !== null) {
+          if (!Array.isArray(opts.palette)) throw new Error('importImageAsVoxels(opts.palette) must be an array of [r,g,b] triples');
+          opts.palette.forEach((c, i) => {
+            const t = assertNumberTuple(c, 3, `importImageAsVoxels(opts.palette[${i}])`);
+            t.forEach((n, j) => assertNumber(n, `importImageAsVoxels(opts.palette[${i}][${j}])`, { min: 0, max: 255, integer: true }));
+          });
+        }
+        if (opts.codeStyle !== undefined) assertEnum(opts.codeStyle, ['decode', 'calls'], 'importImageAsVoxels(opts.codeStyle)');
         if (opts.removeBackground !== undefined) assertBoolean(opts.removeBackground, 'importImageAsVoxels(opts.removeBackground)');
         if (opts.backgroundColor !== undefined) {
           const c = assertNumberTuple(opts.backgroundColor, 3, 'importImageAsVoxels(opts.backgroundColor)');
@@ -5116,7 +6143,7 @@ async function main() {
       }
       const grid = imageDataToVoxelGrid(imageData, opts);
       if (grid.size === 0) return { error: 'importImageAsVoxels: image produced no voxels (every sampled pixel was transparent).' };
-      const code = generateVoxelImportCode(grid, 'image');
+      const code = generateVoxelImportCode(grid, 'image', { style: opts.codeStyle });
       const result = await importCodePayload(code, 'voxel', 'image-voxels');
       return { sessionId: result.sessionId, voxelCount: grid.size };
     },
@@ -6060,9 +7087,11 @@ async function main() {
       const lostLabels = currentLostLabels && currentLostLabels.length > 0
         ? [...currentLostLabels]
         : undefined;
+      const printability = computePrintability(newGeoData);
       return {
         ...(assertions ? { passed: true } : {}),
         geometry: newGeoData,
+        printability,
         version: version ? { id: version.id, index: version.index, label: version.label } : null,
         diff,
         galleryUrl: getGalleryUrl(),
@@ -6371,7 +7400,10 @@ async function main() {
       let warning: string | null = null;
       const session = await importSession(
         data,
-        async (code: string) => {
+        async (code: string, importedMeshes) => {
+          // Seed this version's imported meshes so `api.imports[0]` resolves to
+          // its own geometry when regenerating the thumbnail (else a stale part).
+          setActiveImports(importedMeshes ?? []);
           await runCodeSync(code);
           return captureThumbnail();
         },
@@ -6681,8 +7713,13 @@ async function main() {
         } catch { /* ignore */ }
       }
 
-      // Include current stats for convenience
-      result.stats = JSON.parse(geometryDataEl.textContent || '{}');
+      // Include current stats for convenience, with a stale flag when the editor
+      // code doesn't match the last-executed code (setCode was called without run).
+      const rawStats = JSON.parse(geometryDataEl.textContent || '{}') as Record<string, unknown>;
+      const stale = typeof rawStats.codeHash === 'string' && simpleHash(getValue()) !== rawStats.codeHash;
+      if (stale) rawStats.stale = true;
+      result.stats = rawStats;
+      if (stale) result.stale = true;
 
       return result;
     },
@@ -9124,6 +10161,9 @@ async function main() {
   apiWindow.partwright = partwrightAPI;
   apiWindow.mainifold = partwrightAPI;
 
+  // Surface modifiers UI (viewport ✦ Surface button + command-palette entries).
+  initSurfaceUI(partwrightAPI as unknown as Parameters<typeof initSurfaceUI>[0]);
+
   // Log API availability for AI agents
   console.info('Partwright: AI agents should use window.partwright -- start with partwright.help(). window.mainifold remains as a legacy alias. See /llms.txt');
 
@@ -9667,27 +10707,41 @@ async function main() {
     }
     if (typeof geo.componentCount === 'number' && geo.componentCount > 1) {
       const cc = geo.componentCount;
-      // Partwright exists to produce printable parts, so a multi-component
-      // result is almost always a failed union rather than a deliberate
-      // assembly. Frame it as a print defect and point at the exact tool that
-      // diagnoses it, instead of inviting the model to shrug it off.
-      let msg =
-        `componentCount: ${cc} — the model is ${cc} disconnected solids. ` +
-        `For 3D printing that means ${cc} separate pieces: any part not connected ` +
-        `to the main body floats free and will detach (or print in mid-air). ` +
-        `Unless you deliberately intend a multi-part assembly, the pieces must ` +
-        `volumetrically OVERLAP by ≥ 0.5 units to fuse into one solid — a shared ` +
-        `face or a point/edge touch is NOT enough.`;
-      msg += isBrep
-        ? ' In BREP this bites often: OCCT leaves non-overlapping or thinly-touching ' +
-          'shapes as a disconnected compound even after fuse / fuseAll (e.g. a thin ' +
-          'annular sliver of overlap frequently fails to bond). Call ' +
-          'runAndExplain(code) to list every component with a per-floater overlap ' +
-          'suggestion, then seat the piece a few units deeper into its neighbour and ' +
-          're-run until componentCount is 1.'
-        : ' Call runAndExplain(code) to see which pieces are disconnected and get a ' +
-          'concrete .translate() overlap suggestion for each floater.';
-      warnings.push(msg);
+      const enclosed = typeof geo.containedComponents === 'number' ? geo.containedComponents : 0;
+      const floating = cc - enclosed;
+      // Only warn about true floaters — fully-enclosed interior components (e.g.
+      // sealed voids inside voxel shells) won't detach in print and shouldn't
+      // block a single-piece assertion.
+      if (floating > 1) {
+        // Partwright exists to produce printable parts, so a multi-component
+        // result is almost always a failed union rather than a deliberate
+        // assembly. Frame it as a print defect and point at the exact tool that
+        // diagnoses it, instead of inviting the model to shrug it off.
+        let msg =
+          `componentCount: ${cc}${enclosed > 0 ? ` (${enclosed} enclosed interior void${enclosed > 1 ? 's' : ''} excluded)` : ''} — ` +
+          `the model has ${floating} disconnected solid${floating > 1 ? 's' : ''}. ` +
+          `For 3D printing that means ${floating} separate piece${floating > 1 ? 's' : ''}: any part not connected ` +
+          `to the main body floats free and will detach (or print in mid-air). ` +
+          `Unless you deliberately intend a multi-part assembly, the pieces must ` +
+          `volumetrically OVERLAP by ≥ 0.5 units to fuse into one solid — a shared ` +
+          `face or a point/edge touch is NOT enough.`;
+        msg += isBrep
+          ? ' In BREP this bites often: OCCT leaves non-overlapping or thinly-touching ' +
+            'shapes as a disconnected compound even after fuse / fuseAll (e.g. a thin ' +
+            'annular sliver of overlap frequently fails to bond). Call ' +
+            'runAndExplain(code) to list every component with a per-floater overlap ' +
+            'suggestion, then seat the piece a few units deeper into its neighbour and ' +
+            're-run until componentCount is 1.'
+          : ' Call runAndExplain(code) to see which pieces are disconnected and get a ' +
+            'concrete .translate() overlap suggestion for each floater.';
+        warnings.push(msg);
+      } else if (enclosed > 0) {
+        // All extra components are sealed interior voids — informational only
+        warnings.push(
+          `componentCount: ${cc} — ${enclosed} component${enclosed > 1 ? 's are' : ' is'} a sealed interior void fully enclosed within another solid. ` +
+          `These won't detach in print. Call runAndExplain(code) to inspect each component individually.`,
+        );
+      }
     }
     // Surface color regions that no longer resolve to any triangles on
     // the freshly-run mesh — descriptors are still serialized (so the
@@ -9806,6 +10860,7 @@ async function main() {
     if (result.error) {
       const diagnostics = result.diagnostics ?? [];
       setStatus(statusBar, 'error', summarizeDiagnostics(result.error, diagnostics));
+      if (printabilityIndicatorEl) printabilityIndicatorEl.style.display = 'none';
       geometryDataEl.textContent = JSON.stringify({
         status: 'error',
         error: result.error,
@@ -9860,7 +10915,16 @@ async function main() {
         currentManifold = null;
       } else {
         const mod = getModule();
-        currentManifold = (mod && result.mesh) ? mod.Manifold.ofMesh(result.mesh) : null;
+        // SCAD / replicad engines deliberately tolerate non-watertight output
+        // and return it as a raw mesh — ofMesh() throws "Not manifold" on
+        // those. Treat a failed reconstruction as render-only (parity with the
+        // renderOnly branch and the import flow) rather than letting the run
+        // handler blow up.
+        try {
+          currentManifold = (mod && result.mesh) ? mod.Manifold.ofMesh(result.mesh) : null;
+        } catch {
+          currentManifold = null;
+        }
       }
       // Capture the labelled-construction map for this run. byLabel
       // region descriptors look up their triangles here; rehydrating a

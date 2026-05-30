@@ -1,9 +1,13 @@
-// Per-browser modeling quality settings. Controls the default circular
+// Per-tab modeling quality settings. Controls the default circular
 // segment count applied to every Manifold / OpenSCAD run. Scripts can
 // still override per-call (segment arg to sphere/cylinder/etc., or an
 // explicit setCircularSegments() / $fn assignment) — this is just the
 // starting default that primitives fall back to when no override is
-// given. Persisted to localStorage as one JSON blob.
+// given. Persisted per-tab (with a shared seed for fresh tabs) so changing
+// quality in one window doesn't silently re-render another open window's model
+// at a different segment count.
+
+import { readPerTabPref, writePerTabPref } from '../storage/perTabPref';
 
 const STORAGE_KEY = 'partwright-quality-settings-v1';
 
@@ -57,13 +61,11 @@ const listeners = new Set<(s: QualitySettings) => void>();
 
 export function loadQualitySettings(): QualitySettings {
   if (cached) return cached;
-  // localStorage is unavailable in Worker context; use defaults.
-  if (typeof localStorage === 'undefined') {
-    cached = { ...DEFAULT_SETTINGS };
-    return cached;
-  }
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    // Per-tab value (sessionStorage) with a fresh-tab seed (localStorage). Both
+    // are unavailable in the Worker context; readPerTabPref returns null there
+    // and we fall back to defaults.
+    const raw = readPerTabPref(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<QualitySettings>;
       cached = mergeWithDefaults(parsed);
@@ -78,12 +80,7 @@ export function loadQualitySettings(): QualitySettings {
 
 export function saveQualitySettings(next: QualitySettings): void {
   cached = next;
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // localStorage may be full or disabled (private browsing). Settings
-    // remain applied for this session; we don't surface the failure.
-  }
+  writePerTabPref(STORAGE_KEY, JSON.stringify(next));
   for (const fn of listeners) fn(next);
 }
 

@@ -74,10 +74,50 @@ export function computeGeometryStats(
     : null;
 
   let componentCount = 1;
+  let containedComponents = 0;
   if (manifold) {
     try {
       const parts = manifold.decompose();
       componentCount = parts.length;
+      if (parts.length > 1) {
+        // Identify enclosed components (fully inside another solid, or negative-volume
+        // artifacts). These won't detach in print and shouldn't trip floater warnings.
+        // The two fast pre-filters (volume comparison + bbox containment) reject the
+        // vast majority of pairs cheaply, so the expensive WASM intersect() call is
+        // only reached for plausible containment candidates — safe without a count cap.
+        interface PartInfo { vol: number; bb: { min: number[]; max: number[] } | null; m: Manifold }
+        const infos: PartInfo[] = parts.map((p: Manifold) => {
+          const bb = getBoundingBox(p);
+          const vol = (() => { try { return p.volume() as number; } catch { return 0; } })();
+          return { vol, bb, m: p };
+        });
+        for (let j = 0; j < infos.length; j++) {
+          const smaller = infos[j];
+          if (smaller.vol <= 0) { containedComponents++; continue; }
+          for (let i = 0; i < infos.length; i++) {
+            if (i === j) continue;
+            const larger = infos[i];
+            if (larger.vol <= smaller.vol || !larger.bb || !smaller.bb) continue;
+            // Fast bbox filter: smaller must fit inside larger's bbox
+            let inside = true;
+            for (let ax = 0; ax < 3 && inside; ax++) {
+              if (smaller.bb.min[ax] < larger.bb.min[ax] - 0.01 ||
+                  smaller.bb.max[ax] > larger.bb.max[ax] + 0.01) inside = false;
+            }
+            if (!inside) continue;
+            // Precise check: intersection volume ≈ smaller's volume → fully enclosed
+            try {
+              const ix = larger.m.intersect(smaller.m);
+              const ixVol = ix.volume() as number;
+              ix.delete();
+              if (Math.abs(ixVol - smaller.vol) <= smaller.vol * 0.05) {
+                containedComponents++;
+                break;
+              }
+            } catch { /* ignore — boolean failed, skip this pair */ }
+          }
+        }
+      }
       for (const p of parts) p.delete();
     } catch {
       // fallback
@@ -135,11 +175,29 @@ export function computeGeometryStats(
     isManifold,
     ...(manifoldStatus ? { manifoldStatus } : {}),
     componentCount,
+    ...(containedComponents > 0 ? { containedComponents } : {}),
     crossSections: quartileSlices,
     unit: getUnits(),
     executionTimeMs: executionTimeMs ?? null,
     codeHash: sourceCode ? simpleHash(sourceCode) : null,
   };
+}
+
+/** Synthesise a printability verdict from existing geometry stats.
+ *  A model is printable when it is a single watertight solid (isManifold + one floating component).
+ *  Fully-enclosed interior components (containedComponents) are excluded — they are sealed voids
+ *  that won't detach in print, matching the logic in geometryWarnings().
+ *  Returns a short structured result the AI agent can check without parsing warning strings. */
+export function computePrintability(geo: Record<string, unknown>): { printable: boolean; issues: string[] } {
+  if (!geo || geo.status !== 'ok') return { printable: false, issues: ['no geometry'] };
+  const issues: string[] = [];
+  if (geo.isManifold === false) issues.push('non-manifold mesh (not watertight)');
+  if (typeof geo.componentCount === 'number' && geo.componentCount > 1) {
+    const enclosed = typeof geo.containedComponents === 'number' ? geo.containedComponents : 0;
+    const floating = geo.componentCount - enclosed;
+    if (floating > 1) issues.push(`${floating} disconnected components`);
+  }
+  return { printable: issues.length === 0, issues };
 }
 
 export function computeStatDiff(prev: Record<string, unknown>, next: Record<string, unknown>): Record<string, unknown> {
@@ -209,8 +267,15 @@ export function checkAssertions(stats: Record<string, unknown>, assertions: Geom
     failures.push(`volume ${v.toFixed(1)} > maxVolume ${assertions.maxVolume}`);
   if (assertions.isManifold !== undefined && im !== assertions.isManifold)
     failures.push(`isManifold is ${im}, expected ${assertions.isManifold}`);
-  if (assertions.maxComponents !== undefined && cc > assertions.maxComponents)
-    failures.push(`componentCount ${cc} > maxComponents ${assertions.maxComponents}`);
+  if (assertions.maxComponents !== undefined) {
+    const enclosed = (stats.containedComponents as number | undefined) ?? 0;
+    const freeFloating = cc - enclosed;
+    if (freeFloating > assertions.maxComponents)
+      failures.push(
+        `componentCount ${cc} > maxComponents ${assertions.maxComponents}` +
+        (enclosed > 0 ? ` (${enclosed} fully-enclosed interior component${enclosed > 1 ? 's' : ''} excluded from check)` : ''),
+      );
+  }
   if (assertions.genus !== undefined && g !== assertions.genus)
     failures.push(`genus ${g} !== expected ${assertions.genus}`);
   if (assertions.minGenus !== undefined && (g === null || g < assertions.minGenus))

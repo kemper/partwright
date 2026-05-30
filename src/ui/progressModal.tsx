@@ -14,15 +14,20 @@
 
 import { render } from 'preact';
 import { signal, type Signal } from '@preact/signals';
+import { getConfig } from '../config/appConfig';
 
-const DEFAULT_SHOW_DELAY_MS = 250;
-let showDelayMs = DEFAULT_SHOW_DELAY_MS;
+// null = use getConfig(); set to non-null by __setProgressModalDelayForTests
+let showDelayMsOverride: number | null = null;
+
+function getShowDelay(): number {
+  return showDelayMsOverride ?? getConfig().ui.progressModalShowDelayMs;
+}
 
 /** Tests override the show delay to 0 so the Cancel button is hittable
  *  without racing the worker. Returns the previous value. */
 export function __setProgressModalDelayForTests(ms: number): number {
-  const prev = showDelayMs;
-  showDelayMs = Math.max(0, ms | 0);
+  const prev = getShowDelay();
+  showDelayMsOverride = Math.max(0, ms | 0);
   return prev;
 }
 
@@ -158,13 +163,13 @@ export function startProgress(opts: {
     showTimer = null;
   }
 
-  if (showDelayMs <= 0) {
+  if (getShowDelay() <= 0) {
     showModalNow();
   } else {
     showTimer = window.setTimeout(() => {
       showTimer = null;
       if (currentJob && currentJob.id === id) showModalNow();
-    }, showDelayMs);
+    }, getShowDelay());
   }
 
   return id;

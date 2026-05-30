@@ -11,15 +11,12 @@
 // The public surface (onOwnershipChange / acquireSession) is unchanged, so the
 // UI keeps consuming "am I the writer?" the same way.
 
+import { getConfig } from '../config/appConfig';
+
 export interface OwnershipState {
   sessionId: string | null;
   owned: boolean;
 }
-
-const HEARTBEAT_MS = 3000;
-/** A leader is considered dead if its token hasn't been refreshed in this long
- *  (more than two missed heartbeats). */
-const STALE_MS = 8000;
 
 const tabId =
   (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
@@ -70,7 +67,7 @@ function clearOwnToken(sessionId: string): void {
 }
 
 function isStale(tok: LeaderToken | null): boolean {
-  return !tok || Date.now() - tok.ts > STALE_MS;
+  return !tok || Date.now() - tok.ts > getConfig().ui.sessionLockStaleMs;
 }
 
 function emit(): void {
@@ -147,7 +144,7 @@ export function initSessionLeader(): void {
     if (owned && currentSessionId) clearOwnToken(currentSessionId);
   });
 
-  setInterval(tick, HEARTBEAT_MS);
+  setInterval(tick, getConfig().ui.sessionLockHeartbeatMs);
 }
 
 /** Begin coordinating leadership for `sessionId` (or release when null).

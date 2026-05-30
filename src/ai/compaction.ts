@@ -8,6 +8,7 @@
 import { summarize } from './anthropic';
 import { summarize as summarizeOpenai } from './openai';
 import { summarize as summarizeGemini } from './gemini';
+import { summarize as summarizeCustom } from './custom';
 import { summarizeLocal } from './local';
 import { recordEvent } from './diagnostics';
 import { turnCostUsd } from './cost';
@@ -15,12 +16,24 @@ import { getKey } from './db';
 import type { ChatMessage, ChatToggles, Provider } from './types';
 
 /** Per-provider cheap model used for compaction. The big models cost too
- *  much for a summarize call we'll fire after most longer sessions. */
-const COMPACTION_MODEL: Record<Exclude<Provider, 'local'>, string> = {
+ *  much for a summarize call we'll fire after most longer sessions. 'local'
+ *  and 'custom' aren't here: both reuse whatever model the session is already
+ *  on (there's no separate cheap tier to pick), handled as explicit branches
+ *  in proposeCompaction. */
+const COMPACTION_MODEL: Record<Exclude<Provider, 'local' | 'custom'>, string> = {
   anthropic: 'claude-haiku-4-5',
   openai: 'gpt-4o-mini',
   gemini: 'gemini-2.5-flash-lite',
 };
+
+/** Model id used in diagnostics for a compaction call — the cheap-tier model
+ *  for cloud providers, or the session's own model for local/custom (which
+ *  have no separate tier). */
+function compactionModelFor(toggles: ChatToggles): string {
+  if (toggles.provider === 'local') return toggles.localModel ?? '(no model)';
+  if (toggles.provider === 'custom') return toggles.customModel || '(no model)';
+  return COMPACTION_MODEL[toggles.provider];
+}
 
 export interface CompactionProposal {
   /** Plain-text summary of the conversation up to the kept tail. */
@@ -117,6 +130,18 @@ export async function proposeCompaction(
       text = r.text;
       usage = { inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
       costUsd = 0;
+    } else if (ctx.toggles.provider === 'custom') {
+      // Self-hosted OpenAI-compatible endpoint. Reuse the session's own model
+      // (no cheap tier to pick), pass the base URL, and treat the optional
+      // key as empty when absent. Billed at $0, like local.
+      if (!ctx.toggles.customBaseUrl.trim()) throw new Error('Custom endpoint URL required for compaction.');
+      if (!ctx.toggles.customModel.trim()) throw new Error('A model id is required for the custom endpoint.');
+      compactionModel = ctx.toggles.customModel;
+      const key = ctx.apiKey ?? (await getKey('custom'))?.apiKey ?? '';
+      const r = await summarizeCustom(key, compactionModel, COMPACTION_SYSTEM, prompt, ctx.toggles.customBaseUrl);
+      text = r.text;
+      usage = r.usage;
+      costUsd = 0;
     } else {
       const apiKey = ctx.apiKey ?? (await getKey(ctx.toggles.provider))?.apiKey;
       if (!apiKey) throw new Error(`${ctx.toggles.provider} API key required for compaction.`);
@@ -132,7 +157,7 @@ export async function proposeCompaction(
   } catch (err) {
     recordEvent({
       provider: ctx.toggles.provider,
-      model: ctx.toggles.provider === 'local' ? (ctx.toggles.localModel ?? '(no model)') : COMPACTION_MODEL[ctx.toggles.provider],
+      model: compactionModelFor(ctx.toggles),
       kind: 'summarize',
       durationMs: Math.round(performance.now() - t0),
       status: 'error',

@@ -34,10 +34,15 @@ export interface ToolbarCallbacks {
   onShareLink: () => void;
   onExportRawCode: () => void;
   onImportFile: (file: File) => void | Promise<void>;
+  /** Open the "Import from URL…" modal (share link or remote file URL). */
+  onImportFromURL: () => void;
   /** Re-import a blob already held in the inbox (e.g. recent-imports re-click). */
   onImportInboxEntry: (entry: ImportInboxEntry) => void | Promise<void>;
   /** Open the image → keychain / tile / stepped-relief import wizard. */
   onCreateRelief: () => void;
+  /** Open the image → voxel import modal (modal-first; the user picks the image
+   *  inside). */
+  onCreateVoxel: () => void;
   onLanguageSwitch: (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => void;
   /** "?" link next to the language toggle — opens a modal explaining
    *  what each engine is best for. */
@@ -97,10 +102,11 @@ export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
   if (toolbarBtn) toolbarBtn.title = title;
 }
 
-/** File extensions accepted by the Import button and drag-and-drop. */
-export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp,.vox,.png,.jpg,.jpeg,.gif,.webp,.bmp';
-/** Raster image types accepted by the dedicated "Image → voxel" picker. */
-export const IMAGE_ACCEPT = '.png,.jpg,.jpeg,.gif,.webp,.bmp';
+/** File extensions accepted by the Import button and drag-and-drop. Kept in
+ *  sync with `classifyImportSource` (src/import/importInbox.ts) — every type
+ *  the classifier recognizes should be selectable here. `.svg` opens the
+ *  Relief Studio wizard; `.avif` is treated as a raster image. */
+export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp,.vox,.svg,.png,.jpg,.jpeg,.gif,.webp,.bmp,.avif';
 
 let _autoRun = true;
 let _onAutoRunChange: ((on: boolean) => void) | null = null;
@@ -330,6 +336,16 @@ export function createToolbar(
   });
   importDropdown.appendChild(chooseFileOpt);
 
+  const fromUrlOpt = createDescribedItem(
+    'Import from URL…',
+    'Paste a Partwright share link, or an http(s) link to a session, mesh, or image file.',
+  );
+  fromUrlOpt.addEventListener('click', () => {
+    importDropdown.classList.add('hidden');
+    callbacks.onImportFromURL();
+  });
+  importDropdown.appendChild(fromUrlOpt);
+
   importDropdown.appendChild(createDivider());
   importDropdown.appendChild(createSectionHeader('Create'));
   const reliefOpt = createDescribedItem(
@@ -348,12 +364,11 @@ export function createToolbar(
   );
   imageVoxelOpt.addEventListener('click', () => {
     importDropdown.classList.add('hidden');
-    // Reuse the single import file input (a second one would break the
-    // `#import-wrapper input[type=file]` selector other tests rely on), just
-    // narrowed to raster images for this row. The change handler routes the
-    // picked image into the voxel-import modal via onImportFile.
-    importInput.accept = IMAGE_ACCEPT;
-    importInput.click();
+    // Modal-first (like the relief row): open the voxel import modal and let the
+    // user pick the image inside it, rather than launching the OS file picker
+    // straight away. Drag-and-drop and the "Choose file…" row still route raster
+    // images here via onImportFile.
+    callbacks.onCreateVoxel();
   });
   importDropdown.appendChild(imageVoxelOpt);
 

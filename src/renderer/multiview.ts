@@ -4,6 +4,7 @@ import type { MeshData } from '../geometry/types';
 import { buildStrokesGroup, disposeStrokesGroup } from '../annotations/annotationOverlay';
 import { presetIndex } from '../storage/db';
 import { CREASE_ANGLE_DEG, resolveEdgeMode, type EdgeMode } from './edgeMode';
+import { getConfig } from '../config/appConfig';
 export { EDGE_MODES, type EdgeMode } from './edgeMode';
 
 /** Composite-render angle sets accepted by `partwright.renderViews`.
@@ -41,10 +42,10 @@ interface ViewConfig {
 
 // 4 isometric angles from alternating cube corners — every face visible in 3+ views
 const VIEWS: ViewConfig[] = [
-  { name: 'Upper Front-Right', position: (d) => [d, -d, d],     up: [0, 0, 1] },
-  { name: 'Upper Back-Left',   position: (d) => [-d, d, d],     up: [0, 0, 1] },
-  { name: 'Under Front-Left',  position: (d) => [-d, -d, -d],   up: [0, 0, 1] },
-  { name: 'Under Back-Right',  position: (d) => [d, d, -d],     up: [0, 0, 1] },
+  { name: 'Upper Front-Right', position: (d) => [d, d, d],     up: [0, 0, 1] },
+  { name: 'Upper Back-Left',   position: (d) => [-d, -d, d],   up: [0, 0, 1] },
+  { name: 'Under Front-Left',  position: (d) => [-d, d, -d],   up: [0, 0, 1] },
+  { name: 'Under Back-Right',  position: (d) => [d, -d, -d],   up: [0, 0, 1] },
 ];
 
 function meshDataToGeometry(meshData: MeshData): THREE.BufferGeometry {
@@ -115,7 +116,6 @@ let offRendererDisposeTimer: ReturnType<typeof setTimeout> | null = null;
 // at ~16 live WebGL contexts. We dispose the offscreen renderer after a short
 // idle window so GPU memory is reclaimed between user actions; the lazy branch
 // in getOffscreenRenderer re-creates it on the next render.
-const OFFSCREEN_IDLE_DISPOSE_MS = 10_000;
 
 function disposeOffscreenRenderer(): void {
   if (!offRenderer) return;
@@ -131,7 +131,7 @@ function scheduleOffscreenDispose(): void {
   offRendererDisposeTimer = setTimeout(() => {
     offRendererDisposeTimer = null;
     disposeOffscreenRenderer();
-  }, OFFSCREEN_IDLE_DISPOSE_MS);
+  }, getConfig().renderer.offscreenIdleDisposeMs);
 }
 
 function getOffscreenRenderer(size: number): THREE.WebGLRenderer {
@@ -322,7 +322,7 @@ function createElevationScene(geometry: THREE.BufferGeometry, bgColor: number, e
 /** Render a single view from any camera angle. Returns a data URL (PNG).
  *  For orthographic views, pass ortho: true.
  *  elevation/azimuth are in degrees: elevation 0 = horizon, 90 = top-down.
- *  azimuth 0 = front (-Y), 90 = right (+X), 180 = back (+Y), 270 = left (-X). */
+ *  azimuth 0 = front (+Y), 90 = right (+X), 180 = back (-Y), 270 = left (-X). */
 /** Build the same THREE.Camera that `renderSingleView` would render
  *  through for these options. Exported so `probePixel` (in
  *  geometry/rayCast.ts) can replay the camera exactly and unproject
@@ -358,7 +358,7 @@ export function buildViewCamera(meshData: MeshData, options: {
 
   // Spherical to cartesian (Z-up)
   const cx = dist * Math.cos(elevation) * Math.sin(azimuth);
-  const cy = dist * Math.cos(elevation) * (-Math.cos(azimuth));
+  const cy = dist * Math.cos(elevation) * Math.cos(azimuth);
   const cz = dist * Math.sin(elevation);
 
   let camera: THREE.Camera;

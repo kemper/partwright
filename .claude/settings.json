@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__github__merge_pull_request|mcp__github__update_pull_request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -c 'if (.tool_name == \"mcp__github__merge_pull_request\") or (.tool_name == \"mcp__github__update_pull_request\" and .tool_input.state == \"closed\") then {hookSpecificOutput: {hookEventName: \"PreToolUse\", permissionDecision: \"ask\", permissionDecisionReason: \"Closing or merging a PR is irreversible and outward-facing. Confirm this was explicitly requested and is not a batched or speculative action.\"}} else empty end'",
+            "statusMessage": "Checking PR safety guard…"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -8,12 +8,13 @@
 import { streamTurn as anthropicStreamTurn, buildApiMessages } from './anthropic';
 import { streamTurn as openaiStreamTurn } from './openai';
 import { streamTurn as geminiStreamTurn } from './gemini';
+import { streamTurn as customStreamTurn } from './custom';
 import { streamLocalTurn } from './local';
 import { turnCostUsd } from './cost';
 import { recordEvent } from './diagnostics';
 import { generateId } from '../storage/db';
 import { putMessages, getKey } from './db';
-import { providerLabel } from './settings';
+import { loadSettings, providerLabel } from './settings';
 import { captureIsoViews } from './images';
 import type {
   ChatBlock,
@@ -143,6 +144,24 @@ export async function runReview(
         tools: [],
         // See the Anthropic branch: Gemini's 32768 default is what keeps a
         // Pro/2.5 thinking reviewer from spending the ceiling on reasoning.
+      });
+      text = r.text;
+      usage = r.usage;
+    } else if (req.provider === 'custom') {
+      // Self-hosted OpenAI-compatible endpoint as the reviewer. Base URL
+      // comes from settings (the same endpoint the chat uses); the key is
+      // optional. The Chat Completions transport is reused via custom.ts.
+      const baseUrl = loadSettings().toggles.customBaseUrl;
+      if (!baseUrl.trim()) throw new Error('Custom endpoint URL required for review. Set it in AI Settings → Custom.');
+      const key = req.apiKey ?? (await getKey('custom'))?.apiKey ?? '';
+      const r = await customStreamTurn({
+        apiKey: key,
+        baseUrl,
+        model: req.model,
+        systemPrompt: REVIEW_SYSTEM,
+        systemSuffix: '',
+        history: [ephemeral],
+        tools: [],
       });
       text = r.text;
       usage = r.usage;

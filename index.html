@@ -112,6 +112,11 @@
   <meta name="theme-color" content="#18181b" />
   <link rel="manifest" href="/manifest.json" />
   <link rel="stylesheet" href="/src/style.css" />
+  <!-- Preload landing-page fonts so they're ready before the JS handoff -->
+  <link rel="preload" href="/fonts/spacegrotesk-400.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/spacegrotesk-600.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/sora-700.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/sora-800.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
   <link rel="ai-instructions" href="ai.md" type="text/markdown" />
   <meta name="ai-instructions" content="See /llms.txt" />
 </head>
@@ -133,24 +138,250 @@
         <p style="font-size:15px;line-height:1.6;color:#d4d4d8;margin:0 0 16px;">Describe a part, get a printable 3D model. Partwright is a browser-based parametric CAD tool with a programmatic API designed for AI agents — no signup, no installs, powered by manifold-3d.</p>
         <p style="font-size:15px;line-height:1.6;color:#d4d4d8;margin:0 0 24px;">This app requires JavaScript. Please enable it to load the editor.</p>
         <ul style="font-size:14px;color:#a1a1aa;line-height:1.8;padding-left:20px;">
-          <li><a href="/editor" style="color:#60a5fa;">Open the editor</a></li>
-          <li><a href="/catalog" style="color:#60a5fa;">Browse the catalog</a></li>
-          <li><a href="/help" style="color:#60a5fa;">How it works</a></li>
-          <li><a href="/ai.md" style="color:#60a5fa;">AI agent instructions</a></li>
+          <li><a href="/editor" style="color:#f59e0b;">Open the editor</a></li>
+          <li><a href="/catalog" style="color:#f59e0b;">Browse the catalog</a></li>
+          <li><a href="/help" style="color:#f59e0b;">How it works</a></li>
+          <li><a href="/ai.md" style="color:#f59e0b;">AI agent instructions</a></li>
         </ul>
       </div>
     </div>
   </noscript>
 
-  <div id="app" class="flex flex-col h-screen w-screen">
-    <!-- Splash screen — visible until JS mounts, then removed -->
-    <div id="loading-splash" style="display:flex;align-items:center;justify-content:center;flex-direction:column;height:100vh;width:100vw;background:#18181b;gap:24px">
-      <div style="font-family:system-ui,-apple-system,sans-serif;font-size:28px;font-weight:700;color:#fafafa;letter-spacing:-0.5px">Partwright</div>
-      <div style="width:24px;height:24px;border:2.5px solid #3f3f46;border-top-color:#60a5fa;border-radius:50%;animation:splash-spin .8s linear infinite"></div>
-      <style>@keyframes splash-spin{to{transform:rotate(360deg)}}</style>
+  <!-- Inline landing page — rendered immediately on / before any JS loads.
+       Removed by main.ts once the JS-built landing page is ready.
+       Hidden by the sync script below on all non-landing routes. -->
+  <div id="landing-inline" style="position:fixed;inset:0;z-index:50;overflow-y:auto;background:#18181b;color:#fafafa;font-family:'Space Grotesk',system-ui,-apple-system,sans-serif">
+    <style>
+      #li-hero{display:grid;grid-template-columns:1fr 1.1fr;gap:48px;align-items:center}
+      @media(max-width:767px){#li-hero{grid-template-columns:1fr}#li-frame,#li-nav-links{display:none!important}}
+      @keyframes li-pulse{0%,100%{opacity:1}50%{opacity:.45}}
+      .li-sk{animation:li-pulse 2s ease-in-out infinite}
+      /* Match JS landing: text-5xl (3rem) below md, text-6xl (3.75rem) at md+ */
+      #li-h1{font-size:3rem}
+      @media(min-width:768px){#li-h1{font-size:3.75rem}}
+    </style>
+    <div style="display:flex;flex-direction:column;align-items:center;min-height:100%">
+
+      <!-- Nav -->
+      <header style="width:100%;max-width:72rem;padding:20px 24px;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box">
+        <div style="display:flex;align-items:center;gap:10px">
+          <svg width="30" height="30" viewBox="0 0 104 104" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+              <linearGradient id="li-tile" x1="0" y1="0" x2="104" y2="104" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1c1408"/><stop offset="1" stop-color="#0a0703"/></linearGradient>
+              <clipPath id="li-clip"><rect x="0" y="0" width="104" height="104" rx="24"/></clipPath>
+            </defs>
+            <rect x="0" y="0" width="104" height="104" rx="24" fill="url(#li-tile)"/>
+            <g clip-path="url(#li-clip)"><g transform="translate(4 6) scale(1.5)">
+              <polygon points="24,47 24,53 28,50.6 28,44.6" fill="#b45309"/>
+              <polygon points="18,47 24,47 28,44.6 22,44.6" fill="#fde68a"/>
+              <polygon points="18,47 24,47 24,53 18,53" fill="#f59e0b"/>
+              <polygon points="24,41 24,47 28,44.6 28,38.6" fill="#b45309"/>
+              <polygon points="18,41 24,41 28,38.6 22,38.6" fill="#fde68a"/>
+              <polygon points="18,41 24,41 24,47 18,47" fill="#f59e0b"/>
+              <polygon points="24,35 24,41 28,38.6 28,32.6" fill="#b45309"/>
+              <polygon points="18,35 24,35 28,32.6 22,32.6" fill="#fde68a"/>
+              <polygon points="18,35 24,35 24,41 18,41" fill="#f59e0b"/>
+              <polygon points="24,29 24,35 28,32.6 28,26.6" fill="#b45309"/>
+              <polygon points="18,29 24,29 28,26.6 22,26.6" fill="#fde68a"/>
+              <polygon points="18,29 24,29 24,35 18,35" fill="#f59e0b"/>
+              <polygon points="30,29 30,35 34,32.6 34,26.6" fill="#b45309"/>
+              <polygon points="24,29 30,29 34,26.6 28,26.6" fill="#fde68a"/>
+              <polygon points="24,29 30,29 30,35 24,35" fill="#f59e0b"/>
+              <polygon points="36,29 36,35 40,32.6 40,26.6" fill="#b45309"/>
+              <polygon points="30,29 36,29 40,26.6 34,26.6" fill="#fde68a"/>
+              <polygon points="30,29 36,29 36,35 30,35" fill="#f59e0b"/>
+              <polygon points="42,29 42,35 46,32.6 46,26.6" fill="#b45309"/>
+              <polygon points="36,29 42,29 46,26.6 40,26.6" fill="#fde68a"/>
+              <polygon points="36,29 42,29 42,35 36,35" fill="#f59e0b"/>
+              <polygon points="24,23 24,29 28,26.6 28,20.6" fill="#b45309"/>
+              <polygon points="18,23 24,23 28,20.6 22,20.6" fill="#fde68a"/>
+              <polygon points="18,23 24,23 24,29 18,29" fill="#f59e0b"/>
+              <polygon points="42,23 42,29 46,26.6 46,20.6" fill="#b45309"/>
+              <polygon points="36,23 42,23 46,20.6 40,20.6" fill="#fde68a"/>
+              <polygon points="36,23 42,23 42,29 36,29" fill="#f59e0b"/>
+              <polygon points="24,17 24,23 28,20.6 28,14.6" fill="#b45309"/>
+              <polygon points="18,17 24,17 28,14.6 22,14.6" fill="#fde68a"/>
+              <polygon points="18,17 24,17 24,23 18,23" fill="#f59e0b"/>
+              <polygon points="42,17 42,23 46,20.6 46,14.6" fill="#b45309"/>
+              <polygon points="36,17 42,17 46,14.6 40,14.6" fill="#fde68a"/>
+              <polygon points="36,17 42,17 42,23 36,23" fill="#f59e0b"/>
+              <polygon points="24,11 24,17 28,14.6 28,8.6" fill="#b45309"/>
+              <polygon points="18,11 24,11 28,8.6 22,8.6" fill="#fde68a"/>
+              <polygon points="18,11 24,11 24,17 18,17" fill="#f59e0b"/>
+              <polygon points="30,11 30,17 34,14.6 34,8.6" fill="#b45309"/>
+              <polygon points="24,11 30,11 34,8.6 28,8.6" fill="#fde68a"/>
+              <polygon points="24,11 30,11 30,17 24,17" fill="#f59e0b"/>
+              <polygon points="36,11 36,17 40,14.6 40,8.6" fill="#b45309"/>
+              <polygon points="30,11 36,11 40,8.6 34,8.6" fill="#fde68a"/>
+              <polygon points="30,11 36,11 36,17 30,17" fill="#f59e0b"/>
+              <polygon points="42,11 42,17 46,14.6 46,8.6" fill="#b45309"/>
+              <polygon points="36,11 42,11 46,8.6 40,8.6" fill="#fde68a"/>
+              <polygon points="36,11 42,11 42,17 36,17" fill="#f59e0b"/>
+            </g></g>
+            <rect x="1" y="1" width="102" height="102" rx="23" fill="none" stroke="#f59e0b" stroke-width="1.4" stroke-opacity="0.45"/>
+          </svg>
+          <span style="font-weight:700;font-size:18px;letter-spacing:-0.025em;color:#fafafa;font-family:'Sora',system-ui,sans-serif">Partwright</span>
+        </div>
+        <nav id="li-nav-links" style="display:flex;align-items:center;gap:28px;font-size:14px">
+          <a href="/ideas" style="color:#a1a1aa;text-decoration:none">Ideas</a>
+          <a href="/catalog" style="color:#a1a1aa;text-decoration:none">Catalog</a>
+          <a href="/help" style="color:#a1a1aa;text-decoration:none">How it works</a>
+          <a href="/whats-new" style="color:#a1a1aa;text-decoration:none">What&#39;s new</a>
+        </nav>
+        <div style="display:flex;align-items:center;gap:12px">
+          <a href="/editor" style="padding:8px 16px;border-radius:8px;font-size:14px;font-weight:600;color:#1c1917;text-decoration:none;background:linear-gradient(135deg,#fcd34d,#f59e0b)">Open editor &#8594;</a>
+        </div>
+      </header>
+
+      <!-- Hero -->
+      <section style="position:relative;width:100%;box-sizing:border-box">
+        <div style="position:absolute;inset:0;pointer-events:none;background:radial-gradient(120% 90% at 64% 12%,rgba(245,158,11,.06) 0%,rgba(39,39,42,.30) 34%,transparent 72%)"></div>
+        <div id="li-hero" style="position:relative;z-index:1;max-width:72rem;margin:0 auto;padding:32px 24px 64px;box-sizing:border-box">
+          <!-- Left -->
+          <div>
+            <div style="display:inline-flex;align-items:center;gap:8px;font-size:12px;color:#d4d4d8;background:rgba(255,255,255,0.05);border:1px solid #3f3f46;border-radius:999px;padding:6px 14px;margin-bottom:24px">
+              <span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:#fbbf24">New</span>
+              <span>Voxels, BREP solids &amp; image relief</span>
+              <span style="color:#71717a">&#8594;</span>
+            </div>
+            <h1 id="li-h1" style="font-weight:800;line-height:1.03;letter-spacing:-0.025em;margin:0 0 20px;color:#fafafa;font-family:'Sora',system-ui,sans-serif">
+              Describe a part.<br>Get a <span style="background:linear-gradient(115deg,#fcd34d 8%,#2dd4bf 92%);-webkit-background-clip:text;background-clip:text;color:transparent">printable model.</span>
+            </h1>
+            <p style="font-size:18px;color:#a1a1aa;line-height:1.65;max-width:576px;margin:0 0 28px">
+              A browser-native parametric CAD studio with a programmatic API built for AI agents. Write JavaScript or OpenSCAD, watch it render live, export print-ready GLB / STL / OBJ / 3MF. No signup, no installs.
+            </p>
+            <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:32px">
+              <a href="/editor" style="padding:12px 24px;border-radius:12px;font-size:14px;font-weight:600;color:#1c1917;text-decoration:none;background:linear-gradient(135deg,#fcd34d,#f59e0b)">Open the editor</a>
+              <a href="/editor" style="padding:12px 24px;border-radius:12px;font-size:14px;font-weight:600;color:#f4f4f5;text-decoration:none;background:rgba(255,255,255,0.05);border:1px solid #3f3f46">Take the guided tour</a>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px 28px;font-size:14px;color:#71717a">
+              <span><b style="color:#d4d4d8;font-weight:600">0</b> installs</span>
+              <span><b style="color:#d4d4d8;font-weight:600">4</b> engines</span>
+              <span><b style="color:#d4d4d8;font-weight:600">100%</b> in-browser</span>
+              <span><b style="color:#d4d4d8;font-weight:600">GLB &middot; STL &middot; 3MF</b> export</span>
+            </div>
+          </div>
+          <!-- Right: product frame -->
+          <div id="li-frame" style="border-radius:16px;overflow:hidden;border:1px solid #27272a;background:#0c0c0f;box-shadow:0 40px 110px -40px rgba(0,0,0,.75),0 12px 40px -24px rgba(0,0,0,.7)">
+            <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:#141417;border-bottom:1px solid #27272a">
+              <span style="width:11px;height:11px;border-radius:50%;background:#ef4444;display:inline-block"></span>
+              <span style="width:11px;height:11px;border-radius:50%;background:#f59e0b;display:inline-block"></span>
+              <span style="width:11px;height:11px;border-radius:50%;background:#22c55e;display:inline-block"></span>
+              <span style="margin-left:8px;font-size:12px;color:#52525b;font-family:'JetBrains Mono',ui-monospace,monospace">partwright &middot; mounting-bracket</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1.1fr;height:320px">
+              <div style="padding:16px;font-size:12.5px;line-height:1.7;background:#0a0a0c;border-right:1px solid #1c1c20;overflow:hidden;font-family:'JetBrains Mono',ui-monospace,monospace">
+                <span style="color:#546e7a">// parametric bracket</span><br>
+                <span style="color:#c792ea">const</span> { <span style="color:#89ddff">Manifold</span> } = api;<br><br>
+                <span style="color:#c792ea">const</span> <span style="color:#ffcb6b">base</span> = <span style="color:#89ddff">Manifold</span>.<span style="color:#82aaff">cube</span>([<span style="color:#f78c6c">40</span>,<span style="color:#f78c6c">30</span>,<span style="color:#f78c6c">4</span>], <span style="color:#c792ea">true</span>);<br>
+                <span style="color:#c792ea">const</span> <span style="color:#ffcb6b">wall</span> = <span style="color:#89ddff">Manifold</span>.<span style="color:#82aaff">cube</span>([<span style="color:#f78c6c">40</span>,<span style="color:#f78c6c">4</span>,<span style="color:#f78c6c">24</span>])<br>
+                &nbsp;&nbsp;.<span style="color:#82aaff">translate</span>([<span style="color:#f78c6c">0</span>,<span style="color:#f78c6c">13</span>,<span style="color:#f78c6c">12</span>]);<br>
+                <span style="color:#c792ea">const</span> <span style="color:#ffcb6b">bore</span> = <span style="color:#89ddff">Manifold</span>.<span style="color:#82aaff">cylinder</span>(<span style="color:#f78c6c">10</span>,<span style="color:#f78c6c">4</span>,<span style="color:#f78c6c">4</span>,<span style="color:#f78c6c">48</span>);<br><br>
+                <span style="color:#c792ea">return</span> <span style="color:#ffcb6b">base</span>.<span style="color:#82aaff">add</span>(<span style="color:#ffcb6b">wall</span>)<br>
+                &nbsp;&nbsp;.<span style="color:#82aaff">subtract</span>(<span style="color:#ffcb6b">bore</span>.<span style="color:#82aaff">translate</span>([<span style="color:#f78c6c">0</span>,<span style="color:#f78c6c">0</span>,<span style="color:#f78c6c">4</span>]));
+              </div>
+              <div style="position:relative;display:flex;align-items:center;justify-content:center;background:radial-gradient(120% 90% at 50% 18%,#1a2330 0%,#0d1117 55%,#090b0f 100%)">
+                <span style="position:absolute;top:12px;left:12px;font-size:11px;font-weight:600;color:#34d399;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);border-radius:999px;padding:3px 10px 3px 8px;display:flex;align-items:center;gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:#34d399;display:inline-block"></span>Ready &middot; 1 component</span>
+                <svg width="230" height="230" viewBox="0 0 240 240" aria-hidden="true">
+                  <defs>
+                    <linearGradient id="li-top" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/></linearGradient>
+                    <linearGradient id="li-left" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#115e59"/></linearGradient>
+                    <linearGradient id="li-right" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/></linearGradient>
+                    <radialGradient id="li-floor" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#1f2a38"/><stop offset="1" stop-color="transparent"/></radialGradient>
+                  </defs>
+                  <ellipse cx="120" cy="196" rx="92" ry="26" fill="url(#li-floor)"/>
+                  <polygon points="120,40 208,90 120,140 32,90" fill="url(#li-top)"/>
+                  <polygon points="32,90 120,140 120,196 32,146" fill="url(#li-left)"/>
+                  <polygon points="208,90 120,140 120,196 208,146" fill="url(#li-right)"/>
+                  <ellipse cx="120" cy="90" rx="26" ry="14" fill="#0b3b38"/>
+                  <ellipse cx="120" cy="90" rx="26" ry="14" fill="none" stroke="#0d9488" stroke-width="1.5"/>
+                  <path d="M94 90 a26 14 0 0 0 52 0 l0 14 a26 14 0 0 1 -52 0 z" fill="#072a28"/>
+                  <line x1="120" y1="40" x2="208" y2="90" stroke="#fcd34d" stroke-width="1.5" opacity="0.55"/>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- How it works -->
+      <section style="width:100%;max-width:80rem;padding:48px 24px;border-top:1px solid #27272a;box-sizing:border-box">
+        <p style="text-align:center;font-size:12px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 40px">How it works</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:24px">
+          <div style="background:rgba(39,39,42,0.4);border:1px solid #27272a;border-radius:12px;padding:24px">
+            <div style="font-size:12px;color:#2dd4bf;margin-bottom:12px;font-family:'JetBrains Mono',ui-monospace,monospace">01</div>
+            <h3 style="font-size:15px;font-weight:600;color:#f4f4f5;margin:0 0 8px">Write or prompt</h3>
+            <p style="font-size:14px;color:#a1a1aa;line-height:1.6;margin:0">Type code in the editor, or let an AI agent drive it. Both engines (manifold-js, OpenSCAD) work the same way.</p>
+          </div>
+          <div style="background:rgba(39,39,42,0.4);border:1px solid #27272a;border-radius:12px;padding:24px">
+            <div style="font-size:12px;color:#2dd4bf;margin-bottom:12px;font-family:'JetBrains Mono',ui-monospace,monospace">02</div>
+            <h3 style="font-size:15px;font-weight:600;color:#f4f4f5;margin:0 0 8px">Render live</h3>
+            <p style="font-size:14px;color:#a1a1aa;line-height:1.6;margin:0">Geometry compiles in WebAssembly and renders in a Three.js viewport with cross-sections and on-demand multi-angle snapshots.</p>
+          </div>
+          <div style="background:rgba(39,39,42,0.4);border:1px solid #27272a;border-radius:12px;padding:24px">
+            <div style="font-size:12px;color:#2dd4bf;margin-bottom:12px;font-family:'JetBrains Mono',ui-monospace,monospace">03</div>
+            <h3 style="font-size:15px;font-weight:600;color:#f4f4f5;margin:0 0 8px">Verify &amp; export</h3>
+            <p style="font-size:14px;color:#a1a1aa;line-height:1.6;margin:0">Sessions track every iteration with thumbnails and stats. Export GLB, STL, OBJ, or 3MF when ready.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Catalog skeleton (populated by JS) -->
+      <section style="width:100%;max-width:80rem;padding:48px 24px;border-top:1px solid #27272a;box-sizing:border-box">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px">
+          <p style="font-size:12px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:0.1em;margin:0">What you can build</p>
+        </div>
+        <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+          <div style="border-radius:8px;overflow:hidden;background:rgba(39,39,42,0.6);border:1px solid #27272a"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:14px;background:rgba(63,63,70,0.5);border-radius:4px;width:75%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:50%"></div></div></div>
+          <div style="border-radius:8px;overflow:hidden;background:rgba(39,39,42,0.6);border:1px solid #27272a"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:14px;background:rgba(63,63,70,0.5);border-radius:4px;width:60%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:45%"></div></div></div>
+          <div style="border-radius:8px;overflow:hidden;background:rgba(39,39,42,0.6);border:1px solid #27272a"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:14px;background:rgba(63,63,70,0.5);border-radius:4px;width:80%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:55%"></div></div></div>
+          <div style="border-radius:8px;overflow:hidden;background:rgba(39,39,42,0.6);border:1px solid #27272a"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:14px;background:rgba(63,63,70,0.5);border-radius:4px;width:70%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:40%"></div></div></div>
+          <div style="border-radius:8px;overflow:hidden;background:rgba(39,39,42,0.6);border:1px solid #27272a"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:14px;background:rgba(63,63,70,0.5);border-radius:4px;width:65%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:48%"></div></div></div>
+          <div style="border-radius:8px;overflow:hidden;background:rgba(39,39,42,0.6);border:1px solid #27272a"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:14px;background:rgba(63,63,70,0.5);border-radius:4px;width:72%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:52%"></div></div></div>
+          <div style="border-radius:8px;overflow:hidden;background:rgba(39,39,42,0.6);border:1px solid #27272a"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:14px;background:rgba(63,63,70,0.5);border-radius:4px;width:58%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:42%"></div></div></div>
+          <div style="border-radius:8px;overflow:hidden;background:rgba(39,39,42,0.6);border:1px solid #27272a"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:14px;background:rgba(63,63,70,0.5);border-radius:4px;width:78%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:46%"></div></div></div>
+        </div>
+      </section>
+
+      <!-- Recent sessions skeleton (populated by JS) -->
+      <section style="width:100%;max-width:80rem;padding:48px 24px;border-top:1px solid #27272a;box-sizing:border-box">
+        <p style="font-size:12px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 24px">Recent sessions</p>
+        <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(180px,1fr))">
+          <div style="border-radius:8px;overflow:hidden;background:#27272a;border:1px solid #3f3f46"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:8px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:12px;background:rgba(63,63,70,0.5);border-radius:4px;width:66%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:33%"></div></div></div>
+          <div style="border-radius:8px;overflow:hidden;background:#27272a;border:1px solid #3f3f46"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:8px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:12px;background:rgba(63,63,70,0.5);border-radius:4px;width:55%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:38%"></div></div></div>
+          <div style="border-radius:8px;overflow:hidden;background:#27272a;border:1px solid #3f3f46"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:8px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:12px;background:rgba(63,63,70,0.5);border-radius:4px;width:70%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:30%"></div></div></div>
+          <div style="border-radius:8px;overflow:hidden;background:#27272a;border:1px solid #3f3f46"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:8px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:12px;background:rgba(63,63,70,0.5);border-radius:4px;width:60%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:35%"></div></div></div>
+        </div>
+      </section>
+
+      <!-- Footer -->
+      <footer style="width:100%;max-width:80rem;padding:32px 24px;border-top:1px solid #27272a;margin-top:auto;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;box-sizing:border-box">
+        <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:#52525b">
+          <span style="font-weight:600;color:#71717a">Partwright</span>
+          <span>&mdash;</span>
+          <span>Free for non-commercial use</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:20px;font-size:13px">
+          <a href="/help" style="color:#71717a;text-decoration:none">Docs</a>
+          <a href="/ai.md" style="color:#71717a;text-decoration:none">AI instructions</a>
+          <a href="/catalog" style="color:#71717a;text-decoration:none">Catalog</a>
+        </div>
+      </footer>
     </div>
   </div>
 
+  <!-- Loading splash for non-landing routes (hidden by default, shown by inline script) -->
+  <div id="loading-splash" style="display:none;position:fixed;inset:0;z-index:50;align-items:center;justify-content:center;flex-direction:column;gap:24px;background:#18181b">
+    <div style="font-family:system-ui,-apple-system,sans-serif;font-size:28px;font-weight:700;color:#fafafa;letter-spacing:-0.5px">Partwright</div>
+    <div style="width:24px;height:24px;border:2.5px solid #3f3f46;border-top-color:#f59e0b;border-radius:50%;animation:splash-spin .8s linear infinite"></div>
+    <style>@keyframes splash-spin{to{transform:rotate(360deg)}}</style>
+  </div>
+
+  <!-- Sync script: runs before first paint to pick the right initial view.
+       On /, the landing HTML above shows. On all other routes, show the spinner. -->
+  <script src="/route-init.js"></script>
+
+  <div id="app" class="flex flex-col h-screen w-screen"></div>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

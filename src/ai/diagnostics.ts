@@ -7,6 +7,7 @@
 // request fragments we don't want sitting in IndexedDB long-term.
 
 import type { Provider } from './types';
+import { getConfig } from '../config/appConfig';
 
 export type DiagnosticKind = 'streamTurn' | 'summarize' | 'validateKey' | 'review';
 export type DiagnosticStatus = 'ok' | 'error' | 'aborted';
@@ -48,7 +49,7 @@ export interface DiagnosticEvent {
   notes?: string;
 }
 
-const MAX_EVENTS = 50;
+function getMaxEvents(): number { return getConfig().ai.diagnosticsRingSize; }
 const events: DiagnosticEvent[] = [];
 const listeners = new Set<() => void>();
 let counter = 0;
@@ -102,7 +103,7 @@ export function recordEvent(evt: Omit<DiagnosticEvent, 'id' | 'timestamp'>): voi
  *  real time, not when the main thread happened to receive it. */
 export function ingestEvent(full: DiagnosticEvent): void {
   events.unshift(full);
-  if (events.length > MAX_EVENTS) events.length = MAX_EVENTS;
+  if (events.length > getMaxEvents()) events.length = getMaxEvents();
   // Mirror to devtools so a user who reports "diagnostics shows nothing"
   // can verify in the browser console that recording is alive. The
   // single-line format is greppable: `[partwright-ai]`.

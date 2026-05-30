@@ -153,6 +153,36 @@ return v;`;
     await expect(page.locator('#customize-toggle')).toContainText('Customize (1)');
   });
 
+  test('parameters work in a SCAD session (native customizer annotations)', async ({ page }) => {
+    // OpenSCAD customizer annotations (// [min:max], bare true/false) are parsed
+    // into the same schema; overrides apply through OpenSCAD's -D flag.
+    const SCAD_PARAM_MODEL = [
+      'width = 20; // [10:60]',
+      'tall = false;',
+      'cube([width, width, tall ? 40 : 10], center=true);',
+    ].join('\n');
+
+    const out = await page.evaluate(async (code) => {
+      const api = (window as unknown as { partwright: PW & { setActiveLanguage: (l: string) => Promise<void> } }).partwright;
+      await api.createSession('scad-customizer');
+      await api.setActiveLanguage('scad');
+      const geo = await api.run(code); // first SCAD run lazy-loads the WASM engine
+      const wide = await api.setParams({ width: 50 });
+      return {
+        schema: api.getParams().schema.map(s => s.key),
+        defaultX: (geo.boundingBox as { dimensions?: number[] }).dimensions?.[0] ?? -1,
+        wideX: (wide.geometry as { boundingBox: { dimensions: number[] } }).boundingBox.dimensions[0],
+      };
+    }, SCAD_PARAM_MODEL);
+
+    // Both top-level vars surfaced; width slider override re-runs via -D.
+    expect(out.schema).toEqual(['width', 'tall']);
+    expect(out.defaultX).toBeCloseTo(20, 0);
+    expect(out.wideX).toBeCloseTo(50, 0);
+    await expect(page.locator('#params-panel')).toBeVisible();
+    await expect(page.locator('#customize-toggle')).toContainText('Customize (2)');
+  });
+
   test('Customize toolbar pill toggles the panel, and close → reopen always works', async ({ page }) => {
     const pill = page.locator('#customize-toggle');
     const panel = page.locator('#params-panel');

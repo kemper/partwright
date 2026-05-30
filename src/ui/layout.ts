@@ -361,8 +361,10 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   mobilePaneToggle.appendChild(mobileEditorBtn);
   mobilePaneToggle.appendChild(mobileViewportBtn);
 
-  const MOBILE_TOGGLE_ACTIVE = 'flex-1 px-4 py-2 text-sm font-medium text-zinc-100 border-b-2 border-blue-500 bg-zinc-900';
-  const MOBILE_TOGGLE_INACTIVE = 'flex-1 px-4 py-2 text-sm font-medium text-zinc-500 border-b-2 border-transparent';
+  // py-3 (not py-2) keeps these mobile-only toggles ≥44px tall — the minimum
+  // fingertip target. The toggle strip is `md:hidden`, so desktop never sees it.
+  const MOBILE_TOGGLE_ACTIVE = 'flex-1 px-4 py-3 text-sm font-medium text-zinc-100 border-b-2 border-blue-500 bg-zinc-900';
+  const MOBILE_TOGGLE_INACTIVE = 'flex-1 px-4 py-3 text-sm font-medium text-zinc-500 border-b-2 border-transparent';
   function syncMobileToggleUI(pane: 'editor' | 'viewport') {
     mobileEditorBtn.className = pane === 'editor' ? MOBILE_TOGGLE_ACTIVE : MOBILE_TOGGLE_INACTIVE;
     mobileViewportBtn.className = pane === 'viewport' ? MOBILE_TOGGLE_ACTIVE : MOBILE_TOGGLE_INACTIVE;

@@ -7,6 +7,7 @@
 import { signal, type Signal } from '@preact/signals';
 import { useRef } from 'preact/hooks';
 import { mountPreactModal } from './preact/mount';
+import { showAdvancedSettingsModal } from './advancedSettingsModal';
 import {
   loadQualitySettings,
   saveQualitySettings,
@@ -157,11 +158,20 @@ export function showQualitySettingsModal(): void {
     close => ({
       body: <QualityBody state={state} noteVersion={noteVersion} />,
       footer: (
-        <button
-          type="button"
-          class="px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white"
-          onClick={close}
-        >Done</button>
+        <div class="flex items-center justify-between w-full">
+          <button
+            type="button"
+            class="px-2 py-1.5 rounded text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors"
+            onClick={() => { close(); showAdvancedSettingsModal(); }}
+          >
+            ⚙ Advanced settings…
+          </button>
+          <button
+            type="button"
+            class="px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white"
+            onClick={close}
+          >Done</button>
+        </div>
       ),
     }),
     { bodyClassPatches: [['gap-3', 'gap-4']] },

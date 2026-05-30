@@ -60,7 +60,7 @@ export function preprocessRgb(rgb: Float32Array, w: number, h: number, p: Prepro
     rgb[o + 2] = b < 0 ? 0 : b > 255 ? 255 : b;
   }
 }
-import { buildTileMesh, type TileOptions, type TileShape } from './tileMesh';
+import { buildTileMesh, buildCellMask, type TileOptions, type TileShape } from './tileMesh';
 import { parseSvgToTile } from '../import/parsers/svg';
 
 const LUMA_R = 0.2126;
@@ -244,7 +244,21 @@ export function sampleImageToGrid(image: ImageData, opts: ReliefOptions): Height
   const count = w * h;
 
   if (opts.mode === 'quantized') {
-    return sampleQuantized(rgb, w, h, opts);
+    const grid = sampleQuantized(rgb, w, h, opts);
+    if (opts.common.removeBackground) {
+      // Detect background from pre-quantization RGB so exact-color matching in
+      // detectBackgroundMask doesn't hit subject pixels that share a cluster
+      // centroid with the background (the bug when using grid.colors, which
+      // collapses many colors to k representatives).
+      const colorsU8 = new Uint8Array(count * 3);
+      for (let i = 0; i < count * 3; i++) colorsU8[i] = clamp255(rgb[i]);
+      const bgMask = pickBackgroundMask(colorsU8, image, w, h, cropToPixels(image, opts.crop) ?? undefined);
+      grid.bgMask = bgMask;
+      for (let i = 0; i < count; i++) {
+        if (bgMask[i] === 0) grid.heights[i] = 0;
+      }
+    }
+    return grid;
   }
 
   // Luminance (and AI) mode.
@@ -261,6 +275,16 @@ export function sampleImageToGrid(image: ImageData, opts: ReliefOptions): Height
     heights[i] = quantizeHeight(l * maxHeight, levels, maxHeight);
   }
 
+  // Zero out background cells so they print as base only.
+  if (opts.common.removeBackground) {
+    const colorsU8 = new Uint8Array(count * 3);
+    for (let i = 0; i < count * 3; i++) colorsU8[i] = clamp255(rgb[i]);
+    const bgMask = pickBackgroundMask(colorsU8, image, w, h, cropToPixels(image, opts.crop) ?? undefined);
+    for (let i = 0; i < count; i++) {
+      if (bgMask[i] === 0) heights[i] = 0;
+    }
+  }
+
   return { width: w, height: h, heights };
 }
 
@@ -272,7 +296,7 @@ function clamp255(v: number): number {
 }
 
 // sRGB byte triple -> CIE L*a*b*, for perceptual clustering (the 'lab' option).
-function rgbToLab(r: number, g: number, b: number): [number, number, number] {
+export function rgbToLab(r: number, g: number, b: number): [number, number, number] {
   const lin = (c: number) => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
   const R = lin(r), G = lin(g), B = lin(b);
   const X = (R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047;
@@ -401,7 +425,10 @@ export function quantizeColors(
   return kmeansCluster(feat, src, count, Math.max(1, Math.floor(k)), 16);
 }
 
-function nearestPalette(fr: number, fg: number, fb: number, palFeat: Array<[number, number, number]>): number {
+/** Index of the palette entry (feature triples in the same colour space as the
+ *  query) closest to `(fr,fg,fb)` by squared distance. Shared by the relief
+ *  dithering path and the image→voxel fixed-palette snapping. */
+export function nearestPalette(fr: number, fg: number, fb: number, palFeat: Array<[number, number, number]>): number {
   let best = 0, bd = Infinity;
   for (let c = 0; c < palFeat.length; c++) {
     const dx = fr - palFeat[c][0], dy = fg - palFeat[c][1], dz = fb - palFeat[c][2];
@@ -669,7 +696,7 @@ export function generateRelief(image: ImageData, opts: ReliefOptions = DEFAULT_R
   // its top face — the keychain workflow. Only applies to quantized mode
   // (luminance is always a heightmap).
   if (opts.mode === 'quantized' && grid.colors && opts.quantized.output !== 'relief') {
-    return buildQuantizedTile(grid, opts);
+    return buildQuantizedTile(grid, opts, image);
   }
 
   // Stepped relief (both painting modes) uses the continuous height-grid mesh.
@@ -694,7 +721,7 @@ export function generateRelief(image: ImageData, opts: ReliefOptions = DEFAULT_R
 }
 
 /** Build the flat colour-tile result for quantized mode with output !== 'relief'. */
-function buildQuantizedTile(grid: HeightGrid, opts: ReliefOptions): GenerateReliefResult {
+function buildQuantizedTile(grid: HeightGrid, opts: ReliefOptions, sourceImage?: ImageData): GenerateReliefResult {
   const colors = grid.colors!;
   const W = grid.width, H = grid.height;
   const tileOpts: TileOptions = {
@@ -703,7 +730,9 @@ function buildQuantizedTile(grid: HeightGrid, opts: ReliefOptions): GenerateReli
     holes: opts.quantized.holes,
     chamferMm: opts.quantized.chamferMm,
   };
-  const shape: TileShape = opts.quantized.output === 'silhouette'
+
+  // Compute the base shape for the tile.
+  let shape: TileShape = opts.quantized.output === 'silhouette'
     ? {
         kind: 'mask',
         mask: opts.quantized.manualBackground
@@ -715,8 +744,30 @@ function buildQuantizedTile(grid: HeightGrid, opts: ReliefOptions): GenerateReli
       : opts.quantized.shape === 'circle'
         ? { kind: 'circle' }
         : { kind: 'rect' };
-  const { mesh, cellTriIds } = buildTileMesh(W, H, tileOpts, shape);
+
+  // When removeBackground is on for a non-silhouette tile, detect the
+  // background and intersect it with the existing shape mask so background
+  // pixels are cut out of even rect/rounded/circle tiles. Prefer the pre-
+  // quantization bgMask (set by sampleImageToGrid) to avoid matching subject
+  // pixels that share a cluster centroid with the background color.
+  if (opts.common.removeBackground && opts.quantized.output !== 'silhouette') {
+    const fgMask = grid.bgMask ?? pickBackgroundMask(colors, sourceImage ?? null, W, H);
+    const shapeMask = buildCellMask(W, H, tileOpts, shape);
+    const combined = new Uint8Array(W * H);
+    for (let i = 0; i < W * H; i++) combined[i] = shapeMask[i] & fgMask[i];
+    shape = { kind: 'mask', mask: combined };
+  }
+
+  const { mesh, cellTriIds, cellTriIdsBottom } = buildTileMesh(W, H, tileOpts, shape);
   const seedRegions = seedRegionsFromCellGrid(colors, cellTriIds, W, H);
+
+  // Double-sided: paint the bottom face too, using mirrored or same colors.
+  if (opts.quantized.doubleSided && opts.quantized.output === 'flat') {
+    const mirror = opts.quantized.backMirror !== false;
+    const bottomRegions = seedRegionsFromCellGridBottom(colors, cellTriIdsBottom, W, H, mirror);
+    return { mesh, grid, seedRegions: mergeRegions(seedRegions, bottomRegions) };
+  }
+
   return { mesh, grid, seedRegions };
 }
 
@@ -744,7 +795,7 @@ function seedRegionsFromReliefGrid(grid: HeightGrid): SeedRegion[] {
 //  retro-fit colours onto a slanted continuous mesh.)
 
 /** Tile variant: cellTriIds carries -1 for excluded cells (shape/hole/edge),
- *  so only included cells contribute. */
+ *  so only included cells contribute. Top-face (CCW from +Z). */
 function seedRegionsFromCellGrid(colors: Uint8Array, cellTriIds: Int32Array, W: number, H: number): SeedRegion[] {
   const byColor = new Map<number, { color: [number, number, number]; triangleIds: number[] }>();
   for (let y = 0; y < H; y++) {
@@ -762,6 +813,50 @@ function seedRegionsFromCellGrid(colors: Uint8Array, cellTriIds: Int32Array, W: 
   return mapBucketsToRegions(byColor);
 }
 
+/** Bottom-face variant for double-sided tiles. When `mirror` is true, cell
+ *  (x, y) on the bottom takes its colour from (W-1-x, y) on the image so the
+ *  tile looks identical from both sides when flipped. */
+function seedRegionsFromCellGridBottom(
+  colors: Uint8Array,
+  cellTriIdsBottom: Int32Array,
+  W: number,
+  H: number,
+  mirror: boolean,
+): SeedRegion[] {
+  const byColor = new Map<number, { color: [number, number, number]; triangleIds: number[] }>();
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const cell = y * W + x;
+      const t0 = cellTriIdsBottom[cell * 2];
+      if (t0 < 0) continue;
+      const srcX = mirror ? W - 1 - x : x;
+      const src = y * W + srcX;
+      const r = colors[src * 3], g = colors[src * 3 + 1], b = colors[src * 3 + 2];
+      const key = (r << 16) | (g << 8) | b;
+      let bucket = byColor.get(key);
+      if (!bucket) { bucket = { color: [r / 255, g / 255, b / 255], triangleIds: [] }; byColor.set(key, bucket); }
+      bucket.triangleIds.push(t0, cellTriIdsBottom[cell * 2 + 1]);
+    }
+  }
+  return mapBucketsToRegions(byColor);
+}
+
+/** Merge two sets of seed regions, combining triangle lists for matching colours. */
+function mergeRegions(a: SeedRegion[], b: SeedRegion[]): SeedRegion[] {
+  const byKey = new Map<number, SeedRegion>();
+  for (const r of a) {
+    const k = (Math.round(r.color[0] * 255) << 16) | (Math.round(r.color[1] * 255) << 8) | Math.round(r.color[2] * 255);
+    byKey.set(k, { ...r, triangleIds: [...r.triangleIds] });
+  }
+  for (const r of b) {
+    const k = (Math.round(r.color[0] * 255) << 16) | (Math.round(r.color[1] * 255) << 8) | Math.round(r.color[2] * 255);
+    const existing = byKey.get(k);
+    if (existing) existing.triangleIds.push(...r.triangleIds);
+    else byKey.set(k, { ...r, triangleIds: [...r.triangleIds] });
+  }
+  return Array.from(byKey.values());
+}
+
 function mapBucketsToRegions(byColor: Map<number, { color: [number, number, number]; triangleIds: number[] }>): SeedRegion[] {
   const seedRegions: SeedRegion[] = [];
   let i = 0;
@@ -769,6 +864,77 @@ function mapBucketsToRegions(byColor: Map<number, { color: [number, number, numb
     seedRegions.push({ color: bucket.color, triangleIds: bucket.triangleIds, name: `Region ${++i}` });
   }
   return seedRegions;
+}
+
+/**
+ * Downsample the alpha channel of an ImageData to (targetW × targetH) using
+ * the same box-average + Y-flip as downsample() so the result aligns with the
+ * colour grid. Returns null when the image is fully opaque (no cell has mean
+ * alpha < 128), signalling that colour-based detection should be used instead.
+ * Otherwise returns a 0/1 mask: 1 = foreground (alpha ≥ 128), 0 = background.
+ */
+function tryAlphaBasedMask(
+  image: ImageData,
+  targetW: number,
+  targetH: number,
+  cropPx?: { left: number; top: number; right: number; bottom: number },
+): Uint8Array | null {
+  const imgW = image.width, imgH = image.height;
+  const cl = cropPx ? Math.max(0, Math.floor(cropPx.left)) : 0;
+  const ct = cropPx ? Math.max(0, Math.floor(cropPx.top)) : 0;
+  const cr = cropPx ? Math.min(imgW, Math.floor(cropPx.right)) : imgW;
+  const cb = cropPx ? Math.min(imgH, Math.floor(cropPx.bottom)) : imgH;
+  const srcW = Math.max(1, cr - cl), srcH = Math.max(1, cb - ct);
+  const src = image.data;
+  const count = targetW * targetH;
+  const avgAlpha = new Float32Array(count);
+
+  for (let cy = 0; cy < targetH; cy++) {
+    const fcy = targetH - 1 - cy; // Y-flip: grid row 0 = image bottom
+    const y0 = ct + Math.floor((fcy * srcH) / targetH);
+    const y1 = Math.max(y0 + 1, ct + Math.floor(((fcy + 1) * srcH) / targetH));
+    for (let cx = 0; cx < targetW; cx++) {
+      const x0 = cl + Math.floor((cx * srcW) / targetW);
+      const x1 = Math.max(x0 + 1, cl + Math.floor(((cx + 1) * srcW) / targetW));
+      let sum = 0, n = 0;
+      for (let sy = y0; sy < y1; sy++) {
+        for (let sx = x0; sx < x1; sx++) {
+          sum += src[(sy * imgW + sx) * 4 + 3];
+          n++;
+        }
+      }
+      avgAlpha[cy * targetW + cx] = n > 0 ? sum / n : 255;
+    }
+  }
+
+  // Return null (fall through to colour detection) if the image is fully opaque.
+  let hasTransparent = false;
+  for (let i = 0; i < count; i++) {
+    if (avgAlpha[i] < 128) { hasTransparent = true; break; }
+  }
+  if (!hasTransparent) return null;
+
+  const mask = new Uint8Array(count);
+  for (let i = 0; i < count; i++) mask[i] = avgAlpha[i] >= 128 ? 1 : 0;
+  return mask;
+}
+
+/**
+ * Pick the best available background mask: alpha channel (if the image has
+ * transparency), otherwise border-colour detection on the downsampled RGB.
+ */
+function pickBackgroundMask(
+  colors: Uint8Array,
+  image: ImageData | null,
+  w: number,
+  h: number,
+  cropPx?: { left: number; top: number; right: number; bottom: number },
+): Uint8Array {
+  if (image) {
+    const alphaMask = tryAlphaBasedMask(image, w, h, cropPx);
+    if (alphaMask) return alphaMask;
+  }
+  return detectBackgroundMask(colors, w, h);
 }
 
 /** Approximate background detection: the dominant exact colour on the image

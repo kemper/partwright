@@ -1,32 +1,51 @@
-// Durable storage request.
+// Persistent-storage request helper.
 //
-// All user work — sessions, version history, painted colors, annotations,
-// imported meshes, AI keys, and chat transcripts — lives in IndexedDB, and
-// downloaded WebLLM model weights live in the Cache Storage API. Both are
-// "best-effort" by default: under storage pressure the browser may evict them.
-// For a tool whose whole value is the work you've saved, that's a bad surprise,
-// so we ask the browser to mark the origin's storage as persistent (exempt from
-// automatic eviction).
+// By default a browser keeps an origin's IndexedDB / Cache / OPFS data in
+// "best-effort" storage, which it is free to evict under storage pressure.
+// Mobile browsers are far more aggressive here than desktop — iOS Safari in
+// particular evicts best-effort storage after ~7 days without a visit (the
+// ITP storage cap), which is why saved API keys quietly vanish on mobile but
+// almost never on desktop.
 //
-// `navigator.storage.persist()` is a no-op-or-prompt depending on the browser:
-//   - Chrome/Edge grant it silently based on engagement/installed-PWA signals.
-//   - Firefox may prompt the user.
-//   - Safari grants it heuristically.
-// It never throws on rejection (resolves false), so this is safe to fire and
-// forget at boot. We only ask when not already persisted.
+// `navigator.storage.persist()` asks the browser to mark this origin's storage
+// as persistent so it is exempt from that eviction. On Chrome/Android the grant
+// is decided silently from engagement heuristics (no prompt); Firefox may
+// prompt; iOS Safari grants based on its own heuristics (e.g. installed to the
+// home screen). Requesting is harmless everywhere and is the standard mitigation
+// for vanishing client-side data.
 
-/** Request durable storage for this origin if it isn't already granted.
- *  Fire-and-forget; resolves to the effective persisted state (or null when the
- *  API is unavailable). Never throws. */
-export async function ensurePersistentStorage(): Promise<boolean | null> {
-  try {
-    const storage = typeof navigator !== 'undefined' ? navigator.storage : undefined;
-    if (!storage || typeof storage.persist !== 'function') return null;
-    if (typeof storage.persisted === 'function' && (await storage.persisted())) {
-      return true;
+/** Resolves true once the origin's storage is persistent. */
+let granted = false;
+/** In-flight request so concurrent callers share one round-trip. */
+let inFlight: Promise<boolean> | null = null;
+
+/** Ask the browser to make this origin's storage persistent (eviction-exempt).
+ *
+ *  Idempotent and cheap to call repeatedly: once a grant succeeds we never
+ *  re-request, and concurrent calls share a single round-trip. A *denied*
+ *  request is NOT cached, so a later call (e.g. after the user saves a key and
+ *  engagement is higher) can succeed where an earlier one failed. Soft-fails on
+ *  browsers without the Storage API, so callers can fire-and-forget. */
+export async function requestPersistentStorage(): Promise<boolean> {
+  if (granted) return true;
+  if (inFlight) return inFlight;
+  inFlight = (async () => {
+    const nav = typeof navigator !== 'undefined' ? navigator : null;
+    if (!nav?.storage?.persist) return false;
+    try {
+      // Already persistent (e.g. granted in a previous session)? Don't re-ask.
+      if (nav.storage.persisted && (await nav.storage.persisted())) {
+        granted = true;
+        return true;
+      }
+      const ok = await nav.storage.persist();
+      if (ok) granted = true;
+      return ok;
+    } catch {
+      return false;
+    } finally {
+      inFlight = null;
     }
-    return await storage.persist();
-  } catch {
-    return null;
-  }
+  })();
+  return inFlight;
 }
