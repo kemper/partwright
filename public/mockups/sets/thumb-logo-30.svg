@@ -1,0 +1,65 @@
+<svg class="imp-hero" width="120" height="120" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright — an impossible isometric letter P with one amber beam threading through the stem">
+  <defs>
+    <style>
+      @media (prefers-reduced-motion: reduce){
+        .imp-hero{animation:none !important}
+      }
+      .imp-hero{
+        transform-origin:50% 52%;
+        animation: imp-rock 9s ease-in-out infinite;
+      }
+      @keyframes imp-rock{
+        0%,100% { transform: rotate(-1.2deg); }
+        50%     { transform: rotate(1.2deg); }
+      }
+    </style>
+    <radialGradient id="h-shadow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#000" stop-opacity="0.5"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="h-ttop" x1="6" y1="2" x2="58" y2="34" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#99f6e4"/><stop offset="1" stop-color="#5eead4"/>
+    </linearGradient>
+    <linearGradient id="h-tside" x1="8" y1="6" x2="46" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+    </linearGradient>
+    <linearGradient id="h-atop" x1="10" y1="22" x2="52" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+
+  <!-- contact shadow grounds the solid -->
+  <ellipse cx="30" cy="60.5" rx="22" ry="2.3" fill="url(#h-shadow)"/>
+
+  <!-- RIGHT bowl beam (drawn first = furthest back) -->
+  <polygon points="45.0,8.0 45.0,39.0 50.0,36.1 50.0,5.1" fill="#0f766e"/>
+  <polygon points="36.0,8.0 45.0,8.0 50.0,5.1 41.0,5.1" fill="#5eead4"/>
+  <polygon points="36.0,8.0 45.0,8.0 45.0,39.0 36.0,39.0" fill="url(#h-tside)"/>
+
+  <!-- STEM (drawn over the amber's middle — the amber tucks BEHIND here) -->
+  <polygon points="23.5,8.0 23.5,56.0 28.5,53.1 28.5,5.1" fill="url(#h-tside)"/>
+  <polygon points="14.5,8.0 23.5,8.0 28.5,5.1 19.5,5.1" fill="#5eead4"/>
+  <polygon points="14.5,8.0 23.5,8.0 23.5,56.0 14.5,56.0" fill="#14b8a6"/>
+
+  <!-- AMBER return — RIGHT half drawn AFTER the stem (now IN FRONT of it) -->
+  <polygon points="23.5,30.0 45.0,30.0 50.0,27.1 28.5,27.1" fill="url(#h-atop)"/>
+  <polygon points="45.0,30.0 45.0,39.0 50.0,36.1 50.0,27.1" fill="#a85b04"/>
+  <polygon points="23.5,30.0 45.0,30.0 45.0,39.0 23.5,39.0" fill="#c9760a"/>
+
+  <!-- TOP bowl beam (drawn last = nearest, crosses IN FRONT of the stem top) -->
+  <polygon points="45.0,8.0 45.0,17.0 50.0,14.1 50.0,5.1" fill="#0f766e"/>
+  <polygon points="14.5,8.0 45.0,8.0 50.0,5.1 19.5,5.1" fill="url(#h-ttop)"/>
+  <polygon points="14.5,8.0 45.0,8.0 45.0,17.0 14.5,17.0" fill="#2dd4bf"/>
+
+  <!-- crisp dark edge lines sell the machined teal solid -->
+  <g fill="none" stroke="#06302b" stroke-width="0.6" stroke-linejoin="round" stroke-linecap="round" opacity="0.55">
+    <polygon points="14.5,8.0 23.5,8.0 28.5,5.1 28.5,53.1 23.5,56.0 14.5,56.0"/>
+    <polygon points="14.5,8.0 45.0,8.0 50.0,5.1 50.0,14.1 45.0,17.0 14.5,17.0"/>
+    <polygon points="36.0,8.0 45.0,8.0 50.0,5.1 50.0,36.1 45.0,39.0 36.0,39.0"/>
+  </g>
+  <!-- amber edge lines (only the visible faces — right half in front of stem) -->
+  <g fill="none" stroke="#7a4203" stroke-width="0.55" stroke-linejoin="round" stroke-linecap="round" opacity="0.6">
+    <path d="M23.5,30.0 L45.0,30.0 L50.0,27.1 L50.0,36.1 L45.0,39.0 L23.5,39.0"/>
+  </g>
+  <!-- lit highlight along the top crest -->
+  <path d="M14.5,8.0 L19.5,5.1 L50.0,5.1" fill="none" stroke="#d6fff5" stroke-width="0.7" stroke-linecap="round" opacity="0.7"/>
+</svg>

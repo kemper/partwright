@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="robots" content="noindex"/>
+<title>Partwright — Impossible P · clean</title>
+<style>
+@import url('../fonts.css');
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#09090b;color:#e4e4e7;font-family:'Space Grotesk',system-ui,sans-serif;padding:40px 56px 90px}
+a.back{color:#71717a;font-size:13px;text-decoration:none}
+a.back:hover{color:#e4e4e7}
+.head{margin:20px 0 6px;font:800 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.thesis{color:#a1a1aa;font-size:15px;max-width:640px;line-height:1.6;margin-bottom:34px}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
+.panel{background:#18181b;border:1px solid #27272a;border-radius:16px;padding:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;min-height:150px}
+.panel .lbl{font:600 11px 'Space Grotesk';letter-spacing:1.5px;text-transform:uppercase;color:#52525b}
+.s3{grid-column:span 3}.s5{grid-column:span 5}.s7{grid-column:span 7}
+.hero{min-height:230px}
+.lockup{display:flex;align-items:center;gap:14px}
+.lockup .wm{font:700 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.favs{display:flex;align-items:flex-end;gap:16px}
+.fav{background:#0b0b0d;border:1px solid #27272a;border-radius:8px;padding:8px;display:flex;align-items:center;justify-content:center}
+.light{background:#f4f4f5}
+.light .lbl{color:#a1a1aa}
+</style></head>
+<body>
+<a class="back" href="../">← all mockups</a>
+<div class="head">Impossible P · clean</div>
+<div class="thesis">The impossible P, stripped to its essential contradiction — an <strong>amber bar threading through the stem</strong> with nowhere to hide on the backside. It emerges from inside the bowl, crosses <em>in front</em> of the stem on the right, and simply stops at the stem's left face — no floating piece on the back. <strong>Just the letter, just the trick.</strong></div>
+<div class="grid">
+  <div class="panel hero s5"><div class="lbl">Primary mark</div>
+    <!-- {{SVG_HERO}} -->
+    <svg class="imp-hero" width="120" height="120" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright — an impossible isometric letter P with one amber beam threading through the stem">
+      <defs>
+        <radialGradient id="h-shadow" cx="0.5" cy="0.5" r="0.5">
+          <stop offset="0" stop-color="#000" stop-opacity="0.5"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
+        </radialGradient>
+        <linearGradient id="h-ttop" x1="6" y1="2" x2="58" y2="34" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#99f6e4"/><stop offset="1" stop-color="#5eead4"/>
+        </linearGradient>
+        <linearGradient id="h-tside" x1="8" y1="6" x2="46" y2="58" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <linearGradient id="h-atop" x1="10" y1="22" x2="52" y2="44" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/>
+        </linearGradient>
+      </defs>
+
+      <!-- contact shadow grounds the solid -->
+      <ellipse cx="30" cy="60.5" rx="22" ry="2.3" fill="url(#h-shadow)"/>
+
+      <!-- ============================================================
+           IMPOSSIBLE P — a blocky letterform built from four iso beams.
+           STEM (vertical) + bowl loop (TOP beam · RIGHT beam · AMBER return).
+           The amber return is ONE continuous bar that starts AT the left face
+           of the stem, is occluded BEHIND the stem in the middle, then is
+           drawn IN FRONT of the stem on the right — a Penrose contradiction.
+           No polygons protrude past the stem's left face (clean version).
+           Each beam = front face + top face + right face on a shared depth
+           vector (+5.0,-2.9), so every beam is a clean engineered solid.
+           Draw order encodes the weave (back→front):
+             RIGHT beam → STEM → amber RIGHT → TOP beam.
+           Coordinates baked to the 0–64 space — no nested transform.
+           ============================================================ -->
+
+      <!-- RIGHT bowl beam (drawn first = furthest back) -->
+      <polygon points="45.0,8.0 45.0,39.0 50.0,36.1 50.0,5.1" fill="#0f766e"/>
+      <polygon points="36.0,8.0 45.0,8.0 50.0,5.1 41.0,5.1" fill="#5eead4"/>
+      <polygon points="36.0,8.0 45.0,8.0 45.0,39.0 36.0,39.0" fill="url(#h-tside)"/>
+
+      <!-- STEM (drawn over the amber's middle — the amber tucks BEHIND here) -->
+      <polygon points="23.5,8.0 23.5,56.0 28.5,53.1 28.5,5.1" fill="url(#h-tside)"/>
+      <polygon points="14.5,8.0 23.5,8.0 28.5,5.1 19.5,5.1" fill="#5eead4"/>
+      <polygon points="14.5,8.0 23.5,8.0 23.5,56.0 14.5,56.0" fill="#14b8a6"/>
+
+      <!-- AMBER return — RIGHT half drawn AFTER the stem (now IN FRONT of it) -->
+      <polygon points="23.5,30.0 45.0,30.0 50.0,27.1 28.5,27.1" fill="url(#h-atop)"/>
+      <polygon points="45.0,30.0 45.0,39.0 50.0,36.1 50.0,27.1" fill="#a85b04"/>
+      <polygon points="23.5,30.0 45.0,30.0 45.0,39.0 23.5,39.0" fill="#c9760a"/>
+
+      <!-- TOP bowl beam (drawn last = nearest, crosses IN FRONT of the stem top) -->
+      <polygon points="45.0,8.0 45.0,17.0 50.0,14.1 50.0,5.1" fill="#0f766e"/>
+      <polygon points="14.5,8.0 45.0,8.0 50.0,5.1 19.5,5.1" fill="url(#h-ttop)"/>
+      <polygon points="14.5,8.0 45.0,8.0 45.0,17.0 14.5,17.0" fill="#2dd4bf"/>
+
+      <!-- crisp dark edge lines sell the machined teal solid -->
+      <g fill="none" stroke="#06302b" stroke-width="0.6" stroke-linejoin="round" stroke-linecap="round" opacity="0.55">
+        <polygon points="14.5,8.0 23.5,8.0 28.5,5.1 28.5,53.1 23.5,56.0 14.5,56.0"/>
+        <polygon points="14.5,8.0 45.0,8.0 50.0,5.1 50.0,14.1 45.0,17.0 14.5,17.0"/>
+        <polygon points="36.0,8.0 45.0,8.0 50.0,5.1 50.0,36.1 45.0,39.0 36.0,39.0"/>
+      </g>
+      <!-- amber edge lines (only the visible faces — right half in front of stem) -->
+      <g fill="none" stroke="#7a4203" stroke-width="0.55" stroke-linejoin="round" stroke-linecap="round" opacity="0.6">
+        <path d="M23.5,30.0 L45.0,30.0 L50.0,27.1 L50.0,36.1 L45.0,39.0 L23.5,39.0"/>
+      </g>
+      <!-- lit highlight along the top crest -->
+      <path d="M14.5,8.0 L19.5,5.1 L50.0,5.1" fill="none" stroke="#d6fff5" stroke-width="0.7" stroke-linecap="round" opacity="0.7"/>
+    </svg>
+  </div>
+
+  <div class="panel s7"><div class="lbl">Wordmark lockup</div><div class="lockup">
+    <!-- {{SVG_MARK}} -->
+    <svg width="42" height="42" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright impossible P mark">
+      <defs>
+        <linearGradient id="m-ttop" x1="6" y1="2" x2="58" y2="34" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#99f6e4"/><stop offset="1" stop-color="#5eead4"/>
+        </linearGradient>
+        <linearGradient id="m-tside" x1="8" y1="6" x2="46" y2="58" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <linearGradient id="m-atop" x1="10" y1="22" x2="52" y2="44" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/>
+        </linearGradient>
+      </defs>
+      <polygon points="45.0,8.0 45.0,39.0 50.0,36.1 50.0,5.1" fill="#0f766e"/>
+      <polygon points="36.0,8.0 45.0,8.0 50.0,5.1 41.0,5.1" fill="#5eead4"/>
+      <polygon points="36.0,8.0 45.0,8.0 45.0,39.0 36.0,39.0" fill="url(#m-tside)"/>
+      <polygon points="23.5,8.0 23.5,56.0 28.5,53.1 28.5,5.1" fill="url(#m-tside)"/>
+      <polygon points="14.5,8.0 23.5,8.0 28.5,5.1 19.5,5.1" fill="#5eead4"/>
+      <polygon points="14.5,8.0 23.5,8.0 23.5,56.0 14.5,56.0" fill="#14b8a6"/>
+      <polygon points="23.5,30.0 45.0,30.0 50.0,27.1 28.5,27.1" fill="url(#m-atop)"/>
+      <polygon points="45.0,30.0 45.0,39.0 50.0,36.1 50.0,27.1" fill="#a85b04"/>
+      <polygon points="23.5,30.0 45.0,30.0 45.0,39.0 23.5,39.0" fill="#c9760a"/>
+      <polygon points="45.0,8.0 45.0,17.0 50.0,14.1 50.0,5.1" fill="#0f766e"/>
+      <polygon points="14.5,8.0 45.0,8.0 50.0,5.1 19.5,5.1" fill="url(#m-ttop)"/>
+      <polygon points="14.5,8.0 45.0,8.0 45.0,17.0 14.5,17.0" fill="#2dd4bf"/>
+    </svg>
+    <span class="wm">Partwright</span>
+  </div></div>
+
+  <div class="panel s3"><div class="lbl">App icon</div>
+    <!-- {{SVG_APPICON}} -->
+    <svg width="104" height="104" viewBox="0 0 104 104" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright app icon — impossible P">
+      <defs>
+        <linearGradient id="a-tile" x1="0" y1="0" x2="104" y2="104" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#0f172a"/><stop offset="1" stop-color="#070b16"/>
+        </linearGradient>
+        <linearGradient id="a-ttop" x1="14" y1="8" x2="92" y2="58" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#99f6e4"/><stop offset="1" stop-color="#5eead4"/>
+        </linearGradient>
+        <linearGradient id="a-tside" x1="18" y1="14" x2="76" y2="94" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <linearGradient id="a-atop" x1="18" y1="38" x2="86" y2="74" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/>
+        </linearGradient>
+        <radialGradient id="a-vig" cx="0.5" cy="0.42" r="0.62">
+          <stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.42"/>
+        </radialGradient>
+        <clipPath id="a-tileclip"><rect x="0" y="0" width="104" height="104" rx="22"/></clipPath>
+      </defs>
+      <rect x="0" y="0" width="104" height="104" rx="22" fill="url(#a-tile)"/>
+      <g clip-path="url(#a-tileclip)">
+        <!-- scaled (×1.42) + centered from the 0–64 master into the tile -->
+        <g transform="translate(11.6 7.6) scale(1.42)">
+          <polygon points="45.0,8.0 45.0,39.0 50.0,36.1 50.0,5.1" fill="#0f766e"/>
+          <polygon points="36.0,8.0 45.0,8.0 50.0,5.1 41.0,5.1" fill="#5eead4"/>
+          <polygon points="36.0,8.0 45.0,8.0 45.0,39.0 36.0,39.0" fill="url(#a-tside)"/>
+          <polygon points="23.5,8.0 23.5,56.0 28.5,53.1 28.5,5.1" fill="url(#a-tside)"/>
+          <polygon points="14.5,8.0 23.5,8.0 28.5,5.1 19.5,5.1" fill="#5eead4"/>
+          <polygon points="14.5,8.0 23.5,8.0 23.5,56.0 14.5,56.0" fill="#14b8a6"/>
+          <polygon points="23.5,30.0 45.0,30.0 50.0,27.1 28.5,27.1" fill="url(#a-atop)"/>
+          <polygon points="45.0,30.0 45.0,39.0 50.0,36.1 50.0,27.1" fill="#a85b04"/>
+          <polygon points="23.5,30.0 45.0,30.0 45.0,39.0 23.5,39.0" fill="#c9760a"/>
+          <polygon points="45.0,8.0 45.0,17.0 50.0,14.1 50.0,5.1" fill="#0f766e"/>
+          <polygon points="14.5,8.0 45.0,8.0 50.0,5.1 19.5,5.1" fill="url(#a-ttop)"/>
+          <polygon points="14.5,8.0 45.0,8.0 45.0,17.0 14.5,17.0" fill="#2dd4bf"/>
+          <g fill="none" stroke="#06302b" stroke-width="0.55" stroke-linejoin="round" stroke-linecap="round" opacity="0.5">
+            <polygon points="14.5,8.0 23.5,8.0 28.5,5.1 28.5,53.1 23.5,56.0 14.5,56.0"/>
+            <polygon points="14.5,8.0 45.0,8.0 50.0,5.1 50.0,14.1 45.0,17.0 14.5,17.0"/>
+            <polygon points="36.0,8.0 45.0,8.0 50.0,5.1 50.0,36.1 45.0,39.0 36.0,39.0"/>
+          </g>
+          <path d="M14.5,8.0 L19.5,5.1 L50.0,5.1" fill="none" stroke="#d6fff5" stroke-width="0.6" stroke-linecap="round" opacity="0.65"/>
+        </g>
+        <rect x="0" y="0" width="104" height="104" rx="22" fill="url(#a-vig)"/>
+      </g>
+      <rect x="1" y="1" width="102" height="102" rx="21" fill="none" stroke="#2dd4bf" stroke-width="1" stroke-opacity="0.35"/>
+    </svg>
+  </div>
+
+  <div class="panel s3"><div class="lbl">Favicon · 32 / 20 / 16</div><div class="favs">
+    <div class="fav">
+      <!-- {{SVG_32}} -->
+      <svg width="32" height="32" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright favicon 32">
+        <polygon points="45.0,8.0 45.0,39.0 50.0,36.1 50.0,5.1" fill="#0f766e"/>
+        <polygon points="36.0,8.0 45.0,8.0 50.0,5.1 41.0,5.1" fill="#5eead4"/>
+        <polygon points="36.0,8.0 45.0,8.0 45.0,39.0 36.0,39.0" fill="#14b8a6"/>
+        <polygon points="23.5,8.0 23.5,56.0 28.5,53.1 28.5,5.1" fill="#2dd4bf"/>
+        <polygon points="14.5,8.0 23.5,8.0 28.5,5.1 19.5,5.1" fill="#5eead4"/>
+        <polygon points="14.5,8.0 23.5,8.0 23.5,56.0 14.5,56.0" fill="#14b8a6"/>
+        <polygon points="23.5,30.0 45.0,30.0 50.0,27.1 28.5,27.1" fill="#fbbf24"/>
+        <polygon points="45.0,30.0 45.0,39.0 50.0,36.1 50.0,27.1" fill="#a85b04"/>
+        <polygon points="23.5,30.0 45.0,30.0 45.0,39.0 23.5,39.0" fill="#c9760a"/>
+        <polygon points="45.0,8.0 45.0,17.0 50.0,14.1 50.0,5.1" fill="#0f766e"/>
+        <polygon points="14.5,8.0 45.0,8.0 50.0,5.1 19.5,5.1" fill="#5eead4"/>
+        <polygon points="14.5,8.0 45.0,8.0 45.0,17.0 14.5,17.0" fill="#2dd4bf"/>
+      </svg>
+    </div>
+    <div class="fav">
+      <!-- {{SVG_20}} -->
+      <svg width="20" height="20" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright favicon 20">
+        <!-- end caps dropped at 20px; bold faces only, weave preserved -->
+        <polygon points="36.0,8.0 45.0,8.0 45.0,39.0 36.0,39.0" fill="#14b8a6"/>
+        <polygon points="23.5,8.0 23.5,56.0 28.5,53.1 28.5,5.1" fill="#2dd4bf"/>
+        <polygon points="14.5,8.0 23.5,8.0 23.5,56.0 14.5,56.0" fill="#14b8a6"/>
+        <polygon points="23.5,30.0 45.0,30.0 45.0,39.0 23.5,39.0" fill="#f59e0b"/>
+        <polygon points="23.5,30.0 45.0,30.0 50.0,27.1 28.5,27.1" fill="#fbbf24"/>
+        <polygon points="14.5,8.0 45.0,8.0 50.0,5.1 19.5,5.1" fill="#5eead4"/>
+        <polygon points="14.5,8.0 45.0,8.0 45.0,17.0 14.5,17.0" fill="#2dd4bf"/>
+      </svg>
+    </div>
+    <div class="fav">
+      <!-- {{SVG_16}} -->
+      <svg width="16" height="16" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright favicon 16">
+        <!-- 16px: bold flat-face P, amber bar threading the stem (in-front right only) -->
+        <polygon points="36.0,8.0 45.0,8.0 45.0,39.0 36.0,39.0" fill="#14b8a6"/>
+        <polygon points="23.5,8.0 23.5,56.0 14.5,56.0 14.5,8.0" fill="#14b8a6"/>
+        <polygon points="23.5,30.0 45.0,30.0 45.0,39.0 23.5,39.0" fill="#f59e0b"/>
+        <polygon points="14.5,8.0 45.0,8.0 45.0,17.0 14.5,17.0" fill="#2dd4bf"/>
+      </svg>
+    </div>
+  </div></div>
+
+  <div class="panel s3"><div class="lbl">Monochrome</div>
+    <!-- {{SVG_MONO}} -->
+    <svg width="88" height="88" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright monochrome impossible P">
+      <!-- single white ink: faces differentiated by opacity so volume + weave still read -->
+      <g fill="#fafafa">
+        <!-- right bowl beam -->
+        <polygon points="45.0,8.0 45.0,39.0 50.0,36.1 50.0,5.1" opacity="0.30"/>
+        <polygon points="36.0,8.0 45.0,8.0 50.0,5.1 41.0,5.1" opacity="0.92"/>
+        <polygon points="36.0,8.0 45.0,8.0 45.0,39.0 36.0,39.0" opacity="0.52"/>
+        <!-- stem -->
+        <polygon points="23.5,8.0 23.5,56.0 28.5,53.1 28.5,5.1" opacity="0.30"/>
+        <polygon points="14.5,8.0 23.5,8.0 28.5,5.1 19.5,5.1" opacity="0.92"/>
+        <polygon points="14.5,8.0 23.5,8.0 23.5,56.0 14.5,56.0" opacity="0.52"/>
+        <!-- amber RIGHT (in front of stem) → BRIGHT -->
+        <polygon points="23.5,30.0 45.0,30.0 50.0,27.1 28.5,27.1" opacity="0.86"/>
+        <polygon points="45.0,30.0 45.0,39.0 50.0,36.1 50.0,27.1" opacity="0.30"/>
+        <polygon points="23.5,30.0 45.0,30.0 45.0,39.0 23.5,39.0" opacity="0.66"/>
+        <!-- top beam -->
+        <polygon points="45.0,8.0 45.0,17.0 50.0,14.1 50.0,5.1" opacity="0.30"/>
+        <polygon points="14.5,8.0 45.0,8.0 50.0,5.1 19.5,5.1" opacity="0.92"/>
+        <polygon points="14.5,8.0 45.0,8.0 45.0,17.0 14.5,17.0" opacity="0.52"/>
+      </g>
+      <g fill="none" stroke="#fafafa" stroke-width="0.65" stroke-linejoin="round" stroke-linecap="round" opacity="0.85">
+        <polygon points="14.5,8.0 23.5,8.0 28.5,5.1 28.5,53.1 23.5,56.0 14.5,56.0"/>
+        <polygon points="14.5,8.0 45.0,8.0 50.0,5.1 50.0,14.1 45.0,17.0 14.5,17.0"/>
+        <polygon points="36.0,8.0 45.0,8.0 50.0,5.1 50.0,36.1 45.0,39.0 36.0,39.0"/>
+        <path d="M23.5,30.0 L45.0,30.0 L50.0,27.1 L50.0,36.1 L45.0,39.0 L23.5,39.0"/>
+      </g>
+    </svg>
+  </div>
+
+  <div class="panel s3 light"><div class="lbl">On light</div>
+    <!-- {{SVG_ONLIGHT}} -->
+    <svg width="88" height="88" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright on light impossible P">
+      <!-- dark teal beams + amber junction; navy edges carry the form on light -->
+      <!-- right bowl beam -->
+      <polygon points="45.0,8.0 45.0,39.0 50.0,36.1 50.0,5.1" fill="#0a6960"/>
+      <polygon points="36.0,8.0 45.0,8.0 50.0,5.1 41.0,5.1" fill="#2dd4bf"/>
+      <polygon points="36.0,8.0 45.0,8.0 45.0,39.0 36.0,39.0" fill="#14b8a6"/>
+      <!-- stem -->
+      <polygon points="23.5,8.0 23.5,56.0 28.5,53.1 28.5,5.1" fill="#0d9488"/>
+      <polygon points="14.5,8.0 23.5,8.0 28.5,5.1 19.5,5.1" fill="#2dd4bf"/>
+      <polygon points="14.5,8.0 23.5,8.0 23.5,56.0 14.5,56.0" fill="#14b8a6"/>
+      <!-- amber RIGHT (in front of stem) -->
+      <polygon points="23.5,30.0 45.0,30.0 50.0,27.1 28.5,27.1" fill="#fbbf24"/>
+      <polygon points="45.0,30.0 45.0,39.0 50.0,36.1 50.0,27.1" fill="#b86a06"/>
+      <polygon points="23.5,30.0 45.0,30.0 45.0,39.0 23.5,39.0" fill="#e08a09"/>
+      <!-- top beam -->
+      <polygon points="45.0,8.0 45.0,17.0 50.0,14.1 50.0,5.1" fill="#0a6960"/>
+      <polygon points="14.5,8.0 45.0,8.0 50.0,5.1 19.5,5.1" fill="#2dd4bf"/>
+      <polygon points="14.5,8.0 45.0,8.0 45.0,17.0 14.5,17.0" fill="#14b8a6"/>
+      <!-- dark navy outlines so the impossible P holds on a light field -->
+      <g fill="none" stroke="#0f172a" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round">
+        <polygon points="14.5,8.0 23.5,8.0 28.5,5.1 28.5,53.1 23.5,56.0 14.5,56.0"/>
+        <polygon points="14.5,8.0 45.0,8.0 50.0,5.1 50.0,14.1 45.0,17.0 14.5,17.0"/>
+        <polygon points="36.0,8.0 45.0,8.0 50.0,5.1 50.0,36.1 45.0,39.0 36.0,39.0"/>
+        <path d="M23.5,30.0 L45.0,30.0 L50.0,27.1 L50.0,36.1 L45.0,39.0 L23.5,39.0"/>
+      </g>
+    </svg>
+  </div>
+</div>
+
+<!-- ===== subtle optional motion: the impossible P rocks gently in place,
+     so the loop's "wrongness" keeps catching the eye. Geometry never deforms. ===== -->
+<style>
+@media (prefers-reduced-motion: reduce){
+  .imp-hero{animation:none !important}
+}
+/* HERO only: a tiny in-place rock — never a full spin. Keeps it premium, not gimmicky. */
+.imp-hero{
+  transform-origin:50% 52%;
+  animation: imp-rock 9s ease-in-out infinite;
+}
+@keyframes imp-rock{
+  0%,100% { transform: rotate(-1.2deg); }
+  50%     { transform: rotate(1.2deg); }
+}
+</style>
+</body></html>

@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="robots" content="noindex"/>
+<title>Partwright — Hex bolt · print</title>
+<style>
+@import url('../fonts.css');
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#09090b;color:#e4e4e7;font-family:'Space Grotesk',system-ui,sans-serif;padding:40px 56px 90px}
+a.back{color:#71717a;font-size:13px;text-decoration:none}
+a.back:hover{color:#e4e4e7}
+.head{margin:20px 0 6px;font:800 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.thesis{color:#a1a1aa;font-size:15px;max-width:640px;line-height:1.6;margin-bottom:34px}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
+.panel{background:#18181b;border:1px solid #27272a;border-radius:16px;padding:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;min-height:150px}
+.panel .lbl{font:600 11px 'Space Grotesk';letter-spacing:1.5px;text-transform:uppercase;color:#52525b}
+.s3{grid-column:span 3}.s5{grid-column:span 5}.s7{grid-column:span 7}
+.hero{min-height:230px}
+.lockup{display:flex;align-items:center;gap:14px}
+.lockup .wm{font:700 32px 'Sora';letter-spacing:-1px;color:#fafafa}
+.favs{display:flex;align-items:flex-end;gap:16px}
+.fav{background:#0b0b0d;border:1px solid #27272a;border-radius:8px;padding:8px;display:flex;align-items:center;justify-content:center}
+.light{background:#f4f4f5}
+.light .lbl{color:#a1a1aa}
+
+/* ===== motion ===== */
+@media (prefers-reduced-motion: reduce){
+  .ly,.aly,.flash,.plate{animation:none !important}
+  .ly,.aly{opacity:1 !important;transform:none !important}
+  .flash{stroke-opacity:0 !important}
+}
+
+/*
+  Coordinate math (64×64 viewBox, iso right-handed Z-up):
+  - Plate center: (32, 46.5). Plate half-width: 14.8, half-depth: 7.4
+  - Shaft half-width dx=5.5, dy=2.75  (narrow cylinder, ~37% of plate)
+  - Head  half-width dx=9.0, dy=4.5   (wide hex head, ~61% of plate)
+  - Each layer height = 2.45 SVG units (upward = subtract from y)
+  - Shaft: 8 layers (z 0–8)   starting at plate surface
+  - Head:  4 layers (z 8–12)  wider cap on top of shaft
+
+  Shaft corners (left/right of front-facing row) at z=0:
+    right = (32+5.5, 46.5+2.75) = (37.5, 49.25)
+    left  = (32-5.5, 46.5+2.75) = (26.5, 49.25)
+    back-center (top-of-diamond face) = (32, 46.5)
+
+  At z=n: subtract n*2.45 from all y values.
+  Shaft top z=8: back-center y = 46.5 - 19.6 = 26.9
+                  side row y   = 49.25 - 19.6 = 29.65
+
+  Head base z=8 (uses wider dx=9.0, dy=4.5):
+    right = (41.0, 29.65+1.75) = wait — the head sits at the same height as shaft top.
+    At z=8: back-center y = 26.9
+    head right-corner y  = 26.9 + 4.5 = 31.4
+    head left  = (23.0, 31.4)
+    head right = (41.0, 31.4)
+
+  Each layer n of shaft:
+    top-row    y = 49.25 - n*2.45
+    bottom-row y = 49.25 - (n-1)*2.45   (= top-row + 2.45)
+    back-top   y = 46.5  - n*2.45
+    back-bot   y = 46.5  - (n-1)*2.45
+
+  Layer 0 (bottom shaft):  top-row = 49.25, back-top = 46.5, bot-row = 51.7, back-bot = 48.95
+  Layer 1: top 46.8, back 44.05, bot 49.25, back-bot 46.5
+  ...
+  Layer 7 (top shaft):  top 30.55, back 27.8, bot 33.0, back-bot 30.25
+
+  Head layer 0 (z=8, shaft-top to head-base):
+    base: side-row = 31.4, back = 26.9  (head corners)
+    top:  side-row = 31.4 - 2.45 = 28.95, back = 24.45
+  Head layer 1 (z=9):  top 26.5, back 22.0 ...
+  Head layer 2 (z=10): top 24.05, back 19.55
+  Head layer 3 (z=11): top 21.6,  back 17.1  — top face of head
+
+  Hex recess on top of head: small 4-point iso diamond inset, ~3.5 dx,1.75 dy
+  Top face of head at y=17.1 (back), 21.6 (sides)
+*/
+
+/* All layers: 5.2s loop, same keyframe timing technique as logo-12.
+   0%/100% = finished deposited state (static capture = complete bolt).
+   Layers un-print top-first (12 → 0), then re-print bottom-up (0 → 12). */
+.ly,.aly{
+  animation-duration: 5.2s;
+  animation-timing-function: cubic-bezier(.4,.72,.3,1);
+  animation-iteration-count: infinite;
+}
+/* shaft layers 0–7 */
+.ly0,.aly0{ animation-name:lay0; }
+.ly1,.aly1{ animation-name:lay1; }
+.ly2,.aly2{ animation-name:lay2; }
+.ly3,.aly3{ animation-name:lay3; }
+.ly4,.aly4{ animation-name:lay4; }
+.ly5,.aly5{ animation-name:lay5; }
+.ly6,.aly6{ animation-name:lay6; }
+.ly7,.aly7{ animation-name:lay7; }
+/* head layers 8–11 */
+.ly8,.aly8{  animation-name:lay8;  }
+.ly9,.aly9{  animation-name:lay9;  }
+.ly10,.aly10{ animation-name:lay10; }
+.ly11,.aly11{ animation-name:lay11; }
+
+/* layer 0 = bottom shaft (last to leave, first to return) … layer 11 = crown */
+/* Un-print phase: layers leave top-first starting at ~11%, 1.4% apart each step down.
+   Each gap: 5.8% apart for clear window.
+   Re-print phase: layers deposit bottom-up starting at ~38%, 5.5% apart.     */
+@keyframes lay0 { 0%,23.6%{opacity:1;transform:translateY(0)} 29.6%,36%{opacity:0;transform:translateY(3px)} 41.6%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay1 { 0%,22.2%{opacity:1;transform:translateY(0)} 28.2%,42.5%{opacity:0;transform:translateY(3px)} 48.1%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay2 { 0%,20.8%{opacity:1;transform:translateY(0)} 26.8%,49.0%{opacity:0;transform:translateY(3px)} 54.6%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay3 { 0%,19.4%{opacity:1;transform:translateY(0)} 25.4%,55.5%{opacity:0;transform:translateY(3px)} 61.1%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay4 { 0%,18.0%{opacity:1;transform:translateY(0)} 24.0%,61.9%{opacity:0;transform:translateY(3px)} 67.4%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay5 { 0%,16.6%{opacity:1;transform:translateY(0)} 22.6%,65.0%{opacity:0;transform:translateY(3px)} 70.5%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay6 { 0%,15.2%{opacity:1;transform:translateY(0)} 21.2%,68.0%{opacity:0;transform:translateY(3px)} 73.5%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay7 { 0%,13.8%{opacity:1;transform:translateY(0)} 19.8%,71.0%{opacity:0;transform:translateY(3px)} 76.5%,100%{opacity:1;transform:translateY(0)} }
+/* head layers: slightly larger drop (wider mass) */
+@keyframes lay8  { 0%,12.4%{opacity:1;transform:translateY(0)} 18.4%,74.0%{opacity:0;transform:translateY(3.5px)} 80.0%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay9  { 0%,11.0%{opacity:1;transform:translateY(0)} 17.0%,77.0%{opacity:0;transform:translateY(3.5px)} 83.5%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay10 { 0%,9.6%{opacity:1;transform:translateY(0)}  15.6%,80.0%{opacity:0;transform:translateY(3.5px)} 87.0%,100%{opacity:1;transform:translateY(0)} }
+@keyframes lay11 { 0%,8.2%{opacity:1;transform:translateY(0)}  14.2%,83.0%{opacity:0;transform:translateY(3.5px)} 90.5%,100%{opacity:1;transform:translateY(0)} }
+
+/* HERO only: teal print-head blip flashes on each layer's top the instant it deposits */
+.ly .flash{ stroke-opacity:0; animation:5.2s linear infinite; }
+.ly0 .flash{ animation-name:blip0; }
+.ly1 .flash{ animation-name:blip1; }
+.ly2 .flash{ animation-name:blip2; }
+.ly3 .flash{ animation-name:blip3; }
+.ly4 .flash{ animation-name:blip4; }
+.ly5 .flash{ animation-name:blip5; }
+.ly6 .flash{ animation-name:blip6; }
+.ly7 .flash{ animation-name:blip7; }
+.ly8  .flash{ animation-name:blip8;  }
+.ly9  .flash{ animation-name:blip9;  }
+.ly10 .flash{ animation-name:blip10; }
+.ly11 .flash{ animation-name:blip11; }
+
+@keyframes blip0 { 0%,36%{stroke-opacity:0}  40%{stroke-opacity:.9}  48%{stroke-opacity:0}  100%{stroke-opacity:0} }
+@keyframes blip1 { 0%,42%{stroke-opacity:0}  46%{stroke-opacity:.9}  54%{stroke-opacity:0}  100%{stroke-opacity:0} }
+@keyframes blip2 { 0%,48%{stroke-opacity:0}  52%{stroke-opacity:.9}  60%{stroke-opacity:0}  100%{stroke-opacity:0} }
+@keyframes blip3 { 0%,55%{stroke-opacity:0}  59%{stroke-opacity:.9}  67%{stroke-opacity:0}  100%{stroke-opacity:0} }
+@keyframes blip4 { 0%,61%{stroke-opacity:0}  65%{stroke-opacity:.9}  73%{stroke-opacity:0}  100%{stroke-opacity:0} }
+@keyframes blip5 { 0%,64%{stroke-opacity:0}  68%{stroke-opacity:.9}  76%{stroke-opacity:0}  100%{stroke-opacity:0} }
+@keyframes blip6 { 0%,67%{stroke-opacity:0}  71%{stroke-opacity:.9}  79%{stroke-opacity:0}  100%{stroke-opacity:0} }
+@keyframes blip7 { 0%,70%{stroke-opacity:0}  74%{stroke-opacity:.9}  82%{stroke-opacity:0}  100%{stroke-opacity:0} }
+@keyframes blip8  { 0%,74%{stroke-opacity:0}  78%{stroke-opacity:.95} 86%{stroke-opacity:0}  100%{stroke-opacity:0} }
+@keyframes blip9  { 0%,77%{stroke-opacity:0}  81%{stroke-opacity:.95} 89%{stroke-opacity:0}  100%{stroke-opacity:0} }
+@keyframes blip10 { 0%,80%{stroke-opacity:0}  84%{stroke-opacity:.95} 92%{stroke-opacity:0}  100%{stroke-opacity:0} }
+@keyframes blip11 { 0%,83%{stroke-opacity:0}  87%{stroke-opacity:.95} 95%{stroke-opacity:0}  100%{stroke-opacity:0} }
+
+/* build-plate pulses faintly during the clear/re-print window */
+.plate{ animation:plate 5.2s ease-in-out infinite; }
+@keyframes plate{
+  0%,8%,100% { opacity:1; }
+  20%,34%    { opacity:.68; }
+}
+</style></head>
+<body>
+<a class="back" href="../">← all mockups</a>
+<div class="head">Hex bolt · print</div>
+<div class="thesis">The hex socket head cap screw — the Allen bolt — is the fundamental fastener of precision manufacturing: a cylindrical shaft topped by a wider cap with a recessed hex drive, made to be torqued exact. The primary mark shows one printing itself FDM-style on the dark iso build plate, shaft depositing layer by layer from the ground up before the wider socket head caps it, layer by layer. A single amber catch-light kisses the top leading edge of the head — the maker's spark, the moment the part is done.</div>
+<div class="grid">
+
+  <!-- ===== Hero: animated build ===== -->
+  <div class="panel hero s5"><div class="lbl">Primary mark</div>
+    <!--
+      Hex socket head cap screw — iso geometry (64×64 viewBox)
+      Shaft: dx=5.5, dy=2.75 from center. 8 layers × 2.45px.
+      Head:  dx=9.0, dy=4.5  from center. 4 layers × 2.45px.
+      Center-x=32. Plate surface center y=46.5.
+
+      Key coordinates:
+        Shaft base  (z=0): right=(37.5,49.25) left=(26.5,49.25) back=(32,46.5)
+        Shaft top   (z=8): right=(37.5,29.65) left=(26.5,29.65) back=(32,26.9)
+        Head base   (z=8): right=(41.0,31.4)  left=(23.0,31.4)  back=(32,26.9)
+        Head top    (z=12):right=(41.0,21.6)  left=(23.0,21.6)  back=(32,17.1)
+        Hex recess (inscribed in head top): 6 points, dx=4.0,dy=2.0 with 60° iso hex
+    -->
+    <svg class="hero-mark" width="120" height="120" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright — hex socket head cap screw printing itself layer by layer on an isometric build plate">
+      <defs>
+        <!-- shaft gradients -->
+        <linearGradient id="h-sr" x1="37.5" y1="29.65" x2="37.5" y2="49.25" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+        </linearGradient>
+        <linearGradient id="h-sl" x1="26.5" y1="29.65" x2="26.5" y2="49.25" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6b62"/>
+        </linearGradient>
+        <!-- head gradients (brighter, wider) -->
+        <linearGradient id="h-hr" x1="41.0" y1="21.6" x2="41.0" y2="31.4" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <linearGradient id="h-hl" x1="23.0" y1="21.6" x2="23.0" y2="31.4" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+        </linearGradient>
+        <linearGradient id="h-htop" x1="23" y1="17" x2="41" y2="22" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <!-- hex recess fill -->
+        <linearGradient id="h-hex" x1="28" y1="18" x2="36" y2="22" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#072e2b"/><stop offset="1" stop-color="#0a4a44"/>
+        </linearGradient>
+        <!-- plate -->
+        <linearGradient id="h-plate" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#1f2937"/><stop offset="1" stop-color="#0f172a"/>
+        </linearGradient>
+        <radialGradient id="h-shadow" cx="0.5" cy="0.5" r="0.5">
+          <stop offset="0" stop-color="#000" stop-opacity="0.45"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+
+      <!-- contact shadow -->
+      <ellipse cx="32" cy="56" rx="16" ry="2.2" fill="url(#h-shadow)"/>
+
+      <!-- build plate: dark navy iso slab -->
+      <g class="plate">
+        <!-- top face diamond -->
+        <path d="M46.8 45.9 L32 53.3 L17.2 45.9 L32 38.5 Z" fill="#111827"/>
+        <!-- left face -->
+        <path d="M17.2 45.9 L32 53.3 L32 55.2 L17.2 47.8 Z" fill="url(#h-plate)"/>
+        <!-- right face -->
+        <path d="M46.8 45.9 L32 53.3 L32 55.2 L46.8 47.8 Z" fill="#0b1220"/>
+        <!-- datum grid lines on plate -->
+        <path d="M46.8 45.9 L32 53.3 L17.2 45.9" fill="none" stroke="#14b8a6" stroke-width="0.55" stroke-opacity="0.35" stroke-linejoin="round"/>
+        <!-- cross-lines -->
+        <path d="M32 38.5 L32 53.3 M23.6 42.2 L40.4 42.2" fill="none" stroke="#14b8a6" stroke-width="0.4" stroke-opacity="0.18"/>
+      </g>
+
+      <!-- ===== SHAFT: 8 layers (ly0=bottom … ly7=top) ===== -->
+      <!--
+        Shaft at z=n occupies y-band:
+          bottom-row: 49.25 - (n-1)*2.45   [for n=0: 49.25 itself is the top of layer 0's bottom, plate sits below]
+          top-row:    49.25 - n*2.45
+          back-bot:   46.5  - (n-1)*2.45
+          back-top:   46.5  - n*2.45
+        Layer n left face:  M(26.5, back-top) L(32, top-row) L(32, bot-row) L(26.5, back-bot) Z
+        Layer n right face: M(37.5, back-top) L(32, top-row) L(32, bot-row) L(37.5, back-bot) Z
+        Layer n seam (top edge visible): M(26.5, back-top) L(32, top-row) L(37.5, back-top)
+
+        Layer 0: top-row=49.25, back-top=46.5,  bot-row=51.70, back-bot=48.95  [start at plate]
+        Layer 1: top=46.80,     back=44.05,      bot=49.25,     back-bot=46.5
+        Layer 2: top=44.35,     back=41.60,      bot=46.80,     back-bot=44.05
+        Layer 3: top=41.90,     back=39.15,      bot=44.35,     back-bot=41.60
+        Layer 4: top=39.45,     back=36.70,      bot=41.90,     back-bot=39.15
+        Layer 5: top=37.00,     back=34.25,      bot=39.45,     back-bot=36.70
+        Layer 6: top=34.55,     back=31.80,      bot=37.00,     back-bot=34.25
+        Layer 7: top=32.10,     back=29.35,      bot=34.55,     back-bot=31.80
+        Shaft top (z=8): row=29.65, back=26.90
+      -->
+
+      <!-- Shaft layer 0 (bottom, sits on plate) -->
+      <g class="ly ly0">
+        <path d="M26.5 46.5 L32 49.25 L32 51.7 L26.5 48.95 Z" fill="url(#h-sl)"/>
+        <path d="M37.5 46.5 L32 49.25 L32 51.7 L37.5 48.95 Z" fill="url(#h-sr)"/>
+        <path class="seam" d="M26.5 46.5 L32 49.25 L37.5 46.5" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+        <path class="flash" d="M26.5 46.5 L32 49.25 L37.5 46.5 L37.5 44.05 L32 46.8 L26.5 44.05 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+      <!-- Shaft layer 1 -->
+      <g class="ly ly1">
+        <path d="M26.5 44.05 L32 46.8 L32 49.25 L26.5 46.5 Z" fill="url(#h-sl)"/>
+        <path d="M37.5 44.05 L32 46.8 L32 49.25 L37.5 46.5 Z" fill="url(#h-sr)"/>
+        <path class="seam" d="M26.5 44.05 L32 46.8 L37.5 44.05" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+        <path class="flash" d="M26.5 44.05 L32 46.8 L37.5 44.05 L37.5 41.6 L32 44.35 L26.5 41.6 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+      <!-- Shaft layer 2 -->
+      <g class="ly ly2">
+        <path d="M26.5 41.6 L32 44.35 L32 46.8 L26.5 44.05 Z" fill="url(#h-sl)"/>
+        <path d="M37.5 41.6 L32 44.35 L32 46.8 L37.5 44.05 Z" fill="url(#h-sr)"/>
+        <path class="seam" d="M26.5 41.6 L32 44.35 L37.5 41.6" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+        <!-- thread lines (subtle horizontal striations spaced every 2 layers) -->
+        <path class="thr" d="M26.5 42.8 L32 45.55 L37.5 42.8" fill="none" stroke="#0b3b38" stroke-width="0.45" stroke-opacity="0.55"/>
+        <path class="flash" d="M26.5 41.6 L32 44.35 L37.5 41.6 L37.5 39.15 L32 41.9 L26.5 39.15 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+      <!-- Shaft layer 3 -->
+      <g class="ly ly3">
+        <path d="M26.5 39.15 L32 41.9 L32 44.35 L26.5 41.6 Z" fill="url(#h-sl)"/>
+        <path d="M37.5 39.15 L32 41.9 L32 44.35 L37.5 41.6 Z" fill="url(#h-sr)"/>
+        <path class="seam" d="M26.5 39.15 L32 41.9 L37.5 39.15" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+        <path class="flash" d="M26.5 39.15 L32 41.9 L37.5 39.15 L37.5 36.7 L32 39.45 L26.5 36.7 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+      <!-- Shaft layer 4 -->
+      <g class="ly ly4">
+        <path d="M26.5 36.7 L32 39.45 L32 41.9 L26.5 39.15 Z" fill="url(#h-sl)"/>
+        <path d="M37.5 36.7 L32 39.45 L32 41.9 L37.5 39.15 Z" fill="url(#h-sr)"/>
+        <path class="seam" d="M26.5 36.7 L32 39.45 L37.5 36.7" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+        <!-- thread line -->
+        <path class="thr" d="M26.5 37.9 L32 40.65 L37.5 37.9" fill="none" stroke="#0b3b38" stroke-width="0.45" stroke-opacity="0.55"/>
+        <path class="flash" d="M26.5 36.7 L32 39.45 L37.5 36.7 L37.5 34.25 L32 37.0 L26.5 34.25 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+      <!-- Shaft layer 5 -->
+      <g class="ly ly5">
+        <path d="M26.5 34.25 L32 37.0 L32 39.45 L26.5 36.7 Z" fill="url(#h-sl)"/>
+        <path d="M37.5 34.25 L32 37.0 L32 39.45 L37.5 36.7 Z" fill="url(#h-sr)"/>
+        <path class="seam" d="M26.5 34.25 L32 37.0 L37.5 34.25" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+        <path class="flash" d="M26.5 34.25 L32 37.0 L37.5 34.25 L37.5 31.8 L32 34.55 L26.5 31.8 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+      <!-- Shaft layer 6 -->
+      <g class="ly ly6">
+        <path d="M26.5 31.8 L32 34.55 L32 37.0 L26.5 34.25 Z" fill="url(#h-sl)"/>
+        <path d="M37.5 31.8 L32 34.55 L32 37.0 L37.5 34.25 Z" fill="url(#h-sr)"/>
+        <path class="seam" d="M26.5 31.8 L32 34.55 L37.5 31.8" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+        <!-- thread line -->
+        <path class="thr" d="M26.5 33.0 L32 35.75 L37.5 33.0" fill="none" stroke="#0b3b38" stroke-width="0.45" stroke-opacity="0.55"/>
+        <path class="flash" d="M26.5 31.8 L32 34.55 L37.5 31.8 L37.5 29.35 L32 32.1 L26.5 29.35 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+      <!-- Shaft layer 7 (top of shaft, at z=7→8) -->
+      <g class="ly ly7">
+        <path d="M26.5 29.35 L32 32.1 L32 34.55 L26.5 31.8 Z" fill="url(#h-sl)"/>
+        <path d="M37.5 29.35 L32 32.1 L32 34.55 L37.5 31.8 Z" fill="url(#h-sr)"/>
+        <!-- shaft top face (small diamond at z=8) — exposed before head sits on it -->
+        <path d="M32 26.9 L37.5 29.65 L32 32.4 L26.5 29.65 Z" fill="#14b8a6" fill-opacity="0.6"/>
+        <path class="seam" d="M26.5 29.35 L32 32.1 L37.5 29.35" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+        <path class="flash" d="M26.5 29.35 L32 32.1 L37.5 29.35 L37.5 26.9 L32 29.65 L26.5 26.9 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+      </g>
+
+      <!-- ===== HEAD: 4 layers (ly8=base…ly11=crown) — wider cap ===== -->
+      <!--
+        Head corners: right=(41.0, 31.4) left=(23.0, 31.4) back=(32, 26.9) [z=8]
+        Head top:     right=(41.0, 21.6) left=(23.0, 21.6) back=(32, 17.1) [z=12]
+        Layer 8 (z=8→9):   bot-row=31.4,back-bot=26.9, top-row=28.95,back-top=24.45
+        Layer 9 (z=9→10):  bot-row=28.95,back-bot=24.45, top-row=26.5,back-top=22.0
+        Layer 10 (z=10→11):bot-row=26.5,back-bot=22.0, top-row=24.05,back-top=19.55
+        Layer 11 (z=11→12):bot-row=24.05,back-bot=19.55, top-row=21.6,back-top=17.1
+
+        Left face:  M(23, back-top) L(32, top-row) L(32, bot-row) L(23, back-bot) Z
+        Right face: M(41, back-top) L(32, top-row) L(32, bot-row) L(41, back-bot) Z
+
+        Shoulder step (ring between shaft-top and head-base) — two small triangular faces:
+        Left shoulder:  M(26.5, 29.65) L(32, 32.4) L(32, 31.4) L(23, 26.9) — wait, need proper quad
+        Actually: the shoulder top face is part of head layer 8's bottom, and the visible step
+        is the head face from its base down to shaft-top level.
+        The under-shoulder (the overhang facing downward) is not visible from this iso angle.
+        Instead, the head's wider walls simply start at z=8 and the shaft walls stop at z=8.
+        The junction reads as a clear step.
+      -->
+
+      <!-- Head layer 8 (lowest head layer, z=8→9) -->
+      <g class="ly ly8">
+        <!-- left face -->
+        <path d="M23.0 24.45 L32 28.95 L32 31.4 L23.0 26.9 Z" fill="url(#h-hl)"/>
+        <!-- right face -->
+        <path d="M41.0 24.45 L32 28.95 L32 31.4 L41.0 26.9 Z" fill="url(#h-hr)"/>
+        <!-- head shoulder step visible: left overhang rim from shaft to head -->
+        <path d="M26.5 29.65 L23.0 26.9 L23.0 31.4 L26.5 34.15" fill="none" stroke="#0d9488" stroke-width="0.5" stroke-opacity="0.6"/>
+        <path d="M37.5 29.65 L41.0 26.9 L41.0 31.4 L37.5 34.15" fill="none" stroke="#0d9488" stroke-width="0.5" stroke-opacity="0.6"/>
+        <path class="seam" d="M23.0 24.45 L32 28.95 L41.0 24.45" fill="none" stroke="#083d38" stroke-width="0.55" stroke-opacity="0.4"/>
+        <path class="flash" d="M23.0 24.45 L32 28.95 L41.0 24.45 L41.0 26.9 L32 31.4 L23.0 26.9 Z" fill="none" stroke="#ccfbf1" stroke-width="1.15" stroke-opacity="0"/>
+      </g>
+      <!-- Head layer 9 (z=9→10) -->
+      <g class="ly ly9">
+        <path d="M23.0 22.0 L32 26.5 L32 28.95 L23.0 24.45 Z" fill="url(#h-hl)"/>
+        <path d="M41.0 22.0 L32 26.5 L32 28.95 L41.0 24.45 Z" fill="url(#h-hr)"/>
+        <path class="seam" d="M23.0 22.0 L32 26.5 L41.0 22.0" fill="none" stroke="#083d38" stroke-width="0.55" stroke-opacity="0.4"/>
+        <path class="flash" d="M23.0 22.0 L32 26.5 L41.0 22.0 L41.0 24.45 L32 28.95 L23.0 24.45 Z" fill="none" stroke="#ccfbf1" stroke-width="1.15" stroke-opacity="0"/>
+      </g>
+      <!-- Head layer 10 (z=10→11) -->
+      <g class="ly ly10">
+        <path d="M23.0 19.55 L32 24.05 L32 26.5 L23.0 22.0 Z" fill="url(#h-hl)"/>
+        <path d="M41.0 19.55 L32 24.05 L32 26.5 L41.0 22.0 Z" fill="url(#h-hr)"/>
+        <path class="seam" d="M23.0 19.55 L32 24.05 L41.0 19.55" fill="none" stroke="#083d38" stroke-width="0.55" stroke-opacity="0.4"/>
+        <path class="flash" d="M23.0 19.55 L32 24.05 L41.0 19.55 L41.0 22.0 L32 26.5 L23.0 22.0 Z" fill="none" stroke="#ccfbf1" stroke-width="1.15" stroke-opacity="0"/>
+      </g>
+      <!-- Head layer 11 — crown (z=11→12) — includes top face + hex recess + amber spark -->
+      <g class="ly ly11">
+        <path d="M23.0 17.1 L32 21.6 L32 24.05 L23.0 19.55 Z" fill="url(#h-hl)"/>
+        <path d="M41.0 17.1 L32 21.6 L32 24.05 L41.0 19.55 Z" fill="url(#h-hr)"/>
+        <!-- top face of the hex head — iso diamond -->
+        <path d="M32 17.1 L41.0 21.6 L32 26.1 L23.0 21.6 Z" fill="url(#h-htop)"/>
+        <!-- hex socket recess (Allen drive) — inset hexagonal depression on top face.
+             In iso, a regular hex projects as: center at (32,21.6), 6 points at ±dx,±dy.
+             Simplified as a 4-point "diamond" for clarity at small sizes, slightly inset.
+             Points: top=(32,18.95), right=(35.5,20.7), bottom=(32,22.5), left=(28.5,20.7) -->
+        <path d="M32 18.95 L35.5 20.7 L32 22.5 L28.5 20.7 Z" fill="url(#h-hex)"/>
+        <!-- hex recess edge highlight -->
+        <path d="M28.5 20.7 L32 18.95 L35.5 20.7" fill="none" stroke="#1a6b64" stroke-width="0.4" stroke-opacity="0.8"/>
+        <!-- lit front edge of the crown -->
+        <path d="M23.0 21.6 L32 26.1 L41.0 21.6" fill="none" stroke="#ccfbf1" stroke-width="0.7" stroke-opacity="0.85" stroke-linejoin="round"/>
+        <!-- amber maker's spark — catch-light on the top leading edge -->
+        <path d="M33.8 18.2 L39.8 21.05" fill="none" stroke="#fbbf24" stroke-width="1.15" stroke-linecap="round" opacity="0.95"/>
+        <path class="flash" d="M23.0 17.1 L32 21.6 L41.0 17.1 L41.0 19.55 L32 24.05 L23.0 19.55 Z" fill="none" stroke="#ccfbf1" stroke-width="1.15" stroke-opacity="0"/>
+      </g>
+    </svg>
+  </div>
+
+  <!-- ===== Wordmark lockup ===== -->
+  <div class="panel s7"><div class="lbl">Wordmark lockup</div><div class="lockup">
+    <svg width="42" height="42" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright mark — hex socket bolt">
+      <defs>
+        <linearGradient id="m-sr" x1="37.5" y1="29.65" x2="37.5" y2="49.25" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+        </linearGradient>
+        <linearGradient id="m-sl" x1="26.5" y1="29.65" x2="26.5" y2="49.25" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6b62"/>
+        </linearGradient>
+        <linearGradient id="m-hr" x1="41" y1="21.6" x2="41" y2="31.4" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <linearGradient id="m-hl" x1="23" y1="21.6" x2="23" y2="31.4" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+        </linearGradient>
+        <linearGradient id="m-htop" x1="23" y1="17" x2="41" y2="22" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+      </defs>
+      <!-- shaft walls (full height) -->
+      <path d="M26.5 26.9 L32 29.65 L32 51.7 L26.5 48.95 Z" fill="url(#m-sl)"/>
+      <path d="M37.5 26.9 L32 29.65 L32 51.7 L37.5 48.95 Z" fill="url(#m-sr)"/>
+      <!-- shaft thread seams -->
+      <g stroke="#0b3b38" stroke-width="0.45" stroke-opacity="0.5" fill="none">
+        <path d="M26.5 31.8 L32 34.55 L37.5 31.8"/>
+        <path d="M26.5 36.7 L32 39.45 L37.5 36.7"/>
+        <path d="M26.5 41.6 L32 44.35 L37.5 41.6"/>
+        <path d="M26.5 46.5 L32 49.25 L37.5 46.5"/>
+      </g>
+      <!-- head walls -->
+      <path d="M23.0 17.1 L32 21.6 L32 31.4 L23.0 26.9 Z" fill="url(#m-hl)"/>
+      <path d="M41.0 17.1 L32 21.6 L32 31.4 L41.0 26.9 Z" fill="url(#m-hr)"/>
+      <!-- head top face -->
+      <path d="M32 17.1 L41.0 21.6 L32 26.1 L23.0 21.6 Z" fill="url(#m-htop)"/>
+      <!-- hex recess -->
+      <path d="M32 18.95 L35.5 20.7 L32 22.5 L28.5 20.7 Z" fill="#072e2b"/>
+      <!-- crown edge highlight -->
+      <path d="M23.0 21.6 L32 26.1 L41.0 21.6" fill="none" stroke="#ccfbf1" stroke-width="0.65" stroke-opacity="0.8" stroke-linejoin="round"/>
+      <!-- amber spark -->
+      <path d="M33.8 18.2 L39.8 21.05" fill="none" stroke="#fbbf24" stroke-width="1.05" stroke-linecap="round" opacity="0.9"/>
+    </svg>
+    <span class="wm">Partwright</span>
+  </div></div>
+
+  <!-- ===== App icon 104×104 ===== -->
+  <div class="panel s3"><div class="lbl">App icon</div>
+    <svg class="icon-mark" width="104" height="104" viewBox="0 0 104 104" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright app icon">
+      <defs>
+        <linearGradient id="a-bg" x1="0" y1="0" x2="104" y2="104" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#101a2b"/><stop offset="1" stop-color="#0b1220"/>
+        </linearGradient>
+        <linearGradient id="a-sr" x1="58" y1="46" x2="58" y2="76" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+        </linearGradient>
+        <linearGradient id="a-sl" x1="41" y1="46" x2="41" y2="76" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6b62"/>
+        </linearGradient>
+        <linearGradient id="a-hr" x1="63" y1="33" x2="63" y2="49" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+        <linearGradient id="a-hl" x1="36" y1="33" x2="36" y2="49" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+        </linearGradient>
+        <linearGradient id="a-htop" x1="36" y1="27" x2="64" y2="35" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+        </linearGradient>
+        <linearGradient id="a-plate" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#1f2937"/><stop offset="1" stop-color="#0f172a"/>
+        </linearGradient>
+        <clipPath id="a-clip"><rect x="0" y="0" width="104" height="104" rx="22"/></clipPath>
+      </defs>
+      <rect x="0" y="0" width="104" height="104" rx="22" fill="url(#a-bg)"/>
+      <g clip-path="url(#a-clip)">
+        <!-- Part scaled and centered. 64-space → 104-space: scale ≈ 1.55, translate ~(-18,5) -->
+        <!-- Computed: shaft center x=32*1.55-18=31.6≈32, plate surface y=46.5*1.55+5=77 -->
+        <!-- Using explicit coords scaled: multiply all x by (1.55) sub 18, y by 1.55 sub 10 -->
+        <!-- plate -->
+        <path d="M54.5 71.5 L36 82.1 L17.5 71.5 L36 60.9 Z" fill="#111827"/>
+        <path d="M17.5 71.5 L36 82.1 L36 84.7 L17.5 74.1 Z" fill="url(#a-plate)"/>
+        <path d="M54.5 71.5 L36 82.1 L36 84.7 L54.5 74.1 Z" fill="#0b1220"/>
+        <path d="M54.5 71.5 L36 82.1 L17.5 71.5" fill="none" stroke="#14b8a6" stroke-width="0.7" stroke-opacity="0.35" stroke-linejoin="round"/>
+
+        <!-- shaft walls (full, as solid) -->
+        <g class="aly aly0">
+          <path d="M28.0 68.5 L36 72.7 L36 86.0 L28.0 81.8 Z" fill="url(#a-sl)"/>
+          <path d="M44.0 68.5 L36 72.7 L36 86.0 L44.0 81.8 Z" fill="url(#a-sr)"/>
+        </g>
+        <g class="aly aly1">
+          <path d="M28.0 64.7 L36 68.9 L36 72.7 L28.0 68.5 Z" fill="url(#a-sl)"/>
+          <path d="M44.0 64.7 L36 68.9 L36 72.7 L44.0 68.5 Z" fill="url(#a-sr)"/>
+        </g>
+        <g class="aly aly2">
+          <path d="M28.0 60.9 L36 65.1 L36 68.9 L28.0 64.7 Z" fill="url(#a-sl)"/>
+          <path d="M44.0 60.9 L36 65.1 L36 68.9 L44.0 64.7 Z" fill="url(#a-sr)"/>
+        </g>
+        <g class="aly aly3">
+          <path d="M28.0 57.1 L36 61.3 L36 65.1 L28.0 60.9 Z" fill="url(#a-sl)"/>
+          <path d="M44.0 57.1 L36 61.3 L36 65.1 L44.0 60.9 Z" fill="url(#a-sr)"/>
+        </g>
+        <g class="aly aly4">
+          <path d="M28.0 53.3 L36 57.5 L36 61.3 L28.0 57.1 Z" fill="url(#a-sl)"/>
+          <path d="M44.0 53.3 L36 57.5 L36 61.3 L44.0 57.1 Z" fill="url(#a-sr)"/>
+        </g>
+        <g class="aly aly5">
+          <path d="M28.0 49.5 L36 53.7 L36 57.5 L28.0 53.3 Z" fill="url(#a-sl)"/>
+          <path d="M44.0 49.5 L36 53.7 L36 57.5 L44.0 53.3 Z" fill="url(#a-sr)"/>
+        </g>
+        <g class="aly aly6">
+          <path d="M28.0 45.7 L36 49.9 L36 53.7 L28.0 49.5 Z" fill="url(#a-sl)"/>
+          <path d="M44.0 45.7 L36 49.9 L36 53.7 L44.0 49.5 Z" fill="url(#a-sr)"/>
+        </g>
+        <g class="aly aly7">
+          <path d="M28.0 41.9 L36 46.1 L36 49.9 L28.0 45.7 Z" fill="url(#a-sl)"/>
+          <path d="M44.0 41.9 L36 46.1 L36 49.9 L44.0 45.7 Z" fill="url(#a-sr)"/>
+        </g>
+        <!-- head layers -->
+        <g class="aly aly8">
+          <path d="M22.0 37.9 L36 45.0 L36 48.7 L22.0 41.6 Z" fill="url(#a-hl)"/>
+          <path d="M50.0 37.9 L36 45.0 L36 48.7 L50.0 41.6 Z" fill="url(#a-hr)"/>
+        </g>
+        <g class="aly aly9">
+          <path d="M22.0 34.1 L36 41.2 L36 45.0 L22.0 37.9 Z" fill="url(#a-hl)"/>
+          <path d="M50.0 34.1 L36 41.2 L36 45.0 L50.0 37.9 Z" fill="url(#a-hr)"/>
+        </g>
+        <g class="aly aly10">
+          <path d="M22.0 30.3 L36 37.4 L36 41.2 L22.0 34.1 Z" fill="url(#a-hl)"/>
+          <path d="M50.0 30.3 L36 37.4 L36 41.2 L50.0 34.1 Z" fill="url(#a-hr)"/>
+        </g>
+        <g class="aly aly11">
+          <path d="M22.0 26.5 L36 33.6 L36 37.4 L22.0 30.3 Z" fill="url(#a-hl)"/>
+          <path d="M50.0 26.5 L36 33.6 L36 37.4 L50.0 30.3 Z" fill="url(#a-hr)"/>
+          <!-- top face -->
+          <path d="M36 26.5 L50.0 33.6 L36 40.7 L22.0 33.6 Z" fill="url(#a-htop)"/>
+          <!-- hex recess -->
+          <path d="M36 29.8 L40.3 32.0 L36 34.2 L31.7 32.0 Z" fill="#072e2b"/>
+          <!-- crown edge -->
+          <path d="M22.0 33.6 L36 40.7 L50.0 33.6" fill="none" stroke="#ccfbf1" stroke-width="0.8" stroke-opacity="0.8" stroke-linejoin="round"/>
+          <!-- amber spark -->
+          <path d="M38.1 27.8 L45.5 31.5" fill="none" stroke="#fbbf24" stroke-width="1.3" stroke-linecap="round" opacity="0.95"/>
+        </g>
+      </g>
+    </svg>
+  </div>
+
+  <!-- ===== Favicon 32/20/16 ===== -->
+  <div class="panel s3"><div class="lbl">Favicon · 32 / 20 / 16</div><div class="favs">
+    <div class="fav">
+      <svg width="32" height="32" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright favicon 32">
+        <defs>
+          <linearGradient id="f32-sr" x1="37.5" y1="29.65" x2="37.5" y2="49.25" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+          </linearGradient>
+          <linearGradient id="f32-sl" x1="26.5" y1="29.65" x2="26.5" y2="49.25" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6b62"/>
+          </linearGradient>
+          <linearGradient id="f32-hr" x1="41" y1="17" x2="41" y2="31" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+          </linearGradient>
+          <linearGradient id="f32-hl" x1="23" y1="17" x2="23" y2="31" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+          </linearGradient>
+          <linearGradient id="f32-htop" x1="23" y1="17" x2="41" y2="22" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+          </linearGradient>
+        </defs>
+        <!-- shaft -->
+        <path d="M26.5 26.9 L32 29.65 L32 49.25 L26.5 46.5 Z" fill="url(#f32-sl)"/>
+        <path d="M37.5 26.9 L32 29.65 L32 49.25 L37.5 46.5 Z" fill="url(#f32-sr)"/>
+        <!-- head -->
+        <path d="M23.0 17.1 L32 21.6 L32 26.9 L23.0 22.4 Z" fill="url(#f32-hl)"/>
+        <path d="M41.0 17.1 L32 21.6 L32 26.9 L41.0 22.4 Z" fill="url(#f32-hr)"/>
+        <path d="M32 17.1 L41.0 21.6 L32 26.1 L23.0 21.6 Z" fill="url(#f32-htop)"/>
+        <path d="M32 18.95 L35.5 20.7 L32 22.5 L28.5 20.7 Z" fill="#072e2b"/>
+        <path d="M33.8 18.2 L39.8 21.05" fill="none" stroke="#fbbf24" stroke-width="1.0" stroke-linecap="round" opacity="0.9"/>
+      </svg>
+    </div>
+    <div class="fav">
+      <svg width="20" height="20" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright favicon 20">
+        <defs>
+          <linearGradient id="f20-sr" x1="37.5" y1="29" x2="37.5" y2="49" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+          </linearGradient>
+          <linearGradient id="f20-sl" x1="26.5" y1="29" x2="26.5" y2="49" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6b62"/>
+          </linearGradient>
+          <linearGradient id="f20-hr" x1="41" y1="17" x2="41" y2="29" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+          </linearGradient>
+          <linearGradient id="f20-hl" x1="23" y1="17" x2="23" y2="29" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+          </linearGradient>
+          <linearGradient id="f20-htop" x1="23" y1="17" x2="41" y2="22" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+          </linearGradient>
+        </defs>
+        <path d="M26.5 26.9 L32 29.65 L32 49.0 L26.5 46.2 Z" fill="url(#f20-sl)"/>
+        <path d="M37.5 26.9 L32 29.65 L32 49.0 L37.5 46.2 Z" fill="url(#f20-sr)"/>
+        <path d="M23.0 17.1 L32 21.6 L32 26.9 L23.0 22.4 Z" fill="url(#f20-hl)"/>
+        <path d="M41.0 17.1 L32 21.6 L32 26.9 L41.0 22.4 Z" fill="url(#f20-hr)"/>
+        <path d="M32 17.1 L41.0 21.6 L32 26.1 L23.0 21.6 Z" fill="url(#f20-htop)"/>
+        <path d="M32 18.95 L35.5 20.7 L32 22.5 L28.5 20.7 Z" fill="#072e2b"/>
+      </svg>
+    </div>
+    <div class="fav">
+      <svg width="16" height="16" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright favicon 16">
+        <!-- 16px: bold flat tones, clear silhouette, no sub-pixel detail -->
+        <path d="M27 27 L32 30 L32 50 L27 47 Z" fill="#0d9488"/>
+        <path d="M37 27 L32 30 L32 50 L37 47 Z" fill="#14b8a6"/>
+        <path d="M23 18 L32 22 L32 27 L23 23 Z" fill="#0d9488"/>
+        <path d="M41 18 L32 22 L32 27 L41 23 Z" fill="#14b8a6"/>
+        <path d="M32 18 L41 22 L32 26 L23 22 Z" fill="#2dd4bf"/>
+        <path d="M32 19.5 L35 21 L32 22.5 L29 21 Z" fill="#072e2b"/>
+      </svg>
+    </div>
+  </div></div>
+
+  <!-- ===== Monochrome ===== -->
+  <div class="panel s3"><div class="lbl">Monochrome</div>
+    <svg width="88" height="88" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright monochrome">
+      <!-- three grey tones: shaft dark/mid, head mid/light, top white -->
+      <!-- shaft -->
+      <path d="M26.5 26.9 L32 29.65 L32 51.7 L26.5 48.95 Z" fill="#71717a"/>
+      <path d="M37.5 26.9 L32 29.65 L32 51.7 L37.5 48.95 Z" fill="#a1a1aa"/>
+      <!-- thread seams -->
+      <g stroke="#3f3f46" stroke-width="0.45" stroke-opacity="0.55" fill="none">
+        <path d="M26.5 31.8 L32 34.55 L37.5 31.8"/>
+        <path d="M26.5 36.7 L32 39.45 L37.5 36.7"/>
+        <path d="M26.5 41.6 L32 44.35 L37.5 41.6"/>
+        <path d="M26.5 46.5 L32 49.25 L37.5 46.5"/>
+      </g>
+      <!-- head -->
+      <path d="M23.0 17.1 L32 21.6 L32 31.4 L23.0 26.9 Z" fill="#71717a"/>
+      <path d="M41.0 17.1 L32 21.6 L32 31.4 L41.0 26.9 Z" fill="#a1a1aa"/>
+      <!-- head top -->
+      <path d="M32 17.1 L41.0 21.6 L32 26.1 L23.0 21.6 Z" fill="#fafafa"/>
+      <!-- hex recess -->
+      <path d="M32 18.95 L35.5 20.7 L32 22.5 L28.5 20.7 Z" fill="#3f3f46"/>
+      <!-- crown edge -->
+      <path d="M23.0 21.6 L32 26.1 L41.0 21.6" fill="none" stroke="#e4e4e7" stroke-width="0.6" stroke-opacity="0.7" stroke-linejoin="round"/>
+    </svg>
+  </div>
+
+  <!-- ===== On light ===== -->
+  <div class="panel s3 light"><div class="lbl">On light</div>
+    <svg width="88" height="88" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright on light">
+      <!-- deep navy/teal — teal head top so brand reads on white -->
+      <!-- shaft -->
+      <path d="M26.5 26.9 L32 29.65 L32 51.7 L26.5 48.95 Z" fill="#0f172a"/>
+      <path d="M37.5 26.9 L32 29.65 L32 51.7 L37.5 48.95 Z" fill="#1e293b"/>
+      <!-- thread seams -->
+      <g stroke="#020617" stroke-width="0.45" stroke-opacity="0.45" fill="none">
+        <path d="M26.5 31.8 L32 34.55 L37.5 31.8"/>
+        <path d="M26.5 36.7 L32 39.45 L37.5 36.7"/>
+        <path d="M26.5 41.6 L32 44.35 L37.5 41.6"/>
+        <path d="M26.5 46.5 L32 49.25 L37.5 46.5"/>
+      </g>
+      <!-- head -->
+      <path d="M23.0 17.1 L32 21.6 L32 31.4 L23.0 26.9 Z" fill="#0f172a"/>
+      <path d="M41.0 17.1 L32 21.6 L32 31.4 L41.0 26.9 Z" fill="#1e293b"/>
+      <!-- head top — teal so it reads on light -->
+      <path d="M32 17.1 L41.0 21.6 L32 26.1 L23.0 21.6 Z" fill="#0d9488"/>
+      <!-- hex recess -->
+      <path d="M32 18.95 L35.5 20.7 L32 22.5 L28.5 20.7 Z" fill="#054740"/>
+      <!-- crown edge highlight -->
+      <path d="M23.0 21.6 L32 26.1 L41.0 21.6" fill="none" stroke="#5eead4" stroke-width="0.65" stroke-opacity="0.9" stroke-linejoin="round"/>
+      <!-- amber spark -->
+      <path d="M33.8 18.2 L39.8 21.05" fill="none" stroke="#d97706" stroke-width="1.0" stroke-linecap="round" opacity="0.9"/>
+    </svg>
+  </div>
+</div>
+</body></html>
