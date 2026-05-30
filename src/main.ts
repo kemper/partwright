@@ -1693,6 +1693,18 @@ async function main() {
     return { sessionId: session.id };
   }
 
+  // Seed pre-computed colour regions (relief's per-colour bands, or a coloured
+  // mesh import's own regions) onto the just-run mesh and repaint. Shared by the
+  // mesh-placement helpers so relief's colours survive into whatever
+  // part/session the import-target modal sends them to.
+  function seedImportRegions(seedRegions: SeedRegion[] | undefined): void {
+    if (!seedRegions || seedRegions.length === 0) return;
+    for (const seed of seedRegions) {
+      addRegion(seed.name, seed.color, 'subtree', { kind: 'triangles', ids: seed.triangleIds }, new Set(seed.triangleIds));
+    }
+    if (currentMeshData) updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+  }
+
   // Import a parsed mesh (STL today) as a new session.
   //
   // Unlike code imports, the parsed mesh bytes don't live in the editor — they
@@ -1712,12 +1724,7 @@ async function main() {
     const code = generateImportCode([mesh], { manifold: opts.manifold });
     setValue(code);
     await runCodeSync(code);
-    if (opts.seedRegions && opts.seedRegions.length > 0) {
-      for (const seed of opts.seedRegions) {
-        addRegion(seed.name, seed.color, 'subtree', { kind: 'triangles', ids: seed.triangleIds }, new Set(seed.triangleIds));
-      }
-      if (currentMeshData) updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
-    }
+    seedImportRegions(opts.seedRegions);
     const thumbnail = await captureThumbnail();
     const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
     const label = opts.manifold ? 'imported' : 'imported (render-only)';
@@ -1884,7 +1891,7 @@ async function main() {
   // ImportedMesh, persist the relief settings, and open the studio. Used by
   // both the raster (createReliefFromImageData) and SVG (createReliefFromSvgText)
   // entry points so the post-generation flow stays in lockstep.
-  async function commitGeneratedRelief(result: GenerateReliefResult, opts: ReliefOptions, sourceName: string, sourceFile: File | null = null, isSvg = false): Promise<{ sessionId: string }> {
+  async function commitGeneratedRelief(result: GenerateReliefResult, opts: ReliefOptions, sourceName: string, sourceFile: File | null = null, isSvg = false, interactive = false): Promise<{ sessionId: string }> {
     if (result.mesh.numTri === 0) throw new Error('Source too small to build a relief — use a larger image or SVG.');
     const mesh: ImportedMesh = {
       id: generateId(),
@@ -1904,10 +1911,46 @@ async function main() {
     // downstream booleans/slice.
     const hasSeeds = !!(result.seedRegions && result.seedRegions.length > 0);
     const useManifold = result.mesh.watertight && !hasSeeds;
-    const { sessionId } = await importMeshPayload(mesh, sourceName, {
-      manifold: useManifold,
-      seedRegions: result.seedRegions,
-    });
+    const seedRegions = result.seedRegions;
+    // Honor the import-target choice (new part / current part / new session)
+    // exactly like STL/STEP/voxel imports — relief used to always spawn a fresh
+    // session via importMeshPayload, silently wiping the open part. Only the
+    // INTERACTIVE wizard path shows the modal; the console/AI path
+    // (importImageAsRelief/importSvgAsRelief) stays modal-free so agents — and
+    // tests that import twice in one page.evaluate — never block on a click,
+    // matching how voxel/image console imports already behave. Skip the modal
+    // too when there's no real work to protect (no session, or an expendable
+    // starter); then a fresh session is the right, non-destructive default
+    // (today's behavior, and what keeps a fresh-/editor relief import
+    // modal-free). The per-colour seed regions ride through new-part and
+    // new-session unchanged (single-mesh order preserved). "Add to current
+    // part" is disabled here: relief's seed-region triangle ids are indexed
+    // against the relief mesh's own triangle order, which compose-into would
+    // scramble — same out-of-scope call BREP imports make.
+    let sessionId: string;
+    if (!interactive || !getState().session || currentPartIsExpendable()) {
+      ({ sessionId } = await importMeshPayload(mesh, sourceName, { manifold: useManifold, seedRegions }));
+    } else {
+      const target = await showImportTargetModal({
+        title: 'Import relief',
+        filename: `${sourceName}.relief`,
+        currentPartName: getState().currentPart?.name ?? null,
+        canAddToCurrent: false,
+        addDisabledReason: 'Relief colours are keyed to this mesh, so it can only become its own part or session.',
+        recommend: 'new-part',
+      });
+      // Cancel: leave the current part untouched and skip relief-state persistence.
+      if (!target) return { sessionId: getState().session?.id ?? '' };
+      if (target === 'new-session') {
+        ({ sessionId } = await importMeshPayload(mesh, sourceName, { manifold: useManifold, seedRegions }));
+      } else {
+        // 'new-part' (default; 'current-part' is disabled above so never reached).
+        // seedNewPartWithMesh runs + saves the import wrapper as the new part's
+        // v1; seed the relief colours onto that version so they persist with it.
+        await seedNewPartWithMesh(mesh, `${sourceName}.relief`, useManifold, seedRegions);
+        sessionId = getState().session?.id ?? '';
+      }
+    }
     setReliefSettings(sessionId, {
       isRelief: true,
       layerHeight: opts.common.layerHeight,
@@ -1940,7 +1983,7 @@ async function main() {
     return null;
   }
 
-  async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string, sourceFile: File | null = null): Promise<{ sessionId: string }> {
+  async function createReliefFromImageData(image: ImageData, options: ReliefOptions, sourceName: string, sourceFile: File | null = null, interactive = false): Promise<{ sessionId: string }> {
     const opts: ReliefOptions = {
       ...options,
       common: clampReliefCommon(options.common),
@@ -1950,10 +1993,10 @@ async function main() {
     const fitError = steppedReliefLayerFitError(opts);
     if (fitError) throw new Error(fitError);
     const result = generateRelief(image, opts);
-    return commitGeneratedRelief(result, opts, sourceName, sourceFile, false);
+    return commitGeneratedRelief(result, opts, sourceName, sourceFile, false, interactive);
   }
 
-  async function createReliefFromSvgText(svgText: string, options: ReliefOptions, sourceName: string, sourceFile: File | null = null): Promise<{ sessionId: string }> {
+  async function createReliefFromSvgText(svgText: string, options: ReliefOptions, sourceName: string, sourceFile: File | null = null, interactive = false): Promise<{ sessionId: string }> {
     const opts: ReliefOptions = {
       ...options,
       common: clampReliefCommon(options.common),
@@ -1964,7 +2007,7 @@ async function main() {
     const fitError = steppedReliefLayerFitError(opts);
     if (fitError) throw new Error(fitError);
     const result = await generateReliefFromSvg(svgText, opts);
-    return commitGeneratedRelief(result, opts, sourceName, sourceFile, true);
+    return commitGeneratedRelief(result, opts, sourceName, sourceFile, true, interactive);
   }
 
   // Seed color regions from an imported stepped-relief STL's existing Z plateaus so the
@@ -2040,10 +2083,12 @@ async function main() {
       // doesn't lose their tuned settings. Swallowing here would also let the
       // wizard think the create succeeded and close itself.
       onCreate: async (image, opts, name, sourceFile) => {
-        await createReliefFromImageData(image, opts, name || 'relief', sourceFile);
+        // interactive: true → the wizard is the only entry point that may show
+        // the import-target modal (console/AI imports stay modal-free).
+        await createReliefFromImageData(image, opts, name || 'relief', sourceFile, true);
       },
       onCreateSvg: async (svgText, opts, name, sourceFile) => {
-        await createReliefFromSvgText(svgText, opts, name || 'relief', sourceFile);
+        await createReliefFromSvgText(svgText, opts, name || 'relief', sourceFile, true);
       },
     });
   }
@@ -2580,7 +2625,7 @@ async function main() {
 
   /** Drop an import wrapper for `components` into the current part: set the
    *  active imports, render, and save a version that carries the mesh data. */
-  async function applyImportWrapper(components: ImportedMesh[], manifold: boolean): Promise<void> {
+  async function applyImportWrapper(components: ImportedMesh[], manifold: boolean, seedRegions?: SeedRegion[]): Promise<void> {
     // Same reset as the other import chokepoints: an import wrapper replaces the
     // part's geometry, so the previous part's regions can't survive (compose
     // even rebuilds topology wholesale). Callers run preserveCurrentEditsIfNeeded
@@ -2598,8 +2643,11 @@ async function main() {
     setActiveImports(components);
     setValue(code);
     await runCodeSync(code);
+    // Seed any pre-computed colour regions (relief bands) AFTER the live-paint
+    // reset above, so the import's own colours survive into the saved version.
+    seedImportRegions(seedRegions);
     const thumbnail = await captureThumbnail();
-    const geometryData = getGeometryDataObj();
+    const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
     const label = manifold ? 'imported' : 'imported (render-only)';
     await saveVersion(code, geometryData, thumbnail, label, undefined, {
       force: true,
@@ -2630,11 +2678,12 @@ async function main() {
     }
   }
 
-  /** Add the imported mesh as a brand-new part (becomes current). */
-  async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean): Promise<void> {
+  /** Add the imported mesh as a brand-new part (becomes current). Optional
+   *  seedRegions (relief's per-colour bands) are painted onto the saved v1. */
+  async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean, seedRegions?: SeedRegion[]): Promise<void> {
     const part = await createPart(filename.replace(/\.[^.]+$/, ''));
     if (!part) return;
-    await applyImportWrapper([mesh], manifold);
+    await applyImportWrapper([mesh], manifold, seedRegions);
   }
 
   /** Run `code` under `language` in the current part and save it as a version.
