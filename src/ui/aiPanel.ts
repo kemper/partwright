@@ -819,17 +819,23 @@ function buildDrawer(): void {
   sendBtnRef = sendBtn;
   inputBtnRow.appendChild(sendBtn);
 
-  // Slash-command autocomplete menu — sits directly above the input row,
-  // hidden until the user starts typing a "/command". Normal flow (not a
-  // floating overlay) so it never trips Playwright's viewport hit-test.
-  slashMenuEl = document.createElement('div');
-  slashMenuEl.id = 'ai-slash-menu';
-  slashMenuEl.className = 'mx-3 mb-1 rounded border border-zinc-700 bg-zinc-800/95 shadow-lg max-h-44 overflow-y-auto hidden shrink-0';
-  bottomSection.appendChild(slashMenuEl);
-
   inputRow.appendChild(inputBtnRow);
   bottomSection.appendChild(inputRow);
   root.appendChild(bottomSection);
+
+  // Slash-command autocomplete menu — a floating overlay anchored just above
+  // the input. It uses `position: fixed` (coordinates set in
+  // positionSlashMenu() from the textarea's rect) so it overlays the content
+  // above the input instead of taking flow space — the textarea never changes
+  // size or shape. Fixed positioning also escapes the bottom section's
+  // `overflow-hidden`, which would otherwise clip an upward-growing menu.
+  slashMenuEl = document.createElement('div');
+  slashMenuEl.id = 'ai-slash-menu';
+  slashMenuEl.className = 'fixed z-50 rounded border border-zinc-600 bg-zinc-800 shadow-xl max-h-56 overflow-y-auto hidden';
+  root.appendChild(slashMenuEl);
+  // Keep the overlay glued to the input if the viewport (or panel) resizes
+  // while it's open. Keystrokes already reposition via renderSlashMenu().
+  window.addEventListener('resize', () => { if (isSlashMenuOpen()) positionSlashMenu(); });
 
   // Drag-drop image handling
   root.addEventListener('dragover', e => { e.preventDefault(); root.classList.add('ring-2', 'ring-blue-500'); });
@@ -2480,6 +2486,20 @@ function renderSlashMenu(): void {
   });
 
   slashMenuEl.classList.remove('hidden');
+  positionSlashMenu();
+}
+
+/** Anchor the floating menu just above the input, matching its width. Uses
+ *  the textarea's viewport rect with `position: fixed`, so the overlay never
+ *  reflows the input and isn't clipped by the bottom section. */
+function positionSlashMenu(): void {
+  if (!slashMenuEl || !inputEl) return;
+  const r = inputEl.getBoundingClientRect();
+  slashMenuEl.style.left = `${Math.round(r.left)}px`;
+  slashMenuEl.style.width = `${Math.round(r.width)}px`;
+  // Pin the menu's bottom edge 6px above the input's top; it grows upward.
+  slashMenuEl.style.bottom = `${Math.round(window.innerHeight - r.top + 6)}px`;
+  slashMenuEl.style.top = 'auto';
 }
 
 async function sendMessage(): Promise<void> {

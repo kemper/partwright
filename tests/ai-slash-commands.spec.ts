@@ -49,6 +49,10 @@ test.describe('AI slash commands', () => {
 
     await expect(menu).toBeHidden();
 
+    // Capture the input box before the menu opens so we can prove the menu is
+    // an overlay that doesn't reflow / resize the textarea.
+    const inputBefore = await input.boundingBox();
+
     await input.click();
     await input.pressSequentially('/');
     await expect(menu).toBeVisible();
@@ -57,6 +61,15 @@ test.describe('AI slash commands', () => {
     await expect(menu).toContainText('/clear');
     await expect(menu).toContainText('/help');
     await expect(menu).toContainText('/models');
+
+    // The input keeps its size/position — the menu floats above it, it does
+    // not share the pane or push the textarea down.
+    const inputAfter = await input.boundingBox();
+    expect(inputAfter?.height).toBeCloseTo(inputBefore!.height, 0);
+    expect(inputAfter?.y).toBeCloseTo(inputBefore!.y, 0);
+    const menuBox = await menu.boundingBox();
+    // Menu sits entirely above the input's top edge.
+    expect(menuBox!.y + menuBox!.height).toBeLessThanOrEqual(inputAfter!.y + 1);
 
     // A stray Enter on the bare-"/" menu must NOT fire the first command
     // (/compact) — the choice is ambiguous, so Enter is a no-op that keeps the
