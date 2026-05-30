@@ -3,11 +3,11 @@
 import { MergeView } from '@codemirror/merge';
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
-import { javascript } from '@codemirror/lang-javascript';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { getTheme } from './theme';
 import { basicSetup } from 'codemirror';
-import { listCurrentVersions, type Version } from '../storage/sessionManager';
+import { listCurrentVersions, effectiveVersionLanguage, getState, type Version } from '../storage/sessionManager';
+import { languageExt } from '../editor/codeEditor';
 
 let diffEl: HTMLElement | null = null;
 let mergeView: MergeView | null = null;
@@ -165,14 +165,17 @@ function renderDiff(
   });
 
   const cmTheme = getTheme() === 'dark' ? [oneDark] : [];
+  const session = getState().session;
+  const langA = languageExt(effectiveVersionLanguage(vA, session));
+  const langB = languageExt(effectiveVersionLanguage(vB, session));
   mergeView = new MergeView({
     a: {
       doc: vA.code,
-      extensions: [basicSetup, javascript(), ...cmTheme, readOnlyExt, themeExt],
+      extensions: [basicSetup, langA, ...cmTheme, readOnlyExt, themeExt],
     },
     b: {
       doc: vB.code,
-      extensions: [basicSetup, javascript(), ...cmTheme, readOnlyExt, themeExt],
+      extensions: [basicSetup, langB, ...cmTheme, readOnlyExt, themeExt],
     },
     parent: mergeContainer,
     highlightChanges: true,

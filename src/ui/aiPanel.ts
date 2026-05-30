@@ -8,7 +8,7 @@ import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerC
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
-import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
+import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
@@ -23,11 +23,12 @@ import { showCompactConfirmModal } from './aiCompactModal';
 import { showAttachmentModal } from './aiAttachmentModal';
 import { putAttachment } from '../ai/attachments';
 import { exportChatMarkdown } from '../export/chat';
-import { getState, setSessionAiPreference } from '../storage/sessionManager';
+import { getState, setSessionAiPreference, refreshCurrentSession } from '../storage/sessionManager';
 import { onTabSync, publishTabSync } from '../storage/tabSync';
 import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
-import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Provider, type TurnOutcomeReason } from '../ai/types';
+import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
+import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
 import { errorLog } from '../diagnostics/errorLog';
 
 interface PanelState {
@@ -143,6 +144,16 @@ let forwardBtnRef: HTMLButtonElement | null = null;
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
 let inputEl: HTMLTextAreaElement | null = null;
+
+// Slash-command autocomplete menu state. The menu sits just above the input
+// row and shows while the user is typing a "/command" token. `slashMenuItems`
+// is the currently-filtered list; `slashMenuIndex` is the keyboard highlight;
+// `slashMenuUserSelected` records whether the user has explicitly arrowed to a
+// choice (so a stray Enter on a bare "/" doesn't fire the default command).
+let slashMenuEl: HTMLElement | null = null;
+let slashMenuItems: SlashCommandSpec[] = [];
+let slashMenuIndex = 0;
+let slashMenuUserSelected = false;
 
 /** "Stuck to bottom" detection for the transcript. The auto-scroll on every
  *  streamed delta used to fight the user when they scrolled up to read earlier
@@ -378,32 +389,56 @@ async function isProviderModelUsable(provider: Provider, model: string): Promise
   if (provider === 'local') {
     try { resolveLocalModel(model); return true; } catch { return false; }
   }
+  // Custom is usable once its endpoint URL is configured — the API key is
+  // optional, so don't gate on a stored key.
+  if (provider === 'custom') return loadSettings().toggles.customBaseUrl.trim().length > 0;
   return !!(await getKey(provider));
 }
 
-/** Record the active provider + model as the current session's preference so
- *  reopening the session restores it. Cheap and idempotent. */
+/** Record the active AI config (provider + model + the full toggle set +
+ *  preset) as the current session's preference so reopening — or taking control
+ *  of — the session in another tab restores exactly what this tab was using.
+ *  Cheap and idempotent (the storage layer skips no-op writes). Only ever
+ *  called on a real user-initiated change, never on load, so a freshly-opened
+ *  session the user hasn't touched keeps no stored config (and the global
+ *  default applies). */
 function recordSessionAiPreference(): void {
   const s = loadSettings();
   const model = activeModel(s.toggles);
   if (typeof model === 'string' && model.length > 0) {
-    void setSessionAiPreference(s.toggles.provider, model);
+    void setSessionAiPreference(
+      s.toggles.provider,
+      model,
+      s.toggles as unknown as Record<string, unknown>,
+      s.preset,
+    );
   }
 }
 
-/** On session open, restore the session's remembered provider/model into the
- *  active settings. If that model isn't available right now we keep the user's
- *  current model and show a non-blocking notice — without erasing the stored
- *  preference, so it snaps back once the model is available again. */
+/** Apply a user-initiated change from the toggle strip: write it to this tab's
+ *  settings AND persist the full toggle set as the session's remembered config,
+ *  so it carries over when the session is reopened or taken control of in
+ *  another tab. (Per-tab live; per-session persisted — never broadcast, so it
+ *  doesn't bleed into other open windows.) */
+function applyToggleChange(partial: Parameters<typeof setToggles>[1]): void {
+  saveSettings(setToggles(loadSettings(), partial));
+  recordSessionAiPreference();
+}
+
+/** Restore the session's remembered AI config into THIS tab's settings — called
+ *  on session open and when this tab takes control of the session (not live on
+ *  every peer write, so windows never bleed into each other). If the remembered
+ *  model isn't available right now we keep the user's current model and show a
+ *  non-blocking notice — without erasing the stored preference, so it snaps back
+ *  once the model is available again. */
 async function applySessionAiPreference(): Promise<void> {
-  // Only the writer applies its session's remembered model. A viewer (or a
-  // background tab) applying would rewrite the shared global settings blob and
-  // nudge the peer/owner tab's model via the settings storage event.
+  // Only the writer applies its session's remembered config. A viewer applying
+  // would mutate this tab's settings to mirror a session it can't drive.
   if (!writeOwner) return;
   hidePrefNotice();
   const pref = getState().session?.aiPreference;
   if (!pref) return;
-  const known: Provider[] = ['anthropic', 'openai', 'gemini', 'local'];
+  const known: Provider[] = ['anthropic', 'openai', 'gemini', 'custom', 'local'];
   const provider = pref.provider as Provider;
   if (!known.includes(provider)) return;
   if (!(await isProviderModelUsable(provider, pref.model))) {
@@ -411,16 +446,27 @@ async function applySessionAiPreference(): Promise<void> {
     return;
   }
   const cur = loadSettings();
-  // Already active — don't re-write settings. This makes the focus re-assert
-  // cheap and stops two tabs on different sessions from ping-ponging the global
-  // model through the cross-tab settings `storage` event.
-  if (cur.toggles.provider === provider && activeModel(cur.toggles) === pref.model) return;
-  let next = setProvider(cur, provider);
-  switch (provider) {
-    case 'anthropic': next = setAnthropicModel(next, pref.model); break;
-    case 'openai': next = setOpenaiModel(next, pref.model); break;
-    case 'gemini': next = setGeminiModel(next, pref.model); break;
-    case 'local': next = setLocalModel(next, pref.model); break;
+  let next: AiSettings;
+  if (pref.toggles) {
+    // Full per-session toggle snapshot (current format): restore provider,
+    // every per-provider model id, and all the toggles in one shot. Skip when
+    // already applied so the focus / take-control re-assert is a cheap no-op
+    // (no needless settings write or transcript-shifting re-render).
+    const sameToggles = JSON.stringify(cur.toggles) === JSON.stringify(pref.toggles);
+    if (sameToggles && (!pref.preset || cur.preset === pref.preset)) return;
+    next = setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]);
+    if (pref.preset) next = { ...next, preset: pref.preset as Preset };
+  } else {
+    // Legacy {provider, model} only (sessions saved before toggles were stored).
+    if (cur.toggles.provider === provider && activeModel(cur.toggles) === pref.model) return;
+    next = setProvider(cur, provider);
+    switch (provider) {
+      case 'anthropic': next = setAnthropicModel(next, pref.model); break;
+      case 'openai': next = setOpenaiModel(next, pref.model); break;
+      case 'gemini': next = setGeminiModel(next, pref.model); break;
+      case 'custom': next = setCustomModel(next, pref.model); break;
+      case 'local': next = setLocalModel(next, pref.model); break;
+    }
   }
   saveSettings(next);
   renderModelPicker();
@@ -474,12 +520,24 @@ async function reloadChatFromPeer(sessionId: string): Promise<void> {
 function applyOwnership(owned: boolean): void {
   // No real session (global bucket) = no contention = always writable.
   const noRealSession = !state.sessionId || state.sessionId === GLOBAL_CHAT_BUCKET;
+  const wasOwner = writeOwner;
   writeOwner = noRealSession ? true : owned;
   // The whole-screen viewer overlay (viewerMode.ts) is the single "locked" UI
   // now; the send-disable + sendMessage guard stay as a backstop.
   if (sendBtnRef) sendBtnRef.disabled = !writeOwner;
   // Becoming a viewer mid-turn (another tab took control): stop our run.
   if (!writeOwner) stopActiveTurn();
+  // Gaining write-ownership of a real session — "Take control" in a new tab —
+  // is one of the explicit transitions where state SHOULD carry over from the
+  // tab that had it. Re-read the session from IndexedDB first (the previous
+  // writer persisted its config there without broadcasting), then apply it so
+  // this tab adopts that session's provider/model/toggles.
+  if (writeOwner && !wasOwner && !noRealSession) {
+    void (async () => {
+      await refreshCurrentSession();
+      await applySessionAiPreference();
+    })();
+  }
 }
 
 /** Abort any in-flight AI turn — used by the Stop button and when this tab
@@ -613,6 +671,7 @@ function buildDrawer(): void {
 
   // Transcript
   transcriptEl = document.createElement('div');
+  transcriptEl.id = 'ai-transcript';
   transcriptEl.className = 'flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-3';
   root.appendChild(transcriptEl);
 
@@ -670,15 +729,44 @@ function buildDrawer(): void {
   inputRow.className = 'px-3 pt-2 pb-2 border-t border-zinc-700 flex flex-col gap-2 flex-1 min-h-0';
 
   const ta = document.createElement('textarea');
-  ta.placeholder = 'Ask the AI to model something...';
+  ta.placeholder = 'Ask the AI to model something…  (type / for commands)';
   ta.rows = 2;
   ta.className = 'w-full flex-1 min-h-0 px-2 py-1.5 rounded bg-zinc-800 border border-zinc-600 text-zinc-100 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 resize-none';
   ta.addEventListener('keydown', e => {
+    // When the slash-command menu is open it owns the arrow/Tab/Enter/Escape
+    // keys so the user can navigate and run a command without it being sent
+    // to the model as a message.
+    if (isSlashMenuOpen()) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); moveSlashSelection(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); moveSlashSelection(-1); return; }
+      if (e.key === 'Tab') { e.preventDefault(); completeSlashSelection(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); hideSlashMenu(); return; }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        // Only run on Enter when the choice is unambiguous: the user has
+        // explicitly highlighted an item (arrow keys), or the filter has
+        // narrowed to a single command. A bare "/" — or any prefix matching
+        // several commands — leaves the highlight on whatever is first, so a
+        // stray Enter would silently fire that command (e.g. /compact). In
+        // that case consume the Enter and keep the menu open to refine.
+        if (slashSelectionConfirmed()) {
+          const cmd = slashMenuItems[slashMenuIndex];
+          if (cmd) runSlashCommand(cmd.name as SlashCommandName);
+        }
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      // A bare "/command" runs the command instead of being sent as a message.
+      if (maybeRunSlashCommand()) return;
       void sendMessage();
     }
   });
+  ta.addEventListener('input', () => { updateSlashMenu(); });
+  // Hide the menu when focus genuinely leaves the input. Row clicks keep focus
+  // (they preventDefault on mousedown), so this fires only on a real blur.
+  ta.addEventListener('blur', () => { window.setTimeout(() => hideSlashMenu(), 120); });
   ta.addEventListener('paste', e => {
     if (!e.clipboardData) return;
     for (const item of Array.from(e.clipboardData.items)) {
@@ -759,6 +847,8 @@ function buildDrawer(): void {
   sendBtn.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
   sendBtn.textContent = 'Send';
   sendBtn.addEventListener('click', () => {
+    // A bare "/command" runs the command rather than being sent/queued.
+    if (maybeRunSlashCommand()) return;
     // While a turn is in flight, Send queues — the agent picks the
     // message up at the next natural pause (between tool round-trips or
     // at end-of-turn) without us aborting the current run. Stop is the
@@ -775,6 +865,20 @@ function buildDrawer(): void {
   inputRow.appendChild(inputBtnRow);
   bottomSection.appendChild(inputRow);
   root.appendChild(bottomSection);
+
+  // Slash-command autocomplete menu — a floating overlay anchored just above
+  // the input. It uses `position: fixed` (coordinates set in
+  // positionSlashMenu() from the textarea's rect) so it overlays the content
+  // above the input instead of taking flow space — the textarea never changes
+  // size or shape. Fixed positioning also escapes the bottom section's
+  // `overflow-hidden`, which would otherwise clip an upward-growing menu.
+  slashMenuEl = document.createElement('div');
+  slashMenuEl.id = 'ai-slash-menu';
+  slashMenuEl.className = 'fixed z-50 rounded border border-zinc-600 bg-zinc-800 shadow-xl max-h-56 overflow-y-auto hidden';
+  root.appendChild(slashMenuEl);
+  // Keep the overlay glued to the input if the viewport (or panel) resizes
+  // while it's open. Keystrokes already reposition via renderSlashMenu().
+  window.addEventListener('resize', () => { if (isSlashMenuOpen()) positionSlashMenu(); });
 
   // Drag-drop image handling
   root.addEventListener('dragover', e => { e.preventDefault(); root.classList.add('ring-2', 'ring-blue-500'); });
@@ -939,6 +1043,24 @@ function renderModelPicker(): void {
     return;
   }
 
+  // Custom OpenAI-compatible endpoint: a chip showing the configured model
+  // (or a prompt to configure), opening AI Settings on the Custom tab — the
+  // endpoint URL + model live there, like the local model lives in its modal.
+  if (settings.toggles.provider === 'custom') {
+    const customChip = document.createElement('button');
+    customChip.type = 'button';
+    customChip.className = 'h-6 px-2 inline-flex items-center rounded text-[11px] bg-sky-900/30 border border-sky-700/50 text-sky-200 hover:bg-sky-900/50';
+    customChip.textContent = settings.toggles.customModel.trim() || 'Configure endpoint';
+    customChip.title = settings.toggles.customBaseUrl.trim()
+      ? `Custom endpoint: ${settings.toggles.customBaseUrl} · model: ${settings.toggles.customModel || '(none set)'}. Click to configure.`
+      : 'No custom endpoint configured yet. Click to set the base URL and model.';
+    customChip.addEventListener('click', () => {
+      void showAiSettingsModal({ onChange: afterAiSettingsChange }, { initialTab: 'custom' });
+    });
+    modelPickerEl.appendChild(customChip);
+    return;
+  }
+
   const chip = document.createElement('button');
   chip.type = 'button';
   chip.className = 'h-6 px-2 inline-flex items-center rounded text-[11px] bg-emerald-900/30 border border-emerald-700/50 text-emerald-200 hover:bg-emerald-900/50';
@@ -1027,7 +1149,7 @@ function renderToggleStrip(): void {
     toggles.vision.views,
     'Auto-render: lets the model call renderView() to take its own screenshots after paint / geometry changes. Each render ≈ 1500 tokens of input on the next turn — verification is valuable but it adds up. The 📷 Show AI button still works manually when this is OFF.',
     () => {
-      saveSettings(setToggles(loadSettings(), { vision: { views: !toggles.vision.views } }));
+      applyToggleChange({ vision: { views: !toggles.vision.views } });
       renderToggleStrip();
       renderCostMeter();
     },
@@ -1048,7 +1170,7 @@ function renderToggleStrip(): void {
   }
   resSel.value = toggles.vision.resolution;
   resSel.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { vision: { resolution: resSel.value as ChatToggles['vision']['resolution'] } }));
+    applyToggleChange({ vision: { resolution: resSel.value as ChatToggles['vision']['resolution'] } });
     renderCostMeter();
   });
   adv.appendChild(resSel);
@@ -1066,7 +1188,7 @@ function renderToggleStrip(): void {
   }
   anglesSel.value = toggles.vision.angles;
   anglesSel.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { vision: { angles: anglesSel.value as ChatToggles['vision']['angles'] } }));
+    applyToggleChange({ vision: { angles: anglesSel.value as ChatToggles['vision']['angles'] } });
   });
   adv.appendChild(anglesSel);
 
@@ -1075,7 +1197,7 @@ function renderToggleStrip(): void {
     toggles.scope.runCode,
     'Run code: allow the AI to execute geometry code (runCode, runAndSave). OFF makes it suggest code in chat without running.',
     () => {
-      saveSettings(setToggles(loadSettings(), { scope: { runCode: !toggles.scope.runCode } }));
+      applyToggleChange({ scope: { runCode: !toggles.scope.runCode } });
       renderToggleStrip();
     },
   ));
@@ -1084,7 +1206,7 @@ function renderToggleStrip(): void {
     toggles.scope.saveVersions,
     'Save versions: allow the AI to commit results to the gallery (runAndSave, loadVersion). OFF keeps the model in run-only / dry-run mode.',
     () => {
-      saveSettings(setToggles(loadSettings(), { scope: { saveVersions: !toggles.scope.saveVersions } }));
+      applyToggleChange({ scope: { saveVersions: !toggles.scope.saveVersions } });
       renderToggleStrip();
     },
   ));
@@ -1093,7 +1215,7 @@ function renderToggleStrip(): void {
     toggles.scope.paintFaces,
     'Paint: allow the AI to set color regions (paintInBox, paintSlab, paintNear, etc.). OFF by default — painting locks the editor and is the easiest place for the AI to over-select.',
     () => {
-      saveSettings(setToggles(loadSettings(), { scope: { paintFaces: !toggles.scope.paintFaces } }));
+      applyToggleChange({ scope: { paintFaces: !toggles.scope.paintFaces } });
       renderToggleStrip();
     },
   ));
@@ -1102,7 +1224,16 @@ function renderToggleStrip(): void {
     toggles.scope.sessionNotes,
     'Session notes: allow the AI to call addSessionNote to log design decisions. OFF saves a tool round-trip per note — the chat transcript already records the reasoning.',
     () => {
-      saveSettings(setToggles(loadSettings(), { scope: { sessionNotes: !toggles.scope.sessionNotes } }));
+      applyToggleChange({ scope: { sessionNotes: !toggles.scope.sessionNotes } });
+      renderToggleStrip();
+    },
+  ));
+  primary.appendChild(togglePill(
+    '♾ Auto-continue',
+    toggles.autoResume,
+    'Auto-continue: the agent keeps working until it calls the finish tool to declare the task done — if a turn ends without calling finish, it is automatically resumed instead of stopping. Bounded by the ⟲ iteration cap and the $ spend cap (whichever trips first). Useful for models that tend to stop early (e.g. Gemini). ON by default; turn it OFF to stop at each end_turn as usual (your choice is remembered).',
+    () => {
+      applyToggleChange({ autoResume: !toggles.autoResume });
       renderToggleStrip();
     },
   ));
@@ -1118,7 +1249,7 @@ function renderToggleStrip(): void {
   }
   retry.value = String(toggles.autoRetry);
   retry.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { autoRetry: Number(retry.value) as 0 | 1 | 3 }));
+    applyToggleChange({ autoRetry: Number(retry.value) as 0 | 1 | 3 });
   });
   adv.appendChild(retry);
 
@@ -1137,7 +1268,7 @@ function renderToggleStrip(): void {
   }
   iterCap.value = toggles.maxIterations;
   iterCap.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { maxIterations: iterCap.value as ChatToggles['maxIterations'] }));
+    applyToggleChange({ maxIterations: iterCap.value as ChatToggles['maxIterations'] });
   });
   adv.appendChild(iterCap);
 
@@ -1157,7 +1288,7 @@ function renderToggleStrip(): void {
   }
   spendCap.value = toggles.maxSpend;
   spendCap.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { maxSpend: spendCap.value as ChatToggles['maxSpend'] }));
+    applyToggleChange({ maxSpend: spendCap.value as ChatToggles['maxSpend'] });
   });
   adv.appendChild(spendCap);
 
@@ -1178,7 +1309,7 @@ function renderToggleStrip(): void {
   }
   thinkSel.value = toggles.thinking;
   thinkSel.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { thinking: thinkSel.value as ChatToggles['thinking'] }));
+    applyToggleChange({ thinking: thinkSel.value as ChatToggles['thinking'] });
     renderCostMeter();
   });
   adv.appendChild(thinkSel);
@@ -1313,6 +1444,33 @@ function panelStatusUpdate(): void {
     hint.appendChild(switchLink);
     hint.appendChild(document.createTextNode(' for better quality.'));
     panelStatusEl.appendChild(hint);
+    return;
+  }
+  // Custom OpenAI-compatible endpoint: readiness is the base URL + model
+  // (the API key is optional), so don't run the cloud-key check below — it
+  // would falsely report "Not connected" for a keyless self-hosted server.
+  if (settings.toggles.provider === 'custom') {
+    panelStatusEl.replaceChildren();
+    panelStatusEl.classList.remove('hidden', 'text-emerald-400', 'text-amber-400', 'text-blue-300');
+    const needsUrl = settings.toggles.customBaseUrl.trim().length === 0;
+    const needsModel = settings.toggles.customModel.trim().length === 0;
+    if (needsUrl || needsModel) {
+      panelStatusEl.classList.add('text-amber-400');
+      panelStatusEl.appendChild(document.createTextNode(needsUrl ? 'Custom endpoint not configured. ' : 'No model set for the endpoint. '));
+      const link = document.createElement('button');
+      link.className = 'underline text-amber-200 hover:text-amber-100';
+      link.textContent = needsUrl ? 'Set endpoint URL' : 'Choose a model';
+      link.addEventListener('click', () => {
+        void showAiSettingsModal(
+          { onChange: () => { renderTranscript(); renderToggleStrip(); renderCostMeter(); renderModelPicker(); renderPromptChip(); panelStatusUpdate(); } },
+          { initialTab: 'custom' },
+        );
+      });
+      panelStatusEl.appendChild(link);
+      panelStatusEl.appendChild(document.createTextNode('.'));
+    } else {
+      panelStatusEl.classList.add('hidden');
+    }
     return;
   }
   // Hosted providers (anthropic / openai / gemini) all need a key. When the
@@ -1482,6 +1640,15 @@ function renderMessage(msg: ChatMessage): HTMLElement {
   // rendering.
   if (msg.stopNotice) {
     wrap.appendChild(renderStopNotice(msg));
+    return wrap;
+  }
+
+  // Auto-continue nudge: a synthetic "keep going" user turn. Render a subtle
+  // centered divider instead of a normal blue user bubble so it doesn't read
+  // as something the human typed.
+  if (msg.autoResumeNudge) {
+    wrap.className = 'flex flex-col items-center gap-1';
+    wrap.appendChild(renderAutoResumeDivider());
     return wrap;
   }
 
@@ -1747,7 +1914,7 @@ async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean): Pr
     const cur = loadSettings().toggles.maxSpend;
     const next = nextSpendTier(cur);
     if (next !== cur) {
-      saveSettings(setToggles(loadSettings(), { maxSpend: next }));
+      applyToggleChange({ maxSpend: next });
       renderToggleStrip();
       renderCostMeter();
     }
@@ -1770,6 +1937,21 @@ async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean): Pr
   progressState.retryCount = 0;
   stalledByWatchdog = false;
   await runTurnWithStallRetry(apiKey, settings.toggles, []);
+}
+
+/** Subtle centered divider for an auto-continue nudge (the synthetic "keep
+ *  going" turn injected when the model stopped without calling `finish`). */
+function renderAutoResumeDivider(): HTMLElement {
+  const el = document.createElement('div');
+  el.className = 'text-[10px] text-zinc-500 italic flex items-center gap-1.5 py-0.5 select-none';
+  el.title = 'Auto-continue is on: the model ended its turn without calling the finish tool, so the agent resumed it automatically.';
+  const icon = document.createElement('span');
+  icon.textContent = '↻';
+  el.appendChild(icon);
+  const label = document.createElement('span');
+  label.textContent = 'auto-continued (model didn\'t call finish)';
+  el.appendChild(label);
+  return el;
 }
 
 function renderTextBubble(role: 'user' | 'assistant', text: string, compacted?: boolean): HTMLElement {
@@ -2147,8 +2329,20 @@ async function preflightTurn(
   onReady: () => void,
 ): Promise<string | undefined | typeof PREFLIGHT_ABORT> {
   let apiKey: string | undefined;
-  if (settings.toggles.provider !== 'local') {
-    // Hosted provider (anthropic / openai / gemini): need a stored key.
+  if (settings.toggles.provider === 'custom') {
+    // Custom OpenAI-compatible endpoint: needs a base URL + model; the API
+    // key is OPTIONAL (a stored one is used when present, else no auth). Send
+    // the user to the Custom settings tab if it isn't configured yet.
+    if (!settings.toggles.customBaseUrl.trim() || !settings.toggles.customModel.trim()) {
+      void showAiSettingsModal(
+        { onChange: () => { panelStatusUpdate(); renderModelPicker(); renderToggleStrip(); renderCostMeter(); onReady(); } },
+        { initialTab: 'custom' },
+      );
+      return PREFLIGHT_ABORT;
+    }
+    apiKey = (await getKey('custom'))?.apiKey;
+  } else if (settings.toggles.provider !== 'local') {
+    // Hosted cloud provider (anthropic / openai / gemini): need a stored key.
     const provider = settings.toggles.provider;
     const key = await getKey(provider);
     if (!key) {
@@ -2200,6 +2394,155 @@ async function preflightTurn(
     }
   }
   return apiKey;
+}
+
+// === Slash commands ===
+//
+// A bare "/command" typed in the input runs a panel action instead of being
+// sent to the model. Each command mirrors a header button, giving the whole
+// chat-management surface a keyboard path. The command names live in the pure
+// `slashCommands` module; this map binds each to its handler and is type-
+// checked against `SlashCommandName`, so adding a name there without a handler
+// here (or vice versa) is a compile error.
+const SLASH_HANDLERS: Record<SlashCommandName, () => void> = {
+  compact: () => { void runCompact(); },
+  clear: () => { void clearCurrentChat(); },
+  review: () => { void launchReview(); },
+  export: () => { exportCurrentChat(); },
+  models: () => { void showAiSettingsModal({ onChange: afterAiSettingsChange }); },
+  help: () => { openSlashHelp(); },
+};
+
+/** Interpret the current input as a slash command. Returns true when it was a
+ *  slash-command invocation — known commands run, unknown ones surface a hint
+ *  — so the caller skips the normal send/queue path. Returns false for any
+ *  ordinary message (which then sends as usual). */
+function maybeRunSlashCommand(): boolean {
+  if (!inputEl) return false;
+  const parsed = parseSlashCommand(inputEl.value);
+  if (!parsed) return false;
+  if (parsed.name) {
+    runSlashCommand(parsed.name);
+  } else {
+    hideSlashMenu();
+    setTransientStatus(`Unknown command /${parsed.token} — type /help to list commands.`);
+  }
+  return true;
+}
+
+/** Run a resolved command: dismiss the menu, clear the input, dispatch. */
+function runSlashCommand(name: SlashCommandName): void {
+  hideSlashMenu();
+  if (inputEl) inputEl.value = '';
+  SLASH_HANDLERS[name]();
+}
+
+function isSlashMenuOpen(): boolean {
+  return !!slashMenuEl && !slashMenuEl.classList.contains('hidden') && slashMenuItems.length > 0;
+}
+
+/** Re-filter the menu against the current input and show or hide it. Called on
+ *  every input event: shows while the user is mid-"/command", hides once a
+ *  space is typed or the leading slash is gone. */
+function updateSlashMenu(): void {
+  if (!inputEl) return;
+  const prefix = slashMenuPrefix(inputEl.value);
+  if (prefix === null) { hideSlashMenu(); return; }
+  showSlashMenu(prefix);
+}
+
+/** Open the menu showing every command — the /help action. */
+function openSlashHelp(): void {
+  showSlashMenu('');
+  inputEl?.focus();
+}
+
+function showSlashMenu(prefix: string): void {
+  slashMenuItems = matchSlashCommands(prefix);
+  slashMenuIndex = 0;
+  // Re-filtering resets the highlight, so any prior explicit selection is
+  // stale — require fresh confirmation before Enter runs anything.
+  slashMenuUserSelected = false;
+  renderSlashMenu();
+}
+
+function hideSlashMenu(): void {
+  slashMenuItems = [];
+  slashMenuIndex = 0;
+  slashMenuUserSelected = false;
+  if (slashMenuEl) {
+    slashMenuEl.replaceChildren();
+    slashMenuEl.classList.add('hidden');
+  }
+}
+
+function moveSlashSelection(delta: number): void {
+  if (slashMenuItems.length === 0) return;
+  slashMenuIndex = (slashMenuIndex + delta + slashMenuItems.length) % slashMenuItems.length;
+  slashMenuUserSelected = true;
+  renderSlashMenu();
+}
+
+/** Whether an Enter press should run the highlighted command: true once the
+ *  user has explicitly arrowed to a choice, or the filter has narrowed to a
+ *  single command (typing the full name, or a unique prefix). Guards against a
+ *  stray Enter on an ambiguous menu firing the first command. */
+function slashSelectionConfirmed(): boolean {
+  return slashMenuUserSelected || slashMenuItems.length === 1;
+}
+
+/** Tab-complete the highlighted command into the input, then re-filter so the
+ *  menu narrows to the now-exact token. */
+function completeSlashSelection(): void {
+  const cmd = slashMenuItems[slashMenuIndex];
+  if (!cmd || !inputEl) return;
+  inputEl.value = `/${cmd.name}`;
+  updateSlashMenu();
+}
+
+function renderSlashMenu(): void {
+  if (!slashMenuEl) return;
+  if (slashMenuItems.length === 0) { hideSlashMenu(); return; }
+  slashMenuEl.replaceChildren();
+
+  const header = document.createElement('div');
+  header.className = 'px-2 py-1 text-[10px] uppercase tracking-wide text-zinc-500 border-b border-zinc-700/60 sticky top-0 bg-zinc-800/95';
+  header.textContent = 'Slash commands';
+  slashMenuEl.appendChild(header);
+
+  slashMenuItems.forEach((cmd, i) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = `w-full text-left px-2 py-1.5 flex flex-col gap-0.5 ${i === slashMenuIndex ? 'bg-zinc-700' : 'hover:bg-zinc-700/50'}`;
+    const nameEl = document.createElement('span');
+    nameEl.className = 'text-[12px] font-medium text-blue-300';
+    nameEl.textContent = `/${cmd.name}`;
+    const sumEl = document.createElement('span');
+    sumEl.className = 'text-[10px] text-zinc-400';
+    sumEl.textContent = cmd.summary;
+    row.append(nameEl, sumEl);
+    // Keep focus in the textarea so the click handler can clear it and the
+    // blur-hide never races the click.
+    row.addEventListener('mousedown', e => e.preventDefault());
+    row.addEventListener('click', () => { runSlashCommand(cmd.name as SlashCommandName); });
+    slashMenuEl!.appendChild(row);
+  });
+
+  slashMenuEl.classList.remove('hidden');
+  positionSlashMenu();
+}
+
+/** Anchor the floating menu just above the input, matching its width. Uses
+ *  the textarea's viewport rect with `position: fixed`, so the overlay never
+ *  reflows the input and isn't clipped by the bottom section. */
+function positionSlashMenu(): void {
+  if (!slashMenuEl || !inputEl) return;
+  const r = inputEl.getBoundingClientRect();
+  slashMenuEl.style.left = `${Math.round(r.left)}px`;
+  slashMenuEl.style.width = `${Math.round(r.width)}px`;
+  // Pin the menu's bottom edge 6px above the input's top; it grows upward.
+  slashMenuEl.style.bottom = `${Math.round(window.innerHeight - r.top + 6)}px`;
+  slashMenuEl.style.top = 'auto';
 }
 
 async function sendMessage(): Promise<void> {
@@ -2437,6 +2780,12 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         // through onUserPersisted, so without this it would only appear after
         // a session reload. renderToolResultBubble auto-expands image-bearing
         // results, so the rendering shows without the user expanding anything.
+        upsertHistoryMessage(msg);
+        renderTranscript();
+      },
+      onAutoResume: msg => {
+        // Auto-continue injected a synthetic "keep going" turn — show it as a
+        // subtle divider so the user can see why the agent kept going.
         upsertHistoryMessage(msg);
         renderTranscript();
       },
@@ -2787,7 +3136,11 @@ async function maybeAutoCompact(): Promise<void> {
   }
 
   let apiKey: string | undefined;
-  if (settings.toggles.provider !== 'local') {
+  if (settings.toggles.provider === 'custom') {
+    // Optional key; skip silently if the endpoint isn't fully configured.
+    if (!settings.toggles.customBaseUrl.trim() || !settings.toggles.customModel.trim()) return;
+    apiKey = (await getKey('custom'))?.apiKey;
+  } else if (settings.toggles.provider !== 'local') {
     const key = await getKey(settings.toggles.provider);
     if (!key) return;
     apiKey = key.apiKey;
@@ -2839,7 +3192,16 @@ async function runCompact(): Promise<void> {
   }
   const settings = loadSettings();
   let apiKey: string | undefined;
-  if (settings.toggles.provider !== 'local') {
+  if (settings.toggles.provider === 'custom') {
+    // Custom endpoint: API key optional; route to the Custom tab if the
+    // endpoint isn't configured yet.
+    if (!settings.toggles.customBaseUrl.trim() || !settings.toggles.customModel.trim()) {
+      void showAiSettingsModal({ onChange: () => panelStatusUpdate() }, { initialTab: 'custom' });
+      return;
+    }
+    apiKey = (await getKey('custom'))?.apiKey;
+    setTransientStatus('Summarizing the conversation…');
+  } else if (settings.toggles.provider !== 'local') {
     const provider = settings.toggles.provider;
     const key = await getKey(provider);
     if (!key) {

@@ -70,7 +70,7 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 |---|---|---|---|
 | Cube / sphere / cylinder | `Manifold.cube/sphere/cylinder(...)` | `cube()`, `sphere()`, `cylinder()` | `BREP.box([w,d,h])`, `BREP.sphere(r)`, `BREP.cylinder(r, h)` |
 | Boolean union / difference / intersection | `.add(o)`, `.subtract(o)`, `.intersect(o)` | `union(){...}`, `difference(){...}`, `intersection(){...}` | `.fuse(o)` / `.cut(o)` / `.intersect(o)`, or `BREP.fuseAll([a,b,c])` / `BREP.cutAll([body,…holes])` / `BREP.intersectAll([…])` for N-way |
-| Expose tweakable knobs (make it customizable) | `api.params({...})` at the top → live Parameters panel; `partwright.getParams()`/`setParams({...})` to drive | (not in SCAD yet) | `api.params({...})` — same as manifold-js (also works in voxel sessions) |
+| Expose tweakable knobs (make it customizable) | `api.params({...})` at the top → live Parameters panel; `partwright.getParams()`/`setParams({...})` to drive | top-level vars + OpenSCAD customizer annotations (`x = 30; // [10:100]`) → same panel | `api.params({...})` — same as manifold-js (also works in voxel sessions) |
 | 2D shape extruded to 3D | `cs.extrude(h, nDiv?, twist?, scaleTop?)` | `linear_extrude(h, twist=, slices=, scale=) polygon(...)` | (use manifold-js + BREP for one piece) |
 | Surface of revolution (vase, lens, bottle) | `cs.revolve(n?, degrees?)` | `rotate_extrude(angle=) polygon(...)` | (use manifold-js) |
 | Smooth curve from a few points | `Curves.bezier(controls)` -> `/ai/curves.md` | `bezier_curve()` (BOSL2) -> `/ai/bosl2.md` | (use manifold-js Curves) |
@@ -290,7 +290,7 @@ await partwright.listVersions()          // -> [{id, index, label, timestamp, st
 await partwright.loadVersion({index} | {id})  // Load version into editor -> {id, index, label, code, geometryData, labelsAvailable, labelCount} or {error}
 await partwright.forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) // Load + modify + validate + save atomically; carries parent colors -> {..., codeDiff, colors}
 await partwright.copyColorsFromVersion({index} | {id}) // Re-apply a prior version's colors onto the current mesh -> {source, carried, dropped}
-await partwright.getShareLink()          // -> {url, encodedBytes} read-only share link (or {error}); the link to hand the user when done
+await partwright.getShareLink()          // -> {url, encodedBytes} read-only share link (or {error}); external/console agents hand this to the user — in-app users click the toolbar Share (↗) button instead
 partwright.getGalleryUrl()               // -> URL for gallery view (local browser only)
 partwright.getSessionUrl()               // -> URL for this session (local browser only)
 await partwright.listSessions()          // -> [{id, name, updated}]
@@ -403,7 +403,22 @@ Standard JavaScript globals (`Math`, `Array`, `Object`, `JSON`, `Date`, `console
 
 Declare the model's tweakable dimensions/options at the top via `api.params(schema)`. It returns an object of resolved values; a **Parameters panel** appears in the viewport so the user (or you) can adjust them with sliders/toggles/dropdowns and the model re-runs live — Tinkercad-style customization without leaving code. This is the preferred way to make a model reusable: expose the few dimensions someone would actually want to change.
 
-`api.params` works the same in **manifold-js, voxel, and BREP (replicad) sessions** — all three are JS sandboxes that share one implementation (SCAD is the exception and has no `api.params` yet). For `number`/`int` params the panel pairs a slider with an editable number field, so you can type an exact value (and exceed the slider's range when the spec declares no `max`).
+`api.params` works the same in **manifold-js, voxel, and BREP (replicad) sessions** — all three are JS sandboxes that share one implementation. For `number`/`int` params the panel pairs a slider with an editable number field, so you can type an exact value (and exceed the slider's range when the spec declares no `max`).
+
+**SCAD sessions** use OpenSCAD's own customizer convention instead of `api.params` (SCAD isn't a JS sandbox): annotate top-level variables and they surface in the *same* Parameters panel. Overrides are applied through OpenSCAD's native `-D` flag — no code rewriting. `getParams`/`setParams` and persistence work identically.
+
+```scad
+// Outer width            (a preceding line-comment becomes the tooltip)
+width = 30;     // [10:100]        slider 10..100
+rows  = 2;      // [1:1:6]         slider 1..6 step 1
+style = "flat"; // [flat, round]   dropdown of strings
+mode  = 1;      // [0:Off, 1:On]   dropdown (value:label)
+label = "PART"; // 12              text, max length 12
+solid = true;                      // checkbox
+cube([width, width, rows * 10]);
+```
+
+Only top-level literal assignments become knobs; variables inside modules/functions are ignored, and a `/* [Hidden] */` group suppresses its members. Vectors and expression-valued variables aren't customizable.
 
 ```js
 const { Manifold } = api;
@@ -1041,7 +1056,9 @@ Read the notes and version history before making changes. The notes tell you:
 4. When satisfied, save: `runAndSave(modifiedCode, "v2 - improvements", assertions)` -- check the diff
 5. Use `query({sliceAt: [...], decompose: true})` for follow-up inspection without re-running
 6. Repeat.
-7. When done, hand the user a **share link**: `const { url } = await partwright.getShareLink()`. This is a self-contained, read-only URL that encodes the whole design — anyone can open it anywhere and fork it into their own copy. Prefer it over `getSessionUrl()`/`getGalleryUrl()`, which only resolve against *your* browser's local storage and won't open for the user.
+7. When done, briefly say what you built — it's already saved as a version, so you don't need to produce any link.
+   - **In-app chat assistant:** do NOT mint or paste a share/export URL into the conversation. The encoded share link is enormous and pasting it just burns the user's tokens, and the user already has a **Share** button (↗) in the toolbar that builds one on demand. Just confirm the work is saved.
+   - **External / console agents** (driving Partwright from outside the browser, e.g. via the console or Claude Code) have no toolbar to click, so hand the user a **share link**: `const { url } = await partwright.getShareLink()` — a self-contained, read-only URL that encodes the whole design so anyone can open and fork it. Prefer it over `getSessionUrl()`/`getGalleryUrl()`, which only resolve against *your* browser's local storage and won't open for the user.
 
 ## Visual verification
 

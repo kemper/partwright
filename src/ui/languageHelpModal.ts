@@ -136,10 +136,9 @@ export function showLanguageHelpModal(): Promise<void> {
       grid.appendChild(wrapper);
     }
 
-    // Dismiss lives in the shell footer so it stays visible above the
-    // scrollable card list (and fills what would otherwise be an empty footer
-    // bar) rather than being buried at the bottom of the scroll on small
-    // screens.
+    // Dismiss button lives in the shell's pinned footer (not the scrolling
+    // body) so it stays reachable without scrolling to the bottom of a long,
+    // scrollable card list.
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'px-3 py-1.5 rounded text-sm font-medium transition-colors bg-zinc-700 hover:bg-zinc-600 text-zinc-100';

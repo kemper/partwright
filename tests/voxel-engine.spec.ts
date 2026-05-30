@@ -277,6 +277,93 @@ test.describe('voxel engine', () => {
     expect(result.geo.isManifold).toBe(true);
   });
 
+  test('Image → voxel menu is modal-first with a Choose image button', async ({ page }) => {
+    // A small solid PNG to pick inside the modal.
+    const dataUrl = await page.evaluate(() => {
+      const c = document.createElement('canvas');
+      c.width = 4; c.height = 4;
+      const x = c.getContext('2d')!;
+      x.fillStyle = '#33aaff'; x.fillRect(0, 0, 4, 4);
+      return c.toDataURL('image/png');
+    });
+    const buffer = Buffer.from(dataUrl.split(',')[1], 'base64');
+
+    // Click the menu row — the modal must open FIRST (no OS file picker).
+    await page.locator('#btn-import').click();
+    await page.getByText('Image → voxel…', { exact: true }).click();
+    await expect(page.getByText('Image → Voxel', { exact: true })).toBeVisible({ timeout: 10_000 });
+
+    // No image yet: a "Choose image…" CTA, and Import disabled.
+    await expect(page.getByRole('button', { name: 'Choose image…', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Import', exact: true })).toBeDisabled();
+
+    // Pick the image inside the modal.
+    await page.locator('[data-testid="voxel-image-input"]').setInputFiles({ name: 'dot.png', mimeType: 'image/png', buffer });
+
+    // Controls populate; the button now offers a swap; Import becomes enabled.
+    // (Generous timeout: the swap button appears only after the image decodes.)
+    await expect(page.getByRole('button', { name: 'Choose a different image…', exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole('button', { name: 'Import', exact: true })).toBeEnabled();
+
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
+    await expect.poll(async () => page.evaluate(
+      () => (window as any).partwright.getActiveLanguage(), // eslint-disable-line @typescript-eslint/no-explicit-any
+    ), { timeout: 10_000 }).toBe('voxel');
+  });
+
+  test("importImageAsVoxels codeStyle 'calls' writes editable builder code", async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      // A 3×1 solid red strip → merges into a single fillBox run.
+      const canvas = document.createElement('canvas');
+      canvas.width = 3;
+      canvas.height = 1;
+      const ctx = canvas.getContext('2d')!;
+      ctx.fillStyle = '#ff0000';
+      ctx.fillRect(0, 0, 3, 1);
+      const url = canvas.toDataURL('image/png');
+      const imp = await pw.importImageAsVoxels(url, { codeStyle: 'calls' });
+      return { imp, code: pw.getCode(), geo: pw.getGeometryData() };
+    });
+
+    expect(result.imp.error).toBeFalsy();
+    // Editable code, not a decode blob.
+    expect(result.code).toContain('v.fillBox([');
+    expect(result.code).not.toContain('voxels.decode(');
+    // And it still renders a valid manifold.
+    expect(result.geo.isManifold).toBe(true);
+  });
+
+  test('importImageAsVoxels palette snaps pixels to chosen colors', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      // Two near-red and two near-blue pixels; a 2-color palette snaps them
+      // to pure red / pure blue.
+      const canvas = document.createElement('canvas');
+      canvas.width = 2;
+      canvas.height = 2;
+      const ctx = canvas.getContext('2d')!;
+      const px = ['#fa0a0a', '#f01414', '#0a0afa', '#1414f0'];
+      let n = 0;
+      for (let y = 0; y < 2; y++) for (let x = 0; x < 2; x++) { ctx.fillStyle = px[n++]; ctx.fillRect(x, y, 1, 1); }
+      const url = canvas.toDataURL('image/png');
+      const imp = await pw.importImageAsVoxels(url, {
+        palette: [[255, 0, 0], [0, 0, 255]],
+        codeStyle: 'calls',
+      });
+      return { imp, code: pw.getCode(), geo: pw.getGeometryData() };
+    });
+
+    expect(result.imp.error).toBeFalsy();
+    expect(result.imp.voxelCount).toBe(4);
+    // Only the two palette colors appear in the generated code.
+    expect(result.code).toContain("'#ff0000'");
+    expect(result.code).toContain("'#0000ff'");
+    expect(result.geo.isManifold).toBe(true);
+  });
+
   test('smooth surfacing rounds the mesh while staying a manifold', async ({ page }) => {
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

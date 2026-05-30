@@ -169,7 +169,10 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
   // Drag handle (pointer-based reorder — works for mouse, touch, and pen).
   // Always visible (not hover-gated) so it's discoverable on touch.
   const grip = document.createElement('span');
-  grip.className = 'shrink-0 text-zinc-500 [@media(hover:hover)]:group-hover:text-zinc-300 text-sm leading-none cursor-grab touch-none px-1 py-1';
+  // ≥44×44px hit area on mobile (fingertip-friendly) that collapses to the
+  // subtle padded glyph on pointer-capable desktop (md+). The visible ⠿ stays
+  // small; the transparent box around it is what grows the touch target.
+  grip.className = 'shrink-0 inline-flex items-center justify-center text-zinc-500 [@media(hover:hover)]:group-hover:text-zinc-300 text-sm leading-none cursor-grab touch-none min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:px-1 md:py-1';
   grip.textContent = '⠿'; // ⠿ drag grip
   grip.title = 'Drag to reorder';
   grip.setAttribute('aria-label', 'Drag to reorder');

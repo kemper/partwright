@@ -33,7 +33,11 @@ test.describe('Guided tour entry points', () => {
 
   test('landing CTA opens the editor and starts the tour', async ({ page }) => {
     await page.goto('/');
-    const cta = page.getByRole('button', { name: 'Take the guided tour' });
+    // Scope to the landing subtree: the editor chrome (mounted but hidden in
+    // the same SPA DOM) carries a rail button #btn-tour with the same
+    // accessible name, so an unscoped getByRole can resolve to that hidden
+    // control on slower startups and time out waiting for it to be clickable.
+    const cta = page.locator('#landing-page').getByRole('button', { name: 'Take the guided tour' });
     await expect(cta).toBeVisible();
 
     await cta.click();

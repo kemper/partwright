@@ -32,6 +32,14 @@ const MAX_NAME_CHARS = 256;
  *  a generous PNG/JPEG/WebP preview; anything larger is dropped. */
 const MAX_IMAGE_DATA_URL_CHARS = 1_500_000;
 
+/** Per-version annotation caps. Annotations are drawn via canvas (not HTML), so
+ *  this is a bounded-DoS / odd-content guard, not an XSS one: a shared link
+ *  could otherwise carry tens of thousands of strokes or a multi-MB text label.
+ *  Beyond either cap the whole `annotations` field is dropped (the rest of the
+ *  version is still safe to preview) — mirroring the thumbnail-drop policy. */
+const MAX_ANNOTATIONS_PER_VERSION = 500;
+const MAX_ANNOTATIONS_JSON_CHARS = 1_000_000;
+
 /** Thrown for any decode/validation failure on untrusted share input. Callers
  *  treat every instance as "this shared link is invalid or corrupted" and fall
  *  back to a normal editable editor. */
@@ -253,6 +261,26 @@ function assertStringCap(value: unknown, max: number, what: string): void {
   if (value.length > max) throw new ShareDecodeError(`share: ${what} exceeds the size cap`);
 }
 
+/** Drop a version's `annotations` array if it has too many entries or serializes
+ *  to too many bytes. Dropping (not rejecting) keeps the rest of the version
+ *  previewable, matching the unsafe-thumbnail policy below. */
+function capVersionAnnotations(v: Record<string, unknown>): void {
+  const ann = v.annotations;
+  if (ann === undefined || ann === null) return;
+  if (!Array.isArray(ann) || ann.length > MAX_ANNOTATIONS_PER_VERSION) {
+    delete v.annotations;
+    return;
+  }
+  let json = '';
+  try {
+    json = JSON.stringify(ann);
+  } catch {
+    delete v.annotations;
+    return;
+  }
+  if (json.length > MAX_ANNOTATIONS_JSON_CHARS) delete v.annotations;
+}
+
 /** Structural + security validator for a decoded share payload. Asserts the
  *  object has a `session` object and a non-empty `versions` array, enforces
  *  per-string caps (code / label / session name), and drops an unsafe
@@ -274,6 +302,7 @@ export function validateSharePayloadShape(raw: unknown): ExportedSession {
     if (!isObject(v)) throw new ShareDecodeError('share: version entry is not an object');
     assertStringCap(v.code, MAX_CODE_CHARS, 'version code');
     assertStringCap(v.label, MAX_LABEL_CHARS, 'version label');
+    capVersionAnnotations(v);
   }
 
   // Drop an unsafe leading thumbnail rather than rejecting the whole payload —

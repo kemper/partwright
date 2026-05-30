@@ -107,9 +107,17 @@ export interface StreamResult {
   /** Concatenated thought-summary text for the turn, if the model emitted
    *  any. Undefined/empty for non-thinking models. */
   thinking?: string;
+  /** Gemini-only: the thought signature bound to a pure-text (no tool call)
+   *  turn. Gemini 3 attaches it to the answer text part, or — in streaming —
+   *  to a trailing empty-text part; chatLoop stores it on the answer's text
+   *  block so it replays on the next request and the model keeps its
+   *  reasoning thread. Undefined when the turn made a tool call (the signature
+   *  then rides the functionCall part instead) or when none was emitted. */
+  textThoughtSignature?: string;
   /** Anthropic-only thinking-block replay payload — always undefined here
-   *  (Gemini's turn-to-turn continuity rides on `thoughtSignature` on the
-   *  tool call). Declared for a uniform `StreamResult` across providers. */
+   *  (Gemini's turn-to-turn continuity rides on `thoughtSignature`, captured
+   *  on the tool call or `textThoughtSignature` above). Declared for a uniform
+   *  `StreamResult` across providers. */
   thinkingBlocks?: ThinkingBlockData[];
 }
 
@@ -255,6 +263,18 @@ async function consumeGeminiStream(
   let usage: TurnUsage = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
   let toolIndex = 0;
   let promptBlockReason: string | undefined;
+  // Gemini 3 thinking models attach an opaque thoughtSignature that MUST be
+  // echoed back on the next request, "in the exact part where it was received"
+  // — omitting it on a functionCall part is a hard 400, and dropping it on a
+  // text part silently degrades the model's reasoning (it loses its thread and
+  // bails out early with a tiny answer). The signature can ride the
+  // functionCall part, the answer text part, or — per Google's streaming docs
+  // — a *trailing part whose text is empty*. The old parser only read it off
+  // functionCall parts and skipped empty-text parts entirely, so it leaked.
+  // `pendingSignature` captures the latest signature seen on ANY part; we bind
+  // it to the right place once the stream ends.
+  let pendingSignature: string | undefined;
+  let answerSignature: string | undefined;
 
   try {
     for await (const event of readSseStream(res, signal)) {
@@ -291,6 +311,11 @@ async function consumeGeminiStream(
       if (!candidate) continue;
       const parts: GeminiPart[] = candidate.content?.parts ?? [];
       for (const part of parts) {
+        // Capture a thought signature off ANY part, including a trailing part
+        // whose only payload is the signature (empty/absent text, no call).
+        // Such parts hit neither branch below, so reading the signature here
+        // is the only place that catches that documented streaming shape.
+        if (part.thoughtSignature) pendingSignature = part.thoughtSignature;
         if (typeof part.text === 'string' && part.text.length > 0) {
           if (part.thought === true) {
             // Thought summary — goes to the thinking box, not the reply.
@@ -299,6 +324,9 @@ async function consumeGeminiStream(
           } else {
             collectedText += part.text;
             callbacks.onText?.(part.text);
+            // Signature on the answer text part itself (non-streaming, or a
+            // chunk that carries both text and signature).
+            if (part.thoughtSignature) answerSignature = part.thoughtSignature;
           }
         } else if (part.functionCall) {
           const id = `gemini_call_${toolIndex++}`;
@@ -316,6 +344,23 @@ async function consumeGeminiStream(
       if (candidate.finishReason) {
         stopReason = mapStopReason(candidate.finishReason);
       }
+    }
+    // Bind any trailing/standalone signature to the part Gemini requires it on:
+    // the first functionCall of the turn (mandatory — a missing signature 400s
+    // after the model has made a tool call), otherwise the answer text part
+    // (recommended; keeps the model's reasoning continuous across turns). This
+    // covers the case where the signature streams in a chunk separate from the
+    // call/text it belongs to.
+    //
+    // Only toolCalls[0] is backfilled on purpose: per Gemini's contract just
+    // the FIRST parallel function call carries (and requires) a signature —
+    // later parallel calls intentionally omit one, so assigning them the first
+    // call's signature would itself be rejected. Don't broaden this to all
+    // calls.
+    if (toolCalls.length > 0) {
+      if (!toolCalls[0].thoughtSignature && pendingSignature) toolCalls[0].thoughtSignature = pendingSignature;
+    } else if (!answerSignature && pendingSignature) {
+      answerSignature = pendingSignature;
     }
   } catch (err) {
     if (signal?.aborted) return { text: collectedText, toolCalls: [], stopReason: 'aborted', usage, thinking: collectedThinking };
@@ -336,7 +381,16 @@ async function consumeGeminiStream(
     // 🩺 Diagnostics to see what came back.
     stopReason = 'end_turn';
   }
-  return { text: collectedText, toolCalls, stopReason, usage, thinking: collectedThinking };
+  return {
+    text: collectedText,
+    toolCalls,
+    stopReason,
+    usage,
+    thinking: collectedThinking,
+    // Only a pure-text turn carries the signature here; when the turn made a
+    // tool call the signature rides the functionCall part (captured above).
+    ...(toolCalls.length === 0 && answerSignature ? { textThoughtSignature: answerSignature } : {}),
+  };
 }
 
 function abortedResult(): StreamResult {
@@ -362,7 +416,11 @@ function buildGeminiContents(history: ChatMessage[]): GeminiContent[] {
       const parts: GeminiPart[] = [];
       for (const b of msg.blocks) {
         if (b.type === 'text' && b.text.length > 0) {
-          parts.push({ text: b.text });
+          const textPart: GeminiPart = { text: b.text };
+          // Echo the signature Gemini bound to this answer-text part, so the
+          // model keeps its reasoning thread on the next turn / on resume.
+          if (b.thoughtSignature) textPart.thoughtSignature = b.thoughtSignature;
+          parts.push(textPart);
         } else if (b.type === 'review' && b.text.length > 0) {
           // Cross-provider review lands as an assistant turn; surface it on
           // the next turn so the primary model sees the reviewer's feedback.

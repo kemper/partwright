@@ -58,6 +58,39 @@ describe('turnCostUsd no-double-count contract', () => {
   }
 });
 
+describe('known-model pricing for out-of-snapshot compaction models', () => {
+  // The bug we're guarding against: gpt-4o-mini is the OpenAI compaction model
+  // but isn't in the build-time catalog snapshot (filtered to last-year
+  // releases). A catalog miss fell through to the Sonnet-tier FALLBACK_PRICING
+  // ($3/$15 per 1M), over-reporting the summarize call ~5–40×. cost.ts now
+  // carries an explicit KNOWN_MODEL_PRICING entry for it.
+  test('gpt-4o-mini priced at its real (cheap) rate, not the Sonnet fallback', () => {
+    const usage = {
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    };
+    const cost = turnCostUsd('openai', 'gpt-4o-mini', usage);
+    // Real gpt-4o-mini: $0.15 in + $0.60 out per 1M = $0.75.
+    expect(cost).toBeCloseTo(0.75, 6);
+    // Must be far below the $3 + $15 = $18 Sonnet-tier fallback.
+    const fallback = turnCostUsd('openai', 'totally-unknown-model-xyz', usage);
+    expect(fallback).toBeGreaterThan(cost * 10);
+  });
+
+  test('cached gpt-4o-mini input uses the discounted cache-read rate', () => {
+    const cost = turnCostUsd('openai', 'gpt-4o-mini', {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 1_000_000,
+    });
+    // cacheRead $0.075 per 1M.
+    expect(cost).toBeCloseTo(0.075, 6);
+  });
+});
+
 describe('formatUsd', () => {
   test('zero shows as $0', () => {
     expect(formatUsd(0)).toBe('$0');
