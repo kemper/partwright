@@ -28,6 +28,7 @@ import { onTabSync, publishTabSync } from '../storage/tabSync';
 import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
 import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Provider, type TurnOutcomeReason } from '../ai/types';
+import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
 import { errorLog } from '../diagnostics/errorLog';
 
 interface PanelState {
@@ -143,6 +144,16 @@ let forwardBtnRef: HTMLButtonElement | null = null;
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
 let inputEl: HTMLTextAreaElement | null = null;
+
+// Slash-command autocomplete menu state. The menu sits just above the input
+// row and shows while the user is typing a "/command" token. `slashMenuItems`
+// is the currently-filtered list; `slashMenuIndex` is the keyboard highlight;
+// `slashMenuUserSelected` records whether the user has explicitly arrowed to a
+// choice (so a stray Enter on a bare "/" doesn't fire the default command).
+let slashMenuEl: HTMLElement | null = null;
+let slashMenuItems: SlashCommandSpec[] = [];
+let slashMenuIndex = 0;
+let slashMenuUserSelected = false;
 
 /** "Stuck to bottom" detection for the transcript. The auto-scroll on every
  *  streamed delta used to fight the user when they scrolled up to read earlier
@@ -617,6 +628,7 @@ function buildDrawer(): void {
 
   // Transcript
   transcriptEl = document.createElement('div');
+  transcriptEl.id = 'ai-transcript';
   transcriptEl.className = 'flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-3';
   root.appendChild(transcriptEl);
 
@@ -674,15 +686,44 @@ function buildDrawer(): void {
   inputRow.className = 'px-3 pt-2 pb-2 border-t border-zinc-700 flex flex-col gap-2 flex-1 min-h-0';
 
   const ta = document.createElement('textarea');
-  ta.placeholder = 'Ask the AI to model something...';
+  ta.placeholder = 'Ask the AI to model something…  (type / for commands)';
   ta.rows = 2;
   ta.className = 'w-full flex-1 min-h-0 px-2 py-1.5 rounded bg-zinc-800 border border-zinc-600 text-zinc-100 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 resize-none';
   ta.addEventListener('keydown', e => {
+    // When the slash-command menu is open it owns the arrow/Tab/Enter/Escape
+    // keys so the user can navigate and run a command without it being sent
+    // to the model as a message.
+    if (isSlashMenuOpen()) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); moveSlashSelection(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); moveSlashSelection(-1); return; }
+      if (e.key === 'Tab') { e.preventDefault(); completeSlashSelection(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); hideSlashMenu(); return; }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        // Only run on Enter when the choice is unambiguous: the user has
+        // explicitly highlighted an item (arrow keys), or the filter has
+        // narrowed to a single command. A bare "/" — or any prefix matching
+        // several commands — leaves the highlight on whatever is first, so a
+        // stray Enter would silently fire that command (e.g. /compact). In
+        // that case consume the Enter and keep the menu open to refine.
+        if (slashSelectionConfirmed()) {
+          const cmd = slashMenuItems[slashMenuIndex];
+          if (cmd) runSlashCommand(cmd.name as SlashCommandName);
+        }
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      // A bare "/command" runs the command instead of being sent as a message.
+      if (maybeRunSlashCommand()) return;
       void sendMessage();
     }
   });
+  ta.addEventListener('input', () => { updateSlashMenu(); });
+  // Hide the menu when focus genuinely leaves the input. Row clicks keep focus
+  // (they preventDefault on mousedown), so this fires only on a real blur.
+  ta.addEventListener('blur', () => { window.setTimeout(() => hideSlashMenu(), 120); });
   ta.addEventListener('paste', e => {
     if (!e.clipboardData) return;
     for (const item of Array.from(e.clipboardData.items)) {
@@ -763,6 +804,8 @@ function buildDrawer(): void {
   sendBtn.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
   sendBtn.textContent = 'Send';
   sendBtn.addEventListener('click', () => {
+    // A bare "/command" runs the command rather than being sent/queued.
+    if (maybeRunSlashCommand()) return;
     // While a turn is in flight, Send queues — the agent picks the
     // message up at the next natural pause (between tool round-trips or
     // at end-of-turn) without us aborting the current run. Stop is the
@@ -779,6 +822,20 @@ function buildDrawer(): void {
   inputRow.appendChild(inputBtnRow);
   bottomSection.appendChild(inputRow);
   root.appendChild(bottomSection);
+
+  // Slash-command autocomplete menu — a floating overlay anchored just above
+  // the input. It uses `position: fixed` (coordinates set in
+  // positionSlashMenu() from the textarea's rect) so it overlays the content
+  // above the input instead of taking flow space — the textarea never changes
+  // size or shape. Fixed positioning also escapes the bottom section's
+  // `overflow-hidden`, which would otherwise clip an upward-growing menu.
+  slashMenuEl = document.createElement('div');
+  slashMenuEl.id = 'ai-slash-menu';
+  slashMenuEl.className = 'fixed z-50 rounded border border-zinc-600 bg-zinc-800 shadow-xl max-h-56 overflow-y-auto hidden';
+  root.appendChild(slashMenuEl);
+  // Keep the overlay glued to the input if the viewport (or panel) resizes
+  // while it's open. Keystrokes already reposition via renderSlashMenu().
+  window.addEventListener('resize', () => { if (isSlashMenuOpen()) positionSlashMenu(); });
 
   // Drag-drop image handling
   root.addEventListener('dragover', e => { e.preventDefault(); root.classList.add('ring-2', 'ring-blue-500'); });
@@ -2294,6 +2351,155 @@ async function preflightTurn(
     }
   }
   return apiKey;
+}
+
+// === Slash commands ===
+//
+// A bare "/command" typed in the input runs a panel action instead of being
+// sent to the model. Each command mirrors a header button, giving the whole
+// chat-management surface a keyboard path. The command names live in the pure
+// `slashCommands` module; this map binds each to its handler and is type-
+// checked against `SlashCommandName`, so adding a name there without a handler
+// here (or vice versa) is a compile error.
+const SLASH_HANDLERS: Record<SlashCommandName, () => void> = {
+  compact: () => { void runCompact(); },
+  clear: () => { void clearCurrentChat(); },
+  review: () => { void launchReview(); },
+  export: () => { exportCurrentChat(); },
+  models: () => { void showAiSettingsModal({ onChange: afterAiSettingsChange }); },
+  help: () => { openSlashHelp(); },
+};
+
+/** Interpret the current input as a slash command. Returns true when it was a
+ *  slash-command invocation — known commands run, unknown ones surface a hint
+ *  — so the caller skips the normal send/queue path. Returns false for any
+ *  ordinary message (which then sends as usual). */
+function maybeRunSlashCommand(): boolean {
+  if (!inputEl) return false;
+  const parsed = parseSlashCommand(inputEl.value);
+  if (!parsed) return false;
+  if (parsed.name) {
+    runSlashCommand(parsed.name);
+  } else {
+    hideSlashMenu();
+    setTransientStatus(`Unknown command /${parsed.token} — type /help to list commands.`);
+  }
+  return true;
+}
+
+/** Run a resolved command: dismiss the menu, clear the input, dispatch. */
+function runSlashCommand(name: SlashCommandName): void {
+  hideSlashMenu();
+  if (inputEl) inputEl.value = '';
+  SLASH_HANDLERS[name]();
+}
+
+function isSlashMenuOpen(): boolean {
+  return !!slashMenuEl && !slashMenuEl.classList.contains('hidden') && slashMenuItems.length > 0;
+}
+
+/** Re-filter the menu against the current input and show or hide it. Called on
+ *  every input event: shows while the user is mid-"/command", hides once a
+ *  space is typed or the leading slash is gone. */
+function updateSlashMenu(): void {
+  if (!inputEl) return;
+  const prefix = slashMenuPrefix(inputEl.value);
+  if (prefix === null) { hideSlashMenu(); return; }
+  showSlashMenu(prefix);
+}
+
+/** Open the menu showing every command — the /help action. */
+function openSlashHelp(): void {
+  showSlashMenu('');
+  inputEl?.focus();
+}
+
+function showSlashMenu(prefix: string): void {
+  slashMenuItems = matchSlashCommands(prefix);
+  slashMenuIndex = 0;
+  // Re-filtering resets the highlight, so any prior explicit selection is
+  // stale — require fresh confirmation before Enter runs anything.
+  slashMenuUserSelected = false;
+  renderSlashMenu();
+}
+
+function hideSlashMenu(): void {
+  slashMenuItems = [];
+  slashMenuIndex = 0;
+  slashMenuUserSelected = false;
+  if (slashMenuEl) {
+    slashMenuEl.replaceChildren();
+    slashMenuEl.classList.add('hidden');
+  }
+}
+
+function moveSlashSelection(delta: number): void {
+  if (slashMenuItems.length === 0) return;
+  slashMenuIndex = (slashMenuIndex + delta + slashMenuItems.length) % slashMenuItems.length;
+  slashMenuUserSelected = true;
+  renderSlashMenu();
+}
+
+/** Whether an Enter press should run the highlighted command: true once the
+ *  user has explicitly arrowed to a choice, or the filter has narrowed to a
+ *  single command (typing the full name, or a unique prefix). Guards against a
+ *  stray Enter on an ambiguous menu firing the first command. */
+function slashSelectionConfirmed(): boolean {
+  return slashMenuUserSelected || slashMenuItems.length === 1;
+}
+
+/** Tab-complete the highlighted command into the input, then re-filter so the
+ *  menu narrows to the now-exact token. */
+function completeSlashSelection(): void {
+  const cmd = slashMenuItems[slashMenuIndex];
+  if (!cmd || !inputEl) return;
+  inputEl.value = `/${cmd.name}`;
+  updateSlashMenu();
+}
+
+function renderSlashMenu(): void {
+  if (!slashMenuEl) return;
+  if (slashMenuItems.length === 0) { hideSlashMenu(); return; }
+  slashMenuEl.replaceChildren();
+
+  const header = document.createElement('div');
+  header.className = 'px-2 py-1 text-[10px] uppercase tracking-wide text-zinc-500 border-b border-zinc-700/60 sticky top-0 bg-zinc-800/95';
+  header.textContent = 'Slash commands';
+  slashMenuEl.appendChild(header);
+
+  slashMenuItems.forEach((cmd, i) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = `w-full text-left px-2 py-1.5 flex flex-col gap-0.5 ${i === slashMenuIndex ? 'bg-zinc-700' : 'hover:bg-zinc-700/50'}`;
+    const nameEl = document.createElement('span');
+    nameEl.className = 'text-[12px] font-medium text-blue-300';
+    nameEl.textContent = `/${cmd.name}`;
+    const sumEl = document.createElement('span');
+    sumEl.className = 'text-[10px] text-zinc-400';
+    sumEl.textContent = cmd.summary;
+    row.append(nameEl, sumEl);
+    // Keep focus in the textarea so the click handler can clear it and the
+    // blur-hide never races the click.
+    row.addEventListener('mousedown', e => e.preventDefault());
+    row.addEventListener('click', () => { runSlashCommand(cmd.name as SlashCommandName); });
+    slashMenuEl!.appendChild(row);
+  });
+
+  slashMenuEl.classList.remove('hidden');
+  positionSlashMenu();
+}
+
+/** Anchor the floating menu just above the input, matching its width. Uses
+ *  the textarea's viewport rect with `position: fixed`, so the overlay never
+ *  reflows the input and isn't clipped by the bottom section. */
+function positionSlashMenu(): void {
+  if (!slashMenuEl || !inputEl) return;
+  const r = inputEl.getBoundingClientRect();
+  slashMenuEl.style.left = `${Math.round(r.left)}px`;
+  slashMenuEl.style.width = `${Math.round(r.width)}px`;
+  // Pin the menu's bottom edge 6px above the input's top; it grows upward.
+  slashMenuEl.style.bottom = `${Math.round(window.innerHeight - r.top + 6)}px`;
+  slashMenuEl.style.top = 'auto';
 }
 
 async function sendMessage(): Promise<void> {
