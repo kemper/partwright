@@ -2326,7 +2326,10 @@ async function main() {
         return true;
       };
 
-      if (!state.session) return openInNewSession();
+      // No session, or the only part is an expendable starter: open a fresh BREP
+      // session named after the file (legacy behavior). The target modal only
+      // exists to protect real work, and a fresh/expendable editor has none.
+      if (!state.session || currentPartIsExpendable()) return openInNewSession();
 
       // A session is open: offer new-part / new-session (current-part is out of
       // scope — composing an exact BREP shape into a mesh part isn't supported).
@@ -2343,12 +2346,14 @@ async function main() {
 
       // new-part: add a BREP part to the current session, seed the starter, run
       // it, and save v1 tagged `replicad`. preserveCurrentEditsIfNeeded first so
-      // the current part's unsaved work isn't lost.
+      // the current part's unsaved work isn't lost. Parse the STEP shape BEFORE
+      // creating the part — a parse failure must not leave a freshly-created
+      // empty part orphaned as the current part.
       await preserveCurrentEditsIfNeeded();
       if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
+      if (!(await pushBrepShape())) return false;
       const part = await createPart(baseName);
       if (!part) return false;
-      if (!(await pushBrepShape())) return false;
       setValue(starter);
       await runCodeSync(starter);
       const thumbnail = await captureThumbnail();
@@ -2635,24 +2640,26 @@ async function main() {
   }): Promise<boolean> {
     const { code, language, sessionName, filename, title } = opts;
     const state = getState();
-    if (!state.session) {
+    // No session, or the only part is an expendable starter: import as before —
+    // a fresh session named after the file. The target modal only exists to
+    // protect real work, and a fresh/expendable editor has none to protect.
+    if (!state.session || currentPartIsExpendable()) {
       await importCodePayload(code, language, sessionName);
       return true;
     }
 
-    const expendable = currentPartIsExpendable();
-    // A non-empty mesh part can only receive a compose when the import is
-    // composable (voxel bakes to a mesh; a BREP starter can't compose into a
-    // mesh part). An expendable starter is always replaceable.
-    const canAddToCurrent = !!state.currentPart && (expendable || opts.composable);
+    // Past this point the current part holds real work (not an expendable
+    // starter), so the current-part choice can only compose-into — and only
+    // when the import is composable (voxel bakes to a mesh; a BREP starter
+    // can't compose into a mesh part).
+    const canAddToCurrent = !!state.currentPart && opts.composable;
     const target = await showImportTargetModal({
       title,
       filename,
       currentPartName: state.currentPart?.name ?? null,
       canAddToCurrent,
-      addDisabledReason: !expendable && !opts.composable ? opts.composeDisabledReason : undefined,
+      addDisabledReason: !opts.composable ? opts.composeDisabledReason : undefined,
       recommend: 'new-part',
-      addReplacesStarter: expendable,
     });
     if (!target) return false;
 
@@ -2665,12 +2672,8 @@ async function main() {
       await seedNewPartWithCode(code, sessionName, language);
       return true;
     }
-    // current-part: seed an expendable starter directly, else compose the
-    // import's baked mesh into the existing part (composable imports only).
-    if (expendable) {
-      await applyCodeToCurrentPart(code, language);
-      return true;
-    }
+    // current-part: compose the import's baked mesh into the existing part
+    // (composable imports only).
     await preserveCurrentEditsIfNeeded();
     const baked = await bakeCodeComponent(code, language, sessionName);
     if (!baked) {
@@ -2715,12 +2718,16 @@ async function main() {
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const sessionName = filename.replace(/\.[^.]+$/, '');
     const state = getState();
-    if (!state.session) {
+    // No session, or the only part is an expendable starter: import as before —
+    // a fresh session named after the file. The target modal only exists to
+    // protect real work, and a fresh/expendable editor has none to protect.
+    if (!state.session || currentPartIsExpendable()) {
       await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
       return true;
     }
 
-    const expendable = currentPartIsExpendable();
+    // Past this point the current part holds real work (not an expendable
+    // starter), so "current part" always means compose-into, never replace.
     const target = await showImportTargetModal({
       filename,
       currentPartName: state.currentPart?.name ?? null,
@@ -2728,12 +2735,9 @@ async function main() {
       addDisabledReason: !parsed.isManifold
         ? 'Render-only meshes can’t be combined into an existing part.'
         : undefined,
-      // Default to a new part for every import type so an import never
-      // silently overwrites the current part. The current-part button still
-      // reads "Use for current part" when the part is an empty starter
-      // (addReplacesStarter), but it's no longer the pre-selected default.
+      // Default to a new part so an import never silently overwrites the
+      // current part's real work.
       recommend: 'new-part',
-      addReplacesStarter: expendable,
     });
     if (!target) return false;
 
@@ -2746,11 +2750,7 @@ async function main() {
       await seedNewPartWithMesh(parsed.mesh, filename, parsed.isManifold);
       return true;
     }
-    // current-part: seed an expendable starter, else compose into real work.
-    if (expendable) {
-      await applyImportWrapper([parsed.mesh], parsed.isManifold);
-      return true;
-    }
+    // current-part: compose the imported mesh into the existing real work.
     await preserveCurrentEditsIfNeeded();
     return composeMeshIntoCurrentPart(parsed.mesh);
   }
