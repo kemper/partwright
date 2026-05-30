@@ -75,7 +75,10 @@ const scadLanguage = StreamLanguage.define({
   },
 });
 
-function languageExt(lang: EditorLanguage): Extension {
+/** CodeMirror syntax-highlighting extension for an editor language. Exported
+ *  so read-only viewers (e.g. the diff view) can highlight the right language
+ *  without duplicating the SCAD StreamLanguage definition. */
+export function languageExt(lang: EditorLanguage): Extension {
   return lang === 'scad' ? scadLanguage : javascript();
 }
 
