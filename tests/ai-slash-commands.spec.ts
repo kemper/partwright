@@ -58,6 +58,13 @@ test.describe('AI slash commands', () => {
     await expect(menu).toContainText('/help');
     await expect(menu).toContainText('/models');
 
+    // A stray Enter on the bare-"/" menu must NOT fire the first command
+    // (/compact) — the choice is ambiguous, so Enter is a no-op that keeps the
+    // menu open. Nothing ran: the input still holds "/".
+    await input.press('Enter');
+    await expect(menu).toBeVisible();
+    await expect(input).toHaveValue('/');
+
     // Narrowing the token filters the list.
     await input.pressSequentially('cl');
     await expect(menu).toContainText('/clear');
@@ -74,6 +81,28 @@ test.describe('AI slash commands', () => {
     // ...and a plain message never opens it.
     await input.fill('just a normal message');
     await expect(menu).toBeHidden();
+  });
+
+  test('arrow-selecting a command and pressing Enter runs it', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEditorReady(page);
+    await openAiPanel(page);
+    const panel = page.locator('#ai-panel');
+    const input = panel.locator('textarea');
+    const menu = page.locator(MENU);
+
+    await input.click();
+    await input.pressSequentially('/');
+    await expect(menu).toBeVisible();
+
+    // ArrowUp wraps the highlight to the last command (/help); an explicit
+    // selection makes Enter act. /help clears the input and reopens the full
+    // menu — a network-free, observable effect.
+    await input.press('ArrowUp');
+    await input.press('Enter');
+    await expect(input).toHaveValue('');
+    await expect(menu).toBeVisible();
+    await expect(menu).toContainText('/compact');
   });
 
   test('/help opens the full command menu', async ({ page }) => {

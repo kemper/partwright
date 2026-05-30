@@ -147,10 +147,13 @@ let inputEl: HTMLTextAreaElement | null = null;
 
 // Slash-command autocomplete menu state. The menu sits just above the input
 // row and shows while the user is typing a "/command" token. `slashMenuItems`
-// is the currently-filtered list; `slashMenuIndex` is the keyboard highlight.
+// is the currently-filtered list; `slashMenuIndex` is the keyboard highlight;
+// `slashMenuUserSelected` records whether the user has explicitly arrowed to a
+// choice (so a stray Enter on a bare "/" doesn't fire the default command).
 let slashMenuEl: HTMLElement | null = null;
 let slashMenuItems: SlashCommandSpec[] = [];
 let slashMenuIndex = 0;
+let slashMenuUserSelected = false;
 
 /** "Stuck to bottom" detection for the transcript. The auto-scroll on every
  *  streamed delta used to fight the user when they scrolled up to read earlier
@@ -697,8 +700,16 @@ function buildDrawer(): void {
       if (e.key === 'Escape') { e.preventDefault(); hideSlashMenu(); return; }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        const cmd = slashMenuItems[slashMenuIndex];
-        if (cmd) runSlashCommand(cmd.name as SlashCommandName);
+        // Only run on Enter when the choice is unambiguous: the user has
+        // explicitly highlighted an item (arrow keys), or the filter has
+        // narrowed to a single command. A bare "/" — or any prefix matching
+        // several commands — leaves the highlight on whatever is first, so a
+        // stray Enter would silently fire that command (e.g. /compact). In
+        // that case consume the Enter and keep the menu open to refine.
+        if (slashSelectionConfirmed()) {
+          const cmd = slashMenuItems[slashMenuIndex];
+          if (cmd) runSlashCommand(cmd.name as SlashCommandName);
+        }
         return;
       }
     }
@@ -2400,12 +2411,16 @@ function openSlashHelp(): void {
 function showSlashMenu(prefix: string): void {
   slashMenuItems = matchSlashCommands(prefix);
   slashMenuIndex = 0;
+  // Re-filtering resets the highlight, so any prior explicit selection is
+  // stale — require fresh confirmation before Enter runs anything.
+  slashMenuUserSelected = false;
   renderSlashMenu();
 }
 
 function hideSlashMenu(): void {
   slashMenuItems = [];
   slashMenuIndex = 0;
+  slashMenuUserSelected = false;
   if (slashMenuEl) {
     slashMenuEl.replaceChildren();
     slashMenuEl.classList.add('hidden');
@@ -2415,7 +2430,16 @@ function hideSlashMenu(): void {
 function moveSlashSelection(delta: number): void {
   if (slashMenuItems.length === 0) return;
   slashMenuIndex = (slashMenuIndex + delta + slashMenuItems.length) % slashMenuItems.length;
+  slashMenuUserSelected = true;
   renderSlashMenu();
+}
+
+/** Whether an Enter press should run the highlighted command: true once the
+ *  user has explicitly arrowed to a choice, or the filter has narrowed to a
+ *  single command (typing the full name, or a unique prefix). Guards against a
+ *  stray Enter on an ambiguous menu firing the first command. */
+function slashSelectionConfirmed(): boolean {
+  return slashMenuUserSelected || slashMenuItems.length === 1;
 }
 
 /** Tab-complete the highlighted command into the input, then re-filter so the
