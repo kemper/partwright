@@ -11,6 +11,7 @@
 // trigger a debounced auto-preview; an explicit "Preview" button forces one.
 
 import { registerCommands } from './commandPalette';
+import { getConfig } from '../config/appConfig';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 type ModId = 'fuzzy' | 'smooth' | 'voxelize';
@@ -30,7 +31,6 @@ type Tab = ModId;
 
 const BTN_BASE =
   'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur border border-zinc-700 text-zinc-200 hover:bg-zinc-700';
-const PREVIEW_DEBOUNCE_MS = 250;
 
 let openModal: HTMLDivElement | null = null;
 
@@ -169,7 +169,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   function schedulePreview() {
     if (previewTimer !== undefined) clearTimeout(previewTimer);
     status.textContent = 'Updating preview…';
-    previewTimer = window.setTimeout(runPreview, PREVIEW_DEBOUNCE_MS);
+    previewTimer = window.setTimeout(runPreview, getConfig().ui.surfacePreviewDebounceMs);
   }
   function clearPreviewIfDirty() {
     if (previewTimer !== undefined) { clearTimeout(previewTimer); previewTimer = undefined; }

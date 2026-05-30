@@ -258,7 +258,8 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
     return workingHistory;
   }
 
-  for (let iter = 0; Number.isFinite(maxIter) ? iter < maxIter : true; iter++) {
+  let iter = 0;
+  for (; Number.isFinite(maxIter) ? iter < maxIter : true; iter++) {
     // Give the browser a frame between iterations so an agent running
     // many tool round-trips doesn't lock up the page.
     if (iter > 0) await yieldToBrowser();
@@ -623,8 +624,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   // and exits via end_turn / error / abort; under auto-continue the end_turn
   // exit is reached once the no-progress ceiling trips (so even infinity caps
   // can't spin forever on a model that never calls `finish`).
-  const reached = Number.isFinite(maxIter) ? maxIter : totalToolCalls;
-  callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'iteration_cap', iterations: reached });
+  callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'iteration_cap', iterations: iter });
   return workingHistory;
 }
 
