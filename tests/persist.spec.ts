@@ -6,6 +6,10 @@ import { test, expect } from 'playwright/test';
 // `navigator.storage.persist()` — once on its own merits, and again whenever a
 // key is saved via `putKey`. These tests stub the Storage API so they run with
 // no network and no real grant (headless Chromium denies persistence).
+//
+// Each test relies on its own fresh BrowserContext/page so the module-level
+// `granted`/`inFlight` singletons in persist.ts reset between tests — keep them
+// in separate tests; don't consolidate into one page or the cached grant leaks.
 
 test.describe('Persistent storage', () => {
   test('requestPersistentStorage calls persist() and is idempotent once granted', async ({ page }) => {
