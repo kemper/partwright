@@ -371,6 +371,17 @@ Concretely, when adding a feature:
 - **`storage`-event and `BroadcastChannel` handlers must scope to the receiving tab's own session** before acting — gate on `msg.sessionId === currentState.session?.id` (see `tabSync.ts` consumers and `sessionLock.ts`, which guards on its own session's leader-token key). Never adopt a peer's provider/model/toggles live.
 - **Truly-global state is the exception, and must be additive, not last-write-wins.** Custom local models and system-prompt overrides are shared across tabs on purpose; keep such writes merge-friendly so a peer tab's blob write can't clobber another tab's addition.
 
+### Numeric Constants and App Config
+
+Never hardcode numeric tuning constants — timeouts, limits, thresholds, budgets, quality knobs — directly in source files. Instead:
+
+1. **Add the constant to `src/config/appConfig.ts`** — pick the right section (`ai`, `renderer`, `import`, or `ui`), add a typed field to `AppConfig`, a default in `APP_CONFIG_DEFAULTS`, and a JSDoc comment explaining what it controls.
+2. **Read it with `getConfig().<section>.<field>`** at the call site rather than storing it in a module-level `const`. This lets the user's saved override take effect immediately.
+3. **Expose it in `src/ui/advancedSettingsModal.tsx`** — add a `<Field>` inside the matching `<Section>` with `label`, `hint`, `defaultValue`, `min`, `max`, and an `onChange` that calls `set(section, key, v)`.
+4. **Worker context**: `getConfig()` in a Worker returns static defaults (no `localStorage`). If the value must be live for a Worker, thread it through the relevant message (e.g. `toolCallTimeoutMs` is passed via the `run_turn` message in `agentWorkerClient.ts`).
+
+The only exceptions are values that are truly structural constants (array indices, enum values, magic bytes) rather than tunable knobs.
+
 ### Dead Code
 
 Don't export functions unless they're imported elsewhere. When removing usage of an exported function, delete the export too. Periodically grep for exported symbols to verify they have importers.
