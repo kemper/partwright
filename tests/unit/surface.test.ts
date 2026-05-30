@@ -8,9 +8,10 @@ import {
   bboxOf,
 } from '../../src/surface/meshSubdivide';
 import { fuzzySkin } from '../../src/surface/fuzzySkin';
+import { knitTexture } from '../../src/surface/knitTexture';
 import { smoothSurface } from '../../src/surface/smoothSurface';
 import { voxelizeMesh } from '../../src/surface/voxelizeMesh';
-import { applyFuzzy, applySmooth, applyVoxelize } from '../../src/surface/modifiers';
+import { applyFuzzy, applyKnit, applySmooth, applyVoxelize } from '../../src/surface/modifiers';
 import { nearestTriangleMap } from '../../src/surface/colorTransfer';
 
 /** Axis-aligned cube from [0,s]^3 as a 8-vertex / 12-triangle MeshData. */
@@ -111,6 +112,45 @@ describe('fuzzySkin', () => {
   });
 });
 
+describe('knitTexture', () => {
+  it('is deterministic for a given seed and perturbs the surface', () => {
+    const a = knitTexture(cube(10), { amplitude: 0.5, stitchWidth: 2, seed: 7 });
+    const b = knitTexture(cube(10), { amplitude: 0.5, stitchWidth: 2, seed: 7 });
+    expect([...a.vertProperties]).toEqual([...b.vertProperties]);
+    // Subdivided, so more triangles than the input cube.
+    expect(a.numTri).toBeGreaterThan(12);
+    // Bounding box should expand by roughly the amplitude.
+    const grown = bboxOf(a.vertProperties);
+    expect(grown.max[0]).toBeGreaterThan(10);
+  });
+
+  it('a different seed produces different geometry', () => {
+    const a = knitTexture(cube(10), { amplitude: 0.5, stitchWidth: 2, seed: 1 });
+    const b = knitTexture(cube(10), { amplitude: 0.5, stitchWidth: 2, seed: 2 });
+    expect([...a.vertProperties]).not.toEqual([...b.vertProperties]);
+  });
+
+  it('zero amplitude leaves the cube unchanged (no subdivision)', () => {
+    const out = knitTexture(cube(10), { amplitude: 0, stitchWidth: 2 });
+    expect(out.numVert).toBe(8);
+  });
+
+  it('grainAngleDeg rotates the pattern (produces different geometry from angle 0)', () => {
+    const a = knitTexture(cube(10), { amplitude: 0.5, stitchWidth: 2, grainAngleDeg: 0 });
+    const b = knitTexture(cube(10), { amplitude: 0.5, stitchWidth: 2, grainAngleDeg: 45 });
+    expect([...a.vertProperties]).not.toEqual([...b.vertProperties]);
+  });
+
+  it('carries per-triangle colors through subdivision', () => {
+    const c = cube(10);
+    c.triColors = new Uint8Array(c.numTri * 3).fill(42);
+    const out = knitTexture(c, { amplitude: 0.5, stitchWidth: 2 });
+    expect(out.triColors).toBeTruthy();
+    expect(out.triColors!.length).toBe(out.numTri * 3);
+    expect([...out.triColors!].every(v => v === 42)).toBe(true);
+  });
+});
+
 describe('smoothSurface', () => {
   it('rounds a cube without runaway shrinkage and keeps it closed', () => {
     const out = smoothSurface(cube(10), { iterations: 4 });
@@ -152,6 +192,15 @@ describe('modifiers (codegen)', () => {
     const r = applySmooth(cube(10), { iterations: 3 });
     expect(r.kind).toBe('manifold');
     if (r.kind === 'manifold') expect(r.code).toContain('Manifold.ofMesh(api.imports[0])');
+  });
+
+  it('knit emits a manifold ofMesh wrapper with a baked mesh', () => {
+    const r = applyKnit(cube(10), { amplitude: 0.4, stitchWidth: 2 });
+    expect(r.kind).toBe('manifold');
+    if (r.kind === 'manifold') {
+      expect(r.code).toContain('Manifold.ofMesh(api.imports[0])');
+      expect(r.mesh.numTri).toBeGreaterThan(12);
+    }
   });
 
   it('voxelize emits voxels.decode code, with optional smooth', () => {

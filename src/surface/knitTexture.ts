@@ -1,0 +1,153 @@
+// Knit-stitch surface texture.
+//
+// Simulates the look of stockinette (plain knit) fabric: a brick-offset grid of
+// smooth raised bumps shaped by the V-profile of interlocking stitch loops.
+// Parameters mirror fuzzySkin (amplitude, subdivide, seed) but add stitch
+// dimensions (stitchWidth / stitchHeight), a roundness blend from sharp V-ridges
+// to soft circular bumps, a grain rotation angle, and per-stitch variation.
+//
+// Algorithm:
+//   1. Optionally densify the mesh so features have geometry to live on.
+//   2. Compute vertex normals (area-weighted).
+//   3. For each vertex, project world position onto the knit grain (rotated in XY,
+//      Z always as the row axis so stitches naturally run "up" the model).
+//   4. Apply a brick row offset (rowOffset fraction, default 0.5) so alternating
+//      rows are staggered — that interlock is what makes it look like knit.
+//   5. Within each stitch cell, compute displacement from two cosine waves:
+//      uShape (column: peaks at column edges = "legs" of the V, trough at center)
+//      vShape (row: bell per row height, peak at row boundaries).
+//      roundness blends from column-only (sharp vertical ridges, roundness=0)
+//      to the product uShape*vShape (round bump at each intersection, roundness=1).
+//   6. Per-stitch amplitude variation adds organic randomness (deterministic hash).
+//
+// Pure logic (no DOM/WASM) → unit-tested in the vitest tier.
+
+import type { MeshData } from '../geometry/types';
+import {
+  subdivideToMaxEdge,
+  extractPositions,
+  computeVertexNormals,
+  bboxOf,
+} from './meshSubdivide';
+
+export interface KnitTextureOptions {
+  /** Peak outward displacement in world units. */
+  amplitude: number;
+  /** Width of one stitch cell in world units (horizontal repeat). */
+  stitchWidth: number;
+  /** Height of one stitch cell in world units (vertical repeat).
+   *  Defaults to stitchWidth × 1.4 (stitches are taller than wide). */
+  stitchHeight?: number;
+  /** Horizontal offset for alternating rows (brick pattern) as a fraction
+   *  of stitchWidth. Default 0.5 (classic half-stitch offset). */
+  rowOffset?: number;
+  /** Blend from sharp V-ridges (0) to soft round bumps (1). Default 0.5. */
+  roundness?: number;
+  /** Rotate the knit grain in the XY plane (degrees). Default 0 = stitches run
+   *  along the Z axis (up the model). 90° = stitches run left–right. */
+  grainAngleDeg?: number;
+  /** Per-stitch amplitude variation as a fraction 0–1. A value of 0.1 varies
+   *  each stitch's amplitude by ±10%, giving an organic handmade feel. Default 0.1. */
+  variation?: number;
+  /** Deterministic seed for per-stitch variation. Default 1. */
+  seed?: number;
+  /** Densify the mesh before displacing so the texture is visible. Default true. */
+  subdivide?: boolean;
+}
+
+// --- Per-stitch variation noise -----------------------------------------------
+
+/** 2-D integer hash → [0, 1). Used for per-stitch amplitude variation. */
+function hash2(ix: number, iz: number, seed: number): number {
+  let h = (ix * 374761393 + iz * 668265263 + seed * 1013904223) | 0;
+  h = (h ^ (h >>> 13)) | 0;
+  h = Math.imul(h, 1274126177) | 0;
+  h = (h ^ (h >>> 16)) >>> 0;
+  return h / 4294967296;
+}
+
+// --- Main algorithm -----------------------------------------------------------
+
+/** Apply knit-stitch displacement, returning a new position-only MeshData. */
+export function knitTexture(mesh: MeshData, opts: KnitTextureOptions): MeshData {
+  const amplitude = Math.max(0, opts.amplitude);
+  const stitchW = Math.max(1e-4, opts.stitchWidth);
+  const stitchH = Math.max(1e-4, opts.stitchHeight ?? stitchW * 1.4);
+  const rowOffset = opts.rowOffset ?? 0.5;
+  const roundness = Math.max(0, Math.min(1, opts.roundness ?? 0.5));
+  const variation = Math.max(0, Math.min(1, opts.variation ?? 0.1));
+  const seed = (opts.seed ?? 1) | 0;
+  const angleRad = ((opts.grainAngleDeg ?? 0) * Math.PI) / 180;
+  const cosA = Math.cos(angleRad);
+  const sinA = Math.sin(angleRad);
+
+  // Densify so a coarse mesh shows the stitch pattern. Target edge roughly
+  // stitch_min/4, but never smaller than diag/400 to avoid triangle explosion.
+  let base: MeshData = mesh;
+  if (opts.subdivide !== false && amplitude > 0) {
+    const diag = Math.hypot(...bboxOf(extractPositions(mesh)).size);
+    const targetEdge = Math.max(Math.min(stitchW, stitchH) / 4, diag / 400);
+    base = subdivideToMaxEdge(mesh, { maxEdge: targetEdge, maxRounds: 4 });
+  }
+
+  const positions = base.numProp === 3
+    ? Float32Array.from(base.vertProperties)
+    : extractPositions(base);
+  const normals = computeVertexNormals(positions, base.triVerts);
+
+  const TAU = 2 * Math.PI;
+
+  for (let v = 0; v < base.numVert; v++) {
+    const px = positions[v * 3], py = positions[v * 3 + 1], pz = positions[v * 3 + 2];
+
+    // Project world position onto knit-grain axes.
+    // Column axis (u): rotated in XY plane. Row axis (v): always Z (up the model).
+    // grainAngleDeg=0  → columns run along X, rows run along Z.
+    // grainAngleDeg=90 → columns run along Y, rows run along Z.
+    const gx = cosA * px + sinA * py;
+
+    const col = gx / stitchW;
+    const row = pz / stitchH;
+
+    // Brick row offset: odd rows shift by rowOffset fraction of stitch width.
+    const rowInt = Math.floor(row);
+    const evenRow = ((rowInt % 2) + 2) % 2 === 0;
+    const colShifted = col + (evenRow ? 0 : rowOffset);
+
+    // Fractional position within stitch cell [0, 1).
+    const uf = ((colShifted % 1) + 1) % 1;
+    const vf = ((row % 1) + 1) % 1;
+
+    // Per-stitch amplitude variation (deterministic, organic).
+    const colInt = Math.floor(colShifted);
+    const stitchScale = 1 + variation * (hash2(colInt, rowInt, seed) * 2 - 1);
+
+    // Column shape: peaks at uf = 0 and 1 (column edges = "legs" of the V),
+    // trough at uf = 0.5 (center of the stitch valley).
+    const uShape = (1 + Math.cos(uf * TAU)) / 2;  // 1 at edges, 0 at center
+
+    // Row shape: bell per stitch height, peak at row boundaries (vf = 0, 1)
+    // where the stitch "head" crosses into the next row.
+    const vShape = (1 + Math.cos(vf * TAU)) / 2;  // 1 at 0 and 1, 0 at 0.5
+
+    // Blend from pure column ridges (roundness=0) to round bumps (roundness=1).
+    // At roundness=0, every point on a column edge is equally raised (vertical
+    // ridges). At roundness=1, only the intersections of column edges with row
+    // boundaries are raised (round bumps at stitch corners).
+    const d = amplitude * stitchScale * uShape * (1 - roundness + roundness * vShape);
+
+    const nx = normals[v * 3], ny = normals[v * 3 + 1], nz = normals[v * 3 + 2];
+    positions[v * 3]     = px + nx * d;
+    positions[v * 3 + 1] = py + ny * d;
+    positions[v * 3 + 2] = pz + nz * d;
+  }
+
+  return {
+    vertProperties: positions,
+    triVerts: base.triVerts,
+    numVert: base.numVert,
+    numTri: base.numTri,
+    numProp: 3,
+    triColors: base.triColors,
+  };
+}

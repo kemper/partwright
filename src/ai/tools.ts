@@ -426,7 +426,7 @@ const ALL_TOOLS: ToolDefinition[] = [
       properties: {
         name: {
           type: 'string',
-          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations', 'relief'],
+          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations', 'relief', 'textures'],
           description: 'Subdoc name without the .md extension.',
         },
       },
@@ -1050,6 +1050,112 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'applyFuzzySkin',
+    description: `Apply a fuzzy-skin surface texture to the current model — a 3D-printing finish that roughens the surface with fine, irregular noise displacement along per-vertex normals. Saves a new version.
+
+**When to use:** After the geometry is final, before or after paint. Paint is carried through subdivision automatically (preserveColor: true) — region descriptors (coplanar/slab/label) re-resolve against the denser mesh; raw triangle-id regions survive as nearest-triangle transfers.
+
+**Parameters:** amplitude = peak outward displacement (world units; start at ~1% of model diagonal); scale = characteristic feature size (smaller → finer fuzz; ~4% of diagonal is a good default); octaves = 1–5 fractal layers (more → busier surface; default 2); seed = reproducibility.
+
+**Return:** { ok, label, geometry, colorsCarried, warnings? }. warnings is an array of strings — always check it. Typical warnings: amplitude-too-large (try ≤ 5% of diagonal), scale-too-small/too-large, color-transfer-low-coverage (repaint those areas or use copyColorsFromVersion).
+
+**Workflow guidance:** call renderViews after to verify the texture. For fine-tuning: apply → render → undo (loadVersion to the prior version) → re-apply with adjusted params.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        amplitude: {
+          type: 'number',
+          description: 'Peak displacement in world units. Default: ~1% of model diagonal. Keep ≤ 5% to avoid manifold artifacts.',
+        },
+        scale: {
+          type: 'number',
+          description: 'Characteristic feature size in world units (smaller = finer fuzz). Default ~4% of diagonal.',
+        },
+        octaves: {
+          type: 'integer',
+          description: 'Fractal octaves 1–5 (more = busier/noisier surface). Default 2.',
+          minimum: 1,
+          maximum: 5,
+        },
+        seed: {
+          type: 'integer',
+          description: 'Deterministic seed. Different seeds produce different patterns with identical parameters. Default 1.',
+        },
+        preserveColor: {
+          type: 'boolean',
+          description: 'Carry existing paint regions onto the retessellated mesh. Default true. Pass false for an intentionally clean-slate texture.',
+        },
+      },
+    },
+  },
+  {
+    name: 'applyKnitTexture',
+    description: `Apply a knit-stitch surface texture — a repeating brick-offset V-pattern mimicking hand-knitted fabric (stockinette stitch). Each stitch is a smooth raised bump arranged in alternating rows whose horizontal offset creates the characteristic interlocking V shapes.
+
+**When to use:** After the geometry is final; works best on organic and rounded models. Paint is carried through subdivision automatically (preserveColor: true).
+
+**Key parameters:**
+- amplitude: peak bump height (world units; ~3% of diagonal is a good start)
+- stitchWidth: width of one stitch (horizontal repeat; ~5% of diagonal)
+- stitchHeight: height of one stitch (default stitchWidth × 1.4 — stitches are taller than wide)
+- rowOffset: brick pattern offset in [0,1] (default 0.5 = classic half-stitch)
+- roundness: 0 = sharp V-ridges (heavy column contrast), 1 = soft round bumps (default 0.5)
+- grainAngleDeg: rotate the knit grain in the XY plane (default 0 = stitches run up Z)
+- variation: per-stitch amplitude jitter 0–1 (default 0.1 for organic handmade feel)
+- seed: deterministic seed for per-stitch variation
+
+**Return:** { ok, label, geometry, colorsCarried, warnings? }. warnings is an array of strings — always check it. Typical warnings: amplitude-too-large, stitchWidth/Height too large (too few stitches visible) or too small (invisible), color-transfer-low-coverage.
+
+**Workflow guidance:** Start with default parameters, render to verify, then tune. A coarser stitchWidth (10–20% of diagonal) gives a chunky knit look; finer (3–6%) gives a tight knit. For sweater-like geometry, grainAngleDeg=0 (stitches vertical) is typical.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        amplitude: {
+          type: 'number',
+          description: 'Peak displacement in world units. Default ~3% of model diagonal. Keep ≤ 5% to avoid manifold artifacts.',
+        },
+        stitchWidth: {
+          type: 'number',
+          description: 'Horizontal stitch repeat in world units. Default ~5% of diagonal. Larger = chunkier knit.',
+        },
+        stitchHeight: {
+          type: 'number',
+          description: 'Vertical stitch repeat in world units. Default stitchWidth × 1.4 (stitches taller than wide).',
+        },
+        rowOffset: {
+          type: 'number',
+          description: 'Brick-pattern horizontal offset for alternating rows as a fraction [0, 1]. Default 0.5 (half-stitch, classic stockinette).',
+          minimum: 0,
+          maximum: 1,
+        },
+        roundness: {
+          type: 'number',
+          description: 'Blend from sharp V-ridges (0) to soft circular bumps (1). Default 0.5.',
+          minimum: 0,
+          maximum: 1,
+        },
+        grainAngleDeg: {
+          type: 'number',
+          description: 'Rotate the knit grain in the XY plane, degrees. 0 = stitches run up the Z axis (default, natural for standing models). 90 = stitches run left–right.',
+        },
+        variation: {
+          type: 'number',
+          description: 'Per-stitch amplitude variation 0–1. 0.1 = each stitch varies by ±10% for an organic handmade feel (default). 0 = perfectly uniform machine-knit look.',
+          minimum: 0,
+          maximum: 1,
+        },
+        seed: {
+          type: 'integer',
+          description: 'Deterministic seed for per-stitch variation. Default 1.',
+        },
+        preserveColor: {
+          type: 'boolean',
+          description: 'Carry existing paint regions onto the retessellated mesh. Default true. Pass false for an intentionally unpainted result.',
+        },
+      },
+    },
+  },
+  {
     name: 'finish',
     description: 'Signal that the user\'s request is fully complete and you have nothing left to do. This ENDS your turn. Auto-continue is on: if you stop WITHOUT calling finish, you will be automatically resumed to keep working — so never end with a plain "all done" message; call finish instead. Call it once, only when the task is genuinely complete and verified. Optionally include a one-line summary of what you accomplished.',
     input_schema: {
@@ -1121,7 +1227,7 @@ export const CONFIRM_REQUIRED_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -1255,7 +1361,7 @@ function detectLanguageMismatch(code: string): string | null {
  *  `tools.ts` to import the engine module statically. The function lives
  *  in `src/geometry/engine.ts` and is already loaded by the app shell at
  *  startup, so a require-style lookup via `window.partwright` is safe. */
-const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations', 'relief', 'iteration-workflow', 'gotchas', 'visual-verification', 'spending', 'manifold-api']);
+const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations', 'relief', 'textures', 'iteration-workflow', 'gotchas', 'visual-verification', 'spending', 'manifold-api']);
 
 /** Fetch a topic subdoc by short name. Same fetch path for Anthropic and
  *  local providers — both run inside the user's browser tab, so this is
@@ -1572,6 +1678,10 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.getReliefSwapGuide();
     case 'setReliefPreviewMode':
       return api.setReliefPreviewMode(input.mode);
+    case 'applyFuzzySkin':
+      return api.applyFuzzySkin(input);
+    case 'applyKnitTexture':
+      return api.applyKnitTexture(input);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

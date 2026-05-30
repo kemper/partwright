@@ -14,13 +14,14 @@
 
 import type { MeshData } from '../geometry/types';
 import { fuzzySkin, type FuzzySkinOptions } from './fuzzySkin';
+import { knitTexture, type KnitTextureOptions } from './knitTexture';
 import { smoothSurface, type SmoothOptions } from './smoothSurface';
 import { voxelizeMesh, type VoxelizeOptions } from './voxelizeMesh';
 import { extractPositions, bboxOf } from './meshSubdivide';
 import { encodeGrid } from '../geometry/voxel/grid';
 import { meshGrid } from '../geometry/voxel/mesher';
 
-export type SurfaceModifierId = 'fuzzy' | 'smooth' | 'voxelize';
+export type SurfaceModifierId = 'fuzzy' | 'knit' | 'smooth' | 'voxelize';
 
 export interface ModifierManifoldResult {
   kind: 'manifold';
@@ -60,6 +61,23 @@ export function defaultFuzzyOptions(mesh: MeshData): Required<FuzzySkinOptions> 
   return { amplitude: d * 0.01, scale: d * 0.04, octaves: 2, seed: 1, subdivide: true };
 }
 
+/** Size-relative starting parameters for knit texture (~3% amplitude, ~5% stitch width). */
+export function defaultKnitOptions(mesh: MeshData): Required<KnitTextureOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  const sw = d * 0.05;
+  return {
+    amplitude: d * 0.03,
+    stitchWidth: sw,
+    stitchHeight: sw * 1.4,
+    rowOffset: 0.5,
+    roundness: 0.5,
+    grainAngleDeg: 0,
+    variation: 0.1,
+    seed: 1,
+    subdivide: true,
+  };
+}
+
 /** Starting parameters for the smooth/round modifier. */
 export function defaultSmoothOptions(): Required<Omit<SmoothOptions, 'maxEdge'>> {
   return { iterations: 4, subdivide: true };
@@ -74,6 +92,8 @@ return Manifold.ofMesh(api.imports[0]);
 `;
 }
 
+export { type KnitTextureOptions };
+
 export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierManifoldResult {
   const baked = fuzzySkin(mesh, opts);
   return {
@@ -82,6 +102,19 @@ export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierMani
     mesh: baked,
     code: manifoldWrapper([
       `Fuzzy skin applied on ${today()} — amplitude ${opts.amplitude}, feature ~${opts.scale}.`,
+      `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
+  };
+}
+
+export function applyKnit(mesh: MeshData, opts: KnitTextureOptions): ModifierManifoldResult {
+  const baked = knitTexture(mesh, opts);
+  return {
+    kind: 'manifold',
+    label: 'knit texture',
+    mesh: baked,
+    code: manifoldWrapper([
+      `Knit texture applied on ${today()} — stitch ${opts.stitchWidth.toFixed(2)} × ${(opts.stitchHeight ?? opts.stitchWidth * 1.4).toFixed(2)}, amplitude ${opts.amplitude}.`,
       `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
     ]),
   };
