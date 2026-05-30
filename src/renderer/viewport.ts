@@ -137,7 +137,7 @@ export function initViewport(container: HTMLElement): {
   scene.background = new THREE.Color(bgFor(getTheme()));
 
   camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
-  camera.position.set(15, -15, 15);
+  camera.position.set(15, 15, 15);
   camera.up.set(0, 0, 1);
 
   const canvas = document.createElement('canvas');
