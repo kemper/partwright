@@ -224,7 +224,7 @@ A "🩺" button in the panel header opens `src/ui/aiDiagnosticsModal.ts`. Shows 
 1. Add the id to `Provider` in `src/ai/types.ts` and a `<name>Model` field to `ChatToggles` (+ default in `settings.ts`).
 2. Add a sibling case to `activeModel(toggles)`.
 3. Create `src/ai/<name>.ts` exporting `streamTurn`, `summarize`, `validateKey`, `resetClient` — same shape as `anthropic.ts`.
-4. Register pricing in `src/ai/cost.ts`'s `PROVIDER_PRICING`.
+4. Wire pricing. Pricing is catalog-driven: add the provider's models.dev id to `CATALOG_PROVIDER_ID` in `src/ai/catalog.ts` (e.g. Gemini's `google`) so `getPricing()` resolves real rates from the build-time snapshot. For specific cheap models the snapshot doesn't carry (e.g. an older compaction model), add an explicit entry to `KNOWN_MODEL_PRICING` in `src/ai/cost.ts`; everything else falls back to `FALLBACK_PRICING` there.
 5. Add a `<name>_MODEL_OPTIONS` array + `set<Name>Model` setter in `src/ai/settings.ts`.
 6. Add dispatch + compaction branches in `chatLoop.ts` / `compaction.ts`.
 7. Add a `buildHostedProviderSection(<name>, …)` call in `aiSettingsModal.ts`, a `PROVIDER_UI` entry in `aiKeyModal.ts`, and a `hostedConfig` entry in `aiPanel.ts`'s `renderModelPicker()`.

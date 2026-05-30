@@ -100,8 +100,11 @@ export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
   if (toolbarBtn) toolbarBtn.title = title;
 }
 
-/** File extensions accepted by the Import button and drag-and-drop. */
-export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp,.vox,.png,.jpg,.jpeg,.gif,.webp,.bmp';
+/** File extensions accepted by the Import button and drag-and-drop. Kept in
+ *  sync with `classifyImportSource` (src/import/importInbox.ts) — every type
+ *  the classifier recognizes should be selectable here. `.svg` opens the
+ *  Relief Studio wizard; `.avif` is treated as a raster image. */
+export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp,.vox,.svg,.png,.jpg,.jpeg,.gif,.webp,.bmp,.avif';
 
 let _autoRun = true;
 let _onAutoRunChange: ((on: boolean) => void) | null = null;

@@ -22,7 +22,7 @@
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, simplifyInWorker, type Language } from './geometry/engine';
+import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
@@ -1512,6 +1512,15 @@ function shouldShow404(): boolean {
   return path !== '/' && path !== '' && path !== '/help' && path !== '/editor' && path !== '/catalog' && path !== '/legal' && path !== '/whats-new';
 }
 
+/** True when the editor view is the active page. Editor-scoped command-palette
+ *  actions (tab switches, the guided tour) gate on this so they don't fire from
+ *  the landing / help / catalog pages — which would rewrite the URL to
+ *  `/editor?…` and toggle hidden panes without ever transitioning into the
+ *  editor. A `#share=…` link also lands in the editor, so it counts too. */
+function isEditorActive(): boolean {
+  return window.location.pathname === '/editor' || hasShareHash();
+}
+
 function getTabFromURL(): TabName {
   const params = new URLSearchParams(window.location.search);
   if (params.has('data')) return 'data';
@@ -1645,6 +1654,13 @@ async function main() {
     resetPaintWorkerState();
     clearRegions();
     clearModelColorRegions(); // model-declared underlay is module state too
+    // Annotations are module state too, scoped to the outgoing version — wipe
+    // them here so an editor reset (new part / new session / fresh import) is
+    // self-contained rather than relying on the session manager clearing them
+    // first via loadAnnotations([]). clearAll() early-returns when already
+    // empty, so this is a no-op in the common case and won't disturb the
+    // per-version annotation swap on version navigation.
+    clearAllAnnotations();
     syncLockState();
   }
 
@@ -2076,7 +2092,7 @@ async function main() {
   async function handleImportFile(file: File, options: { skipPreActiveConfirm?: boolean } = {}): Promise<boolean> {
     const source = classifyImportSource(file.name);
     if (!source) {
-      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl, .step / .stp, .vox, .png / .jpg / .gif / .webp`);
+      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl, .step / .stp, .vox, .svg, .png / .jpg / .gif / .webp / .avif`);
       return false;
     }
 
@@ -2085,7 +2101,7 @@ async function main() {
     // confirmation; STL and STEP imports skip it because their target modals let
     // the user choose where the import should go; IMAGE imports skip it because
     // the image→voxel parameter modal (with its own Cancel) serves the same role.
-    if (!options.skipPreActiveConfirm && source !== 'JSON' && source !== 'STL' && source !== 'STEP' && source !== 'IMAGE') {
+    if (!options.skipPreActiveConfirm && source !== 'JSON' && source !== 'STL' && source !== 'STEP' && source !== 'IMAGE' && source !== 'SVG') {
       const cur = getState();
       if (cur.session && cur.versionCount > 0) {
         const ok = await showInlineConfirm(
@@ -2118,6 +2134,13 @@ async function main() {
         committed = await handleImageImport(file);
       } else if (source === 'VOX') {
         committed = await handleVoxImport(file);
+      } else if (source === 'SVG') {
+        // SVG has no standalone mesh importer — it's a Relief Studio source.
+        // Open the relief wizard pre-loaded with the dropped file (its own
+        // Create registers the Recent-Imports entry + thumbnail), so a dropped
+        // .svg lands somewhere sensible instead of silently doing nothing.
+        openReliefImportFlow(file);
+        return true;
       }
       // IMAGE registers itself inside handleImageImport (it owns the chosen
       // voxel options + thumbnail it needs to stash for a faithful re-import).
@@ -2177,7 +2200,7 @@ async function main() {
       return false;
     }
     const code = generateVoxelImportCode(grid, chosenName, { style: opts.codeStyle });
-    const sessionName = chosenName.replace(/\.(png|jpe?g|gif|webp|bmp)$/i, '');
+    const sessionName = chosenName.replace(/\.[^.]+$/, '');
     await importCodePayload(code, 'voxel', sessionName);
     // Register in Recent Imports tagged as a voxel import, with the chosen
     // settings + a thumbnail, so re-clicking it reopens THIS modal (not relief)
@@ -2269,19 +2292,29 @@ async function main() {
 
     const baseName = file.name.replace(/\.(step|stp)$/i, '');
     if (target === 'brep') {
+      // Switch the editor to the BREP language and open a fresh session named
+      // after the file FIRST, so the session-change listener's
+      // clearBrepImports/clearBrepShape fires (and is enqueued on the worker)
+      // before we push this file's shape — otherwise it would wipe the
+      // just-imported shape. switchLanguage resets the editor to a stub
+      // starter; we overwrite that below.
+      if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
+      await createSession(baseName, 'replicad');
       // Lazy-loads OCCT on the first call; subsequent imports are instant.
       try {
+        // Drop any previously-imported BREP shapes first — otherwise the
+        // worker's pending-imports list accumulates and the seeded
+        // `return api.imports[0]` would render the *first* file, not this one.
+        // (Belt-and-suspenders with the session-change clear above, and the
+        // sole guard when the import doesn't change the active session.)
+        await clearBrepImports();
         await importSTEPToBrep(file, file.name);
       } catch (e) {
         alert(`Failed to parse STEP file: ${(e as Error).message}`);
         return false;
       }
-      // Switch the editor to the BREP language, open a fresh session named
-      // after the file, and seed the editor with the canonical "return the
-      // import" form so the user can iterate immediately. switchLanguage
-      // resets the editor to a stub starter; we overwrite that.
-      if (getActiveLanguage() !== 'replicad') await switchLanguage('replicad');
-      await createSession(baseName, 'replicad');
+      // Seed the editor with the canonical "return the import" form so the
+      // user can iterate immediately.
       const starter = `// Imported from ${file.name}\n// api.imports[0] is the BREP shape parsed from the STEP file.\nconst { BREP } = api;\nreturn api.imports[0];\n`;
       setValue(starter);
       runCode(starter);
@@ -2306,7 +2339,7 @@ async function main() {
     // the OCCT mesh isn't watertight.
     const trial = tryConstructManifold(mesh);
     const parsed: ParsedSTL = {
-      mesh: toImportedMesh(file.name, mesh),
+      mesh: toImportedMesh(file.name, mesh, 'step'),
       isManifold: trial.ok,
     };
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
@@ -2373,11 +2406,11 @@ async function main() {
     return { mesh: toImportedMesh(file.name, bestMesh), isManifold: false };
   }
 
-  function toImportedMesh(filename: string, mesh: MeshData): ImportedMesh {
+  function toImportedMesh(filename: string, mesh: MeshData, format: ImportedMesh['format'] = 'stl'): ImportedMesh {
     return {
       id: generateId(),
       filename,
-      format: 'stl',
+      format,
       vertProperties: mesh.vertProperties,
       triVerts: mesh.triVerts,
       numVert: mesh.numVert,
@@ -2460,6 +2493,11 @@ async function main() {
     // the editor.
     cancelVoxelPaintIfActive();
     dropPaintState();
+    // The import wrapper is manifold-js code; runCodeSync and saveVersion both
+    // key off the active language, so switch before running/saving — otherwise
+    // composing into a SCAD/BREP/voxel part would run the wrapper through the
+    // wrong engine and persist the version tagged with the wrong language.
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const code = generateImportCode(components, { manifold });
     setActiveImports(components);
     setValue(code);
@@ -2479,10 +2517,16 @@ async function main() {
   async function bakePartComponents(partId: string, label: string): Promise<ImportedMesh[] | null> {
     const version = await getLatestVersion(partId);
     if (!version) return null;
+    // Bake the part under the language it was authored in, not the globally
+    // active engine. Without the explicit lang arg executeCodeAsync falls back
+    // to pickLang(undefined) = the active language, so merging/composing a SCAD
+    // or BREP part while a manifold-js part is open ran its code through the
+    // wrong engine and produced no usable geometry ("No geometry data").
+    const lang = effectiveVersionLanguage(version, getState().session);
     const saved = getActiveImports();
     try {
       setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
-      const result = await executeCodeAsync(version.code);
+      const result = await executeCodeAsync(version.code, lang);
       if (result.error || !result.mesh) return null;
       return [toImportedMesh(label, result.mesh)];
     } finally {
@@ -2492,7 +2536,7 @@ async function main() {
 
   /** Add the imported mesh as a brand-new part (becomes current). */
   async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean): Promise<void> {
-    const part = await createPart(filename.replace(/\.stl$/i, ''));
+    const part = await createPart(filename.replace(/\.[^.]+$/, ''));
     if (!part) return;
     await applyImportWrapper([mesh], manifold);
   }
@@ -2514,7 +2558,15 @@ async function main() {
    *  creates one (legacy behavior); otherwise the import-target modal lets the
    *  user pick a new part, the current part, or a new session. */
   async function placeImportedMesh(parsed: ParsedSTL, filename: string): Promise<boolean> {
-    const sessionName = filename.replace(/\.stl$/i, '');
+    // Mesh imports always produce a `Manifold.ofMesh(...)` / `Manifold.compose(...)`
+    // wrapper, which is manifold-js code. saveVersion snapshots the active
+    // language, so switch before any version is written — otherwise importing
+    // into an active SCAD/BREP/voxel session tags the version with the wrong
+    // language and the engine switches wrong on reload. (The STEP→mesh path
+    // already switches before calling here; do it unconditionally so every
+    // entry point — STL, STEP, re-import — is safe.)
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+    const sessionName = filename.replace(/\.[^.]+$/, '');
     const state = getState();
     if (!state.session) {
       await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
@@ -2560,6 +2612,10 @@ async function main() {
   /** Build a new part holding the composed geometry of `components`. Probes the
    *  combine first so a failure surfaces as a toast instead of a broken part. */
   async function createCombinedPart(components: ImportedMesh[], name: string): Promise<boolean> {
+    // The compose wrapper is manifold-js; merging while a SCAD/BREP/voxel part
+    // is active would probe + run + save it through the wrong engine. Switch
+    // first so the probe, runCodeSync, and the saved version are all manifold-js.
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const code = generateImportCode(components, { manifold: true });
     const saved = getActiveImports();
     setActiveImports(components);
@@ -2705,8 +2761,10 @@ async function main() {
   // the lifetime of the document — no cleanup needed. If editor teardown is
   // ever added, store these handlers and pair with removeEventListener().
   function isImportableFile(file: File): boolean {
-    const n = file.name.toLowerCase();
-    return n.endsWith('.json') || n.endsWith('.js') || n.endsWith('.scad') || n.endsWith('.stl');
+    // Reuse the single classifier so drag-and-drop accepts exactly the same set
+    // as the Import button (IMPORT_ACCEPT) — STEP, VOX, images, and SVG too,
+    // not just the original JSON/JS/SCAD/STL.
+    return classifyImportSource(file.name) !== null;
   }
 
   document.addEventListener('dragover', (e) => {
@@ -2849,6 +2907,14 @@ async function main() {
   const actionExportSTEP = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     try {
+      // The retained shape is cleared on session/language change, but guard the
+      // active language too so a stale shape can never be served outside a
+      // replicad session (defense-in-depth — the toolbar item and palette entry
+      // are already gated on replicad).
+      if (getActiveLanguage() !== 'replicad') {
+        showToast('STEP export is only available in BREP mode. Switch to BREP and run a model first.', { variant: 'warn' });
+        return;
+      }
       const blob = await exportLastBrepAsSTEP();
       if (!blob) {
         showToast('No BREP shape available. Run a model in BREP mode first.', { variant: 'warn' });
@@ -3203,13 +3269,13 @@ async function main() {
     { id: 'format', title: 'Format code', hint: 'Editor', shortcut: combo(SHIFT_LABEL, ALT_LABEL, 'F'), keywords: 'prettify beautify indent', run: () => formatCode() },
     { id: 'new-session', title: 'New session', hint: 'Session', keywords: 'create blank', run: () => startNewSessionInEditor() },
     { id: 'open-sessions', title: 'Open session…', hint: 'Session', keywords: 'switch list recent', run: () => showSessionList() },
-    { id: 'tab-interactive', title: 'Go to 3D view', hint: 'Tab', keywords: 'interactive viewport model', run: () => switchTab('interactive') },
-    { id: 'tab-gallery', title: 'Go to Gallery (read-only)', hint: 'Tab', keywords: 'thumbnails versions visual grid', run: () => switchTab('gallery') },
-    { id: 'tab-versions', title: 'Go to Versions', hint: 'Tab', keywords: 'history rename delete', run: () => switchTab('versions') },
-    { id: 'tab-images', title: 'Go to Reference images', hint: 'Tab', keywords: 'photos reference', run: () => switchTab('images') },
-    { id: 'tab-diff', title: 'Go to Diff', hint: 'Tab', keywords: 'compare changes', run: () => switchTab('diff') },
-    { id: 'tab-notes', title: 'Go to Notes', hint: 'Tab', keywords: 'session notes', run: () => switchTab('notes') },
-    { id: 'tab-data', title: 'Go to Data', hint: 'Tab', keywords: 'storage browser indexeddb inventory', run: () => switchTab('data') },
+    { id: 'tab-interactive', title: 'Go to 3D view', hint: 'Tab', keywords: 'interactive viewport model', run: () => switchTab('interactive'), enabled: isEditorActive },
+    { id: 'tab-gallery', title: 'Go to Gallery (read-only)', hint: 'Tab', keywords: 'thumbnails versions visual grid', run: () => switchTab('gallery'), enabled: isEditorActive },
+    { id: 'tab-versions', title: 'Go to Versions', hint: 'Tab', keywords: 'history rename delete', run: () => switchTab('versions'), enabled: isEditorActive },
+    { id: 'tab-images', title: 'Go to Reference images', hint: 'Tab', keywords: 'photos reference', run: () => switchTab('images'), enabled: isEditorActive },
+    { id: 'tab-diff', title: 'Go to Diff', hint: 'Tab', keywords: 'compare changes', run: () => switchTab('diff'), enabled: isEditorActive },
+    { id: 'tab-notes', title: 'Go to Notes', hint: 'Tab', keywords: 'session notes', run: () => switchTab('notes'), enabled: isEditorActive },
+    { id: 'tab-data', title: 'Go to Data', hint: 'Tab', keywords: 'storage browser indexeddb inventory', run: () => switchTab('data'), enabled: isEditorActive },
     { id: 'export-glb', title: 'Export GLB', hint: 'Export', keywords: 'download gltf 3d', run: () => { void actionExportGLB(); }, enabled: () => currentMeshData !== null },
     { id: 'export-stl', title: 'Export STL', hint: 'Export', keywords: 'download print', run: actionExportSTL, enabled: () => currentMeshData !== null },
     { id: 'export-obj', title: 'Export OBJ', hint: 'Export', keywords: 'download wavefront', run: actionExportOBJ, enabled: () => currentMeshData !== null },
@@ -3229,7 +3295,7 @@ async function main() {
     { id: 'open-help', title: 'Open help', hint: 'Navigate', keywords: 'docs documentation guide', run: () => showHelp() },
     { id: 'open-whats-new', title: "Open what's new", hint: 'Navigate', keywords: 'changelog recent features updates release notes', run: () => showWhatsNewPage() },
     { id: 'open-quality', title: 'Modeling quality settings', hint: 'Settings', keywords: 'resolution curve segments smoothness', run: () => showQualitySettingsModal() },
-    { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); } },
+    { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); }, enabled: isEditorActive },
   ]);
 
   // Init gallery — `loadVersion` (in gallery.ts) has already updated state to
@@ -4493,8 +4559,21 @@ async function main() {
   // disabled, with a "Take over" banner).
   initViewerMode();
 
+  // Track the active session id so BREP worker state (pending STEP imports +
+  // the retained STEP-export shape) can be flushed when the session changes —
+  // both live module-global in the worker and would otherwise bleed across
+  // sessions (a second STEP-as-BREP import accumulating in `api.imports`, or
+  // exportSTEP serializing a previous session's shape).
+  let lastBrepSessionId: string | null = getState().session?.id ?? null;
+
   // Update document title when session state changes (create, open, close, rename)
   onStateChange((state) => {
+    const sid = state.session?.id ?? null;
+    if (sid !== lastBrepSessionId) {
+      lastBrepSessionId = sid;
+      void clearBrepImports().catch(() => {});
+      void clearBrepShape().catch(() => {});
+    }
     updateDocumentTitle({ page: 'editor', sessionName: state.session?.name ?? null });
     // Re-bind the AI panel to the current session so chat history follows.
     void setAiActiveSession(state.session?.id ?? null);
@@ -4611,6 +4690,11 @@ async function main() {
    *  only updated on session creation or by an explicit AI/console call. */
   async function applyEngineLanguage(lang: Language) {
     if (lang === getActiveLanguage()) return;
+    // Leaving a replicad session: drop the retained STEP-export shape so a
+    // later exportSTEP can't serialize a stale shape that belonged to the
+    // previous BREP model (it's module-global in the worker and only replaced
+    // by the next replicad run).
+    if (getActiveLanguage() === 'replicad') void clearBrepShape().catch(() => {});
     setActiveLanguage(lang);
     setEditorLanguage(lang);
     setToolbarLanguage(lang);
@@ -4909,6 +4993,12 @@ async function main() {
     async exportSTEP(filename?: string) {
       assertString(filename, 'exportSTEP(filename)', { optional: true });
       try {
+        // The retained shape is cleared on session/language change; guard the
+        // active language too so a stale shape can never be served outside a
+        // replicad session.
+        if (getActiveLanguage() !== 'replicad') {
+          return { ok: false as const, error: 'No BREP shape available. STEP export requires BREP mode — switch with setActiveLanguage("replicad") and run a model first.' };
+        }
         const blob = await exportLastBrepAsSTEP();
         if (!blob) {
           return { ok: false as const, error: 'No BREP shape available. Switch to BREP language (setActiveLanguage("replicad")) and run a model first.' };
@@ -9899,7 +9989,16 @@ async function main() {
         currentManifold = null;
       } else {
         const mod = getModule();
-        currentManifold = (mod && result.mesh) ? mod.Manifold.ofMesh(result.mesh) : null;
+        // SCAD / replicad engines deliberately tolerate non-watertight output
+        // and return it as a raw mesh — ofMesh() throws "Not manifold" on
+        // those. Treat a failed reconstruction as render-only (parity with the
+        // renderOnly branch and the import flow) rather than letting the run
+        // handler blow up.
+        try {
+          currentManifold = (mod && result.mesh) ? mod.Manifold.ofMesh(result.mesh) : null;
+        } catch {
+          currentManifold = null;
+        }
       }
       // Capture the labelled-construction map for this run. byLabel
       // region descriptors look up their triangles here; rehydrating a

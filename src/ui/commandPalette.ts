@@ -28,7 +28,7 @@ export function registerCommands(cmds: Command[]): void {
 }
 
 /** All registered commands, in registration order. */
-export function getCommands(): Command[] {
+function getCommands(): Command[] {
   return [...registry.values()];
 }
 
@@ -194,7 +194,7 @@ function onInputKeydown(e: KeyboardEvent): void {
   }
 }
 
-export function closeCommandPalette(opts: { restoreFocus?: boolean } = {}): void {
+function closeCommandPalette(opts: { restoreFocus?: boolean } = {}): void {
   if (!overlayEl) return;
   overlayEl.remove();
   overlayEl = null;

@@ -5,6 +5,15 @@
 
 import type { Version, Session } from '../storage/sessionManager';
 import { effectiveVersionLanguage } from '../storage/sessionManager';
+import { languageBadge } from './languageBadge';
+
+/** Human-readable engine names for the language-badge tooltip. */
+const LANGUAGE_TITLES: Record<string, string> = {
+  'manifold-js': 'manifold-js',
+  scad: 'OpenSCAD',
+  replicad: 'replicad (BREP)',
+  voxel: 'voxel',
+};
 
 export interface VersionTileControl {
   /** Glyph or short text shown on the button. */
@@ -99,12 +108,11 @@ export function createVersionTile(version: Version, options: VersionTileOptions 
   // by the session-level badges (sessionList / landing / sessionBar) so the
   // gallery makes language visible at a glance for mixed-language sessions.
   const versionLang = effectiveVersionLanguage(version, session ?? null);
+  const badge = languageBadge(versionLang);
   const langBadge = document.createElement('span');
-  const langLabel = versionLang === 'scad' ? 'SCAD' : 'JS';
-  const langColor = versionLang === 'scad' ? 'text-amber-400 border-amber-400/30' : 'text-blue-400 border-blue-400/30';
-  langBadge.className = `text-[9px] font-semibold border rounded px-1 ml-1 ${langColor}`;
-  langBadge.textContent = langLabel;
-  langBadge.title = versionLang === 'scad' ? 'OpenSCAD' : 'manifold-js';
+  langBadge.className = `text-[9px] font-semibold border rounded px-1 ml-1 ${badge.classes}`;
+  langBadge.textContent = badge.label;
+  langBadge.title = LANGUAGE_TITLES[versionLang] ?? versionLang;
   header.appendChild(langBadge);
 
   const time = document.createElement('span');
