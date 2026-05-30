@@ -3,6 +3,7 @@
 // second IndexedDB instance.
 
 import { openPartwrightDB } from '../storage/db';
+import { requestPersistentStorage } from '../storage/persist';
 import type { ChatMessage, KeyRecord, Provider } from './types';
 
 const KEYS_STORE = 'aiKeys';
@@ -42,6 +43,10 @@ export async function putKey(record: KeyRecord): Promise<void> {
   const txn = db.transaction(KEYS_STORE, 'readwrite');
   txn.objectStore(KEYS_STORE).put(record);
   await txComplete(txn);
+  // Saving a key is the moment its durability matters most. Ask the browser to
+  // make storage persistent so mobile (iOS Safari ITP) doesn't evict it later.
+  // Fire-and-forget: never block or fail the save on the request.
+  void requestPersistentStorage();
 }
 
 export async function deleteKey(provider: Provider): Promise<void> {

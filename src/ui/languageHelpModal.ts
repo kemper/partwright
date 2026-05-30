@@ -71,14 +71,13 @@ export function showLanguageHelpModal(): Promise<void> {
   return new Promise((resolve) => {
     const shell = createModalShell({
       title: 'Pick a modeling language',
-      // Wider than the default 'md' so the four engine cards get room to
-      // breathe (and wrap less) on roomy screens, while `w-full` still lets
-      // it shrink to fit a phone. `scrollable` caps the height at the
-      // viewport and lets the body scroll instead of overflowing off-screen
-      // on short windows — the cards are taller than many laptop screens.
-      maxWidth: '2xl',
-      scrollable: true,
       onClose: () => resolve(),
+      // Widen on roomier screens so the four engine cards lay out 2-up instead
+      // of one tall column; small screens fall back to the lg width. `scrollable`
+      // caps the height and lets the card list scroll rather than overflow the
+      // viewport on short screens.
+      widthClass: 'max-w-lg sm:max-w-3xl',
+      scrollable: true,
     });
 
     const intro = document.createElement('p');
@@ -86,10 +85,17 @@ export function showLanguageHelpModal(): Promise<void> {
     intro.textContent = 'Each engine has its own strengths. You can switch languages at any time — switching resets the editor to a starter snippet but doesn\'t touch your other sessions.';
     shell.body.appendChild(intro);
 
+    // Two-column grid on roomier screens; single column on small screens (the
+    // shell's scrollable body keeps it scrollable). gap-3 replaces the per-card
+    // mb-2 that previously stacked them into one tall column.
+    const grid = document.createElement('div');
+    grid.className = 'grid grid-cols-1 sm:grid-cols-2 gap-3';
+    shell.body.appendChild(grid);
+
     for (const card of CARDS) {
       const badge = languageBadge(card.language);
       const wrapper = document.createElement('div');
-      wrapper.className = 'border border-zinc-700 rounded-md p-3 mb-2 bg-zinc-800/40';
+      wrapper.className = 'border border-zinc-700 rounded-md p-3 bg-zinc-800/40';
 
       const head = document.createElement('div');
       head.className = 'flex items-center gap-2 mb-1';
@@ -127,7 +133,7 @@ export function showLanguageHelpModal(): Promise<void> {
       tradeoffEl.textContent = card.tradeoffs;
       wrapper.appendChild(tradeoffEl);
 
-      shell.body.appendChild(wrapper);
+      grid.appendChild(wrapper);
     }
 
     // Dismiss button lives in the shell's pinned footer (not the scrolling

@@ -12,6 +12,12 @@ export interface ModalShellOptions {
   /** Tailwind max-width fragment without the `max-w-` prefix.
    *  Defaults to `'md'`. Compact-confirm uses `'2xl'`. */
   maxWidth?: 'sm' | 'md' | 'lg' | 'xl' | '2xl';
+  /** Full Tailwind width class(es) — e.g. `'max-w-lg sm:max-w-3xl'` — that
+   *  override {@link maxWidth}. Use this when the panel needs a *responsive*
+   *  width (the `maxWidth` enum only expresses a single breakpoint-less size).
+   *  Pass the complete `max-w-*` literals so Tailwind's content scanner emits
+   *  them. */
+  widthClass?: string;
   /** When true, applies `max-h-[80vh]` + `overflow-auto` so long bodies
    *  (e.g. compaction proposal with many notes) scroll. */
   scrollable?: boolean;
@@ -67,7 +73,7 @@ export function createModalShell(opts: ModalShellOptions): ModalShell {
   // Remember what was focused so we can restore it when the modal closes.
   const previouslyFocused = document.activeElement as HTMLElement | null;
 
-  const maxW = MAX_WIDTH_CLASS[opts.maxWidth ?? 'md'];
+  const maxW = opts.widthClass ?? MAX_WIDTH_CLASS[opts.maxWidth ?? 'md'];
   const maxH = opts.scrollable ? 'max-h-[calc(100vh-2rem)]' : '';
   const overlayPad = opts.scrollable ? 'p-4' : '';
 

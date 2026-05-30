@@ -356,6 +356,21 @@ Every URL parameter the app writes must also be read back correctly everywhere:
 
 Always await `txn.oncomplete` before returning from functions that modify IndexedDB data. Awaiting individual request promises within a transaction is not sufficient — the transaction can still fail to commit after those promises resolve. Follow the pattern in `clearAllData()`.
 
+**Never `await` between a `get` and the `put`/`delete` that depends on it inside one readwrite transaction.** Awaiting yields the microtask queue and lets IndexedDB auto-commit the (now request-less) transaction before the write is queued — a `TransactionInactiveError`, and across two tabs a lost update. Issue the dependent write from inside the `get`'s `onsuccess` callback (chain further requests from *their* callbacks too), then await `txn.oncomplete` once. See `recordUsage`, `updateSession`, and `putAttachment` for the pattern.
+
+### Cross-Tab Isolation — No Data Bleed Between Windows
+
+The app runs in multiple browser windows/tabs at once, often each driving a **different session** (and a different AI provider). Tabs share one origin, so they share IndexedDB *and* localStorage; separate windows do **not** share JS module memory. The rule:
+
+> State must not bleed or cause side effects from one tab into another. The only times state should cross tabs are the **explicit** transitions: opening a session (incl. a previously-closed one) in a tab, or **taking control** of a session in another tab. Anything else changing in tab B must not silently alter tab A.
+
+Concretely, when adding a feature:
+
+- **Don't put session-scoped or task-scoped state in a single shared localStorage blob.** AI provider/model/toggles are **per-tab** working state (each window drives its own session) and are persisted **per-session** on the session record (`session.aiPreference`) so they carry over only on open / take-control — see `applySessionAiPreference` / `recordSessionAiPreference` in `aiPanel.ts` and `setSessionAiPreference` in `sessionManager.ts`. The live AI settings (`reloadSettingsFromStorage` in `ai/settings.ts`) deliberately **preserve this tab's `toggles`/`preset`** when a peer tab writes the shared blob — it adopts only genuinely-global, additive prefs (custom models, system-prompt overrides, panel width). Blindly adopting a peer's blob via the `storage` event was the cross-window provider-leak bug.
+- **App-level preferences that used to be one shared localStorage key should be per-tab** (units, render quality, editor auto-format). Use `readPerTabPref`/`writePerTabPref` (`src/storage/perTabPref.ts`): the live value is per-tab (sessionStorage) with a localStorage seed so a *fresh* tab still inherits the last choice, but already-open tabs never adopt a peer's change. Don't attach a `storage` listener that live-mirrors them.
+- **`storage`-event and `BroadcastChannel` handlers must scope to the receiving tab's own session** before acting — gate on `msg.sessionId === currentState.session?.id` (see `tabSync.ts` consumers and `sessionLock.ts`, which guards on its own session's leader-token key). Never adopt a peer's provider/model/toggles live.
+- **Truly-global state is the exception, and must be additive, not last-write-wins.** Custom local models and system-prompt overrides are shared across tabs on purpose; keep such writes merge-friendly so a peer tab's blob write can't clobber another tab's addition.
+
 ### Dead Code
 
 Don't export functions unless they're imported elsewhere. When removing usage of an exported function, delete the export too. Periodically grep for exported symbols to verify they have importers.
@@ -403,6 +418,15 @@ Subject is imperative and lowercase after the prefix: `feat: add light/dark mode
 - `ignore-for-release` — suppress from release notes (use for `chore:`/`refactor:` housekeeping that shouldn't appear in user-facing notes)
 
 Anything unlabeled lands in "Other Changes." That's fine for occasional internal cleanup, but features and fixes should always be labeled.
+
+### Agent working discipline (git, PRs, tool output)
+
+Guardrails for automated work, learned the hard way:
+
+- **Irreversible GitHub actions stand alone, after an explicit decision.** Closing or merging a PR, deleting a branch, or force-pushing is outward-facing and hard to undo. Never batch such a call in the same tool block as other work (a sibling call fires even if the call meant to gate it errored or was never answered), and never infer the go-ahead — issue it as its own step only when the user explicitly asked for it. A PR close/merge is never a default or a guess. (A `PreToolUse` hook in `.claude/settings.json` also pauses for confirmation before `merge_pull_request` and a `state: closed` `update_pull_request`, as a backstop.)
+- **A failed or unreadable tool result is not a success.** If a call errors (e.g. an `AskUserQuestion` that didn't validate) or its output comes back garbled / empty / out-of-order, re-run or re-verify state before proceeding — never act on an answer you didn't actually receive, and never treat a laggy/garbled shell as ground truth.
+- **Git is single-writer.** The working tree and index are shared mutable state. Don't run git mutations while a subagent is also touching the same checkout. Resolve merges/rebases inline yourself; if you must delegate git work to a subagent, give it an isolated worktree (`isolation: "worktree"`).
+- **Verify state between destructive git steps.** After a merge / rebase / reset, confirm `git status` and HEAD, and that local HEAD matches what you pushed, before moving on.
 
 ### After Opening a PR
 

@@ -40,7 +40,8 @@ import { showQualitySettingsModal } from './ui/qualitySettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar } from './ui/aiPanel';
-import { mergeChatBucket } from './ai/db';
+import { getKey, mergeChatBucket } from './ai/db';
+import { requestPersistentStorage } from './storage/persist';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
 import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
@@ -1569,6 +1570,18 @@ async function main() {
   // and the order relative to toolbar mount doesn't matter.
   void hydrateImportInbox();
   void hydrateExportInbox();
+
+  // If the user already has a saved API key, ask the browser to make storage
+  // persistent so it isn't evicted under storage pressure (mobile browsers,
+  // iOS Safari ITP especially, evict best-effort IndexedDB and wipe the key).
+  // New saves request this from putKey; this covers installs keyed before that
+  // shipped. Gated on having a key so we don't prompt (Firefox) unprompted users.
+  void (async () => {
+    const keyed = await Promise.all(
+      (['anthropic', 'openai', 'gemini', 'custom'] as const).map((p) => getKey(p)),
+    );
+    if (keyed.some(Boolean)) void requestPersistentStorage();
+  })();
 
   // Remove loading splash as soon as JS takes over
   document.getElementById('loading-splash')?.remove();

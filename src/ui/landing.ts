@@ -1,6 +1,9 @@
 // Landing page — shown when no URL params direct to a specific view.
-// Sections (top to bottom):
-//   1. Hero — wordmark, headline, sub, primary/secondary CTAs
+// "Calm studio" theme: a quiet dark field, an amber→teal gradient headline as
+// the lone pop of colour, the voxel-P app-icon mark beside the wordmark, and a
+// faux product-frame embed in the hero. Sections (top to bottom):
+//   0. Nav — brand lockup, links, theme toggle, Open editor
+//   1. Hero — eyebrow, gradient headline, lede, CTAs, trust stats, product frame
 //   2. How it works — three numbered steps
 //   3. What you can build — featured catalog tiles
 //   4. Built for AI agents — copyable prompt + bullets
@@ -37,6 +40,10 @@ interface FeaturedCatalogEntry {
 /** Number of catalog entries to show in the "What you can build" section. */
 const FEATURED_CATALOG_COUNT = 8;
 
+/** Amber→teal gradient used for the headline accent + primary buttons. */
+const GRAD_TEXT = 'background:linear-gradient(115deg,#fcd34d 8%,#2dd4bf 92%);-webkit-background-clip:text;background-clip:text;color:transparent;';
+const GRAD_BTN = 'background:linear-gradient(135deg,#fcd34d,#f59e0b);';
+
 /** Fisher-Yates shuffle — returns a new array in random order. */
 function shuffleArray<T>(arr: T[]): T[] {
   const copy = arr.slice();
@@ -53,9 +60,9 @@ export async function createLandingPage(
 ): Promise<HTMLElement> {
   const page = document.createElement('div');
   page.id = 'landing-page';
-  page.className = 'flex flex-col items-center w-full h-full overflow-auto bg-zinc-900 text-zinc-100 relative';
+  page.className = 'flex flex-col items-center w-full h-full overflow-auto bg-zinc-900 text-zinc-100 relative font-body';
 
-  page.appendChild(buildThemeToggle());
+  page.appendChild(buildNav(callbacks));
   page.appendChild(buildHero(callbacks));
   page.appendChild(buildHowItWorks());
   page.appendChild(await buildFeaturedCatalog(callbacks));
@@ -68,17 +75,19 @@ export async function createLandingPage(
   return page;
 }
 
-// ---------- 0. Theme toggle ----------
+// ---------- 0. Nav ----------
 
+/** Compact theme toggle, placed inside the nav. */
 function buildThemeToggle(): HTMLElement {
   const btn = document.createElement('button');
-  btn.textContent = 'Dark Mode';
-  const active = 'absolute top-4 right-4 px-3 py-1 rounded text-xs font-medium transition-colors bg-zinc-700 text-zinc-100 z-10';
-  const inactive = 'absolute top-4 right-4 px-3 py-1 rounded text-xs font-medium transition-colors text-zinc-500 hover:text-zinc-300 border border-zinc-600 z-10';
+  const base = 'shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border';
   const sync = (theme: 'light' | 'dark') => {
     const on = theme === 'dark';
-    btn.className = on ? active : inactive;
-    btn.title = on ? 'Dark mode on — click to switch to light' : 'Dark mode off — click to switch to dark';
+    btn.className = `${base} ${on
+      ? 'bg-white/5 border-zinc-700 text-zinc-300 hover:text-zinc-100'
+      : 'bg-zinc-200 border-zinc-300 text-zinc-700 hover:bg-zinc-300'}`;
+    btn.textContent = on ? 'Dark' : 'Light';
+    btn.title = on ? 'Dark mode on — click to switch to light' : 'Light mode on — click to switch to dark';
     btn.setAttribute('aria-pressed', String(on));
     btn.setAttribute('aria-label', btn.title);
   };
@@ -88,88 +97,192 @@ function buildThemeToggle(): HTMLElement {
   return btn;
 }
 
+function buildNav(callbacks: LandingCallbacks): HTMLElement {
+  const nav = document.createElement('header');
+  nav.className = 'w-full max-w-6xl px-6 py-5 flex items-center justify-between relative z-20';
+
+  // Brand lockup — app-icon tile mark + wordmark. The tile keeps the mark from
+  // reading as the leading "P" of "Partwright".
+  const brand = document.createElement('div');
+  brand.className = 'flex items-center gap-2.5';
+  brand.innerHTML = `${partwrightMarkSvg(30)}<span class="font-display font-bold text-lg tracking-tight text-zinc-50">Partwright</span>`;
+  nav.appendChild(brand);
+
+  // Center links (desktop only)
+  const links = document.createElement('nav');
+  links.className = 'hidden md:flex items-center gap-7 text-sm text-zinc-400';
+  const navItems: { label: string; onClick: () => void }[] = [
+    { label: 'Catalog', onClick: callbacks.onOpenCatalog },
+    { label: 'How it works', onClick: callbacks.onOpenHelp },
+    { label: 'For AI agents', onClick: scrollToAgentSection },
+    { label: "What's new", onClick: callbacks.onOpenWhatsNew },
+  ];
+  for (const item of navItems) {
+    const a = document.createElement('button');
+    a.className = 'bg-transparent border-0 cursor-pointer text-zinc-400 hover:text-zinc-100 transition-colors';
+    a.textContent = item.label;
+    a.addEventListener('click', item.onClick);
+    links.appendChild(a);
+  }
+  nav.appendChild(links);
+
+  // Right cluster — theme toggle + primary CTA
+  const right = document.createElement('div');
+  right.className = 'flex items-center gap-3';
+  right.appendChild(buildThemeToggle());
+
+  const open = document.createElement('button');
+  open.className = 'px-4 py-2 rounded-lg text-sm font-semibold text-amber-950 transition-transform hover:-translate-y-px';
+  open.setAttribute('style', GRAD_BTN);
+  open.textContent = 'Open editor →';
+  open.addEventListener('click', callbacks.onOpenEditor);
+  right.appendChild(open);
+
+  nav.appendChild(right);
+  return nav;
+}
+
 // ---------- 1. Hero ----------
 
 function buildHero(callbacks: LandingCallbacks): HTMLElement {
   const hero = document.createElement('section');
   hero.setAttribute('aria-labelledby', 'hero-heading');
-  hero.className = 'flex flex-col items-center text-center pt-20 pb-12 px-6 max-w-3xl';
+  // shrink-0: the page is a fixed-height flex-column scroll container, so the
+  // hero must not flex-shrink below its content height. (Avoid overflow-hidden
+  // here — it would drop min-height:auto and let the section collapse to 0.)
+  hero.className = 'relative w-full shrink-0';
 
-  const mark = document.createElement('div');
-  mark.className = 'flex items-center gap-4 mb-4';
-  mark.innerHTML = `${partwrightMarkSvg(56)}<h1 id="hero-heading" class="text-5xl font-bold tracking-tight">Partwright</h1>`;
-  hero.appendChild(mark);
+  const field = document.createElement('div');
+  field.className = 'pw-calmfield';
+  hero.appendChild(field);
 
-  const tagline = document.createElement('p');
-  tagline.className = 'text-xl text-zinc-300 mb-3 font-medium';
-  tagline.textContent = 'AI-driven parametric CAD in your browser';
-  hero.appendChild(tagline);
+  const wrap = document.createElement('div');
+  wrap.className = 'relative z-10 w-full max-w-6xl mx-auto px-6 pt-8 pb-16 grid gap-12 md:grid-cols-2 items-center';
 
-  const desc = document.createElement('p');
-  desc.className = 'text-base text-zinc-400 mb-8 max-w-xl leading-relaxed';
-  desc.textContent =
-    'Describe a part, get a printable 3D model. Partwright runs entirely in your browser, with a programmatic API designed for AI agents. No signup, no installs — powered by manifold-3d.';
-  hero.appendChild(desc);
+  // ----- left column -----
+  const left = document.createElement('div');
+
+  // eyebrow — doubles as the "What's new" entry point
+  const eyebrow = document.createElement('button');
+  eyebrow.className = 'inline-flex items-center gap-2 text-xs text-zinc-300 bg-white/5 hover:bg-white/10 border border-zinc-700 rounded-full px-3.5 py-1.5 mb-6 transition-colors cursor-pointer';
+  eyebrow.innerHTML =
+    '<span class="text-[10px] font-semibold uppercase tracking-wider text-amber-400">New</span>' +
+    '<span>Voxels, BREP solids &amp; image relief</span>' +
+    '<span class="text-zinc-500">→</span>';
+  eyebrow.addEventListener('click', callbacks.onOpenWhatsNew);
+  left.appendChild(eyebrow);
+
+  const h1 = document.createElement('h1');
+  h1.id = 'hero-heading';
+  h1.className = 'font-display font-extrabold text-5xl md:text-6xl leading-[1.03] tracking-tight text-zinc-50 mb-5';
+  h1.innerHTML = `Describe a part.<br>Get a <span style="${GRAD_TEXT}">printable model.</span>`;
+  left.appendChild(h1);
+
+  const lede = document.createElement('p');
+  lede.className = 'text-lg text-zinc-400 leading-relaxed max-w-xl mb-7';
+  lede.textContent =
+    'A browser-native parametric CAD studio with a programmatic API built for AI agents. Write JavaScript or OpenSCAD, watch it render live, export print-ready GLB / STL / OBJ / 3MF. No signup, no installs.';
+  left.appendChild(lede);
 
   const ctas = document.createElement('div');
-  ctas.className = 'flex flex-wrap gap-3 justify-center';
+  ctas.className = 'flex flex-wrap gap-3 items-center mb-8';
 
   const open = document.createElement('button');
-  open.className = 'px-6 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors';
-  open.textContent = 'Open editor';
+  open.className = 'px-6 py-3 rounded-xl text-sm font-semibold text-amber-950 transition-transform hover:-translate-y-px';
+  open.setAttribute('style', GRAD_BTN);
+  open.textContent = 'Open the editor';
   open.addEventListener('click', callbacks.onOpenEditor);
   ctas.appendChild(open);
 
-  const tryAgent = document.createElement('button');
-  tryAgent.className = 'px-6 py-2.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-sm font-semibold transition-colors border border-zinc-700';
-  tryAgent.textContent = 'Try with an AI agent';
-  tryAgent.addEventListener('click', () => scrollToAgentSection());
-  ctas.appendChild(tryAgent);
-
-  const help = document.createElement('button');
-  help.className = 'px-6 py-2.5 rounded-lg bg-transparent hover:bg-zinc-800 text-zinc-400 text-sm font-medium transition-colors';
-  help.textContent = 'How does this work?';
-  help.addEventListener('click', callbacks.onOpenHelp);
-  ctas.appendChild(help);
-
   const tour = document.createElement('button');
-  tour.className = 'px-6 py-2.5 rounded-lg bg-transparent hover:bg-zinc-800 text-zinc-400 text-sm font-medium transition-colors';
+  tour.className = 'px-6 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-100 text-sm font-semibold transition-colors border border-zinc-700';
   tour.textContent = 'Take the guided tour';
   tour.addEventListener('click', callbacks.onTakeTour);
   ctas.appendChild(tour);
 
-  hero.appendChild(ctas);
+  const agent = document.createElement('button');
+  agent.className = 'px-2 py-3 text-zinc-400 hover:text-zinc-100 text-sm font-medium transition-colors';
+  agent.textContent = 'Try with an AI agent →';
+  agent.addEventListener('click', () => scrollToAgentSection());
+  ctas.appendChild(agent);
 
-  // Sub-hero feature pills
-  const pills = document.createElement('div');
-  pills.className = 'flex flex-wrap justify-center gap-2 mt-8';
-  const pillItems = [
-    'JavaScript + OpenSCAD',
-    'manifold-3d engine',
-    'No backend',
-    'GLB / STL / OBJ / 3MF export',
+  left.appendChild(ctas);
+
+  // trust stats
+  const trust = document.createElement('div');
+  trust.className = 'flex flex-wrap gap-x-7 gap-y-2 text-sm text-zinc-500';
+  const stats: { value: string; label: string }[] = [
+    { value: '0', label: 'installs' },
+    { value: '4', label: 'engines' },
+    { value: '100%', label: 'in-browser' },
+    { value: 'GLB · STL · 3MF', label: 'export' },
   ];
-  for (const text of pillItems) {
-    const pill = document.createElement('span');
-    pill.className = 'text-xs text-zinc-500 border border-zinc-800 rounded-full px-3 py-1';
-    pill.textContent = text;
-    pills.appendChild(pill);
+  for (const s of stats) {
+    const span = document.createElement('span');
+    span.innerHTML = `<b class="text-zinc-300 font-semibold">${s.value}</b> ${s.label}`;
+    trust.appendChild(span);
   }
-  hero.appendChild(pills);
+  left.appendChild(trust);
 
-  // "What's new" announcement link — a discoverable entry point to the
-  // recently-shipped-features changelog.
-  const whatsNew = document.createElement('button');
-  whatsNew.className =
-    'mt-6 inline-flex items-center gap-2 text-xs text-zinc-300 bg-zinc-800/60 hover:bg-zinc-800 border border-zinc-700 rounded-full px-4 py-1.5 transition-colors';
-  whatsNew.innerHTML =
-    '<span class="text-[10px] font-semibold uppercase tracking-wider text-blue-400">New</span>' +
-    '<span>Voxels, BREP solids, image relief &amp; more</span>' +
-    '<span class="text-zinc-500">→</span>';
-  whatsNew.addEventListener('click', callbacks.onOpenWhatsNew);
-  hero.appendChild(whatsNew);
+  wrap.appendChild(left);
 
+  // ----- right column: faux product frame -----
+  wrap.appendChild(buildProductFrame());
+
+  hero.appendChild(wrap);
   return hero;
+}
+
+/**
+ * A decorative "editor screenshot" — browser chrome with a code pane and an
+ * isometric rendered part. Purely visual (the live editor is the real thing).
+ */
+function buildProductFrame(): HTMLElement {
+  const frame = document.createElement('div');
+  frame.setAttribute('aria-hidden', 'true');
+  frame.className = 'rounded-2xl overflow-hidden border border-zinc-800 bg-[#0c0c0f]';
+  frame.style.boxShadow = '0 40px 110px -40px rgba(0,0,0,.75), 0 12px 40px -24px rgba(0,0,0,.7)';
+  frame.innerHTML = `
+    <div class="flex items-center gap-2 px-3.5 py-2.5 bg-[#141417] border-b border-zinc-800">
+      <span style="width:11px;height:11px;border-radius:50%;background:#ef4444;display:inline-block"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#f59e0b;display:inline-block"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:#22c55e;display:inline-block"></span>
+      <span class="pw-codemock" style="margin-left:8px;font-size:12px;color:#52525b">partwright · mounting-bracket</span>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1.1fr;height:320px">
+      <div class="pw-codemock" style="padding:16px;font-size:12.5px;line-height:1.7;background:#0a0a0c;border-right:1px solid #1c1c20;overflow:hidden">
+<span style="color:#546e7a">// parametric bracket</span><br>
+<span style="color:#c792ea">const</span> { <span style="color:#89ddff">Manifold</span> } = api;<br><br>
+<span style="color:#c792ea">const</span> <span style="color:#ffcb6b">base</span> = <span style="color:#89ddff">Manifold</span>.<span style="color:#82aaff">cube</span>([<span style="color:#f78c6c">40</span>,<span style="color:#f78c6c">30</span>,<span style="color:#f78c6c">4</span>], <span style="color:#c792ea">true</span>);<br>
+<span style="color:#c792ea">const</span> <span style="color:#ffcb6b">wall</span> = <span style="color:#89ddff">Manifold</span>.<span style="color:#82aaff">cube</span>([<span style="color:#f78c6c">40</span>,<span style="color:#f78c6c">4</span>,<span style="color:#f78c6c">24</span>])<br>
+&nbsp;&nbsp;.<span style="color:#82aaff">translate</span>([<span style="color:#f78c6c">0</span>,<span style="color:#f78c6c">13</span>,<span style="color:#f78c6c">12</span>]);<br>
+<span style="color:#c792ea">const</span> <span style="color:#ffcb6b">bore</span> = <span style="color:#89ddff">Manifold</span>.<span style="color:#82aaff">cylinder</span>(<span style="color:#f78c6c">10</span>,<span style="color:#f78c6c">4</span>,<span style="color:#f78c6c">4</span>,<span style="color:#f78c6c">48</span>);<br><br>
+<span style="color:#c792ea">return</span> <span style="color:#ffcb6b">base</span>.<span style="color:#82aaff">add</span>(<span style="color:#ffcb6b">wall</span>)<br>
+&nbsp;&nbsp;.<span style="color:#82aaff">subtract</span>(<span style="color:#ffcb6b">bore</span>.<span style="color:#82aaff">translate</span>([<span style="color:#f78c6c">0</span>,<span style="color:#f78c6c">0</span>,<span style="color:#f78c6c">4</span>]));
+      </div>
+      <div style="position:relative;display:flex;align-items:center;justify-content:center;background:radial-gradient(120% 90% at 50% 18%,#1a2330 0%,#0d1117 55%,#090b0f 100%)">
+        <span style="position:absolute;top:12px;left:12px;font-size:11px;font-weight:600;color:#34d399;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);border-radius:999px;padding:3px 10px 3px 8px;display:flex;align-items:center;gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:#34d399;display:inline-block"></span>Ready · 1 component</span>
+        <span style="position:absolute;top:12px;right:12px;display:flex;gap:5px"><i style="width:16px;height:16px;border-radius:4px;background:#14b8a6;border:1px solid rgba(255,255,255,.15);display:block"></i><i style="width:16px;height:16px;border-radius:4px;background:#f59e0b;border:1px solid rgba(255,255,255,.15);display:block"></i></span>
+        <svg width="230" height="230" viewBox="0 0 240 240" aria-hidden="true">
+          <defs>
+            <linearGradient id="pwf-top" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/></linearGradient>
+            <linearGradient id="pwf-left" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0f766e"/><stop offset="1" stop-color="#115e59"/></linearGradient>
+            <linearGradient id="pwf-right" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/></linearGradient>
+            <radialGradient id="pwf-floor" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#1f2a38"/><stop offset="1" stop-color="transparent"/></radialGradient>
+          </defs>
+          <ellipse cx="120" cy="196" rx="92" ry="26" fill="url(#pwf-floor)"/>
+          <polygon points="120,40 208,90 120,140 32,90" fill="url(#pwf-top)"/>
+          <polygon points="32,90 120,140 120,196 32,146" fill="url(#pwf-left)"/>
+          <polygon points="208,90 120,140 120,196 208,146" fill="url(#pwf-right)"/>
+          <ellipse cx="120" cy="90" rx="26" ry="14" fill="#0b3b38"/>
+          <ellipse cx="120" cy="90" rx="26" ry="14" fill="none" stroke="#0d9488" stroke-width="1.5"/>
+          <path d="M94 90 a26 14 0 0 0 52 0 l0 14 a26 14 0 0 1 -52 0 z" fill="#072a28"/>
+          <line x1="120" y1="40" x2="208" y2="90" stroke="#fcd34d" stroke-width="1.5" opacity="0.55"/>
+        </svg>
+        <span class="pw-codemock" style="position:absolute;bottom:12px;right:14px;font-size:10px;color:#52525b">Z ⊥ · iso</span>
+      </div>
+    </div>`;
+  return frame;
 }
 
 // ---------- 2. How it works ----------
@@ -211,12 +324,12 @@ function buildHowItWorks(): HTMLElement {
     card.className = 'bg-zinc-800/40 border border-zinc-800 rounded-xl p-6';
 
     const num = document.createElement('div');
-    num.className = 'text-xs font-mono text-blue-400 mb-3';
+    num.className = 'pw-codemock text-xs text-teal-400 mb-3';
     num.textContent = step.num;
     card.appendChild(num);
 
     const t = document.createElement('h3');
-    t.className = 'text-base font-semibold text-zinc-100 mb-2';
+    t.className = 'font-display text-base font-semibold text-zinc-100 mb-2';
     t.textContent = step.title;
     card.appendChild(t);
 
@@ -249,7 +362,7 @@ async function buildFeaturedCatalog(callbacks: LandingCallbacks): Promise<HTMLEl
   header.appendChild(heading);
 
   const browseAll = document.createElement('button');
-  browseAll.className = 'shrink-0 inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-sm font-medium border border-blue-500/60 text-blue-300 hover:bg-blue-500/10 hover:border-blue-400 transition-colors';
+  browseAll.className = 'shrink-0 inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-sm font-medium border border-teal-500/60 text-teal-300 hover:bg-teal-500/10 hover:border-teal-400 transition-colors';
   browseAll.textContent = 'Browse the full catalog →';
   browseAll.addEventListener('click', callbacks.onOpenCatalog);
   header.appendChild(browseAll);
@@ -390,7 +503,7 @@ function buildAgentSection(): HTMLElement {
   left.appendChild(heading);
 
   const subheading = document.createElement('h3');
-  subheading.className = 'text-2xl font-bold text-zinc-100 mb-4 leading-tight';
+  subheading.className = 'font-display text-2xl font-bold text-zinc-100 mb-4 leading-tight';
   subheading.textContent = 'Hand the keyboard to your agent.';
   left.appendChild(subheading);
 
@@ -412,7 +525,7 @@ function buildAgentSection(): HTMLElement {
     const li = document.createElement('li');
     li.className = 'flex items-start gap-2';
     const arrow = document.createElement('span');
-    arrow.className = 'text-blue-400 mt-0.5';
+    arrow.className = 'text-teal-400 mt-0.5';
     arrow.textContent = '→';
     const span = document.createElement('span');
     span.textContent = text;
@@ -423,7 +536,7 @@ function buildAgentSection(): HTMLElement {
   left.appendChild(bullets);
 
   const docsLink = document.createElement('a');
-  docsLink.className = 'inline-block mt-5 text-sm text-blue-400 hover:text-blue-300 transition-colors';
+  docsLink.className = 'inline-block mt-5 text-sm text-teal-400 hover:text-teal-300 transition-colors';
   docsLink.href = '/ai.md';
   docsLink.textContent = 'Read the agent instructions →';
   left.appendChild(docsLink);
@@ -450,7 +563,7 @@ function buildAgentSection(): HTMLElement {
   right.appendChild(promptHeader);
 
   const promptBody = document.createElement('pre');
-  promptBody.className = 'text-xs leading-relaxed text-zinc-300 px-4 py-3 max-h-72 overflow-auto whitespace-pre-wrap font-mono';
+  promptBody.className = 'pw-codemock text-xs leading-relaxed text-zinc-300 px-4 py-3 max-h-72 overflow-auto whitespace-pre-wrap';
   const promptText = AGENT_PROMPT_TEMPLATE(window.location.origin);
   promptBody.textContent = promptText;
   right.appendChild(promptBody);

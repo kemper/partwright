@@ -1,5 +1,37 @@
 @import "tailwindcss";
 
+/* ---------- Brand fonts (self-hosted, latin subset) ----------
+   Used by the landing / marketing surfaces. font-src 'self' in the CSP
+   already permits these — no header change needed. The editor keeps the
+   default system sans / mono; these only apply where opted in via the
+   .font-display / .font-body utilities or .pw-codemock. */
+@font-face { font-family:'Space Grotesk'; font-style:normal; font-weight:400; font-display:swap; src:url(/fonts/spacegrotesk-400.woff2) format('woff2'); }
+@font-face { font-family:'Space Grotesk'; font-style:normal; font-weight:500; font-display:swap; src:url(/fonts/spacegrotesk-500.woff2) format('woff2'); }
+@font-face { font-family:'Space Grotesk'; font-style:normal; font-weight:600; font-display:swap; src:url(/fonts/spacegrotesk-600.woff2) format('woff2'); }
+@font-face { font-family:'Space Grotesk'; font-style:normal; font-weight:700; font-display:swap; src:url(/fonts/spacegrotesk-700.woff2) format('woff2'); }
+@font-face { font-family:'Sora'; font-style:normal; font-weight:600; font-display:swap; src:url(/fonts/sora-600.woff2) format('woff2'); }
+@font-face { font-family:'Sora'; font-style:normal; font-weight:700; font-display:swap; src:url(/fonts/sora-700.woff2) format('woff2'); }
+@font-face { font-family:'Sora'; font-style:normal; font-weight:800; font-display:swap; src:url(/fonts/sora-800.woff2) format('woff2'); }
+@font-face { font-family:'JetBrains Mono'; font-style:normal; font-weight:400; font-display:swap; src:url(/fonts/jetbrainsmono-400.woff2) format('woff2'); }
+@font-face { font-family:'JetBrains Mono'; font-style:normal; font-weight:500; font-display:swap; src:url(/fonts/jetbrainsmono-500.woff2) format('woff2'); }
+
+/* New Tailwind font utilities: .font-display (Sora) and .font-body (Space
+   Grotesk). Deliberately NOT overriding --font-sans / --font-mono so the
+   editor's typography is unchanged. */
+@theme {
+  --font-display: 'Sora', system-ui, sans-serif;
+  --font-body: 'Space Grotesk', system-ui, sans-serif;
+}
+
+/* Landing helpers */
+.pw-codemock { font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* Calm studio field — one subtle dark radial behind the hero (no bright glows).
+   Barely-there in light mode, which is the intended restraint. */
+.pw-calmfield {
+  position:absolute; inset:0; z-index:0; pointer-events:none;
+  background:radial-gradient(120% 90% at 64% 12%, rgba(245,158,11,.06) 0%, rgba(39,39,42,.30) 34%, transparent 72%);
+}
+
 /* Light theme: remap Tailwind's zinc/neutral scales so existing classes
    (bg-zinc-900, text-zinc-100, border-zinc-700, etc.) render as readable
    light-mode equivalents. The mapping is not a strict inversion — it's tuned
