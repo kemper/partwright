@@ -22,8 +22,13 @@ test.beforeEach(async ({ page }) => {
 test.describe('Landing + editor', () => {
   test('landing page renders hero', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'Partwright', level: 1 })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Open Editor/i })).toBeVisible();
+    const landing = page.locator('#landing-page');
+    // The hero h1 is now the headline; the "Partwright" wordmark lives in the
+    // nav. Scope to the landing subtree — the editor chrome is mounted-but-
+    // hidden in the same SPA DOM and its toolbar also renders "Partwright".
+    await expect(landing.getByText('Partwright', { exact: true })).toBeVisible();
+    await expect(landing.getByRole('heading', { level: 1 })).toBeVisible();
+    await expect(landing.getByRole('button', { name: /Open editor/i })).toBeVisible();
   });
 
   test('editor loads with AI button', async ({ page }) => {
