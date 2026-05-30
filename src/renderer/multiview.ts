@@ -4,6 +4,7 @@ import type { MeshData } from '../geometry/types';
 import { buildStrokesGroup, disposeStrokesGroup } from '../annotations/annotationOverlay';
 import { presetIndex } from '../storage/db';
 import { CREASE_ANGLE_DEG, resolveEdgeMode, type EdgeMode } from './edgeMode';
+import { getConfig } from '../config/appConfig';
 export { EDGE_MODES, type EdgeMode } from './edgeMode';
 
 /** Composite-render angle sets accepted by `partwright.renderViews`.
@@ -115,7 +116,6 @@ let offRendererDisposeTimer: ReturnType<typeof setTimeout> | null = null;
 // at ~16 live WebGL contexts. We dispose the offscreen renderer after a short
 // idle window so GPU memory is reclaimed between user actions; the lazy branch
 // in getOffscreenRenderer re-creates it on the next render.
-const OFFSCREEN_IDLE_DISPOSE_MS = 10_000;
 
 function disposeOffscreenRenderer(): void {
   if (!offRenderer) return;
@@ -131,7 +131,7 @@ function scheduleOffscreenDispose(): void {
   offRendererDisposeTimer = setTimeout(() => {
     offRendererDisposeTimer = null;
     disposeOffscreenRenderer();
-  }, OFFSCREEN_IDLE_DISPOSE_MS);
+  }, getConfig().renderer.offscreenIdleDisposeMs);
 }
 
 function getOffscreenRenderer(size: number): THREE.WebGLRenderer {

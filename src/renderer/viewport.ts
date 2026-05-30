@@ -56,7 +56,6 @@ export function setOnContextRestored(fn: () => void): void { onContextRestored =
 // difference between constant GPU churn and only working when the view moves.
 let needsRender = true;
 let lastPointerActivity = 0;
-const POINTER_GRACE_MS = 350;
 
 // === Adaptive resolution ===
 // Full (capped) device pixel ratio when the camera is still; a reduced ratio
@@ -168,7 +167,7 @@ export function initViewport(container: HTMLElement): {
 
   controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
-  controls.dampingFactor = 0.1;
+  controls.dampingFactor = getConfig().renderer.orbitDampingFactor;
   controls.target.set(0, 0, 0);
 
   // On-demand rendering hooks: 'change' fires on every camera move (including
@@ -240,14 +239,14 @@ export function initViewport(container: HTMLElement): {
   }, { capture: true, passive: false });
 
   // Lighting
-  const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+  const ambient = new THREE.AmbientLight(0xffffff, getConfig().renderer.ambientLightIntensity);
   scene.add(ambient);
 
-  const dir1 = new THREE.DirectionalLight(0xffffff, 0.8);
+  const dir1 = new THREE.DirectionalLight(0xffffff, getConfig().renderer.primaryLightIntensity);
   dir1.position.set(10, -10, 15);
   scene.add(dir1);
 
-  const dir2 = new THREE.DirectionalLight(0xffffff, 0.3);
+  const dir2 = new THREE.DirectionalLight(0xffffff, getConfig().renderer.secondaryLightIntensity);
   dir2.position.set(-10, 10, -5);
   scene.add(dir2);
 
@@ -324,7 +323,7 @@ export function initViewport(container: HTMLElement): {
     // sets needsRender) whenever the camera actually moves, so inertia keeps the
     // loop painting until it settles.
     controls.update();
-    const pointerActive = performance.now() - lastPointerActivity < POINTER_GRACE_MS;
+    const pointerActive = performance.now() - lastPointerActivity < getConfig().renderer.pointerGraceMs;
     if (needsRender || pointerActive || isGizmoAnimating()) {
       renderer.render(scene, camera);
       renderGizmo(renderer);

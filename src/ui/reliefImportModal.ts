@@ -34,13 +34,11 @@ export interface ReliefImportModalOptions {
 }
 
 const PREVIEW_PX = 220;
-const DEBOUNCE_MS = 120;
 function getMaxResolution(): number { return getConfig().import.reliefMaxResolution; }
 // 3D preview rebuilds use a downscaled grid — mesh generation is fast at this
 // size and the wizard's static thumbnail doesn't benefit from print-quality
 // fidelity. Quality previews happen in the studio after Create.
 const PREVIEW_3D_RESOLUTION = 64;
-const PREVIEW_3D_DEBOUNCE_MS = 250;
 
 interface ModeDef {
   id: ReliefImportMode;
@@ -575,7 +573,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   let preview3DTimer: number | undefined;
   function schedule3DPreview(): void {
     if (preview3DTimer !== undefined) window.clearTimeout(preview3DTimer);
-    preview3DTimer = window.setTimeout(render3DPreview, PREVIEW_3D_DEBOUNCE_MS);
+    preview3DTimer = window.setTimeout(render3DPreview, getConfig().ui.reliefPreview3dDebounceMs);
   }
   async function render3DPreview(): Promise<void> {
     if (!image && !svgText) {
@@ -864,7 +862,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   // --- Preview rendering ---------------------------------------------------
   function schedulePreview(): void {
     if (previewTimer !== undefined) window.clearTimeout(previewTimer);
-    previewTimer = window.setTimeout(renderPreview, DEBOUNCE_MS);
+    previewTimer = window.setTimeout(renderPreview, getConfig().ui.reliefPreviewDebounceMs);
     schedule3DPreview();
   }
 

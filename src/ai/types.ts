@@ -39,9 +39,9 @@ export type GeminiModelId =
   | 'gemini-flash-latest'
   | 'gemini-flash-lite-latest';
 
-/** Either an Anthropic model name or a WebLLM model_id or a hosted-provider
- *  model id. The shape is the same at the type level (a string) so callers
- *  can treat it opaquely. */
+/** Statically-known model IDs for the four named providers. Custom endpoint
+ *  models are user-supplied strings; `activeModel()` returns `ModelId | string | null`
+ *  to cover that case. */
 export type ModelId = AnthropicModelId | LocalModelId | OpenaiModelId | GeminiModelId;
 
 /** Named bundles of toggle settings the user can flip between with a

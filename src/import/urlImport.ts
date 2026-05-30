@@ -23,8 +23,6 @@ export type ImportUrlParse =
  *  for servers that omit or lie about the header. */
 export const MAX_REMOTE_BYTES = 25 * 1024 * 1024;
 
-/** Abort a stalled remote fetch after this long (~15s). */
-export const REMOTE_FETCH_TIMEOUT_MS = 15_000;
 
 /**
  * Classify a trimmed user input string into a share link, a remote http(s)

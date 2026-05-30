@@ -93,7 +93,6 @@ import {
   classifyRemoteResource,
   ensureExtensionForSource,
   MAX_REMOTE_BYTES,
-  REMOTE_FETCH_TIMEOUT_MS,
 } from './import/urlImport';
 import { showImportTargetModal } from './ui/importTargetModal';
 import { showImageVoxelImportModal, type ImageVoxelModalResult } from './ui/imageVoxelImportModal';
@@ -566,7 +565,6 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
  *  the GPU readback never settles the callback. A thumbnail is non-essential, so
  *  we cap the wait and let the save proceed without it rather than hang forever
  *  (which silently blocked saving a painted version). */
-const THUMBNAIL_TIMEOUT_MS = 4000;
 
 function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob | null> {
   if (!mesh) return Promise.resolve(null);
@@ -590,7 +588,7 @@ function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob
     };
     // Bound the wait: if toBlob never calls back, resolve null so the caller
     // (save / snapshot) still completes.
-    const timer = setTimeout(() => finish(null), THUMBNAIL_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(null), getConfig().renderer.thumbnailTimeoutMs);
     try {
       canvas.toBlob(b => finish(b), 'image/png');
     } catch {
@@ -2350,7 +2348,7 @@ async function main() {
    *  Throws a human-readable message on any failure. */
   async function importFromRemoteUrl(url: string): Promise<void> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REMOTE_FETCH_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), getConfig().import.remoteFetchTimeoutMs);
     let res: Response;
     try {
       res = await fetch(url, { signal: controller.signal, redirect: 'follow' });
