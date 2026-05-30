@@ -58,6 +58,25 @@ describe('meshSubdivide', () => {
     expect([...out.triColors!].every(v => v === 7)).toBe(true);
   });
 
+  it('carries the _painted mask to all four children', () => {
+    type P = Uint8Array & { _painted?: Uint8Array };
+    const c = cube(10); // 12 triangles
+    c.triColors = new Uint8Array(c.numTri * 3);
+    const painted = new Uint8Array(c.numTri);
+    painted[0] = 1; painted[3] = 1; // only triangles 0 and 3 are painted
+    (c.triColors as P)._painted = painted;
+    const out = subdivideToMaxEdge(c, { maxEdge: 4, maxRounds: 1 }); // 12→48
+    const outPainted = (out.triColors as P)._painted;
+    expect(outPainted).toBeTruthy();
+    expect(outPainted!.length).toBe(48);
+    // children of tri 0 → slots 0-3: painted
+    for (let k = 0; k < 4; k++) expect(outPainted![k]).toBe(1);
+    // children of tri 1 → slots 4-7: not painted
+    for (let k = 4; k < 8; k++) expect(outPainted![k]).toBe(0);
+    // children of tri 3 → slots 12-15: painted
+    for (let k = 12; k < 16; k++) expect(outPainted![k]).toBe(1);
+  });
+
   it('computes unit-length vertex normals', () => {
     const c = cube(10);
     const n = computeVertexNormals(extractPositions(c), c.triVerts);

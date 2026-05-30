@@ -5368,39 +5368,14 @@ async function main() {
     return hasColorRegions() || hasModelColorRegions();
   }
 
-  /** Build a copy of `newMesh` whose triangles are colored by transferring paint
-   *  from `oldMesh` (nearest-triangle). Used so a manifold preview shows the
-   *  carried colors instead of flashing the model uncolored. Returns `newMesh`
-   *  unchanged when nothing is painted. */
-  function meshWithTransferredColors(oldMesh: MeshData, newMesh: MeshData): MeshData {
-    const oldColors = buildTriColors(oldMesh.numTri);
-    if (!oldColors) return newMesh;
-    const painted = (oldColors as Uint8Array & { _painted?: Uint8Array })._painted;
-    const nearest = nearestTriangleMap(oldMesh, newMesh);
-    const tc = new Uint8Array(newMesh.numTri * 3);
-    const mask = new Uint8Array(newMesh.numTri);
-    for (let t = 0; t < newMesh.numTri; t++) {
-      const o = nearest[t];
-      if (o < 0 || (painted && !painted[o])) continue;
-      tc[t * 3] = oldColors[o * 3]; tc[t * 3 + 1] = oldColors[o * 3 + 1]; tc[t * 3 + 2] = oldColors[o * 3 + 2];
-      mask[t] = 1;
-    }
-    (tc as Uint8Array & { _painted?: Uint8Array })._painted = mask;
-    return { ...newMesh, triColors: tc };
-  }
-
   // Non-destructive preview: swap the viewport mesh to the modifier's result
   // WITHOUT running the engine or saving a version. Cleared by reverting to the
   // current model's mesh (clearSurfacePreview). Mirrors the relief preview path.
-  // When the model is painted and colors are being preserved, the manifold
-  // preview is colored by nearest-triangle transfer so it matches what Apply
-  // produces (voxel previews already carry per-voxel color from the mesher).
-  function previewSurfaceModifier(result: ModifierResult, preserveColor: boolean): void {
-    let previewMesh = result.kind === 'manifold' ? result.mesh : result.previewMesh;
+  // Colors are carried through subdivision in buildSurfaceModifier, so result.mesh
+  // already has the correct per-triangle colors — no post-hoc transfer needed.
+  function previewSurfaceModifier(result: ModifierResult, _preserveColor: boolean): void {
+    const previewMesh = result.kind === 'manifold' ? result.mesh : result.previewMesh;
     if (previewMesh.numTri === 0) return;
-    if (result.kind === 'manifold' && preserveColor && modelHasColor() && currentMeshData) {
-      previewMesh = meshWithTransferredColors(currentMeshData, previewMesh);
-    }
     updateMesh(previewMesh, { skipAutoFrame: true });
   }
 
@@ -5454,12 +5429,13 @@ async function main() {
   }
 
   async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean): Promise<Record<string, unknown>> {
-    // Snapshot the OLD mesh + its composited colors BEFORE dropping paint state,
-    // so we can transfer them onto the modifier's re-tessellated result. (For
-    // voxelize, color is baked into the grid at voxelize time instead.)
-    const carryColor = preserveColor && result.kind === 'manifold' && modelHasColor();
-    const oldMesh = carryColor ? currentMeshData : null;
-    const oldColors = carryColor && currentMeshData ? buildTriColors(currentMeshData.numTri) : null;
+    // For manifold results the modifier already baked colors into its input and
+    // carried them through subdivision — result.mesh.triColors has the correct
+    // per-triangle paint (dense mesh, same shape as the engine output). We use
+    // that as the color source rather than the pre-modifier coarse mesh, which
+    // avoids the coarse→dense centroid-mapping errors that cause wrong colors.
+    const colorMesh = (preserveColor && result.kind === 'manifold' && result.mesh.triColors != null)
+      ? result.mesh : null;
     cancelVoxelPaintIfActive();
     dropPaintState();
     if (result.kind === 'manifold') {
@@ -5480,8 +5456,8 @@ async function main() {
       if (!ok) return { error: `Failed to apply ${result.label}` };
       let geoData = getGeometryDataObj();
       let carried = 0;
-      if (oldMesh && oldColors && currentMeshData && geoData) {
-        const { regions, transferredTris } = buildCarriedColorRegions(oldMesh, oldColors, currentMeshData);
+      if (colorMesh && currentMeshData && geoData) {
+        const { regions, transferredTris } = buildCarriedColorRegions(colorMesh, colorMesh.triColors!, currentMeshData);
         if (regions.length > 0) {
           rehydrateColorRegions({ ...geoData, colorRegions: regions });
           carried = transferredTris;
@@ -5509,15 +5485,16 @@ async function main() {
   }
 
   // Build a modifier result from an id + options (shared by apply and preview).
-  // `preserveColor` only affects voxelize's input here (color-baked mesh so the
-  // grid samples paint); fuzzy/smooth carry paint via regions at commit time.
+  // All three modifiers receive the color-baked mesh when preserveColor is on:
+  // fuzzy/smooth carry triColors (with _painted) through subdivision so the
+  // result already has correct per-triangle paint — no post-hoc transfer needed.
   function buildSurfaceModifier(
     id: 'fuzzy' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
   ): ModifierResult {
     if (id === 'fuzzy') {
-      const mesh = requireCurrentMeshForModifier();
+      const mesh = meshForModifier(preserveColor);
       const base = defaultFuzzyOptions(mesh);
       return applyFuzzy(mesh, {
         amplitude: (opts?.amplitude as number) ?? base.amplitude,
@@ -5527,7 +5504,7 @@ async function main() {
       });
     }
     if (id === 'smooth') {
-      const mesh = requireCurrentMeshForModifier();
+      const mesh = meshForModifier(preserveColor);
       const base = defaultSmoothOptions();
       return applySmooth(mesh, {
         iterations: (opts?.iterations as number) ?? base.iterations,

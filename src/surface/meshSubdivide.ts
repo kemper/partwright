@@ -69,17 +69,21 @@ export interface SubdivideOptions {
   maxTriangles?: number;
 }
 
+type PaintedMask = Uint8Array & { _painted?: Uint8Array };
+
 /** One 1→4 midpoint subdivision pass over a position-only mesh. */
 function subdivideOnce(
   positions: Float32Array,
   triVerts: Uint32Array,
   triColors: Uint8Array | undefined,
-): { positions: Float32Array; triVerts: Uint32Array; triColors: Uint8Array | undefined } {
+  painted: Uint8Array | undefined,
+): { positions: Float32Array; triVerts: Uint32Array; triColors: Uint8Array | undefined; painted: Uint8Array | undefined } {
   const numTri = triVerts.length / 3;
   const verts: number[] = Array.from(positions);
   const midCache = new Map<number, number>();
   const newTris = new Uint32Array(numTri * 4 * 3);
   const newColors = triColors ? new Uint8Array(numTri * 4 * 3) : undefined;
+  const newPainted = painted ? new Uint8Array(numTri * 4) : undefined;
 
   const midpoint = (i: number, j: number): number => {
     const key = i < j ? i * positions.length + j : j * positions.length + i;
@@ -108,28 +112,39 @@ function subdivideOnce(
         newColors[o] = r; newColors[o + 1] = g; newColors[o + 2] = bl;
       }
     }
+    if (newPainted && painted) {
+      const p = painted[t];
+      for (let k = 0; k < 4; k++) newPainted[t * 4 + k] = p;
+    }
   }
 
-  return { positions: Float32Array.from(verts), triVerts: newTris, triColors: newColors };
+  return { positions: Float32Array.from(verts), triVerts: newTris, triColors: newColors, painted: newPainted };
 }
 
 /** Repeatedly midpoint-subdivide until the longest edge is `<= maxEdge`, bounded
  *  by `maxRounds` and `maxTriangles`. Returns a position-only (`numProp === 3`)
- *  MeshData; per-triangle colors are carried forward when present. */
+ *  MeshData; per-triangle colors and the `_painted` mask are carried forward when
+ *  present. */
 export function subdivideToMaxEdge(mesh: MeshData, opts: SubdivideOptions): MeshData {
   const maxRounds = opts.maxRounds ?? 4;
   const maxTriangles = opts.maxTriangles ?? 400_000;
   let positions = extractPositions(mesh);
   let triVerts = Uint32Array.from(mesh.triVerts);
   let triColors = mesh.triColors ? Uint8Array.from(mesh.triColors) : undefined;
+  // `_painted` is an expando on triColors (not part of the typed array), so
+  // Uint8Array.from() above silently drops it — carry it separately.
+  let painted: Uint8Array | undefined = triColors
+    ? (mesh.triColors as PaintedMask)._painted?.slice()
+    : undefined;
 
   for (let round = 0; round < maxRounds; round++) {
     if (maxEdgeLength(positions, triVerts) <= opts.maxEdge) break;
     if ((triVerts.length / 3) * 4 > maxTriangles) break;
-    const next = subdivideOnce(positions, triVerts, triColors);
-    positions = next.positions; triVerts = next.triVerts; triColors = next.triColors;
+    const next = subdivideOnce(positions, triVerts, triColors, painted);
+    positions = next.positions; triVerts = next.triVerts; triColors = next.triColors; painted = next.painted;
   }
 
+  if (triColors && painted) (triColors as PaintedMask)._painted = painted;
   return {
     vertProperties: positions,
     triVerts,
