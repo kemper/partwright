@@ -290,7 +290,7 @@ await partwright.listVersions()          // -> [{id, index, label, timestamp, st
 await partwright.loadVersion({index} | {id})  // Load version into editor -> {id, index, label, code, geometryData, labelsAvailable, labelCount} or {error}
 await partwright.forkVersion({index} | {id}, transformFn, label?, assertions?, carryColors=true) // Load + modify + validate + save atomically; carries parent colors -> {..., codeDiff, colors}
 await partwright.copyColorsFromVersion({index} | {id}) // Re-apply a prior version's colors onto the current mesh -> {source, carried, dropped}
-await partwright.getShareLink()          // -> {url, encodedBytes} read-only share link (or {error}); the link to hand the user when done
+await partwright.getShareLink()          // -> {url, encodedBytes} read-only share link (or {error}); external/console agents hand this to the user — in-app users click the toolbar Share (↗) button instead
 partwright.getGalleryUrl()               // -> URL for gallery view (local browser only)
 partwright.getSessionUrl()               // -> URL for this session (local browser only)
 await partwright.listSessions()          // -> [{id, name, updated}]
@@ -1056,7 +1056,9 @@ Read the notes and version history before making changes. The notes tell you:
 4. When satisfied, save: `runAndSave(modifiedCode, "v2 - improvements", assertions)` -- check the diff
 5. Use `query({sliceAt: [...], decompose: true})` for follow-up inspection without re-running
 6. Repeat.
-7. When done, hand the user a **share link**: `const { url } = await partwright.getShareLink()`. This is a self-contained, read-only URL that encodes the whole design — anyone can open it anywhere and fork it into their own copy. Prefer it over `getSessionUrl()`/`getGalleryUrl()`, which only resolve against *your* browser's local storage and won't open for the user.
+7. When done, briefly say what you built — it's already saved as a version, so you don't need to produce any link.
+   - **In-app chat assistant:** do NOT mint or paste a share/export URL into the conversation. The encoded share link is enormous and pasting it just burns the user's tokens, and the user already has a **Share** button (↗) in the toolbar that builds one on demand. Just confirm the work is saved.
+   - **External / console agents** (driving Partwright from outside the browser, e.g. via the console or Claude Code) have no toolbar to click, so hand the user a **share link**: `const { url } = await partwright.getShareLink()` — a self-contained, read-only URL that encodes the whole design so anyone can open and fork it. Prefer it over `getSessionUrl()`/`getGalleryUrl()`, which only resolve against *your* browser's local storage and won't open for the user.
 
 ## Visual verification
 
