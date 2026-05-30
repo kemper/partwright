@@ -356,6 +356,21 @@ Every URL parameter the app writes must also be read back correctly everywhere:
 
 Always await `txn.oncomplete` before returning from functions that modify IndexedDB data. Awaiting individual request promises within a transaction is not sufficient — the transaction can still fail to commit after those promises resolve. Follow the pattern in `clearAllData()`.
 
+**Never `await` between a `get` and the `put`/`delete` that depends on it inside one readwrite transaction.** Awaiting yields the microtask queue and lets IndexedDB auto-commit the (now request-less) transaction before the write is queued — a `TransactionInactiveError`, and across two tabs a lost update. Issue the dependent write from inside the `get`'s `onsuccess` callback (chain further requests from *their* callbacks too), then await `txn.oncomplete` once. See `recordUsage`, `updateSession`, and `putAttachment` for the pattern.
+
+### Cross-Tab Isolation — No Data Bleed Between Windows
+
+The app runs in multiple browser windows/tabs at once, often each driving a **different session** (and a different AI provider). Tabs share one origin, so they share IndexedDB *and* localStorage; separate windows do **not** share JS module memory. The rule:
+
+> State must not bleed or cause side effects from one tab into another. The only times state should cross tabs are the **explicit** transitions: opening a session (incl. a previously-closed one) in a tab, or **taking control** of a session in another tab. Anything else changing in tab B must not silently alter tab A.
+
+Concretely, when adding a feature:
+
+- **Don't put session-scoped or task-scoped state in a single shared localStorage blob.** AI provider/model/toggles are **per-tab** working state (each window drives its own session) and are persisted **per-session** on the session record (`session.aiPreference`) so they carry over only on open / take-control — see `applySessionAiPreference` / `recordSessionAiPreference` in `aiPanel.ts` and `setSessionAiPreference` in `sessionManager.ts`. The live AI settings (`reloadSettingsFromStorage` in `ai/settings.ts`) deliberately **preserve this tab's `toggles`/`preset`** when a peer tab writes the shared blob — it adopts only genuinely-global, additive prefs (custom models, system-prompt overrides, panel width). Blindly adopting a peer's blob via the `storage` event was the cross-window provider-leak bug.
+- **App-level preferences that used to be one shared localStorage key should be per-tab** (units, render quality, editor auto-format). Use `readPerTabPref`/`writePerTabPref` (`src/storage/perTabPref.ts`): the live value is per-tab (sessionStorage) with a localStorage seed so a *fresh* tab still inherits the last choice, but already-open tabs never adopt a peer's change. Don't attach a `storage` listener that live-mirrors them.
+- **`storage`-event and `BroadcastChannel` handlers must scope to the receiving tab's own session** before acting — gate on `msg.sessionId === currentState.session?.id` (see `tabSync.ts` consumers and `sessionLock.ts`, which guards on its own session's leader-token key). Never adopt a peer's provider/model/toggles live.
+- **Truly-global state is the exception, and must be additive, not last-write-wins.** Custom local models and system-prompt overrides are shared across tabs on purpose; keep such writes merge-friendly so a peer tab's blob write can't clobber another tab's addition.
+
 ### Dead Code
 
 Don't export functions unless they're imported elsewhere. When removing usage of an exported function, delete the export too. Periodically grep for exported symbols to verify they have importers.

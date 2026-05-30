@@ -582,20 +582,43 @@ export async function listSessionDrafts(sessionId: string) {
 
 // === Per-session AI preference ===
 
-/** Remember which AI provider + model is driving the current session so it can
- *  be restored on reopen. No-op when nothing is open or the value is unchanged.
- *  Not broadcast to peer tabs on purpose — restoring on reload is the goal, not
- *  live-mirroring the active model across windows (which would fight the user). */
-export async function setSessionAiPreference(provider: string, model: string | null): Promise<void> {
+/** Remember the AI config driving the current session (provider, model, and the
+ *  full toggle snapshot + preset) so it can be restored when the session is
+ *  reopened or taken control of in another tab. No-op when nothing is open or
+ *  the value is unchanged. Deliberately NOT broadcast to peer tabs — restoring
+ *  on the explicit open / take-control transitions is the goal, not
+ *  live-mirroring the active model across windows (which would fight the user
+ *  and was the cross-window provider-leak bug). `toggles` is stored opaquely so
+ *  this layer stays decoupled from the AI types. */
+export async function setSessionAiPreference(
+  provider: string,
+  model: string | null,
+  toggles?: Record<string, unknown>,
+  preset?: string,
+): Promise<void> {
   if (!currentState.session || !model) return;
   // A read-only viewer must not mutate the shared session row, or it would
-  // clobber the leader's remembered provider/model (last reopen would win
-  // whatever the viewer last picked).
+  // clobber the leader's remembered config (last reopen would win whatever the
+  // viewer last picked).
   if (isViewerTab()) return;
   const cur = currentState.session.aiPreference;
-  if (cur && cur.provider === provider && cur.model === model) return;
+  const togglesSnap = toggles ?? cur?.toggles;
+  const presetVal = preset ?? cur?.preset;
+  // Skip the write when nothing meaningful changed (cheap + idempotent).
+  if (cur
+    && cur.provider === provider
+    && cur.model === model
+    && (cur.preset ?? undefined) === (presetVal ?? undefined)
+    && JSON.stringify(cur.toggles ?? null) === JSON.stringify(togglesSnap ?? null)) {
+    return;
+  }
   const id = currentState.session.id;
-  const aiPreference = { provider, model };
+  const aiPreference = {
+    provider,
+    model,
+    ...(togglesSnap ? { toggles: togglesSnap } : {}),
+    ...(presetVal ? { preset: presetVal } : {}),
+  };
   await dbUpdateSession(id, { aiPreference });
   if (currentState.session?.id === id) {
     currentState.session = { ...currentState.session, aiPreference };
