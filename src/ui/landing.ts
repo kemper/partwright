@@ -147,6 +147,7 @@ function buildHero(callbacks: LandingCallbacks): HTMLElement {
   ctas.appendChild(tour);
 
   hero.appendChild(ctas);
+  hero.appendChild(install.note);
   hero.appendChild(install.hint);
 
   // Sub-hero feature pills
@@ -182,22 +183,33 @@ function buildHero(callbacks: LandingCallbacks): HTMLElement {
 }
 
 /**
- * Build the "Install app" CTA plus its iOS hint. The button advertises itself
- * only when the app is actually installable:
+ * Build the "Install app" CTA plus its supporting copy. Install is purely an
+ * optional convenience — Partwright runs fully in the browser without it — so
+ * the button carries a clarifying tooltip and a persistent "optional" note.
+ *
+ * The button advertises itself only when the app is actually installable:
  *   - Chrome/Edge/Android: a live `beforeinstallprompt` is held -> click runs
- *     the native install dialog.
+ *     the native install dialog (installs it as a Chrome/desktop app).
  *   - iOS Safari: no programmatic prompt exists -> click reveals the manual
  *     "Share -> Add to Home Screen" hint.
  *   - Otherwise (already installed, Firefox, in-app standalone): stays hidden.
  */
-function buildInstallCta(): { button: HTMLButtonElement; hint: HTMLElement } {
+function buildInstallCta(): { button: HTMLButtonElement; note: HTMLElement; hint: HTMLElement } {
   const button = document.createElement('button');
   button.className =
     'px-6 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold transition-colors hidden items-center gap-2';
-  button.innerHTML = '<span aria-hidden="true">⬇</span><span>Install app</span>';
+  button.title = 'Optional — install Partwright as an app for one-click launch. The app runs fully in your browser either way.';
+  button.innerHTML = '<span aria-hidden="true">⬇</span><span>Install as app</span>';
+
+  // Persistent note shown whenever the button is visible: make it unmistakable
+  // that installing is optional and the app needs no install to run.
+  const note = document.createElement('p');
+  note.className = 'hidden text-xs text-zinc-500 mt-4 max-w-md';
+  note.textContent =
+    'Optional — Partwright already runs fully in your browser. Installing just adds it as an app you can launch from your desktop, taskbar, or home screen.';
 
   const hint = document.createElement('p');
-  hint.className = 'hidden text-xs text-zinc-400 mt-4 max-w-sm';
+  hint.className = 'hidden text-xs text-zinc-400 mt-2 max-w-sm';
   hint.innerHTML =
     'To install on iPhone or iPad: tap the <span class="text-zinc-200 font-medium">Share</span> button, ' +
     'then <span class="text-zinc-200 font-medium">&ldquo;Add to Home Screen.&rdquo;</span>';
@@ -208,6 +220,8 @@ function buildInstallCta(): { button: HTMLButtonElement; hint: HTMLElement } {
     const show = !isAppInstalled() && (installable || ios);
     button.classList.toggle('hidden', !show);
     button.classList.toggle('flex', show);
+    // The "optional" note rides with the button's visibility.
+    note.classList.toggle('hidden', !show);
     // `mode` drives the click handler; clear the iOS hint whenever it no longer applies.
     button.dataset.mode = installable ? 'prompt' : ios ? 'ios' : '';
     if (!ios) hint.classList.add('hidden');
@@ -233,7 +247,7 @@ function buildInstallCta(): { button: HTMLButtonElement; hint: HTMLElement } {
     sync();
   });
 
-  return { button, hint };
+  return { button, note, hint };
 }
 
 // ---------- 2. How it works ----------
