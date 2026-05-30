@@ -76,6 +76,17 @@ describe('model-declared color compositing (buildTriColors)', () => {
     expect(getModelRegions()).toHaveLength(1);
   });
 
+  it('round-trips a 0..255 color byte through a region back to the same byte', () => {
+    // Guards the surface-modifier color carry (main.ts buildCarriedColorRegions):
+    // it reads 0..255 bytes off the baked mesh and must store region.color in
+    // 0..1, so a region built from byte B renders back to byte B — no
+    // 256's-complement inversion, and stable across repeated apply cycles.
+    const bytes: [number, number, number] = [204, 51, 26];
+    addRegion('carried', [bytes[0] / 255, bytes[1] / 255, bytes[2] / 255], 'face-pick', { kind: 'triangles', ids: [0] }, new Set([0]));
+    const buf = buildTriColors(1)!;
+    expect(rgbAt(buf, 0)).toEqual(bytes);
+  });
+
   it('replaces the whole model layer on each set, and clears on []', () => {
     setModelColorRegions([{ name: 'a', color: [1, 0, 0], triangles: new Set([0]) }]);
     setModelColorRegions([{ name: 'b', color: [0, 1, 0], triangles: new Set([1]) }]);

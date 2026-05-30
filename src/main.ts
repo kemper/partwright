@@ -5419,7 +5419,9 @@ async function main() {
     for (const [rgb, ids] of groups) {
       regions.push({
         name: `Surface color ${++i}`,
-        color: [(rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff],
+        // ColorRegion.color is RGB in 0..1 (buildTriColors multiplies by 255);
+        // the packed rgb here is 0..255 bytes, so normalize each channel.
+        color: [((rgb >> 16) & 0xff) / 255, ((rgb >> 8) & 0xff) / 255, (rgb & 0xff) / 255],
         source: 'face-pick',
         descriptor: { kind: 'triangles', ids },
         visible: true,
