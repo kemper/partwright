@@ -2,20 +2,35 @@
   "name": "Partwright",
   "short_name": "Partwright",
   "description": "AI-driven parametric CAD in your browser",
+  "id": "/",
+  "scope": "/",
   "start_url": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["productivity", "graphics", "utilities"],
   "background_color": "#18181b",
   "theme_color": "#18181b",
   "icons": [
     {
       "src": "/favicon.svg",
       "type": "image/svg+xml",
-      "sizes": "any"
+      "sizes": "any",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "maskable"
     },
     {
       "src": "/apple-touch-icon.png",
       "type": "image/png",
-      "sizes": "180x180"
+      "sizes": "180x180",
+      "purpose": "any"
     }
   ]
 }

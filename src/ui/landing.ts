@@ -14,6 +14,7 @@ import { partwrightMarkSvg } from './brand';
 import { languageBadge } from './languageBadge';
 import { showUninstallModal } from './uninstallModal';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
+import { canInstall, isAppInstalled, isIOSInstallable, onInstallStateChange, promptInstall } from './installPrompt';
 import type { ExportedSession } from '../storage/sessionManager';
 import type { CatalogManifestEntry } from './catalog';
 
@@ -120,6 +121,13 @@ function buildHero(callbacks: LandingCallbacks): HTMLElement {
   open.addEventListener('click', callbacks.onOpenEditor);
   ctas.appendChild(open);
 
+  // Install-as-app CTA — only visible on browsers that can install the PWA
+  // (Chrome/Edge/Android), or as a Share-sheet hint on iOS Safari. Hidden
+  // everywhere else, including when already installed. Self-syncs because the
+  // browser's `beforeinstallprompt` can arrive after this renders.
+  const install = buildInstallCta();
+  ctas.appendChild(install.button);
+
   const tryAgent = document.createElement('button');
   tryAgent.className = 'px-6 py-2.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-sm font-semibold transition-colors border border-zinc-700';
   tryAgent.textContent = 'Try with an AI agent';
@@ -139,6 +147,7 @@ function buildHero(callbacks: LandingCallbacks): HTMLElement {
   ctas.appendChild(tour);
 
   hero.appendChild(ctas);
+  hero.appendChild(install.hint);
 
   // Sub-hero feature pills
   const pills = document.createElement('div');
@@ -170,6 +179,61 @@ function buildHero(callbacks: LandingCallbacks): HTMLElement {
   hero.appendChild(whatsNew);
 
   return hero;
+}
+
+/**
+ * Build the "Install app" CTA plus its iOS hint. The button advertises itself
+ * only when the app is actually installable:
+ *   - Chrome/Edge/Android: a live `beforeinstallprompt` is held -> click runs
+ *     the native install dialog.
+ *   - iOS Safari: no programmatic prompt exists -> click reveals the manual
+ *     "Share -> Add to Home Screen" hint.
+ *   - Otherwise (already installed, Firefox, in-app standalone): stays hidden.
+ */
+function buildInstallCta(): { button: HTMLButtonElement; hint: HTMLElement } {
+  const button = document.createElement('button');
+  button.className =
+    'px-6 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold transition-colors hidden items-center gap-2';
+  button.innerHTML = '<span aria-hidden="true">⬇</span><span>Install app</span>';
+
+  const hint = document.createElement('p');
+  hint.className = 'hidden text-xs text-zinc-400 mt-4 max-w-sm';
+  hint.innerHTML =
+    'To install on iPhone or iPad: tap the <span class="text-zinc-200 font-medium">Share</span> button, ' +
+    'then <span class="text-zinc-200 font-medium">&ldquo;Add to Home Screen.&rdquo;</span>';
+
+  const sync = () => {
+    const installable = canInstall();
+    const ios = !installable && isIOSInstallable();
+    const show = !isAppInstalled() && (installable || ios);
+    button.classList.toggle('hidden', !show);
+    button.classList.toggle('flex', show);
+    // `mode` drives the click handler; clear the iOS hint whenever it no longer applies.
+    button.dataset.mode = installable ? 'prompt' : ios ? 'ios' : '';
+    if (!ios) hint.classList.add('hidden');
+  };
+
+  button.addEventListener('click', () => {
+    if (button.dataset.mode === 'prompt') {
+      void promptInstall();
+    } else if (button.dataset.mode === 'ios') {
+      hint.classList.toggle('hidden');
+    }
+  });
+
+  sync();
+  // Re-sync when install availability changes (the event can arrive after this
+  // renders). Self-unsubscribe once detached so re-rendered landing pages don't
+  // leak listeners.
+  const unsubscribe = onInstallStateChange(() => {
+    if (!document.body.contains(button)) {
+      unsubscribe();
+      return;
+    }
+    sync();
+  });
+
+  return { button, hint };
 }
 
 // ---------- 2. How it works ----------
