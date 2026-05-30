@@ -3754,6 +3754,7 @@ async function main() {
     if (window.location.pathname !== '/editor') return;
     if (!getState().session) {
       await createSession();
+      setStatus(statusBar, 'ready', 'Ready');
       runCode(defaultCode);
     }
     updateDocumentTitle({ page: 'editor' });

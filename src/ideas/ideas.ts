@@ -228,9 +228,8 @@ export function promptIdeas(): Idea[] {
   return IDEAS.filter((idea) => typeof idea.prompt === 'string' && idea.prompt.length > 0);
 }
 
-/** A short rotating-ish slice of starter prompts for the AI panel empty state.
- *  Deterministic (first N starters) so the chips don't jump around on every
- *  render. */
+/** A short slice of starter prompts for the AI panel empty state. Deterministic
+ *  (the first N starters) so the chips don't jump around on every render. */
 export function starterChipIdeas(limit = 4): Idea[] {
   return IDEAS.filter((idea) => idea.category === 'starter').slice(0, limit);
 }
