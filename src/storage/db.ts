@@ -12,10 +12,17 @@ export interface Session {
    *  fall back to the first part by `order`. Set on every part switch so the
    *  editor restores to the part the user last worked on. */
   currentPartId?: string;
-  /** Last-used AI provider + model for this session, restored when the session
-   *  is reopened so each session remembers which assistant was driving it.
-   *  Plain strings to keep the storage layer decoupled from the AI types. */
-  aiPreference?: { provider: string; model: string };
+  /** Last-used AI config for this session, restored when the session is
+   *  (re)opened or taken control of in another tab — so each session carries
+   *  its own assistant/provider/model and toggle settings across tabs without
+   *  live-bleeding between concurrently-open windows.
+   *
+   *  `provider`/`model` are the human-readable summary (and the back-compat
+   *  shape pre-dating `toggles`). `toggles` is the full {@link ChatToggles}
+   *  snapshot (stored opaquely as a record to keep this storage layer decoupled
+   *  from the AI types) and `preset` mirrors the settings preset. Sessions saved
+   *  before this field gains `toggles` simply restore provider/model only. */
+  aiPreference?: { provider: string; model: string; toggles?: Record<string, unknown>; preset?: string };
 }
 
 /** A modeling target within a session. A session holds one or more parts; each

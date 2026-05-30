@@ -9,6 +9,7 @@ import { js as jsBeautify } from 'js-beautify';
 import { manifoldApiCompletion } from './apiCompletions';
 import type { SourceDiagnostic } from '../geometry/types';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
+import { readPerTabPref, writePerTabPref } from '../storage/perTabPref';
 
 /** Replicad/BREP sessions reuse the JavaScript editor since they're written
  *  as JS (`api.BREP.box(...)`), but we still track them as a distinct
@@ -24,7 +25,9 @@ let activeDiagnostics: Diagnostic[] = [];
 /** How long typing must be idle before deferred error UI is surfaced. */
 const ERROR_IDLE_MS = 800;
 let currentLanguage: EditorLanguage = 'manifold-js';
-let autoFormatEnabled: boolean = localStorage.getItem('editor-auto-format') !== 'false';
+// Per-tab (with a shared seed for fresh tabs) so toggling auto-format in one
+// window doesn't flip it in another open window.
+let autoFormatEnabled: boolean = readPerTabPref('editor-auto-format') !== 'false';
 const languageCompartment = new Compartment();
 const readOnlyCompartment = new Compartment();
 const themeCompartment = new Compartment();
@@ -292,7 +295,7 @@ export function getAutoFormat(): boolean {
 
 export function setAutoFormat(enabled: boolean): void {
   autoFormatEnabled = enabled;
-  localStorage.setItem('editor-auto-format', enabled ? 'true' : 'false');
+  writePerTabPref('editor-auto-format', enabled ? 'true' : 'false');
 }
 
 export function setEditorDiagnostics(diagnostics: SourceDiagnostic[]): void {

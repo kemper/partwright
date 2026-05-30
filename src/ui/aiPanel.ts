@@ -23,11 +23,11 @@ import { showCompactConfirmModal } from './aiCompactModal';
 import { showAttachmentModal } from './aiAttachmentModal';
 import { putAttachment } from '../ai/attachments';
 import { exportChatMarkdown } from '../export/chat';
-import { getState, setSessionAiPreference } from '../storage/sessionManager';
+import { getState, setSessionAiPreference, refreshCurrentSession } from '../storage/sessionManager';
 import { onTabSync, publishTabSync } from '../storage/tabSync';
 import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
-import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Provider, type TurnOutcomeReason } from '../ai/types';
+import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
 import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
 import { errorLog } from '../diagnostics/errorLog';
 
@@ -395,24 +395,45 @@ async function isProviderModelUsable(provider: Provider, model: string): Promise
   return !!(await getKey(provider));
 }
 
-/** Record the active provider + model as the current session's preference so
- *  reopening the session restores it. Cheap and idempotent. */
+/** Record the active AI config (provider + model + the full toggle set +
+ *  preset) as the current session's preference so reopening — or taking control
+ *  of — the session in another tab restores exactly what this tab was using.
+ *  Cheap and idempotent (the storage layer skips no-op writes). Only ever
+ *  called on a real user-initiated change, never on load, so a freshly-opened
+ *  session the user hasn't touched keeps no stored config (and the global
+ *  default applies). */
 function recordSessionAiPreference(): void {
   const s = loadSettings();
   const model = activeModel(s.toggles);
   if (typeof model === 'string' && model.length > 0) {
-    void setSessionAiPreference(s.toggles.provider, model);
+    void setSessionAiPreference(
+      s.toggles.provider,
+      model,
+      s.toggles as unknown as Record<string, unknown>,
+      s.preset,
+    );
   }
 }
 
-/** On session open, restore the session's remembered provider/model into the
- *  active settings. If that model isn't available right now we keep the user's
- *  current model and show a non-blocking notice — without erasing the stored
- *  preference, so it snaps back once the model is available again. */
+/** Apply a user-initiated change from the toggle strip: write it to this tab's
+ *  settings AND persist the full toggle set as the session's remembered config,
+ *  so it carries over when the session is reopened or taken control of in
+ *  another tab. (Per-tab live; per-session persisted — never broadcast, so it
+ *  doesn't bleed into other open windows.) */
+function applyToggleChange(partial: Parameters<typeof setToggles>[1]): void {
+  saveSettings(setToggles(loadSettings(), partial));
+  recordSessionAiPreference();
+}
+
+/** Restore the session's remembered AI config into THIS tab's settings — called
+ *  on session open and when this tab takes control of the session (not live on
+ *  every peer write, so windows never bleed into each other). If the remembered
+ *  model isn't available right now we keep the user's current model and show a
+ *  non-blocking notice — without erasing the stored preference, so it snaps back
+ *  once the model is available again. */
 async function applySessionAiPreference(): Promise<void> {
-  // Only the writer applies its session's remembered model. A viewer (or a
-  // background tab) applying would rewrite the shared global settings blob and
-  // nudge the peer/owner tab's model via the settings storage event.
+  // Only the writer applies its session's remembered config. A viewer applying
+  // would mutate this tab's settings to mirror a session it can't drive.
   if (!writeOwner) return;
   hidePrefNotice();
   const pref = getState().session?.aiPreference;
@@ -425,17 +446,27 @@ async function applySessionAiPreference(): Promise<void> {
     return;
   }
   const cur = loadSettings();
-  // Already active — don't re-write settings. This makes the focus re-assert
-  // cheap and stops two tabs on different sessions from ping-ponging the global
-  // model through the cross-tab settings `storage` event.
-  if (cur.toggles.provider === provider && activeModel(cur.toggles) === pref.model) return;
-  let next = setProvider(cur, provider);
-  switch (provider) {
-    case 'anthropic': next = setAnthropicModel(next, pref.model); break;
-    case 'openai': next = setOpenaiModel(next, pref.model); break;
-    case 'gemini': next = setGeminiModel(next, pref.model); break;
-    case 'custom': next = setCustomModel(next, pref.model); break;
-    case 'local': next = setLocalModel(next, pref.model); break;
+  let next: AiSettings;
+  if (pref.toggles) {
+    // Full per-session toggle snapshot (current format): restore provider,
+    // every per-provider model id, and all the toggles in one shot. Skip when
+    // already applied so the focus / take-control re-assert is a cheap no-op
+    // (no needless settings write or transcript-shifting re-render).
+    const sameToggles = JSON.stringify(cur.toggles) === JSON.stringify(pref.toggles);
+    if (sameToggles && (!pref.preset || cur.preset === pref.preset)) return;
+    next = setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]);
+    if (pref.preset) next = { ...next, preset: pref.preset as Preset };
+  } else {
+    // Legacy {provider, model} only (sessions saved before toggles were stored).
+    if (cur.toggles.provider === provider && activeModel(cur.toggles) === pref.model) return;
+    next = setProvider(cur, provider);
+    switch (provider) {
+      case 'anthropic': next = setAnthropicModel(next, pref.model); break;
+      case 'openai': next = setOpenaiModel(next, pref.model); break;
+      case 'gemini': next = setGeminiModel(next, pref.model); break;
+      case 'custom': next = setCustomModel(next, pref.model); break;
+      case 'local': next = setLocalModel(next, pref.model); break;
+    }
   }
   saveSettings(next);
   renderModelPicker();
@@ -489,12 +520,24 @@ async function reloadChatFromPeer(sessionId: string): Promise<void> {
 function applyOwnership(owned: boolean): void {
   // No real session (global bucket) = no contention = always writable.
   const noRealSession = !state.sessionId || state.sessionId === GLOBAL_CHAT_BUCKET;
+  const wasOwner = writeOwner;
   writeOwner = noRealSession ? true : owned;
   // The whole-screen viewer overlay (viewerMode.ts) is the single "locked" UI
   // now; the send-disable + sendMessage guard stay as a backstop.
   if (sendBtnRef) sendBtnRef.disabled = !writeOwner;
   // Becoming a viewer mid-turn (another tab took control): stop our run.
   if (!writeOwner) stopActiveTurn();
+  // Gaining write-ownership of a real session — "Take control" in a new tab —
+  // is one of the explicit transitions where state SHOULD carry over from the
+  // tab that had it. Re-read the session from IndexedDB first (the previous
+  // writer persisted its config there without broadcasting), then apply it so
+  // this tab adopts that session's provider/model/toggles.
+  if (writeOwner && !wasOwner && !noRealSession) {
+    void (async () => {
+      await refreshCurrentSession();
+      await applySessionAiPreference();
+    })();
+  }
 }
 
 /** Abort any in-flight AI turn — used by the Stop button and when this tab
@@ -1106,7 +1149,7 @@ function renderToggleStrip(): void {
     toggles.vision.views,
     'Auto-render: lets the model call renderView() to take its own screenshots after paint / geometry changes. Each render ≈ 1500 tokens of input on the next turn — verification is valuable but it adds up. The 📷 Show AI button still works manually when this is OFF.',
     () => {
-      saveSettings(setToggles(loadSettings(), { vision: { views: !toggles.vision.views } }));
+      applyToggleChange({ vision: { views: !toggles.vision.views } });
       renderToggleStrip();
       renderCostMeter();
     },
@@ -1127,7 +1170,7 @@ function renderToggleStrip(): void {
   }
   resSel.value = toggles.vision.resolution;
   resSel.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { vision: { resolution: resSel.value as ChatToggles['vision']['resolution'] } }));
+    applyToggleChange({ vision: { resolution: resSel.value as ChatToggles['vision']['resolution'] } });
     renderCostMeter();
   });
   adv.appendChild(resSel);
@@ -1145,7 +1188,7 @@ function renderToggleStrip(): void {
   }
   anglesSel.value = toggles.vision.angles;
   anglesSel.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { vision: { angles: anglesSel.value as ChatToggles['vision']['angles'] } }));
+    applyToggleChange({ vision: { angles: anglesSel.value as ChatToggles['vision']['angles'] } });
   });
   adv.appendChild(anglesSel);
 
@@ -1154,7 +1197,7 @@ function renderToggleStrip(): void {
     toggles.scope.runCode,
     'Run code: allow the AI to execute geometry code (runCode, runAndSave). OFF makes it suggest code in chat without running.',
     () => {
-      saveSettings(setToggles(loadSettings(), { scope: { runCode: !toggles.scope.runCode } }));
+      applyToggleChange({ scope: { runCode: !toggles.scope.runCode } });
       renderToggleStrip();
     },
   ));
@@ -1163,7 +1206,7 @@ function renderToggleStrip(): void {
     toggles.scope.saveVersions,
     'Save versions: allow the AI to commit results to the gallery (runAndSave, loadVersion). OFF keeps the model in run-only / dry-run mode.',
     () => {
-      saveSettings(setToggles(loadSettings(), { scope: { saveVersions: !toggles.scope.saveVersions } }));
+      applyToggleChange({ scope: { saveVersions: !toggles.scope.saveVersions } });
       renderToggleStrip();
     },
   ));
@@ -1172,7 +1215,7 @@ function renderToggleStrip(): void {
     toggles.scope.paintFaces,
     'Paint: allow the AI to set color regions (paintInBox, paintSlab, paintNear, etc.). OFF by default — painting locks the editor and is the easiest place for the AI to over-select.',
     () => {
-      saveSettings(setToggles(loadSettings(), { scope: { paintFaces: !toggles.scope.paintFaces } }));
+      applyToggleChange({ scope: { paintFaces: !toggles.scope.paintFaces } });
       renderToggleStrip();
     },
   ));
@@ -1181,7 +1224,7 @@ function renderToggleStrip(): void {
     toggles.scope.sessionNotes,
     'Session notes: allow the AI to call addSessionNote to log design decisions. OFF saves a tool round-trip per note — the chat transcript already records the reasoning.',
     () => {
-      saveSettings(setToggles(loadSettings(), { scope: { sessionNotes: !toggles.scope.sessionNotes } }));
+      applyToggleChange({ scope: { sessionNotes: !toggles.scope.sessionNotes } });
       renderToggleStrip();
     },
   ));
@@ -1190,7 +1233,7 @@ function renderToggleStrip(): void {
     toggles.autoResume,
     'Auto-continue: the agent keeps working until it calls the finish tool to declare the task done — if a turn ends without calling finish, it is automatically resumed instead of stopping. Bounded by the ⟲ iteration cap and the $ spend cap (whichever trips first). Useful for models that tend to stop early (e.g. Gemini). ON by default; turn it OFF to stop at each end_turn as usual (your choice is remembered).',
     () => {
-      saveSettings(setToggles(loadSettings(), { autoResume: !toggles.autoResume }));
+      applyToggleChange({ autoResume: !toggles.autoResume });
       renderToggleStrip();
     },
   ));
@@ -1206,7 +1249,7 @@ function renderToggleStrip(): void {
   }
   retry.value = String(toggles.autoRetry);
   retry.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { autoRetry: Number(retry.value) as 0 | 1 | 3 }));
+    applyToggleChange({ autoRetry: Number(retry.value) as 0 | 1 | 3 });
   });
   adv.appendChild(retry);
 
@@ -1225,7 +1268,7 @@ function renderToggleStrip(): void {
   }
   iterCap.value = toggles.maxIterations;
   iterCap.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { maxIterations: iterCap.value as ChatToggles['maxIterations'] }));
+    applyToggleChange({ maxIterations: iterCap.value as ChatToggles['maxIterations'] });
   });
   adv.appendChild(iterCap);
 
@@ -1245,7 +1288,7 @@ function renderToggleStrip(): void {
   }
   spendCap.value = toggles.maxSpend;
   spendCap.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { maxSpend: spendCap.value as ChatToggles['maxSpend'] }));
+    applyToggleChange({ maxSpend: spendCap.value as ChatToggles['maxSpend'] });
   });
   adv.appendChild(spendCap);
 
@@ -1266,7 +1309,7 @@ function renderToggleStrip(): void {
   }
   thinkSel.value = toggles.thinking;
   thinkSel.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { thinking: thinkSel.value as ChatToggles['thinking'] }));
+    applyToggleChange({ thinking: thinkSel.value as ChatToggles['thinking'] });
     renderCostMeter();
   });
   adv.appendChild(thinkSel);
@@ -1871,7 +1914,7 @@ async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean): Pr
     const cur = loadSettings().toggles.maxSpend;
     const next = nextSpendTier(cur);
     if (next !== cur) {
-      saveSettings(setToggles(loadSettings(), { maxSpend: next }));
+      applyToggleChange({ maxSpend: next });
       renderToggleStrip();
       renderCostMeter();
     }
