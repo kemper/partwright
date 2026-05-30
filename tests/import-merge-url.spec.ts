@@ -189,6 +189,89 @@ test.describe('Import: merge + from-URL', () => {
     expect(thumbs.imported).not.toBe(thumbs.host);
   });
 
+  test('switching between a manifold-js part and a merged voxel part runs each under its own engine', async ({ page }) => {
+    await openEditor(page);
+
+    // A source session whose single part is authored in the VOXEL language. We
+    // export it, then merge it into a manifold-js session — producing the mixed-
+    // language session the bug needs (manifold-js Part 1 + voxel Part 2).
+    const json = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW & {
+        setActiveLanguage: (l: string) => Promise<void>;
+      } }).partwright;
+      await pw.createSession('voxel-source');
+      await pw.setActiveLanguage('voxel');
+      // A minimal voxel model — `api.voxels()` exists only under the voxel
+      // engine (the manifold-js sandbox has `api.Manifold` instead).
+      await pw.runAndSave('const { voxels } = api; return voxels().fillBox([0,0,0],[5,5,5], "#88aaff");', 'v1');
+      const { data } = await pw.exportSessionData();
+      return JSON.stringify(data);
+    });
+
+    // The host: a fresh manifold-js session. Crucially Part 1 here is the
+    // DEFAULT, UNSAVED starter — it has no saved version, so switching back to
+    // it goes through the version-less `loadPartIntoEditor(null)` path. Re-run
+    // the starter so it's the active, render-clean manifold-js part.
+    await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: PW & { run: (c: string) => Promise<unknown> } }).partwright;
+      await pw.createSession('host-manifold');
+      await pw.run('const { Manifold } = api; return Manifold.cube([10,10,10], true);');
+    });
+
+    // Merge the voxel part in via the toolbar import → "Add parts".
+    await page.locator('#import-wrapper input[type="file"]').setInputFiles({
+      name: 'voxel.partwright.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(json, 'utf8'),
+    });
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog).toBeVisible({ timeout: 6000 });
+    await dialog.getByRole('button', { name: 'Add parts' }).click();
+    await expect(dialog).toBeHidden({ timeout: 10_000 });
+
+    // Two parts now: [0] = manifold-js host (unsaved starter), [1] = voxel.
+    await expect.poll(async () =>
+      page.evaluate(() => (window as unknown as { partwright: PW }).partwright.listParts().length),
+    ).toBe(2);
+
+    type PartChange = { active: string; error?: string };
+    const switchTo = (idx: number): Promise<PartChange> =>
+      page.evaluate(async (i: number) => {
+        const w = window as unknown as {
+          partwright: PW & {
+            changePart: (id: string) => Promise<unknown>;
+            getActiveLanguage: () => string;
+          };
+        };
+        const pw = w.partwright;
+        const parts = pw.listParts();
+        try {
+          await pw.changePart(parts[i].id);
+          return { active: pw.getActiveLanguage() };
+        } catch (e) {
+          return { active: pw.getActiveLanguage(), error: e instanceof Error ? e.message : String(e) };
+        }
+      }, idx);
+
+    // Switch to the voxel part (index 1): engine becomes voxel, no error.
+    const onVoxel = await switchTo(1);
+    expect(onVoxel.error).toBeUndefined();
+    expect(onVoxel.active).toBe('voxel');
+
+    // Switch back to the manifold-js host (index 0). This is the regression:
+    // before the fix, the version-less starter ran its `Manifold.cube(...)`
+    // under the still-active voxel engine and threw "Cannot read properties of
+    // undefined (reading 'cube')", leaving the language stuck on voxel.
+    const onHost = await switchTo(0);
+    expect(onHost.error).toBeUndefined();
+    expect(onHost.active).toBe('manifold-js');
+
+    // And the round-trip back to voxel still works cleanly.
+    const backToVoxel = await switchTo(1);
+    expect(backToVoxel.error).toBeUndefined();
+    expect(backToVoxel.active).toBe('voxel');
+  });
+
   test('"Import from URL…" rejects an unsupported scheme inline', async ({ page }) => {
     await openEditor(page);
 
