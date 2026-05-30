@@ -87,6 +87,7 @@ import { createThumbnailFromImageData } from './import/imageThumbnail';
 import { showImportPreview, summarizeSessionImport } from './ui/importPreview';
 import { showImportTargetModal } from './ui/importTargetModal';
 import { showImageVoxelImportModal, type ImageVoxelModalResult } from './ui/imageVoxelImportModal';
+import { showImageImportKindModal } from './ui/imageImportKindModal';
 import { showStepImportTargetModal } from './ui/stepImportTargetModal';
 import { showLanguageHelpModal } from './ui/languageHelpModal';
 import { showMergePartsModal } from './ui/mergePartsModal';
@@ -2144,6 +2145,19 @@ async function main() {
       } else if (source === 'STEP') {
         committed = await handleStepImport(file);
       } else if (source === 'IMAGE') {
+        // This is the GENERIC image import path (toolbar "Choose file…" or
+        // drag-and-drop), where the user hasn't expressed an intent — so first
+        // ask whether to build a relief or voxels. The explicit "Image → voxel…"
+        // and "Image → relief…" menu items bypass handleImportFile entirely
+        // (openVoxelImportFlow / openReliefImportFlow), and the console API
+        // (importImageAsVoxels) skips this too. Cancel aborts cleanly (no
+        // session mutation); each branch owns its own Recent-Imports entry.
+        const kind = await showImageImportKindModal({ filename: file.name });
+        if (!kind) return false;
+        if (kind === 'relief') {
+          openReliefImportFlow(file);
+          return true;
+        }
         committed = await handleImageImport(file);
       } else if (source === 'VOX') {
         committed = await handleVoxImport(file);

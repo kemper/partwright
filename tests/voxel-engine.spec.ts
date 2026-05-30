@@ -86,6 +86,9 @@ test.describe('voxel engine', () => {
     await page.locator('#import-wrapper input[type="file"]').first()
       .setInputFiles({ name: 'logo.png', mimeType: 'image/png', buffer });
 
+    // The generic image import now asks relief-or-voxel first — pick Voxel.
+    await page.locator('button[data-kind="voxel"]').click();
+
     // The voxel modal (not the relief wizard) opens; commit it.
     await expect(page.getByText('Image → Voxel', { exact: true })).toBeVisible({ timeout: 5000 });
     await page.getByRole('button', { name: 'Import', exact: true }).click();
