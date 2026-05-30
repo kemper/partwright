@@ -105,6 +105,7 @@ import { parseSTL } from './import/parsers/stl';
 import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
+import { carveVisualHull, imageToMask, type SilhouetteView, type Vec3 as ReconVec3 } from './recon/visualHull';
 import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
@@ -5905,6 +5906,153 @@ async function main() {
       const code = generateVoxelImportCode(grid, 'image', { style: opts.codeStyle });
       const result = await importCodePayload(code, 'voxel', 'image-voxels');
       return { sessionId: result.sessionId, voxelCount: grid.size };
+    },
+
+    // === Multi-view silhouette reconstruction (visual hull) — prototype ===
+    //
+    // Given silhouette images of a subject at KNOWN camera angles, carve the
+    // visual hull into a voxel model. The intended source is a frontier image
+    // model's synthesized turntable (e.g. Gemini, "give me this person at
+    // azimuth 0/45/90/… on a plain background"). Robust to the view-to-view
+    // texture inconsistency those models produce, since it only uses outlines.
+    // See public/ai/reconstruct.md and src/recon/visualHull.ts.
+
+    /** Reconstruct a model from supplied silhouette views. `input.views` is a
+     *  list of `{ src, azimuth, elevation }` (angles in degrees, renderer
+     *  convention: az 0 = front/+Y, 90 = right/+X; el 0 = horizon, 90 = top). */
+    async reconstructFromSilhouettes(input: {
+      views?: Array<{ src?: string; azimuth?: number; elevation?: number }>;
+      options?: {
+        resolution?: number; frameFill?: number; smooth?: number;
+        color?: [number, number, number]; colorFromViews?: boolean;
+        alphaThreshold?: number; backgroundColor?: [number, number, number]; bgTolerance?: number;
+      };
+    }) {
+      const opts = input?.options ?? {};
+      const check = guard(() => {
+        assertObject(input, 'reconstructFromSilhouettes(input)');
+        if (!Array.isArray(input.views) || input.views.length === 0)
+          throw new Error('reconstructFromSilhouettes: input.views must be a non-empty array of { src, azimuth, elevation }');
+        input.views.forEach((v, i) => {
+          assertObject(v, `views[${i}]`);
+          assertString(v.src, `views[${i}].src`, { allowEmpty: false });
+          assertNumber(v.azimuth, `views[${i}].azimuth`);
+          assertNumber(v.elevation, `views[${i}].elevation`, { min: -89, max: 89 });
+        });
+        assertObject(opts, 'options', { optional: true });
+        if (opts.resolution !== undefined) assertNumber(opts.resolution, 'options.resolution', { min: 8, max: 256, integer: true });
+        if (opts.frameFill !== undefined) assertNumber(opts.frameFill, 'options.frameFill', { min: 0.1, max: 2 });
+        if (opts.smooth !== undefined) assertNumber(opts.smooth, 'options.smooth', { min: 0, max: 8, integer: true });
+        if (opts.colorFromViews !== undefined) assertBoolean(opts.colorFromViews, 'options.colorFromViews');
+        if (opts.alphaThreshold !== undefined) assertNumber(opts.alphaThreshold, 'options.alphaThreshold', { min: 0, max: 255, integer: true });
+        if (opts.bgTolerance !== undefined) assertNumber(opts.bgTolerance, 'options.bgTolerance', { min: 0, max: 441 });
+        if (opts.color !== undefined) assertNumberTuple(opts.color, 3, 'options.color');
+        if (opts.backgroundColor !== undefined) assertNumberTuple(opts.backgroundColor, 3, 'options.backgroundColor');
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+
+      const colorFromViews = opts.colorFromViews ?? true;
+      const silhouettes: SilhouetteView[] = [];
+      for (let i = 0; i < input.views!.length; i++) {
+        const v = input.views![i];
+        let img: ImageData;
+        try {
+          img = await decodeImageUrlToImageData(v.src!);
+        } catch (e) {
+          return { error: `reconstructFromSilhouettes: could not load view ${i} — ${(e as Error).message}` };
+        }
+        const mask = imageToMask(img.data, img.width, img.height, {
+          alphaThreshold: opts.alphaThreshold,
+          backgroundColor: opts.backgroundColor as ReconVec3 | undefined,
+          bgTolerance: opts.bgTolerance,
+        });
+        silhouettes.push({
+          width: img.width, height: img.height, mask,
+          azimuth: v.azimuth!, elevation: v.elevation!,
+          rgba: colorFromViews ? img.data : undefined,
+        });
+      }
+
+      let grid;
+      try {
+        grid = carveVisualHull(silhouettes, {
+          resolution: opts.resolution ?? 96,
+          frameFill: opts.frameFill ?? 1,
+          color: opts.color as ReconVec3 | undefined,
+          colorFromViews,
+        });
+      } catch (e) {
+        return { error: `reconstructFromSilhouettes: ${(e as Error).message}` };
+      }
+      if (grid.size === 0)
+        return { error: 'reconstructFromSilhouettes: the silhouettes carved away everything — check that the subject is centred and the same scale in every view, and tune frameFill.' };
+
+      const smooth = opts.smooth ?? 2;
+      if (smooth > 0) grid.smooth({ iterations: smooth });
+      const code = generateVoxelImportCode(grid, 'reconstruction');
+      const result = await importCodePayload(code, 'voxel', 'silhouette-reconstruction');
+      return { sessionId: result.sessionId, voxelCount: grid.size, views: silhouettes.length };
+    },
+
+    /** Self-test / playground: reconstruct the CURRENT model by rendering its
+     *  own silhouettes at a turntable of angles and carving them back. No image
+     *  generation or API key needed — lets you feel out how faithfully the
+     *  visual hull recovers a known shape (and where concavities are lost). */
+    async reconstructFromCurrentModel(opts: {
+      azimuthCount?: number; includePoles?: boolean;
+      resolution?: number; smooth?: number; renderSize?: number; frameFill?: number;
+    } = {}) {
+      const check = guard(() => {
+        assertObject(opts, 'reconstructFromCurrentModel(opts)', { optional: true });
+        if (opts.azimuthCount !== undefined) assertNumber(opts.azimuthCount, 'opts.azimuthCount', { min: 2, max: 64, integer: true });
+        if (opts.includePoles !== undefined) assertBoolean(opts.includePoles, 'opts.includePoles');
+        if (opts.resolution !== undefined) assertNumber(opts.resolution, 'opts.resolution', { min: 8, max: 256, integer: true });
+        if (opts.smooth !== undefined) assertNumber(opts.smooth, 'opts.smooth', { min: 0, max: 8, integer: true });
+        if (opts.renderSize !== undefined) assertNumber(opts.renderSize, 'opts.renderSize', { min: 64, max: 1024, integer: true });
+        if (opts.frameFill !== undefined) assertNumber(opts.frameFill, 'opts.frameFill', { min: 0.1, max: 2 });
+      });
+      if (typeof check === 'object' && check !== null && 'error' in check) return check;
+      if (!currentMeshData) return { error: 'reconstructFromCurrentModel: no model in the viewport — run some code first.' };
+
+      const azimuthCount = opts.azimuthCount ?? 12;
+      const renderSize = opts.renderSize ?? 256;
+      const angles: Array<{ azimuth: number; elevation: number }> = [];
+      for (let i = 0; i < azimuthCount; i++) angles.push({ azimuth: (360 / azimuthCount) * i, elevation: 0 });
+      if (opts.includePoles ?? true) {
+        angles.push({ azimuth: 0, elevation: 80 }, { azimuth: 0, elevation: -80 });
+      }
+
+      const silhouettes: SilhouetteView[] = [];
+      for (const a of angles) {
+        const canvas = renderSingleViewCanvas(currentMeshData, {
+          azimuth: a.azimuth, elevation: a.elevation, ortho: true, size: renderSize,
+        });
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return { error: 'reconstructFromCurrentModel: could not read the rendered silhouette.' };
+        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        // Renders are a shaded model on a white background — key against white.
+        const mask = imageToMask(img.data, img.width, img.height, { backgroundColor: [255, 255, 255], bgTolerance: 24 });
+        silhouettes.push({ width: img.width, height: img.height, mask, azimuth: a.azimuth, elevation: a.elevation });
+      }
+
+      let grid;
+      try {
+        grid = carveVisualHull(silhouettes, {
+          resolution: opts.resolution ?? 96,
+          // renderSingleView frames the model at halfExtent = 0.7 * maxDim, so
+          // the model edge sits at ~0.71 of the half-frame — match that here.
+          frameFill: opts.frameFill ?? 0.71,
+        });
+      } catch (e) {
+        return { error: `reconstructFromCurrentModel: ${(e as Error).message}` };
+      }
+      if (grid.size === 0) return { error: 'reconstructFromCurrentModel: carved away everything (try a lower frameFill).' };
+
+      const smooth = opts.smooth ?? 2;
+      if (smooth > 0) grid.smooth({ iterations: smooth });
+      const code = generateVoxelImportCode(grid, 'reconstruction');
+      const result = await importCodePayload(code, 'voxel', 'self-reconstruction');
+      return { sessionId: result.sessionId, voxelCount: grid.size, views: silhouettes.length };
     },
 
     // === Recent Exports inbox ===

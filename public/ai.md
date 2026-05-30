@@ -210,6 +210,8 @@ partwright.getModule()         // Raw manifold-3d WASM module
 partwright.getActiveLanguage() // -> 'manifold-js' | 'scad' | 'replicad' | 'voxel'
 await partwright.setActiveLanguage(lang) // Swap engine ('manifold-js' | 'scad' | 'replicad' | 'voxel'); stashes the prev draft, restores the other
 partwright.importImageAsVoxels(imageUrl, opts?) // Image (data:/URL) -> colored voxel session. See /ai/voxel.md
+partwright.reconstructFromSilhouettes({views:[{src,azimuth,elevation},...], options?}) // Multi-view silhouette carving -> voxel model. See /ai/reconstruct.md
+partwright.reconstructFromCurrentModel(opts?) // Self-test: render the live model's silhouettes and carve them back. See /ai/reconstruct.md
 partwright.toggleClip(on?)     // Toggle 3D clipping plane -> {enabled, z, min, max}
 partwright.setClipZ(z)         // Set clip height -> {enabled, z, min, max}
 partwright.getClipState()      // -> {enabled, z, min, max}
