@@ -94,6 +94,107 @@ test.describe('Multi-provider AI', () => {
     expect(fcPart.thoughtSignature).toBe('SIG_ABC');
   });
 
+  test('Gemini captures a text turn thoughtSignature from a trailing empty-text part', async ({ page }) => {
+    // Regression for the "Gemini stalls after thinking" bug: Gemini 3 streams a
+    // text response's thought signature on a trailing part whose text is empty.
+    // The old parser skipped empty-text parts (they matched neither the text
+    // nor the functionCall branch), dropping the signature — which silently
+    // degrades the model into a premature, tiny end_turn. The signature must be
+    // captured and surfaced as result.textThoughtSignature for a pure-text turn.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const out = await page.evaluate(async () => {
+      const gemini = await import('/src/ai/gemini.ts');
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async () => {
+        const frames = [
+          'data: {"candidates":[{"content":{"parts":[{"text":"Looks good — done."}]}}]}',
+          'data: {"candidates":[{"content":{"parts":[{"thoughtSignature":"SIG_TEXT"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}',
+        ];
+        const body = frames.join('\r\n\r\n') + '\r\n\r\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result = await gemini.streamTurn({ apiKey: 'k', model: 'gemini-flash-latest', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] });
+        return { text: result.text, sig: (result as { textThoughtSignature?: string }).textThoughtSignature, tools: result.toolCalls.length };
+      } finally {
+        window.fetch = origFetch;
+      }
+    });
+    expect(out.text).toBe('Looks good — done.');
+    expect(out.sig).toBe('SIG_TEXT');
+    expect(out.tools).toBe(0);
+  });
+
+  test('Gemini replays an answer-text thoughtSignature on the text part', async ({ page }) => {
+    // The captured text-turn signature (above) rides the persisted text block
+    // and must replay on the text part of the next request, so a resumed
+    // Gemini conversation keeps its reasoning thread.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const sentBody = await page.evaluate(async () => {
+      const gemini = await import('/src/ai/gemini.ts');
+      let captured = '';
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (_input: unknown, init: { body?: string }) => {
+        captured = String(init?.body ?? '');
+        const body = 'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}\r\n\r\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        const history = [
+          { id: 'a1', sessionId: 's', role: 'assistant', blocks: [{ type: 'text', text: 'Planning the box.', thoughtSignature: 'SIG_TEXT' }], createdAt: 0, seq: 0 },
+          { id: 'u1', sessionId: 's', role: 'user', blocks: [{ type: 'text', text: 'keep going' }], createdAt: 0, seq: 1 },
+        ];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await gemini.streamTurn({ apiKey: 'k', model: 'gemini-flash-latest', systemPrompt: 'sys', systemSuffix: '', history: history as any, tools: [] });
+      } finally {
+        window.fetch = origFetch;
+      }
+      return captured;
+    });
+    const parsed = JSON.parse(sentBody);
+    const modelTurn = parsed.contents.find((c: { role: string }) => c.role === 'model');
+    const textPart = modelTurn.parts.find((p: { text?: string }) => typeof p.text === 'string');
+    expect(textPart.text).toBe('Planning the box.');
+    expect(textPart.thoughtSignature).toBe('SIG_TEXT');
+  });
+
+  test('Gemini backfills a functionCall thoughtSignature delivered in a separate chunk', async ({ page }) => {
+    // Hardening for the documented 400 ("missing thought_signature after
+    // multiple tool uses"): when the signature streams in a chunk separate from
+    // the functionCall part it belongs to, it must still attach to the call so
+    // the next request doesn't 400.
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const out = await page.evaluate(async () => {
+      const gemini = await import('/src/ai/gemini.ts');
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async () => {
+        const frames = [
+          'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"getSessionContext","args":{}}}]}}]}',
+          'data: {"candidates":[{"content":{"parts":[{"thoughtSignature":"SIG_FC"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}',
+        ];
+        const body = frames.join('\r\n\r\n') + '\r\n\r\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const result = await gemini.streamTurn({ apiKey: 'k', model: 'gemini-flash-latest', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] });
+        return { name: result.toolCalls[0]?.name, sig: result.toolCalls[0]?.thoughtSignature, count: result.toolCalls.length };
+      } finally {
+        window.fetch = origFetch;
+      }
+    });
+    expect(out.count).toBe(1);
+    expect(out.name).toBe('getSessionContext');
+    expect(out.sig).toBe('SIG_FC');
+  });
+
   test('Gemini validateKey tolerates a 503 and pings the models endpoint, not generateContent', async ({ page }) => {
     // Regression: validateKey used a generateContent ping on a hard-coded
     // model. When that model is overloaded Google answers 503 UNAVAILABLE
@@ -585,13 +686,14 @@ test.describe('Multi-provider AI', () => {
     await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
     // The modal is tabbed by provider — one tab per provider. Only the
     // viewed tab's section renders, so we assert the tab strip has all
-    // four, then walk each hosted tab and confirm its Connect button.
+    // five, then walk each hosted tab and confirm its Connect button.
     const tabLabels = await page.evaluate(() =>
       Array.from(document.querySelectorAll('button')).map(b => (b.textContent ?? '').trim())
     );
     expect(tabLabels.some(l => /^Anthropic \(cloud\)/.test(l))).toBe(true);
     expect(tabLabels.some(l => /^OpenAI \(cloud\)/.test(l))).toBe(true);
     expect(tabLabels.some(l => /^Gemini \(cloud\)/.test(l))).toBe(true);
+    expect(tabLabels.some(l => /^Custom \(OpenAI\)/.test(l))).toBe(true);
     expect(tabLabels.some(l => /^Local \(WebGPU\)/.test(l))).toBe(true);
 
     // Scope to the modal shell so the assertions can't accidentally match
@@ -605,6 +707,32 @@ test.describe('Multi-provider AI', () => {
     // Switch to the Gemini tab → its Connect button appears.
     await page.locator('button:has-text("Gemini (cloud)")').dispatchEvent('click');
     await expect(modal.locator('button:has-text("Connect Google Gemini")')).toBeVisible();
+  });
+
+  test('Custom tab configures a self-hosted endpoint and gates Enable on the URL', async ({ page }) => {
+    await page.goto('/editor');
+    await page.evaluate(() => { try { localStorage.setItem('partwright-tour-completed', '1'); } catch {} });
+    await page.reload();
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    await openAiPanel(page);
+    await page.locator('#ai-panel button[title^="AI settings"]').dispatchEvent('click');
+    await expect(page.getByRole('heading', { name: 'AI Settings' })).toBeVisible();
+
+    const modal = page.locator('.bg-zinc-800.rounded-xl').filter({ hasText: 'AI Settings' });
+    await page.locator('button:has-text("Custom (OpenAI)")').dispatchEvent('click');
+
+    // The custom config UI renders: base URL input + the connection helpers.
+    const urlInput = modal.locator('input[placeholder="http://localhost:8080/v1"]');
+    await expect(urlInput).toBeVisible();
+    await expect(modal.locator('button:has-text("Test connection")')).toBeVisible();
+    await expect(modal.locator('button:has-text("Fetch models")')).toBeVisible();
+
+    // Enable is gated on the endpoint URL (the API key is optional), so it's
+    // disabled until a URL is set, then flips on — no key required.
+    await expect(modal.locator('button:has-text("Enable Custom endpoint")')).toBeDisabled();
+    await urlInput.fill('http://localhost:8080/v1');
+    await modal.locator('input[placeholder^="e.g. llama"]').fill('my-model');
+    await expect(modal.locator('button:has-text("Enable Custom endpoint")')).toBeEnabled();
   });
 
   test('Enable is gated on a connected key, except local', async ({ page }) => {
@@ -908,5 +1036,80 @@ test.describe('Capability suffix', () => {
     expect(onSuffix).not.toContain('Paint is OFF');
     // The override directive that tells the model the list beats earlier turns.
     expect(onSuffix).toContain('OVERRIDES anything said earlier');
+  });
+
+  // === Custom OpenAI-compatible endpoint ===
+  // The custom provider reuses the OpenAI Chat Completions transport but
+  // targets a user-supplied base URL (e.g. a self-hosted llama.cpp server),
+  // omits the Authorization header when no key is set, and NEVER uses the
+  // Responses API (self-hosted servers don't implement /v1/responses).
+  test('Custom endpoint targets its base URL, omits auth when keyless, and forces Chat Completions', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const sent = await page.evaluate(async () => {
+      const custom = await import('/src/ai/custom.ts');
+      let url = '';
+      let captured = '';
+      let authHeader: string | null = null;
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (input: unknown, init: { body?: string; headers?: Record<string, string> }) => {
+        url = String(input);
+        captured = String(init?.body ?? '');
+        authHeader = new Headers(init?.headers as HeadersInit).get('authorization');
+        const body = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+        return new Response(new Blob([body]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      };
+      try {
+        // The model name deliberately matches the reasoning sniff (gpt-5.5) to
+        // prove the custom path still uses Chat Completions, not /v1/responses.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await custom.streamTurn({ apiKey: '', baseUrl: 'http://example.test/v1', model: 'gpt-5.5', systemPrompt: 'sys', systemSuffix: '', history: [] as any, tools: [] });
+      } finally {
+        window.fetch = origFetch;
+      }
+      return { url, authHeader, body: JSON.parse(captured) };
+    });
+    expect(sent.url).toBe('http://example.test/v1/chat/completions');
+    expect(sent.url).not.toContain('/responses');
+    // No key → no Authorization header (keyless self-hosted server).
+    expect(sent.authHeader).toBeNull();
+    // Chat-shaped body, and no reasoning request (custom always sends thinking off).
+    expect(Array.isArray(sent.body.messages)).toBe(true);
+    expect(sent.body.max_completion_tokens).toBeGreaterThan(0);
+    expect(sent.body.reasoning_effort).toBeUndefined();
+  });
+
+  test('Custom listModels hits /models with auth when keyed, and does not filter ids', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#ai-panel', { state: 'attached' });
+    const out = await page.evaluate(async () => {
+      const custom = await import('/src/ai/custom.ts');
+      let url = '';
+      let authHeader: string | null = null;
+      const origFetch = window.fetch;
+      // @ts-expect-error test stub
+      window.fetch = async (input: unknown, init: { headers?: Record<string, string> }) => {
+        url = String(input);
+        authHeader = new Headers(init?.headers as HeadersInit).get('authorization');
+        const body = JSON.stringify({ data: [{ id: 'my-local-llama-3.3' }, { id: 'whisper-tiny' }] });
+        return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+      };
+      let ids: string[] = [];
+      try {
+        // Trailing slash on the base URL should be trimmed before appending /models.
+        const models = await custom.listModels('http://example.test/v1/', 'secret-key');
+        ids = models.map(m => m.id);
+      } finally {
+        window.fetch = origFetch;
+      }
+      return { url, authHeader, ids };
+    });
+    expect(out.url).toBe('http://example.test/v1/models');
+    expect(out.authHeader).toBe('Bearer secret-key');
+    // Unlike the OpenAI helper, no gpt-/o- filter — a self-hosted server's
+    // arbitrary ids all come through (even a "whisper" id OpenAI would drop).
+    expect(out.ids).toContain('my-local-llama-3.3');
+    expect(out.ids).toContain('whisper-tiny');
   });
 });

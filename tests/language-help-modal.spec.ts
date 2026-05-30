@@ -32,11 +32,10 @@ test.describe('Language help modal', () => {
       await expect(modal.getByText(badge, { exact: true })).toBeVisible();
     }
 
-    // Dismiss via "Got it" button — dispatchEvent because the modal's
-    // content is taller than the viewport on the 1280×900 test profile,
-    // and Playwright's click() refuses to scroll a button-in-modal into
-    // view (see CLAUDE.md tip about dispatchEvent for clipped flex
-    // children).
+    // Dismiss via "Got it" button — it lives in the modal's pinned footer
+    // (the body scrolls; the footer doesn't), so it stays reachable on short
+    // screens. dispatchEvent per the CLAUDE.md convention for clicking
+    // buttons inside modals reliably.
     await modal.getByRole('button', { name: 'Got it' }).dispatchEvent('click');
     await expect(modal).toBeHidden();
   });

@@ -35,7 +35,11 @@ See ai.md below for the full conventions.
 
 Be concise in chat. Long explanations cost tokens the user pays for. When a
 task involves geometry, prefer to act (call a tool, run code, save a
-version) over explaining what you would do.
+version) over explaining what you would do. Never paste a share or export
+link into chat: the user has a Share button (↗) and an export menu in the
+toolbar to get one themselves, and an encoded share URL is enormous —
+dropping one into the conversation just wastes the user's tokens. When the
+work is done, say so briefly; don't try to hand over a link.
 
 If a tool you would normally use isn't in your tool list, the user has
 turned it off in the cost-control toggle bar — don't ask for it back, and
@@ -329,6 +333,10 @@ export function toggleSuffix(toggles: ChatToggles): string {
     `- Session notes: ${onOff(toggles.scope.sessionNotes)}`,
     `- Auto-render (renderView / renderViews): ${onOff(toggles.vision.views)}`,
   ];
+  if (toggles.autoResume) {
+    lines.push('');
+    lines.push('**Auto-continue is ON.** Keep working until the user\'s request is fully complete. Do NOT end your turn with a plain "all done" message and wait for the user — either call a tool to make progress, or, when the task is genuinely finished and verified, call the `finish` tool (the only clean way to end your turn). If you stop without calling `finish`, you will be automatically resumed to continue, so stopping early just wastes a round-trip. This is bounded by the iteration and spend caps above, so don\'t pad with busy-work — call `finish` as soon as the task is actually done.');
+  }
   if (offGuidance.length > 0) {
     lines.push('');
     lines.push('Reminders for the capabilities that are OFF:');

@@ -11,6 +11,10 @@ import { mountPreactModal } from './preact/mount';
 import { BUTTON_CANCEL, BUTTON_PRIMARY } from './styleConstants';
 import {
   computeImageVoxelLayout,
+  extractImagePalette,
+  imageDataToVoxelGrid,
+  countVoxelBuilderCalls,
+  MAX_BUILDER_CALLS,
   type ImageDataLike,
   type ImageToVoxelOptions,
   type ImageVoxelMode,
@@ -18,8 +22,10 @@ import {
 } from '../import/imageToVoxel';
 
 export interface ImageVoxelModalOptions {
-  filename: string;
-  image: ImageDataLike;
+  filename?: string;
+  /** The image to import. Omit / null to open the modal **first** with no
+   *  image — the user then picks one inside via "Choose image…". */
+  image?: ImageDataLike | null;
   /** The File the image was decoded from, when available. Threaded back out so
    *  a "swap image" keeps the right blob for Recent Imports; null for sources
    *  that didn't come from a File (e.g. the console API's URL path). */
@@ -57,7 +63,15 @@ async function decodeFileToImageData(file: File): Promise<ImageData> {
 // Above this the model gets heavy to mesh/render; we warn but don't block.
 const HEAVY_VOXEL_COUNT = 250_000;
 
-type Opts = Required<Omit<ImageToVoxelOptions, 'flatColor' | 'backgroundColor'>> & { flatColor: [number, number, number] };
+type Opts = Required<Omit<ImageToVoxelOptions, 'flatColor' | 'backgroundColor' | 'palette'>> & {
+  flatColor: [number, number, number];
+  /** A locked fixed palette (pixels snap to nearest), or null for none. */
+  palette: [number, number, number][] | null;
+};
+
+/** Default number of colors to extract when the user switches on the custom
+ *  palette (and the posterize default). */
+const DEFAULT_COLOR_COUNT = 6;
 
 const DEFAULT_OPTS: Opts = {
   maxSize: 64,
@@ -74,7 +88,9 @@ const DEFAULT_OPTS: Opts = {
   contrast: 0,
   saturation: 0,
   posterizeColors: 0,
+  palette: null,
   removeBackground: false,
+  codeStyle: 'decode',
 };
 
 /** Seed the modal state from optional initial options, falling back to each
@@ -98,7 +114,9 @@ function seedOpts(init?: ImageToVoxelOptions): Opts {
     contrast: init.contrast ?? DEFAULT_OPTS.contrast,
     saturation: init.saturation ?? DEFAULT_OPTS.saturation,
     posterizeColors: init.posterizeColors ?? DEFAULT_OPTS.posterizeColors,
+    palette: init.palette ?? DEFAULT_OPTS.palette,
     removeBackground: init.removeBackground ?? DEFAULT_OPTS.removeBackground,
+    codeStyle: init.codeStyle ?? DEFAULT_OPTS.codeStyle,
   };
 }
 
@@ -163,8 +181,93 @@ function SegButton<T extends string>(props: {
   );
 }
 
+/** Which color-reduction strategy the `original` mode is using, derived from
+ *  the current options (a fixed palette wins over posterize). */
+type ColorReduction = 'all' | 'posterize' | 'palette';
+function reductionOf(o: Opts): ColorReduction {
+  if (o.palette && o.palette.length > 0) return 'palette';
+  if (o.posterizeColors >= 2) return 'posterize';
+  return 'all';
+}
+
+/** Editable swatch list for the fixed-palette color mode: each pixel snaps to
+ *  its nearest swatch. Swatches seed from the image (k-means) and can be
+ *  recolored, removed, added, or re-extracted at a different count. */
+function PaletteEditor(props: {
+  image: ImageDataLike;
+  opts: Opts;
+  set: <K extends keyof Opts>(key: K, value: Opts[K]) => void;
+}) {
+  const { image, opts, set } = props;
+  const palette = opts.palette ?? [];
+  const count = palette.length;
+
+  const reseed = (k: number) => {
+    const colors = extractImagePalette(image, k, {
+      maxSize: opts.maxSize,
+      brightness: opts.brightness,
+      contrast: opts.contrast,
+      saturation: opts.saturation,
+    });
+    set('palette', colors.length ? colors : [[180, 180, 180]]);
+    set('posterizeColors', Math.max(2, k));
+  };
+  const setSwatch = (i: number, hex: string) => {
+    const next = palette.slice();
+    next[i] = fromHex(hex);
+    set('palette', next);
+  };
+  const removeSwatch = (i: number) => {
+    const next = palette.slice();
+    next.splice(i, 1);
+    set('palette', next.length ? next : [[180, 180, 180]]);
+  };
+  const addSwatch = () => set('palette', [...palette, palette[palette.length - 1] ?? [180, 180, 180]]);
+
+  return (
+    <div class="flex flex-col gap-1.5 mt-1.5">
+      <div class="flex flex-wrap items-center gap-1.5">
+        {palette.map((c, i) => (
+          <div class="relative">
+            <input
+              type="color"
+              class="w-7 h-7 rounded border border-zinc-700 bg-transparent cursor-pointer"
+              value={toHex(c)}
+              onInput={e => setSwatch(i, (e.target as HTMLInputElement).value)}
+            />
+            <button
+              type="button"
+              title="Remove color"
+              class="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-zinc-900 border border-zinc-600 text-zinc-300 text-[10px] leading-none flex items-center justify-center hover:bg-rose-600 hover:border-rose-500"
+              onClick={() => removeSwatch(i)}
+            >×</button>
+          </div>
+        ))}
+        <button
+          type="button"
+          title="Add a color"
+          class="w-7 h-7 rounded border border-dashed border-zinc-600 text-zinc-400 text-base leading-none hover:bg-zinc-700 hover:text-zinc-200"
+          onClick={addSwatch}
+        >+</button>
+      </div>
+      <div class="flex items-center gap-2 text-[11px] text-zinc-400">
+        <span>Re-extract</span>
+        <button type="button" class="w-5 h-5 rounded bg-zinc-700 text-zinc-200 leading-none hover:bg-zinc-600"
+          onClick={() => reseed(Math.max(2, count - 1))}>−</button>
+        <span class="text-zinc-200 tabular-nums w-4 text-center">{count}</span>
+        <button type="button" class="w-5 h-5 rounded bg-zinc-700 text-zinc-200 leading-none hover:bg-zinc-600"
+          onClick={() => reseed(Math.min(16, count + 1))}>+</button>
+        <span>from image</span>
+      </div>
+      <div class="text-[10px] text-zinc-500 leading-snug">
+        Each pixel snaps to the nearest swatch. Edit a swatch to recolor it; − / + re-extracts that many colors (discarding manual edits).
+      </div>
+    </div>
+  );
+}
+
 function ImageVoxelBody(props: {
-  imageSig: Signal<ImageDataLike>;
+  imageSig: Signal<ImageDataLike | null>;
   filenameSig: Signal<string>;
   fileSig: Signal<File | null>;
   swapErrorSig: Signal<string | null>;
@@ -178,6 +281,31 @@ function ImageVoxelBody(props: {
 
   const set = <K extends keyof Opts>(key: K, value: Opts[K]) => {
     state.value = { ...state.value, [key]: value };
+  };
+
+  // Switch between the three `original`-mode color strategies. 'palette' seeds
+  // an editable swatch list from the image so the user can then tweak it.
+  const pickReduction = (r: ColorReduction) => {
+    if (r === 'all') {
+      set('palette', null);
+      set('posterizeColors', 0);
+      return;
+    }
+    if (r === 'posterize') {
+      set('palette', null);
+      set('posterizeColors', opts.posterizeColors >= 2 ? opts.posterizeColors : DEFAULT_COLOR_COUNT);
+      return;
+    }
+    if (!image) return; // can't seed a palette without an image
+    const k = opts.posterizeColors >= 2 ? opts.posterizeColors : DEFAULT_COLOR_COUNT;
+    const colors = extractImagePalette(image, k, {
+      maxSize: opts.maxSize,
+      brightness: opts.brightness,
+      contrast: opts.contrast,
+      saturation: opts.saturation,
+    });
+    set('palette', colors.length ? colors : [[180, 180, 180]]);
+    set('posterizeColors', Math.max(2, k));
   };
 
   // Swap the source image while keeping every tuned knob. Decoding replaces the
@@ -196,7 +324,23 @@ function ImageVoxelBody(props: {
 
   // Recompute the voxel layout whenever a parameter changes. Cheap: it walks
   // the downsampled pixels once (≤ maxSize²) without allocating a grid.
-  const layout = useMemo(() => computeImageVoxelLayout(image, opts), [image, opts]);
+  const layout = useMemo(
+    () => (image
+      ? computeImageVoxelLayout(image, opts)
+      : { tw: 0, th: 0, columns: [], voxelCount: 0, dims: { x: 0, y: 0, z: 0 } }),
+    [image, opts],
+  );
+
+  // When "Editable code" is selected, work out up front whether the model fits
+  // in readable builder calls or will fall back to the compact blob — so the
+  // choice isn't a silent surprise at import time. Since calls ≤ voxelCount,
+  // only the ambiguous (> cap) case needs the pricier exact decomposition.
+  const callPlan = useMemo(() => {
+    if (opts.codeStyle !== 'calls' || !image || layout.voxelCount === 0) return null;
+    if (layout.voxelCount <= MAX_BUILDER_CALLS) return { fallback: false, count: null as number | null };
+    const count = countVoxelBuilderCalls(imageDataToVoxelGrid(image, opts));
+    return { fallback: count > MAX_BUILDER_CALLS, count };
+  }, [image, opts, layout.voxelCount]);
 
   // Draw the front-view preview. Heightmap mode shades each pixel by its
   // resulting column height so the relief reads at a glance.
@@ -226,6 +370,37 @@ function ImageVoxelBody(props: {
   const heavy = layout.voxelCount > HEAVY_VOXEL_COUNT;
   const empty = layout.voxelCount === 0;
 
+  // Modal-first: no image picked yet. Show just the "Choose image…" call to
+  // action; the controls + preview appear once an image is loaded.
+  if (!image) {
+    return (
+      <div class="flex flex-col items-center gap-3 py-8 text-center">
+        <p class="text-[12px] text-zinc-300 font-medium">Import an image as a voxel model</p>
+        <p class="text-[11px] text-zinc-500 max-w-[260px] leading-relaxed">
+          Pick a picture (PNG, JPG, GIF, WebP) — a logo, sprite, or small photo. You'll tune resolution, color, and depth next.
+        </p>
+        <input
+          ref={swapInputRef}
+          data-testid="voxel-image-input"
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/*"
+          class="hidden"
+          onChange={e => {
+            const f = (e.target as HTMLInputElement).files?.[0];
+            if (f) void onSwapFile(f);
+            (e.target as HTMLInputElement).value = '';
+          }}
+        />
+        <button type="button" class={BUTTON_PRIMARY} onClick={() => swapInputRef.current?.click()}>
+          Choose image…
+        </button>
+        {swapErrorSig.value && (
+          <div class="text-[10px] text-rose-400 leading-snug max-w-[260px]">{swapErrorSig.value}</div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div class="flex flex-col gap-3">
       <p class="text-[11px] text-zinc-400 leading-relaxed">
@@ -254,6 +429,7 @@ function ImageVoxelBody(props: {
           {/* Swap the source image while keeping all tuned settings. */}
           <input
             ref={swapInputRef}
+            data-testid="voxel-image-input"
             type="file"
             accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/*"
             class="hidden"
@@ -347,23 +523,60 @@ function ImageVoxelBody(props: {
               )}
             </div>
             {opts.colorMode === 'original' && (
-              <label class="flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer mt-1.5">
-                <input type="checkbox" class="accent-blue-500" checked={opts.posterizeColors >= 2}
-                  onChange={e => set('posterizeColors', (e.target as HTMLInputElement).checked ? 6 : 0)} />
-                Posterize
-                {opts.posterizeColors >= 2 && (
-                  <input
-                    type="range"
-                    class="flex-1 accent-blue-500 ml-1"
-                    min={2} max={12} step={1}
-                    value={opts.posterizeColors}
-                    onInput={e => set('posterizeColors', Number((e.target as HTMLInputElement).value))}
-                  />
+              <div class="mt-1.5">
+                <div class="flex gap-1">
+                  <SegButton<ColorReduction> value="all" current={reductionOf(opts)} onPick={pickReduction}>
+                    All colors
+                  </SegButton>
+                  <SegButton<ColorReduction> value="posterize" current={reductionOf(opts)} onPick={pickReduction}>
+                    Posterize
+                  </SegButton>
+                  <SegButton<ColorReduction> value="palette" current={reductionOf(opts)} onPick={pickReduction}>
+                    Palette
+                  </SegButton>
+                </div>
+                {reductionOf(opts) === 'posterize' && (
+                  <label class="flex items-center gap-2 text-[11px] text-zinc-300 mt-1.5">
+                    Colors
+                    <input
+                      type="range"
+                      class="flex-1 accent-blue-500"
+                      min={2} max={12} step={1}
+                      value={opts.posterizeColors}
+                      onInput={e => set('posterizeColors', Number((e.target as HTMLInputElement).value))}
+                    />
+                    <span class="text-zinc-200 tabular-nums">{opts.posterizeColors}</span>
+                  </label>
                 )}
-                {opts.posterizeColors >= 2 && (
-                  <span class="text-zinc-200 tabular-nums">{opts.posterizeColors}</span>
-                )}
-              </label>
+                {reductionOf(opts) === 'palette' && <PaletteEditor image={image} opts={opts} set={set} />}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <div class="text-[11px] text-zinc-400 mb-0.5">Editor code</div>
+            <div class="flex gap-1">
+              <SegButton<'decode' | 'calls'> value="decode" current={opts.codeStyle} onPick={v => set('codeStyle', v)}>
+                Compact data
+              </SegButton>
+              <SegButton<'decode' | 'calls'> value="calls" current={opts.codeStyle} onPick={v => set('codeStyle', v)}>
+                Editable code
+              </SegButton>
+            </div>
+            <div class="text-[10px] text-zinc-500 mt-0.5 leading-snug">
+              {opts.codeStyle === 'decode'
+                ? 'A compact voxels.decode("…") blob — small and fast to load.'
+                : 'Readable v.fillBox(…) / v.set(…) you can hand-edit.'}
+            </div>
+            {callPlan && callPlan.fallback && (
+              <div class="text-[10px] text-amber-400 mt-0.5 leading-snug">
+                {callPlan.count!.toLocaleString()} blocks exceeds the {MAX_BUILDER_CALLS.toLocaleString()}-block limit, so this saves as compact data instead. Lower the resolution or use a Palette to keep it editable.
+              </div>
+            )}
+            {callPlan && !callPlan.fallback && (
+              <div class="text-[10px] text-emerald-400 mt-0.5 leading-snug">
+                {callPlan.count != null ? `≈ ${callPlan.count.toLocaleString()} editable calls.` : 'Editable builder calls ✓'}
+              </div>
             )}
           </div>
 
@@ -396,7 +609,7 @@ function ImageVoxelBody(props: {
 }
 
 function emitOptions(o: Opts): ImageToVoxelOptions {
-  return {
+  const out: ImageToVoxelOptions = {
     maxSize: o.maxSize,
     mode: o.mode,
     depth: o.depth,
@@ -412,17 +625,23 @@ function emitOptions(o: Opts): ImageToVoxelOptions {
     saturation: o.saturation,
     posterizeColors: o.posterizeColors,
     removeBackground: o.removeBackground,
+    codeStyle: o.codeStyle,
   };
+  // Only emit a fixed palette when one is actually in use (original mode).
+  if (o.colorMode === 'original' && o.palette && o.palette.length > 0) out.palette = o.palette;
+  return out;
 }
 
 function ImageVoxelFooter(props: {
-  imageSig: Signal<ImageDataLike>;
+  imageSig: Signal<ImageDataLike | null>;
   state: Signal<Opts>;
   onImport: (opts: ImageToVoxelOptions) => void;
   onCancel: () => void;
 }) {
   const opts = props.state.value;
-  const empty = computeImageVoxelLayout(props.imageSig.value, opts).voxelCount === 0;
+  const image = props.imageSig.value;
+  // Disabled until an image is picked and it yields at least one voxel.
+  const empty = !image || computeImageVoxelLayout(image, opts).voxelCount === 0;
   return (
     <>
       <button type="button" class={BUTTON_CANCEL} onClick={props.onCancel}>Cancel</button>
@@ -443,11 +662,12 @@ export function showImageVoxelImportModal(opts: ImageVoxelModalOptions): Promise
   return new Promise(resolve => {
     let result: ImageVoxelModalResult | null = null;
     const state = signal<Opts>(seedOpts(opts.initialOptions));
-    // Image / file / name are reactive so "Choose a different image…" swaps the
-    // source in place without tearing down the modal or losing tuned knobs.
-    const imageSig = signal<ImageDataLike>(opts.image);
+    // Image / file / name are reactive so "Choose (a different) image…" swaps
+    // the source in place without tearing down the modal or losing tuned knobs.
+    // image starts null in the modal-first flow (no file picked yet).
+    const imageSig = signal<ImageDataLike | null>(opts.image ?? null);
     const fileSig = signal<File | null>(opts.file ?? null);
-    const filenameSig = signal<string>(opts.filename);
+    const filenameSig = signal<string>(opts.filename ?? '');
     const swapErrorSig = signal<string | null>(null);
     mountPreactModal(
       {
@@ -462,7 +682,8 @@ export function showImageVoxelImportModal(opts: ImageVoxelModalOptions): Promise
             imageSig={imageSig}
             state={state}
             onImport={o => {
-              result = { options: o, image: imageSig.value, file: fileSig.value, filename: filenameSig.value };
+              // Import is only enabled once an image is loaded, so this is set.
+              result = { options: o, image: imageSig.value!, file: fileSig.value, filename: filenameSig.value };
               close();
             }}
             onCancel={() => { result = null; close(); }}

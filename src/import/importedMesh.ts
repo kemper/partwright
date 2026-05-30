@@ -15,7 +15,7 @@ export interface ImportedMesh {
   /** Original filename, for display. */
   filename: string;
   /** Source format. */
-  format: 'stl' | 'relief';
+  format: 'stl' | 'relief' | 'step';
   /** Mesh data — shape mirrors what `Manifold.ofMesh()` expects. */
   vertProperties: Float32Array;
   triVerts: Uint32Array;

@@ -41,8 +41,20 @@ import type { ToolDefinition } from './tools';
 import { readSseStream } from './sse';
 import { getCapabilities } from './catalog';
 
-const CHAT_URL = 'https://api.openai.com/v1/chat/completions';
-const RESPONSES_URL = 'https://api.openai.com/v1/responses';
+const OPENAI_BASE = 'https://api.openai.com/v1';
+const CHAT_URL = `${OPENAI_BASE}/chat/completions`;
+const RESPONSES_URL = `${OPENAI_BASE}/responses`;
+
+/** Resolve the chat-completions / responses URLs for a request. Defaults to
+ *  OpenAI's hosted endpoints; the custom provider (src/ai/custom.ts) threads
+ *  its own base (a llama.cpp / vLLM / LM Studio server) through
+ *  `OpenaiRequestSpec.baseUrl`. A trailing slash on the base is tolerated so
+ *  `http://host:8080/v1` and `http://host:8080/v1/` behave the same. */
+function endpointUrls(baseUrl?: string): { chat: string; responses: string } {
+  if (!baseUrl || baseUrl.trim().length === 0) return { chat: CHAT_URL, responses: RESPONSES_URL };
+  const base = baseUrl.trim().replace(/\/+$/, '');
+  return { chat: `${base}/chat/completions`, responses: `${base}/responses` };
+}
 
 /** OpenAI reasoning models (gpt-5 family + the o-series) accept a reasoning
  *  request and need to go to /v1/responses; chat / 4o / 4.1 / legacy models
@@ -70,11 +82,15 @@ function reasoningEffort(model: string, level: ChatToggles['thinking']): string 
   return level;
 }
 
+/** When `apiKey` is empty/whitespace we omit the Authorization header
+ *  entirely. A self-hosted OpenAI-compatible server commonly runs with no
+ *  auth (llama.cpp's `--api-key` is optional), and sending `Bearer ` with an
+ *  empty token makes some servers 401. OpenAI itself always passes a real
+ *  key, so its request shape is unchanged. */
 function authHeaders(apiKey: string): HeadersInit {
-  return {
-    'Authorization': `Bearer ${apiKey}`,
-    'Content-Type': 'application/json',
-  };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (apiKey && apiKey.trim().length > 0) headers['Authorization'] = `Bearer ${apiKey}`;
+  return headers;
 }
 
 export function resetClient(): void {
@@ -164,19 +180,30 @@ export interface OpenaiRequestSpec {
   /** Extended-thinking level → reasoning `effort` (reasoning models only).
    *  'off' (default) omits the reasoning request. */
   thinking?: ChatToggles['thinking'];
+  /** Override the OpenAI base URL. Set by the custom provider to target a
+   *  self-hosted OpenAI-compatible server. Omitted (undefined) for OpenAI. */
+  baseUrl?: string;
+  /** Force the Chat Completions path regardless of the model name. The
+   *  custom provider sets this because self-hosted servers implement
+   *  `/v1/chat/completions` but not OpenAI's proprietary `/v1/responses`,
+   *  so a model id that happens to match the reasoning sniff (e.g. a model
+   *  the user named "o3-local") must NOT be routed to Responses. */
+  forceChatCompletions?: boolean;
 }
 
 /** Route per model: reasoning models go to the Responses API (gpt-5.5+
  *  require it for tools + reasoning), everything else to Chat Completions
- *  (where the older / legacy models live). */
+ *  (where the older / legacy models live). `forceChatCompletions` pins the
+ *  Chat path for OpenAI-compatible endpoints that lack the Responses API. */
 export async function streamTurn(
   spec: OpenaiRequestSpec,
   callbacks: StreamCallbacks = {},
   signal?: AbortSignal,
 ): Promise<StreamResult> {
-  return isReasoningModel(spec.model)
-    ? streamTurnResponses(spec, callbacks, signal)
-    : streamTurnChat(spec, callbacks, signal);
+  const useChat = spec.forceChatCompletions === true || !isReasoningModel(spec.model);
+  return useChat
+    ? streamTurnChat(spec, callbacks, signal)
+    : streamTurnResponses(spec, callbacks, signal);
 }
 
 // ---------------------------------------------------------------------------
@@ -242,7 +269,7 @@ async function streamTurnResponses(
 
   let res: Response;
   try {
-    res = await fetch(RESPONSES_URL, {
+    res = await fetch(endpointUrls(spec.baseUrl).responses, {
       method: 'POST',
       headers: authHeaders(spec.apiKey),
       body: JSON.stringify(body),
@@ -535,7 +562,7 @@ async function streamTurnChat(
 
   let res: Response;
   try {
-    res = await fetch(CHAT_URL, {
+    res = await fetch(endpointUrls(spec.baseUrl).chat, {
       method: 'POST',
       headers: authHeaders(spec.apiKey),
       body: JSON.stringify(body),
@@ -791,8 +818,11 @@ export async function summarize(
   system: string,
   user: string,
   maxTokens = 4096,
+  /** Override the base URL (custom OpenAI-compatible endpoint). Defaults to
+   *  OpenAI's hosted Chat Completions. */
+  baseUrl?: string,
 ): Promise<{ text: string; usage: TurnUsage }> {
-  const res = await fetch(CHAT_URL, {
+  const res = await fetch(endpointUrls(baseUrl).chat, {
     method: 'POST',
     headers: authHeaders(apiKey),
     body: JSON.stringify({

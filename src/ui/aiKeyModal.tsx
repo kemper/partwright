@@ -38,7 +38,12 @@ interface ProviderUi {
   reset: () => void;
 }
 
-export type HostedProvider = Exclude<Provider, 'local'>;
+// 'custom' is deliberately excluded: it isn't a paste-an-API-key cloud
+// provider but a user-supplied OpenAI-compatible endpoint (base URL + an
+// OPTIONAL key), configured in its own AI Settings tab. Keeping it out of
+// HostedProvider means PROVIDER_UI / providerKeyMeta / validateAndStoreKey
+// stay cloud-only and unchanged.
+export type HostedProvider = Exclude<Provider, 'local' | 'custom'>;
 
 const PROVIDER_UI: Record<HostedProvider, ProviderUi> = {
   anthropic: {
@@ -219,7 +224,9 @@ function KeyFormFooter(props: {
 
 export async function showAiKeyModal(cb: AiKeyModalCallbacks): Promise<void> {
   const requested: Provider = cb.provider ?? 'anthropic';
-  if (requested === 'local') return; // local uses no key
+  // local uses no key; custom is configured in its own settings tab (base
+  // URL + optional key), not via this paste-a-key modal.
+  if (requested === 'local' || requested === 'custom') return;
   const providerId: HostedProvider = requested;
   const ui = PROVIDER_UI[providerId];
 

@@ -163,11 +163,13 @@ export default defineConfig({
       'Cross-Origin-Embedder-Policy': 'require-corp',
       // Mirror the production CSP (public/_headers) so an accidental new
       // external call surfaces here in dev instead of slipping through to
-      // production. The ONLY intentional delta is in connect-src: dev also
-      // allows the localhost WebSocket that Vite uses for HMR/live-reload,
-      // which production has no equivalent of. Keep the host allowlist below
-      // in sync with public/_headers.
-      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:* https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://raw.githubusercontent.com; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
+      // production. connect-src allows `https:` + http://localhost / 127.0.0.1
+      // so a user-configured Custom (OpenAI-compatible) endpoint — e.g. a
+      // self-hosted llama.cpp server — works (matches _headers). The dev-only
+      // delta is the localhost WebSocket Vite uses for HMR/live-reload, which
+      // production has no equivalent of. Keep the host allowlist in sync with
+      // public/_headers.
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:* https: http://localhost:* http://127.0.0.1:* https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://huggingface.co https://*.huggingface.co https://*.xethub.hf.co https://raw.githubusercontent.com; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'",
     },
     fs: {
       // Relax strict fs access for WASM files in node_modules
