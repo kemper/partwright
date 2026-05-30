@@ -184,6 +184,7 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   sliderControl(imageSection.grid, 'Saturation', '', () => opts.preprocess.saturation, v => (opts.preprocess.saturation = v), { min: -1, max: 1, step: 0.05 });
   sliderControl(imageSection.grid, 'Black point', '', () => opts.preprocess.levelsLow, v => (opts.preprocess.levelsLow = v), { min: 0, max: 254, step: 1, int: true });
   sliderControl(imageSection.grid, 'White point', '', () => opts.preprocess.levelsHigh, v => (opts.preprocess.levelsHigh = v), { min: 1, max: 255, step: 1, int: true });
+  const removeBgRow = checkboxControl(imageSection.grid, 'Remove background (auto-detect)', () => opts.common.removeBackground, v => (opts.common.removeBackground = v));
 
   const commonSection = makeSection('Geometry');
   const luminanceSection = makeSection('Luminance mapping');
@@ -244,6 +245,10 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
   // default (bright = tall) makes the background occlude the figure from a
   // top-down view; turning this on raises the subject instead.
   const invertHeightsRow = checkboxControl(tileSection.grid, 'Invert (dark = tall)', () => opts.quantized.invertHeights, v => (opts.quantized.invertHeights = v));
+  // Double-sided: paint the back face of the tile too (useful for keychains
+  // and pendants that are visible from both sides).
+  const doubleSidedRow = checkboxControl(tileSection.grid, 'Double sided', () => opts.quantized.doubleSided, v => { opts.quantized.doubleSided = v; syncMode(); });
+  const backMirrorRow = checkboxControl(tileSection.grid, 'Mirror back face', () => opts.quantized.backMirror, v => (opts.quantized.backMirror = v));
   // Inline hint: a single-nozzle swap print needs one printable layer band per
   // cluster. If maxHeight < (clusters - 1) × layerHeight, two clusters land in
   // the same band and the slicer would have to swap mid-layer. Surface the
@@ -964,9 +969,10 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     const shape = isQ ? o.quantized.shape : 'rect';
     const hasShape = isQ && out === 'flat' && (shape === 'rounded' || shape === 'circle');
     const hasSilhouette = isQ && out === 'silhouette' && !!grid.colors;
+    const hasRemoveBg = o.common.removeBackground && !!grid.colors && out !== 'silhouette';
     const holes = isQ ? o.quantized.holes : [];
     const hasHole = holes.length > 0;
-    if (!hasShape && !hasSilhouette && !hasHole) return null;
+    if (!hasShape && !hasSilhouette && !hasRemoveBg && !hasHole) return null;
 
     const widthMm = o.common.widthMm;
     const heightMm = widthMm * (h / w);
@@ -979,6 +985,8 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     if (hasSilhouette && grid.colors) {
       const mb = o.quantized.manualBackground;
       mask.set(mb ? bgMaskFromColor(grid.colors, w, h, mb) : detectBackgroundMask(grid.colors, w, h));
+    } else if (hasRemoveBg && grid.colors) {
+      mask.set(detectBackgroundMask(grid.colors, w, h));
     } else {
       mask.fill(1);
     }
@@ -1056,6 +1064,12 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     // Same gating for the invert-heights toggle — it only changes the
     // cluster→Z mapping for stepped reliefs.
     invertHeightsRow.classList.toggle('hidden', !showPaintingMode);
+    // Remove background: not useful for SVG (fills are already discrete paths).
+    removeBgRow.classList.toggle('hidden', isSvg);
+    // Double-sided and mirror only apply to flat tiles (not silhouette or relief).
+    const showDoubleSided = !isSvg && opts.mode === 'quantized' && opts.quantized.output === 'flat';
+    doubleSidedRow.classList.toggle('hidden', !showDoubleSided);
+    backMirrorRow.classList.toggle('hidden', !showDoubleSided || !opts.quantized.doubleSided);
     // Layer-fit hint — visible only when a single-nozzle stepped relief can't
     // fit one printable layer band per cluster given the current settings. syncEnabled
     // is what actually toggles createBtn.disabled; here we just paint the

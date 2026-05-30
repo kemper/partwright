@@ -1888,6 +1888,8 @@ async function main() {
       paintingMode: q.paintingMode === 'multi-color' ? 'multi-color' : 'single-nozzle',
       invertHeights: !!q.invertHeights,
       manualBackground: q.manualBackground,
+      doubleSided: !!q.doubleSided,
+      backMirror: q.backMirror !== false,
     };
   }
 
@@ -1900,6 +1902,7 @@ async function main() {
       maxHeight: Math.max(0.1, Math.min(100, num(c.maxHeight, 3))),
       resolution: Math.max(8, Math.min(512, Math.floor(num(c.resolution, 200)))),
       smoothing: Math.max(0, Math.min(20, num(c.smoothing, 0))),
+      removeBackground: !!c.removeBackground,
     };
   }
 

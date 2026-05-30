@@ -60,7 +60,7 @@ export function preprocessRgb(rgb: Float32Array, w: number, h: number, p: Prepro
     rgb[o + 2] = b < 0 ? 0 : b > 255 ? 255 : b;
   }
 }
-import { buildTileMesh, type TileOptions, type TileShape } from './tileMesh';
+import { buildTileMesh, buildCellMask, type TileOptions, type TileShape } from './tileMesh';
 import { parseSvgToTile } from '../import/parsers/svg';
 
 const LUMA_R = 0.2126;
@@ -259,6 +259,16 @@ export function sampleImageToGrid(image: ImageData, opts: ReliefOptions): Height
     if (invert) l = 1 - l;
     if (g !== 1) l = Math.pow(l, g);
     heights[i] = quantizeHeight(l * maxHeight, levels, maxHeight);
+  }
+
+  // Zero out background cells so they print as base only.
+  if (opts.common.removeBackground) {
+    const colorsU8 = new Uint8Array(count * 3);
+    for (let i = 0; i < count * 3; i++) colorsU8[i] = clamp255(rgb[i]);
+    const bgMask = detectBackgroundMask(colorsU8, w, h);
+    for (let i = 0; i < count; i++) {
+      if (bgMask[i] === 0) heights[i] = 0;
+    }
   }
 
   return { width: w, height: h, heights };
@@ -675,6 +685,15 @@ export function generateRelief(image: ImageData, opts: ReliefOptions = DEFAULT_R
     return buildQuantizedTile(grid, opts);
   }
 
+  // For stepped relief with removeBackground, zero out height for background
+  // cells so they print as the base only (no raised colour terrace).
+  if (opts.common.removeBackground && opts.mode === 'quantized' && grid.colors) {
+    const bgMask = detectBackgroundMask(grid.colors, grid.width, grid.height);
+    for (let i = 0; i < grid.heights.length; i++) {
+      if (bgMask[i] === 0) grid.heights[i] = 0;
+    }
+  }
+
   // Stepped relief (both painting modes) uses the continuous height-grid mesh.
   // It is a closed 2-manifold (verified by isEdgeManifold inside
   // buildReliefMesh) so it slices and prints; an earlier experiment that built
@@ -706,7 +725,9 @@ function buildQuantizedTile(grid: HeightGrid, opts: ReliefOptions): GenerateReli
     holes: opts.quantized.holes,
     chamferMm: opts.quantized.chamferMm,
   };
-  const shape: TileShape = opts.quantized.output === 'silhouette'
+
+  // Compute the base shape for the tile.
+  let shape: TileShape = opts.quantized.output === 'silhouette'
     ? {
         kind: 'mask',
         mask: opts.quantized.manualBackground
@@ -718,8 +739,28 @@ function buildQuantizedTile(grid: HeightGrid, opts: ReliefOptions): GenerateReli
       : opts.quantized.shape === 'circle'
         ? { kind: 'circle' }
         : { kind: 'rect' };
-  const { mesh, cellTriIds } = buildTileMesh(W, H, tileOpts, shape);
+
+  // When removeBackground is on for a non-silhouette tile, detect the
+  // background and intersect it with the existing shape mask so background
+  // pixels are cut out of even rect/rounded/circle tiles.
+  if (opts.common.removeBackground && opts.quantized.output !== 'silhouette') {
+    const fgMask = detectBackgroundMask(colors, W, H);
+    const shapeMask = buildCellMask(W, H, tileOpts, shape);
+    const combined = new Uint8Array(W * H);
+    for (let i = 0; i < W * H; i++) combined[i] = shapeMask[i] & fgMask[i];
+    shape = { kind: 'mask', mask: combined };
+  }
+
+  const { mesh, cellTriIds, cellTriIdsBottom } = buildTileMesh(W, H, tileOpts, shape);
   const seedRegions = seedRegionsFromCellGrid(colors, cellTriIds, W, H);
+
+  // Double-sided: paint the bottom face too, using mirrored or same colors.
+  if (opts.quantized.doubleSided && opts.quantized.output === 'flat') {
+    const mirror = opts.quantized.backMirror !== false;
+    const bottomRegions = seedRegionsFromCellGridBottom(colors, cellTriIdsBottom, W, H, mirror);
+    return { mesh, grid, seedRegions: mergeRegions(seedRegions, bottomRegions) };
+  }
+
   return { mesh, grid, seedRegions };
 }
 
@@ -747,7 +788,7 @@ function seedRegionsFromReliefGrid(grid: HeightGrid): SeedRegion[] {
 //  retro-fit colours onto a slanted continuous mesh.)
 
 /** Tile variant: cellTriIds carries -1 for excluded cells (shape/hole/edge),
- *  so only included cells contribute. */
+ *  so only included cells contribute. Top-face (CCW from +Z). */
 function seedRegionsFromCellGrid(colors: Uint8Array, cellTriIds: Int32Array, W: number, H: number): SeedRegion[] {
   const byColor = new Map<number, { color: [number, number, number]; triangleIds: number[] }>();
   for (let y = 0; y < H; y++) {
@@ -763,6 +804,50 @@ function seedRegionsFromCellGrid(colors: Uint8Array, cellTriIds: Int32Array, W: 
     }
   }
   return mapBucketsToRegions(byColor);
+}
+
+/** Bottom-face variant for double-sided tiles. When `mirror` is true, cell
+ *  (x, y) on the bottom takes its colour from (W-1-x, y) on the image so the
+ *  tile looks identical from both sides when flipped. */
+function seedRegionsFromCellGridBottom(
+  colors: Uint8Array,
+  cellTriIdsBottom: Int32Array,
+  W: number,
+  H: number,
+  mirror: boolean,
+): SeedRegion[] {
+  const byColor = new Map<number, { color: [number, number, number]; triangleIds: number[] }>();
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const cell = y * W + x;
+      const t0 = cellTriIdsBottom[cell * 2];
+      if (t0 < 0) continue;
+      const srcX = mirror ? W - 1 - x : x;
+      const src = y * W + srcX;
+      const r = colors[src * 3], g = colors[src * 3 + 1], b = colors[src * 3 + 2];
+      const key = (r << 16) | (g << 8) | b;
+      let bucket = byColor.get(key);
+      if (!bucket) { bucket = { color: [r / 255, g / 255, b / 255], triangleIds: [] }; byColor.set(key, bucket); }
+      bucket.triangleIds.push(t0, cellTriIdsBottom[cell * 2 + 1]);
+    }
+  }
+  return mapBucketsToRegions(byColor);
+}
+
+/** Merge two sets of seed regions, combining triangle lists for matching colours. */
+function mergeRegions(a: SeedRegion[], b: SeedRegion[]): SeedRegion[] {
+  const byKey = new Map<number, SeedRegion>();
+  for (const r of a) {
+    const k = (Math.round(r.color[0] * 255) << 16) | (Math.round(r.color[1] * 255) << 8) | Math.round(r.color[2] * 255);
+    byKey.set(k, { ...r, triangleIds: [...r.triangleIds] });
+  }
+  for (const r of b) {
+    const k = (Math.round(r.color[0] * 255) << 16) | (Math.round(r.color[1] * 255) << 8) | Math.round(r.color[2] * 255);
+    const existing = byKey.get(k);
+    if (existing) existing.triangleIds.push(...r.triangleIds);
+    else byKey.set(k, { ...r, triangleIds: [...r.triangleIds] });
+  }
+  return Array.from(byKey.values());
 }
 
 function mapBucketsToRegions(byColor: Map<number, { color: [number, number, number]; triangleIds: number[] }>): SeedRegion[] {
