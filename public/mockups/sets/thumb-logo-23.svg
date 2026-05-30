@@ -1,0 +1,136 @@
+<svg width="120" height="120" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Partwright — hex socket head cap screw printing itself layer by layer on an isometric build plate">
+  <defs>
+    <linearGradient id="h-sr" x1="37.5" y1="29.65" x2="37.5" y2="49.25" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+    </linearGradient>
+    <linearGradient id="h-sl" x1="26.5" y1="29.65" x2="26.5" y2="49.25" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#0a6b62"/>
+    </linearGradient>
+    <linearGradient id="h-hr" x1="41.0" y1="21.6" x2="41.0" y2="31.4" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/>
+    </linearGradient>
+    <linearGradient id="h-hl" x1="23.0" y1="21.6" x2="23.0" y2="31.4" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#14b8a6"/><stop offset="1" stop-color="#0d9488"/>
+    </linearGradient>
+    <linearGradient id="h-htop" x1="23" y1="17" x2="41" y2="22" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#2dd4bf"/>
+    </linearGradient>
+    <linearGradient id="h-hex" x1="28" y1="18" x2="36" y2="22" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#072e2b"/><stop offset="1" stop-color="#0a4a44"/>
+    </linearGradient>
+    <linearGradient id="h-plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f2937"/><stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <radialGradient id="h-shadow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#000" stop-opacity="0.45"/><stop offset="1" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- contact shadow -->
+  <ellipse cx="32" cy="56" rx="16" ry="2.2" fill="url(#h-shadow)"/>
+
+  <!-- build plate -->
+  <g class="plate">
+    <path d="M46.8 45.9 L32 53.3 L17.2 45.9 L32 38.5 Z" fill="#111827"/>
+    <path d="M17.2 45.9 L32 53.3 L32 55.2 L17.2 47.8 Z" fill="url(#h-plate)"/>
+    <path d="M46.8 45.9 L32 53.3 L32 55.2 L46.8 47.8 Z" fill="#0b1220"/>
+    <path d="M46.8 45.9 L32 53.3 L17.2 45.9" fill="none" stroke="#14b8a6" stroke-width="0.55" stroke-opacity="0.35" stroke-linejoin="round"/>
+    <path d="M32 38.5 L32 53.3 M23.6 42.2 L40.4 42.2" fill="none" stroke="#14b8a6" stroke-width="0.4" stroke-opacity="0.18"/>
+  </g>
+
+  <!-- Shaft layer 0 -->
+  <g class="ly ly0">
+    <path d="M26.5 46.5 L32 49.25 L32 51.7 L26.5 48.95 Z" fill="url(#h-sl)"/>
+    <path d="M37.5 46.5 L32 49.25 L32 51.7 L37.5 48.95 Z" fill="url(#h-sr)"/>
+    <path class="seam" d="M26.5 46.5 L32 49.25 L37.5 46.5" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+    <path class="flash" d="M26.5 46.5 L32 49.25 L37.5 46.5 L37.5 44.05 L32 46.8 L26.5 44.05 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+  </g>
+  <!-- Shaft layer 1 -->
+  <g class="ly ly1">
+    <path d="M26.5 44.05 L32 46.8 L32 49.25 L26.5 46.5 Z" fill="url(#h-sl)"/>
+    <path d="M37.5 44.05 L32 46.8 L32 49.25 L37.5 46.5 Z" fill="url(#h-sr)"/>
+    <path class="seam" d="M26.5 44.05 L32 46.8 L37.5 44.05" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+    <path class="flash" d="M26.5 44.05 L32 46.8 L37.5 44.05 L37.5 41.6 L32 44.35 L26.5 41.6 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+  </g>
+  <!-- Shaft layer 2 -->
+  <g class="ly ly2">
+    <path d="M26.5 41.6 L32 44.35 L32 46.8 L26.5 44.05 Z" fill="url(#h-sl)"/>
+    <path d="M37.5 41.6 L32 44.35 L32 46.8 L37.5 44.05 Z" fill="url(#h-sr)"/>
+    <path class="seam" d="M26.5 41.6 L32 44.35 L37.5 41.6" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+    <path class="thr" d="M26.5 42.8 L32 45.55 L37.5 42.8" fill="none" stroke="#0b3b38" stroke-width="0.45" stroke-opacity="0.55"/>
+    <path class="flash" d="M26.5 41.6 L32 44.35 L37.5 41.6 L37.5 39.15 L32 41.9 L26.5 39.15 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+  </g>
+  <!-- Shaft layer 3 -->
+  <g class="ly ly3">
+    <path d="M26.5 39.15 L32 41.9 L32 44.35 L26.5 41.6 Z" fill="url(#h-sl)"/>
+    <path d="M37.5 39.15 L32 41.9 L32 44.35 L37.5 41.6 Z" fill="url(#h-sr)"/>
+    <path class="seam" d="M26.5 39.15 L32 41.9 L37.5 39.15" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+    <path class="flash" d="M26.5 39.15 L32 41.9 L37.5 39.15 L37.5 36.7 L32 39.45 L26.5 36.7 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+  </g>
+  <!-- Shaft layer 4 -->
+  <g class="ly ly4">
+    <path d="M26.5 36.7 L32 39.45 L32 41.9 L26.5 39.15 Z" fill="url(#h-sl)"/>
+    <path d="M37.5 36.7 L32 39.45 L32 41.9 L37.5 39.15 Z" fill="url(#h-sr)"/>
+    <path class="seam" d="M26.5 36.7 L32 39.45 L37.5 36.7" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+    <path class="thr" d="M26.5 37.9 L32 40.65 L37.5 37.9" fill="none" stroke="#0b3b38" stroke-width="0.45" stroke-opacity="0.55"/>
+    <path class="flash" d="M26.5 36.7 L32 39.45 L37.5 36.7 L37.5 34.25 L32 37.0 L26.5 34.25 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+  </g>
+  <!-- Shaft layer 5 -->
+  <g class="ly ly5">
+    <path d="M26.5 34.25 L32 37.0 L32 39.45 L26.5 36.7 Z" fill="url(#h-sl)"/>
+    <path d="M37.5 34.25 L32 37.0 L32 39.45 L37.5 36.7 Z" fill="url(#h-sr)"/>
+    <path class="seam" d="M26.5 34.25 L32 37.0 L37.5 34.25" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+    <path class="flash" d="M26.5 34.25 L32 37.0 L37.5 34.25 L37.5 31.8 L32 34.55 L26.5 31.8 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+  </g>
+  <!-- Shaft layer 6 -->
+  <g class="ly ly6">
+    <path d="M26.5 31.8 L32 34.55 L32 37.0 L26.5 34.25 Z" fill="url(#h-sl)"/>
+    <path d="M37.5 31.8 L32 34.55 L32 37.0 L37.5 34.25 Z" fill="url(#h-sr)"/>
+    <path class="seam" d="M26.5 31.8 L32 34.55 L37.5 31.8" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+    <path class="thr" d="M26.5 33.0 L32 35.75 L37.5 33.0" fill="none" stroke="#0b3b38" stroke-width="0.45" stroke-opacity="0.55"/>
+    <path class="flash" d="M26.5 31.8 L32 34.55 L37.5 31.8 L37.5 29.35 L32 32.1 L26.5 29.35 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+  </g>
+  <!-- Shaft layer 7 -->
+  <g class="ly ly7">
+    <path d="M26.5 29.35 L32 32.1 L32 34.55 L26.5 31.8 Z" fill="url(#h-sl)"/>
+    <path d="M37.5 29.35 L32 32.1 L32 34.55 L37.5 31.8 Z" fill="url(#h-sr)"/>
+    <path d="M32 26.9 L37.5 29.65 L32 32.4 L26.5 29.65 Z" fill="#14b8a6" fill-opacity="0.6"/>
+    <path class="seam" d="M26.5 29.35 L32 32.1 L37.5 29.35" fill="none" stroke="#083d38" stroke-width="0.5" stroke-opacity="0.4"/>
+    <path class="flash" d="M26.5 29.35 L32 32.1 L37.5 29.35 L37.5 26.9 L32 29.65 L26.5 26.9 Z" fill="none" stroke="#ccfbf1" stroke-width="1.1" stroke-opacity="0"/>
+  </g>
+
+  <!-- Head layer 8 -->
+  <g class="ly ly8">
+    <path d="M23.0 24.45 L32 28.95 L32 31.4 L23.0 26.9 Z" fill="url(#h-hl)"/>
+    <path d="M41.0 24.45 L32 28.95 L32 31.4 L41.0 26.9 Z" fill="url(#h-hr)"/>
+    <path d="M26.5 29.65 L23.0 26.9 L23.0 31.4 L26.5 34.15" fill="none" stroke="#0d9488" stroke-width="0.5" stroke-opacity="0.6"/>
+    <path d="M37.5 29.65 L41.0 26.9 L41.0 31.4 L37.5 34.15" fill="none" stroke="#0d9488" stroke-width="0.5" stroke-opacity="0.6"/>
+    <path class="seam" d="M23.0 24.45 L32 28.95 L41.0 24.45" fill="none" stroke="#083d38" stroke-width="0.55" stroke-opacity="0.4"/>
+    <path class="flash" d="M23.0 24.45 L32 28.95 L41.0 24.45 L41.0 26.9 L32 31.4 L23.0 26.9 Z" fill="none" stroke="#ccfbf1" stroke-width="1.15" stroke-opacity="0"/>
+  </g>
+  <!-- Head layer 9 -->
+  <g class="ly ly9">
+    <path d="M23.0 22.0 L32 26.5 L32 28.95 L23.0 24.45 Z" fill="url(#h-hl)"/>
+    <path d="M41.0 22.0 L32 26.5 L32 28.95 L41.0 24.45 Z" fill="url(#h-hr)"/>
+    <path class="seam" d="M23.0 22.0 L32 26.5 L41.0 22.0" fill="none" stroke="#083d38" stroke-width="0.55" stroke-opacity="0.4"/>
+    <path class="flash" d="M23.0 22.0 L32 26.5 L41.0 22.0 L41.0 24.45 L32 28.95 L23.0 24.45 Z" fill="none" stroke="#ccfbf1" stroke-width="1.15" stroke-opacity="0"/>
+  </g>
+  <!-- Head layer 10 -->
+  <g class="ly ly10">
+    <path d="M23.0 19.55 L32 24.05 L32 26.5 L23.0 22.0 Z" fill="url(#h-hl)"/>
+    <path d="M41.0 19.55 L32 24.05 L32 26.5 L41.0 22.0 Z" fill="url(#h-hr)"/>
+    <path class="seam" d="M23.0 19.55 L32 24.05 L41.0 19.55" fill="none" stroke="#083d38" stroke-width="0.55" stroke-opacity="0.4"/>
+    <path class="flash" d="M23.0 19.55 L32 24.05 L41.0 19.55 L41.0 22.0 L32 26.5 L23.0 22.0 Z" fill="none" stroke="#ccfbf1" stroke-width="1.15" stroke-opacity="0"/>
+  </g>
+  <!-- Head layer 11 — crown -->
+  <g class="ly ly11">
+    <path d="M23.0 17.1 L32 21.6 L32 24.05 L23.0 19.55 Z" fill="url(#h-hl)"/>
+    <path d="M41.0 17.1 L32 21.6 L32 24.05 L41.0 19.55 Z" fill="url(#h-hr)"/>
+    <path d="M32 17.1 L41.0 21.6 L32 26.1 L23.0 21.6 Z" fill="url(#h-htop)"/>
+    <path d="M32 18.95 L35.5 20.7 L32 22.5 L28.5 20.7 Z" fill="url(#h-hex)"/>
+    <path d="M28.5 20.7 L32 18.95 L35.5 20.7" fill="none" stroke="#1a6b64" stroke-width="0.4" stroke-opacity="0.8"/>
+    <path d="M23.0 21.6 L32 26.1 L41.0 21.6" fill="none" stroke="#ccfbf1" stroke-width="0.7" stroke-opacity="0.85" stroke-linejoin="round"/>
+    <path d="M33.8 18.2 L39.8 21.05" fill="none" stroke="#fbbf24" stroke-width="1.15" stroke-linecap="round" opacity="0.95"/>
+    <path class="flash" d="M23.0 17.1 L32 21.6 L41.0 17.1 L41.0 19.55 L32 24.05 L23.0 19.55 Z" fill="none" stroke="#ccfbf1" stroke-width="1.15" stroke-opacity="0"/>
+  </g>
+</svg>
