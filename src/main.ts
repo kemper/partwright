@@ -149,6 +149,7 @@ import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontS
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
+import { loadPalette } from './color/palette';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
@@ -4880,6 +4881,20 @@ async function main() {
     /** Get current editor code */
     getCode(): string {
       return getValue();
+    },
+
+    /** Read the user's configured filament color palette: the filaments they
+     *  can print with (name + hex), how many load at once (maxSimultaneous),
+     *  and whether AI enforcement is on. Mirrors what the AI sees in its
+     *  per-turn prompt, exposed so console / MCP callers can read it too. */
+    getColorPalette(): { configured: boolean; enforce: boolean; maxSimultaneous: number; colors: { name: string; hex: string }[] } {
+      const p = loadPalette();
+      return {
+        configured: p.colors.length > 0,
+        enforce: p.enforce,
+        maxSimultaneous: p.maxSimultaneous,
+        colors: p.colors.map(c => ({ name: c.name, hex: c.hex })),
+      };
     },
 
     /** Set editor code (does not auto-run — call .run() after) */

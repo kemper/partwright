@@ -17,6 +17,7 @@ import { showAiKeyModal } from './aiKeyModal';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
+import { showPaletteModal } from './paletteModal';
 import { showAiLocalModal } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { showCompactConfirmModal } from './aiCompactModal';
@@ -581,6 +582,11 @@ function buildDrawer(): void {
   diagBtn.title = 'AI Call Log — recent provider API calls: request shape, stop reason, token usage, full error messages. Open this when a turn ends with a confusing status.';
   diagBtn.addEventListener('click', () => { showAiDiagnosticsModal(); });
   header.appendChild(diagBtn);
+
+  const paletteBtn = createIconButton('Filament palette', '🧵');
+  paletteBtn.title = 'Filament palette — record the colors you can print with (and auto-fill them from photos), then have AI stick to them.';
+  paletteBtn.addEventListener('click', () => { showPaletteModal(); });
+  header.appendChild(paletteBtn);
 
   const settingsBtn = createIconButton('Settings', '⚙');
   settingsBtn.title = 'AI settings: provider, key, lifetime usage.';

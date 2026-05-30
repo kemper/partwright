@@ -718,6 +718,19 @@ The paint helpers are exposed both as tool calls (`paintRegion`, `paintFaces`, `
 
 Before painting anything substantial, **call `readDoc({name: "colors"})`** for the picker decision tree (which `paint*` for which intent), the labelled-construction workflow, vision-driven painting with `probePixel`/`paintConnected`, undo/redo, and export behavior.
 
+### Filament color palette — `getColorPalette()`
+
+The user can configure a **filament palette** (the AI panel's 🧵 button): the real filament colors they own, how many can be loaded at once (`maxSimultaneous`, their AMS slot count), and whether to **enforce** it. Read it any time with `getColorPalette()`, which returns:
+
+```json
+{ "configured": true, "enforce": true, "maxSimultaneous": 4,
+  "colors": [ { "name": "Matte Black", "hex": "#000000" }, { "name": "Galaxy Purple", "hex": "#3a2a6b" } ] }
+```
+
+**When `enforce` is `true`** (and at least one color is configured), you MUST color models using **only** colors from `colors`, and use **at most `maxSimultaneous` distinct colors** across the whole model. This applies to every coloring path — `api.label(shape, name, { color })` and voxel colors in code, and every `paint*` tool. Don't invent or approximate off-palette colors; pick the nearest palette entry. If a design seems to want more colors than the limit, consolidate to the most important ones and say so in one short sentence. The same constraint is also injected into your per-turn instructions whenever enforcement is on, so you don't have to call `getColorPalette()` first — but call it to re-read the exact names/hex values before painting.
+
+**When `enforce` is `false`**, the palette is advisory: ignore it unless the user explicitly asks to match the filament they own, in which case read it and prefer those colors.
+
 ### `paintStroke` — smooth, rounded painted edges (use sparingly)
 
 All the other selectors paint whole existing triangles, so a painted edge follows the tessellation (stair-stepped on coarse meshes). `paintStroke` instead **subdivides the mesh under the stroke** so the painted region's outline is rounded — the smooth-brush equivalent of dragging a paintbrush. It is the only paint tool that changes the triangle count, so it costs more (a mesh rebuild) than the region selectors.
