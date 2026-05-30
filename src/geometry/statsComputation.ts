@@ -142,6 +142,18 @@ export function computeGeometryStats(
   };
 }
 
+/** Synthesise a printability verdict from existing geometry stats.
+ *  A model is printable when it is a single watertight solid (isManifold + one component).
+ *  Returns a short structured result the AI agent can check without parsing warning strings. */
+export function computePrintability(geo: Record<string, unknown>): { printable: boolean; issues: string[] } {
+  if (!geo || geo.status !== 'ok') return { printable: false, issues: ['no geometry'] };
+  const issues: string[] = [];
+  if (geo.isManifold === false) issues.push('non-manifold mesh (not watertight)');
+  if (typeof geo.componentCount === 'number' && geo.componentCount > 1)
+    issues.push(`${geo.componentCount} disconnected components`);
+  return { printable: issues.length === 0, issues };
+}
+
 export function computeStatDiff(prev: Record<string, unknown>, next: Record<string, unknown>): Record<string, unknown> {
   const diff: Record<string, unknown> = {};
 

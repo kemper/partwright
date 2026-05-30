@@ -20,6 +20,7 @@ Partwright is a browser-based parametric CAD tool with four modeling engines: **
 - [Common gotchas](#common-gotchas)
 - [Iteration workflow](#iteration-workflow)
 - [Stat-based verification](#stat-based-verification)
+- [Printability](#printability)
 - [Visual verification](#visual-verification)
 - [Spending mode](#spending-mode)
 
@@ -283,7 +284,7 @@ partwright.clearAnnotations()
 // create/open/list/clear console methods below are for the browser console and
 // the external Claude Code agent only.
 await partwright.createSession(name?)    // -> {id, url, galleryUrl}
-await partwright.runAndSave(code, label?, assertions?) // Assert+save in one call -> {passed?, geometry, version, diff, galleryUrl}
+await partwright.runAndSave(code, label?, assertions?) // Assert+save in one call -> {passed?, geometry, printability, version, diff, galleryUrl}
 await partwright.createSessionWithVersions(name, [{code, label},...]) // Batch create
 await partwright.saveVersion(label?)     // Save current state as version
 await partwright.listVersions()          // -> [{id, index, label, timestamp, status}]
@@ -375,6 +376,8 @@ await partwright.getSessionContext()     // -> {session, versions[], notes[], cu
 ```
 
 On error: `{"status":"error","error":"...","executionTimeMs":2,"codeHash":"..."}`
+
+`partwright.run()` and `partwright.getGeometryData()` also include a `printability` field — see [Printability](#printability).
 
 ### Common errors
 - `Code must return a Manifold object` -- forgot `return` statement
@@ -704,6 +707,33 @@ const r = await partwright.runAndExplain(code);
 // ]
 ```
 
+## Printability
+
+Every `runAndSave`, `run`, and `getGeometryData` response now includes:
+
+```json
+"printability": { "printable": true, "issues": [] }
+```
+
+`printable` is `false` when either condition holds:
+- `isManifold: false` — mesh has gaps or non-manifold edges (not watertight, slicer will reject or produce holes)
+- `componentCount > 1` — model has disconnected solids; floaters print as separate pieces or fail support generation
+
+**Always check `printability.printable` after `runAndSave`.** If it is `false`:
+1. Read `printability.issues` for the specific problems.
+2. For disconnected components, call `runAndExplain(code)` to see which pieces are floating and get overlap suggestions.
+3. Fix the geometry and re-save. Do not leave a saved version with `printable: false` as the final result of a build task — the user intends to print it.
+
+Voxel models are especially prone to `componentCount > 1` because every isolated island of voxels becomes its own component. After building a voxel scene, always verify `printability.printable`. If components > 1, either bridge the floating islands with connecting voxels, or confirm with the user that the separate pieces are intentional.
+
+```js
+const r = await partwright.runAndSave(code, 'v1');
+if (!r.printability.printable) {
+  // r.printability.issues: e.g. ["3 disconnected components"]
+  // fix the code, then re-save
+}
+```
+
 ## Print-safe geometry
 
 For 3D-printable output (FDM/FFF), features thinner than the nozzle's extrusion width are silently dropped by the slicer even though `geometry-data` (volume, `componentCount`, `genus`, `isManifold`) looks correct. The classic trap is `scaleTop` near zero tapering to sub-extrusion-width layers near `zMax`.
@@ -876,11 +906,12 @@ const r = await partwright.runAndSave(code, "v2 - added towers", {
 });
 // If assertions fail: r.passed = false, r.failures = [...], version NOT saved
 // If assertions pass (or no assertions given):
-// r.passed       = true (only present when assertions provided)
-// r.geometry     = full geometry stats
-// r.version      = { id, index, label }
-// r.diff         = { volume: { from, to, delta }, componentCount: ..., ... }
-// r.galleryUrl   = gallery URL for human review
+// r.passed         = true (only present when assertions provided)
+// r.geometry       = full geometry stats
+// r.printability   = { printable: true/false, issues: [] }   ← check this always
+// r.version        = { id, index, label }
+// r.diff           = { volume: { from, to, delta }, componentCount: ..., ... }
+// r.galleryUrl     = gallery URL for human review
 ```
 
 ### Forking a prior version

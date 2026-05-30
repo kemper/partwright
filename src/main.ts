@@ -236,6 +236,7 @@ import {
   bboxFromMesh,
   computeGeometryStats,
   computeStatDiff,
+  computePrintability,
   checkAssertions,
   type GeometryAssertions,
 } from './geometry/statsComputation';
@@ -354,6 +355,8 @@ let currentLostLabels: string[] | null = null;
 
 // #geometry-data element — always-updated machine-readable state
 let geometryDataEl: HTMLElement;
+// Viewport overlay pill — shows printability issues after each successful run.
+let printabilityIndicatorEl: HTMLElement | null = null;
 
 // === Shared-link preview mode ===
 //
@@ -528,6 +531,15 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
   // can't form a watertight manifold). computeGeometryStats degrades gracefully.
   const data = withSessionContext(computeGeometryStats(currentManifold, currentMeshData, executionTimeMs, sourceCode));
   geometryDataEl.textContent = JSON.stringify(data, null, 2);
+  if (printabilityIndicatorEl) {
+    const { printable, issues } = computePrintability(data);
+    if (printable) {
+      printabilityIndicatorEl.style.display = 'none';
+    } else {
+      printabilityIndicatorEl.textContent = '⚠ ' + issues.join(' · ');
+      printabilityIndicatorEl.style.display = '';
+    }
+  }
 }
 
 /** How long to wait for `canvas.toBlob` before giving up on the thumbnail.
@@ -3162,6 +3174,14 @@ async function main() {
     onStartTour: () => { resetTour(); startTour(); },
   });
 
+  // Printability indicator pill — shown in the viewport overlay when the model
+  // has structural issues that would prevent 3D printing (non-manifold or
+  // disconnected components). Hidden when the model is printable.
+  printabilityIndicatorEl = document.createElement('span');
+  printabilityIndicatorEl.className = 'absolute top-8 left-2 z-20 text-xs text-amber-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-amber-700/60 pointer-events-none';
+  printabilityIndicatorEl.style.display = 'none';
+  viewportPane.appendChild(printabilityIndicatorEl);
+
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
     onSelectPart: async (partId: string) => {
@@ -4880,14 +4900,15 @@ async function main() {
       if (!applied) {
         return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
       }
-      return JSON.parse(geometryDataEl.textContent || '{}');
+      const geo = JSON.parse(geometryDataEl.textContent || '{}');
+      return { ...geo, printability: computePrintability(geo) };
     },
 
     /** Get current geometry stats without re-running */
     getGeometryData(): Record<string, unknown> {
       const geo = JSON.parse(geometryDataEl.textContent || '{}');
       const warnings = geometryWarnings(geo);
-      return warnings.length > 0 ? { ...geo, warnings } : geo;
+      return { ...geo, printability: computePrintability(geo), ...(warnings.length > 0 ? { warnings } : {}) };
     },
 
     /** Get current editor code */
@@ -6202,9 +6223,11 @@ async function main() {
       const lostLabels = currentLostLabels && currentLostLabels.length > 0
         ? [...currentLostLabels]
         : undefined;
+      const printability = computePrintability(newGeoData);
       return {
         ...(assertions ? { passed: true } : {}),
         geometry: newGeoData,
+        printability,
         version: version ? { id: version.id, index: version.index, label: version.label } : null,
         diff,
         galleryUrl: getGalleryUrl(),
@@ -9948,6 +9971,7 @@ async function main() {
     if (result.error) {
       const diagnostics = result.diagnostics ?? [];
       setStatus(statusBar, 'error', summarizeDiagnostics(result.error, diagnostics));
+      if (printabilityIndicatorEl) printabilityIndicatorEl.style.display = 'none';
       geometryDataEl.textContent = JSON.stringify({
         status: 'error',
         error: result.error,
