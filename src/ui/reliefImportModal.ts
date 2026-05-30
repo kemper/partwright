@@ -7,6 +7,7 @@
 import type { ReliefOptions, ReliefImportMode, TileOutputKind, TileShapeKind, HeightGrid, ReliefMesh, SeedRegion } from '../relief/types';
 import { DEFAULT_RELIEF_OPTIONS } from '../relief/types';
 import { sampleImageToGrid, detectBackgroundMask, bgMaskFromColor, generateRelief, generateReliefFromSvg } from '../relief/imageToRelief';
+import { loadPalette } from '../color/palette';
 import { registerImportSnapshot, type ImportMetadata } from '../import/importInbox';
 import { createThumbnailFromBlob } from '../import/imageThumbnail';
 import { createModalShell } from './modalShell';
@@ -209,6 +210,14 @@ export function openReliefImportModal(options: ReliefImportModalOptions): void {
     { value: 'lab', label: 'Lab' },
   ]);
   checkboxControl(quantizedSection.grid, 'Dither', () => opts.quantized.dither, v => (opts.quantized.dither = v));
+  // Constrain the tile's cluster colours to the user's filament palette — each
+  // cluster snaps to the nearest filament (best match). Off keeps raw clusters.
+  checkboxControl(quantizedSection.grid, 'Constrain to filament palette', () => !!opts.quantized.snapPalette, v => {
+    const fil = loadPalette().colors;
+    opts.quantized.snapPalette = (v && fil.length > 0)
+      ? fil.map(c => [parseInt(c.hex.slice(1, 3), 16), parseInt(c.hex.slice(3, 5), 16), parseInt(c.hex.slice(5, 7), 16)] as [number, number, number])
+      : null;
+  });
 
   // Tile knobs — visible for 'quantized' mode and for SVG imports. The Output
   // picker switches between a stepped relief, a flat colour tile (keychain
