@@ -4872,7 +4872,46 @@ async function main() {
     return currentMeshData;
   }
 
-  async function commitSurfaceModifier(result: ModifierResult): Promise<Record<string, unknown>> {
+  /** The mesh a modifier should consume. When `preserveColor` is on and the
+   *  model is painted, bake the visible colors into `triColors` so a modifier
+   *  that resamples color (voxelize) inherits the paint; manifold modifiers
+   *  ignore `triColors` (they re-resolve paint regions after the run instead). */
+  function meshForModifier(preserveColor: boolean): MeshData {
+    const mesh = requireCurrentMeshForModifier();
+    if (preserveColor && (hasColorRegions() || hasModelColorRegions())) {
+      return applyTriColors(mesh);
+    }
+    return mesh;
+  }
+
+  /** True if the active model carries any paint (manual or model-declared). */
+  function modelHasColor(): boolean {
+    return hasColorRegions() || hasModelColorRegions();
+  }
+
+  // Non-destructive preview: swap the viewport mesh to the modifier's result
+  // WITHOUT running the engine or saving a version. Cleared by reverting to the
+  // current model's mesh (clearSurfacePreview). Mirrors the relief preview path.
+  function previewSurfaceModifier(result: ModifierResult): void {
+    const previewMesh = result.kind === 'manifold' ? result.mesh : result.previewMesh;
+    if (previewMesh.numTri > 0) updateMesh(previewMesh, { skipAutoFrame: true });
+  }
+
+  function clearSurfacePreview(): void {
+    if (!currentMeshData) return;
+    const restored = modelHasColor() ? applyTriColorsIfVisible(currentMeshData) : currentMeshData;
+    updateMesh(restored, { skipAutoFrame: true });
+  }
+
+  async function commitSurfaceModifier(result: ModifierResult, preserveColor: boolean): Promise<Record<string, unknown>> {
+    // Capture the paint regions to carry forward BEFORE we drop paint state.
+    // Manifold modifiers re-tessellate, so raw mesh colors are lost in the
+    // ofMesh round-trip; instead we re-attach the serialized regions to the new
+    // version's geometry and let the post-run reconcile re-resolve them onto the
+    // new mesh (region-based paint survives; freehand brush strokes may not).
+    const carriedRegions = preserveColor && result.kind === 'manifold' && hasColorRegions()
+      ? serializeRegions()
+      : null;
     cancelVoxelPaintIfActive();
     dropPaintState();
     if (result.kind === 'manifold') {
@@ -4891,14 +4930,25 @@ async function main() {
       setValue(result.code);
       const ok = await runCodeSync(result.code);
       if (!ok) return { error: `Failed to apply ${result.label}` };
+      let geoData = getGeometryDataObj();
+      let carried = 0, dropped = 0;
+      if (carriedRegions && geoData) {
+        geoData = { ...geoData, colorRegions: carriedRegions };
+        const report = rehydrateColorRegions(geoData);
+        carried = report.carried.length;
+        dropped = report.dropped.length;
+        geoData = enrichGeometryDataWithColors(getGeometryDataObj());
+      }
       const thumbnail = await captureThumbnail();
-      await saveVersion(result.code, getGeometryDataObj(), thumbnail, result.label, undefined, {
+      await saveVersion(result.code, geoData, thumbnail, result.label, undefined, {
         force: true,
         importedMeshes: [comp],
       });
-      return { ok: true, label: result.label, geometry: getGeometryDataObj() };
+      return { ok: true, label: result.label, geometry: getGeometryDataObj(), colorsCarried: carried, colorsDropped: dropped };
     }
     // Voxel result: a self-contained `voxels.decode(...)` program, no imports.
+    // Color (when preserved) is baked into the grid at voxelize time, so it
+    // rides the emitted code — nothing extra to persist here.
     if (getActiveLanguage() !== 'voxel') await switchLanguage('voxel');
     setActiveImports([]);
     setValue(result.code);
@@ -4909,40 +4959,74 @@ async function main() {
     return { ok: true, label: result.label, geometry: getGeometryDataObj() };
   }
 
+  // Build a modifier result from an id + options (shared by apply and preview).
+  // `preserveColor` only affects voxelize's input here (color-baked mesh so the
+  // grid samples paint); fuzzy/smooth carry paint via regions at commit time.
+  function buildSurfaceModifier(
+    id: 'fuzzy' | 'smooth' | 'voxelize',
+    opts: Record<string, unknown> | undefined,
+    preserveColor: boolean,
+  ): ModifierResult {
+    if (id === 'fuzzy') {
+      const mesh = requireCurrentMeshForModifier();
+      const base = defaultFuzzyOptions(mesh);
+      return applyFuzzy(mesh, {
+        amplitude: (opts?.amplitude as number) ?? base.amplitude,
+        scale: (opts?.scale as number) ?? base.scale,
+        octaves: (opts?.octaves as number) ?? base.octaves,
+        seed: (opts?.seed as number) ?? base.seed,
+      });
+    }
+    if (id === 'smooth') {
+      const mesh = requireCurrentMeshForModifier();
+      const base = defaultSmoothOptions();
+      return applySmooth(mesh, {
+        iterations: (opts?.iterations as number) ?? base.iterations,
+        subdivide: (opts?.subdivide as boolean) ?? base.subdivide,
+      });
+    }
+    // voxelize: feed the color-baked mesh when preserving so per-voxel color is sampled.
+    return applyVoxelize(meshForModifier(preserveColor), {
+      resolution: (opts?.resolution as number) ?? 32,
+      smooth: (opts?.smooth as boolean) ?? false,
+    });
+  }
+
   // === Expose window.partwright console API ===
   const partwrightAPI = {
-    /** Apply a fuzzy-skin surface texture to the current model; saves a new version. */
-    async applyFuzzySkin(opts?: { amplitude?: number; scale?: number; octaves?: number; seed?: number }) {
+    /** Whether the current model carries paint (so the UI can warn before a
+     *  color-clearing modifier, or offer "preserve colors"). */
+    modelHasColor(): boolean { return modelHasColor(); },
+    /** Non-destructive viewport preview of a surface modifier (no version saved).
+     *  Call clearSurfacePreview() / re-run to restore. id: 'fuzzy'|'smooth'|'voxelize'. */
+    previewSurfaceModifier(id: 'fuzzy' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
       try {
-        const mesh = requireCurrentMeshForModifier();
-        const base = defaultFuzzyOptions(mesh);
-        return await commitSurfaceModifier(applyFuzzy(mesh, {
-          amplitude: opts?.amplitude ?? base.amplitude,
-          scale: opts?.scale ?? base.scale,
-          octaves: opts?.octaves ?? base.octaves,
-          seed: opts?.seed ?? base.seed,
-        }));
+        previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor));
+        return { ok: true };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Discard a live surface preview and restore the current model's mesh. */
+    clearSurfacePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
+    /** Apply a fuzzy-skin surface texture to the current model; saves a new version.
+     *  `preserveColor` (default true) re-resolves paint regions onto the new mesh. */
+    async applyFuzzySkin(opts?: { amplitude?: number; scale?: number; octaves?: number; seed?: number; preserveColor?: boolean }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('fuzzy', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Smooth/round the current model (Taubin λ/μ); saves a new version. */
-    async smoothModel(opts?: { iterations?: number; subdivide?: boolean }) {
+    async smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }) {
       try {
-        const mesh = requireCurrentMeshForModifier();
-        const base = defaultSmoothOptions();
-        return await commitSurfaceModifier(applySmooth(mesh, {
-          iterations: opts?.iterations ?? base.iterations,
-          subdivide: opts?.subdivide ?? base.subdivide,
-        }));
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('smooth', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Voxelize the current model into the voxel engine; saves a new version. */
-    async voxelizeModel(opts?: { resolution?: number; smooth?: boolean }) {
+    async voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }) {
       try {
-        const mesh = requireCurrentMeshForModifier();
-        return await commitSurfaceModifier(applyVoxelize(mesh, {
-          resolution: opts?.resolution ?? 32,
-          smooth: opts?.smooth ?? false,
-        }));
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(buildSurfaceModifier('voxelize', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Run code string and update all views. Returns geometry data object. */

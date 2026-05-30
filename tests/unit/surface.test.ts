@@ -142,4 +142,26 @@ describe('modifiers (codegen)', () => {
     const smooth = applyVoxelize(cube(10), { resolution: 12, smooth: true });
     expect(smooth.code).toContain('v.smooth()');
   });
+
+  it('voxelize carries a non-empty preview mesh for non-destructive preview', () => {
+    const r = applyVoxelize(cube(10), { resolution: 12 });
+    expect(r.previewMesh.numTri).toBeGreaterThan(0);
+    expect(r.previewMesh.triColors).toBeTruthy();
+  });
+
+  it('voxelize samples per-triangle color from a painted input mesh', () => {
+    const c = cube(10);
+    // Paint the whole input mesh solid red (0xff,0,0) so every surface voxel
+    // should inherit red rather than the default fill.
+    c.triColors = new Uint8Array(c.numTri * 3);
+    for (let t = 0; t < c.numTri; t++) c.triColors[t * 3] = 255;
+    const r = applyVoxelize(c, { resolution: 12 });
+    const tc = r.previewMesh.triColors!;
+    // At least one surface triangle should be pure red (sampled from the paint).
+    let sawRed = false;
+    for (let t = 0; t < r.previewMesh.numTri; t++) {
+      if (tc[t * 3] === 255 && tc[t * 3 + 1] === 0 && tc[t * 3 + 2] === 0) { sawRed = true; break; }
+    }
+    expect(sawRed).toBe(true);
+  });
 });

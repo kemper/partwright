@@ -18,6 +18,7 @@ import { smoothSurface, type SmoothOptions } from './smoothSurface';
 import { voxelizeMesh, type VoxelizeOptions } from './voxelizeMesh';
 import { extractPositions, bboxOf } from './meshSubdivide';
 import { encodeGrid } from '../geometry/voxel/grid';
+import { meshGrid } from '../geometry/voxel/mesher';
 
 export type SurfaceModifierId = 'fuzzy' | 'smooth' | 'voxelize';
 
@@ -36,6 +37,9 @@ export interface ModifierVoxelResult {
   label: string;
   /** Editor code that rebuilds the grid via `voxels.decode(...)`. */
   code: string;
+  /** The meshed grid (with per-voxel colors), for non-destructive preview —
+   *  what the voxel engine would render once the code runs. */
+  previewMesh: MeshData;
 }
 
 export type ModifierResult = ModifierManifoldResult | ModifierVoxelResult;
@@ -103,7 +107,11 @@ export interface VoxelizeModifierOptions extends VoxelizeOptions {
 
 export function applyVoxelize(mesh: MeshData, opts: VoxelizeModifierOptions): ModifierVoxelResult {
   const grid = voxelizeMesh(mesh, opts);
+  // encodeGrid serializes only occupancy + colors (not the surfacing flag), so
+  // encode first, then flip the in-memory grid to smooth purely so the preview
+  // mesh below matches what the emitted `v.smooth()` produces at runtime.
   const encoded = encodeGrid(grid);
+  if (opts.smooth) grid.smooth();
   const smoothCall = opts.smooth ? `\nv.smooth();` : '';
   const code = `// Voxelized from the current model on ${today()} (resolution ${opts.resolution ?? 32}).
 // Edit below — toggle "Smooth voxels" for rounded corners, or v.fillBox(...) to extend.
@@ -111,5 +119,12 @@ const { voxels } = api;
 const v = voxels.decode(${JSON.stringify(encoded)});${smoothCall}
 return v;
 `;
-  return { kind: 'voxel', label: opts.smooth ? 'voxelized (smooth)' : 'voxelized', code };
+  // `meshGrid` honors the grid's surfacing flag (blocks/smooth) and carries
+  // per-voxel colors, so the preview matches what the emitted code renders.
+  return {
+    kind: 'voxel',
+    label: opts.smooth ? 'voxelized (smooth)' : 'voxelized',
+    code,
+    previewMesh: meshGrid(grid),
+  };
 }
