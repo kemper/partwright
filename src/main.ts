@@ -2092,7 +2092,7 @@ async function main() {
   async function handleImportFile(file: File, options: { skipPreActiveConfirm?: boolean } = {}): Promise<boolean> {
     const source = classifyImportSource(file.name);
     if (!source) {
-      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl, .step / .stp, .vox, .png / .jpg / .gif / .webp`);
+      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl, .step / .stp, .vox, .svg, .png / .jpg / .gif / .webp / .avif`);
       return false;
     }
 
@@ -2101,7 +2101,7 @@ async function main() {
     // confirmation; STL and STEP imports skip it because their target modals let
     // the user choose where the import should go; IMAGE imports skip it because
     // the image→voxel parameter modal (with its own Cancel) serves the same role.
-    if (!options.skipPreActiveConfirm && source !== 'JSON' && source !== 'STL' && source !== 'STEP' && source !== 'IMAGE') {
+    if (!options.skipPreActiveConfirm && source !== 'JSON' && source !== 'STL' && source !== 'STEP' && source !== 'IMAGE' && source !== 'SVG') {
       const cur = getState();
       if (cur.session && cur.versionCount > 0) {
         const ok = await showInlineConfirm(
@@ -2134,6 +2134,13 @@ async function main() {
         committed = await handleImageImport(file);
       } else if (source === 'VOX') {
         committed = await handleVoxImport(file);
+      } else if (source === 'SVG') {
+        // SVG has no standalone mesh importer — it's a Relief Studio source.
+        // Open the relief wizard pre-loaded with the dropped file (its own
+        // Create registers the Recent-Imports entry + thumbnail), so a dropped
+        // .svg lands somewhere sensible instead of silently doing nothing.
+        openReliefImportFlow(file);
+        return true;
       }
       // IMAGE registers itself inside handleImageImport (it owns the chosen
       // voxel options + thumbnail it needs to stash for a faithful re-import).
@@ -2210,7 +2217,7 @@ async function main() {
       return false;
     }
     const code = generateVoxelImportCode(grid, chosenName);
-    const sessionName = chosenName.replace(/\.(png|jpe?g|gif|webp|bmp)$/i, '');
+    const sessionName = chosenName.replace(/\.[^.]+$/, '');
     await importCodePayload(code, 'voxel', sessionName);
     // Register in Recent Imports tagged as a voxel import, with the chosen
     // settings + a thumbnail, so re-clicking it reopens THIS modal (not relief)
@@ -2314,7 +2321,7 @@ async function main() {
     // the OCCT mesh isn't watertight.
     const trial = tryConstructManifold(mesh);
     const parsed: ParsedSTL = {
-      mesh: toImportedMesh(file.name, mesh),
+      mesh: toImportedMesh(file.name, mesh, 'step'),
       isManifold: trial.ok,
     };
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
@@ -2381,11 +2388,11 @@ async function main() {
     return { mesh: toImportedMesh(file.name, bestMesh), isManifold: false };
   }
 
-  function toImportedMesh(filename: string, mesh: MeshData): ImportedMesh {
+  function toImportedMesh(filename: string, mesh: MeshData, format: ImportedMesh['format'] = 'stl'): ImportedMesh {
     return {
       id: generateId(),
       filename,
-      format: 'stl',
+      format,
       vertProperties: mesh.vertProperties,
       triVerts: mesh.triVerts,
       numVert: mesh.numVert,
@@ -2468,6 +2475,11 @@ async function main() {
     // the editor.
     cancelVoxelPaintIfActive();
     dropPaintState();
+    // The import wrapper is manifold-js code; runCodeSync and saveVersion both
+    // key off the active language, so switch before running/saving — otherwise
+    // composing into a SCAD/BREP/voxel part would run the wrapper through the
+    // wrong engine and persist the version tagged with the wrong language.
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const code = generateImportCode(components, { manifold });
     setActiveImports(components);
     setValue(code);
@@ -2487,10 +2499,16 @@ async function main() {
   async function bakePartComponents(partId: string, label: string): Promise<ImportedMesh[] | null> {
     const version = await getLatestVersion(partId);
     if (!version) return null;
+    // Bake the part under the language it was authored in, not the globally
+    // active engine. Without the explicit lang arg executeCodeAsync falls back
+    // to pickLang(undefined) = the active language, so merging/composing a SCAD
+    // or BREP part while a manifold-js part is open ran its code through the
+    // wrong engine and produced no usable geometry ("No geometry data").
+    const lang = effectiveVersionLanguage(version, getState().session);
     const saved = getActiveImports();
     try {
       setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
-      const result = await executeCodeAsync(version.code);
+      const result = await executeCodeAsync(version.code, lang);
       if (result.error || !result.mesh) return null;
       return [toImportedMesh(label, result.mesh)];
     } finally {
@@ -2500,7 +2518,7 @@ async function main() {
 
   /** Add the imported mesh as a brand-new part (becomes current). */
   async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean): Promise<void> {
-    const part = await createPart(filename.replace(/\.stl$/i, ''));
+    const part = await createPart(filename.replace(/\.[^.]+$/, ''));
     if (!part) return;
     await applyImportWrapper([mesh], manifold);
   }
@@ -2522,7 +2540,15 @@ async function main() {
    *  creates one (legacy behavior); otherwise the import-target modal lets the
    *  user pick a new part, the current part, or a new session. */
   async function placeImportedMesh(parsed: ParsedSTL, filename: string): Promise<boolean> {
-    const sessionName = filename.replace(/\.stl$/i, '');
+    // Mesh imports always produce a `Manifold.ofMesh(...)` / `Manifold.compose(...)`
+    // wrapper, which is manifold-js code. saveVersion snapshots the active
+    // language, so switch before any version is written — otherwise importing
+    // into an active SCAD/BREP/voxel session tags the version with the wrong
+    // language and the engine switches wrong on reload. (The STEP→mesh path
+    // already switches before calling here; do it unconditionally so every
+    // entry point — STL, STEP, re-import — is safe.)
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
+    const sessionName = filename.replace(/\.[^.]+$/, '');
     const state = getState();
     if (!state.session) {
       await importMeshPayload(parsed.mesh, sessionName, { manifold: parsed.isManifold });
@@ -2568,6 +2594,10 @@ async function main() {
   /** Build a new part holding the composed geometry of `components`. Probes the
    *  combine first so a failure surfaces as a toast instead of a broken part. */
   async function createCombinedPart(components: ImportedMesh[], name: string): Promise<boolean> {
+    // The compose wrapper is manifold-js; merging while a SCAD/BREP/voxel part
+    // is active would probe + run + save it through the wrong engine. Switch
+    // first so the probe, runCodeSync, and the saved version are all manifold-js.
+    if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const code = generateImportCode(components, { manifold: true });
     const saved = getActiveImports();
     setActiveImports(components);
@@ -2713,8 +2743,10 @@ async function main() {
   // the lifetime of the document — no cleanup needed. If editor teardown is
   // ever added, store these handlers and pair with removeEventListener().
   function isImportableFile(file: File): boolean {
-    const n = file.name.toLowerCase();
-    return n.endsWith('.json') || n.endsWith('.js') || n.endsWith('.scad') || n.endsWith('.stl');
+    // Reuse the single classifier so drag-and-drop accepts exactly the same set
+    // as the Import button (IMPORT_ACCEPT) — STEP, VOX, images, and SVG too,
+    // not just the original JSON/JS/SCAD/STL.
+    return classifyImportSource(file.name) !== null;
   }
 
   document.addEventListener('dragover', (e) => {
