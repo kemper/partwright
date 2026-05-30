@@ -370,32 +370,9 @@
     <style>@keyframes splash-spin{to{transform:rotate(360deg)}}</style>
   </div>
 
-  <!-- Sync inline script: runs before first paint to pick the right initial view.
+  <!-- Sync script: runs before first paint to pick the right initial view.
        On /, the landing HTML above shows. On all other routes, show the spinner. -->
-  <script>
-  (function(){
-    var p=window.location.pathname;
-    var q=window.location.search;
-    var h=window.location.hash;
-    var isLanding=
-      (p==='/'||p==='')&&
-      !h.startsWith('#share=')&&
-      q.indexOf('view=')<0&&
-      q.indexOf('session=')<0&&
-      q.indexOf('gallery')<0&&
-      q.indexOf('versions')<0&&
-      q.indexOf('images')<0&&
-      q.indexOf('diff')<0&&
-      q.indexOf('notes')<0&&
-      q.indexOf('data')<0;
-    if(!isLanding){
-      var li=document.getElementById('landing-inline');
-      var ls=document.getElementById('loading-splash');
-      if(li)li.style.display='none';
-      if(ls)ls.style.display='flex';
-    }
-  })();
-  </script>
+  <script src="/route-init.js"></script>
 
   <div id="app" class="flex flex-col h-screen w-screen"></div>
   <script type="module" src="/src/main.ts"></script>
