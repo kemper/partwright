@@ -419,11 +419,6 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
-    name: 'getShareLink',
-    description: 'Mint a self-contained, read-only share link for the current version — the link to hand the user when you are done. Commits the current buffer first (capturing unsaved edits), then encodes the whole design into the URL hash; nothing is uploaded to a server, and anyone can open the link anywhere and fork it into their own editable copy. Returns { url, encodedBytes } on success, or { error } (e.g. no session open, an older browser without CompressionStream, or a design too large to fit in a URL). Prefer this over a session/gallery URL, which only resolves against your own browser.',
-    input_schema: { type: 'object', properties: {} },
-  },
-  {
     name: 'readDoc',
     description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, reference-images, file-io, annotations, relief.',
     input_schema: {
@@ -1081,11 +1076,11 @@ const ALWAYS_AVAILABLE = new Set([
   // can stop the model from spending a tool round-trip on notes the chat
   // transcript already records.
   'listSessionNotes',
-  // getShareLink is the "hand the design back to the user when done" action the
-  // system prompt steers every session toward, so it stays always-on like the
-  // other read-only session surfaces — gating it would resurrect the
-  // "Unknown tool: getShareLink" failure whenever the toggle was off.
-  'getShareLink',
+  // getShareLink is intentionally NOT a chat tool. The encoded share URL is
+  // enormous, so returning it as a tool result would dump the whole design into
+  // the model's context for no benefit — the in-app user just clicks the toolbar
+  // Share button (↗). The capability lives on window.partwright.getShareLink()
+  // for EXTERNAL agents (no toolbar to click); see public/ai.md.
   'readDoc',
   'findFaces',
   'listComponents',
@@ -1427,8 +1422,6 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.addSessionNote(input.text as string);
     case 'listSessionNotes':
       return api.listSessionNotes();
-    case 'getShareLink':
-      return api.getShareLink();
     case 'readDoc':
       return readSubdoc(input.name as string);
     case 'paintRegion':

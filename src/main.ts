@@ -40,7 +40,8 @@ import { showQualitySettingsModal } from './ui/qualitySettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar } from './ui/aiPanel';
-import { mergeChatBucket } from './ai/db';
+import { getKey, mergeChatBucket } from './ai/db';
+import { requestPersistentStorage } from './storage/persist';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
 import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
@@ -85,7 +86,7 @@ import {
 import { createThumbnailFromImageData } from './import/imageThumbnail';
 import { showImportPreview, summarizeSessionImport } from './ui/importPreview';
 import { showImportTargetModal } from './ui/importTargetModal';
-import { showImageVoxelImportModal } from './ui/imageVoxelImportModal';
+import { showImageVoxelImportModal, type ImageVoxelModalResult } from './ui/imageVoxelImportModal';
 import { showStepImportTargetModal } from './ui/stepImportTargetModal';
 import { showLanguageHelpModal } from './ui/languageHelpModal';
 import { showMergePartsModal } from './ui/mergePartsModal';
@@ -1568,6 +1569,18 @@ async function main() {
   void hydrateImportInbox();
   void hydrateExportInbox();
 
+  // If the user already has a saved API key, ask the browser to make storage
+  // persistent so it isn't evicted under storage pressure (mobile browsers,
+  // iOS Safari ITP especially, evict best-effort IndexedDB and wipe the key).
+  // New saves request this from putKey; this covers installs keyed before that
+  // shipped. Gated on having a key so we don't prompt (Firefox) unprompted users.
+  void (async () => {
+    const keyed = await Promise.all(
+      (['anthropic', 'openai', 'gemini', 'custom'] as const).map((p) => getKey(p)),
+    );
+    if (keyed.some(Boolean)) void requestPersistentStorage();
+  })();
+
   // Remove loading splash as soon as JS takes over
   document.getElementById('loading-splash')?.remove();
 
@@ -2187,6 +2200,47 @@ async function main() {
     return ctx.getImageData(0, 0, canvas.width, canvas.height);
   }
 
+  /** Shared tail of every image→voxel import (drag/drop, recent re-click, and
+   *  the modal-first menu): turn the modal result into a voxel session + a
+   *  Recent Imports entry. `fallbackFile` seeds the source blob when the result
+   *  didn't carry one (the picker flows always do). */
+  async function finishVoxelImport(result: ImageVoxelModalResult, fallbackFile?: File): Promise<boolean> {
+    const { options: opts, image: chosenImage, file: chosenFile, filename: chosenName } = result;
+    const sourceFile = chosenFile ?? fallbackFile ?? null;
+    const grid = imageDataToVoxelGrid(chosenImage, opts);
+    if (grid.size === 0) {
+      alert(`"${chosenName}" produced no voxels at the chosen settings. Try lowering the transparency cutoff.`);
+      return false;
+    }
+    const code = generateVoxelImportCode(grid, chosenName, { style: opts.codeStyle });
+    const sessionName = chosenName.replace(/\.[^.]+$/, '');
+    // With a session open (and real work to protect), let the user pick
+    // new-part / current-part / new-session (default new-part). A fresh /
+    // expendable starter or no session forces a fresh session named after the
+    // file (handled inside placeImportedCode).
+    const placed = await placeImportedCode({
+      code,
+      language: 'voxel',
+      sessionName,
+      filename: chosenName,
+      title: 'Import voxels',
+      composable: true,
+    });
+    if (!placed) return false;
+    // Register in Recent Imports tagged as a voxel import, with the chosen
+    // settings + a thumbnail, so re-clicking it reopens THIS modal (not relief)
+    // pre-loaded with these knobs. Needs the source blob to re-import later.
+    if (sourceFile) {
+      const meta: ImportMetadata = { importer: 'voxel', options: opts };
+      // Snapshot the file bytes (registerImportSnapshot): a later re-import must
+      // not depend on the original OS file still being readable. chosenImage
+      // always originates from decodeImage*ToImageData (a real ImageData), so
+      // the ImageDataLike→ImageData narrowing is safe here.
+      await registerImportSnapshot(sourceFile, chosenName, 'IMAGE', meta, createThumbnailFromImageData(chosenImage as ImageData));
+    }
+    return true;
+  }
+
   /** Import an image as a colored voxel billboard in a new voxel session.
    *  Transparent pixels (alpha below threshold) drop out, so logos and
    *  sprites voxelize cleanly; opaque photos become a full extruded slab.
@@ -2205,40 +2259,19 @@ async function main() {
     // pre-import confirm is skipped for images (see handleImportFile).
     // `initialOptions` pre-fills the controls when re-importing a past entry.
     // The user may also swap the source image inside the modal ("Choose a
-    // different image…"), so build everything below from the RESULT's image /
-    // file / name rather than the originally-picked one.
+    // different image…"), so build everything from the RESULT's image / file /
+    // name rather than the originally-picked one.
     const result = await showImageVoxelImportModal({ filename: file.name, image: imageData, file, initialOptions });
     if (!result) return false;
-    const { options: opts, image: chosenImage, file: chosenFile, filename: chosenName } = result;
-    const sourceFile = chosenFile ?? file;
-    const grid = imageDataToVoxelGrid(chosenImage, opts);
-    if (grid.size === 0) {
-      alert(`"${chosenName}" produced no voxels at the chosen settings. Try lowering the transparency cutoff.`);
-      return false;
-    }
-    const code = generateVoxelImportCode(grid, chosenName);
-    const sessionName = chosenName.replace(/\.[^.]+$/, '');
-    // With a session open, let the user pick new-part / current-part /
-    // new-session (default new-part). With none open, force a fresh session.
-    const placed = await placeImportedCode({
-      code,
-      language: 'voxel',
-      sessionName,
-      filename: chosenName,
-      title: 'Import voxels',
-      composable: true,
-    });
-    if (!placed) return false;
-    // Register in Recent Imports tagged as a voxel import, with the chosen
-    // settings + a thumbnail, so re-clicking it reopens THIS modal (not relief)
-    // pre-loaded with these knobs. Use the swapped-in source when present.
-    const meta: ImportMetadata = { importer: 'voxel', options: opts };
-    // Snapshot the file bytes (see registerImportSnapshot): a re-import later
-    // must not depend on the original OS file still being readable. Use the
-    // swapped-in source when present. chosenImage always originates from
-    // decodeImage*ToImageData (a real ImageData), so the narrowing is safe.
-    await registerImportSnapshot(sourceFile, chosenName, 'IMAGE', meta, createThumbnailFromImageData(chosenImage as ImageData));
-    return true;
+    return finishVoxelImport(result, file);
+  }
+
+  /** Modal-first entry for Import → "Image → voxel…": open the voxel modal with
+   *  no image and let the user pick one inside (mirrors the relief wizard). */
+  async function openVoxelImportFlow(): Promise<boolean> {
+    const result = await showImageVoxelImportModal({});
+    if (!result) return false;
+    return finishVoxelImport(result);
   }
 
   /** Import a MagicaVoxel `.vox` file as a voxel session. Mirrors the image
@@ -3216,6 +3249,7 @@ async function main() {
       if (sid && isReliefSession(sid)) void reopenReliefImport(sid);
       else openReliefImportFlow();
     },
+    onCreateVoxel: () => { void openVoxelImportFlow(); },
     onLanguageHelp: async () => { await showLanguageHelpModal(); },
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => {
@@ -5340,8 +5374,11 @@ async function main() {
      *  per-column height from pixel brightness (with an optional `baseThickness`
      *  backing, and `invert` to raise dark areas). `colorMode` keeps the
      *  original color, converts to `grayscale`, or paints a single `flatColor`.
-     *  Transparent pixels below `alphaThreshold` drop out. Returns
-     *  `{ sessionId, voxelCount }` or `{ error }`. */
+     *  Transparent pixels below `alphaThreshold` drop out. `palette` (an array
+     *  of `[r,g,b]` triples) snaps each `original`-mode pixel to its nearest
+     *  entry (overrides `posterizeColors`); `codeStyle: 'calls'` emits editable
+     *  `v.fillBox(...)` builder code instead of the compact `voxels.decode(...)`
+     *  blob. Returns `{ sessionId, voxelCount }` or `{ error }`. */
     async importImageAsVoxels(imageUrl: string, opts: ImageToVoxelOptions = {}) {
       const check = guard(() => {
         assertString(imageUrl, 'importImageAsVoxels(imageUrl)', { allowEmpty: false });
@@ -5363,6 +5400,14 @@ async function main() {
         if (opts.contrast !== undefined) assertNumber(opts.contrast, 'importImageAsVoxels(opts.contrast)', { min: -1, max: 1 });
         if (opts.saturation !== undefined) assertNumber(opts.saturation, 'importImageAsVoxels(opts.saturation)', { min: -1, max: 1 });
         if (opts.posterizeColors !== undefined) assertNumber(opts.posterizeColors, 'importImageAsVoxels(opts.posterizeColors)', { min: 0, integer: true });
+        if (opts.palette !== undefined && opts.palette !== null) {
+          if (!Array.isArray(opts.palette)) throw new Error('importImageAsVoxels(opts.palette) must be an array of [r,g,b] triples');
+          opts.palette.forEach((c, i) => {
+            const t = assertNumberTuple(c, 3, `importImageAsVoxels(opts.palette[${i}])`);
+            t.forEach((n, j) => assertNumber(n, `importImageAsVoxels(opts.palette[${i}][${j}])`, { min: 0, max: 255, integer: true }));
+          });
+        }
+        if (opts.codeStyle !== undefined) assertEnum(opts.codeStyle, ['decode', 'calls'], 'importImageAsVoxels(opts.codeStyle)');
         if (opts.removeBackground !== undefined) assertBoolean(opts.removeBackground, 'importImageAsVoxels(opts.removeBackground)');
         if (opts.backgroundColor !== undefined) {
           const c = assertNumberTuple(opts.backgroundColor, 3, 'importImageAsVoxels(opts.backgroundColor)');
@@ -5378,7 +5423,7 @@ async function main() {
       }
       const grid = imageDataToVoxelGrid(imageData, opts);
       if (grid.size === 0) return { error: 'importImageAsVoxels: image produced no voxels (every sampled pixel was transparent).' };
-      const code = generateVoxelImportCode(grid, 'image');
+      const code = generateVoxelImportCode(grid, 'image', { style: opts.codeStyle });
       const result = await importCodePayload(code, 'voxel', 'image-voxels');
       return { sessionId: result.sessionId, voxelCount: grid.size };
     },

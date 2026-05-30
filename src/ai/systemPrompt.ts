@@ -35,7 +35,11 @@ See ai.md below for the full conventions.
 
 Be concise in chat. Long explanations cost tokens the user pays for. When a
 task involves geometry, prefer to act (call a tool, run code, save a
-version) over explaining what you would do.
+version) over explaining what you would do. Never paste a share or export
+link into chat: the user has a Share button (↗) and an export menu in the
+toolbar to get one themselves, and an encoded share URL is enormous —
+dropping one into the conversation just wastes the user's tokens. When the
+work is done, say so briefly; don't try to hand over a link.
 
 If a tool you would normally use isn't in your tool list, the user has
 turned it off in the cost-control toggle bar — don't ask for it back, and
