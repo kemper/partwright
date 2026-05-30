@@ -1612,8 +1612,13 @@ async function main() {
     if (keyed.some(Boolean)) void requestPersistentStorage();
   })();
 
-  // Remove loading splash as soon as JS takes over
+  // Remove loading overlays as soon as JS takes over.
+  // landing-inline stays visible on the landing route until showLandingPage()
+  // replaces it with the JS-built version; remove it immediately on all other routes.
   document.getElementById('loading-splash')?.remove();
+  if (!shouldShowLanding()) {
+    document.getElementById('landing-inline')?.remove();
+  }
 
   const app = document.getElementById('app')!;
   geometryDataEl = createGeometryDataElement();
@@ -1630,7 +1635,7 @@ async function main() {
   // Wrapper for the main editor UI (toolbar + session bar + layout)
   const editorUI = document.createElement('div');
   editorUI.id = 'editor-ui';
-  editorUI.className = 'flex flex-col flex-1 min-h-0 w-full';
+  editorUI.className = 'flex flex-col flex-1 min-h-0 w-full hidden';
 
   let landingEl: HTMLElement | null = null;
   let helpEl: HTMLElement | null = null;
@@ -3905,6 +3910,8 @@ async function main() {
   let editorReadyResolve: (() => void) = () => {};
   const editorReadyPromise = new Promise<void>(resolve => { editorReadyResolve = resolve; });
   let engineOk = false;
+  let engineLoadPromise: Promise<void> | null = null;
+  let engineLoadingOverlay: HTMLElement | null = null;
   let helpHasAppBackTarget = false;
   let legalEl: HTMLElement | null = null;
   let legalHasAppBackTarget = false;
@@ -3945,6 +3952,7 @@ async function main() {
     if (legalEl) legalEl.classList.add('hidden');
     overlayContainer.classList.add('hidden');
     window.dispatchEvent(new Event('resize'));
+    void ensureEngineStarted();
   }
 
   async function loadVersionIntoEditor(version: Version) {
@@ -3992,6 +4000,8 @@ async function main() {
     transitionToEditor();
     await ensureEditorReady();
     if (window.location.pathname !== '/editor') return;
+    await ensureEngineStarted();
+    if (!engineOk) return;
     await createSession();
     updateDocumentTitle({ page: 'editor' });
     setStatus(statusBar, 'ready', 'Ready');
@@ -4002,6 +4012,8 @@ async function main() {
     updateAppHistory(`/editor?session=${sid}`, 'push');
     transitionToEditor();
     await ensureEditorReady();
+    await ensureEngineStarted();
+    if (!engineOk) return;
     if (getSessionIdFromURL() !== sid) return;
     const version = await openSession(sid);
     if (version) {
@@ -4024,6 +4036,7 @@ async function main() {
     updateAppHistory('/editor', 'push');
     transitionToEditor();
     await ensureEditorReady();
+    await ensureEngineStarted();
     if (!getState().session) {
       await createSession();
       runCode(defaultCode);
@@ -4032,9 +4045,9 @@ async function main() {
     startTour();
   }
 
-  async function ensureLandingPage() {
+  function ensureLandingPage() {
     if (!landingEl) {
-      landingEl = await createLandingPage(overlayContainer, {
+      landingEl = createLandingPage(overlayContainer, {
         onOpenEditor: openEditorFromLanding,
         onOpenHelp: () => showHelp(),
         onOpenCatalog: () => { void showCatalogPage(); },
@@ -4048,8 +4061,10 @@ async function main() {
     return landingEl;
   }
 
-  async function showLandingPage() {
-    const page = await ensureLandingPage();
+  function showLandingPage() {
+    // Remove the inline static landing page now that the JS version is ready.
+    document.getElementById('landing-inline')?.remove();
+    const page = ensureLandingPage();
     overlayContainer.classList.remove('hidden');
     editorUI.classList.add('hidden');
     helpEl?.classList.add('hidden');
@@ -4221,6 +4236,8 @@ async function main() {
     updateAppHistory('/editor', 'push');
     transitionToEditor();
     await ensureEditorReady();
+    await ensureEngineStarted();
+    if (!engineOk) return;
     await importSessionPayload(payload);
     updateDocumentTitle({ page: 'editor' });
   }
@@ -4385,6 +4402,7 @@ async function main() {
     switchTab('interactive', { history: 'none' });
     updateDocumentTitle({ page: 'editor' });
     await ensureEditorReady();
+    await ensureEngineStarted();
     if (!engineOk) return;
 
     // Decode + validate. ANY failure → graceful fallback to a blank editor.
@@ -4487,6 +4505,7 @@ async function main() {
     switchTab(tab, { history: 'none' });
     updateDocumentTitle({ page: 'editor' });
     await ensureEditorReady();
+    await ensureEngineStarted();
     if (!engineOk) return;
 
     const sessionId = getSessionIdFromURL();
@@ -4552,7 +4571,7 @@ async function main() {
     if (hasShareHash()) {
       await enterSharedFromHash();
     } else if (shouldShowLanding()) {
-      await showLandingPage();
+      showLandingPage();
     } else if (shouldShowHelp()) {
       showHelp({ history: 'none' });
     } else if (shouldShowCatalog()) {
@@ -4617,60 +4636,86 @@ async function main() {
     showNotFoundPage();
   }
 
-  // Init geometry engine — wrapped in try/catch so editor/viewport still init
-  // on failure. The WASM engines need SharedArrayBuffer, which requires
-  // cross-origin isolation (COOP+COEP). The coi-serviceworker.js shim installs
-  // those headers and reloads ONCE on a first visit to gain isolation, so a
-  // transient non-isolated state on the very first load is expected and must
-  // NOT flash the scary message — we gate on the shim having had its reload.
+  // Geometry engine initialisation — deferred until the user first opens the
+  // editor. WASM is never loaded on landing / catalog / help page visits.
   const COI_MISSING_MSG =
-    'This browser tab is not cross-origin isolated, so the WASM engine (which needs SharedArrayBuffer) can’t start. ' +
-    'This usually fixes itself on reload; if it persists, the required COOP/COEP headers aren’t reaching the page ' +
+    "This browser tab is not cross-origin isolated, so the WASM engine (which needs SharedArrayBuffer) can't start. " +
+    "This usually fixes itself on reload; if it persists, the required COOP/COEP headers aren't reaching the page " +
     '(a proxy, extension, or unsupported browser can strip them).';
-  setStatus(statusBar, 'loading', 'Loading WASM...');
-  if (!isolationSupported()) {
-    // Has the COI shim already had a chance to reload this tab? It registers a
-    // service worker and reloads once; until a controller exists, that reload
-    // is still pending, so stay on the neutral "Loading…" message rather than
-    // alarming the user. We remember that we waited so a second non-isolated
-    // load (where the shim can't help) surfaces the explanation.
-    let coiReloadPending = false;
-    try {
-      const waited = sessionStorage.getItem('partwright-coi-waited') === '1';
-      const hasController = 'serviceWorker' in navigator && !!navigator.serviceWorker.controller;
-      coiReloadPending = !waited && !hasController && 'serviceWorker' in navigator;
-      if (coiReloadPending) sessionStorage.setItem('partwright-coi-waited', '1');
-    } catch {
-      // sessionStorage unavailable — treat as "no reload pending" and explain.
-      coiReloadPending = false;
+
+  function ensureEngineStarted(): Promise<void> {
+    if (engineLoadPromise) return engineLoadPromise;
+    setStatus(statusBar, 'loading', 'Loading WASM...');
+    engineLoadingOverlay?.classList.remove('hidden');
+    if (!isolationSupported()) {
+      // Has the COI shim already had a chance to reload this tab? It registers a
+      // service worker and reloads once; until a controller exists, that reload
+      // is still pending, so stay on the neutral "Loading…" message rather than
+      // alarming the user. We remember that we waited so a second non-isolated
+      // load (where the shim can't help) surfaces the explanation.
+      let coiReloadPending = false;
+      try {
+        const waited = sessionStorage.getItem('partwright-coi-waited') === '1';
+        const hasController = 'serviceWorker' in navigator && !!navigator.serviceWorker.controller;
+        coiReloadPending = !waited && !hasController && 'serviceWorker' in navigator;
+        if (coiReloadPending) sessionStorage.setItem('partwright-coi-waited', '1');
+      } catch {
+        coiReloadPending = false;
+      }
+      if (!coiReloadPending) {
+        setStatus(statusBar, 'error', 'WASM unavailable (not cross-origin isolated)');
+        errorLog.capture({ level: 'error', source: 'engine', message: COI_MISSING_MSG });
+        showToast(COI_MISSING_MSG, { variant: 'warn', durationMs: 9000 });
+      }
+      engineLoadingOverlay?.classList.add('hidden');
+      engineLoadPromise = Promise.resolve();
+    } else {
+      engineLoadPromise = (async () => {
+        try {
+          await initEngine();
+          engineOk = true;
+        } catch (e) {
+          console.error('WASM engine failed to load:', e);
+          const coiMissing = !isolationSupported();
+          setStatus(statusBar, 'error', coiMissing ? 'WASM unavailable (not cross-origin isolated)' : 'WASM failed');
+          errorLog.capture({
+            level: 'error',
+            source: 'engine',
+            message: coiMissing ? COI_MISSING_MSG : `WASM engine failed to load: ${e instanceof Error ? e.message : String(e)}`,
+          });
+        } finally {
+          engineLoadingOverlay?.classList.add('hidden');
+        }
+      })();
     }
-    if (!coiReloadPending) {
-      setStatus(statusBar, 'error', 'WASM unavailable (not cross-origin isolated)');
-      errorLog.capture({ level: 'error', source: 'engine', message: COI_MISSING_MSG });
-      showToast(COI_MISSING_MSG, { variant: 'warn', durationMs: 9000 });
-    }
-    // Either way, don't attempt initEngine — it would throw on the missing
-    // SharedArrayBuffer. engineOk stays false; the editor/viewport still init.
-  } else {
-    try {
-      await initEngine();
-      engineOk = true;
-    } catch (e) {
-      console.error('WASM engine failed to load:', e);
-      // Distinguish a genuine load failure from the COI-missing case (which we
-      // already handled above) so the message points at the right cause.
-      const coiMissing = !isolationSupported();
-      setStatus(statusBar, 'error', coiMissing ? 'WASM unavailable (not cross-origin isolated)' : 'WASM failed');
-      errorLog.capture({
-        level: 'error',
-        source: 'engine',
-        message: coiMissing ? COI_MISSING_MSG : `WASM engine failed to load: ${e instanceof Error ? e.message : String(e)}`,
-      });
-    }
+    return engineLoadPromise;
   }
 
   // Init viewport
   initViewport(viewportPane);
+
+  // Indeterminate progress bar shown over the viewport while WASM loads on
+  // first editor open. Hidden by ensureEngineStarted's finally block.
+  {
+    const style = document.createElement('style');
+    style.textContent = '@keyframes pw-bar{0%{left:0;width:30%}50%{left:35%;width:30%}100%{left:70%;width:30%}}';
+    document.head.appendChild(style);
+    engineLoadingOverlay = document.createElement('div');
+    engineLoadingOverlay.className = 'absolute inset-0 flex flex-col items-center justify-center z-10 pointer-events-none hidden';
+    const loadingText = document.createElement('div');
+    loadingText.className = 'text-xs text-zinc-400 mb-3 font-mono';
+    loadingText.textContent = 'Loading engine…';
+    const progressTrack = document.createElement('div');
+    progressTrack.className = 'relative w-48 h-1 bg-zinc-700 rounded-full overflow-hidden';
+    const progressBar = document.createElement('div');
+    progressBar.className = 'absolute h-full bg-blue-500 rounded-full';
+    progressBar.style.animation = 'pw-bar 1.5s ease-in-out infinite';
+    progressTrack.appendChild(progressBar);
+    engineLoadingOverlay.appendChild(loadingText);
+    engineLoadingOverlay.appendChild(progressTrack);
+    viewportPane.appendChild(engineLoadingOverlay);
+  }
+
   // Keep the live triangle-count readout (and high-complexity warning) in sync
   // with every displayed mesh — runs, paint strokes, simplify, clear.
   setOnMeshUpdate((mesh) => refreshTriangleCount(mesh.numTri));
@@ -5142,9 +5187,8 @@ async function main() {
   // load. enterSharedFromHash must run before syncEditorFromURL so the latter
   // never createSession()s + runs default code on this path; it strips the hash
   // and degrades to a normal editable editor if the link is invalid. (The
-  // editor + engine are ready here, so its internal ensureEditorReady resolves
-  // immediately — no deadlock from awaiting it earlier in main().)
-  if (!showLanding && !showHelpPage && !showCatalog && !showIdeas && !showLegalPage && !showWhatsNew && !show404 && engineOk) {
+  // editor is ready here; ensureEngineStarted is awaited inside each path.)
+  if (!showLanding && !showHelpPage && !showCatalog && !showIdeas && !showLegalPage && !showWhatsNew && !show404) {
     if (hasShareHash()) {
       await enterSharedFromHash();
     } else {
