@@ -4,7 +4,7 @@
 // Changes persist to localStorage and take effect immediately (renderer
 // settings marked "reload" need a page refresh to rebuild Three.js objects).
 
-import { signal, computed } from '@preact/signals';
+import { signal, computed, type Signal } from '@preact/signals';
 import type { ComponentChildren } from 'preact';
 import { mountPreactModal } from './preact/mount';
 import {
@@ -111,7 +111,7 @@ function Section({ title, children }: SectionProps) {
 
 // ─── body ─────────────────────────────────────────────────────────────────────
 
-function AdvancedSettingsBody(props: { cfg: ReturnType<typeof signal<AppConfig>>; onReset: () => void }) {
+function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => void }) {
   const { cfg, onReset } = props;
 
   const hasAnyOverride = computed(() => {
