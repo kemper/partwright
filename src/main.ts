@@ -96,6 +96,7 @@ import {
   MAX_REMOTE_BYTES,
 } from './import/urlImport';
 import { showImportTargetModal } from './ui/importTargetModal';
+import { showScadCompanionModal } from './ui/scadCompanionModal';
 import { showImageVoxelImportModal, type ImageVoxelModalResult } from './ui/imageVoxelImportModal';
 import { showImageImportKindModal } from './ui/imageImportKindModal';
 import { showStepImportTargetModal } from './ui/stepImportTargetModal';
@@ -109,7 +110,7 @@ import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
-import { getCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes } from './import/companionFiles';
+import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes } from './import/companionFiles';
 import { applyFuzzy, applySmooth, applyVoxelize, applyScale, defaultFuzzyOptions, defaultSmoothOptions, type ModifierResult } from './surface/modifiers';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
@@ -2208,12 +2209,37 @@ async function main() {
       return false;
     }
 
+    // For SCAD files, detect missing includes before showing any confirm so we
+    // can present the companion modal (which IS the confirmation) instead of the
+    // generic "open as new session?" prompt.
+    let scadCode: string | undefined;
+    let scadCompanions: Record<string, string> | undefined;
+    if (source === 'SCAD') {
+      scadCode = await file.text();
+      const missing = detectMissingIncludes(scadCode);
+      if (missing.length > 0) {
+        const result = await showScadCompanionModal({
+          filename: file.name,
+          missingIncludes: missing,
+        });
+        if (result === null) return false; // user cancelled
+        scadCompanions = result;
+      }
+    }
+
     // Raw code imports don't get a preview modal of their own — confirm before clobber.
     // JSON imports skip this confirm because the preview modal already serves as
     // confirmation; STL and STEP imports skip it because their target modals let
     // the user choose where the import should go; IMAGE imports skip it because
     // the image→voxel parameter modal (with its own Cancel) serves the same role.
-    if (!options.skipPreActiveConfirm && source !== 'JSON' && source !== 'STL' && source !== 'STEP' && source !== 'IMAGE' && source !== 'SVG') {
+    // SCAD files that went through the companion modal also skip it — that modal
+    // already served as the confirmation.
+    if (
+      !options.skipPreActiveConfirm &&
+      source !== 'JSON' && source !== 'STL' && source !== 'STEP' &&
+      source !== 'IMAGE' && source !== 'SVG' &&
+      scadCompanions === undefined
+    ) {
       const cur = getState();
       if (cur.session && cur.versionCount > 0) {
         const ok = await showInlineConfirm(
@@ -2230,21 +2256,22 @@ async function main() {
         const text = await file.text();
         committed = await importJSONFromText(file.name, text);
       } else if (source === 'JS' || source === 'SCAD') {
-        const code = await file.text();
+        const code = scadCode ?? await file.text();
         const lang: Language = source === 'SCAD' ? 'scad' : 'manifold-js';
         const sessionName = file.name.replace(/\.(js|scad)$/i, '');
         await importCodePayload(code, lang, sessionName);
-        committed = true;
-        // For SCAD imports, warn about non-BOSL2 includes that won't resolve.
-        if (source === 'SCAD') {
-          const missing = detectMissingIncludes(code);
-          if (missing.length > 0) {
-            showToast(
-              `This file needs companion files: ${missing.join(', ')}. Use the "+" tab in the editor to add them.`,
-              { variant: 'warn', durationMs: 8000 },
-            );
+        // Register any companion files supplied through the modal, re-run with
+        // them in place, then save so the first DB version already carries them.
+        if (scadCompanions !== undefined && Object.keys(scadCompanions).length > 0) {
+          for (const [path, content] of Object.entries(scadCompanions)) {
+            addCompanionFileToRegistry(path, content);
           }
+          await runCodeSync(getValue());
         }
+        if (scadCompanions !== undefined) {
+          await saveCurrentVersion();
+        }
+        committed = true;
       } else if (source === 'STL') {
         const parsed = await parseSTLFile(file);
         if (parsed) {
@@ -3317,8 +3344,10 @@ async function main() {
           addCompanionFileToRegistry(matchedPath, cfCode);
         }
         renderCompanionFilesBar();
-        // Re-run with companions now in place.
-        runCode(getValue(), { surfaceErrors: false });
+        // Re-run with companions now in place, then save so the first DB
+        // version already carries the companions (not save-on-reload-loss).
+        await runCodeSync(getValue());
+        await saveCurrentVersion();
         // Warn about any still-missing includes.
         const stillMissing = missing.filter(p => getCompanionFiles()[p] === undefined);
         if (stillMissing.length > 0) {
@@ -4930,6 +4959,7 @@ async function main() {
   // main CodeMirror view while a companion tab is active.
 
   let _companionActiveTab: string | null = null; // null = main tab
+  let _lastSyncedVersionId: string | undefined;
   const companionEditorPanel = document.getElementById('companion-editor-panel') as HTMLElement;
 
   // CodeMirror editor for companion SCAD files — created once, content swapped
@@ -5069,7 +5099,17 @@ async function main() {
   }
 
   // Re-render companion tab bar when language or session state changes.
+  // Also syncs the in-memory registry from the DB-stored version whenever the
+  // version ID changes (session open, version navigation, post-save). Gating
+  // on the version ID prevents overwriting in-progress unsaved edits — the ID
+  // only changes on explicit state transitions, not on keystrokes.
   onStateChange(() => {
+    const versionId = getState().currentVersion?.id;
+    if (versionId !== _lastSyncedVersionId) {
+      _lastSyncedVersionId = versionId;
+      setCompanionFiles(getState().currentVersion?.companionFiles ?? {});
+    }
+
     if (_companionActiveTab !== null) {
       // Keep the companion tab active unless the companion is no longer present
       // (e.g. navigated to a version that doesn't have it). Staying on the
