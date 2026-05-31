@@ -45,7 +45,7 @@ Partwright supports four modeling engines. The table below covers the three soli
 | Best for | Algorithmic geometry, smooth curves, mesh-level ops (`warp`/`levelSet`/`smoothOut`), painting | Mechanical parts with BOSL2 (threads, gears, attachables), porting existing `.scad` files | True edge fillets/chamfers, exact surfaces, STEP export, mechanical-CAD interop |
 | Code style | `return Manifold.cube([10,10,10], true);` | `cube([10,10,10], center=true);` | `return BREP.box([10,10,10]).fillet(2);` |
 | Unique strengths | `Curves.loft/sweep/naca4`; `levelSet`/`warp`/`smoothOut` (mesh-level) | BOSL2's `cuboid(rounding=)`, `skin()`, `path_sweep()`, `threaded_rod()`, `spur_gear()` | Exact `fillet()`/`chamfer()`, `.blobSTEP()` export, BREP shapes survive across runs |
-| Limitations | Must learn the manifold-3d API | No `text()` (fonts not loaded), slower per-run (~100-300ms WASM init) | No `warp`/`levelSet`; no `Curves` helpers; 10 MB WASM lazy-load on first use |
+| Limitations | Must learn the manifold-3d API | Slower per-run (~100-300ms WASM init); `text()` needs Liberation Sans font family (1.6 MB lazy-loaded on first use) | No `warp`/`levelSet`; no `Curves` helpers; 10 MB WASM lazy-load on first use |
 
 **Crucial:** You can ALSO use the BREP namespace **inside a manifold-js session** without switching languages — `api.BREP.box(...).fillet(r)`, then `api.BREP.toManifold(shape, api.Manifold)` to drop back into the Manifold world. This is the right move for "one feature needs an exact fillet" without committing to a BREP-only session. Switch to the **replicad** language only when you need STEP export of the *combined* shape, or when the part is dominated by BREP operations. See `/ai/replicad.md` for the full BREP API.
 
@@ -576,7 +576,7 @@ When the engine is set to `scad`, code is compiled by OpenSCAD (WASM) instead of
 **Key differences from manifold-js:**
 - **No `return` statement** -- SCAD uses implicit top-level geometry. Just write `cube(10);`, not `return Manifold.cube(...)`.
 - **SCAD syntax** -- standard OpenSCAD: `module`, `function`, `for`, `let`, `if/else`, `use`, `include`.
-- **Built-in primitives** -- `cube`, `sphere`, `cylinder`, `polyhedron`, `polygon`, `circle`, `square`, `text` (text not available -- fonts not loaded).
+- **Built-in primitives** -- `cube`, `sphere`, `cylinder`, `polyhedron`, `polygon`, `circle`, `square`, `text`.
 - **Transforms** -- `translate`, `rotate`, `scale`, `mirror`, `multmatrix`, `color`, `resize`.
 - **Booleans** -- `union()`, `difference()`, `intersection()`, `hull()`, `minkowski()`.
 - **Extrusion** -- `linear_extrude(height, twist, slices, scale)`, `rotate_extrude(angle)`.
@@ -587,7 +587,7 @@ When the engine is set to `scad`, code is compiled by OpenSCAD (WASM) instead of
 **BOSL2 library is bundled** -- start your file with `include <BOSL2/std.scad>` to unlock rounded cuboids, skin/loft, sweep, threaded rods, gears, attachables, and pattern distributors. See **[/ai/bosl2.md](/ai/bosl2.md)**. First BOSL2 run on a fresh page fetches ~4 MB of library source (one-time, then cached).
 
 **Known limitations:**
-- `text()` is not available (font data not loaded to save ~8MB).
+- `text()` uses Liberation Sans (Regular/Bold/Italic/BoldItalic). The font files (~1.6 MB) are lazy-loaded on the first run that uses `text()`. Other font names will silently produce no geometry.
 - External `.scad` libraries (other than the bundled BOSL2) can't be `include`d -- there's no filesystem to read from.
 - Each SCAD run creates a fresh WASM instance (~100-300ms overhead). For fast iteration, manifold-js is snappier.
 
