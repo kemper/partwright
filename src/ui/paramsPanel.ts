@@ -63,7 +63,7 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   // that, and `touch-none` stops the browser claiming the gesture for scroll
   // before pointer-capture kicks in.
   const header = document.createElement('div');
-  header.className = 'flex items-center gap-2 px-2.5 py-1.5 border-b border-zinc-700/70 select-none cursor-move touch-none';
+  header.className = 'flex items-center gap-2 px-2.5 py-2 border-b border-zinc-700/70 select-none cursor-move touch-none';
 
   const title = document.createElement('span');
   title.className = 'text-xs font-medium text-zinc-300 flex-1 truncate';
@@ -184,6 +184,9 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     const pad = 8;
     const pr = parent.getBoundingClientRect();
     const rr = root.getBoundingClientRect();
+    // Not laid out yet (parent still display:none mid tab-switch) — bail rather
+    // than clamp to a bogus zero-size rect.
+    if (rr.width === 0 || rr.height === 0) return;
     const visTop = Math.max(pr.top, 0);
     const visBottom = Math.min(pr.bottom, window.innerHeight);
     const visLeft = Math.max(pr.left, 0);
@@ -207,6 +210,9 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   let startX = 0, startY = 0, startLeft = 0, startTop = 0;
 
   header.addEventListener('pointerdown', (e) => {
+    // Only the primary (left) mouse button starts a drag — right/middle click
+    // should still raise the context menu / be ignored. Touch & pen pass through.
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     // Don't start a drag from the Reset / close buttons — let them click.
     if ((e.target as HTMLElement).closest('button')) return;
     const parent = root.offsetParent as HTMLElement | null;
