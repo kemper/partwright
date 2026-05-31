@@ -27,6 +27,21 @@ let manifestPromise: Promise<Bosl2Manifest> | null = null;
 let filesPromise: Promise<Map<string, string>> | null = null;
 
 /**
+ * Strip whitespace from inside SCAD include/use angle-bracket paths.
+ *
+ * js-beautify formats `include <BOSL2/std.scad>` as `include < BOSL2 / std.scad >`
+ * (treating / as a division operator). OpenSCAD resolves includes literally against
+ * MEMFS paths, so those extra spaces cause "Can't open include file" failures even
+ * when the library is correctly mounted. Normalizing before writing to MEMFS and
+ * before the BOSL2-detection check fixes both problems at once.
+ */
+export function normalizeScadIncludes(source: string): string {
+  return source.replace(/\b(use|include)\s*<([^>]*)>/g, (_, keyword: string, path: string) =>
+    `${keyword} <${path.replace(/\s+/g, '')}>`
+  );
+}
+
+/**
  * Does this SCAD source reference BOSL2? Matches both `use <BOSL2/...>` and
  * `include <BOSL2/...>`, with optional whitespace.
  */

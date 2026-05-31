@@ -4,7 +4,7 @@ import { parseAmfObjects } from './amfParser';
 import { scanScadLabels } from './scadLabels';
 import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
 import { scadDiagnostics } from '../sourceDiagnostics';
-import { ensureBosl2InMemfs, sourceUsesBosl2 } from '../bosl2Loader';
+import { ensureBosl2InMemfs, normalizeScadIncludes, sourceUsesBosl2 } from '../bosl2Loader';
 import { injectFontsIntoMemfs, preloadFonts, sourceUsesText } from '../fontsLoader';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { parseScadParams, buildScadDefines } from '../scadParams';
@@ -157,10 +157,17 @@ async function runScadInner(source: string, defines: string[]): Promise<MeshResu
     return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
   }
 
+  // Normalize include/use paths before any further processing. The code editor's
+  // beautifier adds spaces inside angle brackets (treating / as a division op),
+  // producing `include < BOSL2 / std.scad >` which OpenSCAD can't resolve
+  // against the MEMFS paths we mount libraries at. Stripping those spaces here
+  // fixes both the BOSL2-detection check below and the MEMFS path lookup.
+  const normalizedSource = normalizeScadIncludes(source);
+
   // Source-side scan — single linear pass over the user's text. Decides which
   // compile mode we use below (label-aware vs the historical STL fast path).
-  const labelScan = scanScadLabels(source);
-  const effectiveSource = LABEL_MODULE_PREFIX + source;
+  const labelScan = scanScadLabels(normalizedSource);
+  const effectiveSource = LABEL_MODULE_PREFIX + normalizedSource;
 
   let preRunHook: ((mod: any) => void) | undefined;
   if (sourceUsesText(source)) {
@@ -183,7 +190,7 @@ async function runScadInner(source: string, defines: string[]): Promise<MeshResu
   }
 
   try {
-    if (sourceUsesBosl2(source)) {
+    if (sourceUsesBosl2(normalizedSource)) {
       try {
         await ensureBosl2InMemfs(instance);
       } catch (e) {
@@ -507,7 +514,8 @@ export async function validateScadAsync(source: string): Promise<ValidateResult>
   }
 
   try {
-    if (sourceUsesBosl2(source)) {
+    const normalizedSource = normalizeScadIncludes(source);
+    if (sourceUsesBosl2(normalizedSource)) {
       try {
         await ensureBosl2InMemfs(instance);
       } catch (e) {
@@ -517,7 +525,7 @@ export async function validateScadAsync(source: string): Promise<ValidateResult>
     }
     // Match runScadAsync — prepend the label() helper so a source that uses
     // it doesn't trip "unknown module" warnings during the AST pass.
-    instance.FS.writeFile('/v.scad', LABEL_MODULE_PREFIX + source);
+    instance.FS.writeFile('/v.scad', LABEL_MODULE_PREFIX + normalizedSource);
     const code = instance.callMain([
       '--export-format=ast',
       '-o', '/v.ast',
