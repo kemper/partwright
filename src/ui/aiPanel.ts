@@ -2774,7 +2774,12 @@ async function sendMessage(): Promise<void> {
     if (state.pendingPlanApproval) {
       // Refinement turn: plain user message, no prefix. historyLengthBefore
       // stays fixed so Reject still removes all planning messages.
-      planBlocks = blocks;
+      // Refinement: remind the model it is still in plan mode so it doesn't
+      // switch to execution mode when it receives the information it asked for.
+      const refinePrefix = '[Plan refinement — revise or extend the plan only, do not call any tools or start building]: ';
+      planBlocks = [];
+      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: refinePrefix + capturedText });
+      for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
     } else {
       // First planning turn: prefix with the planning instruction.
       const planPrefix =
