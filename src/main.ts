@@ -2927,6 +2927,7 @@ async function main() {
     // re-resolves stale regions onto the new mesh and locks the editor.
     cancelVoxelPaintIfActive();
     dropPaintState();
+    clearMesh();
     if (getActiveLanguage() !== language) await switchLanguage(language);
     // Clear stale params panel immediately so old controls don't linger while
     // the new model is loading.
