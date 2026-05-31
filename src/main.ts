@@ -139,7 +139,7 @@ import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
 import { initImagePaintUI, setSmoothStampCallback } from './color/imagePaintUI';
-import { stampImageOntoMesh, entriesToPerTriColors, remapPerTriColors } from './color/imagePaint';
+import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors } from './color/imagePaint';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, type SimplifyHandlers } from './ui/simplifyUI';
 import { updatePaintMesh, setOnRegionPainted } from './color/paintMode';
@@ -5198,29 +5198,48 @@ async function main() {
   setSmoothStampCallback((imageData, stampOpts, maxEdge) => {
     if (!currentMeshData) return null;
 
-    // Step 1: Initial stamp to identify which triangles fall within the stamp footprint
-    const initialResult = stampImageOntoMesh(currentMeshData, imageData, stampOpts);
-    if (initialResult.entries.length === 0) return null;
+    // Build the rotated tangent frame to identify which triangles overlap the stamp footprint.
+    const { hitPoint: [hpX, hpY, hpZ], hitNormal, size, rotationDeg } = stampOpts;
+    const halfSize = size / 2;
+    const { tr: [trX, trY, trZ], br: [brX, brY, brZ] } = buildTangentFrame(hitNormal, rotationDeg);
 
-    // Step 2: Find boundary triangles (painted ↔ unpainted neighbors via edge adjacency)
-    const paintedSet = new Set<number>(initialResult.entries);
-    const adjacency = buildAdjacency(currentMeshData);
-    const boundaryTris = new Set<number>();
-    for (const t of paintedSet) {
-      for (const n of adjacency.neighbors[t]) {
-        if (!paintedSet.has(n)) {
-          boundaryTris.add(t);
-          boundaryTris.add(n);
-        }
+    // Step 1: Find all triangles that overlap the stamp footprint (with a small
+    // margin so triangles straddling the stamp edge are included).
+    const { numTri, numProp, vertProperties, triVerts } = currentMeshData;
+    const MARGIN = 0.15;
+    const lo = -(1 + MARGIN), hi = 1 + MARGIN;
+    const inFootprint = (px: number, py: number, pz: number) => {
+      const dx = px - hpX, dy = py - hpY, dz = pz - hpZ;
+      const u = (dx * trX + dy * trY + dz * trZ) / halfSize;
+      const v = (dx * brX + dy * brY + dz * brZ) / halfSize;
+      return u >= lo && u <= hi && v >= lo && v <= hi;
+    };
+    const footprintTris = new Set<number>();
+    for (let t = 0; t < numTri; t++) {
+      const v0 = triVerts[t * 3], v1 = triVerts[t * 3 + 1], v2 = triVerts[t * 3 + 2];
+      const x0 = vertProperties[v0 * numProp], y0 = vertProperties[v0 * numProp + 1], z0 = vertProperties[v0 * numProp + 2];
+      const x1 = vertProperties[v1 * numProp], y1 = vertProperties[v1 * numProp + 1], z1 = vertProperties[v1 * numProp + 2];
+      const x2 = vertProperties[v2 * numProp], y2 = vertProperties[v2 * numProp + 1], z2 = vertProperties[v2 * numProp + 2];
+      const cx = (x0 + x1 + x2) / 3, cy = (y0 + y1 + y2) / 3, cz = (z0 + z1 + z2) / 3;
+      if (inFootprint(cx, cy, cz) || inFootprint(x0, y0, z0) || inFootprint(x1, y1, z1) || inFootprint(x2, y2, z2)) {
+        footprintTris.add(t);
       }
     }
 
-    if (boundaryTris.size === 0) {
-      return { result: initialResult, parentToChildren: null };
+    if (footprintTris.size === 0) return null;
+
+    // Step 2: Expand by one neighbor ring so the boundary has fine tessellation
+    // on both sides of the stamp edge.
+    const adjacency = buildAdjacency(currentMeshData);
+    const toSubdivide = new Set<number>(footprintTris);
+    for (const t of footprintTris) {
+      for (const n of adjacency.neighbors[t]) toSubdivide.add(n);
     }
 
-    // Step 3: Subdivide only the boundary triangles until edges ≤ maxEdge
-    const { mesh, childToParent } = buildRefinedMeshFromSet(currentMeshData, boundaryTris, maxEdge);
+    // Step 3: Subdivide all footprint + ring triangles until edges ≤ maxEdge.
+    // This works even on 2-triangle models — the large triangles get subdivided
+    // to thousands of small ones before the stamp is applied.
+    const { mesh, childToParent } = buildRefinedMeshFromSet(currentMeshData, toSubdivide, maxEdge);
     const parentToChildren = childrenByParent(childToParent);
     currentMeshData = mesh;
     updatePaintMesh(mesh);
@@ -5239,7 +5258,7 @@ async function main() {
     }
     paintedColorRefresh();
 
-    // Step 5: Re-stamp on the refined mesh — smaller boundary triangles give crisper edges
+    // Step 5: Stamp on the now-fine mesh for crisp image edges
     const finalResult = stampImageOntoMesh(mesh, imageData, stampOpts);
     return { result: finalResult, parentToChildren };
   });
