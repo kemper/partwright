@@ -84,6 +84,14 @@ export function saveQualitySettings(next: QualitySettings): void {
   for (const fn of listeners) fn(next);
 }
 
+/** Write settings without notifying listeners. Used when quality must switch
+ *  atomically with a language change so only the language-switch re-run fires,
+ *  not an extra one from the quality listener. */
+export function saveQualitySettingsSilent(next: QualitySettings): void {
+  cached = next;
+  writePerTabPref(STORAGE_KEY, JSON.stringify(next));
+}
+
 export function onQualitySettingsChange(fn: (s: QualitySettings) => void): () => void {
   listeners.add(fn);
   return () => { listeners.delete(fn); };

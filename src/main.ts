@@ -37,6 +37,7 @@ import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarS
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { registerCommands } from './ui/commandPalette';
 import { showQualitySettingsModal } from './ui/qualitySettingsModal';
+import { initCurvatureQualityPanel, notifyLanguageChange as notifyQualityLanguageChange, isCurvatureQualityOpen, closeCurvatureQuality } from './ui/curvatureQualityPanel';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput } from './ui/aiPanel';
@@ -5302,6 +5303,8 @@ async function main() {
   if (paintBtnEl) clipControls.insertBefore(reliefViewportBtn, paintBtnEl);
   else clipControls.appendChild(reliefViewportBtn);
 
+  initCurvatureQualityPanel(clipControls, viewportPane, getActiveLanguage());
+
   initEscapeMenuClose();
 
   // When a color region is painted, re-render the mesh with colors.
@@ -5496,6 +5499,7 @@ async function main() {
     setEditorLanguage(lang);
     setToolbarLanguage(lang);
     setVoxelPaintAvailable(lang === 'voxel');
+    notifyQualityLanguageChange(lang);
     syncEditorTitle(getState());
     const loadingLabel =
       lang === 'scad' ? 'Loading OpenSCAD...' :
@@ -11328,6 +11332,7 @@ async function main() {
       if (isSelectActive() && getSelectedAnnotationId()) return;
 
       let closed = false;
+      if (isCurvatureQualityOpen()) { closeCurvatureQuality(); closed = true; }
       if (isAnnotateOpen()) { closeAnnotateMenu(); closed = true; }
       if (isPaintOpen()) { closePaintMenu(); closed = true; }
       if (isSimplifyOpen()) { closeSimplifyMenu(); closed = true; }
