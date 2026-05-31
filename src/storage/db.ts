@@ -109,14 +109,16 @@ export interface Version {
   paramValues?: Record<string, number | boolean | string>;
 }
 
-/** Editor working buffer scoped to (session, language). One per language per
- *  session: switching the toolbar's language toggle stashes the previous
- *  language's code here and restores the target language's. Persisted so a
- *  reload doesn't lose in-progress work in either language. Cascade-deleted
- *  with the session. */
+/** Editor working buffer scoped to (session, part, language). One slot per
+ *  (part, language): switching parts or the toolbar language toggle stashes the
+ *  outgoing code here and restores the target slot's. Persisted so a reload
+ *  doesn't lose in-progress work. Cascade-deleted with the session (sessionId
+ *  index); individual part drafts are also pruned when the part is deleted. */
 export interface SessionDraft {
-  /** Composite key: `${sessionId}:${language}`. Lets the cascade delete on
-   *  session removal walk a simple `sessionId` index. */
+  /** Composite key: `${sessionId}:${partId}:${language}` (with partId) or
+   *  legacy `${sessionId}:${language}` (pre-per-part drafts). The cascade
+   *  delete on session removal uses the `sessionId` index, which covers both
+   *  formats. */
   id: string;
   sessionId: string;
   language: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
@@ -124,8 +126,8 @@ export interface SessionDraft {
   updatedAt: number;
 }
 
-function draftId(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): string {
-  return `${sessionId}:${language}`;
+function draftId(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): string {
+  return partId ? `${sessionId}:${partId}:${language}` : `${sessionId}:${language}`;
 }
 
 export interface SessionNote {
@@ -930,17 +932,17 @@ export async function clearAllData(): Promise<void> {
   await txComplete(txn);
 }
 
-// === Editor drafts (per session, per language) ===
+// === Editor drafts (per session, per part, per language) ===
 
-export async function getDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<SessionDraft | null> {
+export async function getDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<SessionDraft | null> {
   const store = await tx('drafts', 'readonly');
-  return reqToPromise(store.get(draftId(sessionId, language))) as Promise<SessionDraft | null>;
+  return reqToPromise(store.get(draftId(sessionId, language, partId))) as Promise<SessionDraft | null>;
 }
 
-export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string): Promise<void> {
+export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string): Promise<void> {
   const store = await tx('drafts', 'readwrite');
   const row: SessionDraft = {
-    id: draftId(sessionId, language),
+    id: draftId(sessionId, language, partId),
     sessionId,
     language,
     code,
@@ -950,9 +952,9 @@ export async function setDraft(sessionId: string, language: 'manifold-js' | 'sca
   await txComplete(store.transaction);
 }
 
-export async function deleteDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<void> {
+export async function deleteDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<void> {
   const store = await tx('drafts', 'readwrite');
-  store.delete(draftId(sessionId, language));
+  store.delete(draftId(sessionId, language, partId));
   await txComplete(store.transaction);
 }
 
@@ -960,6 +962,18 @@ export async function listDrafts(sessionId: string): Promise<SessionDraft[]> {
   const store = await tx('drafts', 'readonly');
   const index = store.index('sessionId');
   return reqToPromise(index.getAll(IDBKeyRange.only(sessionId))) as Promise<SessionDraft[]>;
+}
+
+/** Delete all per-part drafts for a given part. Called when a part is removed
+ *  so its stashed buffers don't accumulate. */
+export async function deletePartDrafts(sessionId: string, partId: string): Promise<void> {
+  const all = await listDrafts(sessionId);
+  const prefix = `${sessionId}:${partId}:`;
+  const toDelete = all.filter(d => d.id.startsWith(prefix));
+  if (toDelete.length === 0) return;
+  const store = await tx('drafts', 'readwrite');
+  for (const d of toDelete) store.delete(d.id);
+  await txComplete(store.transaction);
 }
 
 // === Relief source images (per session) ===

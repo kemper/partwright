@@ -3640,10 +3640,10 @@ async function main() {
   // under whatever engine the previously-active part left behind (e.g. voxel,
   // where `api.Manifold` is undefined). This is the mixed-language case a JSON
   // merge creates: a voxel Part 2 alongside an unsaved manifold-js Part 1.
-  async function loadPartIntoEditor(version: Version | null) {
+  async function loadPartIntoEditor(version: Version | null, opts: { skipDraftSave?: boolean } = {}) {
     clearMesh();
     if (version) {
-      await loadVersionIntoEditor(version);
+      await loadVersionIntoEditor(version, opts);
     } else {
       if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
       startNewPartInEditor();
@@ -3692,11 +3692,22 @@ async function main() {
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
     onSelectPart: async (partId: string) => {
-      // Save any unsaved non-starter edits (e.g. imported SCAD with errors) so
-      // they survive the switch and are loadable when the user returns here.
+      // Save any unsaved non-starter edits as a version (imported SCAD with
+      // errors, etc.) so they survive the switch and are loadable on return.
       await preserveCurrentEditsIfNeeded();
+      // Also stash the raw editor buffer as a per-part draft BEFORE changePart
+      // runs — after that call currentPart is already the incoming part, so
+      // saving inside loadVersionIntoEditor would land under the wrong id.
+      const { session, currentPart } = getState();
+      if (session && currentPart) {
+        await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id);
+      }
       const version = await changePart(partId);
-      await loadPartIntoEditor(version);
+      // skipDraftSave: the outgoing draft was already saved above.
+      await loadPartIntoEditor(version, { skipDraftSave: true });
+      // Restore the incoming part's unsaved work (if any) on top of the
+      // saved version that loadPartIntoEditor just loaded.
+      await restoreDraftIfNewer();
     },
     onCreatePart: async () => {
       // Structural part edits are leader-only — a read-only viewer must not
@@ -3715,6 +3726,7 @@ async function main() {
       const result = await deletePart(partId);
       if (result && wasCurrent) {
         await loadPartIntoEditor(getState().currentVersion);
+        await restoreDraftIfNewer();
       }
     },
     onDeleteParts: async (partIds: string[]) => {
@@ -3724,6 +3736,7 @@ async function main() {
       // (deleteParts reports this via newCurrent).
       if (result && result.newCurrent) {
         await loadPartIntoEditor(getState().currentVersion);
+        await restoreDraftIfNewer();
       }
     },
     onMergeParts: async (partIds: string[]) => {
@@ -3999,7 +4012,7 @@ async function main() {
     void ensureEngineStarted();
   }
 
-  async function loadVersionIntoEditor(version: Version) {
+  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean } = {}) {
     // Cancel any active voxel paint before loading a different version — its
     // live grid and provenance map are bound to the OUTGOING code, so a Bake
     // after navigation would write the wrong session's voxels into the new
@@ -4012,11 +4025,20 @@ async function main() {
     // language boundary we stash the current editor buffer as a draft for
     // the previous language first, so navigate ↔ toggle round-trips don't
     // silently drop work-in-progress in the language we're leaving.
+    // skipDraftSave is set by onSelectPart, which saves the outgoing draft
+    // before calling changePart (ensuring it lands under the correct part id).
     const versionLang = effectiveVersionLanguage(version, getState().session);
     if (versionLang !== getActiveLanguage()) {
-      const sid = getState().session?.id;
-      if (sid) await writeDraft(sid, getActiveLanguage(), getValue());
+      if (!opts.skipDraftSave) {
+        const sid = getState().session?.id;
+        const pid = getState().currentPart?.id;
+        if (sid) await writeDraft(sid, getActiveLanguage(), getValue(), pid);
+      }
       await switchLanguage(versionLang);
+    } else {
+      // Engine is already on the right language but the toolbar might have
+      // drifted (e.g. a previous same-language part was active) — sync it.
+      setToolbarLanguage(versionLang);
     }
     setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
     setValue(version.code);
@@ -4540,6 +4562,7 @@ async function main() {
   async function restoreDraftIfNewer(): Promise<void> {
     const sid = getState().session?.id;
     if (!sid) return;
+    const pid = getState().currentPart?.id;
     // Only at the tip: if a specific older version is loaded, don't override it.
     const current = getState().currentVersion;
     if (current) {
@@ -4547,7 +4570,7 @@ async function main() {
       const latestIndex = versions.reduce((m, v) => Math.max(m, v.index), -Infinity);
       if (current.index !== latestIndex) return;
     }
-    const draft = await readDraft(sid, getActiveLanguage());
+    const draft = await readDraft(sid, getActiveLanguage(), pid);
     if (draft == null || draft === getValue()) return;
     setValue(draft);
     await runCodeSync(draft);
@@ -4865,9 +4888,10 @@ async function main() {
   function autosaveDraft(): void {
     const sid = getState().session?.id;
     if (!sid) return;
+    const pid = getState().currentPart?.id;
     const lang = getActiveLanguage();
     const code = getValue();
-    void writeDraft(sid, lang, code).catch((e) => {
+    void writeDraft(sid, lang, code, pid).catch((e) => {
       if (isQuotaError(e)) {
         showToast('Storage full — could not autosave your draft. Free up space or export your work.', { variant: 'warn' });
       }
@@ -5591,15 +5615,16 @@ async function main() {
       await createSession(undefined, prevLang);
     }
     const sid = getState().session?.id;
+    const pid = getState().currentPart?.id;
     if (sid) {
       // Persist the previous language's working buffer so flipping back
       // restores it exactly. Both languages stay live in IDB until the
-      // session is deleted.
-      await writeDraft(sid, prevLang, currentCode);
+      // part/session is deleted.
+      await writeDraft(sid, prevLang, currentCode, pid);
     }
     await applyEngineLanguage(lang);
     let nextCode: string | null = null;
-    if (sid) nextCode = await readDraft(sid, lang);
+    if (sid) nextCode = await readDraft(sid, lang, pid);
     if (nextCode === null) {
       nextCode = lang === 'scad' ? DRAFT_STUB_SCAD
         : lang === 'replicad' ? DRAFT_STUB_REPLICAD

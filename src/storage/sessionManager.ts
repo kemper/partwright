@@ -31,6 +31,7 @@ import {
   setDraft as dbSetDraft,
   deleteDraft as dbDeleteDraft,
   listDrafts as dbListDrafts,
+  deletePartDrafts as dbDeletePartDrafts,
   legacyImagesObjectToArray,
   generateId,
   type Session,
@@ -548,31 +549,37 @@ export async function renameSession(id: string, newName: string): Promise<void> 
   publishTabSync({ kind: 'session-meta', sessionId: id });
 }
 
-// === Editor drafts (per session, per language) ===
+// === Editor drafts (per session, per part, per language) ===
 //
-// Each session keeps a per-language draft slot — manifold-js, SCAD, and
-// replicad (BREP) each get their own — so flipping the toolbar's language
-// toggle preserves whatever the user (or the AI) was writing in the previous
-// language. Drafts are persisted so a reload doesn't lose them; they're
-// cascade-deleted when the session is.
+// Each part keeps a per-language draft slot — manifold-js, SCAD, replicad,
+// and voxel each get their own — so switching parts or flipping the toolbar's
+// language toggle preserves whatever the user (or the AI) was writing.
+// Drafts are persisted so a reload doesn't lose them; they're cascade-deleted
+// with the session (via sessionId index) and pruned when a part is deleted.
 
-/** Read the working buffer for a session in a given language. Returns null
- *  when no draft has been stashed yet (caller should fall back to a stub). */
-export async function readDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<string | null> {
-  const row = await dbGetDraft(sessionId, language);
+/** Read the working buffer for a (session, part, language) triple. Pass
+ *  `partId` to scope the draft to a specific part; omit for legacy session-
+ *  wide access. Returns null when no draft exists yet. */
+export async function readDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<string | null> {
+  const row = await dbGetDraft(sessionId, language, partId);
   return row ? row.code : null;
 }
 
-/** Write the working buffer for a session in a given language. Idempotent —
- *  the row is upserted by composite key. */
-export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string): Promise<void> {
-  await dbSetDraft(sessionId, language, code);
+/** Write the working buffer for a (session, part, language) triple. Idempotent
+ *  — the row is upserted by composite key. */
+export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string): Promise<void> {
+  await dbSetDraft(sessionId, language, code, partId);
 }
 
-/** Drop the working buffer for a (session, language) pair — used when the
- *  caller wants to force the next language switch to land on a stub. */
-export async function clearDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<void> {
-  await dbDeleteDraft(sessionId, language);
+/** Drop the working buffer for a (session, part, language) triple. */
+export async function clearDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<void> {
+  await dbDeleteDraft(sessionId, language, partId);
+}
+
+/** Delete all drafts stashed for a specific part (all languages). Called when
+ *  the part is removed so its buffers don't accumulate. */
+export async function deletePartDrafts(sessionId: string, partId: string): Promise<void> {
+  await dbDeletePartDrafts(sessionId, partId);
 }
 
 /** All drafts stashed for a session, ordered by language. */
@@ -746,6 +753,7 @@ export async function deletePart(partId: string): Promise<DeletePartResult | nul
   if (parts.length <= 1) return null; // keep at least one part
 
   await dbDeletePart(partId);
+  void dbDeletePartDrafts(currentState.session.id, partId).catch(() => {});
 
   const remaining = parts.filter(p => p.id !== partId);
   const wasCurrent = currentState.currentPart?.id === partId;
@@ -791,6 +799,8 @@ export async function deleteParts(partIds: string[]): Promise<DeletePartsResult 
 
   const deletedSet = new Set(targets.map(p => p.id));
   await dbDeleteParts(targets.map(p => p.id));
+  const sid = currentState.session.id;
+  for (const id of deletedSet) void dbDeletePartDrafts(sid, id).catch(() => {});
 
   const remaining = parts.filter(p => !deletedSet.has(p.id));
   const currentId = currentState.currentPart?.id;
