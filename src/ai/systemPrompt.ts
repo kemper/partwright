@@ -280,6 +280,32 @@ export function loadAiMd(): Promise<string> {
  *  Sticking the active language in the suffix flips the prompt-vs-suffix
  *  signal ratio so the more-recent + more-specific instruction wins. */
 export function toggleSuffix(toggles: ChatToggles): string {
+  // Plan-mode turns get their own suffix that replaces the capabilities
+  // section entirely. The model's only job is to write a plan — showing
+  // "Run code: OFF" would trigger the "paste code in chat" fallback, which
+  // is exactly the wrong behavior here.
+  if (toggles.planFirst) {
+    const lang = currentLanguage();
+    const model = activeModel(toggles) ?? '(none picked)';
+    return [
+      '',
+      '## Session toggle state',
+      '',
+      `Active language: ${lang}`,
+      `Model: ${model}`,
+      '',
+      '**PLAN MODE — do NOT call any tools or write runnable code.**',
+      '',
+      'Your only job this turn is to outline your approach for the request:',
+      '- What you will build and the overall shape/structure',
+      '- Key design decisions and any trade-offs',
+      '- The concrete steps you will take to implement it',
+      '',
+      'If you need clarification before you can write a useful plan, ask your questions now.',
+      'The user will approve the plan (triggering a new turn with full tools) or reply to refine it further.',
+    ].join('\n');
+  }
+
   // Behavioural guidance for each capability that's currently OFF — tells the
   // model what to do instead of reaching for the disabled tool.
   const offGuidance: string[] = [];
