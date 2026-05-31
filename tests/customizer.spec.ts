@@ -287,8 +287,8 @@ return v;`;
     const before = await panel.boundingBox();
     if (!before) throw new Error('no panel box');
 
-    // Grab the header (the "Customize" title area) and drag it up-and-right —
-    // the panel starts bottom-left, so there's room that way without clamping.
+    // Grab the header (the "Customize" title area) and drag it down-and-left —
+    // the panel starts top-right, so there's room that way without clamping.
     // Pointer/mouse events route to the header's drag handler.
     const title = panel.locator('text=Customize').first();
     const titleBox = await title.boundingBox();
@@ -297,14 +297,14 @@ return v;`;
     const grabY = titleBox.y + titleBox.height / 2;
     await page.mouse.move(grabX, grabY);
     await page.mouse.down();
-    await page.mouse.move(grabX + 80, grabY - 80, { steps: 8 });
+    await page.mouse.move(grabX - 80, grabY + 80, { steps: 8 });
     await page.mouse.up();
 
     const after = await panel.boundingBox();
     if (!after) throw new Error('no panel box after drag');
-    // It followed the pointer (moved up and right) and stayed fully on screen.
-    expect(after.y).toBeLessThan(before.y - 20);
-    expect(after.x).toBeGreaterThan(before.x + 10);
+    // It followed the pointer (moved down and left) and stayed fully on screen.
+    expect(after.y).toBeGreaterThan(before.y + 20);
+    expect(after.x).toBeLessThan(before.x - 10);
     expect(after.y).toBeGreaterThanOrEqual(0);
     expect(after.x).toBeGreaterThanOrEqual(0);
   });
