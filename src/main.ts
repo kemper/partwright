@@ -5851,22 +5851,25 @@ async function main() {
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Non-destructive viewport preview of a scale operation (no version saved). */
-    previewScale(sx: number, sy: number, sz: number): { ok: true } | { error: string } {
+    previewScale(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }): { ok: true } | { error: string } {
       try {
         if (!currentMeshData) return { error: 'No model loaded' };
-        const result = applyScale(meshForModifier(false), sx, sy, sz);
-        previewSurfaceModifier(result, false);
+        const preserve = opts?.preserveColor ?? false;
+        const result = applyScale(meshForModifier(preserve), sx, sy, sz);
+        previewSurfaceModifier(result, preserve);
         return { ok: true };
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Discard a live scale preview and restore the current model's mesh. */
     clearScalePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
     /** Scale the current model and save as a new version.
-     *  sx/sy/sz are multiplicative factors (1 = no change, 2 = double, 0.5 = half). */
-    async scaleModel(sx: number, sy: number, sz: number) {
+     *  sx/sy/sz are multiplicative factors (1 = no change, 2 = double, 0.5 = half).
+     *  `preserveColor` (default true) re-resolves paint regions onto the scaled mesh. */
+    async scaleModel(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }) {
       try {
         if (!currentMeshData) return { error: 'No model loaded' };
-        return await commitSurfaceModifier(applyScale(meshForModifier(false), sx, sy, sz), false);
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(applyScale(meshForModifier(preserve), sx, sy, sz), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Run code string and update all views. Returns geometry data object. */

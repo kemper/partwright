@@ -10,10 +10,11 @@ import { registerCommands } from './commandPalette';
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 
 export interface ResizeApi {
-  scaleModel(sx: number, sy: number, sz: number): Promise<ApplyResult>;
-  previewScale(sx: number, sy: number, sz: number): { ok: true } | { error: string };
+  scaleModel(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }): Promise<ApplyResult>;
+  previewScale(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }): { ok: true } | { error: string };
   clearScalePreview(): { ok: true };
   getGeometryData(): { boundingBox?: { min?: number[]; max?: number[] } | null } | Record<string, unknown>;
+  modelHasColor(): boolean;
 }
 
 type ScaleMode = 'percent' | 'units';
@@ -60,6 +61,9 @@ export function openResizeModal(api: ResizeApi): void {
   // Max values for sliders (user-configurable)
   let maxPct = 500;
   let maxRaw = Math.max(...size) * 5 || 100;
+
+  let preserveColor = true;
+  const hasColor = api.modelHasColor();
 
   let previewDirty = false;
   let previewTimer: number | undefined;
@@ -184,6 +188,20 @@ export function openResizeModal(api: ResizeApi): void {
   const axisContainer = el('div', 'space-y-3 mb-4');
   body.append(axisContainer);
 
+  // ---- Preserve colors checkbox (only when the model has paint) ----
+  if (hasColor) {
+    const colorRow = el('label', 'flex items-center gap-2 mb-3 text-xs text-zinc-300 cursor-pointer');
+    const colorCheck = el('input', 'accent-sky-500');
+    colorCheck.type = 'checkbox';
+    colorCheck.checked = preserveColor;
+    colorCheck.addEventListener('change', () => {
+      preserveColor = colorCheck.checked;
+      schedulePreview();
+    });
+    colorRow.append(colorCheck, el('span', '', 'Preserve colors (best-effort)'));
+    body.append(colorRow);
+  }
+
   // ---- Current size display ----
   const sizeInfo = el('div', 'text-[11px] text-zinc-500 mb-3');
   if (bbox) {
@@ -294,7 +312,7 @@ export function openResizeModal(api: ResizeApi): void {
         status.textContent = '';
         return;
       }
-      const r = api.previewScale(sx, sy, sz);
+      const r = api.previewScale(sx, sy, sz, { preserveColor });
       if ((r as { error?: string }).error) {
         status.textContent = `Preview error: ${(r as { error: string }).error}`;
       } else {
@@ -334,7 +352,7 @@ export function openResizeModal(api: ResizeApi): void {
     status.textContent = 'Working…';
     try {
       const [sx, sy, sz] = getScaleFactors();
-      const result = await api.scaleModel(sx, sy, sz);
+      const result = await api.scaleModel(sx, sy, sz, { preserveColor });
       const err = (result as { error?: string })?.error;
       if (err) {
         status.textContent = `Error: ${err}`;
