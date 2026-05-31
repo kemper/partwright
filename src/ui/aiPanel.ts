@@ -1623,7 +1623,7 @@ function renderPlanApprovalBar(): void {
 
   const label = document.createElement('span');
   label.className = 'text-[11px] text-amber-200 flex-1';
-  label.textContent = '📋 Plan ready — review above, then approve or reject.';
+  label.textContent = '📋 Plan mode — type to refine, or approve/reject.';
   planApprovalBarEl.appendChild(label);
 
   const approveBtn = document.createElement('button');
@@ -2712,9 +2712,6 @@ async function sendMessage(): Promise<void> {
   // against the same transcript. The viewer overlay offers "Take control".
   if (!writeOwner) return;
   if (!inputEl) return;
-  // Block new sends while a plan is awaiting approval — the user must
-  // approve or reject it first.
-  if (state.pendingPlanApproval) return;
   const text = inputEl.value.trim();
   if (text.length === 0 && state.pendingImages.length === 0) return;
 
@@ -2761,28 +2758,39 @@ async function sendMessage(): Promise<void> {
   // if they had been scrolled up reading earlier history.
   pinTranscriptToBottom();
 
-  if (settings.toggles.planFirst) {
-    // Plan-first mode: run a planning turn (tools off, auto-continue off)
-    // asking the model to describe its approach before executing anything.
+  if (settings.toggles.planFirst || state.pendingPlanApproval) {
+    // Plan-first mode or an in-flight plan refinement: keep tools off so the
+    // model can't execute anything until the user approves. If this is a
+    // follow-up (pendingPlanApproval is already set), the user is replying to
+    // a clarifying question or asking the model to revise — just send the
+    // message as-is; the planning prefix is only for the very first turn.
     const planToggles: ChatToggles = {
       ...settings.toggles,
       scope: { runCode: false, saveVersions: false, paintFaces: false, sessionNotes: false },
       autoResume: false,
     };
-    const planPrefix =
-      'Before doing anything, write a concise plan for the following request. '
-      + 'Describe your approach, key steps, and any design decisions. '
-      + 'Do NOT call any tools or start building yet — I will approve or reject your plan first.\n\n'
-      + '---\n\n';
-    const planBlocks: ChatBlock[] = [];
-    if (capturedText.length > 0) planBlocks.push({ type: 'text', text: planPrefix + capturedText });
-    for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
 
-    state.pendingPlanApproval = {
-      originalText: capturedText,
-      originalImages: capturedImages,
-      historyLengthBefore: state.history.length,
-    };
+    let planBlocks: ChatBlock[];
+    if (state.pendingPlanApproval) {
+      // Refinement turn: plain user message, no prefix. historyLengthBefore
+      // stays fixed so Reject still removes all planning messages.
+      planBlocks = blocks;
+    } else {
+      // First planning turn: prefix with the planning instruction.
+      const planPrefix =
+        'Before doing anything, write a concise plan for the following request. '
+        + 'Describe your approach, key steps, and any design decisions. '
+        + 'Do NOT call any tools or start building yet — I will approve or reject your plan first.\n\n'
+        + '---\n\n';
+      planBlocks = [];
+      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: planPrefix + capturedText });
+      for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
+      state.pendingPlanApproval = {
+        originalText: capturedText,
+        originalImages: capturedImages,
+        historyLengthBefore: state.history.length,
+      };
+    }
 
     await runTurnWithStallRetry(apiKey, planToggles, planBlocks);
     renderPlanApprovalBar();
