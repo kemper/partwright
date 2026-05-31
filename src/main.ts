@@ -3612,11 +3612,15 @@ async function main() {
   // Load a part's active version into the editor, or reset to a blank part when
   // the part has no saved versions yet. A saved version carries its own language
   // and `loadVersionIntoEditor` swaps the engine to match. A version-less part
-  // uses whatever language is currently active for the session.
+  // uses the session's language as its baseline — so switching back to an unsaved
+  // manifold-js part from a voxel part correctly resets to manifold-js, while an
+  // unsaved part in a SCAD/voxel/replicad session stays on that language.
   async function loadPartIntoEditor(version: Version | null) {
     if (version) {
       await loadVersionIntoEditor(version);
     } else {
+      const sessionLang = getState().session?.language ?? 'manifold-js';
+      if (getActiveLanguage() !== sessionLang) await switchLanguage(sessionLang);
       startNewPartInEditor();
     }
   }
