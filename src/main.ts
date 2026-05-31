@@ -22,7 +22,7 @@
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, type Language } from './geometry/engine';
+import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
@@ -31,7 +31,7 @@ import { initViewport, updateMesh, setOnMeshUpdate, setOnContextLost, setOnConte
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { generateId, getLatestVersion } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
-import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, getAutoFormat, setAutoFormat, editorContentDiffersFrom } from './editor/codeEditor';
+import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, editorContentDiffersFrom } from './editor/codeEditor';
 import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
@@ -108,9 +108,10 @@ import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
-import { applyFuzzy, applyKnit, applyCable, applyWaffle, applyFur, applyWoven, applySmooth, applyVoxelize, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applyKnit, applyCable, applyWaffle, applyFur, applyWoven, applySmooth, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, type ModifierResult } from './surface/modifiers';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
+import { initResizeUI } from './ui/resizeModal';
 import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
 import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type ReliefCommonOptions, type SeedRegion, type PreviewMode, type GenerateReliefResult } from './relief/types';
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
@@ -3587,7 +3588,18 @@ async function main() {
   // so both clear the previous session's code instead of leaving it behind.
   function resetEditorToStarter(comment: string) {
     dropPaintState();
-    const freshCode = `// ${comment}\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);`;
+    const lang = getActiveLanguage();
+    let body: string;
+    if (lang === 'scad') {
+      body = 'cube([10, 10, 10], center=true);';
+    } else if (lang === 'replicad') {
+      body = 'const { BREP } = api;\nconst body = BREP.box([30, 30, 10]).fillet(3, { inDirection: [0, 0, 1] });\nconst bore = BREP.cylinder(4, 12).translate([0, 0, -1]);\nreturn body.cut(bore);';
+    } else if (lang === 'voxel') {
+      body = "const { voxels } = api;\nconst v = voxels();\nv.fillBox([-5, -5, 0], [4, 4, 0], '#6b8cff');\nv.fillBox([-1, -1, 1], [1, 1, 6], '#ff8c42');\nv.set(0, 0, 7, '#ff3b30');\nreturn v;";
+    } else {
+      body = 'const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
+    }
+    const freshCode = `// ${comment}\n${body}`;
     setValue(freshCode);
     runCode(freshCode);
   }
@@ -3604,16 +3616,13 @@ async function main() {
   }
 
   // Load a part's active version into the editor, or reset to a blank part when
-  // the part has no saved versions yet.
-  //
-  // A saved version carries its own language and `loadVersionIntoEditor` swaps
-  // the engine to match. A version-less part falls back to the manifold-js
-  // starter, so the engine MUST be on manifold-js before we seed + run it —
-  // otherwise the starter's `Manifold.cube(...)` runs under whatever engine the
-  // previously-active part left behind (e.g. voxel, where `api.Manifold` is
-  // undefined) and throws "Cannot read properties of undefined (reading
-  // 'cube')". This is the mixed-language case a JSON merge creates: a voxel
-  // Part 2 alongside the default unsaved manifold-js Part 1.
+  // the part has no saved versions yet. A saved version carries its own language
+  // and `loadVersionIntoEditor` swaps the engine to match. A version-less part
+  // falls back to the manifold-js starter: the engine MUST be on manifold-js
+  // before we seed + run it — otherwise the starter's `Manifold.cube(...)` runs
+  // under whatever engine the previously-active part left behind (e.g. voxel,
+  // where `api.Manifold` is undefined). This is the mixed-language case a JSON
+  // merge creates: a voxel Part 2 alongside an unsaved manifold-js Part 1.
   async function loadPartIntoEditor(version: Version | null) {
     if (version) {
       await loadVersionIntoEditor(version);
@@ -3644,7 +3653,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
+  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
@@ -3732,6 +3741,7 @@ async function main() {
     autoFormatToggle.className = on ? AUTO_FORMAT_ON_CLASS : AUTO_FORMAT_OFF_CLASS;
   }
   syncAutoFormatToggleUI();
+  findReplaceBtn.addEventListener('click', () => openFindReplace());
   formatBtn.addEventListener('click', () => formatCode());
   autoFormatToggle.addEventListener('click', () => {
     setAutoFormat(!getAutoFormat());
@@ -4909,6 +4919,32 @@ async function main() {
   // imported-style version. The baseline persists across panel open/close and
   // is cleared whenever a code run replaces the geometry.
   let simplifyBaselineMesh: MeshData | null = null;
+  // Baseline mesh with triColors baked in (set when the panel opens with paint
+  // active). Used as the color source for all carry operations in this session.
+  let simplifyBaselineColoredMesh: MeshData | null = null;
+  // Serialized paint (user) regions from the baseline — restored when the user resets.
+  let simplifyBaselineRegions: SerializedColorRegion[] | null = null;
+  // Model color region snapshot — these come from code declarations, not user paint,
+  // so they aren't captured by serializeRegions(). Captured separately at open time.
+  let simplifyBaselineModelRegions: Array<{ name: string; color: [number, number, number]; triangles: Set<number> }> | null = null;
+
+  // Restore the baseline mesh and all its color state (user regions + model regions).
+  // Used by simplify/enhance's "already at full detail" early-out and by Reset.
+  function restoreBaselineColors(baseline: MeshData): void {
+    if (simplifyBaselineColoredMesh) {
+      resetPaintWorkerState();
+      clearRegions();
+      clearModelColorRegions();
+      applyLiveGeometry(baseline);
+      if (simplifyBaselineModelRegions && simplifyBaselineModelRegions.length > 0) {
+        setModelColorRegions(simplifyBaselineModelRegions);
+      }
+      rehydrateColorRegions({ colorRegions: simplifyBaselineRegions ?? [] });
+      updateMesh(applyTriColorsIfVisible(baseline), { skipAutoFrame: true });
+    } else {
+      applyLiveGeometryWithColor(baseline);
+    }
+  }
 
   // Replace the live geometry with `mesh`: rebuild the queryable Manifold and
   // refresh the viewport, paint-adjacency map, stats, and clip bounds. Mirrors
@@ -4931,40 +4967,77 @@ async function main() {
     syncClipSliderBounds();
   }
 
+  /** Apply geometry and ensure colors from the regions module are re-rendered.
+   *  `applyLiveGeometry` calls `updateMesh(mesh)` which bypasses color regions;
+   *  this overrides that with a colored repaint when regions are active. */
+  function applyLiveGeometryWithColor(mesh: MeshData): void {
+    applyLiveGeometry(mesh);
+    if (hasColorRegions() || hasModelColorRegions()) {
+      updateMesh(applyTriColorsIfVisible(mesh), { skipAutoFrame: true });
+    }
+  }
+
+  /** Transfer colors from `src` (which must have `.triColors`) onto `dest` via
+   *  nearest-triangle centroid mapping. Returns `dest` with `triColors` added. */
+  function carryColorsToMesh(src: MeshData, dest: MeshData): MeshData {
+    const srcColors = src.triColors!;
+    const nearest = nearestTriangleMap(src, dest);
+    const triColors = new Uint8Array(dest.numTri * 3);
+    for (let t = 0; t < dest.numTri; t++) {
+      const o = nearest[t];
+      if (o >= 0) {
+        triColors[t * 3]     = srcColors[o * 3];
+        triColors[t * 3 + 1] = srcColors[o * 3 + 1];
+        triColors[t * 3 + 2] = srcColors[o * 3 + 2];
+      }
+    }
+    return { ...dest, triColors };
+  }
+
   const simplifyHandlers: SimplifyHandlers = {
     open(userInitiated) {
       if (userInitiated) {
-        // Don't let two overlay panels share the top-right slot.
+        // Don’t let two overlay panels share the top-right slot.
         if (isPaintOpen()) closePaintMenu();
         if (isAnnotateOpen()) closeAnnotateMenu();
         closeMeasureIfActive();
       }
       if (!currentMeshData) {
-        return { ok: false, reason: 'Run some code first — there’s no model to simplify.' };
+        return { ok: false, reason: "Run some code first — there’s no model to simplify." };
       }
       if (!currentManifold) {
-        return { ok: false, reason: 'Simplify needs a solid (manifold) model. Render-only imports can’t be reduced.' };
+        return { ok: false, reason: "Simplify needs a solid (manifold) model. Render-only imports can’t be reduced." };
       }
-      if (hasColorRegions()) {
-        return { ok: false, reason: 'Clear paint regions before simplifying — reducing triangles would invalidate them.' };
+      if (!simplifyBaselineMesh) {
+        simplifyBaselineMesh = currentMeshData;
+        // Snapshot colors once so all carry operations in this session use the
+        // same source — even after apply clears the regions module state.
+        if (modelHasColor()) {
+          simplifyBaselineColoredMesh = applyTriColors(currentMeshData);
+          simplifyBaselineRegions = serializeRegions();
+          simplifyBaselineModelRegions = getModelRegions().map(r => ({
+            name: r.name, color: [...r.color] as [number, number, number], triangles: new Set(r.triangles),
+          }));
+        }
       }
-      if (!simplifyBaselineMesh) simplifyBaselineMesh = currentMeshData;
       return {
         ok: true,
         info: {
           baseTriangles: simplifyBaselineMesh.numTri,
           currentTriangles: currentMeshData.numTri,
+          hasColor: simplifyBaselineColoredMesh != null,
         },
       };
     },
 
-    async apply(targetTriangles, onProgress, signal) {
+    async apply(targetTriangles, preserveColor, onProgress, signal) {
       const baseline = simplifyBaselineMesh;
       if (!baseline) return null;
-      // Dragging the target back to (or above) full detail is just a restore —
-      // no search to run, so report it as instantly complete.
+      const coloredBaseline = preserveColor ? simplifyBaselineColoredMesh : null;
+
+      // Dragging the target back to (or above) full detail is just a restore.
       if (targetTriangles >= baseline.numTri) {
-        applyLiveGeometry(baseline);
+        restoreBaselineColors(baseline);
         await onProgress(1);
         return { triangleCount: baseline.numTri };
       }
@@ -4974,9 +5047,6 @@ async function main() {
         : 0;
       if (!(diag > 0)) return null;
 
-      // Run the binary-search reduction off the main thread so a heavy mesh
-      // doesn't freeze the viewport. The worker reports progress per
-      // iteration and honors `signal` for Cancel.
       const result = await simplifyInWorker(
         baseline,
         targetTriangles,
@@ -4984,38 +5054,79 @@ async function main() {
         (fraction) => { void onProgress(fraction); },
         signal,
       );
-      // The search yields to the event loop, so a code run can replace the
-      // geometry mid-flight. If the baseline moved, our result is stale —
-      // drop it rather than clobber the freshly-run mesh.
       if (simplifyBaselineMesh !== baseline) return null;
       if (!result) {
-        applyLiveGeometry(baseline);
+        applyLiveGeometryWithColor(baseline);
         return null;
       }
-      applyLiveGeometry(result.mesh);
+      if (coloredBaseline?.triColors) {
+        resetPaintWorkerState();
+        clearRegions();
+        clearModelColorRegions();
+        applyLiveGeometry(carryColorsToMesh(coloredBaseline, result.mesh));
+      } else {
+        applyLiveGeometry(result.mesh);
+      }
+      return { triangleCount: result.triangleCount };
+    },
+
+    async enhance(targetTriangles, preserveColor, onProgress, signal) {
+      const baseline = simplifyBaselineMesh;
+      if (!baseline) return null;
+      const coloredBaseline = preserveColor ? simplifyBaselineColoredMesh : null;
+
+      if (targetTriangles <= baseline.numTri) {
+        restoreBaselineColors(baseline);
+        await onProgress(1);
+        return { triangleCount: baseline.numTri };
+      }
+      const bbox = bboxFromMesh(baseline);
+      const diag = bbox
+        ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
+        : 0;
+      if (!(diag > 0)) return null;
+
+      const result = await enhanceInWorker(
+        baseline,
+        targetTriangles,
+        diag,
+        (fraction) => { void onProgress(fraction); },
+        signal,
+      );
+      if (simplifyBaselineMesh !== baseline) return null;
+      if (!result) {
+        applyLiveGeometryWithColor(baseline);
+        return null;
+      }
+      if (coloredBaseline?.triColors) {
+        resetPaintWorkerState();
+        clearRegions();
+        clearModelColorRegions();
+        applyLiveGeometry(carryColorsToMesh(coloredBaseline, result.mesh));
+      } else {
+        applyLiveGeometry(result.mesh);
+      }
       return { triangleCount: result.triangleCount };
     },
 
     reset() {
-      if (simplifyBaselineMesh) applyLiveGeometry(simplifyBaselineMesh);
+      if (!simplifyBaselineMesh) return;
+      restoreBaselineColors(simplifyBaselineMesh);
     },
 
     async save() {
       const baseline = simplifyBaselineMesh;
       if (!getState().session) {
-        return { ok: false, message: 'Open a session before saving.' };
+        return { ok: false, message: "Open a session before saving." };
       }
-      if (!currentMeshData || !baseline || currentMeshData.numTri >= baseline.numTri) {
-        return { ok: false, message: 'Reduce the model first, then save.' };
+      if (!currentMeshData || !baseline || currentMeshData.numTri === baseline.numTri) {
+        return { ok: false, message: "Simplify or enhance the model first, then save." };
       }
       try {
         const reduced = currentMeshData;
+        // triColors on the live mesh (set by carry) — used to persist colors.
+        const carriedColors = reduced.triColors ?? null;
 
-        // Preserve the pre-simplify model as its own version first, so baking the
-        // reduced mesh (which overwrites the editor with an import wrapper) never
-        // silently discards the full-detail original. Skip when the editor already
-        // matches the current saved version (formatting-aware, so a version saved
-        // with raw code isn't re-saved just because the editor reformatted it).
         const originalCode = getValue();
         const current = getState().currentVersion;
         let savedOriginal = false;
@@ -5024,14 +5135,27 @@ async function main() {
           savedOriginal = !!(await saveVersion(originalCode, original.geometryData, original.thumbnail));
         }
 
-        const baked = toImportedMesh(`simplified-${reduced.numTri}tri`, reduced);
+        const versionLabel = reduced.numTri < baseline.numTri ? 'simplified' : 'enhanced';
+        const importFilename = `${versionLabel}-${reduced.numTri}tri`;
+        const baked = toImportedMesh(importFilename, reduced);
         const code = generateImportCode([baked], { manifold: true });
         setActiveImports([baked]);
         setValue(code);
         await runCodeSync(code);
+        let geoData = getGeometryDataObj();
+        if (carriedColors && currentMeshData && geoData) {
+          const { regions } = buildCarriedColorRegions(
+            { ...reduced, triColors: carriedColors },
+            carriedColors,
+            currentMeshData,
+          );
+          if (regions.length > 0) {
+            rehydrateColorRegions({ ...geoData, colorRegions: regions });
+            geoData = enrichGeometryDataWithColors(getGeometryDataObj());
+          }
+        }
         const thumbnail = await captureThumbnail();
-        const geometryData = getGeometryDataObj();
-        await saveVersion(code, geometryData, thumbnail, 'simplified', undefined, {
+        await saveVersion(code, geoData, thumbnail, versionLabel, undefined, {
           force: true,
           importedMeshes: [baked],
         });
@@ -5039,7 +5163,7 @@ async function main() {
         return {
           ok: true,
           message: savedOriginal
-            ? `Saved original + simplified (${tri} triangles).`
+            ? `Saved original + result (${tri} triangles).`
             : `Saved as a new version (${tri} triangles).`,
         };
       } catch (e) {
@@ -6066,6 +6190,25 @@ async function main() {
       try {
         const preserve = opts?.preserveColor ?? true;
         return await commitSurfaceModifier(buildSurfaceModifier('voxelize', opts, preserve), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Non-destructive viewport preview of a scale operation (no version saved). */
+    previewScale(sx: number, sy: number, sz: number): { ok: true } | { error: string } {
+      try {
+        if (!currentMeshData) return { error: 'No model loaded' };
+        const result = applyScale(meshForModifier(false), sx, sy, sz);
+        previewSurfaceModifier(result, false);
+        return { ok: true };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Discard a live scale preview and restore the current model's mesh. */
+    clearScalePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
+    /** Scale the current model and save as a new version.
+     *  sx/sy/sz are multiplicative factors (1 = no change, 2 = double, 0.5 = half). */
+    async scaleModel(sx: number, sy: number, sz: number) {
+      try {
+        if (!currentMeshData) return { error: 'No model loaded' };
+        return await commitSurfaceModifier(applyScale(meshForModifier(false), sx, sy, sz), false);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Run code string and update all views. Returns geometry data object. */
@@ -10485,6 +10628,8 @@ async function main() {
 
   // Surface modifiers UI (viewport ✦ Surface button + command-palette entries).
   initSurfaceUI(partwrightAPI as unknown as Parameters<typeof initSurfaceUI>[0]);
+  // Resize/scale UI (viewport ⇲ Resize button + command-palette entry).
+  initResizeUI(partwrightAPI as unknown as Parameters<typeof initResizeUI>[0]);
 
   // Log API availability for AI agents
   console.info('Partwright: AI agents should use window.partwright -- start with partwright.help(). window.mainifold remains as a legacy alias. See /llms.txt');
@@ -11315,6 +11460,9 @@ async function main() {
       // A fresh run replaces the geometry, so any simplify baseline is stale.
       // Drop it and let an open panel re-snapshot the new mesh.
       simplifyBaselineMesh = null;
+      simplifyBaselineColoredMesh = null;
+      simplifyBaselineRegions = null;
+      simplifyBaselineModelRegions = null;
       refreshSimplifyIfOpen();
       setStatus(statusBar, 'ready', 'Ready');
     }
