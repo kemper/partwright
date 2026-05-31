@@ -352,10 +352,18 @@ function buildPanel(): HTMLElement {
   p.style.minWidth = '240px';
   p.style.maxWidth = '280px';
 
-  const title = document.createElement('div');
-  title.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5 font-medium';
-  title.textContent = 'Simplify / Enhance';
-  p.appendChild(title);
+  const header = document.createElement('div');
+  header.className = 'flex items-center justify-between mb-1.5';
+  const titleEl = document.createElement('div');
+  titleEl.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
+  titleEl.textContent = 'Simplify / Enhance';
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 transition-colors leading-none text-base';
+  closeBtn.textContent = '✕';
+  closeBtn.title = 'Close';
+  closeBtn.addEventListener('click', closePanel);
+  header.append(titleEl, closeBtn);
+  p.appendChild(header);
 
   originalEl = document.createElement('div');
   originalEl.id = 'simplify-original';
