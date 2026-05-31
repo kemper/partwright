@@ -657,6 +657,15 @@ export function getMeshGroup(): THREE.Group {
   return meshGroup;
 }
 
+export function getModelBoundingBox(): { min: [number, number, number]; max: [number, number, number] } | null {
+  if (!meshGroup || meshGroup.children.length === 0) return null;
+  const box = new THREE.Box3().setFromObject(meshGroup);
+  return {
+    min: [box.min.x, box.min.y, box.min.z],
+    max: [box.max.x, box.max.y, box.max.z],
+  };
+}
+
 // === Orbit lock API ===
 
 // Locks gate rotate + pan; zoom is intentionally always enabled so

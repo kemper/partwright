@@ -27,7 +27,7 @@ import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
+import { initViewport, updateMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getModelBoundingBox, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { generateId, getLatestVersion } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
@@ -120,6 +120,7 @@ import { listFilaments, hexToRgb } from './relief/filaments';
 import { meshBounds } from './color/slabPaint';
 import { openReliefImportModal } from './ui/reliefImportModal';
 import { mountReliefStudio, type ReliefStudioHandle } from './ui/reliefStudio';
+import { mountFlexiMaker, type FlexiMakerHandle } from './ui/flexiMaker';
 import type { BuiltExport } from './export/gltf';
 
 /** Register a freshly-built export blob in the inbox so it shows up in Recent Exports. */
@@ -1777,6 +1778,9 @@ async function main() {
     });
     return { sessionId: session.id };
   }
+
+  // === Flexi-Maker ===
+  let flexiMaker: FlexiMakerHandle | null = null;
 
   // === Relief Studio (image → printable colour tile / stepped relief) ===
   let reliefStudio: ReliefStudioHandle | null = null;
@@ -3569,6 +3573,10 @@ async function main() {
     onCreateVoxel: () => { void openVoxelImportFlow(); },
     onLanguageHelp: async () => { await showLanguageHelpModal(); },
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
+    onOpenFlexiMaker: () => {
+      switchTab('interactive');
+      flexiMaker?.toggle();
+    },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => {
       if (lang === getActiveLanguage()) return;
       // Stash the current language's editor buffer as a draft on the active
@@ -4809,6 +4817,64 @@ async function main() {
       if (sid) void reopenReliefImport(sid);
       else openReliefImportFlow();
     },
+  });
+
+  flexiMaker = mountFlexiMaker(viewportPane, {
+    getCurrentCode: () => getValue(),
+    getActiveLanguage: () => getActiveLanguage(),
+    previewCode: async (code: string) => {
+      const result = await executeCodeAsync(code);
+      if (!result.error && result.mesh) {
+        updateMesh(result.mesh, { skipAutoFrame: true });
+      }
+      return { error: result.error };
+    },
+    restorePreview: () => {
+      if (currentMeshData) {
+        updateMesh(applyTriColorsIfVisible(currentMeshData), { skipAutoFrame: true });
+      }
+    },
+    applyCode: async (code: string, label: string) => {
+      // Snapshot baked colors BEFORE the run so we can transfer them to the new mesh
+      const oldColorMesh = (hasColorRegions() || hasModelColorRegions()) && currentMeshData
+        ? applyTriColors(currentMeshData) : null;
+
+      setValue(code);
+      const ok = await runCodeSync(code, { surfaceErrors: true });
+      if (!ok) return { error: 'Run was superseded or failed — retry' };
+
+      // Transfer paint colors to the new topology via nearest-triangle mapping
+      if (oldColorMesh?.triColors && currentMeshData) {
+        const nearest = nearestTriangleMap(oldColorMesh, currentMeshData);
+        const oldColors = oldColorMesh.triColors;
+        const painted = (oldColors as Uint8Array & { _painted?: Uint8Array })._painted;
+        const groups = new Map<number, number[]>();
+        for (let t = 0; t < currentMeshData.numTri; t++) {
+          const o = nearest[t];
+          if (o < 0 || (painted && !painted[o])) continue;
+          const r = oldColors[o * 3], g = oldColors[o * 3 + 1], b = oldColors[o * 3 + 2];
+          const rgb = (r << 16) | (g << 8) | b;
+          let arr = groups.get(rgb); if (!arr) { arr = []; groups.set(rgb, arr); }
+          arr.push(t);
+        }
+        const regions: SerializedColorRegion[] = [];
+        let colorIdx = 0;
+        for (const [rgb, ids] of groups) {
+          regions.push({
+            name: `Flexi color ${++colorIdx}`,
+            color: [((rgb >> 16) & 0xff) / 255, ((rgb >> 8) & 0xff) / 255, (rgb & 0xff) / 255],
+            source: 'face-pick' as const,
+            descriptor: { kind: 'triangles', ids },
+            visible: true,
+          } as SerializedColorRegion);
+        }
+        if (regions.length > 0) rehydrateColorRegions({ colorRegions: regions });
+      }
+
+      await saveCurrentVersion(label);
+    },
+    getModelBounds: () => getModelBoundingBox(),
+    onClose: () => { /* no special teardown needed */ },
   });
 
   // Persist the editor's working buffer to the active session's draft so an
