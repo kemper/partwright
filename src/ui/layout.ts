@@ -124,18 +124,17 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
 
   editorPane.appendChild(editorHeader);
 
-  // Overlay (absolutely positioned) so showing/hiding it never reflows the code
-  // or moves the caret. Anchored to the bottom of the editor pane; long errors
-  // scroll within it.
-  const editorErrorPanel = document.createElement('div');
-  editorErrorPanel.id = 'editor-error-panel';
-  editorErrorPanel.className = 'hidden absolute bottom-0 left-0 right-0 z-10 max-h-[45%] overflow-auto border-t border-red-500/40 bg-red-950/90 backdrop-blur-sm px-3 py-2 text-xs text-red-100 shadow-lg';
-  editorPane.appendChild(editorErrorPanel);
-
   const editorContainer = document.createElement('div');
   editorContainer.id = 'editor-container';
   editorContainer.className = 'flex-1 min-h-0 overflow-hidden';
   editorPane.appendChild(editorContainer);
+
+  // Sits below the editor so it pushes the code up rather than overlaying it.
+  // Long errors scroll within the panel; max-h caps how much space it can take.
+  const editorErrorPanel = document.createElement('div');
+  editorErrorPanel.id = 'editor-error-panel';
+  editorErrorPanel.className = 'hidden shrink-0 max-h-[45%] overflow-auto border-t border-red-500/40 bg-red-950/90 px-3 py-2 text-xs text-red-100';
+  editorPane.appendChild(editorErrorPanel);
 
   // === Splitter ===
   // Outer is a wide transparent grab strip (touch-friendly); inner stripe is the

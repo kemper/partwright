@@ -192,9 +192,12 @@ export async function streamTurn(
     model: spec.model,
     max_tokens,
     system,
-    tools,
     messages: spec.apiMessages,
   };
+  // Omit tools entirely when the list is empty — passing tools:[] causes the
+  // API to return malformed_function_call if the model tries to use a tool
+  // it remembers from earlier turns in the conversation.
+  if (tools.length > 0) params.tools = tools;
   // Only attach the thinking config when enabled — omitting it entirely keeps
   // the request (and the prompt cache) identical to the pre-feature path.
   if (budget > 0) {

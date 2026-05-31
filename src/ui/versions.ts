@@ -9,6 +9,9 @@ import {
   deleteVersion,
   restoreVersion,
   renameVersion,
+  findVersionChildren,
+  clearVersionParentRefs,
+  loadVersion,
   getState,
   type Version,
 } from '../storage/sessionManager';
@@ -69,6 +72,9 @@ export async function refreshVersions(): Promise<void> {
     return;
   }
 
+  // Build a quick id→label map so provenance badges can show "from v2" etc.
+  const labelById = new Map(versions.map(v => [v.id, v.label]));
+
   const grid = document.createElement('div');
   grid.className = 'grid gap-3';
   grid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(220px, 1fr))';
@@ -87,14 +93,26 @@ export async function refreshVersions(): Promise<void> {
         onClick: (v) => void performDelete(v),
       });
     }
+
+    const parentLabel = version.parentVersionId ? (labelById.get(version.parentVersionId) ?? null) : null;
+
     grid.appendChild(createVersionTile(version, {
       session,
       active: version.id === currentId,
       onClick: (v) => void cbs?.onOpenVersion(v),
       controls,
+      parentLabel,
+      onGoToParent: version.parentVersionId
+        ? (parentId) => void goToParent(parentId)
+        : undefined,
     }));
   }
   versionsEl.appendChild(grid);
+}
+
+async function goToParent(parentVersionId: string): Promise<void> {
+  const version = await loadVersion(parentVersionId);
+  if (version) await cbs?.onOpenVersion(version);
 }
 
 function buildToolbar(versionCount: number): HTMLElement {
@@ -144,6 +162,19 @@ function describeOp(op: VersionOp): string {
 }
 
 async function performDelete(version: Version): Promise<void> {
+  // Warn if other versions are derived from this one.
+  const children = await findVersionChildren(version.id);
+  if (children.length > 0) {
+    const childList = children.map(c => `"${c.label}"`).join(', ');
+    const noun = children.length === 1 ? 'version' : 'versions';
+    const confirmed = window.confirm(
+      `"${version.label}" is the source for ${children.length} derived ${noun} (${childList}).\n\n` +
+      `Deleting it will remove the provenance link from those ${noun}. Continue?`,
+    );
+    if (!confirmed) return;
+    await clearVersionParentRefs(version.id);
+  }
+
   const result = await deleteVersion(version.id);
   if (!result) return; // refused (last remaining version) or not found
   undoStack.push({ kind: 'delete', version: result.deleted, wasCurrent: result.wasCurrent });

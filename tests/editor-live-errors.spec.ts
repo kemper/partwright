@@ -1,7 +1,7 @@
 // Live-error UX: auto-runs (typing) drive the preview but defer error surfacing
 // so the editor doesn't flicker an error / move the caret on every keystroke.
-// The error panel is a non-shifting overlay, and transient typing errors are
-// kept out of the diagnostic log.
+// The error panel sits below the editor and pushes it up; transient typing
+// errors are kept out of the diagnostic log.
 
 import { test, expect } from 'playwright/test';
 
@@ -44,12 +44,12 @@ test.describe('editor live errors', () => {
     await expect(panel).toContainText('zzznotdefined123');
   });
 
-  test('the error panel is an overlay (does not reflow the editor)', async ({ page }) => {
+  test('the error panel is inline (pushes the editor up, not an overlay)', async ({ page }) => {
     await openEditor(page);
     const panel = page.locator('#editor-error-panel');
     await replaceEditorWith(page, BAD);
     await expect(panel).toBeVisible({ timeout: 3000 });
-    await expect(panel).toHaveCSS('position', 'absolute');
+    await expect(panel).toHaveCSS('position', 'static');
   });
 
   test('transient typing errors stay out of the diagnostic log', async ({ page }) => {

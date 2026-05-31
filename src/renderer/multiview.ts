@@ -22,7 +22,7 @@ export const STANDARD_VIEWS = {
   front: { label: 'Front', elevation: 0,  azimuth: 0,   ortho: true  },
   right: { label: 'Right', elevation: 0,  azimuth: 90,  ortho: true  },
   top:   { label: 'Top',   elevation: 90, azimuth: 0,   ortho: true  },
-  iso:   { label: 'Iso',   elevation: 35, azimuth: 45,  ortho: false },
+  iso:   { label: 'Iso',   elevation: 35, azimuth: 135, ortho: false },
 } as const;
 export type StandardViewAngle = typeof STANDARD_VIEWS[keyof typeof STANDARD_VIEWS];
 
@@ -361,19 +361,27 @@ export function buildViewCamera(meshData: MeshData, options: {
   const cy = dist * Math.cos(elevation) * Math.cos(azimuth);
   const cz = dist * Math.sin(elevation);
 
+  // When looking straight down or up (elevation ≈ ±90°), the Z-up vector is
+  // parallel to the look direction — a degenerate case Three.js resolves with
+  // an arbitrary fallback that puts +Y right and +X downward on screen.
+  // Switch to Y-up for polar views so +X is screen-right and +Y is screen-up,
+  // matching the standard slicer/CAD build-plate orientation.
+  const isPolar = Math.abs(Math.sin(elevation)) > 0.999;
+  const [upX, upY, upZ] = isPolar ? [0, 1, 0] : [0, 0, 1];
+
   let camera: THREE.Camera;
   if (options.ortho) {
     const halfExtent = maxDim * 0.7;
     const orthoCamera = new THREE.OrthographicCamera(-halfExtent, halfExtent, halfExtent, -halfExtent, 0.1, 1000);
     orthoCamera.position.set(center.x + cx, center.y + cy, center.z + cz);
-    orthoCamera.up.set(0, 0, 1);
+    orthoCamera.up.set(upX, upY, upZ);
     orthoCamera.lookAt(center);
     orthoCamera.updateProjectionMatrix();
     camera = orthoCamera;
   } else {
     const perspCamera = new THREE.PerspectiveCamera(40, 1, 0.1, 1000);
     perspCamera.position.set(center.x + cx, center.y + cy, center.z + cz);
-    perspCamera.up.set(0, 0, 1);
+    perspCamera.up.set(upX, upY, upZ);
     perspCamera.lookAt(center);
     perspCamera.updateProjectionMatrix();
     camera = perspCamera;

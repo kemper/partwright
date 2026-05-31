@@ -82,10 +82,11 @@ export function executeCode(source: string, lang?: Language, paramOverrides?: Re
 
 let engineWorker: Worker | null = null;
 let workerReadyResolve: (() => void) | null = null;
+let workerReadyReject: ((e: Error) => void) | null = null;
 // Mutable so it can be replaced when the Worker is restarted after a crash.
 // A crashed-and-restarted Worker must not inherit the already-resolved promise
 // from its predecessor — callers would skip the await and race the new init.
-let workerReady: Promise<void> = new Promise(r => { workerReadyResolve = r; });
+let workerReady: Promise<void> = new Promise((r, rej) => { workerReadyResolve = r; workerReadyReject = rej; });
 let callIdCounter = 0;
 
 const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void }>();
@@ -145,18 +146,31 @@ function rejectAllPending(err: Error): void {
 /** Terminate an unresponsive Worker and reject everything in flight so the next
  *  call boots a fresh instance instead of queueing behind a hang. */
 function restartEngineWorker(reason: string): void {
-  rejectAllPending(new Error(reason));
+  const err = new Error(reason);
+  rejectAllPending(err);
+  // Unblock any executeCodeAsync that's still awaiting 'workerReady' (i.e. the
+  // worker was terminated before it sent the 'ready' message). Promise state is
+  // immutable so this is a no-op if the gate was already resolved.
+  workerReadyReject?.(err);
+  workerReadyReject = null;
   engineWorker?.terminate();
   engineWorker = null;
   // eslint-disable-next-line no-console
   console.error('[EngineWorker]', reason);
 }
 
+/** Cancel any in-flight executeCodeAsync by terminating the Worker.
+ *  The pending Promise rejects immediately; the Worker restarts automatically
+ *  on the next executeCodeAsync call. */
+export function cancelCurrentExecution(): void {
+  restartEngineWorker('Execution cancelled');
+}
+
 function initEngineWorker(): void {
   if (engineWorker) return;
   // Fresh ready-gate so the restarted Worker's 'ready' message resolves it,
   // not the one that was already resolved by the previous instance.
-  workerReady = new Promise(r => { workerReadyResolve = r; });
+  workerReady = new Promise((r, rej) => { workerReadyResolve = r; workerReadyReject = rej; });
   engineWorker = new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' });
   engineWorker.onmessage = handleEngineWorkerMessage;
   engineWorker.onerror = (ev) => {
