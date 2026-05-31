@@ -3587,7 +3587,13 @@ async function main() {
   // so both clear the previous session's code instead of leaving it behind.
   function resetEditorToStarter(comment: string) {
     dropPaintState();
-    const freshCode = `// ${comment}\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);`;
+    const lang = getActiveLanguage();
+    const stub = lang === 'scad' ? DRAFT_STUB_SCAD
+      : lang === 'replicad' ? DRAFT_STUB_REPLICAD
+      : lang === 'voxel' ? DRAFT_STUB_VOXEL
+      : DRAFT_STUB_JS;
+    // Replace the stub's own leading language comment with the contextual label.
+    const freshCode = `// ${comment}\n` + stub.replace(/^\/\/[^\n]*\n/, '');
     setValue(freshCode);
     runCode(freshCode);
   }
@@ -3604,21 +3610,13 @@ async function main() {
   }
 
   // Load a part's active version into the editor, or reset to a blank part when
-  // the part has no saved versions yet.
-  //
-  // A saved version carries its own language and `loadVersionIntoEditor` swaps
-  // the engine to match. A version-less part falls back to the manifold-js
-  // starter, so the engine MUST be on manifold-js before we seed + run it —
-  // otherwise the starter's `Manifold.cube(...)` runs under whatever engine the
-  // previously-active part left behind (e.g. voxel, where `api.Manifold` is
-  // undefined) and throws "Cannot read properties of undefined (reading
-  // 'cube')". This is the mixed-language case a JSON merge creates: a voxel
-  // Part 2 alongside the default unsaved manifold-js Part 1.
+  // the part has no saved versions yet. A saved version carries its own language
+  // and `loadVersionIntoEditor` swaps the engine to match. A version-less part
+  // uses whatever language is currently active for the session.
   async function loadPartIntoEditor(version: Version | null) {
     if (version) {
       await loadVersionIntoEditor(version);
     } else {
-      if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
       startNewPartInEditor();
     }
   }
