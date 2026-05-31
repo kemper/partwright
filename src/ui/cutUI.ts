@@ -21,12 +21,17 @@ import {
   getCutMode,
   getKeepSide,
   onGizmoChange,
+  getProxyPosition,
+  setProxyPosition,
+  setGizmoHandlesVisible,
   type CutShape,
   type CutMode,
   type KeepSide,
   type CutGizmoParams,
 } from '../cut/cutGizmo';
 import type { MeshData } from '../geometry/types';
+import { showToast } from '../ui/toast';
+import { meshBounds } from '../color/slabPaint';
 
 export type { CutGizmoParams };
 
@@ -70,6 +75,12 @@ let applying = false;
 
 let preserveColors = true;
 
+let posXInput: HTMLInputElement | null = null;
+let posYInput: HTMLInputElement | null = null;
+let posZInput: HTMLInputElement | null = null;
+let updatingInputs = false;
+let keydownListener: ((e: KeyboardEvent) => void) | null = null;
+
 /** Initialize the Cut UI — adds the toolbar button and builds the floating panel. */
 export function initCutUI(controlsContainer: HTMLElement, h: CutHandlers): void {
   handlers = h;
@@ -105,12 +116,18 @@ function toggle(): void {
   else openPanel();
 }
 
+// External reference for mode buttons so keydown handler can update them
+let _updateModeButtons: (() => void) | null = null;
+
+function updateModeButtonsExternal(): void {
+  if (_updateModeButtons) _updateModeButtons();
+}
+
 function openPanel(): void {
   if (!handlers || !panel) return;
   const res = handlers.open(true);
   if (!res.ok) {
-    // Show the reason briefly in the status area (panel is not open yet).
-    if (statusEl) statusEl.textContent = res.reason;
+    showToast(res.reason, { variant: 'warn' });
     return;
   }
   panel.classList.remove('hidden');
@@ -118,12 +135,35 @@ function openPanel(): void {
   // Activate the 3-D gizmo.
   const mesh = handlers.getMesh();
   if (mesh) activateGizmo(mesh);
+
+  // Keyboard shortcuts: t/r/s for translate/rotate/scale mode
+  keydownListener = (e: KeyboardEvent) => {
+    const target = e.target as HTMLElement;
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+    const key = e.key.toLowerCase();
+    if (key === 't') {
+      setCutMode('translate');
+      updateModeButtonsExternal();
+    } else if (key === 'r') {
+      setCutMode('rotate');
+      updateModeButtonsExternal();
+    } else if (key === 's') {
+      setCutMode('scale');
+      updateModeButtonsExternal();
+    }
+  };
+  document.addEventListener('keydown', keydownListener);
 }
 
 function closePanel(): void {
   panel?.classList.add('hidden');
   if (cutBtn) cutBtn.className = BTN_INACTIVE;
   deactivateGizmo();
+
+  if (keydownListener) {
+    document.removeEventListener('keydown', keydownListener);
+    keydownListener = null;
+  }
 }
 
 // ── Panel builder ──────────────────────────────────────────────────────────────
@@ -133,11 +173,9 @@ function buildPanel(): HTMLElement {
   p.id = 'cut-panel';
   // Responsive: full-width bottom sheet on mobile, floating sidebar on desktop.
   p.className = [
-    'hidden z-20 flex flex-col overflow-hidden',
-    'bg-zinc-800/95 backdrop-blur border border-zinc-600/60 shadow-xl',
-    'absolute inset-x-2 bottom-2 top-auto max-h-[55%] rounded-xl',
-    'md:inset-x-auto md:bottom-auto md:left-auto md:right-2 md:top-12',
-    'md:w-64 md:max-h-[calc(100%-3.5rem)] md:rounded-lg',
+    'hidden absolute top-10 right-0 z-20 flex flex-col',
+    'bg-zinc-800/95 backdrop-blur border border-zinc-600/60 shadow-xl rounded-lg',
+    'w-72 max-h-[min(560px,calc(100vh-4rem))]',
   ].join(' ');
 
   // ── Draggable header ─────────────────────────────────────────────────────────
@@ -195,6 +233,15 @@ function buildPanel(): HTMLElement {
   // Sync shape buttons when the gizmo notifies us (e.g. after onMeshChanged rebuilds).
   onGizmoChange(() => {
     for (const [s, b] of shapeButtons) b.className = toggleBtnClass(s === getCutShape());
+    // Update position inputs from gizmo
+    const pos = getProxyPosition();
+    if (pos && !updatingInputs) {
+      updatingInputs = true;
+      if (posXInput) posXInput.value = pos[0].toFixed(2);
+      if (posYInput) posYInput.value = pos[1].toFixed(2);
+      if (posZInput) posZInput.value = pos[2].toFixed(2);
+      updatingInputs = false;
+    }
   });
   content.appendChild(shapeRow);
 
@@ -217,6 +264,9 @@ function buildPanel(): HTMLElement {
       b.className = modeBtnClass(m === getCutMode() && !disabled, disabled);
     }
   }
+
+  // Expose to the keydown handler
+  _updateModeButtons = updateModeButtons;
 
   for (const [mode, label] of modes) {
     const btn = document.createElement('button');
@@ -253,6 +303,89 @@ function buildPanel(): HTMLElement {
   }
   content.appendChild(sideRow);
 
+  // === Position ===
+  appendSectionLabel(content, 'Position');
+  const posRow = document.createElement('div');
+  posRow.className = 'flex items-center gap-1 mt-1';
+
+  const axisLabels = ['X', 'Y', 'Z'];
+  const posInputs: HTMLInputElement[] = [];
+  for (let i = 0; i < 3; i++) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flex items-center gap-0.5 flex-1';
+
+    const axisLabel = document.createElement('span');
+    axisLabel.className = 'text-[10px] text-zinc-500 w-3 shrink-0';
+    axisLabel.textContent = axisLabels[i];
+    wrapper.appendChild(axisLabel);
+
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.step = '0.1';
+    inp.value = '0.00';
+    inp.className = 'w-16 px-1 py-0.5 rounded text-[10px] bg-zinc-700/60 text-zinc-200 border border-zinc-600/50 focus:border-blue-500/60 focus:outline-none min-w-0';
+    inp.addEventListener('change', () => {
+      if (updatingInputs) return;
+      const x = parseFloat(posInputs[0].value) || 0;
+      const y = parseFloat(posInputs[1].value) || 0;
+      const z = parseFloat(posInputs[2].value) || 0;
+      setProxyPosition(x, y, z);
+    });
+    posInputs.push(inp);
+    wrapper.appendChild(inp);
+    posRow.appendChild(wrapper);
+  }
+  posXInput = posInputs[0];
+  posYInput = posInputs[1];
+  posZInput = posInputs[2];
+  content.appendChild(posRow);
+
+  // === Snap presets ===
+  appendSectionLabel(content, 'Snap');
+  const snapAxes: Array<{ axis: string; idx: 0 | 1 | 2 }> = [
+    { axis: 'X', idx: 0 },
+    { axis: 'Y', idx: 1 },
+    { axis: 'Z', idx: 2 },
+  ];
+  const snapPercentages = [0.25, 0.5, 0.75];
+  const snapLabels = ['25%', '50%', '75%'];
+
+  for (const { axis, idx } of snapAxes) {
+    const snapRow = document.createElement('div');
+    snapRow.className = 'flex items-center gap-1 mt-1';
+
+    const snapAxisLabel = document.createElement('span');
+    snapAxisLabel.className = 'text-[10px] text-zinc-500 w-4 shrink-0';
+    snapAxisLabel.textContent = axis;
+    snapRow.appendChild(snapAxisLabel);
+
+    for (let pi = 0; pi < snapPercentages.length; pi++) {
+      const pct = snapPercentages[pi];
+      const btn = document.createElement('button');
+      btn.className = 'flex-1 px-1 py-0.5 rounded text-[10px] bg-zinc-700/40 text-zinc-300 hover:bg-zinc-600/60 border border-transparent transition-colors text-center';
+      btn.textContent = snapLabels[pi];
+      btn.addEventListener('click', () => {
+        if (!handlers) return;
+        const mesh = handlers.getMesh();
+        const pos = getProxyPosition();
+        if (!mesh || !pos) return;
+        const bb = meshBounds(mesh);
+        const val = bb.min[idx] + (bb.max[idx] - bb.min[idx]) * pct;
+        const newPos: [number, number, number] = [pos[0], pos[1], pos[2]];
+        newPos[idx] = val;
+        setProxyPosition(newPos[0], newPos[1], newPos[2]);
+        // Update the corresponding input immediately
+        updatingInputs = true;
+        if (posXInput) posXInput.value = newPos[0].toFixed(2);
+        if (posYInput) posYInput.value = newPos[1].toFixed(2);
+        if (posZInput) posZInput.value = newPos[2].toFixed(2);
+        updatingInputs = false;
+      });
+      snapRow.appendChild(btn);
+    }
+    content.appendChild(snapRow);
+  }
+
   // === Preserve colors ===
   const colorsLabel = document.createElement('label');
   colorsLabel.className = 'flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer';
@@ -264,6 +397,18 @@ function buildPanel(): HTMLElement {
   colorsLabel.appendChild(colorsCheck);
   colorsLabel.appendChild(document.createTextNode('Preserve colors'));
   content.appendChild(colorsLabel);
+
+  // === Show handles ===
+  const handlesLabel = document.createElement('label');
+  handlesLabel.className = 'flex items-center gap-2 text-[11px] text-zinc-300 cursor-pointer';
+  const handlesCheck = document.createElement('input');
+  handlesCheck.type = 'checkbox';
+  handlesCheck.checked = true;
+  handlesCheck.className = 'w-3.5 h-3.5 rounded accent-blue-500';
+  handlesCheck.addEventListener('change', () => { setGizmoHandlesVisible(handlesCheck.checked); });
+  handlesLabel.appendChild(handlesCheck);
+  handlesLabel.appendChild(document.createTextNode('Show handles'));
+  content.appendChild(handlesLabel);
 
   // === Status line ===
   statusEl = document.createElement('div');
@@ -397,7 +542,7 @@ function makeDraggable(el: HTMLElement, handle: HTMLElement): void {
     // Switch from Tailwind positioning classes to explicit inline style.
     el.style.right = `${startRight}px`;
     el.style.top = `${startTop}px`;
-    el.classList.remove('md:right-2', 'md:top-12');
+    el.classList.remove('right-0', 'top-10');
   });
 
   handle.addEventListener('pointermove', (e: PointerEvent) => {
