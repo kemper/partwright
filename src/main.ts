@@ -3944,11 +3944,11 @@ async function main() {
   let _runTimerStart = 0;
   let _runShowTimer: number | null = null;
   let _runTimerInterval: number | null = null;
-  // True only while the current in-flight runCodeSync was started by runCode()'s
-  // RAF callback (i.e. an auto-run or manual Run button). False when an explicit
-  // call owns it (partwright.run, version load). Used to decide whether a new
-  // RAF auto-run may cancel the current run or must suppress itself instead.
-  let _rafOwnsRun = false;
+  // The _runGeneration value of the most-recently-started RAF-initiated run.
+  // -1 = no RAF run is currently active. A new RAF may cancel only the
+  // generation that this tracks; if the active generation is different (an
+  // explicit call superseded the RAF), the new RAF suppresses itself instead.
+  let _rafOwnedGeneration = -1;
 
   // Last error from an auto-run, held back from the editor UI until typing
   // settles or focus leaves (see surfacePendingError). `src` guards against
@@ -10965,19 +10965,24 @@ async function main() {
 
     requestAnimationFrame(async () => {
       if (_running) {
-        if (_rafOwnsRun) {
-          // The in-flight run was also started by a RAF auto-run — cancel it so
+        if (_runGeneration === _rafOwnedGeneration) {
+          // The in-flight run is our own previous RAF auto-run — cancel it so
           // the latest edited code renders immediately instead of being dropped.
           cancelCurrentExecution();
         } else {
           // An explicit call (partwright.run, version load) owns the current
-          // run — suppress this auto-run rather than preempting it.
+          // run (or a newer RAF already claimed a higher generation) — suppress
+          // this auto-run rather than preempting it.
           return;
         }
       }
-      _rafOwnsRun = true;
+      // Record which generation we're about to start so a later RAF can
+      // cancel only this specific run (not an explicit run that superseded it).
+      const myRafGen = _runGeneration + 1;
+      _rafOwnedGeneration = myRafGen;
       await runCodeSync(src, opts);
-      if (!_running) _rafOwnsRun = false;
+      // If we still own the generation slot and the run is done, clear it.
+      if (_rafOwnedGeneration === myRafGen) _rafOwnedGeneration = -1;
     });
   }
 
