@@ -321,3 +321,20 @@ function disposeGizmo(): void {
     gizmoHelper = null;
   }
 }
+
+export function setGizmoHandlesVisible(visible: boolean): void {
+  if (gizmoHelper) gizmoHelper.visible = visible;
+  requestRender();
+}
+
+export function getProxyPosition(): [number, number, number] | null {
+  if (!proxy) return null;
+  return [proxy.position.x, proxy.position.y, proxy.position.z];
+}
+
+export function setProxyPosition(x: number, y: number, z: number): void {
+  if (!proxy) return;
+  proxy.position.set(x, y, z);
+  notifyChange();
+  requestRender();
+}
