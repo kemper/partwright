@@ -292,6 +292,7 @@ export function createToolbar(
   scadFontSelect.value = getScadFont();
   scadFontSelect.addEventListener('change', () => {
     setScadFont(scadFontSelect.value as ScadFontFamily);
+    callbacks.onRun();
   });
   scadFontWrapper.appendChild(scadFontSelect);
   toolbar.appendChild(scadFontWrapper);

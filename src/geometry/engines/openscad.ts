@@ -237,12 +237,13 @@ async function runFlatStlAsync(
   stderr: string[],
   defines: string[],
 ): Promise<MeshResult> {
-  // Seed $fn from the user's quality preset. The script can still
-  // reassign $fn=… at the top level or pass $fn= per primitive to override.
+  // Seed $fn / $font from the user's settings. The script can still
+  // reassign $fn=… or $font=… at the top level or per-call to override.
   // Customizer overrides follow as additional `-D` flags.
   const exitCode = instance.callMain([
     '--enable=manifold',
     '-D', `$fn=${getDefaultCircularSegments()}`,
+    '-D', `$font="${getScadFont()}"`,
     ...defines,
     '--export-format=binstl',
     '-o', '/out.stl',
@@ -300,6 +301,7 @@ async function runLabelAwareAsync(
     '--enable=manifold',
     '--enable=lazy-union',
     '-D', `$fn=${getDefaultCircularSegments()}`,
+    '-D', `$font="${getScadFont()}"`,
     ...defines,
     '--export-format=amf',
     '-o', '/out.amf',
