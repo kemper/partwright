@@ -197,10 +197,11 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     const maxTop = (visBottom - pr.top) - rr.height - pad;
     const curLeft = rr.left - pr.left;
     const curTop = rr.top - pr.top;
-    // Math.max(min, …) guards the case where the panel is taller/wider than the
-    // visible area: pin to the top/left edge rather than pushing it off the other.
-    const left = Math.min(Math.max(curLeft, minLeft), Math.max(minLeft, maxLeft));
-    const top = Math.min(Math.max(curTop, minTop), Math.max(minTop, maxTop));
+    // Constrain the current position between min and max. The outer Math.max(min, …)
+    // wins when the panel is taller/wider than the visible area (maxLeft < minLeft):
+    // it pins to the top/left edge rather than pushing the panel off the other side.
+    const left = Math.max(minLeft, Math.min(curLeft, maxLeft));
+    const top = Math.max(minTop, Math.min(curTop, maxTop));
     if (dragged || Math.abs(left - curLeft) > 0.5 || Math.abs(top - curTop) > 0.5) {
       applyPos(left, top);
     }
