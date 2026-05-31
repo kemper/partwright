@@ -41,6 +41,7 @@ import { runScadAsync, openscadEngine } from './engines/openscad';
 import { runReplicadAsync, replicadEngine, getLastBrepShape, clearLastBrepShape } from './engines/replicad';
 import { voxelEngine } from './engines/voxel';
 import { ensureBrepLoaded, sourceUsesBrep, parseStepBlob, pushPendingBrepImport, clearPendingBrepImports } from './brepRuntime';
+import { sourceUsesManifoldText, preloadTextFonts } from './textGlyphs';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { setCircularSegmentsOverride } from './qualitySettings';
 import type { Language } from './engines/types';
@@ -141,6 +142,11 @@ self.onmessage = async (event: MessageEvent) => {
         // critical path for everyone else.
         if (sourceUsesBrep(code as string)) {
           await ensureBrepLoaded();
+        }
+        // Pre-load Liberation Sans fonts if the code calls api.text / api.textSection.
+        // Same lazy-load pattern as BREP — fonts are cached after the first run.
+        if (sourceUsesManifoldText(code as string)) {
+          await preloadTextFonts();
         }
         result = manifoldJsEngine.run(code as string, params ?? undefined);
       }

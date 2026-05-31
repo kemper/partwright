@@ -13,6 +13,8 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { textToContours, type TextOptions } from './textGlyphs';
+
 type Vec2 = [number, number];
 type Vec3 = [number, number, number];
 
@@ -22,6 +24,10 @@ type CurvesAPI = {
   bezier: (controls: Vec2[], segments?: number) => Vec2[];
   naca4: (code: string, opts?: NACAOptions) => Vec2[];
   polyline: (points: Vec2[], opts?: PolylineOptions) => any;
+
+  // Text
+  text: (str: string, opts?: TextExtrudeOptions) => any;
+  textSection: (str: string, opts?: TextSectionOptions) => any;
 
   // 3D constructors
   loft: (profiles: any[], heights: number[], opts?: LoftOptions) => any;
@@ -83,6 +89,14 @@ interface RingCopyOptions {
   radius?: number;
   angle?: number;
 }
+
+type TextSectionOptions = TextOptions & {
+  center?: boolean;
+};
+
+type TextExtrudeOptions = TextSectionOptions & {
+  height?: number;
+};
 
 // ---------------------------------------------------------------------------
 
@@ -682,17 +696,68 @@ function makePatterns(module: any) {
 }
 
 // ---------------------------------------------------------------------------
+// Text helpers — api.text() and api.textSection()
+// Fonts are pre-loaded by the Worker before run(); these are synchronous.
+// ---------------------------------------------------------------------------
+
+function makeTextHelpers(module: any) {
+  const { CrossSection } = module;
+
+  function textSection(str: string, opts: TextSectionOptions = {}): any {
+    if (typeof str !== 'string' || str.length === 0) {
+      throw new Error('api.textSection: first argument must be a non-empty string');
+    }
+    const contours = textToContours(str, opts);
+    if (contours.length === 0) {
+      throw new Error(`api.textSection: no glyph outlines produced for "${str}" — the string may contain only whitespace or unsupported characters`);
+    }
+    // Use EvenOdd fill rule: font contours after Y-flip are CW (the default
+    // "Positive" fill rule only fills CCW regions, producing empty output).
+    // EvenOdd is also ideal for glyphs with holes (O, B, P): the inner
+    // contour is enclosed by 2 boundaries (even = not filled = hole). ✓
+    let cs = CrossSection.ofPolygons(contours, 'EvenOdd');
+    if (opts.center) {
+      // Compute bounding box from the CrossSection's polygon data.
+      const polygons: Vec2[][] = cs.toPolygons();
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const ring of polygons) {
+        for (const pt of ring) {
+          if (pt[0] < minX) minX = pt[0];
+          if (pt[0] > maxX) maxX = pt[0];
+          if (pt[1] < minY) minY = pt[1];
+          if (pt[1] > maxY) maxY = pt[1];
+        }
+      }
+      cs = cs.translate([-(minX + maxX) / 2, -(minY + maxY) / 2]);
+    }
+    return cs;
+  }
+
+  function text(str: string, opts: TextExtrudeOptions = {}): any {
+    const height = opts.height ?? 2;
+    need(typeof height === 'number' && Number.isFinite(height) && height > 0, 'api.text: height must be a positive number');
+    const cs = textSection(str, opts);
+    return cs.extrude(height);
+  }
+
+  return { text, textSection };
+}
+
+// ---------------------------------------------------------------------------
 // Factory — builds the Curves namespace given a manifold-3d module instance.
 // ---------------------------------------------------------------------------
 
 export function createCurvesNamespace(module: any): CurvesAPI {
   const { CrossSection } = module;
   const patterns = makePatterns(module);
+  const textHelpers = makeTextHelpers(module);
   return {
     arc,
     bezier,
     naca4,
     polyline: makePolyline(CrossSection),
+    text: textHelpers.text,
+    textSection: textHelpers.textSection,
     loft: makeLoft(module),
     sweep: makeSweep(module),
     revolveAxis: makeRevolveAxis(module),
