@@ -15,6 +15,8 @@ import {
   deleteVersion as dbDeleteVersion,
   putVersion as dbPutVersion,
   renameVersion as dbRenameVersion,
+  findVersionChildren as dbFindVersionChildren,
+  clearVersionParentRefs as dbClearVersionParentRefs,
   clearAllData,
   updateSession as dbUpdateSession,
   createPart as dbCreatePart,
@@ -37,6 +39,7 @@ import {
   type Session,
   type Part,
   type Version,
+  type VersionOperation,
   type SessionNote,
   type AttachedImage,
 } from './db';
@@ -338,7 +341,7 @@ export function getSchemaCompatibilityWarning(data: ExportedSession): string | n
   return null;
 }
 
-export type { Session, Part, Version, SessionNote, AttachedImage, SessionDraft } from './db';
+export type { Session, Part, Version, VersionOperation, SessionNote, AttachedImage, SessionDraft } from './db';
 
 // Pure resolver for a version's effective modeling language — re-exported from
 // its own tiny module so unit tests can import it without dragging in the
@@ -898,7 +901,13 @@ export async function saveVersion(
   thumbnail: Blob | null,
   label?: string,
   notes?: string,
-  options?: { force?: boolean; importedMeshes?: ImportedMesh[]; paramValues?: Record<string, number | boolean | string> },
+  options?: {
+    force?: boolean;
+    importedMeshes?: ImportedMesh[];
+    paramValues?: Record<string, number | boolean | string>;
+    parentVersionId?: string | null;
+    operation?: VersionOperation | null;
+  },
 ): Promise<Version | null> {
   if (!currentState.session || !currentState.currentPart) return null;
 
@@ -943,6 +952,8 @@ export async function saveVersion(
     // engine independently of the session's default.
     getActiveLanguage(),
     paramValues,
+    options?.parentVersionId ?? null,
+    options?.operation ?? null,
   );
 
   currentState = {
@@ -1019,6 +1030,19 @@ export interface DeleteVersionResult {
   wasCurrent: boolean;
   /** The version that became active after deletion (only set when wasCurrent). */
   newCurrent: Version | null;
+}
+
+/** Return versions in the active part whose parentVersionId points to the given id. */
+export async function findVersionChildren(versionId: string): Promise<Version[]> {
+  if (!currentState.currentPart) return [];
+  return dbFindVersionChildren(versionId, currentState.currentPart.id);
+}
+
+/** Clear the parentVersionId field on all versions in the active part that
+ *  reference the given id. Call this after confirming deletion of a parent. */
+export async function clearVersionParentRefs(versionId: string): Promise<void> {
+  if (!currentState.currentPart) return;
+  await dbClearVersionParentRefs(versionId, currentState.currentPart.id);
 }
 
 /**

@@ -73,6 +73,11 @@ export function presetIndex(label: string | undefined): number {
 type LegacyImageAngle = 'front' | 'right' | 'back' | 'left' | 'top' | 'perspective';
 const LEGACY_ANGLES: readonly LegacyImageAngle[] = ['front', 'right', 'back', 'left', 'top', 'perspective'];
 
+/** The mesh-level operation that produced a version. Set alongside
+ *  {@link Version.parentVersionId} when a version is derived from another
+ *  (e.g. a simplify run that wraps the result in `Manifold.ofMesh`). */
+export type VersionOperation = 'simplify' | 'enhance' | 'paint' | 'import' | 'manual';
+
 export interface Version {
   id: string;
   sessionId: string;
@@ -107,6 +112,14 @@ export interface Version {
    *  Only keys that differ from the model defaults are stored; absent when the
    *  version uses all defaults (or declares no parameters). */
   paramValues?: Record<string, number | boolean | string>;
+  /** The version this was derived from. Set when a mesh-capture operation
+   *  (simplify, enhance, paint-bake, import) creates a child version from an
+   *  existing parametric version. Absent for versions created from scratch.
+   *  The reference may become null if the parent is later deleted. */
+  parentVersionId?: string | null;
+  /** The operation that produced this version. Set alongside
+   *  {@link parentVersionId} when the version is derived from another. */
+  operation?: VersionOperation | null;
 }
 
 /** Editor working buffer scoped to (session, part, language). One slot per
@@ -730,6 +743,12 @@ export async function saveVersion(
   language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel',
   /** Customizer parameter overrides for this version (opaque to the db layer). */
   paramValues?: Record<string, number | boolean | string>,
+  /** The version this was derived from (e.g. the parametric version before
+   *  simplify/enhance was applied). Stored so the UI can show provenance and
+   *  offer a one-click jump back to the source. */
+  parentVersionId?: string | null,
+  /** The operation that produced this version. */
+  operation?: VersionOperation | null,
 ): Promise<Version> {
   // Compute the next index and write the version inside ONE readwrite
   // transaction. IndexedDB serializes overlapping readwrite transactions on
@@ -767,6 +786,8 @@ export async function saveVersion(
         ...(annotations && annotations.length > 0 ? { annotations } : {}),
         ...(importedMeshes && importedMeshes.length > 0 ? { importedMeshes } : {}),
         ...(paramValues && Object.keys(paramValues).length > 0 ? { paramValues } : {}),
+        ...(parentVersionId ? { parentVersionId } : {}),
+        ...(operation ? { operation } : {}),
       };
       const putReq = store.put(v);
       putReq.onsuccess = () => resolve(v);
@@ -840,6 +861,40 @@ export async function deleteVersion(id: string): Promise<void> {
   const db = await openDB();
   const txn = db.transaction('versions', 'readwrite');
   txn.objectStore('versions').delete(id);
+  await txComplete(txn);
+}
+
+/** Find all versions in a part whose parentVersionId points to the given id.
+ *  Used to warn the user before deleting a version that other versions depend on. */
+export async function findVersionChildren(parentId: string, partId: string): Promise<Version[]> {
+  const versions = await listVersions(partId);
+  return versions.filter(v => v.parentVersionId === parentId);
+}
+
+/** Clear the parentVersionId field on all versions that reference the given id.
+ *  Called after the user confirms deletion of a parent version. */
+export async function clearVersionParentRefs(parentId: string, partId: string): Promise<void> {
+  const children = await findVersionChildren(parentId, partId);
+  if (children.length === 0) return;
+  const db = await openDB();
+  const txn = db.transaction('versions', 'readwrite');
+  const store = txn.objectStore('versions');
+  // Chain all reads and writes without awaiting between them inside the transaction.
+  let pending = children.length;
+  await new Promise<void>((resolve, reject) => {
+    for (const child of children) {
+      const getReq = store.get(child.id);
+      getReq.onsuccess = () => {
+        const v = getReq.result as Version | null;
+        if (v) {
+          v.parentVersionId = null;
+          store.put(v);
+        }
+        if (--pending === 0) resolve();
+      };
+      getReq.onerror = () => reject(getReq.error);
+    }
+  });
   await txComplete(txn);
 }
 
