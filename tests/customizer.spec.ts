@@ -278,4 +278,34 @@ return v;`;
     expect(out.v1.params).toMatchObject({ width: 20, hollow: false });
     expect(xDim(out.v1.geo)).toBeCloseTo(20, 0);
   });
+
+  test('the panel header is a drag handle that repositions it (and keeps it on-screen)', async ({ page }) => {
+    await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code), PARAM_MODEL);
+    const panel = page.locator('#params-panel');
+    await expect(panel).toBeVisible();
+
+    const before = await panel.boundingBox();
+    if (!before) throw new Error('no panel box');
+
+    // Grab the header (the "Customize" title area) and drag it up-and-right —
+    // the panel starts bottom-left, so there's room that way without clamping.
+    // Pointer/mouse events route to the header's drag handler.
+    const title = panel.locator('text=Customize').first();
+    const titleBox = await title.boundingBox();
+    if (!titleBox) throw new Error('no title box');
+    const grabX = titleBox.x + titleBox.width / 2;
+    const grabY = titleBox.y + titleBox.height / 2;
+    await page.mouse.move(grabX, grabY);
+    await page.mouse.down();
+    await page.mouse.move(grabX + 80, grabY - 80, { steps: 8 });
+    await page.mouse.up();
+
+    const after = await panel.boundingBox();
+    if (!after) throw new Error('no panel box after drag');
+    // It followed the pointer (moved up and right) and stayed fully on screen.
+    expect(after.y).toBeLessThan(before.y - 20);
+    expect(after.x).toBeGreaterThan(before.x + 10);
+    expect(after.y).toBeGreaterThanOrEqual(0);
+    expect(after.x).toBeGreaterThanOrEqual(0);
+  });
 });
