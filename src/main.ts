@@ -138,8 +138,8 @@ import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
-import { initImagePaintUI, setSubdivideForStamp } from './color/imagePaintUI';
-import { entriesToPerTriColors, remapPerTriColors } from './color/imagePaint';
+import { initImagePaintUI, setSmoothStampCallback } from './color/imagePaintUI';
+import { stampImageOntoMesh, entriesToPerTriColors, remapPerTriColors } from './color/imagePaint';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, type SimplifyHandlers } from './ui/simplifyUI';
 import { updatePaintMesh, setOnRegionPainted } from './color/paintMode';
@@ -167,7 +167,7 @@ import { restoreView as restoreAnnotationViewById } from './annotations/selectMo
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
 import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
-import { buildStrokeMesh, buildRefinedMesh, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
+import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
 import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { initEditorLock, syncLockState, setUnlockHandlers, disableRun, enableRun } from './color/editorLock';
@@ -5195,72 +5195,53 @@ async function main() {
   initAnnotateUI(clipControls);
   initPaintUI(clipControls);
   initImagePaintUI(clipControls);
-  setSubdivideForStamp((hitPoint, hitNormal, stampSize, rotationDeg, maxEdge) => {
+  setSmoothStampCallback((imageData, stampOpts, maxEdge) => {
     if (!currentMeshData) return null;
-    const half = stampSize / 2;
-    const [hpX, hpY, hpZ] = hitPoint;
-    const [nx, ny, nz] = hitNormal;
-    // Build the same rotated tangent frame as the stamp projection.
-    const useYRef = Math.abs(nz) > 0.5;
-    const refY = useYRef ? 1 : 0, refZ = useYRef ? 0 : 1;
-    let tX = refY * nz - refZ * ny, tY = refZ * nx - 0, tZ = -refY * nx;
-    const tLen = Math.sqrt(tX * tX + tY * tY + tZ * tZ);
-    if (tLen > 0) { tX /= tLen; tY /= tLen; tZ /= tLen; }
-    const bX = ny * tZ - nz * tY, bY = nz * tX - nx * tZ, bZ = nx * tY - ny * tX;
-    const θ = rotationDeg * Math.PI / 180;
-    const cosθ = Math.cos(θ), sinθ = Math.sin(θ);
-    const trX = tX * cosθ - bX * sinθ, trY = tY * cosθ - bY * sinθ, trZ = tZ * cosθ - bZ * sinθ;
-    const brX = tX * sinθ + bX * cosθ, brY = tY * sinθ + bY * cosθ, brZ = tZ * sinθ + bZ * cosθ;
 
-    const stampRegion: RefineRegion = {
-      aabb: {
-        min: [hpX - half, hpY - half, hpZ - half],
-        max: [hpX + half, hpY + half, hpZ + half],
-      },
-      maxEdge,
-      classify: (a, b, c) => {
-        const projectU = (v: number[]) => ((v[0] - hpX) * trX + (v[1] - hpY) * trY + (v[2] - hpZ) * trZ) / half;
-        const projectV = (v: number[]) => ((v[0] - hpX) * brX + (v[1] - hpY) * brY + (v[2] - hpZ) * brZ) / half;
-        const uA = projectU(a), vA = projectV(a);
-        const uB = projectU(b), vB = projectV(b);
-        const uC = projectU(c), vC = projectV(c);
-        const inside = (u: number, v: number) => u >= -1 && u <= 1 && v >= -1 && v <= 1;
-        const inA = inside(uA, vA), inB = inside(uB, vB), inC = inside(uC, vC);
-        if (inA && inB && inC) return 'inside';
-        const minU = Math.min(uA, uB, uC), maxU = Math.max(uA, uB, uC);
-        const minV = Math.min(vA, vB, vC), maxV = Math.max(vA, vB, vC);
-        if (maxU < -1 || minU > 1 || maxV < -1 || minV > 1) return 'outside';
-        return 'straddle';
-      },
-      // No field/clip: the stamp's face-normal check handles back faces, and a
-      // depth-unaware field would incorrectly clip through the interior of the model.
-    };
+    // Step 1: Initial stamp to identify which triangles fall within the stamp footprint
+    const initialResult = stampImageOntoMesh(currentMeshData, imageData, stampOpts);
+    if (initialResult.entries.length === 0) return null;
 
-    const { mesh, childToParent } = buildRefinedMesh(currentMeshData, [stampRegion]);
+    // Step 2: Find boundary triangles (painted ↔ unpainted neighbors via edge adjacency)
+    const paintedSet = new Set<number>(initialResult.entries);
+    const adjacency = buildAdjacency(currentMeshData);
+    const boundaryTris = new Set<number>();
+    for (const t of paintedSet) {
+      for (const n of adjacency.neighbors[t]) {
+        if (!paintedSet.has(n)) {
+          boundaryTris.add(t);
+          boundaryTris.add(n);
+        }
+      }
+    }
+
+    if (boundaryTris.size === 0) {
+      return { result: initialResult, parentToChildren: null };
+    }
+
+    // Step 3: Subdivide only the boundary triangles until edges ≤ maxEdge
+    const { mesh, childToParent } = buildRefinedMeshFromSet(currentMeshData, boundaryTris, maxEdge);
     const parentToChildren = childrenByParent(childToParent);
     currentMeshData = mesh;
     updatePaintMesh(mesh);
 
-    const splitParents = new Set<number>();
-    for (const [parent, children] of parentToChildren) if (children.length > 1) splitParents.add(parent);
-    let adjacency: AdjacencyGraph | null = null;
-    const overlapsSplit = (region: { triangles: Set<number> }): boolean => {
-      if (region.triangles.size === 0) return true;
-      for (const t of region.triangles) if (splitParents.has(t)) return true;
-      return false;
-    };
+    // Step 4: Remap existing paint regions onto the subdivided mesh
+    let regionAdjacency: AdjacencyGraph | null = null;
     for (const region of getRegions()) {
       const d = region.descriptor;
-      if (d.kind === 'triangles' || d.kind === 'byLabel' || !overlapsSplit(region)) {
+      if (d.kind === 'triangles' || d.kind === 'byLabel') {
         setRegionTriangles(region.id, remapTriangleIds(region.triangles, parentToChildren), remapPerTriColors(region.perTriColors, parentToChildren));
       } else {
-        if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed')) adjacency = buildAdjacency(mesh);
-        const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren);
+        if (!regionAdjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed')) regionAdjacency = buildAdjacency(mesh);
+        const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, regionAdjacency, parentToChildren);
         setRegionTriangles(region.id, triangles, perTriColors);
       }
     }
     paintedColorRefresh();
-    return { mesh, parentToChildren };
+
+    // Step 5: Re-stamp on the refined mesh — smaller boundary triangles give crisper edges
+    const finalResult = stampImageOntoMesh(mesh, imageData, stampOpts);
+    return { result: finalResult, parentToChildren };
   });
   initVoxelPaintUI(clipControls, {
     activate: async () => {

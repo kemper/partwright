@@ -5,13 +5,12 @@
 import * as THREE from 'three';
 import {
   stampImageOntoMesh,
-  loadImageDataFromUrl,
   resizeImageData,
   defaultPreprocess,
   buildTangentFrame,
   type StampImageOptions,
 } from './imagePaint';
-import type { MeshData } from '../geometry/types';
+import type { ImagePaintResult } from './imagePaint';
 import {
   addRegion,
   getRegions,
@@ -38,15 +37,18 @@ import { pickFace } from './facePicker';
 import { getRenderer, getScene, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import type { PreprocessOptions } from '../relief/types';
 
-// Thumbnail of the picked source image, 256px max (kept for display only)
-const THUMB_MAX = 256;
+// Max resolution for stamping — higher = crisper stamp detail.
+const STAMP_MAX = 1024;
+// Max for the in-panel preview thumbnail (display only, can be lower).
+const THUMB_MAX = 512;
 
 let imagePaintBtn: HTMLButtonElement | null = null;
 let panel: HTMLElement | null = null;
 let isOpen = false;
 
 // Current picked image state
-let pickedImageData: ImageData | null = null;
+let pickedImageData: ImageData | null = null;     // full-res for stamping (≤ STAMP_MAX)
+let pickedImageThumb: ImageData | null = null;    // downscaled for the preview canvas
 let previewCanvas: HTMLCanvasElement | null = null;
 let previewCtx: CanvasRenderingContext2D | null = null;
 let sourceLabel: HTMLElement | null = null;
@@ -81,18 +83,19 @@ let stampCounter = 0;
 // Hover preview overlay (a square outline in the scene)
 let previewLines: THREE.LineSegments | null = null;
 
-// Callback registered from main.ts to perform mesh subdivision before stamping
-type SubdivideCallback = (
-  hitPoint: [number, number, number],
-  hitNormal: [number, number, number],
-  stampSize: number,
-  rotationDeg: number,
+// Callback registered from main.ts: runs the full stamp-then-refine loop when
+// smooth mode is on. Receives the image and options, returns the stamp result
+// (already on the refined mesh) plus the parentToChildren remap so existing
+// regions stay correct after the subdivision.
+type SmoothStampCallback = (
+  imageData: ImageData,
+  stampOpts: StampImageOptions,
   maxEdge: number,
-) => { mesh: MeshData; parentToChildren: Map<number, number[]> } | null;
-let subdivideForStamp: SubdivideCallback | null = null;
+) => { result: ImagePaintResult; parentToChildren: Map<number, number[]> | null } | null;
+let smoothStampCb: SmoothStampCallback | null = null;
 
-export function setSubdivideForStamp(cb: SubdivideCallback): void {
-  subdivideForStamp = cb;
+export function setSmoothStampCallback(cb: SmoothStampCallback): void {
+  smoothStampCb = cb;
 }
 
 // Hint element for stamp instructions
@@ -301,16 +304,6 @@ function updatePreviewLines(
 function executeStamp(hitPoint: [number, number, number], hitNormal: [number, number, number]): void {
   if (!pickedImageData) return;
 
-  let mesh = getPaintMesh();
-  if (!mesh) return;
-
-  // When smooth mode is on, refine the mesh at the stamp boundary first so
-  // the painted edge is crisp rather than following coarse triangle edges.
-  if (stampSmooth && stampMaxEdge > 0 && subdivideForStamp) {
-    const refined = subdivideForStamp(hitPoint, hitNormal, stampSize, stampRotation, stampMaxEdge);
-    if (refined) mesh = refined.mesh;
-  }
-
   const stampOpts: StampImageOptions = {
     hitPoint,
     hitNormal,
@@ -322,8 +315,20 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
     bgTolerance: 36 * 36 * 3,
   };
 
-  const result = stampImageOntoMesh(mesh, pickedImageData, stampOpts);
-  if (result.entries.length === 0) return;
+  let result: ImagePaintResult;
+
+  if (stampSmooth && stampMaxEdge > 0 && smoothStampCb) {
+    // Smooth mode: callback stamps on the current mesh, finds boundary triangles,
+    // subdivides them to maxEdge, then re-stamps — giving crisp edges.
+    const refined = smoothStampCb(pickedImageData, stampOpts, stampMaxEdge);
+    if (!refined || refined.result.entries.length === 0) return;
+    result = refined.result;
+  } else {
+    const mesh = getPaintMesh();
+    if (!mesh) return;
+    result = stampImageOntoMesh(mesh, pickedImageData, stampOpts);
+    if (result.entries.length === 0) return;
+  }
 
   stampCounter++;
   const triangles = new Set(result.perTriColors.keys());
@@ -527,17 +532,7 @@ function buildImageSection(): HTMLElement {
   fileInput.addEventListener('change', async () => {
     const file = fileInput.files?.[0];
     if (!file) return;
-    try {
-      const objectUrl = URL.createObjectURL(file);
-      const imageData = await loadImageDataFromUrl(objectUrl);
-      URL.revokeObjectURL(objectUrl);
-      pickedImageData = resizeImageData(imageData, THUMB_MAX);
-      if (sourceLabel) sourceLabel.textContent = file.name;
-      renderPreview();
-      updateStampMode();
-    } catch {
-      if (sourceLabel) sourceLabel.textContent = 'Failed to load image';
-    }
+    await applyImageFile(file);
   });
 
   // Allow drag-drop onto the preview
@@ -546,20 +541,50 @@ function buildImageSection(): HTMLElement {
     e.preventDefault();
     const file = e.dataTransfer?.files?.[0];
     if (!file || !file.type.startsWith('image/')) return;
-    try {
-      const objectUrl = URL.createObjectURL(file);
-      const imageData = await loadImageDataFromUrl(objectUrl);
-      URL.revokeObjectURL(objectUrl);
-      pickedImageData = resizeImageData(imageData, THUMB_MAX);
-      if (sourceLabel) sourceLabel.textContent = file.name;
-      renderPreview();
-      updateStampMode();
-    } catch {
-      if (sourceLabel) sourceLabel.textContent = 'Failed to load image';
-    }
+    await applyImageFile(file);
   });
 
   return section;
+}
+
+/** Load a file into ImageData, rendering SVGs at high resolution. */
+async function applyImageFile(file: File): Promise<void> {
+  try {
+    const objectUrl = URL.createObjectURL(file);
+    const isSvg = file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg');
+    const raw = await loadImageDataHighRes(objectUrl, isSvg);
+    URL.revokeObjectURL(objectUrl);
+    pickedImageData = resizeImageData(raw, STAMP_MAX);
+    pickedImageThumb = resizeImageData(raw, THUMB_MAX);
+    if (sourceLabel) sourceLabel.textContent = file.name;
+    renderPreview();
+    updateStampMode();
+  } catch {
+    if (sourceLabel) sourceLabel.textContent = 'Failed to load image';
+  }
+}
+
+/** Like loadImageDataFromUrl but renders SVGs at ≥1024px for quality. */
+function loadImageDataHighRes(url: string, isSvg: boolean): Promise<ImageData> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const naturalW = img.naturalWidth || 512;
+      const naturalH = img.naturalHeight || 512;
+      // For SVGs, render at a multiple of their declared size so vector
+      // detail is sharp even if the SVG declares a small width/height.
+      const targetW = isSvg ? Math.max(naturalW, 1024) : naturalW;
+      const targetH = isSvg ? Math.max(naturalH, 1024) : naturalH;
+      const canvas = document.createElement('canvas');
+      canvas.width = targetW; canvas.height = targetH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('Canvas 2D not available')); return; }
+      ctx.drawImage(img, 0, 0, targetW, targetH);
+      resolve(ctx.getImageData(0, 0, targetW, targetH));
+    };
+    img.onerror = () => reject(new Error('Failed to load image'));
+    img.src = url;
+  });
 }
 
 function buildAdjustmentsSection(): HTMLElement {
@@ -712,7 +737,7 @@ function buildStampSettingsSection(): HTMLElement {
   addSlider(maxEdgeRow, 'Detail', 1, 200, 1, 10,
     () => stampMaxEdge,
     v => { stampMaxEdge = v; },
-    true);
+    true, true /* uncappedInput */);
 
   const smoothHelp = document.createElement('div');
   smoothHelp.className = 'text-[10px] text-zinc-500';
@@ -734,16 +759,15 @@ function updatePreviewSize(): void {
 // ─── Preview rendering ────────────────────────────────────────────────────────
 
 function renderPreview(): void {
-  if (!previewCanvas || !previewCtx || !pickedImageData) return;
+  const src = pickedImageThumb ?? pickedImageData;
+  if (!previewCanvas || !previewCtx || !src) return;
 
-  const { width, height } = pickedImageData;
+  const { width, height } = src;
   previewCanvas.width = width;
   previewCanvas.height = height;
 
-  // Apply adjustments to a copy
-  const copy = new ImageData(new Uint8ClampedArray(pickedImageData.data), width, height);
+  const copy = new ImageData(new Uint8ClampedArray(src.data), width, height);
   applyAdjustmentsToCanvas(copy);
-
   previewCtx.putImageData(copy, 0, 0);
 }
 
@@ -932,6 +956,7 @@ function addSlider(
   get: () => number,
   set: (v: number) => void,
   integer = false,
+  uncappedInput = false,
 ): void {
   const wrap = document.createElement('div');
   wrap.className = 'flex items-center gap-1.5';
@@ -951,7 +976,7 @@ function addSlider(
   const numInput = document.createElement('input');
   numInput.type = 'number';
   numInput.min = String(min);
-  numInput.max = String(max);
+  if (!uncappedInput) numInput.max = String(max);
   numInput.step = String(step);
   numInput.value = integer ? String(Math.round(get())) : get().toFixed(2);
   numInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
@@ -965,9 +990,9 @@ function addSlider(
   const applyNum = (): void => {
     const raw = parseFloat(numInput.value);
     if (!Number.isFinite(raw)) { numInput.value = integer ? String(Math.round(get())) : get().toFixed(2); return; }
-    const v = Math.max(min, Math.min(max, raw));
+    const v = uncappedInput ? Math.max(min, raw) : Math.max(min, Math.min(max, raw));
     set(v);
-    slider.value = String(v);
+    slider.value = String(Math.min(v, max)); // slider stays within its own range
     numInput.value = integer ? String(Math.round(v)) : v.toFixed(2);
   };
   numInput.addEventListener('change', applyNum);

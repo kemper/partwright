@@ -757,12 +757,61 @@ function subdivideSelected(
   return { mesh: newMesh, childToParent: Int32Array.from(childParent) };
 }
 
-/** Rebuild a refined mesh from a pristine base mesh and an ordered list of
- *  refine regions (brush strokes, slabs, oriented shapes). Each region refines
- *  the (possibly already-refined) mesh near its own boundary until the boundary
- *  triangles fall below its `maxEdge`. Returns the refined mesh and a
- *  `childToParent` map from each final triangle back to its base-mesh triangle
- *  index (used to carry colour regions across the refinement). */
+/** Refine a specific set of triangles until all their edges are ≤ maxEdge.
+ *  Unlike buildRefinedMesh (which takes a spatial RefineRegion), this accepts
+ *  an explicit triangle index set — useful for stamp smooth mode where the
+ *  boundary is determined by the paint result, not a geometric predicate. */
+export function buildRefinedMeshFromSet(
+  base: MeshData,
+  seedTris: Set<number>,
+  maxEdge: number,
+): { mesh: MeshData; childToParent: Int32Array } {
+  if (seedTris.size === 0) {
+    const id = new Int32Array(base.numTri);
+    for (let i = 0; i < id.length; i++) id[i] = i;
+    return { mesh: base, childToParent: id };
+  }
+
+  const maxEdge2 = maxEdge * maxEdge;
+  let mesh = base;
+  let comp = new Int32Array(base.numTri);
+  for (let i = 0; i < comp.length; i++) comp[i] = i;
+
+  let current = new Set<number>(seedTris);
+
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    const selected = new Set<number>();
+    for (const t of current) {
+      if (t >= mesh.numTri) continue;
+      const a = triVertex(mesh, mesh.triVerts[t * 3]);
+      const b = triVertex(mesh, mesh.triVerts[t * 3 + 1]);
+      const c = triVertex(mesh, mesh.triVerts[t * 3 + 2]);
+      if (maxEdgeLen2(a, b, c) > maxEdge2) selected.add(t);
+    }
+    if (selected.size === 0) break;
+    if (mesh.numTri + selected.size * 3 > MAX_REFINED_TRIANGLES) break;
+
+    const { mesh: nm, childToParent } = subdivideSelected(mesh, selected);
+    comp = composeMaps(comp, childToParent);
+
+    const p2c = childrenByParent(childToParent);
+    const next = new Set<number>();
+    for (const t of current) {
+      const ch = p2c.get(t);
+      if (ch) { for (const c of ch) next.add(c); }
+      else next.add(t);
+    }
+    current = next;
+    mesh = nm;
+  }
+
+  return { mesh, childToParent: comp };
+}
+
+/** Refine each region of a mesh until its boundary triangles fall below the
+ *  region's `maxEdge`. Returns the refined mesh and a `childToParent` map
+ *  from each final triangle back to its base-mesh triangle index (used to
+ *  carry colour regions across the refinement). */
 export function buildRefinedMesh(
   base: MeshData,
   regions: RefineRegion[],

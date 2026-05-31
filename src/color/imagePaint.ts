@@ -56,14 +56,23 @@ export function stampImageOntoMesh(
   }
   preprocessRgb(rgb, imgW, imgH, preprocess);
 
-  // Build background mask if requested
+  // Build background mask if requested.
+  // Priority: (1) manual bg color, (2) alpha flood-fill (preserves enclosed
+  // transparent holes like eyes), (3) RGB border-colour detection.
   let bgMask: Uint8Array | null = null;
   if (removeBackground) {
-    const colorsU8 = new Uint8Array(pixelCount * 3);
-    for (let i = 0; i < pixelCount * 3; i++) colorsU8[i] = clamp255(rgb[i]);
-    bgMask = manualBgColor
-      ? bgMaskFromColor(colorsU8, imgW, imgH, manualBgColor, bgTolerance)
-      : detectBackgroundMask(colorsU8, imgW, imgH);
+    if (manualBgColor) {
+      const colorsU8 = new Uint8Array(pixelCount * 3);
+      for (let i = 0; i < pixelCount * 3; i++) colorsU8[i] = clamp255(rgb[i]);
+      bgMask = bgMaskFromColor(colorsU8, imgW, imgH, manualBgColor, bgTolerance);
+    } else {
+      bgMask = buildAlphaMaskFloodFill(imageData.data, imgW, imgH);
+      if (!bgMask) {
+        const colorsU8 = new Uint8Array(pixelCount * 3);
+        for (let i = 0; i < pixelCount * 3; i++) colorsU8[i] = clamp255(rgb[i]);
+        bgMask = detectBackgroundMask(colorsU8, imgW, imgH);
+      }
+    }
   }
 
   // Build orthogonal tangent frame from hitNormal [nx, ny, nz]
@@ -310,6 +319,52 @@ export function buildTangentFrame(
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
+
+/** Alpha-channel flood-fill background mask.
+ *  Returns 1 = foreground (opaque pixel OR enclosed transparent hole like an
+ *  eye cutout), 0 = background (transparent pixel reachable from the image
+ *  border). Returns null when the image is fully opaque (use RGB detection
+ *  instead). Interior holes are preserved so a smiley-face with eye cutouts
+ *  paints the eyes in their underlying colour rather than skipping them. */
+function buildAlphaMaskFloodFill(data: Uint8ClampedArray, w: number, h: number): Uint8Array | null {
+  const total = w * h;
+
+  // Check for any transparency
+  let hasTransparent = false;
+  for (let i = 0; i < total; i++) {
+    if (data[i * 4 + 3] < 128) { hasTransparent = true; break; }
+  }
+  if (!hasTransparent) return null;
+
+  // BFS flood fill from all border pixels with alpha < 128 → these are background.
+  const bg = new Uint8Array(total); // 1 = confirmed background
+  const queue = new Int32Array(total);
+  let head = 0, tail = 0;
+
+  const enqueue = (idx: number) => {
+    if (!bg[idx] && data[idx * 4 + 3] < 128) {
+      bg[idx] = 1;
+      queue[tail++] = idx;
+    }
+  };
+
+  for (let x = 0; x < w; x++) { enqueue(x); enqueue((h - 1) * w + x); }
+  for (let y = 1; y < h - 1; y++) { enqueue(y * w); enqueue(y * w + w - 1); }
+
+  while (head < tail) {
+    const idx = queue[head++];
+    const x = idx % w, y = (idx / w) | 0;
+    if (x > 0) enqueue(idx - 1);
+    if (x < w - 1) enqueue(idx + 1);
+    if (y > 0) enqueue(idx - w);
+    if (y < h - 1) enqueue(idx + w);
+  }
+
+  // Foreground = opaque pixel OR enclosed transparent hole (not reached by BFS)
+  const mask = new Uint8Array(total);
+  for (let i = 0; i < total; i++) mask[i] = bg[i] ? 0 : 1;
+  return mask;
+}
 
 function clamp255(v: number): number {
   const r = Math.round(v);
