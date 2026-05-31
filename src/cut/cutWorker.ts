@@ -16,13 +16,17 @@ export interface CutParams {
 }
 
 export interface CutResult {
-  /** Combined result mesh (all components merged — used for the Apply preview). */
+  /** The "kept side" mesh — shown in the Apply preview. */
   mesh: MeshData;
-  /** One mesh per disconnected component. Length ≥ 1. Used to create one Part per piece on Save. */
+  /**
+   * All resulting parts: the kept side + the complement, each decomposed into
+   * connected components. Every non-empty piece becomes a separate session Part on
+   * Save. Length ≥ 1.
+   */
   meshes: MeshData[];
-  /** Colors for the combined mesh. */
+  /** Colors for the preview mesh. */
   triColors?: Uint8Array;
-  /** Colors per component, parallel to `meshes`. Only present when `meshes.length > 1` and input had colors. */
+  /** Colors per component, parallel to `meshes`. */
   triColorsList?: Uint8Array[];
 }
 
@@ -67,6 +71,32 @@ function safeDelete(obj: ManifoldInstance | null): void {
   }
 }
 
+/**
+ * Decompose a Manifold into per-component MeshData arrays and optionally map
+ * colors from the input mesh to each component. Deletes each piece after
+ * extracting its mesh. Returns only non-empty components.
+ */
+function decomposeToParts(
+  result: ManifoldInstance,
+  inputMesh: MeshData,
+  triColors: Uint8Array | undefined,
+): { meshes: MeshData[]; colorsList: Uint8Array[] | undefined } {
+  const pieces = result.decompose();
+  const hasColors = !!(triColors && triColors.length === inputMesh.numTri * 3);
+  const meshes: MeshData[] = [];
+  const colorsList: Uint8Array[] | undefined = hasColors ? [] : undefined;
+  for (const p of pieces) {
+    const pm = p.getMesh();
+    if (pm.numTri > 0) {
+      const cm = cloneMeshData(pm);
+      meshes.push(cm);
+      if (colorsList && triColors) colorsList.push(mapColors(inputMesh, triColors, cm));
+    }
+    safeDelete(p);
+  }
+  return { meshes, colorsList };
+}
+
 /** Apply a boolean cut to `inputMesh` and return the result. Runs in the Worker. */
 export function performCut(
   mod: ManifoldModule,
@@ -83,51 +113,44 @@ export function performCut(
 
   let base: ManifoldInstance | null = null;
   let cutter: ManifoldInstance | null = null;
+  let resultKept: ManifoldInstance | null = null;
+  let resultOther: ManifoldInstance | null = null;
 
   try {
     base = Manifold.ofMesh(inputMesh);
     cutter = buildCutter(Manifold, shape, keepSide, mat4x3, sx, sy, sz, S);
     if (!cutter) return null;
 
-    // For volumetric shapes with 'inside', use intersect; for plane always use subtract
-    // (plane half-space already encodes keepSide).
-    let result: ManifoldInstance;
-    if (keepSide === 'inside' && shape !== 'plane') {
-      result = base.intersect(cutter);
-    } else {
-      result = base.subtract(cutter);
-    }
+    // keepSide='inside' on volumetric shapes uses intersect; all others use subtract.
+    // The complement always uses the opposite operation.
+    const useIntersectForKept = keepSide === 'inside' && shape !== 'plane';
+    resultKept  = useIntersectForKept ? base.intersect(cutter) : base.subtract(cutter);
+    resultOther = useIntersectForKept ? base.subtract(cutter)  : base.intersect(cutter);
 
-    // Combined mesh for the Apply preview
-    const mesh = cloneMeshData(result.getMesh());
+    // Preview mesh = the kept side (what the user chose to keep)
+    const keptRaw = resultKept.getMesh();
+    if (keptRaw.numTri === 0) return null; // cutter didn't intersect
 
-    // Decompose into connected components before freeing the composite result
-    const pieces = result.decompose();
-    safeDelete(result);
+    const mesh = cloneMeshData(keptRaw);
 
-    // Build per-component meshes
-    let meshes: MeshData[];
-    let triColorsList: Uint8Array[] | undefined;
+    // Decompose each side into connected components, then combine all non-empty pieces.
+    const { meshes: keptMeshes, colorsList: keptColors } = decomposeToParts(resultKept, inputMesh, triColors);
+    safeDelete(resultKept);
+    resultKept = null;
 
-    if (pieces.length <= 1) {
-      // Single component — reuse the combined mesh
-      meshes = [mesh];
-      safeDelete(pieces[0] ?? null);
-    } else {
-      meshes = [];
-      const wantColors = !!(triColors && triColors.length === inputMesh.numTri * 3);
-      if (wantColors) triColorsList = [];
-      for (const p of pieces) {
-        const cm = cloneMeshData(p.getMesh());
-        meshes.push(cm);
-        if (triColorsList && triColors) {
-          triColorsList.push(mapColors(inputMesh, triColors, cm));
-        }
-        safeDelete(p);
-      }
-    }
+    const { meshes: otherMeshes, colorsList: otherColors } = decomposeToParts(resultOther, inputMesh, triColors);
+    safeDelete(resultOther);
+    resultOther = null;
 
-    // Colors for the combined mesh
+    const meshes: MeshData[] = [...keptMeshes, ...otherMeshes];
+    if (meshes.length === 0) meshes.push(mesh); // shouldn't happen, but guard
+
+    const hasColorsList = !!(keptColors || otherColors);
+    const triColorsList: Uint8Array[] | undefined = hasColorsList
+      ? [...(keptColors ?? []), ...(otherColors ?? [])]
+      : undefined;
+
+    // Colors for the combined preview mesh
     let outColors: Uint8Array | undefined;
     if (triColors && triColors.length === inputMesh.numTri * 3 && mesh.numTri > 0) {
       outColors = mapColors(inputMesh, triColors, mesh);
@@ -137,6 +160,8 @@ export function performCut(
   } finally {
     safeDelete(base);
     safeDelete(cutter);
+    safeDelete(resultKept);
+    safeDelete(resultOther);
   }
 }
 

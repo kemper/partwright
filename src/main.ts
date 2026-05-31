@@ -5192,7 +5192,7 @@ async function main() {
           savedOriginal = !!(await saveVersion(originalCode, original.geometryData, original.thumbnail));
         }
 
-        // Create one new part per disconnected component.
+        // Create one new part per disconnected component (kept + complement, each decomposed).
         const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
         for (let i = 0; i < componentMeshes.length; i++) {
           const componentMesh = componentMeshes[i];
