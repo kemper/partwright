@@ -4,6 +4,7 @@
 // Anthropic SDK directly so the provider can be swapped out later.
 
 import Anthropic from '@anthropic-ai/sdk';
+import { getConfig } from '../config/appConfig';
 import type {
   ChatBlock,
   ChatMessage,
@@ -21,17 +22,13 @@ import type { ToolDefinition } from './tools';
  *  thinking is disabled and no `thinking` param is sent — byte-identical to
  *  the pre-feature request. Budgets must be ≥1024 and strictly less than
  *  `max_tokens`; streamTurn raises max_tokens to guarantee the latter. */
-const THINKING_BUDGET: Record<ChatToggles['thinking'], number> = {
-  off: 0,
-  low: 2048,
-  medium: 8192,
-  high: 16384,
-};
-
-/** Output-token headroom reserved for the actual answer + tool calls on top
- *  of the thinking budget. The API requires max_tokens > budget_tokens; we
- *  give the response room to breathe rather than sitting right at the edge. */
-const ANSWER_HEADROOM_TOKENS = 8192;
+function getThinkingBudget(level: ChatToggles['thinking']): number {
+  if (level === 'off') return 0;
+  const cfg = getConfig().ai;
+  if (level === 'low') return cfg.thinkingBudgetAnthropicLow;
+  if (level === 'medium') return cfg.thinkingBudgetAnthropicMedium;
+  return cfg.thinkingBudgetAnthropicHigh;
+}
 
 let cachedClient: Anthropic | null = null;
 let cachedKey: string | null = null;
@@ -159,13 +156,14 @@ export async function streamTurn(
   signal?: AbortSignal,
 ): Promise<StreamResult> {
   const client = getClient(spec.apiKey);
-  const budget = THINKING_BUDGET[spec.thinking ?? 'off'];
+  const budget = getThinkingBudget(spec.thinking ?? 'off');
+  const cfg = getConfig().ai;
   // The API requires max_tokens > budget_tokens, so when thinking is on we
-  // float the ceiling above the budget. When it's off, the original 8K
-  // default is untouched.
+  // float the ceiling above the budget. When it's off, the configured default
+  // is untouched.
   const max_tokens = budget > 0
-    ? Math.max(spec.maxTokens ?? 8192, budget + ANSWER_HEADROOM_TOKENS)
-    : spec.maxTokens ?? 8192;
+    ? Math.max(spec.maxTokens ?? cfg.maxOutputTokensAnthropic, budget + cfg.answerHeadroomTokens)
+    : spec.maxTokens ?? cfg.maxOutputTokensAnthropic;
 
   // System is sent as an array of blocks so we can attach cache_control to
   // the large stable prefix (the full ai.md body) while leaving the small

@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { getConfig } from '../config/appConfig';
 
 let viewHelper: ViewHelper | null = null;
 let mainCamera: THREE.PerspectiveCamera | null = null;
@@ -17,11 +18,6 @@ const snapTargetPos = new THREE.Vector3();
 const snapStartUp = new THREE.Vector3();
 const snapTargetUp = new THREE.Vector3();
 let snapProgress = 0;
-const SNAP_DURATION = 0.4; // seconds
-
-const GIZMO_SIZE = 128;
-const GIZMO_MARGIN = 8;
-const HIT_RADIUS = 0.4; // in orthographic units (-2 to 2 range)
 
 // Z-up view orientations: camera direction from target, camera up vector.
 // Top/bottom use a tiny Y offset to avoid degenerate lookAt when view dir is parallel to camera.up.
@@ -54,7 +50,7 @@ export function initOrientationGizmo(
   viewHelper = new ViewHelper(camera, canvas);
   viewHelper.setLabels('X', 'Y', 'Z');
   viewHelper.setLabelStyle('18px system-ui', '#ffffff', 14);
-  viewHelper.location = { top: GIZMO_MARGIN, right: GIZMO_MARGIN, bottom: 0, left: null };
+  viewHelper.location = { top: getConfig().renderer.gizmoMarginPx, right: getConfig().renderer.gizmoMarginPx, bottom: 0, left: null };
 
   // Fix negative axis sprites: default black is invisible on the dark viewport background
   viewHelper.children.forEach(child => {
@@ -84,16 +80,17 @@ function hitTestGizmo(clientX: number, clientY: number): string | null {
   if (!canvasEl || !mainCamera) return null;
 
   const rect = canvasEl.getBoundingClientRect();
-  const gizmoLeft = rect.right - GIZMO_SIZE - GIZMO_MARGIN;
-  const gizmoTop = rect.top + GIZMO_MARGIN;
+  const cfg = getConfig().renderer;
+  const gizmoLeft = rect.right - cfg.gizmoSizePx - cfg.gizmoMarginPx;
+  const gizmoTop = rect.top + cfg.gizmoMarginPx;
 
   const localX = clientX - gizmoLeft;
   const localY = clientY - gizmoTop;
-  if (localX < 0 || localX > GIZMO_SIZE || localY < 0 || localY > GIZMO_SIZE) return null;
+  if (localX < 0 || localX > cfg.gizmoSizePx || localY < 0 || localY > cfg.gizmoSizePx) return null;
 
   // Convert to gizmo's orthographic space (-2 to 2)
-  const orthoX = (localX / GIZMO_SIZE) * 4 - 2;
-  const orthoY = -((localY / GIZMO_SIZE) * 4 - 2);
+  const orthoX = (localX / cfg.gizmoSizePx) * 4 - 2;
+  const orthoY = -((localY / cfg.gizmoSizePx) * 4 - 2);
 
   const q = mainCamera.quaternion.clone().invert();
   let best: string | null = null;
@@ -103,7 +100,7 @@ function hitTestGizmo(clientX: number, clientY: number): string | null {
     const pos = new THREE.Vector3(x, y, z).applyQuaternion(q);
     const dx = orthoX - pos.x;
     const dy = orthoY - pos.y;
-    if (Math.sqrt(dx * dx + dy * dy) < HIT_RADIUS && pos.z > bestZ) {
+    if (Math.sqrt(dx * dx + dy * dy) < getConfig().renderer.gizmoHitRadius && pos.z > bestZ) {
       best = type;
       bestZ = pos.z;
     }
@@ -157,7 +154,7 @@ export function renderGizmo(renderer: THREE.WebGLRenderer): void {
 export function updateGizmo(delta: number): void {
   if (!snapAnimating || !mainCamera || !mainControls) return;
 
-  snapProgress = Math.min(1, snapProgress + delta / SNAP_DURATION);
+  snapProgress = Math.min(1, snapProgress + delta / getConfig().renderer.gizmoSnapDurationSec);
   const t = snapProgress * snapProgress * (3 - 2 * snapProgress); // smoothstep
 
   mainCamera.position.lerpVectors(snapStartPos, snapTargetPos, t);

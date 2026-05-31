@@ -59,10 +59,8 @@ test.describe('STL import', () => {
       buffer: Buffer.from(stlBase64, 'base64'),
     });
 
-    // The fresh editor is an expendable starter part, so the import-target modal
-    // appears; choose to use the mesh as the current part.
-    await page.getByRole('dialog').locator('[data-target="current-part"]').click();
-
+    // The fresh editor's only part is an expendable starter, so the import lands
+    // directly as a new session named after the file — no import-target modal.
     // Wait for the import to finish — the editor's code buffer should pick up
     // the auto-generated wrapper. "Ready" alone isn't sufficient because the
     // editor is already rendering the default cube before the import runs.
@@ -102,10 +100,8 @@ test.describe('STL import', () => {
       buffer: Buffer.from(stlBase64, 'base64'),
     });
 
-    // The fresh editor is an expendable starter part, so the import-target modal
-    // appears; choose to use the mesh as the current part.
-    await page.getByRole('dialog').locator('[data-target="current-part"]').click();
-
+    // The fresh editor's only part is an expendable starter, so the import lands
+    // directly as a new session named after the file — no import-target modal.
     // Wait for the import to finish — the editor's code buffer should pick up
     // the auto-generated wrapper. "Ready" alone isn't sufficient because the
     // editor is already rendering the default cube before the import runs.

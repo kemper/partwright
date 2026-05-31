@@ -10,6 +10,7 @@ import { initDimensionLines, updateDimensionLines, disposeDimensionLines, setDim
 import { initAnnotationOverlay, setLiveResolution as setAnnotationResolution } from '../annotations/annotationOverlay';
 import { configureSessionPlane } from '../annotations/sessionPlane';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
+import { getConfig } from '../config/appConfig';
 
 const VIEWPORT_BG = { dark: 0x1a1a2e, light: 0xededed } as const;
 const GRID_COLORS = { dark: { major: 0x444444, minor: 0x333333 }, light: { major: 0xb0b0b0, minor: 0xc8c8c8 } } as const;
@@ -55,20 +56,17 @@ export function setOnContextRestored(fn: () => void): void { onContextRestored =
 // difference between constant GPU churn and only working when the view moves.
 let needsRender = true;
 let lastPointerActivity = 0;
-const POINTER_GRACE_MS = 350;
 
 // === Adaptive resolution ===
 // Full (capped) device pixel ratio when the camera is still; a reduced ratio
 // while actively orbiting/panning/zooming, where the lower fragment count keeps
 // interaction smooth on dense meshes and the softer image is invisible mid-
 // motion. Restored to full res the instant interaction ends.
-const MAX_PIXEL_RATIO = 2;
-const INTERACTION_RENDER_SCALE = 0.6;
 let interacting = false;
 let cssWidth = 0;
 let cssHeight = 0;
 function baseDpr(): number {
-  return Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
+  return Math.min(window.devicePixelRatio || 1, getConfig().renderer.maxPixelRatio);
 }
 function applyRenderScale(scale: number): void {
   if (!renderer) return;
@@ -137,7 +135,7 @@ export function initViewport(container: HTMLElement): {
   scene.background = new THREE.Color(bgFor(getTheme()));
 
   camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
-  camera.position.set(15, -15, 15);
+  camera.position.set(15, 15, 15);
   camera.up.set(0, 0, 1);
 
   const canvas = document.createElement('canvas');
@@ -169,7 +167,7 @@ export function initViewport(container: HTMLElement): {
 
   controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
-  controls.dampingFactor = 0.1;
+  controls.dampingFactor = getConfig().renderer.orbitDampingFactor;
   controls.target.set(0, 0, 0);
 
   // On-demand rendering hooks: 'change' fires on every camera move (including
@@ -178,7 +176,7 @@ export function initViewport(container: HTMLElement): {
   controls.addEventListener('change', () => { needsRender = true; });
   controls.addEventListener('start', () => {
     interacting = true;
-    applyRenderScale(INTERACTION_RENDER_SCALE);
+    applyRenderScale(getConfig().renderer.interactionRenderScale);
     needsRender = true;
   });
   controls.addEventListener('end', () => {
@@ -241,14 +239,14 @@ export function initViewport(container: HTMLElement): {
   }, { capture: true, passive: false });
 
   // Lighting
-  const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+  const ambient = new THREE.AmbientLight(0xffffff, getConfig().renderer.ambientLightIntensity);
   scene.add(ambient);
 
-  const dir1 = new THREE.DirectionalLight(0xffffff, 0.8);
+  const dir1 = new THREE.DirectionalLight(0xffffff, getConfig().renderer.primaryLightIntensity);
   dir1.position.set(10, -10, 15);
   scene.add(dir1);
 
-  const dir2 = new THREE.DirectionalLight(0xffffff, 0.3);
+  const dir2 = new THREE.DirectionalLight(0xffffff, getConfig().renderer.secondaryLightIntensity);
   dir2.position.set(-10, 10, -5);
   scene.add(dir2);
 
@@ -294,7 +292,7 @@ export function initViewport(container: HTMLElement): {
     if (width === 0 || height === 0) return;
     cssWidth = width;
     cssHeight = height;
-    applyRenderScale(interacting ? INTERACTION_RENDER_SCALE : 1);
+    applyRenderScale(interacting ? getConfig().renderer.interactionRenderScale : 1);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
     setAnnotationResolution(width * window.devicePixelRatio, height * window.devicePixelRatio);
@@ -325,7 +323,7 @@ export function initViewport(container: HTMLElement): {
     // sets needsRender) whenever the camera actually moves, so inertia keeps the
     // loop painting until it settles.
     controls.update();
-    const pointerActive = performance.now() - lastPointerActivity < POINTER_GRACE_MS;
+    const pointerActive = performance.now() - lastPointerActivity < getConfig().renderer.pointerGraceMs;
     if (needsRender || pointerActive || isGizmoAnimating()) {
       renderer.render(scene, camera);
       renderGizmo(renderer);

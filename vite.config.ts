@@ -87,32 +87,6 @@ function parseGitHubRepo(remoteUrl: string): string {
   return m ? m[1] : '';
 }
 
-// Refresh the models.dev catalog snapshot at the start of every production
-// build so the picker menus + cost meter ship with the latest data. Runs in
-// `build` only (not dev) so iterating on the dev server doesn't spam
-// models.dev on every restart — devs can refresh manually with
-// `npm run refresh-models` when they want the freshest data locally.
-//
-// The script is itself defensive: on any network failure it logs a warning
-// and exits 0, leaving the committed snapshot intact, so this hook can
-// never fail a build (CI / Cloudflare Pages stay green when models.dev is
-// down). Synchronous spawn keeps the build's task ordering simple.
-function catalogSnapshot(): Plugin {
-  return {
-    name: 'partwright-catalog-snapshot',
-    apply: 'build',
-    buildStart() {
-      try {
-        execSync('node scripts/refreshModelsSnapshot.mjs', { stdio: 'inherit' });
-      } catch (err) {
-        // The script soft-fails internally — anything reaching here is a
-        // crash (missing node, permissions). Don't break the build over it.
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[partwright-catalog-snapshot] refresh script crashed: ${msg}`);
-      }
-    },
-  };
-}
 
 function resolveBuildInfo() {
   const git = (cmd: string): string => {
@@ -141,7 +115,7 @@ export default defineConfig({
   define: {
     __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
   },
-  plugins: [tailwindcss(), absoluteUrls(), markdownCharset(), catalogSnapshot(), dynamicSitemap()],
+  plugins: [tailwindcss(), absoluteUrls(), markdownCharset(), dynamicSitemap()],
   esbuild: {
     // .tsx files compile JSX via preact/jsx-runtime — keeps the bundle on
     // Preact without pulling in React. Vanilla .ts files in the rest of
@@ -165,7 +139,9 @@ export default defineConfig({
       // external call surfaces here in dev instead of slipping through to
       // production. connect-src allows `https:` + http://localhost / 127.0.0.1
       // so a user-configured Custom (OpenAI-compatible) endpoint — e.g. a
-      // self-hosted llama.cpp server — works (matches _headers). The dev-only
+      // self-hosted llama.cpp server — works (matches _headers). That same
+      // `https:` allowance also backs "Import from URL…" (fetching a remote
+      // file over https). The dev-only
       // delta is the localhost WebSocket Vite uses for HMR/live-reload, which
       // production has no equivalent of. Keep the host allowlist in sync with
       // public/_headers.

@@ -16,6 +16,9 @@ export interface ImportTargetOptions {
   addDisabledReason?: string;
   recommend?: ImportTarget;
   addReplacesStarter?: boolean;
+  /** Modal heading. Defaults to "Import mesh"; image/voxel/BREP imports pass a
+   *  noun-appropriate title (e.g. "Import voxels", "Import STEP"). */
+  title?: string;
 }
 
 interface Choice {
@@ -126,7 +129,7 @@ export function showImportTargetModal(opts: ImportTargetOptions): Promise<Import
 
     mountPreactModal(
       {
-        title: 'Import mesh',
+        title: opts.title ?? 'Import mesh',
         onClose: () => resolve(result),
       },
       close => ({

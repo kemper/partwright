@@ -1,12 +1,14 @@
-// Regression: ai.md (the in-app chat system prompt) tells the agent to "hand
-// the user a share link" via getShareLink() as the last step of every session
-// — and to PREFER it over the session/gallery URLs — but getShareLink was only
-// wired into the window.partwright console API, never registered as a chat
-// tool. The call fell through dispatch()'s default branch and came back as
-// "Unknown tool: getShareLink", so the agent could never deliver the link it
-// was instructed to deliver. This covers that the tool is now listed
-// (always-available, like the other read-only session surfaces) and that it
-// dispatches to the console API end to end.
+// The in-app chat assistant must NOT be able to mint a share link. The encoded
+// share URL is enormous, so returning it as a tool result would dump the whole
+// design into the model's context on every turn that follows — pure token waste,
+// since the in-app user can just click the toolbar Share button (↗). getShareLink
+// is therefore kept OFF the chat tool surface: no tool definition, not in
+// ALWAYS_AVAILABLE, and no dispatch case (so executeTool rejects it as unknown).
+//
+// The capability still exists for EXTERNAL agents — which have no toolbar to
+// click — via the window.partwright.getShareLink() console API. That path's full
+// encode round-trip is covered in share-link.spec.ts (T1b); here we just confirm
+// the console method is still wired so the two surfaces don't drift.
 
 import { test, expect, type Page } from 'playwright/test';
 
@@ -18,12 +20,12 @@ async function waitForEngine(page: Page) {
   );
 }
 
-test.describe('getShareLink chat tool', () => {
+test.describe('getShareLink is not an in-app chat tool', () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
   });
 
-  test('is always listed (even with every toggle paused) and dispatches to the console API', async ({ page }) => {
+  test('never listed as a chat tool and rejected by dispatch, but still on the console API', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
 
@@ -36,6 +38,7 @@ test.describe('getShareLink chat tool', () => {
         maxIterations: 'medium',
         maxSpend: 'high',
         thinking: 'off',
+        autoResume: true,
         provider: 'anthropic',
         anthropicModel: 'claude-haiku-4-5',
         localModel: null,
@@ -44,41 +47,35 @@ test.describe('getShareLink chat tool', () => {
       };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const listFor = (t: any) => tools.buildToolList(t).map((d) => d.name);
-      const listedDefault = listFor(baseToggles).includes('getShareLink');
-      // The prompt steers EVERY session toward handing back a share link, so the
-      // tool must survive with EVERY toggle paused — running, saving, painting,
-      // notes, and vision all off. That's the whole point of ALWAYS_AVAILABLE:
-      // no toggle can remove it (gating it is what caused the original failure).
-      const listedAllTogglesOff = listFor({
+      // No toggle combination surfaces it: it isn't a tool. Check full scope and
+      // every scope/vision toggle paused (auto-continue off, so even the `finish`
+      // tool isn't in play).
+      const listedFullScope = listFor(baseToggles).includes('getShareLink');
+      const listedAllOff = listFor({
         ...baseToggles,
         scope: { runCode: false, saveVersions: false, paintFaces: false, sessionNotes: false },
         vision: { ...baseToggles.vision, views: false },
+        autoResume: false,
       }).includes('getShareLink');
 
-      // End-to-end dispatch: a session with a saved version so there's a design
-      // to encode (getShareLink commits the current buffer, then exports it).
-      const pw = (window as unknown as { partwright: {
-        createSession: (n?: string) => Promise<unknown>;
-        runAndSave: (code: string, label?: string) => Promise<unknown>;
-      } }).partwright;
-      await pw.createSession('sharelink-tool-test');
-      await pw.runAndSave('const { Manifold } = api; return Manifold.cube([10, 10, 10], true);', 'base');
-
+      // The dispatch case was removed, so reaching the tool by name falls through
+      // to the "Unknown tool" branch — the agent can't tunnel to the console API
+      // through the tool layer.
       const exec = await tools.executeTool('getShareLink', {});
-      return { listedDefault, listedAllTogglesOff, exec, origin: location.origin };
+
+      // The capability is preserved for external/console agents.
+      const onConsoleApi = typeof (window as unknown as {
+        partwright: { getShareLink?: unknown };
+      }).partwright.getShareLink === 'function';
+
+      return { listedFullScope, listedAllOff, exec, onConsoleApi };
     });
 
-    // Always available — present with full scope and with every toggle paused.
-    expect(result.listedDefault).toBe(true);
-    expect(result.listedAllTogglesOff).toBe(true);
-
-    // The call dispatched to window.partwright instead of throwing the old
-    // "Unknown tool" error, and returned a self-contained hash URL.
-    expect(result.exec.isError).toBe(false);
-    expect(result.exec.content).not.toContain('Unknown tool');
-    const payload = JSON.parse(result.exec.content) as { url?: string; encodedBytes?: number; error?: string };
-    expect(payload.error).toBeUndefined();
-    expect(payload.url?.startsWith(`${result.origin}/editor#share=`)).toBe(true);
-    expect(payload.encodedBytes).toBeGreaterThan(0);
+    expect(result.listedFullScope).toBe(false);
+    expect(result.listedAllOff).toBe(false);
+    expect(result.exec.isError).toBe(true);
+    expect(result.exec.content).toContain('Unknown tool');
+    // Still available to external agents (full round-trip covered in share-link.spec.ts T1b).
+    expect(result.onConsoleApi).toBe(true);
   });
 });

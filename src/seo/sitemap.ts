@@ -21,6 +21,7 @@ export const SITEMAP_ROUTES: SitemapRoute[] = [
   { path: '/', changefreq: 'weekly', priority: 1.0 },
   { path: '/editor', changefreq: 'weekly', priority: 0.9 },
   { path: '/catalog', changefreq: 'weekly', priority: 0.8 },
+  { path: '/ideas', changefreq: 'weekly', priority: 0.8 },
   { path: '/help', changefreq: 'monthly', priority: 0.7 },
   { path: '/legal', changefreq: 'yearly', priority: 0.3 },
   { path: '/ai.md', changefreq: 'weekly', priority: 0.7 },

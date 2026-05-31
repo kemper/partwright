@@ -218,15 +218,31 @@ export function onSettingsChange(fn: (settings: AiSettings) => void): () => void
   return () => listeners.delete(fn);
 }
 
-/** Drop the in-memory cache and re-read settings from localStorage, then
- *  notify listeners. Used when another tab writes settings (the `storage`
- *  event fires only in *other* tabs): our `cached` blob would otherwise shadow
- *  the peer tab's change forever, and the next `saveSettings` here would write
- *  the stale blob back and silently revert their edit. Returns the freshly
- *  loaded settings. */
+/** Re-read settings from localStorage when another tab wrote them (the
+ *  `storage` event fires only in *other* tabs), adopting the peer's changes to
+ *  genuinely-global, additive prefs (custom local models, system-prompt
+ *  overrides, panel width, drawer state, …) so this tab doesn't write a stale
+ *  blob back and silently revert their edit.
+ *
+ *  Crucially, this tab's live AI config — `provider`, every per-provider model
+ *  id, the whole `toggles` object, and `preset` — is PRESERVED, never adopted
+ *  from the peer. Those are per-tab/per-session state (each window drives its
+ *  own session), and blindly adopting a peer's provider/model here was the
+ *  cross-window provider-leak bug: a task in this tab would silently switch to
+ *  whatever provider another window selected. State only crosses tabs on the
+ *  explicit transitions handled elsewhere — opening a session or taking control
+ *  of one (see applySessionAiPreference). Returns the merged settings. */
 export function reloadSettingsFromStorage(): AiSettings {
+  const keepToggles = cached ? cloneToggles(cached.toggles) : null;
+  const keepPreset = cached ? cached.preset : null;
   cached = null;
   const next = loadSettings();
+  if (keepToggles) {
+    // `next` is the live `cached` object; restoring our toggles/preset in place
+    // means the next `saveSettings` writes them back, not the peer's.
+    next.toggles = keepToggles;
+    if (keepPreset) next.preset = keepPreset;
+  }
   for (const fn of listeners) fn(next);
   return next;
 }

@@ -144,7 +144,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'getGeometryData',
-    description: 'Read the current geometry stats (volume, surfaceArea, vertexCount, triangleCount, isManifold, componentCount, boundingBox). Cheap — no re-execution.',
+    description: 'Read the current geometry stats (volume, surfaceArea, vertexCount, triangleCount, isManifold, componentCount, boundingBox). Cheap — no re-execution. Returns `stale: true` when the editor code changed since the last run (setCode without a subsequent run) — call runAndSave/run first if you need fresh stats. Returns `containedComponents: N` when N components are fully enclosed inside another solid and excluded from the floater check.',
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -419,13 +419,8 @@ const ALL_TOOLS: ToolDefinition[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
-    name: 'getShareLink',
-    description: 'Mint a self-contained, read-only share link for the current version — the link to hand the user when you are done. Commits the current buffer first (capturing unsaved edits), then encodes the whole design into the URL hash; nothing is uploaded to a server, and anyone can open the link anywhere and fork it into their own editable copy. Returns { url, encodedBytes } on success, or { error } (e.g. no session open, an older browser without CompressionStream, or a design too large to fit in a URL). Prefer this over a session/gallery URL, which only resolves against your own browser.',
-    input_schema: { type: 'object', properties: {} },
-  },
-  {
     name: 'readDoc',
-    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, reference-images, file-io, annotations, relief.',
+    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, reference-images, file-io, annotations, relief, iteration-workflow, gotchas, visual-verification, spending, manifold-api.',
     input_schema: {
       type: 'object',
       properties: {
@@ -628,7 +623,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'forkVersion',
-    description: 'Fork a prior version: load version N, apply new code or patches, validate against optional assertions, and save as a new version — all atomically. Use this to branch off a known-good version without the fragile loadVersion → getCode → modify → runAndSave chain. Provide either `code` (full replacement) or `patches` (find/replace array applied to the parent\'s code — more concise when only a few values change). Each patch\'s `find` MUST occur exactly once in the parent code; a find that matches zero or multiple times is an ERROR (the fork is rejected, not silently saved unchanged), so read the parent code first and copy the exact text including whitespace. Color regions on the parent are re-applied to the forked geometry automatically (each region\'s descriptor is re-resolved against the new mesh) unless you pass `carryColors: false` — no need to repaint after a geometry tweak. Returns {parent, version, geometry, diff (geometry stats), codeDiff (what actually changed in the source — verify your patch landed here), colors: {carried, dropped}, galleryUrl} on success, or {error} / {passed: false, failures} on failure.',
+    description: 'Fork a prior version: load version N, apply new code or patches, validate against optional assertions, and save as a new version — all atomically. Use this to branch off a known-good version without the fragile loadVersion → getCode → modify → runAndSave chain. Provide either `code` (full replacement) or `patches` (find/replace array applied to the parent\'s code — more concise when only a few values change). Each patch\'s `find` MUST occur exactly once in the parent code; a find that matches zero or multiple times is an ERROR (the fork is rejected, not silently saved unchanged), so read the parent code first and copy the exact text including whitespace. Patch matching is whitespace-flexible — if the exact text is not found, a whitespace-normalized match is tried automatically (handles auto-reformatted code). Color regions on the parent are re-applied to the forked geometry automatically (each region\'s descriptor is re-resolved against the new mesh) unless you pass `carryColors: false` — no need to repaint after a geometry tweak. To fork from unsaved editor code: call `saveVersion("checkpoint")` first to commit it, then `forkVersion({index: <that index>}, ...)`. Returns {parent, version, geometry, diff (geometry stats), codeDiff (what actually changed in the source — verify your patch landed here), colors: {carried, dropped}, galleryUrl} on success, or {error} / {passed: false, failures} on failure.',
     input_schema: {
       type: 'object',
       properties: {
@@ -739,7 +734,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'query',
-    description: 'Multi-query the current geometry in one call. Pass any combination of sliceAt (cross-section areas at given Z heights), decompose (component breakdown), boundingBox. Returns only the keys you asked for. Cheaper than separate calls.',
+    description: 'Multi-query the current geometry in one call. Pass any combination of sliceAt (cross-section areas at given Z heights), decompose (component breakdown), boundingBox. Returns only the keys you asked for. Cheaper than separate calls. Returns `stale: true` in both the top-level result and `stats` when the editor code changed since the last run — geometry reflects the previous execution.',
     input_schema: {
       type: 'object',
       properties: {
@@ -947,7 +942,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'importImageAsRelief',
-    description: 'Generate a colour-printable Part from a raster image. By default produces a FLAT colour tile (keychain-style — paint regions on a thin tile, AMS-friendly). Pass quantized.output="silhouette" to cut the tile to the image\'s subject outline (background removed), or quantized.output="relief" for a stepped-height relief (each cluster gets its own Z layer). Pass mode="luminance" for a tonal embossment with no colour clusters. `src` is a data: or http(s) image URL. After creation, paint, then read getReliefSwapGuide() for the single-nozzle swap plan if relevant.',
+    description: 'Generate a colour-printable Part from a raster image. REQUIRES USER CONFIRMATION — only call when the user has explicitly asked to import an image. By default produces a FLAT colour tile (keychain-style — paint regions on a thin tile, AMS-friendly). Pass quantized.output="silhouette" to cut the tile to the image\'s subject outline (background removed), or quantized.output="relief" for a stepped-height relief (each cluster gets its own Z layer). Pass mode="luminance" for a tonal embossment with no colour clusters. `src` is a data: or http(s) image URL. After creation, paint, then read getReliefSwapGuide() for the single-nozzle swap plan if relevant.',
     input_schema: {
       type: 'object',
       properties: {
@@ -998,7 +993,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'importSvgAsRelief',
-    description: 'Generate a multi-colour tile Part from raw SVG text. Each `<path fill>` becomes one seed colour region with CRISP boundaries — no k-means clustering, so the SVG\'s exact colours and shapes are preserved. Vastly better than importImageAsRelief for vector logos, icons, and illustrations. Tile geometry knobs (output/shape/hole) work the same as importImageAsRelief; default output is "silhouette" so the tile takes the SVG\'s overall outline.',
+    description: 'Generate a multi-colour tile Part from raw SVG text. REQUIRES USER CONFIRMATION — only call when the user has explicitly asked to import an SVG. Each `<path fill>` becomes one seed colour region with CRISP boundaries — no k-means clustering, so the SVG\'s exact colours and shapes are preserved. Vastly better than importImageAsRelief for vector logos, icons, and illustrations. Tile geometry knobs (output/shape/hole) work the same as importImageAsRelief; default output is "silhouette" so the tile takes the SVG\'s overall outline.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1081,11 +1076,11 @@ const ALWAYS_AVAILABLE = new Set([
   // can stop the model from spending a tool round-trip on notes the chat
   // transcript already records.
   'listSessionNotes',
-  // getShareLink is the "hand the design back to the user when done" action the
-  // system prompt steers every session toward, so it stays always-on like the
-  // other read-only session surfaces — gating it would resurrect the
-  // "Unknown tool: getShareLink" failure whenever the toggle was off.
-  'getShareLink',
+  // getShareLink is intentionally NOT a chat tool. The encoded share URL is
+  // enormous, so returning it as a tool result would dump the whole design into
+  // the model's context for no benefit — the in-app user just clicks the toolbar
+  // Share button (↗). The capability lives on window.partwright.getShareLink()
+  // for EXTERNAL agents (no toolbar to click); see public/ai.md.
   'readDoc',
   'findFaces',
   'listComponents',
@@ -1116,6 +1111,13 @@ const ALWAYS_AVAILABLE = new Set([
   'importSvgAsRelief',
   'getReliefSwapGuide',
   'setReliefPreviewMode',
+]);
+
+/** Tools that require explicit user confirmation before executing.
+ *  The UI shows a blocking prompt and the model receives an error if declined. */
+export const CONFIRM_REQUIRED_TOOLS = new Set([
+  'importImageAsRelief',
+  'importSvgAsRelief',
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
@@ -1253,7 +1255,7 @@ function detectLanguageMismatch(code: string): string | null {
  *  `tools.ts` to import the engine module statically. The function lives
  *  in `src/geometry/engine.ts` and is already loaded by the app shell at
  *  startup, so a require-style lookup via `window.partwright` is safe. */
-const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations', 'relief']);
+const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'reference-images', 'file-io', 'annotations', 'relief', 'iteration-workflow', 'gotchas', 'visual-verification', 'spending', 'manifold-api']);
 
 /** Fetch a topic subdoc by short name. Same fetch path for Anthropic and
  *  local providers — both run inside the user's browser tab, so this is
@@ -1427,8 +1429,6 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.addSessionNote(input.text as string);
     case 'listSessionNotes':
       return api.listSessionNotes();
-    case 'getShareLink':
-      return api.getShareLink();
     case 'readDoc':
       return readSubdoc(input.name as string);
     case 'paintRegion':
