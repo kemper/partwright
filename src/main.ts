@@ -22,19 +22,19 @@
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, type Language } from './geometry/engine';
+import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { generateId, getLatestVersion } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
 import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
 import type { EditorView as CMEditorView } from '@codemirror/view';
 import { createLayout, type TabName } from './ui/layout';
-import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState } from './ui/toolbar';
+import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { registerCommands } from './ui/commandPalette';
 import { showQualitySettingsModal } from './ui/qualitySettingsModal';
@@ -1735,6 +1735,10 @@ async function main() {
     // colors bleeding onto image→voxel art — and the editor opens locked.
     cancelVoxelPaintIfActive();
     dropPaintState();
+    clearMesh();
+    // Clear stale params panel immediately so old controls don't linger while
+    // the new model is loading — syncParamsPanel runs again after the run.
+    syncParamsPanel(undefined);
     setValue(code);
     await runCodeSync(code);
     return { sessionId: session.id };
@@ -2202,16 +2206,15 @@ async function main() {
   // Import a .partwright.json session, a raw .js / .scad file, or an .stl mesh
   // into a new session. Returns whether the import committed (so callers know
   // if the inbox should be updated).
-  async function handleImportFile(file: File, options: { skipPreActiveConfirm?: boolean } = {}): Promise<boolean> {
+  async function handleImportFile(file: File): Promise<boolean> {
     const source = classifyImportSource(file.name);
     if (!source) {
       alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl, .step / .stp, .vox, .svg, .png / .jpg / .gif / .webp / .avif`);
       return false;
     }
 
-    // For SCAD files, detect missing includes before showing any confirm so we
-    // can present the companion modal (which IS the confirmation) instead of the
-    // generic "open as new session?" prompt.
+    // For SCAD files, detect missing includes before showing the placement modal
+    // so the companion modal can run first (it acts as the user's intent signal).
     let scadCode: string | undefined;
     let scadCompanions: Record<string, string> | undefined;
     if (source === 'SCAD') {
@@ -2227,28 +2230,6 @@ async function main() {
       }
     }
 
-    // Raw code imports don't get a preview modal of their own — confirm before clobber.
-    // JSON imports skip this confirm because the preview modal already serves as
-    // confirmation; STL and STEP imports skip it because their target modals let
-    // the user choose where the import should go; IMAGE imports skip it because
-    // the image→voxel parameter modal (with its own Cancel) serves the same role.
-    // SCAD files that went through the companion modal also skip it — that modal
-    // already served as the confirmation.
-    if (
-      !options.skipPreActiveConfirm &&
-      source !== 'JSON' && source !== 'STL' && source !== 'STEP' &&
-      source !== 'IMAGE' && source !== 'SVG' &&
-      scadCompanions === undefined
-    ) {
-      const cur = getState();
-      if (cur.session && cur.versionCount > 0) {
-        const ok = await showInlineConfirm(
-          editorUI,
-          `Open "${file.name}" as a new session? Your current session will be kept.`,
-        );
-        if (!ok) return false;
-      }
-    }
 
     try {
       let committed = false;
@@ -2258,20 +2239,16 @@ async function main() {
       } else if (source === 'JS' || source === 'SCAD') {
         const code = scadCode ?? await file.text();
         const lang: Language = source === 'SCAD' ? 'scad' : 'manifold-js';
-        const sessionName = file.name.replace(/\.(js|scad)$/i, '');
-        await importCodePayload(code, lang, sessionName);
+        committed = await placeImportedCodeFile(code, lang, file.name);
         // Register any companion files supplied through the modal, re-run with
         // them in place, then save so the first DB version already carries them.
-        if (scadCompanions !== undefined && Object.keys(scadCompanions).length > 0) {
+        if (committed && scadCompanions !== undefined && Object.keys(scadCompanions).length > 0) {
           for (const [path, content] of Object.entries(scadCompanions)) {
             addCompanionFileToRegistry(path, content);
           }
           await runCodeSync(getValue());
-        }
-        if (scadCompanions !== undefined) {
           await saveCurrentVersion();
         }
-        committed = true;
       } else if (source === 'STL') {
         const parsed = await parseSTLFile(file);
         if (parsed) {
@@ -2981,7 +2958,11 @@ async function main() {
     // re-resolves stale regions onto the new mesh and locks the editor.
     cancelVoxelPaintIfActive();
     dropPaintState();
+    clearMesh();
     if (getActiveLanguage() !== language) await switchLanguage(language);
+    // Clear stale params panel immediately so old controls don't linger while
+    // the new model is loading.
+    syncParamsPanel(undefined);
     setValue(code);
     await runCodeSync(code);
     const thumbnail = await captureThumbnail();
@@ -3144,6 +3125,41 @@ async function main() {
     return composeMeshIntoCurrentPart(parsed.mesh);
   }
 
+  /** Place an imported code file (JS / SCAD) into the session, showing a target
+   *  modal when there is real existing work. Options: new part, replace current
+   *  part, or new session. Distinct from placeImportedCode (which handles
+   *  generated code / voxel / BREP with a compose-into current-part path). */
+  async function placeImportedCodeFile(code: string, lang: Language, filename: string): Promise<boolean> {
+    const sessionName = filename.replace(/\.(js|scad)$/i, '');
+    const state = getState();
+    if (!state.session || currentPartIsExpendable()) {
+      await importCodePayload(code, lang, sessionName);
+      return true;
+    }
+    const partLabel = state.currentPart?.name ? `"${state.currentPart.name}"` : 'the current part';
+    const target = await showImportTargetModal({
+      filename,
+      title: 'Import code',
+      currentPartName: state.currentPart?.name ?? null,
+      canAddToCurrent: true,
+      currentPartTitle: `Replace current part — ${partLabel}`,
+      currentPartDesc: "Replace this part's code with the imported file. The current code is saved as a version first.",
+      recommend: 'new-part',
+    });
+    if (!target) return false;
+    if (target === 'new-session') {
+      await importCodePayload(code, lang, sessionName);
+    } else if (target === 'new-part') {
+      await preserveCurrentEditsIfNeeded();
+      await seedNewPartWithCode(code, sessionName, lang);
+    } else {
+      // current-part: replace current part's code with the imported file.
+      await preserveCurrentEditsIfNeeded();
+      await applyCodeToCurrentPart(code, lang);
+    }
+    return true;
+  }
+
   function mergedPartName(names: string[]): string {
     const joined = names.join(' + ');
     return joined.length <= 40 ? joined : `Merged (${names.length} parts)`;
@@ -3271,20 +3287,11 @@ async function main() {
         await handleStepImport(file);
         return;
       }
-      // Remaining sources are raw code (JS / SCAD): read the blob as text and
-      // open it as a new session in the matching language.
-      const cur = getState();
-      if (cur.session && cur.versionCount > 0) {
-        const ok = await showInlineConfirm(
-          editorUI,
-          `Re-import "${entry.filename}" as a new session? Your current session will be kept.`,
-        );
-        if (!ok) return;
-      }
+      // Remaining sources are raw code (JS / SCAD): show the target modal so
+      // the user can choose new part, replace current, or new session.
       const code = await entry.blob.text();
       const lang: Language = entry.source === 'SCAD' ? 'scad' : 'manifold-js';
-      const sessionName = entry.filename.replace(/\.(js|scad)$/i, '');
-      await importCodePayload(code, lang, sessionName);
+      await placeImportedCodeFile(code, lang, entry.filename);
     } catch (e) {
       alert(`Failed to re-import "${entry.filename}": ${(e as Error).message}`);
     }
@@ -3618,6 +3625,7 @@ async function main() {
       void syncRouteFromURL();
     },
     onRun: () => runCode(),
+    onCancelRun: () => { cancelCurrentExecution(); },
     onExportGLB: actionExportGLB,
     onExportSTL: actionExportSTL,
     onExportOBJ: actionExportOBJ,
@@ -3712,6 +3720,7 @@ async function main() {
   // where `api.Manifold` is undefined). This is the mixed-language case a JSON
   // merge creates: a voxel Part 2 alongside an unsaved manifold-js Part 1.
   async function loadPartIntoEditor(version: Version | null) {
+    clearMesh();
     if (version) {
       await loadVersionIntoEditor(version);
     } else {
@@ -3762,6 +3771,9 @@ async function main() {
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
     onSelectPart: async (partId: string) => {
+      // Save any unsaved non-starter edits (e.g. imported SCAD with errors) so
+      // they survive the switch and are loadable when the user returns here.
+      await preserveCurrentEditsIfNeeded();
       const version = await changePart(partId);
       await loadPartIntoEditor(version);
     },
@@ -4024,6 +4036,18 @@ async function main() {
   // version-switch or run has already superseded it, and applying the stale
   // result would overwrite the wrong mesh/manifold/colour state.
   let _runGeneration = 0;
+  // Elapsed-time display for slow renders (SCAD, complex JS). The cancel
+  // button and timer are hidden until 400 ms have elapsed so fast runs don't
+  // flash them. _runShowTimer is the delayed-show timeout; _runTimerInterval
+  // fires every 100 ms to update the displayed elapsed time.
+  let _runTimerStart = 0;
+  let _runShowTimer: number | null = null;
+  let _runTimerInterval: number | null = null;
+  // The _runGeneration value of the most-recently-started RAF-initiated run.
+  // -1 = no RAF run is currently active. A new RAF may cancel only the
+  // generation that this tracks; if the active generation is different (an
+  // explicit call superseded the RAF), the new RAF suppresses itself instead.
+  let _rafOwnedGeneration = -1;
 
   // Last error from an auto-run, held back from the editor UI until typing
   // settles or focus leaves (see surfacePendingError). `src` guards against
@@ -6131,22 +6155,25 @@ async function main() {
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Non-destructive viewport preview of a scale operation (no version saved). */
-    previewScale(sx: number, sy: number, sz: number): { ok: true } | { error: string } {
+    previewScale(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }): { ok: true } | { error: string } {
       try {
         if (!currentMeshData) return { error: 'No model loaded' };
-        const result = applyScale(meshForModifier(false), sx, sy, sz);
-        previewSurfaceModifier(result, false);
+        const preserve = opts?.preserveColor ?? false;
+        const result = applyScale(meshForModifier(preserve), sx, sy, sz);
+        previewSurfaceModifier(result, preserve);
         return { ok: true };
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Discard a live scale preview and restore the current model's mesh. */
     clearScalePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
     /** Scale the current model and save as a new version.
-     *  sx/sy/sz are multiplicative factors (1 = no change, 2 = double, 0.5 = half). */
-    async scaleModel(sx: number, sy: number, sz: number) {
+     *  sx/sy/sz are multiplicative factors (1 = no change, 2 = double, 0.5 = half).
+     *  `preserveColor` (default true) re-resolves paint regions onto the scaled mesh. */
+    async scaleModel(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }) {
       try {
         if (!currentMeshData) return { error: 'No model loaded' };
-        return await commitSurfaceModifier(applyScale(meshForModifier(false), sx, sy, sz), false);
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(applyScale(meshForModifier(preserve), sx, sy, sz), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Run code string and update all views. Returns geometry data object. */
@@ -11223,12 +11250,49 @@ async function main() {
     clearEditorErrorPanel(editorErrorPanel);
 
     requestAnimationFrame(async () => {
-      // An explicit runCodeSync (e.g. version-load, partwright.run) may have
-      // started synchronously before this RAF fired — if so, skip to avoid
-      // racing: the explicit call owns _runGeneration and will apply results.
-      if (_running) return;
+      if (_running) {
+        if (_runGeneration === _rafOwnedGeneration) {
+          // The in-flight run is our own previous RAF auto-run — cancel it so
+          // the latest edited code renders immediately instead of being dropped.
+          cancelCurrentExecution();
+        } else {
+          // An explicit call (partwright.run, version load) owns the current
+          // run (or a newer RAF already claimed a higher generation) — suppress
+          // this auto-run rather than preempting it.
+          return;
+        }
+      }
+      // Record which generation we're about to start so a later RAF can
+      // cancel only this specific run (not an explicit run that superseded it).
+      const myRafGen = _runGeneration + 1;
+      _rafOwnedGeneration = myRafGen;
       await runCodeSync(src, opts);
+      // If we still own the generation slot and the run is done, clear it.
+      if (_rafOwnedGeneration === myRafGen) _rafOwnedGeneration = -1;
     });
+  }
+
+  // Start the elapsed-time display for a render. The cancel button and timer
+  // are delayed 400 ms so fast runs (manifold-js is typically < 100 ms) never
+  // flash them. stopRunTimer() always cancels the pending show before it fires.
+  function startRunTimer(t0: number): void {
+    _runTimerStart = t0;
+    stopRunTimer();
+    _runShowTimer = window.setTimeout(() => {
+      _runShowTimer = null;
+      setRunState(true, performance.now() - _runTimerStart);
+      _runTimerInterval = window.setInterval(() => {
+        const ms = performance.now() - _runTimerStart;
+        setRunState(true, ms);
+        setStatus(statusBar, 'running', `Rendering... ${(ms / 1000).toFixed(1)}s`);
+      }, 100);
+    }, 400);
+  }
+
+  function stopRunTimer(): void {
+    if (_runShowTimer !== null) { clearTimeout(_runShowTimer); _runShowTimer = null; }
+    if (_runTimerInterval !== null) { clearInterval(_runTimerInterval); _runTimerInterval = null; }
+    setRunState(false);
   }
 
   async function runCodeSync(src: string, opts: { surfaceErrors?: boolean } = {}): Promise<boolean> {
@@ -11243,9 +11307,29 @@ async function main() {
     const surfaceErrors = opts.surfaceErrors ?? true;
     const myGen = ++_runGeneration;
     _running = true;
+    // Ensure status shows "Running..." regardless of how this run was triggered
+    // (runCode sets it before the RAF; import paths call runCodeSync directly).
+    setStatus(statusBar, 'running', 'Running...');
+    clearEditorDiagnostics();
+    clearEditorErrorPanel(editorErrorPanel);
     const t0 = performance.now();
+    startRunTimer(t0);
     // Feed the Customizer's current overrides into the model's api.params(...).
-    const result = await executeCodeAsync(src, undefined, currentParamValues);
+    let result: Awaited<ReturnType<typeof executeCodeAsync>>;
+    try {
+      result = await executeCodeAsync(src, undefined, currentParamValues);
+    } catch (err) {
+      // Worker was terminated (cancelled by user, cancelled for a newer run,
+      // timeout, or crash). Only clean up if we're still the active run —
+      // a newer run already owns _running and the timer when myGen differs.
+      if (myGen !== _runGeneration) return false;
+      _running = false;
+      stopRunTimer();
+      const msg = err instanceof Error ? err.message : String(err);
+      const wasCancelled = /cancell?ed/i.test(msg);
+      setStatus(statusBar, wasCancelled ? 'ready' : 'error', wasCancelled ? 'Cancelled' : msg);
+      return false;
+    }
 
     // A newer runCodeSync was dispatched while we were awaiting the Worker.
     // Discard this result to prevent a stale version from overwriting the
@@ -11254,6 +11338,7 @@ async function main() {
 
     const elapsed = Math.round(performance.now() - t0);
     _running = false;
+    stopRunTimer();
 
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel

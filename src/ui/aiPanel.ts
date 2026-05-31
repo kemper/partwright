@@ -52,6 +52,17 @@ interface PanelState {
    *  removed by one rewind operation. Popped by fast-forward to restore.
    *  Cleared when the user sends a new message (conversation has diverged). */
   rewindStack: ChatMessage[][];
+  /** Set when planFirst mode has generated a plan and is awaiting user
+   *  approval. Cleared on approve (which fires the real execution turn) or
+   *  reject (which removes planning messages from history and restores the
+   *  original input). null when no plan is pending. */
+  pendingPlanApproval: {
+    originalText: string;
+    originalImages: ImageSource[];
+    /** Length of state.history before the planning turn was sent, so
+     *  reject can remove exactly the planning messages that were added. */
+    historyLengthBefore: number;
+  } | null;
 }
 
 const state: PanelState = {
@@ -63,6 +74,7 @@ const state: PanelState = {
   inFlightController: null,
   queuedBlocks: [],
   rewindStack: [],
+  pendingPlanApproval: null,
 };
 
 /** Cached length of `public/ai.md` + PREAMBLE, in characters, populated
@@ -146,6 +158,7 @@ let forwardBtnRef: HTMLButtonElement | null = null;
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
 let inputEl: HTMLTextAreaElement | null = null;
+let planApprovalBarEl: HTMLElement | null = null;
 
 // Slash-command autocomplete menu state. The menu sits just above the input
 // row and shows while the user is typing a "/command" token. `slashMenuItems`
@@ -291,6 +304,8 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
   // and the human's instructions almost never make sense out of context.
   state.queuedBlocks = [];
   renderQueuedBadge();
+  state.pendingPlanApproval = null;
+  renderPlanApprovalBar();
   await loadHistoryForCurrentSession();
   await applySessionAiPreference();
   renderTranscript();
@@ -705,6 +720,12 @@ function buildDrawer(): void {
   inputResizeStripe.className = 'absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-zinc-700 group-hover:bg-blue-500 group-[.is-dragging]:bg-blue-500 transition-colors';
   inputResizeHandle.appendChild(inputResizeStripe);
   root.appendChild(inputResizeHandle);
+
+  // Plan approval bar — shown after planFirst mode generates a plan, until
+  // the user approves (proceeds to execution) or rejects (restores input).
+  planApprovalBarEl = document.createElement('div');
+  planApprovalBarEl.className = 'px-3 py-2 border-t border-amber-700/60 bg-amber-900/20 flex items-center gap-2 shrink-0 hidden';
+  root.appendChild(planApprovalBarEl);
 
   // Bottom section — rewind, toggles, cost, input
   const bottomSection = document.createElement('div');
@@ -1258,6 +1279,15 @@ function renderToggleStrip(): void {
       renderToggleStrip();
     },
   ));
+  primary.appendChild(togglePill(
+    '📋 Plan',
+    toggles.planFirst,
+    'Plan first: when ON, the AI writes a step-by-step plan before doing any work. You approve or reject the plan before execution starts. Useful for complex requests where you want to review the approach first.',
+    () => {
+      applyToggleChange({ planFirst: !toggles.planFirst });
+      renderToggleStrip();
+    },
+  ));
 
   const retry = document.createElement('select');
   retry.className = 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 border border-zinc-700 text-zinc-300 focus:outline-none';
@@ -1570,6 +1600,8 @@ async function clearCurrentChat(): Promise<void> {
     return;
   }
   state.history = [];
+  state.pendingPlanApproval = null;
+  renderPlanApprovalBar();
   broadcastChatChanged();
   renderTranscript();
   renderCostMeter();
@@ -1578,6 +1610,77 @@ async function clearCurrentChat(): Promise<void> {
 
 function formatDuration(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+function renderPlanApprovalBar(): void {
+  if (!planApprovalBarEl) return;
+  if (!state.pendingPlanApproval || state.inFlight) {
+    planApprovalBarEl.classList.add('hidden');
+    return;
+  }
+  planApprovalBarEl.classList.remove('hidden');
+  planApprovalBarEl.replaceChildren();
+
+  const label = document.createElement('span');
+  label.className = 'text-[11px] text-amber-200 flex-1';
+  label.textContent = '📋 Plan mode — type to refine, or approve/reject.';
+  planApprovalBarEl.appendChild(label);
+
+  const approveBtn = document.createElement('button');
+  approveBtn.className = 'shrink-0 px-2 py-1 rounded text-[11px] font-medium bg-blue-600 hover:bg-blue-500 text-white';
+  approveBtn.textContent = '✓ Approve';
+  approveBtn.title = 'Approve this plan and start building.';
+  approveBtn.addEventListener('click', () => { void approvePlan(); });
+  planApprovalBarEl.appendChild(approveBtn);
+
+  const rejectBtn = document.createElement('button');
+  rejectBtn.className = 'shrink-0 px-2 py-1 rounded text-[11px] text-zinc-300 bg-zinc-700 hover:bg-zinc-600';
+  rejectBtn.textContent = '✗ Reject';
+  rejectBtn.title = 'Reject this plan and edit your request.';
+  rejectBtn.addEventListener('click', () => { void rejectPlan(); });
+  planApprovalBarEl.appendChild(rejectBtn);
+}
+
+async function approvePlan(): Promise<void> {
+  if (!state.pendingPlanApproval) return;
+  state.pendingPlanApproval = null;
+  renderPlanApprovalBar();
+
+  const settings = loadSettings();
+  const apiKey = await preflightTurn(settings, () => { void approvePlan(); });
+  if (apiKey === PREFLIGHT_ABORT) return;
+
+  state.rewindStack = [];
+  progressState.retryCount = 0;
+  stalledByWatchdog = false;
+  pinTranscriptToBottom();
+  await runTurnWithStallRetry(apiKey, settings.toggles, [
+    { type: 'text', text: 'Plan approved. Please proceed.' },
+  ]);
+}
+
+async function rejectPlan(): Promise<void> {
+  if (!state.pendingPlanApproval) return;
+  const { originalText, originalImages, historyLengthBefore } = state.pendingPlanApproval;
+
+  const msgsToRemove = state.history.slice(historyLengthBefore);
+  if (msgsToRemove.length > 0) {
+    await deleteMessages(msgsToRemove.map(m => m.id));
+    state.history = state.history.slice(0, historyLengthBefore);
+  }
+
+  state.pendingPlanApproval = null;
+
+  if (inputEl) {
+    inputEl.value = originalText;
+    inputEl.dispatchEvent(new Event('input'));
+    inputEl.focus();
+  }
+  state.pendingImages = [...originalImages];
+  renderPendingImages();
+  renderPlanApprovalBar();
+  renderTranscript();
+  updateRewindButtons();
 }
 
 // === Transcript rendering ===
@@ -2631,12 +2734,16 @@ async function sendMessage(): Promise<void> {
   const apiKey = await preflightTurn(settings, () => { void sendMessage(); });
   if (apiKey === PREFLIGHT_ABORT) return;
 
+  // Capture content before clearing the input so plan mode can restore it on reject.
+  const capturedText = text;
+  const capturedImages = [...state.pendingImages];
+
   const blocks: ChatBlock[] = [];
-  if (text.length > 0) blocks.push({ type: 'text', text });
+  if (capturedText.length > 0) blocks.push({ type: 'text', text: capturedText });
   // Only attach images the user added if vision is on. Iso views are
   // user-initiated via Show AI; pending images get sent regardless because
   // the user's intent is explicit when they attached them.
-  for (const img of state.pendingImages) blocks.push({ type: 'image', source: img });
+  for (const img of capturedImages) blocks.push({ type: 'image', source: img });
 
   inputEl.value = '';
   state.pendingImages = [];
@@ -2650,6 +2757,51 @@ async function sendMessage(): Promise<void> {
   // bottom so the user's own bubble and the streamed reply are visible even
   // if they had been scrolled up reading earlier history.
   pinTranscriptToBottom();
+
+  if (settings.toggles.planFirst || state.pendingPlanApproval) {
+    // Plan-first mode or an in-flight plan refinement: keep tools off so the
+    // model can't execute anything until the user approves. If this is a
+    // follow-up (pendingPlanApproval is already set), the user is replying to
+    // a clarifying question or asking the model to revise — just send the
+    // message as-is; the planning prefix is only for the very first turn.
+    const planToggles: ChatToggles = {
+      ...settings.toggles,
+      scope: { runCode: false, saveVersions: false, paintFaces: false, sessionNotes: false },
+      autoResume: false,
+    };
+
+    let planBlocks: ChatBlock[];
+    if (state.pendingPlanApproval) {
+      // Refinement turn: plain user message, no prefix. historyLengthBefore
+      // stays fixed so Reject still removes all planning messages.
+      // Refinement: remind the model it is still in plan mode so it doesn't
+      // switch to execution mode when it receives the information it asked for.
+      const refinePrefix = '[Plan refinement — revise or extend the plan only, do not call any tools or start building]: ';
+      planBlocks = [];
+      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: refinePrefix + capturedText });
+      for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
+    } else {
+      // First planning turn: prefix with the planning instruction.
+      const planPrefix =
+        'Before doing anything, write a concise plan for the following request. '
+        + 'Describe your approach, key steps, and any design decisions. '
+        + 'Do NOT call any tools or start building yet — I will approve or reject your plan first.\n\n'
+        + '---\n\n';
+      planBlocks = [];
+      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: planPrefix + capturedText });
+      for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
+      state.pendingPlanApproval = {
+        originalText: capturedText,
+        originalImages: capturedImages,
+        historyLengthBefore: state.history.length,
+      };
+    }
+
+    await runTurnWithStallRetry(apiKey, planToggles, planBlocks);
+    renderPlanApprovalBar();
+    return;
+  }
+
   await runTurnWithStallRetry(apiKey, settings.toggles, blocks);
 }
 
