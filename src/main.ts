@@ -5052,8 +5052,10 @@ async function main() {
     removeCompanionFileFromRegistry(path);
     if (_companionActiveTab === path) switchToMainTab();
     else renderCompanionFilesBar();
-    // Re-run main code without this companion.
+    // Re-run main code without this companion, then persist the removal so
+    // it survives a page reload (registry-only removal is lost on refresh).
     runCode(getValue(), { surfaceErrors: false });
+    void saveCurrentVersion();
   }
 
   // Re-render companion tab bar when language or session state changes.
@@ -5066,6 +5068,12 @@ async function main() {
       if (getCompanionFiles()[_companionActiveTab] === undefined) {
         switchToMainTab();
       } else {
+        // Refresh editor content in case version navigation changed what's in
+        // this companion file (the registry was updated but the CodeMirror view
+        // still shows the old content).
+        if (_companionEditor !== null) {
+          setCompanionEditorContent(_companionEditor, getCompanionFiles()[_companionActiveTab] ?? '');
+        }
         renderCompanionFilesBar();
       }
     } else {
