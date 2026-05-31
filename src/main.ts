@@ -108,9 +108,10 @@ import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
-import { applyFuzzy, applySmooth, applyVoxelize, defaultFuzzyOptions, defaultSmoothOptions, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applySmooth, applyVoxelize, applyScale, defaultFuzzyOptions, defaultSmoothOptions, type ModifierResult } from './surface/modifiers';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
+import { initResizeUI } from './ui/resizeModal';
 import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
 import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type ReliefCommonOptions, type SeedRegion, type PreviewMode, type GenerateReliefResult } from './relief/types';
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
@@ -5848,6 +5849,25 @@ async function main() {
         return await commitSurfaceModifier(buildSurfaceModifier('voxelize', opts, preserve), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
+    /** Non-destructive viewport preview of a scale operation (no version saved). */
+    previewScale(sx: number, sy: number, sz: number): { ok: true } | { error: string } {
+      try {
+        if (!currentMeshData) return { error: 'No model loaded' };
+        const result = applyScale(meshForModifier(false), sx, sy, sz);
+        previewSurfaceModifier(result, false);
+        return { ok: true };
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+    /** Discard a live scale preview and restore the current model's mesh. */
+    clearScalePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
+    /** Scale the current model and save as a new version.
+     *  sx/sy/sz are multiplicative factors (1 = no change, 2 = double, 0.5 = half). */
+    async scaleModel(sx: number, sy: number, sz: number) {
+      try {
+        if (!currentMeshData) return { error: 'No model loaded' };
+        return await commitSurfaceModifier(applyScale(meshForModifier(false), sx, sy, sz), false);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
     /** Run code string and update all views. Returns geometry data object. */
     async run(code?: string): Promise<Record<string, unknown>> {
       assertString(code, 'run(code)', { optional: true, allowEmpty: false });
@@ -10265,6 +10285,8 @@ async function main() {
 
   // Surface modifiers UI (viewport ✦ Surface button + command-palette entries).
   initSurfaceUI(partwrightAPI as unknown as Parameters<typeof initSurfaceUI>[0]);
+  // Resize/scale UI (viewport ⇲ Resize button + command-palette entry).
+  initResizeUI(partwrightAPI as unknown as Parameters<typeof initResizeUI>[0]);
 
   // Log API availability for AI agents
   console.info('Partwright: AI agents should use window.partwright -- start with partwright.help(). window.mainifold remains as a legacy alias. See /llms.txt');
