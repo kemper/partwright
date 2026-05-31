@@ -138,7 +138,7 @@ import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
-import { initImagePaintUI } from './color/imagePaintUI';
+import { initImagePaintUI, setSubdivideForStamp } from './color/imagePaintUI';
 import { entriesToPerTriColors, remapPerTriColors } from './color/imagePaint';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, type SimplifyHandlers } from './ui/simplifyUI';
@@ -5195,6 +5195,76 @@ async function main() {
   initAnnotateUI(clipControls);
   initPaintUI(clipControls);
   initImagePaintUI(clipControls);
+  setSubdivideForStamp((hitPoint, hitNormal, stampSize, rotationDeg, maxEdge) => {
+    if (!currentMeshData) return null;
+    const half = stampSize / 2;
+    const [hpX, hpY, hpZ] = hitPoint;
+    const [nx, ny, nz] = hitNormal;
+    // Build the same rotated tangent frame as the stamp projection.
+    const useYRef = Math.abs(nz) > 0.5;
+    const refY = useYRef ? 1 : 0, refZ = useYRef ? 0 : 1;
+    let tX = refY * nz - refZ * ny, tY = refZ * nx - 0, tZ = -refY * nx;
+    const tLen = Math.sqrt(tX * tX + tY * tY + tZ * tZ);
+    if (tLen > 0) { tX /= tLen; tY /= tLen; tZ /= tLen; }
+    const bX = ny * tZ - nz * tY, bY = nz * tX - nx * tZ, bZ = nx * tY - ny * tX;
+    const θ = rotationDeg * Math.PI / 180;
+    const cosθ = Math.cos(θ), sinθ = Math.sin(θ);
+    const trX = tX * cosθ - bX * sinθ, trY = tY * cosθ - bY * sinθ, trZ = tZ * cosθ - bZ * sinθ;
+    const brX = tX * sinθ + bX * cosθ, brY = tY * sinθ + bY * cosθ, brZ = tZ * sinθ + bZ * cosθ;
+
+    const stampRegion: RefineRegion = {
+      aabb: {
+        min: [hpX - half, hpY - half, hpZ - half],
+        max: [hpX + half, hpY + half, hpZ + half],
+      },
+      maxEdge,
+      classify: (a, b, c) => {
+        const projectU = (v: number[]) => ((v[0] - hpX) * trX + (v[1] - hpY) * trY + (v[2] - hpZ) * trZ) / half;
+        const projectV = (v: number[]) => ((v[0] - hpX) * brX + (v[1] - hpY) * brY + (v[2] - hpZ) * brZ) / half;
+        const uA = projectU(a), vA = projectV(a);
+        const uB = projectU(b), vB = projectV(b);
+        const uC = projectU(c), vC = projectV(c);
+        const inside = (u: number, v: number) => u >= -1 && u <= 1 && v >= -1 && v <= 1;
+        const inA = inside(uA, vA), inB = inside(uB, vB), inC = inside(uC, vC);
+        if (inA && inB && inC) return 'inside';
+        const minU = Math.min(uA, uB, uC), maxU = Math.max(uA, uB, uC);
+        const minV = Math.min(vA, vB, vC), maxV = Math.max(vA, vB, vC);
+        if (maxU < -1 || minU > 1 || maxV < -1 || minV > 1) return 'outside';
+        return 'straddle';
+      },
+      field: (px, py, pz) => {
+        const u = ((px - hpX) * trX + (py - hpY) * trY + (pz - hpZ) * trZ) / half;
+        const v = ((px - hpX) * brX + (py - hpY) * brY + (pz - hpZ) * brZ) / half;
+        return Math.max(Math.abs(u), Math.abs(v)) - 1;
+      },
+    };
+
+    const { mesh, childToParent } = buildRefinedMesh(currentMeshData, [stampRegion]);
+    const parentToChildren = childrenByParent(childToParent);
+    currentMeshData = mesh;
+    updatePaintMesh(mesh);
+
+    const splitParents = new Set<number>();
+    for (const [parent, children] of parentToChildren) if (children.length > 1) splitParents.add(parent);
+    let adjacency: AdjacencyGraph | null = null;
+    const overlapsSplit = (region: { triangles: Set<number> }): boolean => {
+      if (region.triangles.size === 0) return true;
+      for (const t of region.triangles) if (splitParents.has(t)) return true;
+      return false;
+    };
+    for (const region of getRegions()) {
+      const d = region.descriptor;
+      if (d.kind === 'triangles' || d.kind === 'byLabel' || !overlapsSplit(region)) {
+        setRegionTriangles(region.id, remapTriangleIds(region.triangles, parentToChildren), remapPerTriColors(region.perTriColors, parentToChildren));
+      } else {
+        if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed')) adjacency = buildAdjacency(mesh);
+        const { triangles, perTriColors } = resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren);
+        setRegionTriangles(region.id, triangles, perTriColors);
+      }
+    }
+    paintedColorRefresh();
+    return { mesh, parentToChildren };
+  });
   initVoxelPaintUI(clipControls, {
     activate: async () => {
       const code = getValue();

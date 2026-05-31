@@ -68,10 +68,13 @@ export function stampImageOntoMesh(
 
   // Build orthogonal tangent frame from hitNormal [nx, ny, nz]
   const [nx, ny, nz] = hitNormal;
-  // ref = [1,0,0] if |nx| < 0.9, else [0,1,0]
-  const refX = Math.abs(nx) < 0.9 ? 1 : 0;
-  const refY = Math.abs(nx) < 0.9 ? 0 : 1;
-  const refZ = 0;
+  // Use world-Y as reference for mostly-vertical normals so top faces get
+  // T=[1,0,0], B=[0,1,0] and the image projects without rotation.
+  // Fall back to world-Z for mostly-horizontal normals.
+  const useYRef = Math.abs(nz) > 0.5;
+  const refX = 0;
+  const refY = useYRef ? 1 : 0;
+  const refZ = useYRef ? 0 : 1;
 
   // T = normalize(ref × N)
   let tX = refY * nz - refZ * ny;
@@ -266,6 +269,32 @@ export function imageDataToDataUrl(imageData: ImageData, quality = 0.75): string
 /** Return default no-op preprocess options. */
 export function defaultPreprocess(): PreprocessOptions {
   return { brightness: 0, contrast: 0, saturation: 0, levelsLow: 0, levelsHigh: 255 };
+}
+
+/** Build the rotated tangent frame for a stamp, returning the two in-plane axes
+ *  (tr, br) and the surface normal. Used by the hover-preview overlay. */
+export function buildTangentFrame(
+  hitNormal: [number, number, number],
+  rotationDeg: number,
+): { tr: [number, number, number]; br: [number, number, number]; n: [number, number, number] } {
+  const [nx, ny, nz] = hitNormal;
+  const useYRef = Math.abs(nz) > 0.5;
+  const refX = 0, refY = useYRef ? 1 : 0, refZ = useYRef ? 0 : 1;
+  let tX = refY * nz - refZ * ny;
+  let tY = refZ * nx - refX * nz;
+  let tZ = refX * ny - refY * nx;
+  const tLen = Math.sqrt(tX * tX + tY * tY + tZ * tZ);
+  if (tLen > 0) { tX /= tLen; tY /= tLen; tZ /= tLen; }
+  const bX = ny * tZ - nz * tY;
+  const bY = nz * tX - nx * tZ;
+  const bZ = nx * tY - ny * tX;
+  const θ = (rotationDeg * Math.PI) / 180;
+  const cosθ = Math.cos(θ), sinθ = Math.sin(θ);
+  return {
+    tr: [tX * cosθ - bX * sinθ, tY * cosθ - bY * sinθ, tZ * cosθ - bZ * sinθ],
+    br: [tX * sinθ + bX * cosθ, tY * sinθ + bY * cosθ, tZ * sinθ + bZ * cosθ],
+    n: [nx, ny, nz],
+  };
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────

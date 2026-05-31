@@ -2,13 +2,16 @@
 // image onto the model surface by clicking. Follows the paintUI pattern:
 // the panel is right-docked by default, draggable via its header.
 
+import * as THREE from 'three';
 import {
   stampImageOntoMesh,
   loadImageDataFromUrl,
   resizeImageData,
   defaultPreprocess,
+  buildTangentFrame,
   type StampImageOptions,
 } from './imagePaint';
+import type { MeshData } from '../geometry/types';
 import {
   addRegion,
   getRegions,
@@ -32,7 +35,7 @@ import { forceDeactivate as closeAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as closeAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as closeAnnotateSelect } from '../annotations/selectMode';
 import { pickFace } from './facePicker';
-import { getRenderer, addPointerSuppressor, isPointerOverModel } from '../renderer/viewport';
+import { getRenderer, getScene, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import type { PreprocessOptions } from '../relief/types';
 
 // Thumbnail of the picked source image, 256px max (kept for display only)
@@ -67,11 +70,30 @@ let opts: {
 // Stamp settings
 let stampSize = 20;        // world units
 let stampRotation = 0;     // degrees
+let stampSmooth = false;   // subdivide mesh boundary for crisp edges
+let stampMaxEdge = 10;     // target edge length for smooth mode
 
 // Stamp mode (active when panel is open and image is loaded)
 let stampModeActive = false;
 let removeSuppressor: (() => void) | null = null;
 let stampCounter = 0;
+
+// Hover preview overlay (a square outline in the scene)
+let previewLines: THREE.LineSegments | null = null;
+
+// Callback registered from main.ts to perform mesh subdivision before stamping
+type SubdivideCallback = (
+  hitPoint: [number, number, number],
+  hitNormal: [number, number, number],
+  stampSize: number,
+  rotationDeg: number,
+  maxEdge: number,
+) => { mesh: MeshData; parentToChildren: Map<number, number[]> } | null;
+let subdivideForStamp: SubdivideCallback | null = null;
+
+export function setSubdivideForStamp(cb: SubdivideCallback): void {
+  subdivideForStamp = cb;
+}
 
 // Hint element for stamp instructions
 let stampHintEl: HTMLElement | null = null;
@@ -180,8 +202,10 @@ function activateStampMode(): void {
   const canvas = getRenderer().domElement;
   const container = canvas.parentElement ?? canvas;
   container.addEventListener('pointerdown', onStampPointerDown, { capture: true });
+  container.addEventListener('pointermove', onStampPointerMove);
   removeSuppressor = addPointerSuppressor((event) => event.button === 0 && isPointerOverModel(event));
   (container as HTMLElement).style.cursor = 'crosshair';
+  ensurePreviewLines();
 }
 
 function deactivateStampMode(): void {
@@ -190,8 +214,10 @@ function deactivateStampMode(): void {
   const canvas = getRenderer().domElement;
   const container = canvas.parentElement ?? canvas;
   container.removeEventListener('pointerdown', onStampPointerDown, { capture: true });
+  container.removeEventListener('pointermove', onStampPointerMove);
   if (removeSuppressor) { removeSuppressor(); removeSuppressor = null; }
   (container as HTMLElement).style.cursor = '';
+  removePreviewLines();
 }
 
 function onStampPointerDown(event: PointerEvent): void {
@@ -201,10 +227,89 @@ function onStampPointerDown(event: PointerEvent): void {
   executeStamp(hit.point, hit.normal);
 }
 
+function onStampPointerMove(event: PointerEvent): void {
+  const hit = pickFace(event as unknown as MouseEvent);
+  if (!hit) {
+    hidePreviewLines();
+    return;
+  }
+  updatePreviewLines(hit.point, hit.normal);
+}
+
+// ─── Hover preview (square outline) ──────────────────────────────────────────
+
+function ensurePreviewLines(): void {
+  if (previewLines) return;
+  // A unit square in the XY plane ([-1,1]²), drawn as 4 line segments.
+  const positions = new Float32Array([
+    -1, -1, 0,  1, -1, 0,
+     1, -1, 0,  1,  1, 0,
+     1,  1, 0, -1,  1, 0,
+    -1,  1, 0, -1, -1, 0,
+  ]);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: 0xffffff,
+    opacity: 0.75,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+  });
+  previewLines = new THREE.LineSegments(geo, mat);
+  previewLines.matrixAutoUpdate = false;
+  previewLines.visible = false;
+  previewLines.renderOrder = 999;
+  getScene().add(previewLines);
+}
+
+function removePreviewLines(): void {
+  if (!previewLines) return;
+  getScene().remove(previewLines);
+  previewLines.geometry.dispose();
+  (previewLines.material as THREE.Material).dispose();
+  previewLines = null;
+}
+
+function hidePreviewLines(): void {
+  if (previewLines && previewLines.visible) {
+    previewLines.visible = false;
+    requestRender();
+  }
+}
+
+function updatePreviewLines(
+  hitPoint: [number, number, number],
+  hitNormal: [number, number, number],
+): void {
+  if (!previewLines) return;
+  const { tr, br, n } = buildTangentFrame(hitNormal, stampRotation);
+  const half = stampSize / 2;
+  const [hpX, hpY, hpZ] = hitPoint;
+  // Column-major 4×4 matrix: x-axis = tr*half, y-axis = br*half, z-axis = n, pos = hitPoint
+  previewLines.matrix.set(
+    tr[0] * half, br[0] * half, n[0], hpX,
+    tr[1] * half, br[1] * half, n[1], hpY,
+    tr[2] * half, br[2] * half, n[2], hpZ,
+    0, 0, 0, 1,
+  );
+  previewLines.matrixWorldNeedsUpdate = true;
+  previewLines.visible = true;
+  requestRender();
+}
+
 function executeStamp(hitPoint: [number, number, number], hitNormal: [number, number, number]): void {
   if (!pickedImageData) return;
-  const mesh = getPaintMesh();
+
+  let mesh = getPaintMesh();
   if (!mesh) return;
+
+  // When smooth mode is on, refine the mesh at the stamp boundary first so
+  // the painted edge is crisp rather than following coarse triangle edges.
+  if (stampSmooth && stampMaxEdge > 0 && subdivideForStamp) {
+    const refined = subdivideForStamp(hitPoint, hitNormal, stampSize, stampRotation, stampMaxEdge);
+    if (refined) mesh = refined.mesh;
+  }
 
   const stampOpts: StampImageOptions = {
     hitPoint,
@@ -226,7 +331,15 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
     `Stamp ${stampCounter}`,
     result.avgColor,
     'imagePaint',
-    { kind: 'imagePaint', entries: result.entries, avgColor: result.avgColor },
+    {
+      kind: 'imagePaint',
+      entries: result.entries,
+      avgColor: result.avgColor,
+      ...(stampSmooth ? {
+        smooth: true, maxEdge: stampMaxEdge,
+        hitPoint, hitNormal, stampSize, rotationDeg: stampRotation,
+      } : {}),
+    },
     triangles,
     true,
     result.perTriColors,
@@ -564,7 +677,7 @@ function buildStampSettingsSection(): HTMLElement {
 
   addSlider(grid, 'Size (units)', 1, 200, 1, 20,
     () => stampSize,
-    v => { stampSize = v; },
+    v => { stampSize = v; updatePreviewSize(); },
     true);
 
   addSlider(grid, 'Rotation (°)', 0, 359, 1, 0,
@@ -572,8 +685,50 @@ function buildStampSettingsSection(): HTMLElement {
     v => { stampRotation = v; },
     true);
 
+  // Smooth mode — subdivides the mesh boundary for crisp stamp edges
+  const smoothRow = document.createElement('div');
+  smoothRow.className = 'flex items-center gap-2 mt-0.5';
+
+  const smoothToggle = document.createElement('button');
+  const maxEdgeRow = document.createElement('div');
+  maxEdgeRow.className = 'flex flex-col gap-1.5';
+
+  const syncSmoothUI = (on: boolean): void => {
+    smoothToggle.className = on
+      ? 'px-2 py-1 rounded text-[10px] bg-blue-600/40 text-blue-200 border border-blue-500/50 transition-colors'
+      : 'px-2 py-1 rounded text-[10px] bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600/60 border border-zinc-600/40 transition-colors';
+    smoothToggle.textContent = on ? '◉ Smooth edges: On' : '○ Smooth edges: Off';
+    maxEdgeRow.classList.toggle('hidden', !on);
+  };
+
+  smoothToggle.title = 'Subdivide the mesh at the stamp boundary so the edge is smooth rather than following coarse triangles';
+  smoothToggle.addEventListener('click', () => {
+    stampSmooth = !stampSmooth;
+    syncSmoothUI(stampSmooth);
+  });
+  smoothRow.appendChild(smoothToggle);
+  grid.appendChild(smoothRow);
+
+  addSlider(maxEdgeRow, 'Detail', 1, 200, 1, 10,
+    () => stampMaxEdge,
+    v => { stampMaxEdge = v; },
+    true);
+
+  const smoothHelp = document.createElement('div');
+  smoothHelp.className = 'text-[10px] text-zinc-500';
+  smoothHelp.textContent = 'Detail · lower → finer triangles, crisper edge';
+  maxEdgeRow.appendChild(smoothHelp);
+  grid.appendChild(maxEdgeRow);
+
+  syncSmoothUI(false);
+
   section.appendChild(grid);
   return section;
+}
+
+function updatePreviewSize(): void {
+  // If a preview is visible, re-render so the size change is immediate
+  if (previewLines?.visible) requestRender();
 }
 
 // ─── Preview rendering ────────────────────────────────────────────────────────
