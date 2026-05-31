@@ -3588,12 +3588,17 @@ async function main() {
   function resetEditorToStarter(comment: string) {
     dropPaintState();
     const lang = getActiveLanguage();
-    const stub = lang === 'scad' ? DRAFT_STUB_SCAD
-      : lang === 'replicad' ? DRAFT_STUB_REPLICAD
-      : lang === 'voxel' ? DRAFT_STUB_VOXEL
-      : DRAFT_STUB_JS;
-    // Replace the stub's own leading language comment with the contextual label.
-    const freshCode = `// ${comment}\n` + stub.replace(/^\/\/[^\n]*\n/, '');
+    let body: string;
+    if (lang === 'scad') {
+      body = 'cube([10, 10, 10], center=true);';
+    } else if (lang === 'replicad') {
+      body = 'const { BREP } = api;\nconst body = BREP.box([30, 30, 10]).fillet(3, { inDirection: [0, 0, 1] });\nconst bore = BREP.cylinder(4, 12).translate([0, 0, -1]);\nreturn body.cut(bore);';
+    } else if (lang === 'voxel') {
+      body = "const { voxels } = api;\nconst v = voxels();\nv.fillBox([-5, -5, 0], [4, 4, 0], '#6b8cff');\nv.fillBox([-1, -1, 1], [1, 1, 6], '#ff8c42');\nv.set(0, 0, 7, '#ff3b30');\nreturn v;";
+    } else {
+      body = 'const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
+    }
+    const freshCode = `// ${comment}\n${body}`;
     setValue(freshCode);
     runCode(freshCode);
   }
