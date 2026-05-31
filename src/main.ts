@@ -3588,7 +3588,18 @@ async function main() {
   // so both clear the previous session's code instead of leaving it behind.
   function resetEditorToStarter(comment: string) {
     dropPaintState();
-    const freshCode = `// ${comment}\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);`;
+    const lang = getActiveLanguage();
+    let body: string;
+    if (lang === 'scad') {
+      body = 'cube([10, 10, 10], center=true);';
+    } else if (lang === 'replicad') {
+      body = 'const { BREP } = api;\nconst body = BREP.box([30, 30, 10]).fillet(3, { inDirection: [0, 0, 1] });\nconst bore = BREP.cylinder(4, 12).translate([0, 0, -1]);\nreturn body.cut(bore);';
+    } else if (lang === 'voxel') {
+      body = "const { voxels } = api;\nconst v = voxels();\nv.fillBox([-5, -5, 0], [4, 4, 0], '#6b8cff');\nv.fillBox([-1, -1, 1], [1, 1, 6], '#ff8c42');\nv.set(0, 0, 7, '#ff3b30');\nreturn v;";
+    } else {
+      body = 'const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
+    }
+    const freshCode = `// ${comment}\n${body}`;
     setValue(freshCode);
     runCode(freshCode);
   }
@@ -3605,16 +3616,13 @@ async function main() {
   }
 
   // Load a part's active version into the editor, or reset to a blank part when
-  // the part has no saved versions yet.
-  //
-  // A saved version carries its own language and `loadVersionIntoEditor` swaps
-  // the engine to match. A version-less part falls back to the manifold-js
-  // starter, so the engine MUST be on manifold-js before we seed + run it —
-  // otherwise the starter's `Manifold.cube(...)` runs under whatever engine the
-  // previously-active part left behind (e.g. voxel, where `api.Manifold` is
-  // undefined) and throws "Cannot read properties of undefined (reading
-  // 'cube')". This is the mixed-language case a JSON merge creates: a voxel
-  // Part 2 alongside the default unsaved manifold-js Part 1.
+  // the part has no saved versions yet. A saved version carries its own language
+  // and `loadVersionIntoEditor` swaps the engine to match. A version-less part
+  // falls back to the manifold-js starter: the engine MUST be on manifold-js
+  // before we seed + run it — otherwise the starter's `Manifold.cube(...)` runs
+  // under whatever engine the previously-active part left behind (e.g. voxel,
+  // where `api.Manifold` is undefined). This is the mixed-language case a JSON
+  // merge creates: a voxel Part 2 alongside an unsaved manifold-js Part 1.
   async function loadPartIntoEditor(version: Version | null) {
     if (version) {
       await loadVersionIntoEditor(version);
