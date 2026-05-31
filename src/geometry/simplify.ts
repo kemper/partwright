@@ -12,6 +12,7 @@ import type { MeshData } from './types';
 export interface SimplifiableManifold {
   numTri(): number;
   simplify(tolerance?: number): SimplifiableManifold;
+  refineToLength?(length: number): SimplifiableManifold;
   getMesh(): {
     vertProperties: Float32Array;
     triVerts: Uint32Array;
@@ -157,6 +158,89 @@ export async function simplifyToTriangleBudget(
     mesh: toMeshData(final),
     triangleCount: final.numTri(),
     tolerance,
+  };
+  release(final);
+  if (onProgress) await onProgress(1);
+  return result;
+}
+
+export type EnhanceResult = SimplifyResult;
+
+/** Find the coarsest refineToLength pass that brings a manifold's triangle
+ *  count up to at least `targetTriangles`, by binary-searching the edge-length
+ *  threshold. Returns null when the manifold already meets the target, when
+ *  refineToLength is not available, or when the caller requests cancellation.
+ *
+ *  `maxEdgeLength` bounds the coarse end of the search — pass roughly the
+ *  bounding-box diagonal; beyond that refineToLength is a no-op. */
+export async function enhanceToTriangleBudget(
+  manifold: SimplifiableManifold,
+  targetTriangles: number,
+  maxEdgeLength: number,
+  onProgress?: SimplifyProgress,
+  shouldCancel?: () => boolean,
+): Promise<EnhanceResult | null> {
+  if (typeof manifold.refineToLength !== 'function') return null;
+  const baseTri = manifold.numTri();
+  const target = Math.floor(targetTriangles);
+  if (!Number.isFinite(target) || target <= baseTri) return null;
+  if (!(maxEdgeLength > 0)) return null;
+
+  // Binary-search: find the LARGEST edge-length (coarsest refinement) that
+  // produces at most `target` triangles. Smaller lengths → more triangles.
+  let lo = 0;
+  let hi = maxEdgeLength;
+
+  // Best length found so far (largest l giving ≤ target and > baseTri).
+  let bestLen = -1;
+  // Fallback: smallest l (finest) giving ≤ target (even if ≤ baseTri, unlikely).
+  let finestValidLen = -1;
+  let finestValidCount = Infinity;
+
+  const totalSteps = SEARCH_ITERATIONS + 1;
+
+  for (let i = 0; i < SEARCH_ITERATIONS; i++) {
+    const mid = (lo + hi) / 2;
+    let n: number | null = null;
+    try {
+      const candidate = manifold.refineToLength!(mid);
+      n = candidate.numTri();
+      release(candidate);
+    } catch {
+      hi = mid;
+    }
+
+    if (n !== null) {
+      if (n <= target && n < finestValidCount) {
+        finestValidCount = n;
+        finestValidLen = mid;
+      }
+
+      if (n > target) {
+        lo = mid; // too fine — coarsen by increasing l
+      } else if (n > baseTri) {
+        bestLen = mid; // enhancement within budget — try coarser (larger l)
+        lo = mid;
+      } else {
+        hi = mid; // not enough refinement — need smaller l
+      }
+    }
+
+    if (onProgress) await onProgress((i + 1) / totalSteps);
+    if (shouldCancel && shouldCancel()) return null;
+  }
+
+  const length = bestLen >= 0 ? bestLen : finestValidLen;
+  if (length < 0) {
+    if (onProgress) await onProgress(1);
+    return null;
+  }
+
+  const final = manifold.refineToLength!(length);
+  const result: EnhanceResult = {
+    mesh: toMeshData(final),
+    triangleCount: final.numTri(),
+    tolerance: length,
   };
   release(final);
   if (onProgress) await onProgress(1);
