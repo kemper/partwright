@@ -1138,6 +1138,11 @@ const AUTORESUME_GATED = new Set(['finish']);
 const NOTES_GATED = new Set(['addSessionNote']);
 
 export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
+  // Plan-mode turns are tool-free — the model's only job is to write a plan.
+  // An empty list prevents any tool call, including always-available read
+  // tools that could otherwise be used to set code or query session state.
+  if (toggles.planFirst) return [];
+
   return ALL_TOOLS.filter(t => {
     if (ALWAYS_AVAILABLE.has(t.name)) return true;
     if (RUN_GATED.has(t.name)) return toggles.scope.runCode;
