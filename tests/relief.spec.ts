@@ -81,13 +81,34 @@ test.describe('Relief Studio', () => {
     await page.goto('/editor');
     await waitForEngine(page);
 
-    // The Relief panel toggle lives in the viewport overlay alongside Paint /
-    // Measure / Simplify — was previously a top-toolbar button, which got
-    // clipped behind Show Code on narrower viewports.
-    await expect(page.locator('#relief-viewport-toggle')).toBeVisible();
+    // The Relief toolbar button is hidden until the active session is image-derived —
+    // the import menu is the entry point for creating a new relief from scratch.
+    await expect(page.locator('#relief-viewport-toggle')).toBeHidden();
 
     await page.locator('#btn-import').click();
     await expect(page.getByText('Image → keychain / tile / relief…')).toBeVisible();
+    await page.keyboard.press('Escape');
+
+    // Once a relief session is created the toolbar button appears so the user
+    // can re-open the Edit Colors panel.
+    await page.evaluate(async () => {
+      const c = document.createElement('canvas');
+      c.width = 32; c.height = 32;
+      const ctx = c.getContext('2d')!;
+      const img = ctx.createImageData(32, 32);
+      for (let y = 0; y < 32; y++) {
+        for (let x = 0; x < 32; x++) {
+          const v = Math.floor((x / 31) * 255);
+          const o = (y * 32 + x) * 4;
+          img.data[o] = v; img.data[o + 1] = v; img.data[o + 2] = v; img.data[o + 3] = 255;
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+      await (window as unknown as {
+        partwright: { importImageAsRelief: (o: unknown) => Promise<unknown> }
+      }).partwright.importImageAsRelief({ src: c.toDataURL(), mode: 'luminance', options: { resolution: 32 } });
+    });
+    await expect(page.locator('#relief-viewport-toggle')).toBeVisible({ timeout: 10_000 });
   });
 
   // Regression: the wizard once threw mid-build (a const used in its temporal
