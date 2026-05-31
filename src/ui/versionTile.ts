@@ -34,10 +34,24 @@ export interface VersionTileOptions {
   /** Owning session — only consulted to resolve a version's language fallback
    *  when {@link Version.language} is absent (pre-schema-1.8 versions). */
   session?: Session | null;
+  /** Called when the user clicks the "go to parent" link. Only shown when the
+   *  version has a parentVersionId and this callback is provided. */
+  onGoToParent?: (parentVersionId: string) => void;
+  /** Label of the parent version (e.g. "v2") — shown in the provenance badge
+   *  when the version has a parentVersionId. */
+  parentLabel?: string | null;
 }
 
+const OPERATION_LABELS: Record<string, string> = {
+  simplify: 'simplified',
+  enhance: 'enhanced',
+  paint: 'painted',
+  import: 'imported',
+  manual: 'manual',
+};
+
 export function createVersionTile(version: Version, options: VersionTileOptions = {}): HTMLElement {
-  const { onClick, controls, active, session } = options;
+  const { onClick, controls, active, session, onGoToParent, parentLabel } = options;
 
   const tile = document.createElement('div');
   tile.className =
@@ -187,6 +201,36 @@ export function createVersionTile(version: Version, options: VersionTileOptions 
     notesEl.textContent = version.notes;
     notesEl.title = version.notes;
     info.appendChild(notesEl);
+  }
+
+  // Provenance row — shown when the version was derived from another version
+  if (version.parentVersionId && version.operation) {
+    const provRow = document.createElement('div');
+    provRow.className = 'flex items-center gap-1 mt-1';
+
+    const opBadge = document.createElement('span');
+    opBadge.className = 'text-[9px] font-semibold px-1 py-0.5 rounded bg-violet-900/60 text-violet-300 border border-violet-500/30';
+    opBadge.textContent = OPERATION_LABELS[version.operation] ?? version.operation;
+    provRow.appendChild(opBadge);
+
+    if (onGoToParent) {
+      const fromLink = document.createElement('button');
+      fromLink.className = 'text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors underline underline-offset-2';
+      fromLink.textContent = parentLabel ? `from ${parentLabel}` : 'go to source';
+      fromLink.title = parentLabel ? `Jump to source version ${parentLabel}` : 'Jump to source version';
+      fromLink.addEventListener('click', (e) => {
+        e.stopPropagation();
+        onGoToParent(version.parentVersionId!);
+      });
+      provRow.appendChild(fromLink);
+    } else if (parentLabel) {
+      const fromSpan = document.createElement('span');
+      fromSpan.className = 'text-[10px] text-zinc-500';
+      fromSpan.textContent = `from ${parentLabel}`;
+      provRow.appendChild(fromSpan);
+    }
+
+    info.appendChild(provRow);
   }
 
   tile.appendChild(info);

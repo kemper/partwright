@@ -1,95 +1,17 @@
-// Editor lock — locks the code editor when the current version has color regions.
-// Provides lock overlay banner and unlock modal with preserve/destructive paths.
+// Editor lock stubs — the color-region lock has been removed. The editor is
+// always editable regardless of whether color regions exist; version history
+// is the rollback mechanism. syncLockState is kept as a no-op because it is
+// called from many sites; disableRun/enableRun are kept for other read-only
+// modes (shared-link preview, voxel-paint session).
 
-import { setReadOnlyReason } from '../editor/editorAccess';
-import { hasRegions, clearRegions, serialize as serializeRegions, type SerializedColorRegion } from './regions';
-
-let locked = false;
-let lockOverlay: HTMLElement | null = null;
-let editorContainer: HTMLElement | null = null;
-let runButton: HTMLElement | null = null;
-let autoRunButton: HTMLElement | null = null;
-
-// Callback to fork the current version (provided by main.ts)
-let onUnlockFork: ((colorRegions: SerializedColorRegion[]) => Promise<void>) | null = null;
-let onUnlockClear: (() => void) | null = null;
-
-export function setUnlockHandlers(
-  forkHandler: (colorRegions: SerializedColorRegion[]) => Promise<void>,
-  clearHandler: () => void,
-): void {
-  onUnlockFork = forkHandler;
-  onUnlockClear = clearHandler;
-}
-
-export function initEditorLock(container: HTMLElement): void {
-  editorContainer = container;
-  runButton = document.getElementById('btn-run');
-  autoRunButton = document.getElementById('btn-auto-run');
-}
-
-export function isLocked(): boolean {
-  return locked;
-}
-
-/** Sync lock state based on whether regions exist. Call after painting, loading, or clearing. */
+/** No-op — retained so call sites don't need to be removed one by one. */
 export function syncLockState(): void {
-  const shouldLock = hasRegions();
-  if (shouldLock === locked) return;
-
-  locked = shouldLock;
-  setReadOnlyReason('colorLock', locked);
-
-  if (locked) {
-    showLockOverlay();
-    disableRun();
-  } else {
-    hideLockOverlay();
-    enableRun();
-  }
+  // intentionally empty
 }
 
-function showLockOverlay(): void {
-  if (lockOverlay || !editorContainer) return;
-
-  lockOverlay = document.createElement('div');
-  lockOverlay.id = 'editor-lock-overlay';
-  lockOverlay.className = 'flex items-center justify-between px-3 py-1.5 bg-amber-900/60 border-b border-amber-500/40 text-xs text-amber-200 shrink-0';
-
-  const msg = document.createElement('span');
-  msg.innerHTML = '\uD83D\uDD12 This version has color regions applied.';
-
-  const unlockBtn = document.createElement('button');
-  unlockBtn.className = 'px-2 py-0.5 rounded text-xs bg-amber-500/20 hover:bg-amber-500/40 text-amber-100 border border-amber-500/40 transition-colors';
-  unlockBtn.textContent = 'Unlock to edit';
-  unlockBtn.addEventListener('click', showUnlockModal);
-
-  lockOverlay.appendChild(msg);
-  lockOverlay.appendChild(unlockBtn);
-
-  // Insert after the editor header (first child of editorContainer's parent)
-  const editorPane = editorContainer.parentElement;
-  if (editorPane) {
-    // Insert before the editor container
-    editorPane.insertBefore(lockOverlay, editorContainer);
-  }
-}
-
-function hideLockOverlay(): void {
-  if (lockOverlay) {
-    lockOverlay.remove();
-    lockOverlay = null;
-  }
-}
-
-/** Disable the manual Run + auto-run buttons. Exported so other read-only
- *  modes (e.g. shared-link preview in main.ts) reuse the same disable approach
- *  rather than re-grabbing `#btn-run`/`#btn-auto-run` in a third place. The
- *  ids are re-queried each call so a caller that runs before initEditorLock —
- *  or after the buttons are recreated — still works. */
 export function disableRun(): void {
-  const run = runButton ?? document.getElementById('btn-run');
-  const auto = autoRunButton ?? document.getElementById('btn-auto-run');
+  const run = document.getElementById('btn-run');
+  const auto = document.getElementById('btn-auto-run');
   if (run) {
     (run as HTMLButtonElement).disabled = true;
     run.classList.add('opacity-40', 'pointer-events-none');
@@ -100,10 +22,9 @@ export function disableRun(): void {
   }
 }
 
-/** Re-enable the Run + auto-run buttons disabled by {@link disableRun}. */
 export function enableRun(): void {
-  const run = runButton ?? document.getElementById('btn-run');
-  const auto = autoRunButton ?? document.getElementById('btn-auto-run');
+  const run = document.getElementById('btn-run');
+  const auto = document.getElementById('btn-auto-run');
   if (run) {
     (run as HTMLButtonElement).disabled = false;
     run.classList.remove('opacity-40', 'pointer-events-none');
@@ -112,145 +33,4 @@ export function enableRun(): void {
     (auto as HTMLButtonElement).disabled = false;
     auto.classList.remove('opacity-40', 'pointer-events-none');
   }
-}
-
-function showUnlockModal(): void {
-  // Backdrop
-  const backdrop = document.createElement('div');
-  backdrop.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm';
-
-  const modal = document.createElement('div');
-  modal.className = 'bg-zinc-800 border border-zinc-600 rounded-xl shadow-2xl p-6 max-w-md w-full mx-4';
-
-  // Title
-  const title = document.createElement('h2');
-  title.className = 'text-base font-semibold text-zinc-100 mb-3';
-  title.textContent = 'Editing will create a new uncolored version';
-
-  // Explanation
-  const explanation = document.createElement('p');
-  explanation.className = 'text-sm text-zinc-400 mb-4 leading-relaxed';
-  explanation.textContent = 'This version has color regions applied. To edit the code, Partwright will create a new version with the same code but no colors. The colored version stays in your gallery.';
-
-  // Radio options
-  const optionsContainer = document.createElement('div');
-  optionsContainer.className = 'space-y-3 mb-5';
-
-  // Option 1: Preserve (default)
-  const opt1 = createRadioOption(
-    'unlock-mode',
-    'preserve',
-    true,
-    'Preserve this colored version and create a new version for editing',
-    'The colored version stays in your gallery. A new uncolored copy opens in the editor.',
-    'text-emerald-400',
-  );
-
-  // Option 2: Destructive
-  const opt2 = createRadioOption(
-    'unlock-mode',
-    'destructive',
-    false,
-    'Remove color regions from this version instead',
-    '\u26A0\uFE0F Color regions will be permanently removed. This cannot be undone.',
-    'text-red-400',
-  );
-
-  optionsContainer.appendChild(opt1.wrapper);
-  optionsContainer.appendChild(opt2.wrapper);
-
-  // Single teardown for every dismissal path (Cancel, backdrop click, Escape,
-  // confirm) so the document keydown listener is always removed — closing via
-  // anything other than Escape used to leak one listener per open/close cycle.
-  const close = () => {
-    backdrop.remove();
-    document.removeEventListener('keydown', onKey);
-  };
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') close();
-  };
-
-  // Buttons
-  const btnRow = document.createElement('div');
-  btnRow.className = 'flex justify-end gap-2';
-
-  const cancelBtn = document.createElement('button');
-  cancelBtn.className = 'px-4 py-2 rounded text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700 transition-colors';
-  cancelBtn.textContent = 'Cancel';
-  cancelBtn.addEventListener('click', () => close());
-
-  const confirmBtn = document.createElement('button');
-  confirmBtn.className = 'px-4 py-2 rounded text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors';
-  confirmBtn.textContent = 'Unlock editor';
-  confirmBtn.addEventListener('click', async () => {
-    const preserveRadio = opt1.wrapper.querySelector('input') as HTMLInputElement;
-    const preserve = preserveRadio.checked;
-
-    close();
-
-    if (preserve && onUnlockFork) {
-      const colorData = serializeRegions();
-      clearRegions();
-      syncLockState();
-      await onUnlockFork(colorData);
-    } else if (!preserve && onUnlockClear) {
-      clearRegions();
-      syncLockState();
-      onUnlockClear();
-    }
-  });
-
-  btnRow.appendChild(cancelBtn);
-  btnRow.appendChild(confirmBtn);
-
-  modal.appendChild(title);
-  modal.appendChild(explanation);
-  modal.appendChild(optionsContainer);
-  modal.appendChild(btnRow);
-  backdrop.appendChild(modal);
-
-  // Close on backdrop click
-  backdrop.addEventListener('click', (e) => {
-    if (e.target === backdrop) close();
-  });
-
-  document.addEventListener('keydown', onKey);
-
-  document.body.appendChild(backdrop);
-}
-
-function createRadioOption(
-  name: string,
-  value: string,
-  checked: boolean,
-  label: string,
-  description: string,
-  labelColor: string,
-): { wrapper: HTMLElement } {
-  const wrapper = document.createElement('label');
-  wrapper.className = 'flex items-start gap-3 p-3 rounded-lg border border-zinc-600/50 hover:border-zinc-500 cursor-pointer transition-colors';
-
-  const radio = document.createElement('input');
-  radio.type = 'radio';
-  radio.name = name;
-  radio.value = value;
-  radio.checked = checked;
-  radio.className = 'mt-0.5 accent-blue-500';
-
-  const textDiv = document.createElement('div');
-  const labelEl = document.createElement('div');
-  labelEl.className = `text-sm font-medium ${labelColor}`;
-  labelEl.textContent = label;
-
-  const descEl = document.createElement('div');
-  descEl.className = 'text-xs text-zinc-500 mt-0.5';
-  descEl.textContent = description;
-
-  textDiv.appendChild(labelEl);
-  textDiv.appendChild(descEl);
-
-  wrapper.appendChild(radio);
-  wrapper.appendChild(textDiv);
-
-  return { wrapper };
 }
