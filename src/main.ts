@@ -31,7 +31,7 @@ import { initViewport, updateMesh, setOnMeshUpdate, setOnContextLost, setOnConte
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { generateId, getLatestVersion } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
-import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, getAutoFormat, setAutoFormat, editorContentDiffersFrom } from './editor/codeEditor';
+import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, openFindReplace, getAutoFormat, setAutoFormat, editorContentDiffersFrom } from './editor/codeEditor';
 import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
@@ -3644,7 +3644,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
+  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
@@ -3732,6 +3732,7 @@ async function main() {
     autoFormatToggle.className = on ? AUTO_FORMAT_ON_CLASS : AUTO_FORMAT_OFF_CLASS;
   }
   syncAutoFormatToggleUI();
+  findReplaceBtn.addEventListener('click', () => openFindReplace());
   formatBtn.addEventListener('click', () => formatCode());
   autoFormatToggle.addEventListener('click', () => {
     setAutoFormat(!getAutoFormat());
