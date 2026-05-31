@@ -142,16 +142,32 @@ export const openscadEngine: Engine = {
  *  drive via `api.params`. The user's tweaks arrive as `paramOverrides` and are
  *  applied through OpenSCAD's native `-D name=value` flag — no source
  *  rewriting. The parsed schema rides on every result (success and error) so
- *  the panel stays live, matching the other engines. */
-export async function runScadAsync(source: string, paramOverrides?: Record<string, unknown>): Promise<MeshResult> {
+ *  the panel stays live, matching the other engines.
+ *
+ *  onPreview: optional callback invoked after a fast low-resolution preview
+ *  pass (fn=16) completes. Only fires when the active quality setting exceeds
+ *  the preview threshold; the caller can update the viewport immediately while
+ *  the full-quality pass continues in the background. */
+export async function runScadAsync(
+  source: string,
+  paramOverrides?: Record<string, unknown>,
+  onPreview?: (result: MeshResult) => void,
+): Promise<MeshResult> {
   const schema = parseScadParams(source);
   const paramsSchema = schema.length > 0 ? schema : undefined;
   const defines = buildScadDefines(source, paramOverrides);
-  const result = await runScadInner(source, defines);
+  const result = await runScadInner(source, defines, onPreview);
   return paramsSchema ? { ...result, paramsSchema } : result;
 }
 
-async function runScadInner(source: string, defines: string[]): Promise<MeshResult> {
+/** $fn value used for the fast preview pass — matches the "low" quality preset. */
+const SCAD_PREVIEW_FN = 16;
+
+async function runScadInner(
+  source: string,
+  defines: string[],
+  onPreview?: (result: MeshResult) => void,
+): Promise<MeshResult> {
   if (!createFn) {
     const error = 'OpenSCAD engine not initialized.';
     return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
@@ -171,6 +187,24 @@ async function runScadInner(source: string, defines: string[]): Promise<MeshResu
       const error = `Failed to load fonts for text(): ${e instanceof Error ? e.message : String(e)}`;
       return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
     }
+  }
+
+  // Phase 1: fast preview pass — run at reduced $fn so the user sees geometry
+  // quickly while the full-quality pass builds in the background. Only runs
+  // when the active quality setting meaningfully exceeds the preview threshold.
+  if (onPreview && getDefaultCircularSegments() > SCAD_PREVIEW_FN) {
+    try {
+      // Replace explicit $fn=N assignments so sources that hard-code a high
+      // value (e.g. $fn=90) actually compile at preview resolution.
+      const previewSrc = source.replace(/\$fn\s*=\s*[\d.]+/g, `$fn = ${SCAD_PREVIEW_FN}`);
+      const { instance: pi, stderr: ps } = await createInstance(preRunHook);
+      try {
+        if (sourceUsesBosl2(source)) await ensureBosl2InMemfs(pi);
+        pi.FS.writeFile('/in.scad', LABEL_MODULE_PREFIX + previewSrc);
+        const pr = await runFlatStlAsync(pi, previewSrc, ps, defines, SCAD_PREVIEW_FN);
+        if (pr.mesh) onPreview(pr);
+      } catch { /* preview failure is non-fatal; full render continues */ }
+    } catch { /* instance creation failure is non-fatal for preview */ }
   }
 
   let instance: any;
@@ -224,19 +258,24 @@ async function runScadInner(source: string, defines: string[]): Promise<MeshResu
 }
 
 /** Historical SCAD pipeline: compile to binary STL, weld, round-trip through
- *  Manifold.ofMesh. Used whenever the source has no `label()` calls. */
+ *  Manifold.ofMesh. Used whenever the source has no `label()` calls.
+ *  fnOverride, when set, replaces the quality-preset segment count — used by
+ *  the preview pass so Phase 1 doesn't rely on the global quality setting. */
 async function runFlatStlAsync(
   instance: any,
   source: string,
   stderr: string[],
   defines: string[],
+  fnOverride?: number,
 ): Promise<MeshResult> {
-  // Seed $fn from the user's quality preset. The script can still
-  // reassign $fn=… at the top level or pass $fn= per primitive to override.
+  // Seed $fn from the user's quality preset (or the explicit override for the
+  // preview pass). The script can still reassign $fn=… at the top level or
+  // pass $fn= per primitive to override.
   // Customizer overrides follow as additional `-D` flags.
+  const fn = fnOverride ?? getDefaultCircularSegments();
   const exitCode = instance.callMain([
     '--enable=manifold',
-    '-D', `$fn=${getDefaultCircularSegments()}`,
+    '-D', `$fn=${fn}`,
     ...defines,
     '--export-format=binstl',
     '-o', '/out.stl',

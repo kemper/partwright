@@ -127,7 +127,7 @@ import type { BuiltExport } from './export/gltf';
 function registerExportFromBuilt(built: BuiltExport, source: string): void {
   registerInboxExport(built.blob, built.filename, source, built.mimeType);
 }
-import type { MeshData, SourceDiagnostic } from './geometry/types';
+import type { MeshData, MeshResult, SourceDiagnostic } from './geometry/types';
 import { analyzeZProfile, type ZProfile } from './geometry/profileAnalysis';
 import { probeAtXY, probeRay, probePixel, measureDistance, type ProbeResult, type GeneralRayResult, type PixelHit, type PixelMiss } from './geometry/rayCast';
 import { checkContainment, type ContainmentWarning } from './geometry/containmentCheck';
@@ -10972,8 +10972,33 @@ async function main() {
     const myGen = ++_runGeneration;
     _running = true;
     const t0 = performance.now();
+
+    // Elapsed-time ticker: updates the status bar text with seconds elapsed
+    // once the run has been going for 2s, so fast runs don't flash a count.
+    const statusTimer = setInterval(() => {
+      if (!_running) { clearInterval(statusTimer); return; }
+      const secs = Math.round((performance.now() - t0) / 1000);
+      if (secs >= 2 && statusBar.textContent) {
+        const base = statusBar.textContent.replace(/\s*\(\d+s\)$/, '');
+        statusBar.textContent = `${base} (${secs}s)`;
+        statusBar.title = statusBar.textContent;
+      }
+    }, 1000);
+
+    // SCAD preview callback: receives the fast Phase 1 mesh and updates the
+    // viewport immediately so the user sees geometry while Phase 2 renders.
+    const onScadPreview = getActiveLanguage() === 'scad'
+      ? (previewResult: MeshResult) => {
+          if (myGen !== _runGeneration || !previewResult.mesh) return;
+          currentMeshData = previewResult.mesh;
+          updateMesh(previewResult.mesh);
+          setStatus(statusBar, 'running', 'Rendering...');
+        }
+      : undefined;
+
     // Feed the Customizer's current overrides into the model's api.params(...).
-    const result = await executeCodeAsync(src, undefined, currentParamValues);
+    const result = await executeCodeAsync(src, undefined, currentParamValues, onScadPreview);
+    clearInterval(statusTimer);
 
     // A newer runCodeSync was dispatched while we were awaiting the Worker.
     // Discard this result to prevent a stale version from overwriting the

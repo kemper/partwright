@@ -88,7 +88,7 @@ let workerReadyResolve: (() => void) | null = null;
 let workerReady: Promise<void> = new Promise(r => { workerReadyResolve = r; });
 let callIdCounter = 0;
 
-const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void }>();
+const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void; onPreview?: (r: MeshResult) => void }>();
 const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => void; reject: (e: Error) => void }>();
 const pendingStepExports = new Map<string, { resolve: (blob: Blob | null) => void; reject: (e: Error) => void }>();
 const pendingStepBrepImports = new Map<string, { resolve: (filename: string) => void; reject: (e: Error) => void }>();
@@ -184,6 +184,15 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
   if (msg.type === 'ready') {
     workerReadyResolve?.();
     workerReadyResolve = null;
+    return;
+  }
+
+  if (msg.type === 'execute_preview') {
+    const callId = msg.callId as string;
+    const pending = pendingExecutions.get(callId);
+    if (!pending?.onPreview) return;
+    const mesh = msg.mesh as MeshResult['mesh'];
+    pending.onPreview({ mesh, manifold: null, error: null });
     return;
   }
 
@@ -379,7 +388,12 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
 /** Async execution via the geometry Worker. Returns mesh data with
  *  manifold=null; callers that need the live Manifold should reconstruct
  *  it with getModule().Manifold.ofMesh(result.mesh). */
-export async function executeCodeAsync(source: string, lang?: Language, paramOverrides?: Record<string, unknown>): Promise<MeshResult> {
+export async function executeCodeAsync(
+  source: string,
+  lang?: Language,
+  paramOverrides?: Record<string, unknown>,
+  onPreview?: (result: MeshResult) => void,
+): Promise<MeshResult> {
   const l = pickLang(lang);
 
   // Ensure the Worker is booted.
@@ -413,6 +427,7 @@ export async function executeCodeAsync(source: string, lang?: Language, paramOve
     pendingExecutions.set(callId, {
       resolve: (r) => { clearTimeout(timer); resolve(r); },
       reject:  (e) => { clearTimeout(timer); reject(e); },
+      onPreview,
     });
     engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null });
   });
