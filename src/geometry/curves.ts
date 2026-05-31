@@ -711,7 +711,11 @@ function makeTextHelpers(module: any) {
     if (contours.length === 0) {
       throw new Error(`api.textSection: no glyph outlines produced for "${str}" — the string may contain only whitespace or unsupported characters`);
     }
-    let cs = CrossSection.ofPolygons(contours);
+    // Use EvenOdd fill rule: font contours after Y-flip are CW (the default
+    // "Positive" fill rule only fills CCW regions, producing empty output).
+    // EvenOdd is also ideal for glyphs with holes (O, B, P): the inner
+    // contour is enclosed by 2 boundaries (even = not filled = hole). ✓
+    let cs = CrossSection.ofPolygons(contours, 'EvenOdd');
     if (opts.center) {
       // Compute bounding box from the CrossSection's polygon data.
       const polygons: Vec2[][] = cs.toPolygons();
