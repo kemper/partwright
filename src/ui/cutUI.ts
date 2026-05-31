@@ -50,7 +50,6 @@ export interface CutHandlers {
   apply(
     params: CutGizmoParams,
     preserveColors: boolean,
-    edgeMaxLength: number,
   ): Promise<CutApplyResult | null>;
   /** Bake the cut result as a new session version. */
   save(): Promise<CutSaveResult>;
@@ -70,7 +69,6 @@ let saveBtn: HTMLButtonElement | null = null;
 let applying = false;
 
 let preserveColors = true;
-let edgeMaxLength = 0; // 0 = off
 
 /** Initialize the Cut UI — adds the toolbar button and builds the floating panel. */
 export function initCutUI(controlsContainer: HTMLElement, h: CutHandlers): void {
@@ -267,30 +265,6 @@ function buildPanel(): HTMLElement {
   colorsLabel.appendChild(document.createTextNode('Preserve colors'));
   content.appendChild(colorsLabel);
 
-  // === Cut edge detail ===
-  appendSectionLabel(content, 'Cut Edge Detail');
-  const edgeHint = document.createElement('div');
-  edgeHint.className = 'text-[10px] text-zinc-500 mb-1 leading-snug';
-  edgeHint.textContent = 'Pre-subdivide triangles near the cut boundary for a sharper edge (0 = off).';
-  content.appendChild(edgeHint);
-  const edgeRow = document.createElement('div');
-  edgeRow.className = 'flex items-center gap-2';
-  const edgeSlider = document.createElement('input');
-  edgeSlider.type = 'range';
-  edgeSlider.min = '0'; edgeSlider.max = '100'; edgeSlider.step = '1';
-  edgeSlider.value = String(edgeMaxLength);
-  edgeSlider.className = 'flex-1 h-1 accent-blue-500';
-  const edgeValueLabel = document.createElement('span');
-  edgeValueLabel.className = 'text-[10px] text-zinc-400 w-8 text-right shrink-0';
-  edgeValueLabel.textContent = edgeMaxLength === 0 ? 'off' : String(edgeMaxLength);
-  edgeSlider.addEventListener('input', () => {
-    edgeMaxLength = Number(edgeSlider.value);
-    edgeValueLabel.textContent = edgeMaxLength === 0 ? 'off' : String(edgeMaxLength);
-  });
-  edgeRow.appendChild(edgeSlider);
-  edgeRow.appendChild(edgeValueLabel);
-  content.appendChild(edgeRow);
-
   // === Status line ===
   statusEl = document.createElement('div');
   statusEl.className = 'text-[10px] text-zinc-400 min-h-[1rem] leading-snug';
@@ -331,7 +305,7 @@ async function applyCut(): Promise<void> {
   setButtonsDisabled(true);
   if (statusEl) statusEl.textContent = 'Applying cut…';
   try {
-    const result = await handlers.apply(params, preserveColors, edgeMaxLength);
+    const result = await handlers.apply(params, preserveColors);
     if (result) {
       if (statusEl) statusEl.textContent = `Cut applied — ${result.triangleCount.toLocaleString()} triangles. Click Save to bake.`;
       if (saveBtn) {
@@ -350,7 +324,9 @@ async function applyCut(): Promise<void> {
 }
 
 async function doSave(): Promise<void> {
-  if (!handlers) return;
+  if (!handlers || applying) return;
+  applying = true;
+  setButtonsDisabled(true);
   if (statusEl) statusEl.textContent = 'Saving…';
   try {
     const res = await handlers.save();
@@ -361,6 +337,9 @@ async function doSave(): Promise<void> {
     }
   } catch (e) {
     if (statusEl) statusEl.textContent = `Save failed: ${(e as Error).message}`;
+  } finally {
+    applying = false;
+    setButtonsDisabled(false);
   }
 }
 

@@ -271,6 +271,12 @@ function disposeShapeVisual(): void {
     shapeEdges = null;
   }
   if (planeDirArrow) {
+    planeDirArrow.traverse(child => {
+      if (child instanceof THREE.Mesh || child instanceof THREE.Line) {
+        child.geometry.dispose();
+        (child.material as THREE.Material).dispose();
+      }
+    });
     planeDirArrow.parent?.remove(planeDirArrow);
     planeDirArrow = null;
   }

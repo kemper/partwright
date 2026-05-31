@@ -13,8 +13,6 @@ export interface CutParams {
   scale: [number, number, number];
   /** Optional input triangle colors (RGB, numTri*3 bytes). Preserved best-effort. */
   triColors?: Uint8Array;
-  /** Max edge length for pre-subdivision near cut boundary (0 = no pre-subdivision). */
-  edgeMaxLength?: number;
 }
 
 export interface CutResult {
@@ -56,10 +54,11 @@ export function performCut(
   const S = Math.max(meshRadius * 20, 1000);
 
   let base: ManifoldInstance | null = null;
+  let cutter: ManifoldInstance | null = null;
 
   try {
     base = Manifold.ofMesh(inputMesh);
-    const cutter = buildCutter(Manifold, shape, keepSide, mat4x3, sx, sy, sz, S);
+    cutter = buildCutter(Manifold, shape, keepSide, mat4x3, sx, sy, sz, S);
     if (!cutter) return null;
 
     // For volumetric shapes with 'inside', use intersect; for plane always use subtract
@@ -100,6 +99,9 @@ export function performCut(
     if (base && typeof base.delete === 'function') {
       try { base.delete(); } catch { /* ignore */ }
     }
+    if (cutter && typeof cutter.delete === 'function') {
+      try { cutter.delete(); } catch { /* ignore */ }
+    }
   }
 }
 
@@ -135,10 +137,14 @@ function buildCutter(
     // scale[0]=scale[1]=diameter, scale[2]=height
     const r = sx / 2;
     const h = sz;
-    // manifold cylinder goes from z=0 to z=h; center it around z=0
-    return Manifold.cylinder(h, r, r, 32)
-      .translate([0, 0, -h / 2])
-      .transform(mat4x3);
+    // manifold cylinder goes from z=0 to z=h; center it around z=0.
+    // Break chaining to delete the intermediate WASM object.
+    const centered = Manifold.cylinder(h, r, r, 32).translate([0, 0, -h / 2]);
+    const transformed = centered.transform(mat4x3);
+    if (typeof (centered as { delete?: () => void }).delete === 'function') {
+      try { (centered as { delete: () => void }).delete(); } catch { /* ignore */ }
+    }
+    return transformed;
   }
   return null;
 }

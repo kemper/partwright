@@ -4942,13 +4942,14 @@ async function main() {
   const simplifyHandlers: SimplifyHandlers = {
     open(userInitiated) {
       if (userInitiated) {
-        // Don't let two overlay panels share the top-right slot.
+        // Don’t let two overlay panels share the top-right slot.
         if (isPaintOpen()) closePaintMenu();
         if (isAnnotateOpen()) closeAnnotateMenu();
+        if (isCutOpen()) closeCutMenu();
         closeMeasureIfActive();
       }
       if (!currentMeshData) {
-        return { ok: false, reason: 'Run some code first — there’s no model to simplify.' };
+        return { ok: false, reason: ‘Run some code first — there’s no model to simplify.’ };
       }
       if (!currentManifold) {
         return { ok: false, reason: 'Simplify needs a solid (manifold) model. Render-only imports can’t be reduced.' };
@@ -5135,9 +5136,10 @@ async function main() {
       return currentMeshData;
     },
 
-    async apply(params, preserveColors, _edgeMaxLength) {
+    async apply(params, preserveColors) {
       const base = cutBaseMesh ?? currentMeshData;
       if (!base) return null;
+      const baseSnapshot = cutBaseMesh;
       // Gather paint tri-colors if the user wants them preserved.
       const srcColors = preserveColors && (hasColorRegions() || hasModelColorRegions())
         ? buildTriColors(base.numTri) ?? undefined
@@ -5151,6 +5153,8 @@ async function main() {
           params.scale,
           srcColors,
         );
+        // Bail if a code run updated the mesh while we were waiting.
+        if (cutBaseMesh !== baseSnapshot) return null;
         if (!result) return null;
         // If the Worker returned colors, embed them in the mesh for the viewport.
         const meshToShow: MeshData = result.triColors
@@ -5158,6 +5162,9 @@ async function main() {
           : result.mesh;
         applyLiveGeometry(meshToShow);
         cutResultMesh = meshToShow;
+        // Update baseline so a second Apply starts from the current cut result,
+        // keeping paint regions and triangle counts consistent.
+        cutBaseMesh = result.mesh;
         return { triangleCount: result.mesh.numTri };
       } catch (err) {
         return null;
