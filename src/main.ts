@@ -167,7 +167,7 @@ import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as ge
 import { buildStrokeMesh, buildRefinedMesh, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
 import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
-import { initEditorLock, syncLockState, setUnlockHandlers, disableRun, enableRun } from './color/editorLock';
+import { syncLockState, disableRun, enableRun } from './color/editorLock';
 import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
 import { encodeShare, decodeShare, validateSharePayloadShape, ShareUnsupportedError } from './share/shareLink';
@@ -5237,54 +5237,9 @@ async function main() {
 
   initEscapeMenuClose();
 
-  // Initialize editor lock
-  initEditorLock(editorContainer);
-
-  // Set up unlock handlers
-  setUnlockHandlers(
-    // Fork: save the colored version (if needed), then create a new uncolored version
-    async (colorData) => {
-      if (getState().session && currentMeshData) {
-        const code = getValue();
-
-        // 1. Only save the colored version if it doesn't already have colorRegions persisted
-        const currentVersion = getState().currentVersion;
-        const alreadyPersisted = currentVersion?.geometryData &&
-          Array.isArray((currentVersion.geometryData as Record<string, unknown>).colorRegions);
-
-        if (!alreadyPersisted) {
-          const thumbnail = await captureThumbnail();
-          const coloredGeoData = getGeometryDataObj() ?? {};
-          coloredGeoData.colorRegions = colorData;
-          await saveVersion(code, coloredGeoData, thumbnail, 'colored', undefined, { force: true });
-        }
-
-        // 2. Re-render without colors, then save an uncolored sibling
-        updateMesh(currentMeshData, { skipAutoFrame: true });
-
-        const cleanGeoData = getGeometryDataObj() ?? {};
-        delete cleanGeoData.colorRegions;
-        const cleanThumb = await captureThumbnail();
-        await saveVersion(code, cleanGeoData, cleanThumb, undefined, undefined, { force: true });
-      } else {
-        // No session — just re-render without colors
-        if (currentMeshData) {
-          updateMesh(currentMeshData, { skipAutoFrame: true });
-        }
-      }
-    },
-    // Clear: just re-render without colors (clearRegions already called)
-    () => {
-      if (currentMeshData) {
-        updateMesh(currentMeshData, { skipAutoFrame: true });
-      }
-    },
-  );
-
-  // When a color region is painted, re-render the mesh with colors and sync lock
+  // When a color region is painted, re-render the mesh with colors.
   setOnRegionPainted(() => {
     scheduleColorRefresh();
-    syncLockState();
   });
 
   // Any region change reconciles the working mesh: incremental stroke append,
