@@ -83,13 +83,14 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params, companionFiles } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
       imports?: ImportedMesh[];
       circularSegments?: number;
       params?: Record<string, unknown> | null;
+      companionFiles?: Record<string, string>;
     };
     try {
       // Propagate the main-thread quality setting so the Worker uses the same
@@ -115,7 +116,7 @@ self.onmessage = async (event: MessageEvent) => {
       } else if (effectiveLang === 'scad') {
         // Ensure the OpenSCAD engine is loaded (lazy init).
         if (!openscadEngine.isReady()) await openscadEngine.init();
-        result = await runScadAsync(code as string, params ?? undefined);
+        result = await runScadAsync(code as string, params ?? undefined, companionFiles);
       } else if (effectiveLang === 'replicad') {
         // Full replicad-language session — lazy-init OCCT then evaluate as
         // BREP. Tessellation happens inside the engine before returning.

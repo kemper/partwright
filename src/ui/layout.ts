@@ -9,6 +9,9 @@ export interface LayoutElements {
   editorPane: HTMLElement;
   partsRail: HTMLElement;
   editorContainer: HTMLElement;
+  /** Tab strip for companion SCAD files. Sits between the editor header and the
+   *  CodeMirror container. Managed by main.ts; initially hidden. */
+  companionFilesBar: HTMLElement;
   editorErrorPanel: HTMLElement;
   viewportPane: HTMLElement;
   galleryContainer: HTMLElement;
@@ -115,6 +118,22 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   editorHeader.appendChild(collapseEditorBtn);
 
   editorPane.appendChild(editorHeader);
+
+  // Companion-files tab strip — shown when the active SCAD session has companion
+  // files. main.ts populates it; hidden until there are companions or when in
+  // SCAD mode (to show the + button for adding new companions).
+  const companionFilesBar = document.createElement('div');
+  companionFilesBar.id = 'companion-files-bar';
+  companionFilesBar.className = 'hidden';
+  editorPane.appendChild(companionFilesBar);
+
+  // Companion-file editor panel — shown when a companion tab is selected.
+  // Sits in the same stacking context as the main editor container; main.ts
+  // shows/hides whichever is active.
+  const companionEditorPanel = document.createElement('div');
+  companionEditorPanel.id = 'companion-editor-panel';
+  companionEditorPanel.className = 'hidden flex-1 min-h-0 flex flex-col bg-zinc-900';
+  editorPane.appendChild(companionEditorPanel);
 
   // Overlay (absolutely positioned) so showing/hiding it never reflows the code
   // or moves the caret. Anchored to the bottom of the editor pane; long errors
@@ -642,7 +661,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, partsRail, editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, togglePartsRail, collapseEditor, expandEditor };
+  return { editorPane, partsRail, editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, togglePartsRail, collapseEditor, expandEditor };
 }
 
 // Rail item base — a bottom accent border on mobile (horizontal strip) becomes

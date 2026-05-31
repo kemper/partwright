@@ -107,6 +107,11 @@ export interface Version {
    *  Only keys that differ from the model defaults are stored; absent when the
    *  version uses all defaults (or declares no parameters). */
   paramValues?: Record<string, number | boolean | string>;
+  /** Companion SCAD files for this version. Maps MEMFS-relative path → source
+   *  text (e.g. `{"models.scad": "function models() = ..."}`) so that
+   *  `include <models.scad>` inside the main code resolves at compile time.
+   *  Only present for SCAD sessions that need companion files. */
+  companionFiles?: Record<string, string>;
 }
 
 /** Editor working buffer scoped to (session, language). One per language per
@@ -728,6 +733,8 @@ export async function saveVersion(
   language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel',
   /** Customizer parameter overrides for this version (opaque to the db layer). */
   paramValues?: Record<string, number | boolean | string>,
+  /** Companion SCAD files (path → source) for this version (opaque to the db layer). */
+  companionFiles?: Record<string, string>,
 ): Promise<Version> {
   // Compute the next index and write the version inside ONE readwrite
   // transaction. IndexedDB serializes overlapping readwrite transactions on
@@ -765,6 +772,7 @@ export async function saveVersion(
         ...(annotations && annotations.length > 0 ? { annotations } : {}),
         ...(importedMeshes && importedMeshes.length > 0 ? { importedMeshes } : {}),
         ...(paramValues && Object.keys(paramValues).length > 0 ? { paramValues } : {}),
+        ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
       };
       const putReq = store.put(v);
       putReq.onsuccess = () => resolve(v);

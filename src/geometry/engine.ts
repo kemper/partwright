@@ -6,6 +6,7 @@ import { openscadEngine } from './engines/openscad';
 import { replicadEngine } from './engines/replicad';
 import { voxelEngine } from './engines/voxel';
 import { getActiveImports } from '../import/importedMesh';
+import { getCompanionFiles } from '../import/companionFiles';
 import { getDefaultCircularSegments } from './qualitySettings';
 import { getConfig } from '../config/appConfig';
 
@@ -376,7 +377,8 @@ export async function executeCodeAsync(source: string, lang?: Language, paramOve
       resolve: (r) => { clearTimeout(timer); resolve(r); },
       reject:  (e) => { clearTimeout(timer); reject(e); },
     });
-    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null });
+    const companionFiles = getCompanionFiles();
+    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
   });
 }
 

@@ -137,15 +137,15 @@ export const openscadEngine: Engine = {
  *  applied through OpenSCAD's native `-D name=value` flag — no source
  *  rewriting. The parsed schema rides on every result (success and error) so
  *  the panel stays live, matching the other engines. */
-export async function runScadAsync(source: string, paramOverrides?: Record<string, unknown>): Promise<MeshResult> {
+export async function runScadAsync(source: string, paramOverrides?: Record<string, unknown>, companionFiles?: Record<string, string>): Promise<MeshResult> {
   const schema = parseScadParams(source);
   const paramsSchema = schema.length > 0 ? schema : undefined;
   const defines = buildScadDefines(source, paramOverrides);
-  const result = await runScadInner(source, defines);
+  const result = await runScadInner(source, defines, companionFiles);
   return paramsSchema ? { ...result, paramsSchema } : result;
 }
 
-async function runScadInner(source: string, defines: string[]): Promise<MeshResult> {
+async function runScadInner(source: string, defines: string[], companionFiles?: Record<string, string>): Promise<MeshResult> {
   if (!createFn) {
     const error = 'OpenSCAD engine not initialized.';
     return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
@@ -175,6 +175,29 @@ async function runScadInner(source: string, defines: string[]): Promise<MeshResu
       }
     }
     instance.FS.writeFile('/in.scad', effectiveSource);
+
+    // Write companion files (includes/uses that aren't BOSL2) into MEMFS so
+    // OpenSCAD can resolve them. Keys are MEMFS-relative paths; we create any
+    // needed subdirectories first.
+    if (companionFiles) {
+      for (const [path, content] of Object.entries(companionFiles)) {
+        const memfsPath = path.startsWith('/') ? path : `/${path}`;
+        const dir = memfsPath.lastIndexOf('/') > 0
+          ? memfsPath.slice(0, memfsPath.lastIndexOf('/'))
+          : null;
+        if (dir && dir !== '/') {
+          // Create intermediate directories (Emscripten MEMFS requires each
+          // directory level to exist before writing a file beneath it).
+          const parts = dir.slice(1).split('/');
+          let cur = '';
+          for (const part of parts) {
+            cur += `/${part}`;
+            try { instance.FS.mkdir(cur); } catch { /* already exists */ }
+          }
+        }
+        instance.FS.writeFile(memfsPath, content);
+      }
+    }
 
     if (labelScan.hasAnyLabelCalls) {
       // Label-aware path: single compile to multi-object AMF via lazy-union,
