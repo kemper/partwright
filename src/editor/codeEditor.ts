@@ -84,6 +84,48 @@ export function languageExt(lang: EditorLanguage): Extension {
   return lang === 'scad' ? scadLanguage : javascript();
 }
 
+/** Create a standalone CodeMirror editor for companion SCAD files.
+ *  Uses the SCAD language extension for syntax highlighting. The caller
+ *  owns the returned EditorView and should call setCompanionEditorContent()
+ *  when switching between companion files. */
+export function createCompanionEditor(
+  parent: HTMLElement,
+  onChange: (content: string) => void,
+): EditorView {
+  const companionThemeCompartment = new Compartment();
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: '',
+      extensions: [
+        basicSetup,
+        scadLanguage,
+        companionThemeCompartment.of(themeExt(getTheme())),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) onChange(update.state.doc.toString());
+        }),
+        EditorView.theme({
+          '&': { height: '100%', fontSize: '13px' },
+          '.cm-scroller': { overflow: 'auto' },
+          '.cm-content': { fontFamily: 'monospace' },
+        }),
+      ],
+    }),
+    parent,
+  });
+  onThemeChange((theme) => {
+    view.dispatch({ effects: companionThemeCompartment.reconfigure(themeExt(theme)) });
+  });
+  return view;
+}
+
+/** Replace the full document in a companion editor view (programmatic load
+ *  when switching between companion tabs). */
+export function setCompanionEditorContent(view: EditorView, content: string): void {
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: content },
+  });
+}
+
 function clampOffset(offset: number, docLength: number): number {
   if (!Number.isFinite(offset)) return 0;
   return Math.max(0, Math.min(docLength, Math.trunc(offset)));

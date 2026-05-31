@@ -31,7 +31,8 @@ import { initViewport, updateMesh, setOnMeshUpdate, setOnContextLost, setOnConte
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { generateId, getLatestVersion } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
-import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, getAutoFormat, setAutoFormat, editorContentDiffersFrom } from './editor/codeEditor';
+import { initEditor, setValue, getValue, setLanguage as setEditorLanguage, setEditorDiagnostics, clearEditorDiagnostics, revealFirstDiagnostic, formatCode, getAutoFormat, setAutoFormat, editorContentDiffersFrom, createCompanionEditor, setCompanionEditorContent } from './editor/codeEditor';
+import type { EditorView as CMEditorView } from '@codemirror/view';
 import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
@@ -4921,21 +4922,18 @@ async function main() {
   let _companionActiveTab: string | null = null; // null = main tab
   const companionEditorPanel = document.getElementById('companion-editor-panel') as HTMLElement;
 
-  // Build a companion-file editing textarea inside the panel (created once).
-  const companionTextarea = document.createElement('textarea');
-  companionTextarea.className = [
-    'flex-1 w-full h-full resize-none bg-zinc-900 text-zinc-100',
-    'font-mono text-sm p-4 border-0 outline-none',
-    'leading-relaxed tracking-normal',
-  ].join(' ');
-  companionTextarea.spellcheck = false;
-  companionEditorPanel.appendChild(companionTextarea);
-
-  companionTextarea.addEventListener('input', () => {
-    if (_companionActiveTab === null) return;
-    updateCompanionFile(_companionActiveTab, companionTextarea.value);
-    runCode(getValue(), { surfaceErrors: false });
-  });
+  // CodeMirror editor for companion SCAD files — created once, content swapped
+  // when switching between companion tabs.
+  let _companionEditor: CMEditorView | null = null;
+  function ensureCompanionEditor(): CMEditorView {
+    if (_companionEditor) return _companionEditor;
+    _companionEditor = createCompanionEditor(companionEditorPanel, (content) => {
+      if (_companionActiveTab === null) return;
+      updateCompanionFile(_companionActiveTab, content);
+      runCode(getValue(), { surfaceErrors: false });
+    });
+    return _companionEditor;
+  }
 
   function renderCompanionFilesBar(): void {
     const lang = getActiveLanguage();
@@ -5029,19 +5027,17 @@ async function main() {
     editorContainer.classList.add('hidden');
     companionEditorPanel.classList.remove('hidden');
     const companions = getCompanionFiles();
-    companionTextarea.value = companions[path] ?? '';
-    companionTextarea.focus();
+    const editor = ensureCompanionEditor();
+    setCompanionEditorContent(editor, companions[path] ?? '');
+    editor.focus();
     renderCompanionFilesBar();
   }
 
   async function promptAddCompanion(): Promise<void> {
-    const filename = window.prompt('Companion file name (e.g. models.scad or lib/utils.scad):');
+    const filename = window.prompt('Companion file name (e.g. models or lib/utils):');
     if (!filename || !filename.trim()) return;
-    const path = filename.trim().startsWith('./') ? filename.trim().slice(2) : filename.trim();
-    if (!path.endsWith('.scad')) {
-      showToast('Companion files must be .scad files.', { variant: 'warn' });
-      return;
-    }
+    let path = filename.trim().startsWith('./') ? filename.trim().slice(2) : filename.trim();
+    if (!path.endsWith('.scad')) path += '.scad';
     if (getCompanionFiles()[path] !== undefined) {
       showToast(`${path} is already a companion file.`, { variant: 'warn' });
       return;
@@ -5062,11 +5058,19 @@ async function main() {
 
   // Re-render companion tab bar when language or session state changes.
   onStateChange(() => {
-    // If the loaded version has companion files, switch back to main tab so the
-    // editor shows the primary source. The companions are now in the registry
-    // (set by sessionManager) and available for the next run.
-    if (_companionActiveTab !== null) switchToMainTab();
-    else renderCompanionFilesBar();
+    if (_companionActiveTab !== null) {
+      // Keep the companion tab active unless the companion is no longer present
+      // (e.g. navigated to a version that doesn't have it). Staying on the
+      // companion tab after a plain save is correct UX — the user was editing
+      // a companion file and shouldn't be yanked back to main.scad on save.
+      if (getCompanionFiles()[_companionActiveTab] === undefined) {
+        switchToMainTab();
+      } else {
+        renderCompanionFilesBar();
+      }
+    } else {
+      renderCompanionFilesBar();
+    }
   });
 
   // Initial render (will be hidden since we start in manifold-js mode).
