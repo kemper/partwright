@@ -57,7 +57,7 @@ test.describe('import resets stale paint state', () => {
     await page.addInitScript(() => localStorage.setItem('partwright-tour-completed', '1'));
   });
 
-  test('image→voxel import drops a painted model's regions', async ({ page }) => {
+  test("image→voxel import drops a painted model's regions", async ({ page }) => {
     await waitForEngine(page);
     const result = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -99,7 +99,7 @@ test.describe('import resets stale paint state', () => {
     expect(result.code).toContain('voxels.decode(');
   });
 
-  test('STL "New part" import drops the previous part's paint', async ({ page }) => {
+  test("STL \"New part\" import drops the previous part's paint", async ({ page }) => {
     await waitForEngine(page);
 
     // Paint the current part: an in-memory region.
