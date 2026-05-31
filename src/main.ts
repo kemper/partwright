@@ -1820,31 +1820,19 @@ async function main() {
       collapseEditor();
       studioCollapsedEditor = true;
     }
+    document.getElementById('relief-viewport-toggle')?.classList.remove('hidden');
     reliefStudio.show();
-    reliefStudio.setChipVisible(false);
     reliefStudio.refresh();
   }
 
   function closeReliefStudio(): void {
     if (!reliefStudio) return;
     reliefStudio.hide();
-    // Surface the "Edit colors" chip so users can find their way back to the
-    // palette without remembering the toolbar button.
-    const sid = getState().session?.id ?? null;
-    reliefStudio.setChipVisible(isReliefSession(sid));
     if (studioCollapsedEditor) { expandEditor(); studioCollapsedEditor = false; }
   }
 
   function toggleReliefStudio(): void {
     if (!reliefStudio) return;
-    const sid = getState().session?.id ?? null;
-    // No relief session yet — the studio's filaments/swap-guide/etc. are
-    // contextless. Send the user to the import wizard so the button has an
-    // intuitive meaning regardless of whether they've made a relief yet.
-    if (!isReliefSession(sid) && !reliefStudio.isOpen()) {
-      openReliefImportFlow();
-      return;
-    }
     if (reliefStudio.isOpen()) closeReliefStudio();
     else showReliefStudio();
   }
@@ -1855,12 +1843,11 @@ async function main() {
   function syncReliefStudioForSession(): void {
     if (!reliefStudio) return;
     const sid = getState().session?.id ?? null;
-    if (isReliefSession(sid)) showReliefStudio();
+    const isRelief = isReliefSession(sid);
+    document.getElementById('relief-viewport-toggle')?.classList.toggle('hidden', !isRelief);
+    if (isRelief) showReliefStudio();
     else {
-      // Non-relief session — hide the panel AND the re-open chip; the chip
-      // is only meaningful for image-derived sessions.
       if (reliefStudio.isOpen()) reliefStudio.hide();
-      reliefStudio.setChipVisible(false);
       if (studioCollapsedEditor) { expandEditor(); studioCollapsedEditor = false; }
     }
   }
@@ -5294,9 +5281,9 @@ async function main() {
   // toolbar where it kept getting clipped behind Show Code).
   const reliefViewportBtn = document.createElement('button');
   reliefViewportBtn.id = 'relief-viewport-toggle';
-  reliefViewportBtn.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  reliefViewportBtn.className = 'hidden px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
   reliefViewportBtn.textContent = '✦ Relief';
-  reliefViewportBtn.title = 'Edit colors / make a tile or relief from an image';
+  reliefViewportBtn.title = 'Edit colors for this relief';
   reliefViewportBtn.addEventListener('click', () => toggleReliefStudio());
   const paintBtnEl = clipControls.querySelector('#paint-toggle');
   if (paintBtnEl) clipControls.insertBefore(reliefViewportBtn, paintBtnEl);

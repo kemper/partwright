@@ -4,12 +4,14 @@
 // persisted) — the panel always starts below the clip-controls toolbar.
 
 /** Position the panel below the #clip-controls toolbar buttons.
- *  Safe to call while the panel is still hidden (uses clip-controls's rect,
- *  not the panel's own, so no layout dependency on the panel itself). */
+ *  Prefers the panel's own offset parent as the coordinate reference so
+ *  top/right values land in the correct space. Falls back to clip-controls'
+ *  positioned ancestor for callers that position while the panel is hidden
+ *  (display:none elements have offsetParent=null). */
 export function setInitialPanelPosition(panel: HTMLElement): void {
   const controls = document.getElementById('clip-controls');
   if (controls) {
-    const host = controls.offsetParent as HTMLElement ?? controls.parentElement as HTMLElement;
+    const host = (panel.offsetParent ?? controls.offsetParent ?? controls.parentElement) as HTMLElement | null;
     if (host) {
       const cr = controls.getBoundingClientRect();
       const hr = host.getBoundingClientRect();
