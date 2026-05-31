@@ -327,7 +327,14 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     const mesh = msg.mesh as MeshData | null;
     if (!mesh) { pending.resolve(null); return; }
     const triColors = msg.triColors as Uint8Array | null;
-    pending.resolve({ mesh, triColors: triColors ?? undefined });
+    const meshes = msg.meshes as MeshData[] | null;
+    const triColorsList = msg.triColorsList as Uint8Array[] | null;
+    pending.resolve({
+      mesh,
+      meshes: meshes ?? [mesh],
+      triColors: triColors ?? undefined,
+      triColorsList: triColorsList ?? undefined,
+    });
     return;
   }
 
@@ -655,7 +662,11 @@ export async function simplifyInWorker(
 
 export interface CutWorkerResult {
   mesh: MeshData;
+  /** One mesh per disconnected component. Length ≥ 1. */
+  meshes: MeshData[];
   triColors?: Uint8Array;
+  /** Colors per component, parallel to `meshes`. Only present when meshes.length > 1 and input had colors. */
+  triColorsList?: Uint8Array[];
 }
 
 /** Run a boolean cut inside the geometry Worker. The mesh is copied (zero-copy

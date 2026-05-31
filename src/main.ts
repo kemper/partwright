@@ -4916,6 +4916,7 @@ async function main() {
   // baseline so "Reset" and "Save" both have access to the original mesh.
   let cutBaseMesh: MeshData | null = null;
   let cutResultMesh: MeshData | null = null;
+  let cutResultMeshes: MeshData[] | null = null;
 
   // Replace the live geometry with `mesh`: rebuild the queryable Manifold and
   // refresh the viewport, paint-adjacency map, stats, and clip bounds. Mirrors
@@ -5129,6 +5130,7 @@ async function main() {
       // Snapshot the baseline on first open (or after a reset).
       if (!cutBaseMesh) cutBaseMesh = currentMeshData;
       cutResultMesh = null;
+      cutResultMeshes = null;
       return { ok: true };
     },
 
@@ -5162,10 +5164,11 @@ async function main() {
           : result.mesh;
         applyLiveGeometry(meshToShow);
         cutResultMesh = meshToShow;
+        cutResultMeshes = result.meshes;
         // Update baseline so a second Apply starts from the current cut result,
         // keeping paint regions and triangle counts consistent.
         cutBaseMesh = result.mesh;
-        return { triangleCount: result.mesh.numTri };
+        return { triangleCount: result.mesh.numTri, componentCount: result.meshes.length };
       } catch (err) {
         return null;
       }
@@ -5175,10 +5178,10 @@ async function main() {
       if (!getState().session) {
         return { ok: false, message: 'Open a session before saving.' };
       }
-      const result = cutResultMesh;
-      if (!result) {
+      if (!cutResultMesh || !cutResultMeshes) {
         return { ok: false, message: 'Apply the cut first, then save.' };
       }
+      const componentMeshes = cutResultMeshes;
       try {
         const originalCode = getValue();
         const current = getState().currentVersion;
@@ -5188,25 +5191,38 @@ async function main() {
           const original = await snapshotMeshAsVersion(baseline, originalCode);
           savedOriginal = !!(await saveVersion(originalCode, original.geometryData, original.thumbnail));
         }
-        const baked = toImportedMesh(`cut-${result.numTri}tri`, result);
-        const code = generateImportCode([baked], { manifold: true });
-        setActiveImports([baked]);
-        setValue(code);
-        await runCodeSync(code);
-        const thumbnail = await captureThumbnail();
-        const geometryData = getGeometryDataObj();
-        await saveVersion(code, geometryData, thumbnail, 'cut', undefined, {
-          force: true,
-          importedMeshes: [baked],
-        });
+
+        // Create one new part per disconnected component.
+        const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        for (let i = 0; i < componentMeshes.length; i++) {
+          const componentMesh = componentMeshes[i];
+          const partName = componentMeshes.length === 1
+            ? 'Cut Result'
+            : `Cut ${LETTERS[i] ?? String(i + 1)}`;
+          await createPart(partName);
+          const baked = toImportedMesh(`cut-${componentMesh.numTri}tri`, componentMesh);
+          const code = generateImportCode([baked], { manifold: true });
+          setActiveImports([baked]);
+          setValue(code);
+          await runCodeSync(code);
+          const thumbnail = await captureThumbnail();
+          const geometryData = getGeometryDataObj();
+          await saveVersion(code, geometryData, thumbnail, 'cut', undefined, {
+            force: true,
+            importedMeshes: [baked],
+          });
+        }
+
         cutBaseMesh = null;
         cutResultMesh = null;
-        const tri = result.numTri.toLocaleString();
+        cutResultMeshes = null;
+        const n = componentMeshes.length;
+        const partsLabel = `${n} part${n > 1 ? 's' : ''}`;
         return {
           ok: true,
           message: savedOriginal
-            ? `Saved original + cut result (${tri} triangles).`
-            : `Saved cut result as a new version (${tri} triangles).`,
+            ? `Saved original + ${partsLabel} from cut.`
+            : `Saved ${partsLabel} from cut.`,
         };
       } catch (e) {
         return { ok: false, message: `Save failed: ${(e as Error).message}` };
@@ -11099,6 +11115,7 @@ async function main() {
       simplifyBaselineMesh = null;
       cutBaseMesh = null;
       cutResultMesh = null;
+      cutResultMeshes = null;
       refreshSimplifyIfOpen();
       setStatus(statusBar, 'ready', 'Ready');
     }

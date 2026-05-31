@@ -475,9 +475,26 @@ self.onmessage = async (event: MessageEvent) => {
       if (result.mesh.runIndex)      transfer.push(result.mesh.runIndex.buffer);
       if (result.mesh.runOriginalID) transfer.push(result.mesh.runOriginalID.buffer);
       if (result.triColors)          transfer.push(result.triColors.buffer);
+      // Transfer all per-component mesh buffers
+      for (const m of result.meshes) {
+        transfer.push(m.vertProperties.buffer, m.triVerts.buffer);
+        if (m.mergeFromVert) transfer.push(m.mergeFromVert.buffer);
+        if (m.mergeToVert)   transfer.push(m.mergeToVert.buffer);
+        if (m.runIndex)      transfer.push(m.runIndex.buffer);
+        if (m.runOriginalID) transfer.push(m.runOriginalID.buffer);
+      }
+      if (result.triColorsList) {
+        for (const c of result.triColorsList) transfer.push(c.buffer);
+      }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (self as any).postMessage(
-        { type: 'cut_result', callId, mesh: result.mesh, triColors: result.triColors ?? null, error: null },
+        {
+          type: 'cut_result', callId,
+          mesh: result.mesh, meshes: result.meshes,
+          triColors: result.triColors ?? null,
+          triColorsList: result.triColorsList ?? null,
+          error: null,
+        },
         transfer,
       );
     } catch (err) {

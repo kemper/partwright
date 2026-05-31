@@ -16,8 +16,14 @@ export interface CutParams {
 }
 
 export interface CutResult {
+  /** Combined result mesh (all components merged — used for the Apply preview). */
   mesh: MeshData;
+  /** One mesh per disconnected component. Length ≥ 1. Used to create one Part per piece on Save. */
+  meshes: MeshData[];
+  /** Colors for the combined mesh. */
   triColors?: Uint8Array;
+  /** Colors per component, parallel to `meshes`. Only present when `meshes.length > 1` and input had colors. */
+  triColorsList?: Uint8Array[];
 }
 
 // Type for Manifold module as used by performCut
@@ -36,7 +42,29 @@ interface ManifoldInstance {
   getMesh: () => MeshData;
   translate: (v: [number, number, number]) => ManifoldInstance;
   transform: (m: number[]) => ManifoldInstance;
+  decompose: () => ManifoldInstance[];
   delete?: () => void;
+}
+
+function cloneMeshData(raw: MeshData): MeshData {
+  const m: MeshData = {
+    vertProperties: raw.vertProperties.slice(),
+    triVerts: raw.triVerts.slice(),
+    numVert: raw.numVert,
+    numTri: raw.numTri,
+    numProp: raw.numProp,
+  };
+  if (raw.mergeFromVert) m.mergeFromVert = raw.mergeFromVert.slice();
+  if (raw.mergeToVert) m.mergeToVert = raw.mergeToVert.slice();
+  if (raw.runIndex) m.runIndex = raw.runIndex.slice();
+  if (raw.runOriginalID) m.runOriginalID = raw.runOriginalID.slice();
+  return m;
+}
+
+function safeDelete(obj: ManifoldInstance | null): void {
+  if (obj && typeof obj.delete === 'function') {
+    try { obj.delete(); } catch { /* ignore */ }
+  }
 }
 
 /** Apply a boolean cut to `inputMesh` and return the result. Runs in the Worker. */
@@ -70,38 +98,45 @@ export function performCut(
       result = base.subtract(cutter);
     }
 
-    const rawMesh = result.getMesh();
-    const mesh: MeshData = {
-      vertProperties: rawMesh.vertProperties.slice(),
-      triVerts: rawMesh.triVerts.slice(),
-      numVert: rawMesh.numVert,
-      numTri: rawMesh.numTri,
-      numProp: rawMesh.numProp,
-    };
-    if (rawMesh.mergeFromVert) mesh.mergeFromVert = rawMesh.mergeFromVert.slice();
-    if (rawMesh.mergeToVert) mesh.mergeToVert = rawMesh.mergeToVert.slice();
-    if (rawMesh.runIndex) mesh.runIndex = rawMesh.runIndex.slice();
-    if (rawMesh.runOriginalID) mesh.runOriginalID = rawMesh.runOriginalID.slice();
+    // Combined mesh for the Apply preview
+    const mesh = cloneMeshData(result.getMesh());
 
-    // Attempt to free the result Manifold object.
-    if (typeof (result as { delete?: () => void }).delete === 'function') {
-      try { (result as { delete: () => void }).delete(); } catch { /* ignore */ }
+    // Decompose into connected components before freeing the composite result
+    const pieces = result.decompose();
+    safeDelete(result);
+
+    // Build per-component meshes
+    let meshes: MeshData[];
+    let triColorsList: Uint8Array[] | undefined;
+
+    if (pieces.length <= 1) {
+      // Single component — reuse the combined mesh
+      meshes = [mesh];
+      safeDelete(pieces[0] ?? null);
+    } else {
+      meshes = [];
+      const wantColors = !!(triColors && triColors.length === inputMesh.numTri * 3);
+      if (wantColors) triColorsList = [];
+      for (const p of pieces) {
+        const cm = cloneMeshData(p.getMesh());
+        meshes.push(cm);
+        if (triColorsList && triColors) {
+          triColorsList.push(mapColors(inputMesh, triColors, cm));
+        }
+        safeDelete(p);
+      }
     }
 
-    // Color preservation via nearest-centroid mapping
+    // Colors for the combined mesh
     let outColors: Uint8Array | undefined;
     if (triColors && triColors.length === inputMesh.numTri * 3 && mesh.numTri > 0) {
       outColors = mapColors(inputMesh, triColors, mesh);
     }
 
-    return { mesh, triColors: outColors };
+    return { mesh, meshes, triColors: outColors, triColorsList };
   } finally {
-    if (base && typeof base.delete === 'function') {
-      try { base.delete(); } catch { /* ignore */ }
-    }
-    if (cutter && typeof cutter.delete === 'function') {
-      try { cutter.delete(); } catch { /* ignore */ }
-    }
+    safeDelete(base);
+    safeDelete(cutter);
   }
 }
 

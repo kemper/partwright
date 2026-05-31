@@ -38,6 +38,7 @@ export type { CutGizmoParams };
 
 export interface CutApplyResult {
   triangleCount: number;
+  componentCount: number;
 }
 
 export interface CutSaveResult {
@@ -452,7 +453,10 @@ async function applyCut(): Promise<void> {
   try {
     const result = await handlers.apply(params, preserveColors);
     if (result) {
-      if (statusEl) statusEl.textContent = `Cut applied — ${result.triangleCount.toLocaleString()} triangles. Click Save to bake.`;
+      const partsNote = result.componentCount > 1
+        ? ` → ${result.componentCount} parts`
+        : '';
+      if (statusEl) statusEl.textContent = `Cut applied — ${result.triangleCount.toLocaleString()} triangles${partsNote}. Click Save to bake.`;
       if (saveBtn) {
         saveBtn.disabled = false;
         saveBtn.className = 'px-2 py-1.5 rounded text-[11px] bg-emerald-700/60 text-emerald-200 hover:bg-emerald-600/60 transition-colors';
