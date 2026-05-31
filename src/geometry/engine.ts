@@ -100,6 +100,11 @@ const pendingSimplifies  = new Map<string, {
   reject: (e: Error) => void;
   onProgress: (fraction: number) => void;
 }>();
+const pendingEnhances = new Map<string, {
+  resolve: (r: EnhanceWorkerResult | null) => void;
+  reject: (e: Error) => void;
+  onProgress: (fraction: number) => void;
+}>();
 
 // Per-language hard-timeout for a single execute/validate call. The Worker
 // posts no result back if its WASM hangs, so without this the promise (and
@@ -125,6 +130,7 @@ function rejectAllPending(err: Error): void {
   for (const p of pendingClearBrepImports.values()) p.reject(err);
   for (const p of pendingClearBrepShapes.values()) p.reject(err);
   for (const p of pendingSimplifies.values()) p.reject(err);
+  for (const p of pendingEnhances.values()) p.reject(err);
   pendingExecutions.clear();
   pendingValidations.clear();
   pendingStepExports.clear();
@@ -133,6 +139,7 @@ function rejectAllPending(err: Error): void {
   pendingClearBrepImports.clear();
   pendingClearBrepShapes.clear();
   pendingSimplifies.clear();
+  pendingEnhances.clear();
 }
 
 /** Terminate an unresponsive Worker and reject everything in flight so the next
@@ -314,6 +321,35 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     return;
   }
 
+  if (msg.type === 'enhance_progress') {
+    const callId = msg.callId as string;
+    const pending = pendingEnhances.get(callId);
+    if (!pending) return;
+    pending.onProgress(msg.fraction as number);
+    return;
+  }
+
+  if (msg.type === 'enhance_result') {
+    const callId = msg.callId as string;
+    const pending = pendingEnhances.get(callId);
+    if (!pending) return;
+    pendingEnhances.delete(callId);
+    const error = msg.error as string | null;
+    if (error) {
+      pending.reject(new Error(error));
+      return;
+    }
+    if (msg.cancelled || !msg.mesh) {
+      pending.resolve(null);
+      return;
+    }
+    pending.resolve({
+      mesh: msg.mesh as MeshData,
+      triangleCount: msg.triangleCount as number,
+    });
+    return;
+  }
+
   if (msg.type === 'error') {
     const callId = msg.callId as string | null;
     const err = new Error(msg.message as string);
@@ -334,6 +370,8 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingClearBrepShapes.delete(callId ?? '');
       pendingSimplifies.get(callId)?.reject(err);
       pendingSimplifies.delete(callId ?? '');
+      pendingEnhances.get(callId)?.reject(err);
+      pendingEnhances.delete(callId ?? '');
     }
   }
 }
@@ -627,6 +665,75 @@ export async function simplifyInWorker(
     const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
     engineWorker!.postMessage(
       { type: 'simplify', callId, mesh: meshCopy, targetTriangles, maxTolerance },
+      transfer,
+    );
+  });
+}
+
+// ── Enhance Worker client ───────────────────────────────────────────────────
+
+export interface EnhanceWorkerResult {
+  mesh: MeshData;
+  triangleCount: number;
+}
+
+export class EnhanceAbortError extends Error {
+  constructor(message = 'enhance aborted') {
+    super(message);
+    this.name = 'AbortError';
+  }
+}
+
+/** Run the mesh-budget enhance (refineToLength) search inside the geometry
+ *  Worker. Mirrors simplifyInWorker but adds triangles instead of removing
+ *  them. Resolves to null when no enhancement was needed/possible or the
+ *  caller aborted. */
+export async function enhanceInWorker(
+  mesh: MeshData,
+  targetTriangles: number,
+  maxEdgeLength: number,
+  onProgress: (fraction: number) => void,
+  signal?: AbortSignal,
+): Promise<EnhanceWorkerResult | null> {
+  if (signal?.aborted) throw new EnhanceAbortError();
+  initEngineWorker();
+  await workerReady;
+  const callId = `enhance-${++callIdCounter}`;
+
+  return new Promise<EnhanceWorkerResult | null>((resolve, reject) => {
+    let abortListener: (() => void) | null = null;
+    pendingEnhances.set(callId, {
+      resolve: (r) => {
+        if (signal && abortListener) signal.removeEventListener('abort', abortListener);
+        resolve(r);
+      },
+      reject: (e) => {
+        if (signal && abortListener) signal.removeEventListener('abort', abortListener);
+        reject(e);
+      },
+      onProgress,
+    });
+    if (signal) {
+      abortListener = () => {
+        engineWorker?.postMessage({ type: 'enhance_cancel', callId });
+        const pending = pendingEnhances.get(callId);
+        if (pending) {
+          pendingEnhances.delete(callId);
+          pending.reject(new EnhanceAbortError());
+        }
+      };
+      signal.addEventListener('abort', abortListener, { once: true });
+    }
+    const meshCopy: MeshData = {
+      vertProperties: mesh.vertProperties.slice(),
+      triVerts: mesh.triVerts.slice(),
+      numVert: mesh.numVert,
+      numTri: mesh.numTri,
+      numProp: mesh.numProp,
+    };
+    const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
+    engineWorker!.postMessage(
+      { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength },
       transfer,
     );
   });
