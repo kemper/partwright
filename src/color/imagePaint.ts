@@ -130,20 +130,32 @@ export function stampImageOntoMesh(
     const cy = (y0 + y1 + y2) / 3;
     const cz = (z0 + z1 + z2) / 3;
 
-    // Delta from hit point to centroid
-    const dx = cx - hpX;
-    const dy = cy - hpY;
-    const dz = cz - hpZ;
+    // Project centroid and all three vertices onto the rotated tangent frame,
+    // normalised to [-1, 1]. The triangle is included if ANY of the four
+    // sample points lands inside the stamp square — this handles coarse meshes
+    // where the centroid may fall outside a large triangle's overlap with the stamp.
+    const projectU = (px: number, py: number, pz: number) =>
+      ((px - hpX) * trX + (py - hpY) * trY + (pz - hpZ) * trZ) / halfSize;
+    const projectV = (px: number, py: number, pz: number) =>
+      ((px - hpX) * brX + (py - hpY) * brY + (pz - hpZ) * brZ) / halfSize;
 
-    // Project onto rotated tangent frame, normalised to [-1, 1]
-    const u = (dx * trX + dy * trY + dz * trZ) / halfSize;
-    const v = (dx * brX + dy * brY + dz * brZ) / halfSize;
+    const inStamp = (u: number, v: number) => u >= -1 && u <= 1 && v >= -1 && v <= 1;
 
-    if (u < -1 || u > 1 || v < -1 || v > 1) continue;
+    const uC = projectU(cx, cy, cz), vC = projectV(cx, cy, cz);
+    const u0 = projectU(x0, y0, z0), v0p = projectV(x0, y0, z0);
+    const u1 = projectU(x1, y1, z1), v1p = projectV(x1, y1, z1);
+    const u2 = projectU(x2, y2, z2), v2p = projectV(x2, y2, z2);
+
+    if (!inStamp(uC, vC) && !inStamp(u0, v0p) && !inStamp(u1, v1p) && !inStamp(u2, v2p)) continue;
+
+    // Sample the image at the centroid's projected UV
+    // (centroid gives a stable representative position; clamp to image bounds)
+    const sampleU = Math.max(-1, Math.min(1, uC));
+    const sampleV = Math.max(-1, Math.min(1, vC));
 
     // Map to image coordinates (image is top-down, v flipped)
-    const imgU = (u + 1) / 2;
-    const imgV = (1 - v) / 2;
+    const imgU = (sampleU + 1) / 2;
+    const imgV = (1 - sampleV) / 2;
 
     // Nearest-neighbor sample
     const px = Math.max(0, Math.min(imgW - 1, Math.floor(imgU * imgW)));

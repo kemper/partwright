@@ -5232,11 +5232,8 @@ async function main() {
         if (maxU < -1 || minU > 1 || maxV < -1 || minV > 1) return 'outside';
         return 'straddle';
       },
-      field: (px, py, pz) => {
-        const u = ((px - hpX) * trX + (py - hpY) * trY + (pz - hpZ) * trZ) / half;
-        const v = ((px - hpX) * brX + (py - hpY) * brY + (pz - hpZ) * brZ) / half;
-        return Math.max(Math.abs(u), Math.abs(v)) - 1;
-      },
+      // No field/clip: the stamp's face-normal check handles back faces, and a
+      // depth-unaware field would incorrectly clip through the interior of the model.
     };
 
     const { mesh, childToParent } = buildRefinedMesh(currentMeshData, [stampRegion]);
