@@ -82,10 +82,11 @@ export function executeCode(source: string, lang?: Language, paramOverrides?: Re
 
 let engineWorker: Worker | null = null;
 let workerReadyResolve: (() => void) | null = null;
+let workerReadyReject: ((e: Error) => void) | null = null;
 // Mutable so it can be replaced when the Worker is restarted after a crash.
 // A crashed-and-restarted Worker must not inherit the already-resolved promise
 // from its predecessor — callers would skip the await and race the new init.
-let workerReady: Promise<void> = new Promise(r => { workerReadyResolve = r; });
+let workerReady: Promise<void> = new Promise((r, rej) => { workerReadyResolve = r; workerReadyReject = rej; });
 let callIdCounter = 0;
 
 const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void }>();
@@ -97,6 +98,11 @@ const pendingClearBrepImports = new Map<string, { resolve: () => void; reject: (
 const pendingClearBrepShapes = new Map<string, { resolve: () => void; reject: (e: Error) => void }>();
 const pendingSimplifies  = new Map<string, {
   resolve: (r: SimplifyWorkerResult | null) => void;
+  reject: (e: Error) => void;
+  onProgress: (fraction: number) => void;
+}>();
+const pendingEnhances = new Map<string, {
+  resolve: (r: EnhanceWorkerResult | null) => void;
   reject: (e: Error) => void;
   onProgress: (fraction: number) => void;
 }>();
@@ -125,6 +131,7 @@ function rejectAllPending(err: Error): void {
   for (const p of pendingClearBrepImports.values()) p.reject(err);
   for (const p of pendingClearBrepShapes.values()) p.reject(err);
   for (const p of pendingSimplifies.values()) p.reject(err);
+  for (const p of pendingEnhances.values()) p.reject(err);
   pendingExecutions.clear();
   pendingValidations.clear();
   pendingStepExports.clear();
@@ -133,23 +140,37 @@ function rejectAllPending(err: Error): void {
   pendingClearBrepImports.clear();
   pendingClearBrepShapes.clear();
   pendingSimplifies.clear();
+  pendingEnhances.clear();
 }
 
 /** Terminate an unresponsive Worker and reject everything in flight so the next
  *  call boots a fresh instance instead of queueing behind a hang. */
 function restartEngineWorker(reason: string): void {
-  rejectAllPending(new Error(reason));
+  const err = new Error(reason);
+  rejectAllPending(err);
+  // Unblock any executeCodeAsync that's still awaiting 'workerReady' (i.e. the
+  // worker was terminated before it sent the 'ready' message). Promise state is
+  // immutable so this is a no-op if the gate was already resolved.
+  workerReadyReject?.(err);
+  workerReadyReject = null;
   engineWorker?.terminate();
   engineWorker = null;
   // eslint-disable-next-line no-console
   console.error('[EngineWorker]', reason);
 }
 
+/** Cancel any in-flight executeCodeAsync by terminating the Worker.
+ *  The pending Promise rejects immediately; the Worker restarts automatically
+ *  on the next executeCodeAsync call. */
+export function cancelCurrentExecution(): void {
+  restartEngineWorker('Execution cancelled');
+}
+
 function initEngineWorker(): void {
   if (engineWorker) return;
   // Fresh ready-gate so the restarted Worker's 'ready' message resolves it,
   // not the one that was already resolved by the previous instance.
-  workerReady = new Promise(r => { workerReadyResolve = r; });
+  workerReady = new Promise((r, rej) => { workerReadyResolve = r; workerReadyReject = rej; });
   engineWorker = new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' });
   engineWorker.onmessage = handleEngineWorkerMessage;
   engineWorker.onerror = (ev) => {
@@ -314,6 +335,35 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     return;
   }
 
+  if (msg.type === 'enhance_progress') {
+    const callId = msg.callId as string;
+    const pending = pendingEnhances.get(callId);
+    if (!pending) return;
+    pending.onProgress(msg.fraction as number);
+    return;
+  }
+
+  if (msg.type === 'enhance_result') {
+    const callId = msg.callId as string;
+    const pending = pendingEnhances.get(callId);
+    if (!pending) return;
+    pendingEnhances.delete(callId);
+    const error = msg.error as string | null;
+    if (error) {
+      pending.reject(new Error(error));
+      return;
+    }
+    if (msg.cancelled || !msg.mesh) {
+      pending.resolve(null);
+      return;
+    }
+    pending.resolve({
+      mesh: msg.mesh as MeshData,
+      triangleCount: msg.triangleCount as number,
+    });
+    return;
+  }
+
   if (msg.type === 'error') {
     const callId = msg.callId as string | null;
     const err = new Error(msg.message as string);
@@ -334,6 +384,8 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingClearBrepShapes.delete(callId ?? '');
       pendingSimplifies.get(callId)?.reject(err);
       pendingSimplifies.delete(callId ?? '');
+      pendingEnhances.get(callId)?.reject(err);
+      pendingEnhances.delete(callId ?? '');
     }
   }
 }
@@ -627,6 +679,75 @@ export async function simplifyInWorker(
     const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
     engineWorker!.postMessage(
       { type: 'simplify', callId, mesh: meshCopy, targetTriangles, maxTolerance },
+      transfer,
+    );
+  });
+}
+
+// ── Enhance Worker client ───────────────────────────────────────────────────
+
+export interface EnhanceWorkerResult {
+  mesh: MeshData;
+  triangleCount: number;
+}
+
+export class EnhanceAbortError extends Error {
+  constructor(message = 'enhance aborted') {
+    super(message);
+    this.name = 'AbortError';
+  }
+}
+
+/** Run the mesh-budget enhance (refineToLength) search inside the geometry
+ *  Worker. Mirrors simplifyInWorker but adds triangles instead of removing
+ *  them. Resolves to null when no enhancement was needed/possible or the
+ *  caller aborted. */
+export async function enhanceInWorker(
+  mesh: MeshData,
+  targetTriangles: number,
+  maxEdgeLength: number,
+  onProgress: (fraction: number) => void,
+  signal?: AbortSignal,
+): Promise<EnhanceWorkerResult | null> {
+  if (signal?.aborted) throw new EnhanceAbortError();
+  initEngineWorker();
+  await workerReady;
+  const callId = `enhance-${++callIdCounter}`;
+
+  return new Promise<EnhanceWorkerResult | null>((resolve, reject) => {
+    let abortListener: (() => void) | null = null;
+    pendingEnhances.set(callId, {
+      resolve: (r) => {
+        if (signal && abortListener) signal.removeEventListener('abort', abortListener);
+        resolve(r);
+      },
+      reject: (e) => {
+        if (signal && abortListener) signal.removeEventListener('abort', abortListener);
+        reject(e);
+      },
+      onProgress,
+    });
+    if (signal) {
+      abortListener = () => {
+        engineWorker?.postMessage({ type: 'enhance_cancel', callId });
+        const pending = pendingEnhances.get(callId);
+        if (pending) {
+          pendingEnhances.delete(callId);
+          pending.reject(new EnhanceAbortError());
+        }
+      };
+      signal.addEventListener('abort', abortListener, { once: true });
+    }
+    const meshCopy: MeshData = {
+      vertProperties: mesh.vertProperties.slice(),
+      triVerts: mesh.triVerts.slice(),
+      numVert: mesh.numVert,
+      numTri: mesh.numTri,
+      numProp: mesh.numProp,
+    };
+    const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
+    engineWorker!.postMessage(
+      { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength },
       transfer,
     );
   });

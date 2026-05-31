@@ -17,6 +17,7 @@ import {
 
 export interface ToolbarCallbacks {
   onRun: () => void;
+  onCancelRun: () => void;
   onExportGLB: () => void;
   onExportSTL: () => void;
   onExportOBJ: () => void;
@@ -111,6 +112,13 @@ export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp,.
 let _autoRun = true;
 let _onAutoRunChange: ((on: boolean) => void) | null = null;
 let _syncAutoRunUI: (() => void) | null = null;
+let _setRunState: ((running: boolean, elapsedMs: number) => void) | null = null;
+
+/** Show/hide the cancel button and elapsed timer in the toolbar run group.
+ *  Called by main.ts at the start/end of every runCodeSync execution. */
+export function setRunState(running: boolean, elapsedMs = 0): void {
+  _setRunState?.(running, elapsedMs);
+}
 
 /** Whether auto-run on edit is enabled */
 export function isAutoRun(): boolean { return _autoRun; }
@@ -202,9 +210,37 @@ export function createToolbar(
     if (_autoRun) callbacks.onRun();
   });
 
+  // Cancel button — visible only while a render is in flight
+  const btnCancelRun = document.createElement('button');
+  btnCancelRun.id = 'btn-cancel-run';
+  btnCancelRun.type = 'button';
+  btnCancelRun.className = 'hidden px-2 py-1 rounded text-xs text-red-400 hover:bg-zinc-700 transition-colors';
+  btnCancelRun.textContent = '× Cancel';
+  btnCancelRun.title = 'Cancel the current render';
+  btnCancelRun.addEventListener('click', callbacks.onCancelRun);
+
+  // Elapsed time label — updated every 100 ms during a render
+  const runElapsedEl = document.createElement('span');
+  runElapsedEl.id = 'run-elapsed';
+  runElapsedEl.className = 'hidden text-xs text-zinc-500 font-mono';
+
+  _setRunState = (running, elapsedMs) => {
+    if (running) {
+      btnCancelRun.classList.remove('hidden');
+      runElapsedEl.classList.remove('hidden');
+      runElapsedEl.textContent = `${(elapsedMs / 1000).toFixed(1)}s`;
+    } else {
+      btnCancelRun.classList.add('hidden');
+      runElapsedEl.classList.add('hidden');
+      runElapsedEl.textContent = '';
+    }
+  };
+
   syncAutoRunUI();
   runGroup.appendChild(autoRunBtn);
   runGroup.appendChild(btnRun);
+  runGroup.appendChild(runElapsedEl);
+  runGroup.appendChild(btnCancelRun);
   toolbar.appendChild(runGroup);
 
   // Language toggle — segmented JS / SCAD control

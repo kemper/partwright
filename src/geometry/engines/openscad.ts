@@ -5,6 +5,7 @@ import { scanScadLabels } from './scadLabels';
 import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
 import { scadDiagnostics } from '../sourceDiagnostics';
 import { ensureBosl2InMemfs, sourceUsesBosl2 } from '../bosl2Loader';
+import { injectFontsIntoMemfs, preloadFonts, sourceUsesText } from '../fontsLoader';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { parseScadParams, buildScadDefines } from '../scadParams';
 
@@ -46,16 +47,21 @@ function formatStderr(lines: string[]): string {
 }
 
 /** Create a fresh OpenSCAD WASM instance. Each callMain() can only be called
- *  once per Emscripten instantiation, so we create a new one for every run. */
-async function createInstance(): Promise<{ instance: any; stderr: string[]; stdout: string[] }> {
+ *  once per Emscripten instantiation, so we create a new one for every run.
+ *  preRunHook, if provided, is called during WASM module initialization (before
+ *  callMain), which is the only window where ENV changes like FONTCONFIG_FILE
+ *  take effect. */
+async function createInstance(
+  preRunHook?: (mod: any) => void,
+): Promise<{ instance: any; stderr: string[]; stdout: string[] }> {
   if (!createFn) throw new Error('OpenSCAD factory not loaded — call init() first');
   const stderr: string[] = [];
   const stdout: string[] = [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const wrapper = await createFn({
     noInitialRun: true,
     print: (s: string) => { stdout.push(s); },
     printErr: (s: string) => { stderr.push(s); },
+    ...(preRunHook ? { preRun: [preRunHook] } : {}),
   });
   const instance = wrapper.getInstance();
   return { instance, stderr, stdout };
@@ -156,10 +162,21 @@ async function runScadInner(source: string, defines: string[]): Promise<MeshResu
   const labelScan = scanScadLabels(source);
   const effectiveSource = LABEL_MODULE_PREFIX + source;
 
+  let preRunHook: ((mod: any) => void) | undefined;
+  if (sourceUsesText(source)) {
+    try {
+      await preloadFonts();
+      preRunHook = injectFontsIntoMemfs;
+    } catch (e) {
+      const error = `Failed to load fonts for text(): ${e instanceof Error ? e.message : String(e)}`;
+      return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
+    }
+  }
+
   let instance: any;
   let stderr: string[];
   try {
-    ({ instance, stderr } = await createInstance());
+    ({ instance, stderr } = await createInstance(preRunHook));
   } catch (e) {
     const error = `Failed to create OpenSCAD instance: ${e instanceof Error ? e.message : String(e)}`;
     return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
@@ -472,10 +489,18 @@ export async function validateScadAsync(source: string): Promise<ValidateResult>
     return { valid: false, error, diagnostics: scadDiagnostics(source, error) };
   }
 
+  let preRunHook: ((mod: any) => void) | undefined;
+  if (sourceUsesText(source)) {
+    try {
+      await preloadFonts();
+      preRunHook = injectFontsIntoMemfs;
+    } catch { /* validation can proceed even if fonts fail to load */ }
+  }
+
   let instance: any;
   let stderr: string[];
   try {
-    ({ instance, stderr } = await createInstance());
+    ({ instance, stderr } = await createInstance(preRunHook));
   } catch (e) {
     const error = `Failed to create OpenSCAD instance: ${e instanceof Error ? e.message : String(e)}`;
     return { valid: false, error, diagnostics: scadDiagnostics(source, error) };

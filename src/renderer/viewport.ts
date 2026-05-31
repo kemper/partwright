@@ -342,6 +342,19 @@ export function setOnMeshUpdate(fn: (mesh: MeshData) => void): void {
   onMeshUpdate = fn;
 }
 
+export function clearMesh(): void {
+  while (meshGroup.children.length > 0) {
+    const child = meshGroup.children[0];
+    meshGroup.remove(child);
+    if (child instanceof THREE.Mesh) {
+      child.geometry.dispose();
+      const mat = child.material;
+      if (Array.isArray(mat)) mat.forEach(m => m.dispose());
+      else if (mat) mat.dispose();
+    }
+  }
+}
+
 export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boolean }): void {
   // Clear previous
   while (meshGroup.children.length > 0) {

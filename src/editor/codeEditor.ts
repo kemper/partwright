@@ -1,5 +1,6 @@
 import { EditorView } from '@codemirror/view';
 import { EditorState, Compartment, type Extension } from '@codemirror/state';
+import { openSearchPanel } from '@codemirror/search';
 import { javascript } from '@codemirror/lang-javascript';
 import { StreamLanguage } from '@codemirror/language';
 import { oneDark } from '@codemirror/theme-one-dark';
@@ -238,16 +239,8 @@ export function setValue(code: string): void {
 }
 
 function applyFormat(code: string, lang: EditorLanguage): string {
+  if (lang === 'scad') return code;
   try {
-    if (lang === 'scad') {
-      return jsBeautify(code, {
-        indent_size: 2,
-        brace_style: 'collapse',
-        preserve_newlines: true,
-        max_preserve_newlines: 2,
-        end_with_newline: true,
-      });
-    }
     return jsBeautify(code, {
       indent_size: 2,
       indent_with_tabs: false,
@@ -265,6 +258,11 @@ function applyFormat(code: string, lang: EditorLanguage): string {
   } catch {
     return code;
   }
+}
+
+export function openFindReplace(): void {
+  if (!editorView) return;
+  openSearchPanel(editorView);
 }
 
 export function formatCode(): void {
