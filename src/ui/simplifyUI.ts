@@ -201,14 +201,15 @@ function syncModeUI(): void {
     numberInput.max = String(base);
     numberInput.value = String(info.currentTriangles);
   } else {
-    // Enhance: range from base up to 8× base.
+    // Enhance: slider goes up to 8× base, but the number input accepts any
+    // value ≥ base — the user can type beyond the slider range.
     const max = base * 8;
     const defaultTarget = base * 2;
     slider.min = String(base);
     slider.max = String(max);
     slider.value = String(defaultTarget);
     numberInput.min = String(base);
-    numberInput.max = String(max);
+    numberInput.removeAttribute('max');
     numberInput.value = String(defaultTarget);
   }
 }
@@ -254,8 +255,10 @@ function showResult(count: number): void {
 function clampTarget(raw: number): number {
   if (!info) return raw;
   const min = Number(slider?.min ?? 4);
-  const max = Number(slider?.max ?? info.baseTriangles * 8);
   if (!Number.isFinite(raw)) return mode === 'simplify' ? info.baseTriangles : info.baseTriangles * 2;
+  // Enhance: only enforce the minimum — the user can type beyond the slider range.
+  if (mode === 'enhance') return Math.max(min, Math.round(raw));
+  const max = Number(slider?.max ?? info.baseTriangles);
   return Math.max(min, Math.min(max, Math.round(raw)));
 }
 
@@ -437,14 +440,14 @@ function buildPanel(): HTMLElement {
   numberInput.addEventListener('input', () => {
     if (applying) return;
     const t = clampTarget(Number(numberInput!.value));
-    if (slider) slider.value = String(t);
+    if (slider) slider.value = String(Math.min(Number(slider.max), t));
     updateApplyEnabled();
   });
   numberInput.addEventListener('change', () => {
     if (applying) return;
     const t = clampTarget(Number(numberInput!.value));
     numberInput!.value = String(t);
-    if (slider) slider.value = String(t);
+    if (slider) slider.value = String(Math.min(Number(slider.max), t));
     updateApplyEnabled();
   });
   row.appendChild(numberInput);
