@@ -30,6 +30,14 @@ const FONT_FILES = [
   'LiberationSans-Bold.ttf',
   'LiberationSans-Italic.ttf',
   'LiberationSans-BoldItalic.ttf',
+  'LiberationSerif-Regular.ttf',
+  'LiberationSerif-Bold.ttf',
+  'LiberationSerif-Italic.ttf',
+  'LiberationSerif-BoldItalic.ttf',
+  'LiberationMono-Regular.ttf',
+  'LiberationMono-Bold.ttf',
+  'LiberationMono-Italic.ttf',
+  'LiberationMono-BoldItalic.ttf',
 ];
 
 let fontsPromise: Promise<Map<string, Uint8Array>> | null = null;

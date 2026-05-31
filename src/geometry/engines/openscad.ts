@@ -6,6 +6,7 @@ import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
 import { scadDiagnostics } from '../sourceDiagnostics';
 import { ensureBosl2InMemfs, sourceUsesBosl2 } from '../bosl2Loader';
 import { injectFontsIntoMemfs, preloadFonts, sourceUsesText } from '../fontsLoader';
+import { getScadFont } from '../scadFont';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { parseScadParams, buildScadDefines } from '../scadParams';
 
@@ -15,10 +16,15 @@ import { parseScadParams, buildScadDefines } from '../scadParams';
  *  own copy (e.g. when sharing the file across editors). */
 const LABEL_MODULE_PREFIX = 'module label(name) { children(); }\n';
 
-/** Line count of {@link LABEL_MODULE_PREFIX}. OpenSCAD's stderr reports line
- *  numbers against the file it actually compiled, so we subtract this from
- *  every "line N" reference before handing the message to scadDiagnostics. */
-const LABEL_PREFIX_LINES = 1;
+/** Line count of the injected prefix (label module + $font line). OpenSCAD's
+ *  stderr reports line numbers against the file it compiled, so we subtract
+ *  this from every "line N" reference before handing it to scadDiagnostics. */
+const LABEL_PREFIX_LINES = 2;
+
+/** Build the full source prefix: label helper + SCAD-wide default font. */
+function buildPrefix(): string {
+  return LABEL_MODULE_PREFIX + `$font = "${getScadFont()}";\n`;
+}
 
 /** Rewrite "line N" references in an OpenSCAD stderr blob so they line up
  *  with the user's source instead of the prefixed version we fed the WASM. */
@@ -160,7 +166,7 @@ async function runScadInner(source: string, defines: string[]): Promise<MeshResu
   // Source-side scan — single linear pass over the user's text. Decides which
   // compile mode we use below (label-aware vs the historical STL fast path).
   const labelScan = scanScadLabels(source);
-  const effectiveSource = LABEL_MODULE_PREFIX + source;
+  const effectiveSource = buildPrefix() + source;
 
   let preRunHook: ((mod: any) => void) | undefined;
   if (sourceUsesText(source)) {
@@ -515,9 +521,9 @@ export async function validateScadAsync(source: string): Promise<ValidateResult>
         return { valid: false, error, diagnostics: scadDiagnostics(source, error) };
       }
     }
-    // Match runScadAsync — prepend the label() helper so a source that uses
-    // it doesn't trip "unknown module" warnings during the AST pass.
-    instance.FS.writeFile('/v.scad', LABEL_MODULE_PREFIX + source);
+    // Match runScadAsync — prepend the same prefix so a source that uses
+    // label() doesn't trip "unknown module" warnings during the AST pass.
+    instance.FS.writeFile('/v.scad', buildPrefix() + source);
     const code = instance.callMain([
       '--export-format=ast',
       '-o', '/v.ast',

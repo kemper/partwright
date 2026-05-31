@@ -6,7 +6,7 @@
 //
 // Protocol — Main → Worker:
 //   { type: 'init' }
-//   { type: 'execute',           callId, code, lang?, imports?, circularSegments?, params? }
+//   { type: 'execute',           callId, code, lang?, imports?, circularSegments?, scadFont?, params? }
 //   { type: 'validate',          callId, code, lang? }
 //   { type: 'exportSTEP',        callId }
 //   { type: 'importSTEPToBrep',  callId, bytes, filename }
@@ -42,6 +42,7 @@ import { runReplicadAsync, replicadEngine, getLastBrepShape, clearLastBrepShape 
 import { voxelEngine } from './engines/voxel';
 import { ensureBrepLoaded, sourceUsesBrep, parseStepBlob, pushPendingBrepImport, clearPendingBrepImports } from './brepRuntime';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
+import { setScadFontOverride, type ScadFontFamily } from './scadFont';
 import { setCircularSegmentsOverride } from './qualitySettings';
 import type { Language } from './engines/types';
 import { simplifyToTriangleBudget, enhanceToTriangleBudget } from './simplify';
@@ -88,12 +89,13 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, scadFont, params } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
       imports?: ImportedMesh[];
       circularSegments?: number;
+      scadFont?: ScadFontFamily;
       params?: Record<string, unknown> | null;
     };
     try {
@@ -105,6 +107,7 @@ self.onmessage = async (event: MessageEvent) => {
       // most-recently-started run, whose result the main thread keeps, sets the
       // override last and so always reads the correct value.
       if (typeof circularSegments === 'number') setCircularSegmentsOverride(circularSegments);
+      if (scadFont) setScadFontOverride(scadFont);
       // Populate the per-run import registry so api.imports works in user code.
       setActiveImports(imports ?? []);
 

@@ -1,5 +1,6 @@
 import { partwrightMarkSvg } from './brand';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
+import { getScadFont, setScadFont, SCAD_FONT_FAMILIES, type ScadFontFamily } from '../geometry/scadFont';
 import { downloadBlob } from '../export/download';
 import { getUnits, setUnits, type UnitSystem } from '../geometry/units';
 import {
@@ -131,6 +132,7 @@ let _langBtnJs: HTMLButtonElement | null = null;
 let _langBtnScad: HTMLButtonElement | null = null;
 let _langBtnBrep: HTMLButtonElement | null = null;
 let _langBtnVoxel: HTMLButtonElement | null = null;
+let _scadFontWrapper: HTMLElement | null = null;
 let _currentLang: 'manifold-js' | 'scad' | 'replicad' | 'voxel' = 'manifold-js';
 
 const LANG_ACTIVE = 'px-2 py-0.5 rounded text-xs font-medium transition-colors bg-zinc-700 text-zinc-100';
@@ -142,6 +144,7 @@ function syncLangToggle() {
   _langBtnScad.className = _currentLang === 'scad' ? LANG_ACTIVE : LANG_INACTIVE;
   _langBtnBrep.className = _currentLang === 'replicad' ? LANG_ACTIVE : LANG_INACTIVE;
   _langBtnVoxel.className = _currentLang === 'voxel' ? LANG_ACTIVE : LANG_INACTIVE;
+  if (_scadFontWrapper) _scadFontWrapper.classList.toggle('hidden', _currentLang !== 'scad');
 }
 
 /** Update the toolbar language toggle from outside (e.g. when opening a session). */
@@ -266,6 +269,33 @@ export function createToolbar(
   langHelpBtn.setAttribute('aria-label', 'Open language help');
   langHelpBtn.addEventListener('click', () => { void callbacks.onLanguageHelp(); });
   toolbar.appendChild(langHelpBtn);
+
+  // SCAD font selector — only visible when the active language is SCAD
+  const scadFontWrapper = document.createElement('div');
+  scadFontWrapper.className = 'flex items-center gap-1 ml-2 hidden';
+  scadFontWrapper.title = 'Default font for SCAD text() calls';
+
+  const scadFontLabel = document.createElement('span');
+  scadFontLabel.className = 'text-[10px] text-zinc-500 select-none';
+  scadFontLabel.textContent = 'Font';
+  scadFontWrapper.appendChild(scadFontLabel);
+
+  const scadFontSelect = document.createElement('select');
+  scadFontSelect.className = 'text-xs bg-zinc-900 border border-zinc-700 rounded px-1.5 py-0.5 text-zinc-300 focus:outline-none focus:border-zinc-500 cursor-pointer';
+  scadFontSelect.title = 'Default font for SCAD text() calls';
+  for (const { value, label } of SCAD_FONT_FAMILIES) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    scadFontSelect.appendChild(opt);
+  }
+  scadFontSelect.value = getScadFont();
+  scadFontSelect.addEventListener('change', () => {
+    setScadFont(scadFontSelect.value as ScadFontFamily);
+  });
+  scadFontWrapper.appendChild(scadFontSelect);
+  toolbar.appendChild(scadFontWrapper);
+  _scadFontWrapper = scadFontWrapper;
 
   // Spacer
   const spacer = document.createElement('div');

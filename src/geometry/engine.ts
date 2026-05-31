@@ -7,6 +7,7 @@ import { replicadEngine } from './engines/replicad';
 import { voxelEngine } from './engines/voxel';
 import { getActiveImports } from '../import/importedMesh';
 import { getDefaultCircularSegments } from './qualitySettings';
+import { getScadFont } from './scadFont';
 import { getConfig } from '../config/appConfig';
 
 export type { Language };
@@ -414,7 +415,7 @@ export async function executeCodeAsync(source: string, lang?: Language, paramOve
       resolve: (r) => { clearTimeout(timer); resolve(r); },
       reject:  (e) => { clearTimeout(timer); reject(e); },
     });
-    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null });
+    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), scadFont: getScadFont(), params: paramOverrides ?? null });
   });
 }
 
