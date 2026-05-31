@@ -19,6 +19,7 @@ export interface LayoutElements {
   dataContainer: HTMLElement;
   statusBar: HTMLElement;
   clipControls: HTMLElement;
+  findReplaceBtn: HTMLButtonElement;
   formatBtn: HTMLButtonElement;
   autoFormatToggle: HTMLButtonElement;
   switchTab: (tab: TabName, options?: SwitchTabOptions) => void;
@@ -85,6 +86,13 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   const editorHeaderSpacer = document.createElement('div');
   editorHeaderSpacer.className = 'flex-1';
   editorHeader.appendChild(editorHeaderSpacer);
+
+  const findReplaceBtn = document.createElement('button');
+  findReplaceBtn.id = 'find-replace-btn';
+  findReplaceBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
+  findReplaceBtn.textContent = 'Find/Replace';
+  findReplaceBtn.title = 'Find/Replace (Ctrl+H)';
+  editorHeader.appendChild(findReplaceBtn);
 
   const formatBtn = document.createElement('button');
   formatBtn.id = 'format-btn';
@@ -642,7 +650,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, partsRail, editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, togglePartsRail, collapseEditor, expandEditor };
+  return { editorPane, partsRail, editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, togglePartsRail, collapseEditor, expandEditor };
 }
 
 // Rail item base — a bottom accent border on mobile (horizontal strip) becomes
