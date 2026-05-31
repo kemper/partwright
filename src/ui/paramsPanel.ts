@@ -59,8 +59,11 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   // Header: a "Customize" title, a Reset button, and a close (×) button. Closing
   // hides the whole panel; the viewport "Customize" toggle pill reopens it (see
   // onVisibilityChange), so the close → reopen loop is always discoverable.
+  // The header also doubles as a drag handle (see below) — `cursor-move` hints
+  // that, and `touch-none` stops the browser claiming the gesture for scroll
+  // before pointer-capture kicks in.
   const header = document.createElement('div');
-  header.className = 'flex items-center gap-2 px-2.5 py-1.5 border-b border-zinc-700/70 select-none';
+  header.className = 'flex items-center gap-2 px-2.5 py-1.5 border-b border-zinc-700/70 select-none cursor-move touch-none';
 
   const title = document.createElement('span');
   title.className = 'text-xs font-medium text-zinc-300 flex-1 truncate';
@@ -104,6 +107,11 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
 
   function applyVisibility(): void {
     root.classList.toggle('hidden', !isOpen());
+    // Once visible, keep it fully inside the screen. Deferred a frame so the
+    // panel has laid out (it can't be measured while `hidden`). This is what
+    // rescues the mobile case where the default bottom-left anchor put the
+    // panel's bottom edge below the fold.
+    if (isOpen()) requestAnimationFrame(clampIntoView);
     notify();
   }
 
@@ -151,6 +159,88 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   }
 
   closeBtn.addEventListener('click', () => { userClosed = true; applyVisibility(); });
+
+  // --- Dragging --------------------------------------------------------------
+  // The header is a drag handle so the panel can be repositioned on both desktop
+  // and touch — pointer events cover mouse, touch, and stylus uniformly. Position
+  // is tracked as inline left/top (relative to the offset parent); until the user
+  // drags, the panel keeps its CSS-default bottom-left anchor.
+  let dragged = false;
+
+  function applyPos(left: number, top: number): void {
+    root.style.left = `${left}px`;
+    root.style.top = `${top}px`;
+    root.style.right = 'auto';
+    root.style.bottom = 'auto';
+  }
+
+  // Clamp the panel fully inside the visible intersection of its offset parent
+  // and the window, so it can never sit (even partly) off-screen. Only switches
+  // to explicit positioning when it actually needs to move (or the user already
+  // dragged it), so the default desktop placement keeps its CSS anchor.
+  function clampIntoView(): void {
+    const parent = root.offsetParent as HTMLElement | null;
+    if (!parent || root.classList.contains('hidden')) return;
+    const pad = 8;
+    const pr = parent.getBoundingClientRect();
+    const rr = root.getBoundingClientRect();
+    const visTop = Math.max(pr.top, 0);
+    const visBottom = Math.min(pr.bottom, window.innerHeight);
+    const visLeft = Math.max(pr.left, 0);
+    const visRight = Math.min(pr.right, window.innerWidth);
+    const minLeft = (visLeft - pr.left) + pad;
+    const minTop = (visTop - pr.top) + pad;
+    const maxLeft = (visRight - pr.left) - rr.width - pad;
+    const maxTop = (visBottom - pr.top) - rr.height - pad;
+    const curLeft = rr.left - pr.left;
+    const curTop = rr.top - pr.top;
+    // Math.max(min, …) guards the case where the panel is taller/wider than the
+    // visible area: pin to the top/left edge rather than pushing it off the other.
+    const left = Math.min(Math.max(curLeft, minLeft), Math.max(minLeft, maxLeft));
+    const top = Math.min(Math.max(curTop, minTop), Math.max(minTop, maxTop));
+    if (dragged || Math.abs(left - curLeft) > 0.5 || Math.abs(top - curTop) > 0.5) {
+      applyPos(left, top);
+    }
+  }
+
+  let dragPointerId: number | null = null;
+  let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+
+  header.addEventListener('pointerdown', (e) => {
+    // Don't start a drag from the Reset / close buttons — let them click.
+    if ((e.target as HTMLElement).closest('button')) return;
+    const parent = root.offsetParent as HTMLElement | null;
+    if (!parent) return;
+    const pr = parent.getBoundingClientRect();
+    const rr = root.getBoundingClientRect();
+    startLeft = rr.left - pr.left;
+    startTop = rr.top - pr.top;
+    startX = e.clientX;
+    startY = e.clientY;
+    dragPointerId = e.pointerId;
+    dragged = true;
+    header.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+
+  header.addEventListener('pointermove', (e) => {
+    if (dragPointerId !== e.pointerId) return;
+    applyPos(startLeft + (e.clientX - startX), startTop + (e.clientY - startY));
+  });
+
+  function endDrag(e: PointerEvent): void {
+    if (dragPointerId !== e.pointerId) return;
+    dragPointerId = null;
+    if (header.hasPointerCapture(e.pointerId)) header.releasePointerCapture(e.pointerId);
+    clampIntoView();
+  }
+  header.addEventListener('pointerup', endDrag);
+  header.addEventListener('pointercancel', endDrag);
+
+  // Keep it on-screen across viewport changes (rotate, resize, mobile chrome
+  // show/hide). The panel is a singleton created once for the app's lifetime,
+  // so the window listener never needs removing.
+  window.addEventListener('resize', () => { if (isOpen()) clampIntoView(); });
 
   return {
     element: root,
