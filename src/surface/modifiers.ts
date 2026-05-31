@@ -18,6 +18,7 @@ import { smoothSurface, type SmoothOptions } from './smoothSurface';
 import { voxelizeMesh, type VoxelizeOptions } from './voxelizeMesh';
 import { extractPositions, bboxOf } from './meshSubdivide';
 import { encodeGrid } from '../geometry/voxel/grid';
+import { scaleMesh } from './scaleMesh';
 import { meshGrid } from '../geometry/voxel/mesher';
 
 export type SurfaceModifierId = 'fuzzy' | 'smooth' | 'voxelize';
@@ -103,6 +104,28 @@ export function applySmooth(mesh: MeshData, opts: SmoothOptions): ModifierManifo
 export interface VoxelizeModifierOptions extends VoxelizeOptions {
   /** Emit a `.smooth()` call so the voxels render with rounded corners. */
   smooth?: boolean;
+}
+
+export function applyScale(
+  mesh: MeshData,
+  sx: number,
+  sy: number,
+  sz: number,
+): ModifierManifoldResult {
+  const baked = scaleMesh(mesh, sx, sy, sz);
+  const uniform = sx === sy && sy === sz;
+  const desc = uniform
+    ? `${(sx * 100).toFixed(1)}%`
+    : `X×${sx.toFixed(4)} Y×${sy.toFixed(4)} Z×${sz.toFixed(4)}`;
+  return {
+    kind: 'manifold',
+    label: `scaled (${desc})`,
+    mesh: baked,
+    code: manifoldWrapper([
+      `Scaled on ${today()} — ${desc}.`,
+      `The resized mesh is baked onto api.imports[0]. Open the Resize panel to scale further.`,
+    ]),
+  };
 }
 
 export function applyVoxelize(mesh: MeshData, opts: VoxelizeModifierOptions): ModifierVoxelResult {

@@ -1,5 +1,6 @@
 import { EditorView } from '@codemirror/view';
 import { EditorState, Compartment, Transaction, type Extension } from '@codemirror/state';
+import { openSearchPanel } from '@codemirror/search';
 import { javascript } from '@codemirror/lang-javascript';
 import { StreamLanguage } from '@codemirror/language';
 import { oneDark } from '@codemirror/theme-one-dark';
@@ -323,6 +324,11 @@ function applyFormat(code: string, lang: EditorLanguage): string {
   } catch {
     return code;
   }
+}
+
+export function openFindReplace(): void {
+  if (!editorView) return;
+  openSearchPanel(editorView);
 }
 
 export function formatCode(): void {
