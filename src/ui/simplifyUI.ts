@@ -18,6 +18,9 @@ import { startProgress, updateProgress, endProgress } from './progressModal';
 import { isWireframeVisible, setWireframeVisible } from '../renderer/viewport';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
+import { QUALITY_OPTIONS, QUALITY_SEGMENTS, loadQualitySettings } from '../geometry/qualitySettings';
+import { saveQualityForLang, initQualityLogic, notifyLanguageChange as notifyQualityLangChange } from './curvatureQualityPanel';
+import type { Language } from '../geometry/engine';
 
 export interface SimplifyOpenInfo {
   baseTriangles: number;
@@ -71,6 +74,11 @@ const BTN_ACTIVE = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-blue
 const MODE_INACTIVE = 'flex-1 px-2 py-1 rounded text-xs text-zinc-400 bg-zinc-700/50 [@media(hover:hover)]:hover:bg-zinc-600/50 transition-colors border border-zinc-600/40';
 const MODE_ACTIVE = 'flex-1 px-2 py-1 rounded text-xs text-blue-300 bg-blue-500/20 transition-colors border border-blue-500/40';
 
+let qualityRadios: HTMLInputElement[] = [];
+let stopRenderBtn: HTMLButtonElement | null = null;
+let isScadLang = false;
+let onCancelRender: (() => void) | null = null;
+
 let simplifyBtn: HTMLButtonElement | null = null;
 let panel: HTMLElement | null = null;
 let panelHeader: HTMLElement | null = null;
@@ -106,14 +114,21 @@ let prevWireframeVisible: boolean | null = null;
 /** Whether color preservation is currently requested. */
 let preserveColor = true;
 
-export function initSimplifyUI(controlsContainer: HTMLElement, h: SimplifyHandlers): void {
+export function initSimplifyUI(
+  controlsContainer: HTMLElement,
+  h: SimplifyHandlers,
+  opts: { initialLang: Language; onCancelRender?: () => void },
+): void {
   handlers = h;
+  isScadLang = opts.initialLang === 'scad';
+  onCancelRender = opts.onCancelRender ?? null;
+  initQualityLogic(opts.initialLang);
 
   simplifyBtn = document.createElement('button');
   simplifyBtn.id = 'simplify-toggle';
   simplifyBtn.className = BTN_INACTIVE;
-  simplifyBtn.textContent = '⬢ Simplify';
-  simplifyBtn.title = 'Reduce or enhance the model’s triangle count';
+  simplifyBtn.textContent = '○ Quality';
+  simplifyBtn.title = 'Adjust curvature quality and simplify or enhance triangle count';
   simplifyBtn.addEventListener('click', toggle);
 
   // Sit immediately before Measure so the overlay reads Paint · Simplify · Measure.
@@ -144,6 +159,33 @@ export function refreshSimplifyIfOpen(): void {
 export function forceDeactivate(): void {
   if (!isSimplifyOpen()) return;
   closePanel();
+}
+
+/** Call when the active modeling language changes so quality storage and the
+ *  radio display reflect the new language's saved preference. */
+export function notifyQualityLangChanged(lang: Language): void {
+  notifyQualityLangChange(lang);
+  isScadLang = lang === 'scad';
+  syncQualityRadios();
+  if (stopRenderBtn && !isScadLang) stopRenderBtn.classList.add('hidden');
+}
+
+/** Call when a code run starts (true) or ends (false) so the Stop button
+ *  shows only while a render is actually in progress (SCAD mode only). */
+export function setQualityRenderState(isRendering: boolean): void {
+  if (!stopRenderBtn) return;
+  if (isScadLang && isRendering) {
+    stopRenderBtn.classList.remove('hidden');
+  } else {
+    stopRenderBtn.classList.add('hidden');
+  }
+}
+
+function syncQualityRadios(): void {
+  const current = loadQualitySettings();
+  for (const radio of qualityRadios) {
+    radio.checked = radio.value === current.quality;
+  }
 }
 
 function toggle(): void {
@@ -379,12 +421,12 @@ function buildPanel(): HTMLElement {
   panelHeader = header;
   const titleEl = document.createElement('div');
   titleEl.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
-  titleEl.textContent = 'Simplify / Enhance';
+  titleEl.textContent = 'Quality';
   const closeBtn = document.createElement('button');
   closeBtn.className = 'text-zinc-400 hover:text-zinc-200 transition-colors leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-zinc-700/60';
   closeBtn.textContent = '×';
   closeBtn.title = 'Close';
-  closeBtn.setAttribute('aria-label', 'Close');
+  closeBtn.setAttribute('aria-label', 'Close quality panel');
   closeBtn.addEventListener('click', closePanel);
   header.append(titleEl, closeBtn);
   p.appendChild(header);
@@ -393,6 +435,70 @@ function buildPanel(): HTMLElement {
   const c = document.createElement('div');
   c.className = 'p-2.5';
   p.appendChild(c);
+
+  // --- Curvature quality section ---
+  const qualitySection = document.createElement('div');
+  qualitySection.className = 'mb-2';
+
+  const qualityLabel = document.createElement('div');
+  qualityLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5 font-medium';
+  qualityLabel.textContent = 'Curvature Quality';
+  qualitySection.appendChild(qualityLabel);
+
+  const radiosWrap = document.createElement('div');
+  radiosWrap.className = 'flex flex-col gap-0.5';
+  qualityRadios = [];
+
+  for (const opt of QUALITY_OPTIONS) {
+    const row = document.createElement('label');
+    row.className = 'flex items-center gap-1.5 py-0.5 cursor-pointer rounded hover:bg-zinc-700/30 transition-colors';
+    row.title = opt.hint;
+
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'curvature-quality';
+    radio.value = opt.id;
+    radio.className = 'accent-blue-400 cursor-pointer flex-shrink-0';
+    radio.addEventListener('change', () => {
+      if (!radio.checked) return;
+      onCancelRender?.();
+      const { customSegments } = loadQualitySettings();
+      saveQualityForLang({ quality: opt.id, customSegments });
+    });
+    qualityRadios.push(radio);
+
+    const labelEl = document.createElement('span');
+    labelEl.className = 'text-xs text-zinc-200 flex-1';
+    labelEl.textContent = opt.label;
+
+    const segsEl = document.createElement('span');
+    segsEl.className = 'text-[10px] text-zinc-500 tabular-nums';
+    segsEl.textContent = `${QUALITY_SEGMENTS[opt.id]}`;
+
+    row.append(radio, labelEl, segsEl);
+    radiosWrap.appendChild(row);
+  }
+  qualitySection.appendChild(radiosWrap);
+  syncQualityRadios();
+
+  stopRenderBtn = document.createElement('button');
+  stopRenderBtn.className = 'hidden w-full mt-2 px-2 py-1 rounded text-xs bg-red-500/20 text-red-300 [@media(hover:hover)]:hover:bg-red-500/30 transition-colors border border-red-500/40';
+  stopRenderBtn.textContent = '■ Stop rendering';
+  stopRenderBtn.title = 'Cancel the current OpenSCAD render';
+  stopRenderBtn.addEventListener('click', () => { onCancelRender?.(); });
+  qualitySection.appendChild(stopRenderBtn);
+
+  c.appendChild(qualitySection);
+
+  // Divider between quality and simplify sections
+  const divider = document.createElement('div');
+  divider.className = 'border-t border-zinc-600/40 my-2';
+  c.appendChild(divider);
+
+  const simplifySubHeader = document.createElement('div');
+  simplifySubHeader.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-2 font-medium';
+  simplifySubHeader.textContent = 'Simplify / Enhance';
+  c.appendChild(simplifySubHeader);
 
   originalEl = document.createElement('div');
   originalEl.id = 'simplify-original';

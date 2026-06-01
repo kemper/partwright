@@ -142,16 +142,53 @@ export const openscadEngine: Engine = {
  *  drive via `api.params`. The user's tweaks arrive as `paramOverrides` and are
  *  applied through OpenSCAD's native `-D name=value` flag — no source
  *  rewriting. The parsed schema rides on every result (success and error) so
- *  the panel stays live, matching the other engines. */
-export async function runScadAsync(source: string, paramOverrides?: Record<string, unknown>, companionFiles?: Record<string, string>): Promise<MeshResult> {
+ *  the panel stays live, matching the other engines.
+ *
+ *  onPreview: optional callback invoked after a fast low-resolution preview
+ *  pass (fn=16) completes. Only fires when the active quality setting exceeds
+ *  the preview threshold; the caller can update the viewport immediately while
+ *  the full-quality pass continues in the background. */
+export async function runScadAsync(
+  source: string,
+  paramOverrides?: Record<string, unknown>,
+  onPreview?: (result: MeshResult) => void,
+  companionFiles?: Record<string, string>,
+): Promise<MeshResult> {
   const schema = parseScadParams(source);
   const paramsSchema = schema.length > 0 ? schema : undefined;
   const defines = buildScadDefines(source, paramOverrides);
-  const result = await runScadInner(source, defines, companionFiles);
+  const result = await runScadInner(source, defines, onPreview, companionFiles);
   return paramsSchema ? { ...result, paramsSchema } : result;
 }
 
-async function runScadInner(source: string, defines: string[], companionFiles?: Record<string, string>): Promise<MeshResult> {
+/** $fn value used for the fast preview pass — matches the "low" quality preset. */
+const SCAD_PREVIEW_FN = 16;
+
+function writeCompanionFilesToMemfs(instance: any, companionFiles: Record<string, string> | undefined): void {
+  if (!companionFiles) return;
+  for (const [path, content] of Object.entries(companionFiles)) {
+    const memfsPath = path.startsWith('/') ? path : `/${path}`;
+    const dir = memfsPath.lastIndexOf('/') > 0
+      ? memfsPath.slice(0, memfsPath.lastIndexOf('/'))
+      : null;
+    if (dir && dir !== '/') {
+      const parts = dir.slice(1).split('/');
+      let cur = '';
+      for (const part of parts) {
+        cur += `/${part}`;
+        try { instance.FS.mkdir(cur); } catch { /* already exists */ }
+      }
+    }
+    instance.FS.writeFile(memfsPath, content);
+  }
+}
+
+async function runScadInner(
+  source: string,
+  defines: string[],
+  onPreview?: (result: MeshResult) => void,
+  companionFiles?: Record<string, string>,
+): Promise<MeshResult> {
   if (!createFn) {
     const error = 'OpenSCAD engine not initialized.';
     return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
@@ -160,7 +197,6 @@ async function runScadInner(source: string, defines: string[], companionFiles?: 
   // Source-side scan — single linear pass over the user's text. Decides which
   // compile mode we use below (label-aware vs the historical STL fast path).
   const labelScan = scanScadLabels(source);
-  const effectiveSource = LABEL_MODULE_PREFIX + source;
 
   let preRunHook: ((mod: any) => void) | undefined;
   if (sourceUsesText(source)) {
@@ -171,6 +207,25 @@ async function runScadInner(source: string, defines: string[], companionFiles?: 
       const error = `Failed to load fonts for text(): ${e instanceof Error ? e.message : String(e)}`;
       return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
     }
+  }
+
+  // Phase 1: fast preview pass — run at reduced $fn so the user sees geometry
+  // quickly while the full-quality pass builds in the background. Only runs
+  // when the active quality setting meaningfully exceeds the preview threshold.
+  if (onPreview && getDefaultCircularSegments() > SCAD_PREVIEW_FN) {
+    try {
+      // Replace explicit $fn=N assignments so sources that hard-code a high
+      // value (e.g. $fn=90) actually compile at preview resolution.
+      const previewSrc = source.replace(/\$fn\s*=\s*[\d.]+/g, `$fn = ${SCAD_PREVIEW_FN}`);
+      const { instance: pi, stderr: ps } = await createInstance(preRunHook);
+      try {
+        if (sourceUsesBosl2(source)) await ensureBosl2InMemfs(pi);
+        writeCompanionFilesToMemfs(pi, companionFiles);
+        pi.FS.writeFile('/in.scad', LABEL_MODULE_PREFIX + previewSrc);
+        const pr = await runFlatStlAsync(pi, previewSrc, ps, defines, SCAD_PREVIEW_FN);
+        if (pr.mesh) onPreview(pr);
+      } catch { /* preview failure is non-fatal; full render continues */ }
+    } catch { /* instance creation failure is non-fatal for preview */ }
   }
 
   let instance: any;
@@ -191,30 +246,18 @@ async function runScadInner(source: string, defines: string[], companionFiles?: 
         return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
       }
     }
-    instance.FS.writeFile('/in.scad', effectiveSource);
+    // Apply the quality preset to per-primitive $fn=N arguments. The command-
+    // line `-D $fn=N` only sets the global default; in-source `$fn=N` on
+    // individual primitives (e.g. `sphere(5, $fn=200)`) take precedence over
+    // it. Replacing them ensures the user's quality selection actually wins.
+    // Same pattern as the Phase 1 preview pass.
+    const fn = getDefaultCircularSegments();
+    const qualifiedSrc = source.replace(/\$fn\s*=\s*[\d.]+/g, `$fn = ${fn}`);
+    instance.FS.writeFile('/in.scad', LABEL_MODULE_PREFIX + qualifiedSrc);
 
     // Write companion files (includes/uses that aren't BOSL2) into MEMFS so
-    // OpenSCAD can resolve them. Keys are MEMFS-relative paths; we create any
-    // needed subdirectories first.
-    if (companionFiles) {
-      for (const [path, content] of Object.entries(companionFiles)) {
-        const memfsPath = path.startsWith('/') ? path : `/${path}`;
-        const dir = memfsPath.lastIndexOf('/') > 0
-          ? memfsPath.slice(0, memfsPath.lastIndexOf('/'))
-          : null;
-        if (dir && dir !== '/') {
-          // Create intermediate directories (Emscripten MEMFS requires each
-          // directory level to exist before writing a file beneath it).
-          const parts = dir.slice(1).split('/');
-          let cur = '';
-          for (const part of parts) {
-            cur += `/${part}`;
-            try { instance.FS.mkdir(cur); } catch { /* already exists */ }
-          }
-        }
-        instance.FS.writeFile(memfsPath, content);
-      }
-    }
+    // OpenSCAD can resolve them.
+    writeCompanionFilesToMemfs(instance, companionFiles);
 
     if (labelScan.hasAnyLabelCalls) {
       // Label-aware path: single compile to multi-object AMF via lazy-union,
@@ -247,19 +290,24 @@ async function runScadInner(source: string, defines: string[], companionFiles?: 
 }
 
 /** Historical SCAD pipeline: compile to binary STL, weld, round-trip through
- *  Manifold.ofMesh. Used whenever the source has no `label()` calls. */
+ *  Manifold.ofMesh. Used whenever the source has no `label()` calls.
+ *  fnOverride, when set, replaces the quality-preset segment count — used by
+ *  the preview pass so Phase 1 doesn't rely on the global quality setting. */
 async function runFlatStlAsync(
   instance: any,
   source: string,
   stderr: string[],
   defines: string[],
+  fnOverride?: number,
 ): Promise<MeshResult> {
-  // Seed $fn from the user's quality preset. The script can still
-  // reassign $fn=… at the top level or pass $fn= per primitive to override.
+  // Seed $fn from the user's quality preset (or the explicit override for the
+  // preview pass). The script can still reassign $fn=… at the top level or
+  // pass $fn= per primitive to override.
   // Customizer overrides follow as additional `-D` flags.
+  const fn = fnOverride ?? getDefaultCircularSegments();
   const exitCode = instance.callMain([
     '--enable=manifold',
-    '-D', `$fn=${getDefaultCircularSegments()}`,
+    '-D', `$fn=${fn}`,
     ...defines,
     '--export-format=binstl',
     '-o', '/out.stl',
