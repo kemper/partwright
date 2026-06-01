@@ -9,7 +9,7 @@ npm run test:unit    # Fast vitest unit tier (pure-logic, no browser) — ~1s
 npm run test:e2e     # Playwright browser suite (auto-starts dev server)
 npm test             # Both tiers: unit, then e2e
 npm run lint:consistency  # ast-grep UI-convention scan (advisory)
-npm run lint:deadcode     # knip: unused exports/files (advisory)
+npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (advisory)
 npm run lint:deps         # madge: circular dependencies (advisory)
 ```
 
@@ -324,7 +324,7 @@ This repo ships custom Claude Code subagents and a deterministic static-analysis
 
 - **`work-reviewer`** (`.claude/agents/work-reviewer.md`, Opus, read-only) reviews the branch diff vs `origin/main` for correctness, back-compat, security, and **UI consistency** against the shared component layer (`modalShell`, `styleConstants` `BUTTON_*`, `showToast`, `commandPalette` keyboard model). Launch it before marking a PR ready.
 - **`explore`** (`.claude/agents/explore.md`, Sonnet, read-only) overrides the built-in Haiku Explore agent for sharper codebase discovery, preferring the TypeScript LSP MCP (`mcp__typescript__*`, configured in `.mcp.json`) for reference/definition queries.
-- **`lint:consistency`** (ast-grep), **`lint:deadcode`** (knip), **`lint:deps`** (madge) are **advisory candidate-finders** — they over-report by design; scope each hit to the diff. `lint:consistency` runs in CI (`code-quality.yml`) and gates only on `error`-severity ast-grep rules (all rules are `warning`/`hint` today, so it's green; promote a rule to `error` once the codebase is clean for it).
+- **`lint:consistency`** (ast-grep), **`lint:deadcode`** (knip), and **`lint:deps`** (madge) run in CI (`code-quality.yml`). `lint:consistency` gates on `error`-severity ast-grep rules (`no-native-dialogs` is `error`; the rest are `warning`/`hint` — promote one to `error` once the codebase is clean for it). `lint:deadcode` gates on knip's trustworthy categories (`dependencies`/`unlisted`/`unresolved`/`files`) but keeps `exports`/`types` advisory (knip can't see exports used only via the e2e suite's dynamic `import('/src/…')`, and the dead-export backlog needs per-symbol triage). `lint:deps` (madge circular deps) is advisory. Scope each advisory hit to the diff — they over-report by design. See `docs/agent-tooling.md`.
 
 ### User Messaging & the Diagnostic Log
 
