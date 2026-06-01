@@ -28,14 +28,19 @@ function edgeLen(p: Float32Array, i: number, j: number): number {
 /**
  * Unfold vertex v3 into UV space by isometric projection.
  *
- * Given the shared edge v1→v2 (with known UV coords uv1, uv2) from the
- * already-placed triangle, places v3 to the RIGHT of the directed edge.
+ * Given the shared edge v1→v2 (with known UV coords uv1, uv2), places v3 on
+ * the specified side of the directed edge:
+ *   left=false (default) → CW rotation (right side) — for BFS adjacent triangles
+ *   left=true            → CCW rotation (left side)  — for the seed triangle's
+ *                          third vertex, so it ends up on the opposite side from
+ *                          all subsequently BFS-placed vertices.
  * Preserves 3D distances as faithfully as possible.
  */
 function unfoldVertex(
   v1: number, v2: number, v3: number,
   uv1: [number, number], uv2: [number, number],
   p: Float32Array,
+  left = false,
 ): [number, number] {
   const p1x = p[v1 * 3], p1y = p[v1 * 3 + 1], p1z = p[v1 * 3 + 2];
   const p2x = p[v2 * 3], p2y = p[v2 * 3 + 1], p2z = p[v2 * 3 + 2];
@@ -59,10 +64,12 @@ function unfoldVertex(
   const uvELen = Math.sqrt(uvEx * uvEx + uvEy * uvEy);
   if (uvELen < 1e-14) return [(uv1[0] + uv2[0]) / 2, (uv1[1] + uv2[1]) / 2];
 
-  // CW rotation of the unit edge vector → places v3 to the RIGHT of v1→v2.
-  // This keeps alternating triangles on opposite sides so they tile correctly.
-  const uvPerpX = uvEy / uvELen;   // CW rot: (y, -x)
-  const uvPerpY = -uvEx / uvELen;
+  // CW rotation (right, default): places v3 away from parent for BFS adjacents.
+  // CCW rotation (left): used for the seed triangle's third vertex so it lands
+  // on the opposite side from all subsequent BFS-placed vertices.
+  const side = left ? -1 : 1;
+  const uvPerpX = side * uvEy / uvELen;   // CW: (y,-x), CCW: (-y,x)
+  const uvPerpY = side * -uvEx / uvELen;
 
   return [
     uv1[0] + t * uvEx + perpLen * uvPerpX,
@@ -175,7 +182,7 @@ export function bfsUnwrapMesh(
 
     setUV(seedA, 0, 0);
     setUV(seedB, eAB, 0);
-    const [uc, vc_] = unfoldVertex(seedA, seedB, seedC, uv(seedA), uv(seedB), positions);
+    const [uc, vc_] = unfoldVertex(seedA, seedB, seedC, uv(seedA), uv(seedB), positions, true /* left — CCW so adjacents go right */);
     setUV(seedC, uc, vc_);
     triVisited[startTri] = 1;
     enqueueAdjacent(startTri);
