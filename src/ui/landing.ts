@@ -1,4 +1,12 @@
 // Landing page — shown when no URL params direct to a specific view.
+//
+// SYNC NOTE: index.html ships a static "#landing-inline" copy of this page
+// that paints instantly and is swapped out for this JS-built one once the
+// bundle boots. The two must stay STRUCTURAL TWINS (same sections, widths,
+// grids, headings, footer) or the swap produces a visible layout shift. If
+// you add/move/resize a section here, mirror it in #landing-inline. The e2e
+// guard tests/landing-no-layout-shift.spec.ts fails on drift.
+//
 // "Calm studio" theme: a quiet dark field, an amber→teal gradient headline as
 // the lone pop of colour, the voxel-P app-icon mark beside the wordmark, and a
 // faux product-frame embed in the hero. Sections (top to bottom):
