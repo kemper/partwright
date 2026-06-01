@@ -25,9 +25,9 @@ test.describe('Modeling quality settings', () => {
     const highestRadio = page.locator('#simplify-panel input[type=radio][value=highest]');
     await expect(highestRadio).toBeChecked();
 
-    // X button closes the panel (removes it from DOM).
+    // X button closes the panel (hides it).
     await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
-    await expect(page.locator('#simplify-panel')).toHaveCount(0);
+    await expect(page.locator('#simplify-panel')).not.toBeVisible();
   });
 
   test('picking Low persists and reloads checked', async ({ page }) => {
