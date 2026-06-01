@@ -55,8 +55,8 @@ test.describe('extended paint controls', () => {
     await tolInput.press('Enter');
 
     const tol = await page.evaluate(() => {
-      const pw = (window as unknown as { partwright: { getBucketTolerance(): { tolerance: number } } }).partwright;
-      return pw.getBucketTolerance().tolerance;
+      const pw = (window as unknown as { partwright: { getBucketColorTolerance(): { tolerance: number } } }).partwright;
+      return pw.getBucketColorTolerance().tolerance;
     });
     expect(tol).toBeCloseTo(0.45, 3);
   });
