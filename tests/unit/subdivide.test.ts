@@ -2,7 +2,24 @@
 // in/out test and the boundary-conforming clip). Pure geometry — no browser.
 
 import { describe, test, expect } from 'vitest';
-import { strokeSignedDist, sprayCoverage, airbrushDither, type BrushStroke } from '../../src/color/subdivide';
+import { strokeSignedDist, sprayCoverage, airbrushDither, strokeFootprintTriangles, type BrushStroke } from '../../src/color/subdivide';
+import type { MeshData } from '../../src/geometry/types';
+
+/** Build a MeshData (3 props/vertex, no shared verts) from a list of triangles. */
+function meshFromTris(tris: [number, number, number][][]): MeshData {
+  const vertProperties = new Float32Array(tris.length * 9);
+  const triVerts = new Uint32Array(tris.length * 3);
+  for (let t = 0; t < tris.length; t++) {
+    for (let v = 0; v < 3; v++) {
+      const p = tris[t][v];
+      vertProperties[t * 9 + v * 3] = p[0];
+      vertProperties[t * 9 + v * 3 + 1] = p[1];
+      vertProperties[t * 9 + v * 3 + 2] = p[2];
+      triVerts[t * 3 + v] = t * 3 + v;
+    }
+  }
+  return { vertProperties, triVerts, numVert: tris.length * 3, numTri: tris.length, numProp: 3 };
+}
 
 const at = (s: BrushStroke, p: [number, number, number]) => strokeSignedDist(p[0], p[1], p[2], s);
 
@@ -41,6 +58,62 @@ describe('strokeSignedDist', () => {
     const s: BrushStroke = { samples: [[0, 0, 0], [10, 0, 0]], radius: 2, shape: 'circle', maxEdge: 0.1 };
     expect(at(s, [10, 0, 0])).toBeCloseTo(-2);   // inside the second sample
     expect(at(s, [5, 0, 0])).toBeGreaterThan(0); // between, outside both
+  });
+});
+
+describe('strokeFootprintTriangles spatial grid', () => {
+  // The footprint contract is "triangles whose centroid falls within the stroke
+  // footprint". The grid is just an accelerator, so its result must equal a
+  // brute-force centroid test over every triangle — no misses, no extras.
+  const centroid = (tri: [number, number, number][]): [number, number, number] => [
+    (tri[0][0] + tri[1][0] + tri[2][0]) / 3,
+    (tri[0][1] + tri[1][1] + tri[2][1]) / 3,
+    (tri[0][2] + tri[1][2] + tri[2][2]) / 3,
+  ];
+
+  test('matches brute-force centroid test on a mesh of mixed triangle sizes', () => {
+    const tris: [number, number, number][][] = [];
+    // A dense field of small triangles across the XY plane.
+    for (let x = -6; x <= 6; x++) {
+      for (let y = -6; y <= 6; y++) {
+        tris.push([[x, y, 0], [x + 0.3, y, 0], [x, y + 0.3, 0]]);
+      }
+    }
+    // A couple of oversize triangles (extent ≫ cell) — exercise the always-return
+    // path. One centroid lands inside the footprint, one outside.
+    tris.push([[-0.2, -0.2, 0], [5, 0, 0], [0, 5, 0]]);   // centroid ≈ (1.6,1.6) — outside r=3
+    tris.push([[0, 0, 0], [-3, 0, 0], [0, -3, 0]]);       // centroid ≈ (-1,-1) — inside r=3
+    const mesh = meshFromTris(tris);
+
+    const stroke: BrushStroke = { samples: [[0, 0, 0]], radius: 3, shape: 'circle', maxEdge: 0.1 };
+    const got = strokeFootprintTriangles(mesh, stroke);
+
+    const expected = new Set<number>();
+    for (let t = 0; t < tris.length; t++) {
+      const c = centroid(tris[t]);
+      if (Math.hypot(c[0], c[1], c[2]) <= 3) expected.add(t);
+    }
+
+    expect([...got].sort((a, b) => a - b)).toEqual([...expected].sort((a, b) => a - b));
+    expect(got.size).toBeGreaterThan(0);
+  });
+
+  test('multi-sample stroke covers triangles near every sample', () => {
+    const tris: [number, number, number][][] = [];
+    for (let x = -2; x <= 12; x++) {
+      tris.push([[x, 0, 0], [x + 0.2, 0, 0], [x, 0.2, 0]]);
+    }
+    const mesh = meshFromTris(tris);
+    const stroke: BrushStroke = { samples: [[0, 0, 0], [10, 0, 0]], radius: 1.5, shape: 'circle', maxEdge: 0.1 };
+    const got = strokeFootprintTriangles(mesh, stroke);
+
+    const expected = new Set<number>();
+    for (let t = 0; t < tris.length; t++) {
+      const c = centroid(tris[t]);
+      const near = Math.min(Math.hypot(c[0], c[1], c[2]), Math.hypot(c[0] - 10, c[1], c[2]));
+      if (near <= 1.5) expected.add(t);
+    }
+    expect([...got].sort((a, b) => a - b)).toEqual([...expected].sort((a, b) => a - b));
   });
 });
 

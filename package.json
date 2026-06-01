@@ -43,6 +43,7 @@
     "replicad": "^0.23.1",
     "replicad-opencascadejs": "^0.23.0",
     "tailwindcss": "^4.2.1",
-    "three": "^0.183.2"
+    "three": "^0.183.2",
+    "three-mesh-bvh": "^0.9.10"
   }
 }

@@ -3,7 +3,8 @@
 
 import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
-import { pickFace } from './facePicker';
+import { pickFace, type FacePickResult } from './facePicker';
+import { projectBrushFootprint, invalidateProjection, disposeProjection } from './projectionPaint';
 import { buildAdjacency, findCoplanarRegion, getTriangleNormal, type AdjacencyGraph } from './adjacency';
 import { addRegion, getRegions } from './regions';
 import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
@@ -61,6 +62,15 @@ export function brushTargetEdge(): number {
 let strokeSamples: [number, number, number][] = [];
 let adjacency: AdjacencyGraph | null = null;
 let currentMesh: MeshData | null = null;
+
+// Maps a current-mesh triangle id back to its base-mesh id. Set by main.ts when
+// the working mesh has been refined under a stroke; null (identity) on the
+// pristine mesh. Projection paint stores base ids so a later refine remaps them
+// correctly (base→child) instead of smearing refined-space ids across the mesh.
+let triangleToBase: ((id: number) => number) | null = null;
+export function setTriangleToBaseMapper(fn: ((id: number) => number) | null): void {
+  triangleToBase = fn;
+}
 
 // Hover highlight state
 let highlightMesh: THREE.Mesh | null = null;
@@ -246,6 +256,7 @@ export function getAdjacency(): AdjacencyGraph | null {
 export function updatePaintMesh(mesh: MeshData): void {
   currentMesh = mesh;
   adjacency = null; // invalidate — mesh changed
+  invalidateProjection(); // the id-buffer geometry is rebuilt against the new mesh
   if (active) {
     adjacency = buildAdjacency(mesh);
     onSlabDragMeshChanged();
@@ -325,6 +336,7 @@ export function deactivate(): void {
   canvas.style.cursor = '';
   clearHighlight();
   clearBrushRing();
+  disposeProjection();
   brushPainting = false;
   brushSession = null;
   mouseDownOffModel = false;
@@ -381,7 +393,7 @@ function processMouseMove(event: MouseEvent): void {
         // not a full rebuild of the whole trail each mousemove.
         if (added) appendBrushFillStamp(result.point, result.normal);
       } else {
-        addBrushFootprint(result.triangleIndex, result.point, brushSession);
+        collectBrushFootprint(event, result, brushSession);
         showHighlight(brushSession);
       }
       // Ring must come after showHighlight (which calls clearHighlight internally).
@@ -414,7 +426,7 @@ function processMouseMove(event: MouseEvent): void {
   let region: Set<number>;
   if (currentTool === 'brush') {
     region = new Set<number>();
-    addBrushFootprint(result.triangleIndex, result.point, region);
+    collectBrushFootprint(event, result, region);
   } else {
     clearBrushRing();
     region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
@@ -463,7 +475,7 @@ function onPointerDown(event: PointerEvent): void {
       clearHighlight();
       appendBrushFillStamp(result.point, result.normal);
     } else {
-      addBrushFootprint(result.triangleIndex, result.point, brushSession);
+      collectBrushFootprint(event, result, brushSession);
       showHighlight(brushSession);
     }
     event.preventDefault();
@@ -525,42 +537,34 @@ function commitBrushStroke(): void {
       new Set<number>(),
     );
   } else if (brushSession && brushSession.size > 0) {
-    addRegion(name, color, 'paintbrush', { kind: 'triangles', ids: [...brushSession] }, brushSession);
+    // Projection paint collects ids in the *current* (possibly refined) mesh's
+    // index space. Store them as base-mesh ids so a later smooth/slab stroke
+    // that refines the mesh remaps them correctly (base→child) instead of
+    // smearing refined-space ids. On the pristine mesh the map is identity.
+    const ids = triangleToBase
+      ? [...new Set([...brushSession].map(t => triangleToBase!(t)))]
+      : [...brushSession];
+    addRegion(name, color, 'paintbrush', { kind: 'triangles', ids }, brushSession);
     if (onRegionPainted) onRegionPainted();
   }
 }
 
-/** Expand a single picked triangle into the brush's full footprint.
- *  At brushRadius=0 this just adds the picked triangle.
- *  At brushRadius>0 the footprint shape is controlled by brushShape:
- *    circle  — sphere test: distance ≤ radius
- *    square  — cube test:   |dx|, |dy|, |dz| all ≤ radius
- *    diamond — L1 test:     |dx|+|dy|+|dz| ≤ radius */
-function addBrushFootprint(seedTri: number, seedPoint: [number, number, number], target: Set<number>): void {
-  target.add(seedTri);
-  if (brushRadius <= 0 || !adjacency) return;
-
-  const { centroids } = adjacency;
-  const numTri = centroids.length / 3;
-  const r = brushRadius;
-  const r2 = r * r;
-  const sx = seedPoint[0], sy = seedPoint[1], sz = seedPoint[2];
-
-  for (let t = 0; t < numTri; t++) {
-    if (target.has(t)) continue;
-    const dx = centroids[t * 3]     - sx;
-    const dy = centroids[t * 3 + 1] - sy;
-    const dz = centroids[t * 3 + 2] - sz;
-    let inside: boolean;
-    if (brushShape === 'square') {
-      inside = Math.abs(dx) <= r && Math.abs(dy) <= r && Math.abs(dz) <= r;
-    } else if (brushShape === 'diamond') {
-      inside = Math.abs(dx) + Math.abs(dy) + Math.abs(dz) <= r;
-    } else {
-      inside = dx * dx + dy * dy + dz * dz <= r2;
-    }
-    if (inside) target.add(t);
-  }
+/** The regular (non-smooth) brush footprint: the triangles *visible* under the
+ *  brush disk on screen — "paint exactly what I see". Falls back to the picked
+ *  triangle when projection isn't available (radius 0, or no mesh/GPU). Occluded
+ *  back faces are excluded by the projection's depth test, so paint never bleeds
+ *  through to the far side of a thin wall. */
+function collectBrushFootprint(event: MouseEvent, result: FacePickResult, target: Set<number>): void {
+  target.add(result.triangleIndex);
+  if (brushRadius <= 0 || !currentMesh) return;
+  const proj = projectBrushFootprint({
+    event,
+    mesh: currentMesh,
+    radius: brushRadius,
+    shape: brushShape,
+    hitPoint: result.point,
+  });
+  if (proj) for (const t of proj) target.add(t);
 }
 
 // ---------------------------------------------------------------------------

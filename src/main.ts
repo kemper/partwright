@@ -140,7 +140,8 @@ import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, type SimplifyHandlers } from './ui/simplifyUI';
-import { updatePaintMesh, setOnRegionPainted } from './color/paintMode';
+import { updatePaintMesh, setOnRegionPainted, setTriangleToBaseMapper } from './color/paintMode';
+import { baseTriangleOf } from './color/baseRemap';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu } from './annotations/annotateUI';
 import { isActive as isSelectActive, getSelectedId as getSelectedAnnotationId } from './annotations/selectMode';
 import {
@@ -5299,6 +5300,16 @@ async function main() {
   // When a color region is painted, re-render the mesh with colors.
   setOnRegionPainted(() => {
     scheduleColorRefresh();
+  });
+
+  // Projection paint collects triangle ids in the current working mesh's index
+  // space; this maps them back to pristine-base ids before storage so a later
+  // refine remaps them correctly. Reads live state: identity (no work) while the
+  // mesh is unrefined, a base-mesh closest-point lookup once it's been refined.
+  setTriangleToBaseMapper((t) => {
+    const cm = currentMeshData, base = paintBaseMesh;
+    if (!cm || !base || cm === base) return t;
+    return baseTriangleOf(cm, base, t);
   });
 
   // Any region change reconciles the working mesh: incremental stroke append,
