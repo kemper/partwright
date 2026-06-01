@@ -521,14 +521,124 @@ export function buildGeodesicField(
     const dx = cp[0] - px, dy = cp[1] - py, dz = cp[2] - pz;
     return dx * dx + dy * dy + dz * dz;
   };
-  const nearestActive = (px: number, py: number, pz: number): number => {
-    let best = Infinity, bi = -1;
+
+  // Nearest active triangle to a point. `reachableAt` calls this for *every*
+  // query vertex/centroid of the refined mesh, so a linear scan over `active`
+  // makes the field O(query points × active triangles) — the quadratic blow-up
+  // that made geodesic/spray strokes crawl on dense models. Below a small count
+  // the scan wins (no grid to build); above it we bin the active triangles by
+  // centroid into a uniform cell grid and search outward ring-by-ring from the
+  // query point's cell. The result is the *global* nearest (identical to the
+  // scan) thanks to the (ring−1)·cell termination bound + an always-searched
+  // "oversize" list, so reachability — and the painted result — is unchanged.
+  const GRID_THRESHOLD = 64;
+  let nearestActive: (px: number, py: number, pz: number) => number;
+  if (active.length <= GRID_THRESHOLD) {
+    nearestActive = (px, py, pz) => {
+      let best = Infinity, bi = -1;
+      for (let li = 0; li < active.length; li++) {
+        const d2 = dist2ToActive(px, py, pz, li);
+        if (d2 < best) { best = d2; bi = li; }
+      }
+      return bi;
+    };
+  } else {
+    // Per-active-triangle centroid + extent (centroid → farthest vertex).
+    const ccx = new Float64Array(active.length);
+    const ccy = new Float64Array(active.length);
+    const ccz = new Float64Array(active.length);
+    const cext = new Float64Array(active.length);
+    const glo: [number, number, number] = [Infinity, Infinity, Infinity];
+    const ghi: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    let extSum = 0;
     for (let li = 0; li < active.length; li++) {
-      const d2 = dist2ToActive(px, py, pz, li);
-      if (d2 < best) { best = d2; bi = li; }
+      const [a, b, c] = coords[li];
+      const mx = (a[0] + b[0] + c[0]) / 3, my = (a[1] + b[1] + c[1]) / 3, mz = (a[2] + b[2] + c[2]) / 3;
+      ccx[li] = mx; ccy[li] = my; ccz[li] = mz;
+      const e = Math.max(
+        Math.hypot(a[0] - mx, a[1] - my, a[2] - mz),
+        Math.hypot(b[0] - mx, b[1] - my, b[2] - mz),
+        Math.hypot(c[0] - mx, c[1] - my, c[2] - mz),
+      );
+      cext[li] = e; extSum += e;
+      if (mx < glo[0]) glo[0] = mx; if (my < glo[1]) glo[1] = my; if (mz < glo[2]) glo[2] = mz;
+      if (mx > ghi[0]) ghi[0] = mx; if (my > ghi[1]) ghi[1] = my; if (mz > ghi[2]) ghi[2] = mz;
     }
-    return bi;
-  };
+    const gdiag = Math.hypot(ghi[0] - glo[0], ghi[1] - glo[1], ghi[2] - glo[2]) || 1;
+    // Size cells by *triangle* extent, not the region diagonal: a stroke's
+    // active triangles are near-planar, so a cbrt(count)-over-diagonal cell
+    // would be huge (tens of triangles each) and the ring search would crawl.
+    // ~2× the mean centroid→vertex distance lands a handful of triangles per
+    // cell (bigger ones spill to the always-searched oversize list), so the
+    // nearest is found within the first couple of rings. The diagonal/256 floor
+    // keeps the cell count sane on pathologically sparse active sets.
+    const meanExt = active.length ? extSum / active.length : 0;
+    const cell = Math.max(meanExt * 2, gdiag / 256, 1e-6);
+    const gdim = (k: number): number => Math.max(1, Math.ceil((ghi[k] - glo[k]) / cell) + 1);
+    const gnx = gdim(0), gny = gdim(1), gnz = gdim(2);
+    const ixOf = (x: number): number => Math.min(gnx - 1, Math.max(0, Math.floor((x - glo[0]) / cell)));
+    const iyOf = (y: number): number => Math.min(gny - 1, Math.max(0, Math.floor((y - glo[1]) / cell)));
+    const izOf = (z: number): number => Math.min(gnz - 1, Math.max(0, Math.floor((z - glo[2]) / cell)));
+
+    // Triangles reaching more than a cell past their centroid can't be bounded
+    // by the ring search, so they're always considered.
+    const bins = new Map<number, number[]>();
+    const oversize: number[] = [];
+    for (let li = 0; li < active.length; li++) {
+      if (cext[li] > cell) { oversize.push(li); continue; }
+      const key = (izOf(ccz[li]) * gny + iyOf(ccy[li])) * gnx + ixOf(ccx[li]);
+      const arr = bins.get(key);
+      if (arr) arr.push(li); else bins.set(key, [li]);
+    }
+    const maxRing = Math.max(gnx, gny, gnz);
+
+    nearestActive = (px, py, pz) => {
+      let best = Infinity, bi = -1;
+      const consider = (li: number): void => {
+        const d2 = dist2ToActive(px, py, pz, li);
+        if (d2 < best) { best = d2; bi = li; }
+      };
+      for (const li of oversize) consider(li);
+      const cixp = ixOf(px), ciyp = iyOf(py), cizp = izOf(pz);
+      for (let ring = 0; ring <= maxRing; ring++) {
+        // Visit only the shell of cells at Chebyshev distance `ring`.
+        const x0 = cixp - ring, x1 = cixp + ring;
+        const y0 = ciyp - ring, y1 = ciyp + ring;
+        const z0 = cizp - ring, z1 = cizp + ring;
+        for (let iz = z0; iz <= z1; iz++) {
+          if (iz < 0 || iz >= gnz) continue;
+          const onZShell = iz === z0 || iz === z1;
+          for (let iy = y0; iy <= y1; iy++) {
+            if (iy < 0 || iy >= gny) continue;
+            const onYShell = iy === y0 || iy === y1;
+            const row = (iz * gny + iy) * gnx;
+            if (onZShell || onYShell) {
+              for (let ix = x0; ix <= x1; ix++) {
+                if (ix < 0 || ix >= gnx) continue;
+                const arr = bins.get(row + ix);
+                if (arr) for (const li of arr) consider(li);
+              }
+            } else {
+              // Interior of this z/y line: only the two x faces are on the shell.
+              for (const ix of (x0 === x1 ? [x0] : [x0, x1])) {
+                if (ix < 0 || ix >= gnx) continue;
+                const arr = bins.get(row + ix);
+                if (arr) for (const li of arr) consider(li);
+              }
+            }
+          }
+        }
+        // After fully searching rings 0..ring, any unsearched binned triangle's
+        // surface is ≥ (ring−1)·cell from p (centroid ≥ ring·cell away, extent
+        // ≤ cell). Stop once the best hit is at least that close.
+        if (bi >= 0) {
+          const bound = (ring - 1) * cell;
+          if (bound >= 0 && best <= bound * bound) break;
+        }
+      }
+      return bi;
+    };
+  }
   const withinR = (li: number): boolean => {
     for (const s of samples) if (dist2ToActive(s[0], s[1], s[2], li) <= r2) return true;
     return false;
