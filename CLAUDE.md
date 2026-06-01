@@ -8,6 +8,9 @@ npm run build        # Production build to dist/ (runs tsc first — also the ty
 npm run test:unit    # Fast vitest unit tier (pure-logic, no browser) — ~1s
 npm run test:e2e     # Playwright browser suite (auto-starts dev server)
 npm test             # Both tiers: unit, then e2e
+npm run lint:consistency  # ast-grep UI-convention scan (advisory)
+npm run lint:deadcode     # knip: unused exports/files (advisory)
+npm run lint:deps         # madge: circular dependencies (advisory)
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -313,7 +316,15 @@ The only exceptions are values that are truly structural constants (array indice
 
 ### Dead Code
 
-Don't export functions unless they're imported elsewhere. When removing usage of an exported function, delete the export too. Periodically grep for exported symbols to verify they have importers.
+Don't export functions unless they're imported elsewhere. When removing usage of an exported function, delete the export too. Periodically grep for exported symbols to verify they have importers — or run `npm run lint:deadcode` (knip), which reports exports with no importers and unused files/types.
+
+### Agent Tooling & Static Analysis
+
+This repo ships custom Claude Code subagents and a deterministic static-analysis layer they lean on — see `docs/agent-tooling.md` for the full reference. In short:
+
+- **`work-reviewer`** (`.claude/agents/work-reviewer.md`, Opus, read-only) reviews the branch diff vs `origin/main` for correctness, back-compat, security, and **UI consistency** against the shared component layer (`modalShell`, `styleConstants` `BUTTON_*`, `showToast`, `commandPalette` keyboard model). Launch it before marking a PR ready.
+- **`explore`** (`.claude/agents/explore.md`, Sonnet, read-only) overrides the built-in Haiku Explore agent for sharper codebase discovery, preferring the TypeScript LSP MCP (`mcp__typescript__*`, configured in `.mcp.json`) for reference/definition queries.
+- **`lint:consistency`** (ast-grep), **`lint:deadcode`** (knip), **`lint:deps`** (madge) are **advisory candidate-finders** — they over-report by design; scope each hit to the diff. `lint:consistency` runs in CI (`code-quality.yml`) and gates only on `error`-severity ast-grep rules (all rules are `warning`/`hint` today, so it's green; promote a rule to `error` once the codebase is clean for it).
 
 ### User Messaging & the Diagnostic Log
 
