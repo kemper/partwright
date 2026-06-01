@@ -34,12 +34,14 @@ function ensurePatched(): void {
  *  garbage-collected with the geometry it hangs off — no manual disposal needed
  *  beyond the geometry's own `dispose()`.
  *
- *  `indirect: true` is essential here: the default build reorders the geometry's
- *  index in place for cache locality, but the viewport's index buffer *is* the
- *  live mesh's `triVerts` array — reordering it would corrupt the mesh and break
- *  the assumption that a raycast `faceIndex` equals the mesh triangle index that
- *  paint relies on. Indirect mode keeps the index untouched and still returns
- *  original triangle indices. */
+ *  `indirect: true` matters here: the viewport's index buffer *is* the live
+ *  mesh's `triVerts` array (shared with the app's MeshData), so the BVH must
+ *  never reorder it in place — some three-mesh-bvh build configs partition the
+ *  index for cache locality, which would corrupt the mesh and break the
+ *  assumption that a raycast `faceIndex` equals the mesh triangle index paint
+ *  relies on. Indirect mode keeps an internal indirection buffer instead, so the
+ *  shared index is left untouched and queries still return original triangle
+ *  indices. */
 export function ensureBoundsTree(geometry: THREE.BufferGeometry): void {
   ensurePatched();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

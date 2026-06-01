@@ -142,4 +142,59 @@ test.describe('projection paintbrush', () => {
     // Require it to stay within a small multiple of the original footprint.
     expect(spanAfter).toBeLessThan(spanBefore + 6);
   });
+
+  test('painting a regular stroke ON an already-refined mesh maps to base ids and stays localized', async ({ page }) => {
+    // A finely-tessellated sphere (many triangles per face) so a brush paints a
+    // *localized* cap — unlike a slab face, which is two giant triangles. This is
+    // what lets a smear (scattered base ids) be told apart from a clean patch.
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run('const { Manifold } = api; return Manifold.sphere(20, 96);');
+      pw.setBrushSize(3);
+      pw.setBrushSmooth(false);
+    });
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await page.locator('#paint-picker-panel button:has-text("Brush")').dispatchEvent('click');
+    await page.waitForTimeout(200);
+
+    // Refine the mesh first (smooth stroke on the far side). Now the working mesh
+    // != the pristine base, so the regular paint below exercises the current→base
+    // triangle mapping (baseRemap closest-point lookup) — the path that must NOT
+    // reorder/corrupt the base mesh or return wrong parent ids.
+    const refined = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const r = pw.paintStroke({ points: [[0, 0, 20]], radius: 4, maxEdge: 0.5, color: [0.2, 0.4, 0.9] });
+      await pw.waitForPaint();
+      return { err: r.error, numTri: pw.getMesh().numTri };
+    });
+    expect(refined.err).toBeFalsy();
+
+    // Regular (projection) brush dab on the front of the now-refined sphere.
+    await dragBrush(page);
+
+    // The regular region resolves through the base→child remap on the rebuild
+    // that an append-while-refined triggers — so a wrong base id from the
+    // current→base lookup would scatter it across the sphere instead of a patch.
+    const result = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const regions = pw.listRegions();
+      const regular = regions.reduce((a: { id: number }, b: { id: number }) => (b.id > a.id ? b : a));
+      return { count: regions.length, regular };
+    });
+
+    expect(result.count).toBe(2);
+    expect(result.regular.triangles).toBeGreaterThan(0);
+    expect(result.regular.bbox).not.toBeNull();
+    const b = result.regular.bbox;
+    const span = Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]);
+    // A localized cap on a radius-20 sphere; a smear would approach the sphere's
+    // ~40-unit extent (and the bbox would also balloon in Z).
+    expect(span).toBeLessThan(18);
+  });
 });

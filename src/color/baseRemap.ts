@@ -32,8 +32,22 @@ function bvhFor(base: MeshData): MeshBVH {
   geom.setIndex(new THREE.BufferAttribute(base.triVerts, 1));
   cacheMesh = base;
   cacheGeom = geom;
-  cacheBvh = new MeshBVH(geom);
+  // `indirect: true` keeps the BVH from ever reordering the index in place —
+  // and that index buffer *is* the live `paintBaseMesh.triVerts` array, so an
+  // in-place partition (which some build configs do for cache locality) would
+  // corrupt the pristine base mesh that render/export/slicing all share. Indirect
+  // mode uses an internal indirection buffer instead and still returns original
+  // triangle indices from closestPointToPoint().
+  cacheBvh = new MeshBVH(geom, { indirect: true });
   return cacheBvh;
+}
+
+/** Drop the cached base geometry + BVH (called when leaving a paint session). */
+export function disposeBaseRemap(): void {
+  cacheGeom?.dispose();
+  cacheGeom = null;
+  cacheBvh = null;
+  cacheMesh = null;
 }
 
 const _centroid = new THREE.Vector3();

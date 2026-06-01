@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
 import { pickFace, type FacePickResult } from './facePicker';
 import { projectBrushFootprint, invalidateProjection, disposeProjection } from './projectionPaint';
+import { disposeBaseRemap } from './baseRemap';
 import { buildAdjacency, findCoplanarRegion, getTriangleNormal, type AdjacencyGraph } from './adjacency';
 import { addRegion, getRegions } from './regions';
 import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
@@ -337,6 +338,7 @@ export function deactivate(): void {
   clearHighlight();
   clearBrushRing();
   disposeProjection();
+  disposeBaseRemap();
   brushPainting = false;
   brushSession = null;
   mouseDownOffModel = false;
