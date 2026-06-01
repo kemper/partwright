@@ -17,6 +17,8 @@ import {
   reorderRegion,
   removeRegion,
 } from '../color/regions';
+import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
+import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
 
 export interface ReliefStudioDeps {
   getLayerHeight(): number;
@@ -38,10 +40,6 @@ export interface ReliefStudioHandle {
   toggle(): void;
   isOpen(): boolean;
   refresh(): void;
-  /** Show or hide the small "Edit colors" chip that re-opens the studio
-   *  after the user has closed it. The host decides when to surface it (only
-   *  when the active session is image-derived). */
-  setChipVisible(visible: boolean): void;
 }
 
 const PREVIEW_MODES: { mode: PreviewMode; label: string; caption: string }[] = [
@@ -72,7 +70,7 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
   const panel = document.createElement('div');
   panel.id = 'relief-studio';
   panel.className =
-    'hidden absolute top-2 left-2 z-10 w-[300px] max-w-[calc(100vw-1rem)] max-h-[calc(100%-1rem)] ' +
+    'hidden absolute z-10 w-[300px] max-w-[calc(100vw-1rem)] max-h-[calc(100%-1rem)] ' +
     'flex flex-col bg-zinc-800/90 backdrop-blur border border-zinc-600/50 rounded-lg shadow-xl overflow-hidden';
 
   // === Header ===
@@ -100,6 +98,16 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
   closeBtn.addEventListener('click', () => deps.onClose());
   header.appendChild(closeBtn);
   panel.appendChild(header);
+  const { clampIntoView } = attachViewportPanelDrag(header, panel);
+
+  // Registry entry and Escape handler for mutual panel exclusion.
+  const reliefRegistryEntry = { close(): void { deps.onClose(); } };
+  let escapeActive = false;
+  function onReliefEscape(e: KeyboardEvent): void {
+    if (e.key !== 'Escape') return;
+    if (document.querySelector('[role="dialog"]')) return;
+    deps.onClose();
+  }
 
   // === Scroll body ===
   const body = document.createElement('div');
@@ -210,27 +218,6 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
   applyAdvancedVisibility();
 
   host.appendChild(panel);
-
-  // "Edit colors" chip — a small viewport overlay button that re-opens the
-  // studio after the user has closed it. Sits in the same corner as the
-  // panel; visible only when the host opts in (relief sessions).
-  const chip = document.createElement('button');
-  chip.type = 'button';
-  chip.className =
-    'hidden absolute top-2 left-2 z-10 px-2.5 py-1.5 rounded-lg text-xs font-medium ' +
-    'bg-zinc-800/90 backdrop-blur text-zinc-100 border border-zinc-600/50 shadow ' +
-    'hover:bg-zinc-700/90 transition-colors flex items-center gap-1.5';
-  chip.title = 'Edit colors · open the Relief Studio';
-  const chipSwatch = document.createElement('span');
-  chipSwatch.className = 'inline-block w-3 h-3 rounded-sm bg-gradient-to-br from-rose-400 via-amber-400 to-sky-500 border border-black/30';
-  const chipLabel = document.createElement('span');
-  chipLabel.textContent = 'Edit colors';
-  chip.append(chipSwatch, chipLabel);
-  chip.addEventListener('click', () => {
-    chip.classList.add('hidden');
-    handle.show();
-  });
-  host.appendChild(chip);
 
   function renderPreview(): void {
     const active = deps.getPreviewMode();
@@ -505,11 +492,22 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
   const handle: ReliefStudioHandle = {
     show() {
       panel.classList.remove('hidden');
-      chip.classList.add('hidden');
+      setInitialPanelPosition(panel);
+      openViewportPanel(reliefRegistryEntry);
+      if (!escapeActive) {
+        document.addEventListener('keydown', onReliefEscape);
+        escapeActive = true;
+      }
+      requestAnimationFrame(() => { clampIntoView(); });
       handle.refresh();
     },
     hide() {
       panel.classList.add('hidden');
+      closeViewportPanel(reliefRegistryEntry);
+      if (escapeActive) {
+        document.removeEventListener('keydown', onReliefEscape);
+        escapeActive = false;
+      }
     },
     toggle() {
       if (handle.isOpen()) handle.hide();
@@ -523,12 +521,6 @@ export function mountReliefStudio(host: HTMLElement, deps: ReliefStudioDeps): Re
       renderLayer();
       renderFilaments();
       renderGuide();
-    },
-    setChipVisible(visible: boolean) {
-      // Don't show the chip while the full panel is open — only one or the
-      // other should ever be visible.
-      const shouldShow = visible && panel.classList.contains('hidden');
-      chip.classList.toggle('hidden', !shouldShow);
     },
   };
 

@@ -1,6 +1,11 @@
-// Central diagnostic log. Collects errors and warnings from all subsystems
-// into a single ring buffer, persisted to sessionStorage so entries survive
-// a page refresh within the same browser tab.
+// Central diagnostic log. Collects errors, warnings, and informational
+// activity (every showToast) from all subsystems into a single ring buffer,
+// persisted to sessionStorage so entries survive a page refresh within the
+// same browser tab.
+//
+// Levels: 'error' and 'warn' are problems; 'info' is routine activity (save /
+// export confirmations etc.) captured for a complete audit trail but kept out
+// of the unseen-error badge so it doesn't nag.
 //
 // Call errorLog.install() once at app startup to wire up:
 //   - window.onerror / unhandledrejection (uncaught JS errors)
@@ -9,7 +14,7 @@
 // Subsystems that don't go through console (e.g. geometry engine, AI turns)
 // should call errorLog.capture() directly with an explicit source tag.
 
-export type ErrorLevel = 'error' | 'warn';
+export type ErrorLevel = 'error' | 'warn' | 'info';
 export type ErrorSource =
   | 'engine'
   | 'ai'
