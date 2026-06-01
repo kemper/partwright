@@ -13,7 +13,7 @@ test.beforeEach(async ({ page }) => {
 
 test('SCAD engine applies the chosen $fn from quality preset', async ({ page }) => {
   await page.goto('/editor');
-  await page.waitForSelector('#btn-quality');
+  await page.waitForSelector('#simplify-toggle');
 
   type RunResult = { triangleCount?: number; error?: string };
   type PartwrightApi = {

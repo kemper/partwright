@@ -3533,7 +3533,6 @@ async function main() {
       void syncRouteFromURL();
     },
     onRun: () => runCode(),
-    onCancelRun: () => { cancelCurrentExecution(); },
     onExportGLB: actionExportGLB,
     onExportSTL: actionExportSTL,
     onExportOBJ: actionExportOBJ,
@@ -3658,7 +3657,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
+  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
@@ -11005,6 +11004,8 @@ async function main() {
   // Start the elapsed-time display for a render. The cancel button and timer
   // are delayed 400 ms so fast runs (manifold-js is typically < 100 ms) never
   // flash them. stopRunTimer() always cancels the pending show before it fires.
+  cancelInlineBtn.addEventListener('click', () => { cancelCurrentExecution(); });
+
   function startRunTimer(t0: number): void {
     _runTimerStart = t0;
     stopRunTimer();
@@ -11012,6 +11013,7 @@ async function main() {
       _runShowTimer = null;
       setRunState(true, performance.now() - _runTimerStart);
       setQualityRenderState(true);
+      cancelInlineBtn.classList.remove('hidden');
       _runTimerInterval = window.setInterval(() => {
         const ms = performance.now() - _runTimerStart;
         setRunState(true, ms);
@@ -11025,6 +11027,7 @@ async function main() {
     if (_runTimerInterval !== null) { clearInterval(_runTimerInterval); _runTimerInterval = null; }
     setRunState(false);
     setQualityRenderState(false);
+    cancelInlineBtn.classList.add('hidden');
   }
 
   async function runCodeSync(src: string, opts: { surfaceErrors?: boolean } = {}): Promise<boolean> {

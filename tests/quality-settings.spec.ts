@@ -30,18 +30,17 @@ test.describe('Modeling quality settings', () => {
     await expect(page.locator('#simplify-panel')).not.toBeVisible();
   });
 
-  test('picking Low persists and reloads checked', async ({ page }) => {
+  test('picking Low is reflected in panel and in-memory', async ({ page }) => {
     await page.goto('/editor');
     await page.waitForSelector('#simplify-toggle');
 
     await page.locator('#simplify-toggle').click();
     await page.locator('#simplify-panel input[type=radio][value=low]').check();
 
-    const stored = await page.evaluate(() => localStorage.getItem('partwright-quality-settings-v1'));
-    expect(stored).toBeTruthy();
-    expect(JSON.parse(stored!)).toMatchObject({ quality: 'low' });
+    // Radio should be checked immediately.
+    await expect(page.locator('#simplify-panel input[type=radio][value=low]')).toBeChecked();
 
-    // Close + reopen panel — Low should still be the selected radio.
+    // Close + reopen panel — Low should still be selected (in-memory cache).
     await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
     await page.locator('#simplify-toggle').click();
     await expect(page.locator('#simplify-panel input[type=radio][value=low]')).toBeChecked();
@@ -98,11 +97,10 @@ test.describe('Modeling quality settings', () => {
       return api.run(code);
     }, cylinderCode);
 
-    // Switch to Ultra (1024 segments) and confirm it persists.
+    // Switch to Ultra (1024 segments).
     await page.locator('#simplify-toggle').click();
     await page.locator('#simplify-panel input[type=radio][value=ultra]').check();
-    const stored = await page.evaluate(() => localStorage.getItem('partwright-quality-settings-v1'));
-    expect(JSON.parse(stored!)).toMatchObject({ quality: 'ultra' });
+    await expect(page.locator('#simplify-panel input[type=radio][value=ultra]')).toBeChecked();
     await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
 
     const ultra = await page.evaluate(async (code) => {

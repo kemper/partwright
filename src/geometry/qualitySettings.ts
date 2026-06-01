@@ -3,13 +3,11 @@
 // still override per-call (segment arg to sphere/cylinder/etc., or an
 // explicit setCircularSegments() / $fn assignment) — this is just the
 // starting default that primitives fall back to when no override is
-// given. Persisted per-tab (with a shared seed for fresh tabs) so changing
-// quality in one window doesn't silently re-render another open window's model
-// at a different segment count.
+// given. Quality is session-scoped (not persisted across page reloads)
+// so each load starts from the configured default. The default segment
+// count is set in Settings (Advanced) and persisted via appConfig.
 
-import { readPerTabPref, writePerTabPref } from '../storage/perTabPref';
-
-const STORAGE_KEY = 'partwright-quality-settings-v1';
+import { getConfig } from '../config/appConfig';
 
 export type QualityPreset = 'low' | 'medium' | 'high' | 'highest' | 'ultra';
 export type QualityLevel = QualityPreset | 'custom';
@@ -43,44 +41,37 @@ export const QUALITY_OPTIONS: { id: QualityPreset; label: string; hint: string }
  *  browser-freezing values — a sphere costs ~segments² triangles. */
 export const MIN_CUSTOM_SEGMENTS = 3;
 export const MAX_CUSTOM_SEGMENTS = 4096;
-const DEFAULT_CUSTOM_SEGMENTS = 128;
-
 /** Round + clamp an arbitrary number to a valid integer segment count. */
 export function clampCustomSegments(n: number): number {
-  if (!Number.isFinite(n)) return DEFAULT_CUSTOM_SEGMENTS;
+  if (!Number.isFinite(n)) return MAX_CUSTOM_SEGMENTS;
   return Math.min(MAX_CUSTOM_SEGMENTS, Math.max(MIN_CUSTOM_SEGMENTS, Math.round(n)));
 }
 
-const DEFAULT_SETTINGS: QualitySettings = {
-  quality: 'highest',
-  customSegments: DEFAULT_CUSTOM_SEGMENTS,
-};
+/** Return the nearest named preset for a segment count, or 'custom'. */
+export function segmentsToPreset(segments: number): QualityLevel {
+  for (const [preset, count] of Object.entries(QUALITY_SEGMENTS)) {
+    if (count === segments) return preset as QualityPreset;
+  }
+  return 'custom';
+}
+
+function getDefaultSettings(): QualitySettings {
+  const segs = clampCustomSegments(getConfig().ui.defaultQuality);
+  const preset = segmentsToPreset(segs);
+  return { quality: preset, customSegments: segs };
+}
 
 let cached: QualitySettings | null = null;
 const listeners = new Set<(s: QualitySettings) => void>();
 
 export function loadQualitySettings(): QualitySettings {
   if (cached) return cached;
-  try {
-    // Per-tab value (sessionStorage) with a fresh-tab seed (localStorage). Both
-    // are unavailable in the Worker context; readPerTabPref returns null there
-    // and we fall back to defaults.
-    const raw = readPerTabPref(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<QualitySettings>;
-      cached = mergeWithDefaults(parsed);
-      return cached;
-    }
-  } catch {
-    // Fall through to defaults on parse / storage error.
-  }
-  cached = { ...DEFAULT_SETTINGS };
+  cached = getDefaultSettings();
   return cached;
 }
 
 export function saveQualitySettings(next: QualitySettings): void {
   cached = next;
-  writePerTabPref(STORAGE_KEY, JSON.stringify(next));
   for (const fn of listeners) fn(next);
 }
 
@@ -89,7 +80,6 @@ export function saveQualitySettings(next: QualitySettings): void {
  *  not an extra one from the quality listener. */
 export function saveQualitySettingsSilent(next: QualitySettings): void {
   cached = next;
-  writePerTabPref(STORAGE_KEY, JSON.stringify(next));
 }
 
 export function onQualitySettingsChange(fn: (s: QualitySettings) => void): () => void {
@@ -98,8 +88,8 @@ export function onQualitySettingsChange(fn: (s: QualitySettings) => void): () =>
 }
 
 /** Override applied by the geometry Worker so it uses the main-thread
- *  quality setting (which reads from localStorage) rather than the
- *  Worker's default. Null means "read from localStorage as normal". */
+ *  quality setting rather than the Worker's in-memory default (which
+ *  can't see the main-thread cache). Null means use local defaults. */
 let circularSegmentsOverride: number | null = null;
 
 export function setCircularSegmentsOverride(n: number | null): void {
@@ -114,13 +104,3 @@ export function getDefaultCircularSegments(): number {
   return QUALITY_SEGMENTS[s.quality];
 }
 
-function mergeWithDefaults(partial: Partial<QualitySettings>): QualitySettings {
-  const q = partial.quality;
-  const quality: QualityLevel =
-    q === 'custom' || (q != null && q in QUALITY_SEGMENTS) ? q : DEFAULT_SETTINGS.quality;
-  const customSegments =
-    typeof partial.customSegments === 'number'
-      ? clampCustomSegments(partial.customSegments)
-      : DEFAULT_SETTINGS.customSegments;
-  return { quality, customSegments };
-}

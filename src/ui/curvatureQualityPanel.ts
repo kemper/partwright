@@ -4,39 +4,21 @@
 // simplifyUI.ts (the Quality panel), which calls saveQualityForLang() when
 // the user picks a preset and notifyLanguageChange() when languages switch.
 
-import { readPerTabPref, writePerTabPref } from '../storage/perTabPref';
+import { getConfig } from '../config/appConfig';
 import {
   loadQualitySettings,
   saveQualitySettings,
   saveQualitySettingsSilent,
-  QUALITY_SEGMENTS,
+  clampCustomSegments,
+  segmentsToPreset,
   type QualitySettings,
 } from '../geometry/qualitySettings';
 import type { Language } from '../geometry/engine';
 
-const SCAD_STORAGE_KEY = 'partwright-quality-scad-v1';
-const SCAD_DEFAULT: QualitySettings = { quality: 'medium', customSegments: 128 };
-
 export function loadScadSettings(): QualitySettings {
-  try {
-    const raw = readPerTabPref(SCAD_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<QualitySettings>;
-      const q = parsed.quality;
-      const quality: QualitySettings['quality'] =
-        q === 'custom' || (q != null && q in QUALITY_SEGMENTS) ? q : SCAD_DEFAULT.quality;
-      const customSegments =
-        typeof parsed.customSegments === 'number' ? parsed.customSegments : SCAD_DEFAULT.customSegments;
-      return { quality, customSegments };
-    }
-  } catch {
-    // Fall through to default.
-  }
-  return { ...SCAD_DEFAULT };
-}
-
-function saveScadSettings(next: QualitySettings): void {
-  writePerTabPref(SCAD_STORAGE_KEY, JSON.stringify(next));
+  const segs = clampCustomSegments(getConfig().ui.scadDefaultQuality);
+  const preset = segmentsToPreset(segs);
+  return { quality: preset, customSegments: segs };
 }
 
 export function isScad(lang: Language): boolean {
@@ -58,16 +40,12 @@ export function initQualityLogic(initialLang: Language): void {
   currentLang = initialLang;
 }
 
-/** Apply a quality preset for the current language. Writes to the
- *  language-appropriate storage key(s) and fires the quality listener so
- *  the engine re-runs at the new segment count. */
+/** Apply a quality preset for the current language. Updates the in-memory
+ *  cache and fires the quality listener so the engine re-runs at the new
+ *  segment count. Quality is not persisted across page reloads; the default
+ *  comes from Settings (Advanced). */
 export function saveQualityForLang(next: QualitySettings): void {
-  if (isScad(currentLang)) {
-    saveScadSettings(next);   // persist SCAD preference
-    saveQualitySettings(next); // update shared key + fire re-run
-  } else {
-    saveQualitySettings(next);
-  }
+  saveQualitySettings(next);
 }
 
 /** Called by main.ts when the active language changes (e.g. JS → SCAD).
