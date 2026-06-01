@@ -48,9 +48,9 @@ test('SCAD engine applies the chosen $fn from quality preset', async ({ page }) 
   expect(high.triangleCount ?? 0).toBeGreaterThan(100);
 
   // Drop to Low via the curvature quality panel.
-  await page.locator('#curvature-quality-toggle').click();
-  await page.locator('#curvature-quality-panel input[type=radio][value=low]').check();
-  await page.locator('#curvature-quality-panel button[aria-label="Close curvature quality panel"]').click();
+  await page.locator('#simplify-toggle').click();
+  await page.locator('#simplify-panel input[type=radio][value=low]').check();
+  await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
 
   // Re-run — fewer triangles.
   const low = await page.evaluate(async (code) => {

@@ -37,7 +37,6 @@ import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarS
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { registerCommands } from './ui/commandPalette';
 import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
-import { initCurvatureQualityPanel, notifyLanguageChange as notifyQualityLanguageChange, isCurvatureQualityOpen, closeCurvatureQuality } from './ui/curvatureQualityPanel';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput } from './ui/aiPanel';
@@ -140,7 +139,7 @@ import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
-import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, type SimplifyHandlers } from './ui/simplifyUI';
+import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
 import { updatePaintMesh, setOnRegionPainted } from './color/paintMode';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu } from './annotations/annotateUI';
 import { isActive as isSelectActive, getSelectedId as getSelectedAnnotationId } from './annotations/selectMode';
@@ -5277,7 +5276,10 @@ async function main() {
     const v = await saveVersion(code, geometryData, thumbnail, label);
     return { versionIndex: v?.index ?? null, voxelCount: count };
   }
-  initSimplifyUI(clipControls, simplifyHandlers);
+  initSimplifyUI(clipControls, simplifyHandlers, {
+    initialLang: getActiveLanguage(),
+    onCancelRender: () => { cancelCurrentExecution(); },
+  });
   initMeasureToggle(clipControls);
   initOrbitLockToggle(clipControls);
 
@@ -5294,8 +5296,6 @@ async function main() {
   const paintBtnEl = clipControls.querySelector('#paint-toggle');
   if (paintBtnEl) clipControls.insertBefore(reliefViewportBtn, paintBtnEl);
   else clipControls.appendChild(reliefViewportBtn);
-
-  initCurvatureQualityPanel(clipControls, viewportPane, getActiveLanguage());
 
   initEscapeMenuClose();
 
@@ -5491,7 +5491,7 @@ async function main() {
     setEditorLanguage(lang);
     setToolbarLanguage(lang);
     setVoxelPaintAvailable(lang === 'voxel');
-    notifyQualityLanguageChange(lang);
+    notifyQualityLangChanged(lang);
     syncEditorTitle(getState());
     const loadingLabel =
       lang === 'scad' ? 'Loading OpenSCAD...' :
@@ -11011,6 +11011,7 @@ async function main() {
     _runShowTimer = window.setTimeout(() => {
       _runShowTimer = null;
       setRunState(true, performance.now() - _runTimerStart);
+      setQualityRenderState(true);
       _runTimerInterval = window.setInterval(() => {
         const ms = performance.now() - _runTimerStart;
         setRunState(true, ms);
@@ -11023,6 +11024,7 @@ async function main() {
     if (_runShowTimer !== null) { clearTimeout(_runShowTimer); _runShowTimer = null; }
     if (_runTimerInterval !== null) { clearInterval(_runTimerInterval); _runTimerInterval = null; }
     setRunState(false);
+    setQualityRenderState(false);
   }
 
   async function runCodeSync(src: string, opts: { surfaceErrors?: boolean } = {}): Promise<boolean> {
@@ -11338,7 +11340,6 @@ async function main() {
       if (isSelectActive() && getSelectedAnnotationId()) return;
 
       let closed = false;
-      if (isCurvatureQualityOpen()) { closeCurvatureQuality(); closed = true; }
       if (isAnnotateOpen()) { closeAnnotateMenu(); closed = true; }
       if (isPaintOpen()) { closePaintMenu(); closed = true; }
       if (isSimplifyOpen()) { closeSimplifyMenu(); closed = true; }

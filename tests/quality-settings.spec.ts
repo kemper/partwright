@@ -16,40 +16,40 @@ test.beforeEach(async ({ page }) => {
 test.describe('Modeling quality settings', () => {
   test('viewport quality button opens panel showing Highest as default', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#curvature-quality-toggle');
+    await page.waitForSelector('#simplify-toggle');
 
-    await page.locator('#curvature-quality-toggle').click();
-    await expect(page.locator('#curvature-quality-panel')).toBeVisible();
+    await page.locator('#simplify-toggle').click();
+    await expect(page.locator('#simplify-panel')).toBeVisible();
 
     // Highest preset radio should be checked on first load.
-    const highestRadio = page.locator('#curvature-quality-panel input[type=radio][value=highest]');
+    const highestRadio = page.locator('#simplify-panel input[type=radio][value=highest]');
     await expect(highestRadio).toBeChecked();
 
     // X button closes the panel (removes it from DOM).
-    await page.locator('#curvature-quality-panel button[aria-label="Close curvature quality panel"]').click();
-    await expect(page.locator('#curvature-quality-panel')).toHaveCount(0);
+    await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
+    await expect(page.locator('#simplify-panel')).toHaveCount(0);
   });
 
   test('picking Low persists and reloads checked', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#curvature-quality-toggle');
+    await page.waitForSelector('#simplify-toggle');
 
-    await page.locator('#curvature-quality-toggle').click();
-    await page.locator('#curvature-quality-panel input[type=radio][value=low]').check();
+    await page.locator('#simplify-toggle').click();
+    await page.locator('#simplify-panel input[type=radio][value=low]').check();
 
     const stored = await page.evaluate(() => localStorage.getItem('partwright-quality-settings-v1'));
     expect(stored).toBeTruthy();
     expect(JSON.parse(stored!)).toMatchObject({ quality: 'low' });
 
     // Close + reopen panel — Low should still be the selected radio.
-    await page.locator('#curvature-quality-panel button[aria-label="Close curvature quality panel"]').click();
-    await page.locator('#curvature-quality-toggle').click();
-    await expect(page.locator('#curvature-quality-panel input[type=radio][value=low]')).toBeChecked();
+    await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
+    await page.locator('#simplify-toggle').click();
+    await expect(page.locator('#simplify-panel input[type=radio][value=low]')).toBeChecked();
   });
 
   test('manifold-js engine applies the chosen segment count', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#curvature-quality-toggle');
+    await page.waitForSelector('#simplify-toggle');
     await page.waitForFunction(
       () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
       { timeout: 20_000 },
@@ -67,9 +67,9 @@ test.describe('Modeling quality settings', () => {
     expect(high.triangleCount ?? 0).toBeGreaterThan(2000);
 
     // Drop to Low via the panel.
-    await page.locator('#curvature-quality-toggle').click();
-    await page.locator('#curvature-quality-panel input[type=radio][value=low]').check();
-    await page.locator('#curvature-quality-panel button[aria-label="Close curvature quality panel"]').click();
+    await page.locator('#simplify-toggle').click();
+    await page.locator('#simplify-panel input[type=radio][value=low]').check();
+    await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
 
     // Re-run the same code — should produce far fewer triangles.
     const low = await page.evaluate(async (code) => {
@@ -82,7 +82,7 @@ test.describe('Modeling quality settings', () => {
 
   test('Ultra preset persists and yields more triangles than the default', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#curvature-quality-toggle');
+    await page.waitForSelector('#simplify-toggle');
     await page.waitForFunction(
       () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
       { timeout: 20_000 },
@@ -99,11 +99,11 @@ test.describe('Modeling quality settings', () => {
     }, cylinderCode);
 
     // Switch to Ultra (1024 segments) and confirm it persists.
-    await page.locator('#curvature-quality-toggle').click();
-    await page.locator('#curvature-quality-panel input[type=radio][value=ultra]').check();
+    await page.locator('#simplify-toggle').click();
+    await page.locator('#simplify-panel input[type=radio][value=ultra]').check();
     const stored = await page.evaluate(() => localStorage.getItem('partwright-quality-settings-v1'));
     expect(JSON.parse(stored!)).toMatchObject({ quality: 'ultra' });
-    await page.locator('#curvature-quality-panel button[aria-label="Close curvature quality panel"]').click();
+    await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
 
     const ultra = await page.evaluate(async (code) => {
       const api = (window as unknown as { partwright: PartwrightApi }).partwright;
