@@ -18,12 +18,12 @@ type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' 
 
 /** The subset of the console API the surface UI needs. */
 export interface SurfaceApi {
-  applyFuzzySkin(opts?: { amplitude?: number; scale?: number; octaves?: number; seed?: number; preserveColor?: boolean }): Promise<ApplyResult>;
-  applyKnitTexture(opts?: { amplitude?: number; stitchWidth?: number; stitchHeight?: number; rowOffset?: number; roundness?: number; grainAngleDeg?: number; variation?: number; seed?: number; preserveColor?: boolean }): Promise<ApplyResult>;
-  applyCableKnit(opts?: { amplitude?: number; cableWidth?: number; cablePitch?: number; plyWidth?: number; grainAngleDeg?: number; variation?: number; seed?: number; preserveColor?: boolean }): Promise<ApplyResult>;
-  applyWaffleStitch(opts?: { amplitude?: number; cellWidth?: number; cellHeight?: number; sharpness?: number; rowOffset?: number; grainAngleDeg?: number; seed?: number; preserveColor?: boolean }): Promise<ApplyResult>;
-  applyFurVelvet(opts?: { amplitude?: number; fiberSpacing?: number; fiberLength?: number; octaves?: number; grainAngleDeg?: number; seed?: number; preserveColor?: boolean }): Promise<ApplyResult>;
-  applyWovenFabric(opts?: { amplitude?: number; threadSpacing?: number; threadWidth?: number; underDepth?: number; grainAngleDeg?: number; seed?: number; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyFuzzySkin(opts?: { amplitude?: number; scale?: number; octaves?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyKnitTexture(opts?: { amplitude?: number; stitchWidth?: number; stitchHeight?: number; rowOffset?: number; roundness?: number; grainAngleDeg?: number; variation?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyCableKnit(opts?: { amplitude?: number; cableWidth?: number; cablePitch?: number; plyWidth?: number; grainAngleDeg?: number; variation?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyWaffleStitch(opts?: { amplitude?: number; cellWidth?: number; cellHeight?: number; sharpness?: number; rowOffset?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyFurVelvet(opts?: { amplitude?: number; fiberSpacing?: number; fiberLength?: number; octaves?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyWovenFabric(opts?: { amplitude?: number; threadSpacing?: number; threadWidth?: number; underDepth?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   voxelizeModel(opts?: { resolution?: number; smooth?: boolean; preserveColor?: boolean }): Promise<ApplyResult>;
   previewSurfaceModifier(id: ModId, opts?: Record<string, unknown>, preserveColor?: boolean): { ok: true } | { error: string };
@@ -161,6 +161,12 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     // keep reference so the checkbox closure can find `warn` (defined above via hoist).
   }
 
+  // Shared detail slider — persists across texture-tab switches so the user's
+  // chosen quality level is preserved when comparing different textures.
+  // Not shown for smooth/voxelize (those have their own quality controls).
+  const detailLabels = ['Draft', 'Low', 'Medium', 'High', 'Ultra'];
+  const detail = slider('Mesh detail', 1, 5, 3, 1, n => detailLabels[n - 1], schedulePreview);
+
   // Per-tab option getters → modifier options object for preview/apply.
   let currentOpts: () => Record<string, unknown> = () => ({});
 
@@ -171,9 +177,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const scale = slider('Feature size', span * 0.005, span * 0.25, span * 0.04, span * 0.005, n => n.toFixed(3), schedulePreview);
       const oct = slider('Detail (octaves)', 1, 4, 2, 1, n => String(n), schedulePreview);
       const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);
-      body.append(amp.wrap, scale.wrap, oct.wrap, seed.wrap);
+      body.append(amp.wrap, scale.wrap, oct.wrap, seed.wrap, detail.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Densifies the mesh, then jitters the surface along its normals — the 3D-print "fuzzy skin" finish.'));
-      currentOpts = () => ({ amplitude: amp.get(), scale: scale.get(), octaves: oct.get(), seed: seed.get() });
+      currentOpts = () => ({ amplitude: amp.get(), scale: scale.get(), octaves: oct.get(), seed: seed.get(), quality: detail.get() });
     } else if (active === 'knit') {
       const sw = slider('Stitch width', span * 0.01, span * 0.25, span * 0.05, span * 0.005, n => n.toFixed(3), schedulePreview);
       const sh = slider('Stitch height', span * 0.01, span * 0.35, span * 0.07, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -182,7 +188,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
       const variation = slider('Variation', 0, 0.5, 0.1, 0.01, n => n.toFixed(2), schedulePreview);
       const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);
-      body.append(sw.wrap, sh.wrap, amp.wrap, round.wrap, grain.wrap, variation.wrap, seed.wrap);
+      body.append(sw.wrap, sh.wrap, amp.wrap, round.wrap, grain.wrap, variation.wrap, seed.wrap, detail.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Stockinette (V-stitch) pattern via brick-offset cosine bumps. Roundness 0 = sharp ridges; 1 = soft round bumps. Grain angle rotates the stitch direction.'));
       currentOpts = () => ({
         stitchWidth: sw.get(),
@@ -192,6 +198,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         grainAngleDeg: grain.get(),
         variation: variation.get(),
         seed: seed.get(),
+        quality: detail.get(),
       });
     } else if (active === 'cable') {
       const cw = slider('Cable width', span * 0.02, span * 0.3, span * 0.08, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -201,7 +208,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
       const variation = slider('Variation', 0, 0.4, 0.08, 0.01, n => n.toFixed(2), schedulePreview);
       const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);
-      body.append(cw.wrap, cp.wrap, pw.wrap, amp.wrap, grain.wrap, variation.wrap, seed.wrap);
+      body.append(cw.wrap, cp.wrap, pw.wrap, amp.wrap, grain.wrap, variation.wrap, seed.wrap, detail.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Rope-like cable columns with crossing ply ridges. Cable pitch controls how tightly the plies twist.'));
       currentOpts = () => ({
         cableWidth: cw.get(),
@@ -211,6 +218,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         grainAngleDeg: grain.get(),
         variation: variation.get(),
         seed: seed.get(),
+        quality: detail.get(),
       });
     } else if (active === 'waffle') {
       const cw = slider('Cell width', span * 0.01, span * 0.3, span * 0.06, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -219,7 +227,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const sharp = slider('Sharpness', 1, 10, 3, 0.5, n => n.toFixed(1), schedulePreview);
       const rowOff = slider('Row offset (0=grid, 0.5=honeycomb)', 0, 1, 0, 0.05, n => n.toFixed(2), schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
-      body.append(cw.wrap, ch.wrap, amp.wrap, sharp.wrap, rowOff.wrap, grain.wrap);
+      body.append(cw.wrap, ch.wrap, amp.wrap, sharp.wrap, rowOff.wrap, grain.wrap, detail.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Recessed cells with raised borders. Sharpness 1=soft round, 3=crisp waffle, 8+=very thin border. Row offset 0.5 = honeycomb pattern.'));
       currentOpts = () => ({
         cellWidth: cw.get(),
@@ -228,6 +236,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         sharpness: sharp.get(),
         rowOffset: rowOff.get(),
         grainAngleDeg: grain.get(),
+        quality: detail.get(),
       });
     } else if (active === 'fur') {
       const fs = slider('Fiber spacing', span * 0.003, span * 0.1, span * 0.02, span * 0.001, n => n.toFixed(3), schedulePreview);
@@ -236,7 +245,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const oct = slider('Detail (octaves)', 1, 4, 2, 1, n => String(n), schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
       const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);
-      body.append(fs.wrap, fl.wrap, amp.wrap, oct.wrap, grain.wrap, seed.wrap);
+      body.append(fs.wrap, fl.wrap, amp.wrap, oct.wrap, grain.wrap, seed.wrap, detail.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Anisotropic noise: fine cross-grain (fiber width), coarse along-grain (fiber length). Smaller spacing = finer velvet; larger = shaggy fur.'));
       currentOpts = () => ({
         fiberSpacing: fs.get(),
@@ -245,6 +254,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         octaves: oct.get(),
         grainAngleDeg: grain.get(),
         seed: seed.get(),
+        quality: detail.get(),
       });
     } else if (active === 'woven') {
       const ts = slider('Thread spacing', span * 0.005, span * 0.2, span * 0.04, span * 0.002, n => n.toFixed(3), schedulePreview);
@@ -252,7 +262,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const amp = slider('Amplitude (thread height)', 0, span * 0.06, span * 0.02, span * 0.001, n => n.toFixed(3), schedulePreview);
       const ud = slider('Under-thread depth', 0, 1, 0.5, 0.05, n => n.toFixed(2), schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
-      body.append(ts.wrap, tw.wrap, amp.wrap, ud.wrap, grain.wrap);
+      body.append(ts.wrap, tw.wrap, amp.wrap, ud.wrap, grain.wrap, detail.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Plain-weave interlacing: warp and weft threads alternate over/under. Thread width 0.4=open weave, 0.7=tight. Under-depth 0=flat valleys, 1=deep recess.'));
       currentOpts = () => ({
         threadSpacing: ts.get(),
@@ -260,6 +270,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         amplitude: amp.get(),
         underDepth: ud.get(),
         grainAngleDeg: grain.get(),
+        quality: detail.get(),
       });
     } else if (active === 'smooth') {
       const iter = slider('Rounding strength', 1, 12, 4, 1, n => String(n), schedulePreview);

@@ -47,6 +47,8 @@ export interface CableKnitOptions {
   seed?: number;
   /** Densify mesh before displacing. Default true. */
   subdivide?: boolean;
+  /** Subdivision quality 1 (draft) – 5 (ultra). Default 3. */
+  quality?: number;
 }
 
 function hash2(ix: number, iz: number, seed: number): number {
@@ -77,8 +79,10 @@ export function cableKnit(mesh: MeshData, opts: CableKnitOptions): MeshData {
 
   let base: MeshData = mesh;
   if (opts.subdivide !== false && amplitude > 0) {
+    const quality = Math.max(1, Math.min(5, Math.round(opts.quality ?? 3)));
+    const qScale = 2 ** ((quality - 3) / 2);
     const diag = Math.hypot(...bboxOf(extractPositions(mesh)).size);
-    const targetEdge = Math.max(Math.min(plyW, cableW) / 3, diag / 400);
+    const targetEdge = Math.max(Math.min(plyW, cableW) / (3 * qScale), diag / (400 * qScale));
     base = subdivideToMaxEdge(mesh, { maxEdge: targetEdge, maxRounds: 6 });
   }
 

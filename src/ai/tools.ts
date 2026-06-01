@@ -1081,6 +1081,12 @@ const ALL_TOOLS: ToolDefinition[] = [
           type: 'integer',
           description: 'Deterministic seed. Different seeds produce different patterns with identical parameters. Default 1.',
         },
+        quality: {
+          type: 'integer',
+          description: 'Mesh detail 1 (draft, ~4× fewer triangles) to 5 (ultra, ~4× more). Default 3. Higher = smoother displacement curves, longer compute. Use 4–5 for final renders, 1–2 for quick iteration.',
+          minimum: 1,
+          maximum: 5,
+        },
         preserveColor: {
           type: 'boolean',
           description: 'Carry existing paint regions onto the retessellated mesh. Default true. Pass false for an intentionally clean-slate texture.',
@@ -1148,6 +1154,12 @@ const ALL_TOOLS: ToolDefinition[] = [
           type: 'integer',
           description: 'Deterministic seed for per-stitch variation. Default 1.',
         },
+        quality: {
+          type: 'integer',
+          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = smoother stitch curves.',
+          minimum: 1,
+          maximum: 5,
+        },
         preserveColor: {
           type: 'boolean',
           description: 'Carry existing paint regions onto the retessellated mesh. Default true. Pass false for an intentionally unpainted result.',
@@ -1205,6 +1217,12 @@ const ALL_TOOLS: ToolDefinition[] = [
         seed: {
           type: 'integer',
           description: 'Deterministic seed for per-cable variation. Default 1.',
+        },
+        quality: {
+          type: 'integer',
+          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = smoother ply ridges.',
+          minimum: 1,
+          maximum: 5,
         },
         preserveColor: {
           type: 'boolean',
@@ -1264,6 +1282,12 @@ const ALL_TOOLS: ToolDefinition[] = [
           type: 'integer',
           description: 'Deterministic seed (reserved for future variation). Default 1.',
         },
+        quality: {
+          type: 'integer',
+          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = crisper cell borders.',
+          minimum: 1,
+          maximum: 5,
+        },
         preserveColor: {
           type: 'boolean',
           description: 'Carry existing paint onto the retessellated mesh. Default true.',
@@ -1316,6 +1340,12 @@ const ALL_TOOLS: ToolDefinition[] = [
         seed: {
           type: 'integer',
           description: 'Deterministic noise seed. Default 1.',
+        },
+        quality: {
+          type: 'integer',
+          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = finer fiber strands.',
+          minimum: 1,
+          maximum: 5,
         },
         preserveColor: {
           type: 'boolean',
@@ -1371,6 +1401,12 @@ const ALL_TOOLS: ToolDefinition[] = [
         seed: {
           type: 'integer',
           description: 'Deterministic seed. Default 1.',
+        },
+        quality: {
+          type: 'integer',
+          description: 'Mesh detail 1 (draft) to 5 (ultra). Default 3. Higher = finer thread definition.',
+          minimum: 1,
+          maximum: 5,
         },
         preserveColor: {
           type: 'boolean',

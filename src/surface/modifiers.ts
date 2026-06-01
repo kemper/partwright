@@ -63,7 +63,7 @@ export function modelDiagonal(mesh: MeshData): number {
 /** Size-relative starting parameters for fuzzy skin (subtle ~1% displacement). */
 export function defaultFuzzyOptions(mesh: MeshData): Required<FuzzySkinOptions> {
   const d = modelDiagonal(mesh) || 10;
-  return { amplitude: d * 0.01, scale: d * 0.04, octaves: 2, seed: 1, subdivide: true };
+  return { amplitude: d * 0.01, scale: d * 0.04, octaves: 2, seed: 1, quality: 3, subdivide: true };
 }
 
 /** Size-relative starting parameters for knit texture (~3% amplitude, ~5% stitch width). */
@@ -79,6 +79,7 @@ export function defaultKnitOptions(mesh: MeshData): Required<KnitTextureOptions>
     grainAngleDeg: 0,
     variation: 0.1,
     seed: 1,
+    quality: 3,
     subdivide: true,
   };
 }
@@ -140,6 +141,7 @@ export function defaultCableOptions(mesh: MeshData): Required<CableKnitOptions> 
     grainAngleDeg: 0,
     variation: 0.08,
     seed: 1,
+    quality: 3,
     subdivide: true,
   };
 }
@@ -154,6 +156,7 @@ export function defaultWaffleOptions(mesh: MeshData): Required<WaffleStitchOptio
     rowOffset: 0,
     grainAngleDeg: 0,
     seed: 1,
+    quality: 3,
     subdivide: true,
   };
 }
@@ -168,6 +171,7 @@ export function defaultFurOptions(mesh: MeshData): Required<FurVelvetOptions> {
     octaves: 2,
     grainAngleDeg: 0,
     seed: 1,
+    quality: 3,
     subdivide: true,
   };
 }
@@ -181,6 +185,7 @@ export function defaultWovenOptions(mesh: MeshData): Required<WovenFabricOptions
     underDepth: 0.3,
     grainAngleDeg: 0,
     seed: 1,
+    quality: 3,
     subdivide: true,
   };
 }

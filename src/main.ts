@@ -6046,7 +6046,7 @@ async function main() {
     /** Apply a fuzzy-skin surface texture to the current model; saves a new version.
      *  `preserveColor` (default true) re-resolves paint regions onto the new mesh.
      *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
-    async applyFuzzySkin(opts?: { amplitude?: number; scale?: number; octaves?: number; seed?: number; preserveColor?: boolean }) {
+    async applyFuzzySkin(opts?: { amplitude?: number; scale?: number; octaves?: number; seed?: number; quality?: number; preserveColor?: boolean }) {
       try {
         const preserve = opts?.preserveColor ?? true;
         const mesh = requireCurrentMeshForModifier();
@@ -6073,6 +6073,7 @@ async function main() {
       grainAngleDeg?: number;
       variation?: number;
       seed?: number;
+      quality?: number;
       preserveColor?: boolean;
     }) {
       try {
@@ -6100,6 +6101,7 @@ async function main() {
       grainAngleDeg?: number;
       variation?: number;
       seed?: number;
+      quality?: number;
       preserveColor?: boolean;
     }) {
       try {
@@ -6127,6 +6129,7 @@ async function main() {
       rowOffset?: number;
       grainAngleDeg?: number;
       seed?: number;
+      quality?: number;
       preserveColor?: boolean;
     }) {
       try {
@@ -6153,6 +6156,7 @@ async function main() {
       octaves?: number;
       grainAngleDeg?: number;
       seed?: number;
+      quality?: number;
       preserveColor?: boolean;
     }) {
       try {
@@ -6179,6 +6183,7 @@ async function main() {
       underDepth?: number;
       grainAngleDeg?: number;
       seed?: number;
+      quality?: number;
       preserveColor?: boolean;
     }) {
       try {

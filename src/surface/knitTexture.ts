@@ -54,6 +54,10 @@ export interface KnitTextureOptions {
   seed?: number;
   /** Densify the mesh before displacing so the texture is visible. Default true. */
   subdivide?: boolean;
+  /** Subdivision quality 1 (draft) – 5 (ultra). Controls how finely the mesh is
+   *  tessellated before displacement. Higher = smoother curves, more triangles.
+   *  Default 3 (medium). */
+  quality?: number;
 }
 
 // --- Per-stitch variation noise -----------------------------------------------
@@ -86,8 +90,10 @@ export function knitTexture(mesh: MeshData, opts: KnitTextureOptions): MeshData 
   // stitch_min/4, but never smaller than diag/400 to avoid triangle explosion.
   let base: MeshData = mesh;
   if (opts.subdivide !== false && amplitude > 0) {
+    const quality = Math.max(1, Math.min(5, Math.round(opts.quality ?? 3)));
+    const qScale = 2 ** ((quality - 3) / 2);  // 0.5 at q=1, 1.0 at q=3, 2.0 at q=5
     const diag = Math.hypot(...bboxOf(extractPositions(mesh)).size);
-    const targetEdge = Math.max(Math.min(stitchW, stitchH) / 4, diag / 400);
+    const targetEdge = Math.max(Math.min(stitchW, stitchH) / (4 * qScale), diag / (400 * qScale));
     base = subdivideToMaxEdge(mesh, { maxEdge: targetEdge, maxRounds: 6 });
   }
 
