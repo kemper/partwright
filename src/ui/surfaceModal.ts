@@ -88,11 +88,11 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   const span = modelSpan(api);
   const painted = (() => { try { return api.modelHasColor(); } catch { return false; } })();
 
-  // Right-aligned, matching the Paint / Relief panels. The panel is draggable
-  // via the title bar — pointer capture keeps the drag smooth even if the cursor
-  // moves off the panel or over the viewport canvas.
-  const backdrop = el('div', 'fixed inset-0 z-[60] bg-black/60 flex items-center justify-end p-3');
-  const panel = el('div', 'bg-zinc-900 text-zinc-100 rounded-lg border border-zinc-700 shadow-xl w-[min(94vw,440px)] max-h-[90vh] overflow-auto p-5');
+  // No backdrop overlay — the model must stay fully visible so live preview is
+  // useful. Use pointer-events-none on the wrapper so the viewport stays
+  // interactive (orbit/zoom) while sliders are open, like Paint/Relief panels.
+  const backdrop = el('div', 'fixed inset-0 z-[60] pointer-events-none flex items-end justify-end p-3');
+  const panel = el('div', 'pointer-events-auto bg-zinc-900 text-zinc-100 rounded-lg border border-zinc-700 shadow-xl w-[min(94vw,440px)] max-h-[90vh] overflow-auto p-5');
   backdrop.append(panel);
 
   // --- Drag state ---
