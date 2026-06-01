@@ -1,0 +1,20 @@
+id: prefer-pointer-events
+language: typescript
+severity: hint
+message: >-
+  Mouse-only event listener. For draggable UI use Pointer Events
+  (pointerdown/pointermove/pointerup + setPointerCapture) so touch and stylus
+  work too. (Safe to ignore for click-outside detection or preventDefault.)
+note: >-
+  See CLAUDE.md "Mobile-Friendly UI": never use mouse-only events for draggable
+  UI. Drag handles also need touch-action:none (Tailwind touch-none) and a
+  >=44x44 px hit area. This is a hint — a lone mousedown for click-outside is
+  fine; a mousedown+mousemove+mouseup drag sequence is the real smell.
+files:
+  - "src/**/*.ts"
+  - "src/**/*.tsx"
+rule:
+  any:
+    - pattern: $EL.addEventListener('mousedown', $$$ARGS)
+    - pattern: $EL.addEventListener('mousemove', $$$ARGS)
+    - pattern: $EL.addEventListener('mouseup', $$$ARGS)

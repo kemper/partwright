@@ -1,0 +1,22 @@
+id: no-native-dialogs
+language: typescript
+severity: warning
+message: >-
+  Native browser dialog (alert/confirm/prompt) blocks the thread and ignores
+  the app's UI system. Use a modal (createModalShell / mountPreactModal) for
+  input or confirmation, and showToast() for transient feedback.
+note: >-
+  Partwright has one messaging system. Confirmations belong in a modal built on
+  src/ui/modalShell.ts; notices belong in showToast() (src/ui/toast.ts), which
+  also mirrors to the Diagnostic Log. See CLAUDE.md "User Messaging".
+files:
+  - "src/**/*.ts"
+  - "src/**/*.tsx"
+rule:
+  any:
+    - pattern: alert($$$ARGS)
+    - pattern: window.alert($$$ARGS)
+    - pattern: confirm($$$ARGS)
+    - pattern: window.confirm($$$ARGS)
+    - pattern: prompt($$$ARGS)
+    - pattern: window.prompt($$$ARGS)

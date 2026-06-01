@@ -1,0 +1,50 @@
+name: Code quality
+
+# Advisory static-analysis pass for PRs into main, complementing pr-checks.yml
+# (build + unit + e2e). Two tiers:
+#
+#   - lint:consistency (ast-grep) is a GATE. `ast-grep scan` exits non-zero
+#     only on `error`-severity rules. Today's rules are all warning/hint, so
+#     this step is green now while still surfacing candidates in the log — and
+#     it auto-gates the moment a rule is promoted to `error` after cleanup.
+#   - dead-code (knip) and circular-deps (madge) are ADVISORY: they print
+#     findings for reviewers but never fail the job, because the codebase has
+#     known pre-existing hits being worked down. See docs/agent-tooling.md.
+#
+# This job runs on PRs only — it does not gate the main->staging promotion.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths-ignore:
+      - '**/*.md'
+      - '.github/release.yml'
+      - 'LICENSE'
+
+concurrency:
+  group: code-quality-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: UI consistency (ast-grep) — gates on error-severity rules
+        run: npm run lint:consistency
+
+      - name: Dead code (knip) — advisory
+        run: npm run lint:deadcode || echo "::warning::knip reported findings (advisory, non-blocking)"
+
+      - name: Circular deps (madge) — advisory
+        run: npm run lint:deps || echo "::warning::madge reported circular dependencies (advisory, non-blocking)"

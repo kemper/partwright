@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json.schemastore.org/mcp.json",
+  "mcpServers": {
+    "typescript": {
+      "command": "npx",
+      "args": ["-y", "typescript-mcp@latest", "--project", "."],
+      "env": {}
+    }
+  }
+}
