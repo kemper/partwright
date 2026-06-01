@@ -3683,6 +3683,9 @@ async function main() {
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
     onSelectPart: async (partId: string) => {
+      // Cancel any in-flight render so stale Part N previews can't land on
+      // the viewport after we've switched away to a different part.
+      cancelCurrentExecution();
       // Save any unsaved non-starter edits as a version (imported SCAD with
       // errors, etc.) so they survive the switch and are loadable on return.
       await preserveCurrentEditsIfNeeded();

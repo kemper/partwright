@@ -176,7 +176,6 @@ async function runScadInner(
   // Source-side scan — single linear pass over the user's text. Decides which
   // compile mode we use below (label-aware vs the historical STL fast path).
   const labelScan = scanScadLabels(source);
-  const effectiveSource = LABEL_MODULE_PREFIX + source;
 
   let preRunHook: ((mod: any) => void) | undefined;
   if (sourceUsesText(source)) {
@@ -225,7 +224,14 @@ async function runScadInner(
         return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
       }
     }
-    instance.FS.writeFile('/in.scad', effectiveSource);
+    // Apply the quality preset to per-primitive $fn=N arguments. The command-
+    // line `-D $fn=N` only sets the global default; in-source `$fn=N` on
+    // individual primitives (e.g. `sphere(5, $fn=200)`) take precedence over
+    // it. Replacing them ensures the user's quality selection actually wins.
+    // Same pattern as the Phase 1 preview pass.
+    const fn = getDefaultCircularSegments();
+    const qualifiedSrc = source.replace(/\$fn\s*=\s*[\d.]+/g, `$fn = ${fn}`);
+    instance.FS.writeFile('/in.scad', LABEL_MODULE_PREFIX + qualifiedSrc);
 
     if (labelScan.hasAnyLabelCalls) {
       // Label-aware path: single compile to multi-object AMF via lazy-union,
