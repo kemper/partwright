@@ -1732,6 +1732,18 @@ function renderTranscript(): void {
   // Measure before replaceChildren — clearing children clamps scrollTop, so
   // any post-clear check would mis-report the user's intent.
   const pinned = isTranscriptPinnedToBottom();
+
+  // Preserve open state of thinking boxes the user manually expanded. Keyed
+  // by "messageId:index" so each box in a multi-thinking message is tracked
+  // independently.
+  const openThinkingBoxes = new Set<string>();
+  for (const msgEl of transcriptEl.querySelectorAll('[data-message-id]')) {
+    const msgId = (msgEl as HTMLElement).dataset.messageId!;
+    msgEl.querySelectorAll('details[data-thinking-box]').forEach((box, i) => {
+      if ((box as HTMLDetailsElement).open) openThinkingBoxes.add(`${msgId}:${i}`);
+    });
+  }
+
   transcriptEl.replaceChildren();
   const hasHistory = state.history.length > 0;
   const hasQueue = state.queuedBlocks.length > 0;
@@ -1750,6 +1762,17 @@ function renderTranscript(): void {
   if (hasQueue) {
     transcriptEl.appendChild(renderQueuedPreview());
   }
+
+  // Restore thinking boxes that were open before the re-render.
+  if (openThinkingBoxes.size > 0) {
+    for (const msgEl of transcriptEl.querySelectorAll('[data-message-id]')) {
+      const msgId = (msgEl as HTMLElement).dataset.messageId!;
+      msgEl.querySelectorAll('details[data-thinking-box]').forEach((box, i) => {
+        if (openThinkingBoxes.has(`${msgId}:${i}`)) (box as HTMLDetailsElement).open = true;
+      });
+    }
+  }
+
   if (pinned) pinTranscriptToBottom();
 }
 
@@ -2205,6 +2228,7 @@ function renderToolCallChip(name: string, input: Record<string, unknown>): HTMLE
  *  bury the actual reply. Indigo-tinted to read apart from tool chips. */
 function renderThinkingBox(text: string): HTMLElement {
   const chip = document.createElement('details');
+  chip.dataset.thinkingBox = '1';
   chip.className = 'max-w-[90%] text-[11px] rounded border border-indigo-800/50 bg-indigo-950/20 px-2 py-1';
   const summary = document.createElement('summary');
   summary.className = 'cursor-pointer text-indigo-300/90 select-none';

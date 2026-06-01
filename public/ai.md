@@ -44,8 +44,8 @@ Partwright supports four modeling engines. The table below covers the three soli
 | Kernel | manifold-3d mesh | OpenSCAD CSG | OpenCASCADE B-rep |
 | Best for | Algorithmic geometry, smooth curves, mesh-level ops (`warp`/`levelSet`/`smoothOut`), painting | Mechanical parts with BOSL2 (threads, gears, attachables), porting existing `.scad` files | True edge fillets/chamfers, exact surfaces, STEP export, mechanical-CAD interop |
 | Code style | `return Manifold.cube([10,10,10], true);` | `cube([10,10,10], center=true);` | `return BREP.box([10,10,10]).fillet(2);` |
-| Unique strengths | `Curves.loft/sweep/naca4`; `levelSet`/`warp`/`smoothOut` (mesh-level) | BOSL2's `cuboid(rounding=)`, `skin()`, `path_sweep()`, `threaded_rod()`, `spur_gear()` | Exact `fillet()`/`chamfer()`, `.blobSTEP()` export, BREP shapes survive across runs |
-| Limitations | Must learn the manifold-3d API | Slower per-run (~100-300ms WASM init); `text()` needs Liberation Sans font family (1.6 MB lazy-loaded on first use) | No `warp`/`levelSet`; no `Curves` helpers; 10 MB WASM lazy-load on first use |
+| Unique strengths | `Curves.loft/sweep/naca4`; `api.text()`; `levelSet`/`warp`/`smoothOut` (mesh-level) | BOSL2's `cuboid(rounding=)`, `skin()`, `path_sweep()`, `threaded_rod()`, `spur_gear()` | Exact `fillet()`/`chamfer()`, `.blobSTEP()` export, BREP shapes survive across runs |
+| Limitations | Must learn the manifold-3d API | Slower per-run (~100-300ms WASM init); `text()` shares same Liberation Sans fonts as manifold-js | No `warp`/`levelSet`; no `Curves` helpers; 10 MB WASM lazy-load on first use |
 
 **Crucial:** You can ALSO use the BREP namespace **inside a manifold-js session** without switching languages — `api.BREP.box(...).fillet(r)`, then `api.BREP.toManifold(shape, api.Manifold)` to drop back into the Manifold world. This is the right move for "one feature needs an exact fillet" without committing to a BREP-only session. Switch to the **replicad** language only when you need STEP export of the *combined* shape, or when the part is dominated by BREP operations. See `/ai/replicad.md` for the full BREP API.
 
@@ -81,6 +81,7 @@ Reach for the right tool the first time. If the table sends you to a subdoc, fet
 | Wing, hull, fuselage (varying profile along axis) | `Curves.loft([profA, profB], [zA, zB])` -> `/ai/curves.md` | BOSL2 `skin([profiles], z=, slices=)` -> `/ai/bosl2.md` | (use manifold-js Curves) |
 | Handle, tube, propeller (profile along 3D path) | `Curves.sweep(profile, pathPoints)` | BOSL2 `path_sweep(profile, path)` | (use manifold-js Curves) |
 | Revolve around an arbitrary axis | `Curves.revolveAxis(profile, [ax,ay,az])` | `rotate([...]) rotate_extrude() polygon()` | (use manifold-js Curves) |
+| 3D text / embossed label | **`api.text("Hi", {size, height, font, spacing, center})` → Manifold** (Liberation Sans; fonts lazy-loaded ~1.6 MB on first use); `api.textSection(...)` → CrossSection for custom extrusion | `text("Hi", size=10, font="Liberation Sans:style=Regular")` | (use manifold-js) |
 | Round/chamfer all sharp edges of a solid | `Curves.fillet(solid, {angle: 60})` (mesh-smoothing) | BOSL2 `cuboid(rounding=...)`, `round3d(...)` | **`.fillet(radius)` / `.chamfer(distance)` -> `/ai/replicad.md` (exact, BREP-true)** |
 | Round/chamfer ONLY specific edges (e.g. top rim only) | (not available) | BOSL2 `edge_profile()` (rough) | **`.fillet(r, {minZ, maxZ, nearPoint+withinDist, parallelToPlane, inDirection})` — selective, BREP-only. See `/ai/replicad.md` for the full EdgeFilter.** |
 | STEP export | (not available) | (not available) | **`partwright.exportSTEP()` after a BREP-language run -> `/ai/replicad.md`** |
@@ -403,6 +404,7 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 **Sandbox environment:** The `api` object provides:
 - `Manifold` and `CrossSection` -- the raw manifold-3d bindings
 - `Curves` -- helpers for smooth/organic shapes (loft, sweep, bezier, arc, naca4, polyline with fillet, arbitrary-axis revolve, fillet/chamfer, pattern arrays). See **[/ai/curves.md](/ai/curves.md)**.
+- `text(str, opts)` / `textSection(str, opts)` -- extruded or 2D text from Liberation Sans. See **[Text](#text--api-text--api-textsection)** below.
 - `params` -- declare tweakable **Customizer** knobs that surface as sliders/toggles in the viewport (see below).
 - `sdf` -- signed-distance-field builder for smooth blends, twists, gyroids, and shells. Tree-of-expressions style, lowered to a Manifold via `.build()`. See **[/ai/sdf.md](/ai/sdf.md)**.
 - `setCircularSegments`, `setMinCircularAngle`, `setMinCircularEdgeLength` -- global curve resolution defaults.
@@ -569,6 +571,33 @@ if (api.volumeDelta(body, after) === 0) throw new Error("subtract did nothing");
 
 For smooth curve helpers (`loft`, `sweep`, `naca4`, `bezier`, `polyline` with fillet, etc.), see **[/ai/curves.md](/ai/curves.md)**.
 
+### Text — `api.text` / `api.textSection`
+
+Produces 3D extruded text (or a 2D `CrossSection`) from the Liberation Sans font family. Uses the same TTF files as the OpenSCAD engine — ~1.6 MB, lazy-loaded on the first run that calls `api.text` or `api.textSection`.
+
+```js
+// 3D extruded text — returns a Manifold
+const label = api.text("HELLO", {
+  size:     10,          // character height in model units (default: 10)
+  height:   2,           // extrusion depth along Z (default: 2)
+  font:     'regular',   // 'regular' | 'bold' | 'italic' | 'bold-italic' (default: 'regular')
+  spacing:  1.0,         // advance-width multiplier: >1 widens gaps, <1 compresses (default: 1.0)
+  center:   false,       // if true, center the bounding box on the origin (default: false)
+  segments: 8,           // bezier subdivision per curve segment (default: 8)
+});
+return Manifold.cube([40, 20, 5]).subtract(label.translate([2, 5, 3]));
+
+// 2D cross-section — returns a CrossSection (for revolve, custom extrude, etc.)
+const cs = api.textSection("AB", { size: 10, center: true });
+return cs.extrude(5, 4, 45); // twisted extrusion
+```
+
+**Notes:**
+- `size` is the font's em-size. Cap height ≈ 72% of `size` for Liberation Sans (so `size: 10` → caps ~7.2 units tall).
+- The baseline sits at `y = 0`; ascenders extend above, descenders below.
+- Holes in characters (inside of "O", "B", "P", etc.) are handled correctly via the even-odd fill rule.
+- `api.text` and `api.textSection` are also available as `api.Curves.text` / `api.Curves.textSection`.
+
 ## Writing OpenSCAD code
 
 When the engine is set to `scad`, code is compiled by OpenSCAD (WASM) instead of running as JavaScript.
@@ -587,7 +616,7 @@ When the engine is set to `scad`, code is compiled by OpenSCAD (WASM) instead of
 **BOSL2 library is bundled** -- start your file with `include <BOSL2/std.scad>` to unlock rounded cuboids, skin/loft, sweep, threaded rods, gears, attachables, and pattern distributors. See **[/ai/bosl2.md](/ai/bosl2.md)**. First BOSL2 run on a fresh page fetches ~4 MB of library source (one-time, then cached).
 
 **Known limitations:**
-- `text()` uses Liberation Sans (Regular/Bold/Italic/BoldItalic). The font files (~1.6 MB) are lazy-loaded on the first run that uses `text()`. Other font names will silently produce no geometry.
+- `text()` uses Liberation Sans (Regular/Bold/Italic/BoldItalic) — same font set as `api.text()` in manifold-js. Font files (~1.6 MB) are lazy-loaded on the first run that uses `text()`. Other font names will silently produce no geometry.
 - External `.scad` libraries (other than the bundled BOSL2) can't be `include`d -- there's no filesystem to read from.
 - Each SCAD run creates a fresh WASM instance (~100-300ms overhead). For fast iteration, manifold-js is snappier.
 

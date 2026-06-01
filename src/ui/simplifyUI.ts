@@ -16,6 +16,8 @@
 
 import { startProgress, updateProgress, endProgress } from './progressModal';
 import { isWireframeVisible, setWireframeVisible } from '../renderer/viewport';
+import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
+import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 
 export interface SimplifyOpenInfo {
   baseTriangles: number;
@@ -71,6 +73,7 @@ const MODE_ACTIVE = 'flex-1 px-2 py-1 rounded text-xs text-blue-300 bg-blue-500/
 
 let simplifyBtn: HTMLButtonElement | null = null;
 let panel: HTMLElement | null = null;
+let panelHeader: HTMLElement | null = null;
 let slider: HTMLInputElement | null = null;
 let numberInput: HTMLInputElement | null = null;
 let originalEl: HTMLElement | null = null;
@@ -122,7 +125,9 @@ export function initSimplifyUI(controlsContainer: HTMLElement, h: SimplifyHandle
   }
 
   panel = buildPanel();
-  controlsContainer.appendChild(panel);
+  const overlayHost = controlsContainer.parentElement ?? controlsContainer;
+  overlayHost.appendChild(panel);
+  if (panelHeader) attachViewportPanelDrag(panelHeader, panel);
 }
 
 export function isSimplifyOpen(): boolean {
@@ -149,9 +154,20 @@ function toggle(): void {
   }
 }
 
+const registryEntry = { close(): void { if (isSimplifyOpen()) closePanel(); } };
+
+function onSimplifyEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  if (document.querySelector('[role="dialog"]')) return;
+  closePanel();
+}
+
 function openPanel(): void {
   if (!handlers || !panel) return;
+  setInitialPanelPosition(panel);
+  openViewportPanel(registryEntry);
   panel.classList.remove('hidden');
+  document.addEventListener('keydown', onSimplifyEscape);
   if (simplifyBtn) simplifyBtn.className = BTN_ACTIVE;
   if (prevWireframeVisible === null) {
     prevWireframeVisible = isWireframeVisible();
@@ -216,6 +232,8 @@ function syncModeUI(): void {
 
 function closePanel(): void {
   panel?.classList.add('hidden');
+  document.removeEventListener('keydown', onSimplifyEscape);
+  closeViewportPanel(registryEntry);
   if (simplifyBtn) simplifyBtn.className = BTN_INACTIVE;
   if (prevWireframeVisible !== null) {
     setWireframeVisible(prevWireframeVisible);
@@ -351,28 +369,36 @@ async function runApply(): Promise<void> {
 function buildPanel(): HTMLElement {
   const p = document.createElement('div');
   p.id = 'simplify-panel';
-  p.className = 'hidden absolute top-10 right-2 z-20 bg-zinc-800/95 backdrop-blur border border-zinc-600/60 rounded-lg p-2.5 shadow-xl';
+  p.className = 'hidden absolute z-20 bg-zinc-800/95 backdrop-blur border border-zinc-600/60 rounded-lg shadow-xl';
   p.style.minWidth = '240px';
   p.style.maxWidth = '280px';
 
+  // Header: drag handle + title + × close button.
   const header = document.createElement('div');
-  header.className = 'flex items-center justify-between mb-1.5';
+  header.className = 'flex items-center justify-between px-2.5 py-2 border-b border-zinc-700/70';
+  panelHeader = header;
   const titleEl = document.createElement('div');
   titleEl.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
   titleEl.textContent = 'Simplify / Enhance';
   const closeBtn = document.createElement('button');
-  closeBtn.className = 'text-zinc-500 [@media(hover:hover)]:hover:text-zinc-200 transition-colors leading-none text-base';
-  closeBtn.textContent = '✕';
+  closeBtn.className = 'text-zinc-400 hover:text-zinc-200 transition-colors leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-zinc-700/60';
+  closeBtn.textContent = '×';
   closeBtn.title = 'Close';
+  closeBtn.setAttribute('aria-label', 'Close');
   closeBtn.addEventListener('click', closePanel);
   header.append(titleEl, closeBtn);
   p.appendChild(header);
+
+  // Padded content area beneath the header.
+  const c = document.createElement('div');
+  c.className = 'p-2.5';
+  p.appendChild(c);
 
   originalEl = document.createElement('div');
   originalEl.id = 'simplify-original';
   originalEl.className = 'text-xs text-zinc-300 mb-2';
   originalEl.textContent = 'Original: —';
-  p.appendChild(originalEl);
+  c.appendChild(originalEl);
 
   // Mode toggle: Simplify | Enhance
   const modeRow = document.createElement('div');
@@ -401,7 +427,7 @@ function buildPanel(): HTMLElement {
     updateApplyEnabled();
   });
   modeRow.appendChild(enhanceModeBtn);
-  p.appendChild(modeRow);
+  c.appendChild(modeRow);
 
   // Controls wrapper (hidden when no model is available)
   controlsEl = document.createElement('div');
@@ -525,12 +551,12 @@ function buildPanel(): HTMLElement {
   actions.appendChild(saveBtn);
   controlsEl.appendChild(actions);
 
-  p.appendChild(controlsEl);
+  c.appendChild(controlsEl);
 
   statusEl = document.createElement('div');
   statusEl.id = 'simplify-status';
   statusEl.className = 'text-xs text-zinc-400 mt-2';
-  p.appendChild(statusEl);
+  c.appendChild(statusEl);
 
   return p;
 }

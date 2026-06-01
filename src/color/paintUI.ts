@@ -67,6 +67,8 @@ import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/t
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
 import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, setShapeType, getShapeType, getShapeVisible, setShapeVisible, onShapeVisibilityChange, type BoxMode, type ShapeType } from './boxDrag';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
+import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
+import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
 
 const PRESET_COLORS: [number, number, number][] = [
   // Warm
@@ -152,10 +154,20 @@ export function initPaintUI(controlsContainer: HTMLElement): void {
   updateUndoClearButton();
 }
 
+const paintRegistryEntry = { close(): void { if (isActive()) togglePaintMode(); } };
+
+function onPaintEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  if (document.querySelector('[role="dialog"]')) return;
+  togglePaintMode();
+}
+
 function togglePaintMode(): void {
   if (isActive()) {
     deactivate();
     updateButtonState(false);
+    closeViewportPanel(paintRegistryEntry);
+    document.removeEventListener('keydown', onPaintEscape);
     pickerPanel?.classList.add('hidden');
   } else {
     forceDeactivateAnnotate();
@@ -164,6 +176,9 @@ function togglePaintMode(): void {
     closeSimplifyMenu();
     activate();
     updateButtonState(true);
+    if (pickerPanel) setInitialPanelPosition(pickerPanel);
+    openViewportPanel(paintRegistryEntry);
+    document.addEventListener('keydown', onPaintEscape);
     pickerPanel?.classList.remove('hidden');
     syncToolPanels();
   }
@@ -198,13 +213,9 @@ function createPickerPanel(): HTMLElement {
   // panel pinned top-right. Either way it's a flex column with a sticky header
   // and footer around one scrollable middle, so the action row stays reachable
   // no matter how long the region list grows.
-  panel.className = [
-    'hidden z-20 flex flex-col overflow-hidden bg-zinc-800/95 backdrop-blur border border-zinc-600/60 shadow-xl',
-    'absolute inset-x-2 bottom-2 top-auto max-h-[55%] rounded-xl',
-    'md:inset-x-auto md:bottom-auto md:left-auto md:right-2 md:top-12 md:w-60 md:max-h-[calc(100%-3.5rem)] md:rounded-lg',
-  ].join(' ');
+  panel.className = 'hidden z-20 flex flex-col overflow-hidden bg-zinc-800/95 backdrop-blur border border-zinc-600/60 shadow-xl absolute rounded-lg w-60 max-h-[calc(100%-3.5rem)]';
 
-  // === Header (sticky): title + close affordance ===
+  // === Header: drag handle + title + \u00D7 close button ===
   const header = document.createElement('div');
   header.className = 'shrink-0 flex items-center justify-between gap-2 px-2.5 py-2 border-b border-zinc-700/70';
   const headerTitle = document.createElement('div');
@@ -215,10 +226,11 @@ function createPickerPanel(): HTMLElement {
   closeBtn.className = 'shrink-0 -mr-1 w-7 h-7 flex items-center justify-center rounded text-base leading-none text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60 transition-colors';
   closeBtn.title = 'Close paint menu';
   closeBtn.setAttribute('aria-label', 'Close paint menu');
-  closeBtn.textContent = '\u2715';
+  closeBtn.textContent = '\u00D7';
   closeBtn.addEventListener('click', () => { togglePaintMode(); });
   header.appendChild(closeBtn);
   panel.appendChild(header);
+  attachViewportPanelDrag(header, panel);
 
   // === Scrollable content ===
   const content = document.createElement('div');
@@ -1480,6 +1492,8 @@ export function forceDeactivate(): void {
   if (isActive()) {
     deactivate();
     updateButtonState(false);
+    closeViewportPanel(paintRegistryEntry);
+    document.removeEventListener('keydown', onPaintEscape);
     pickerPanel?.classList.add('hidden');
   }
 }

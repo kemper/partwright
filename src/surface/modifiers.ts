@@ -14,7 +14,7 @@
 
 import type { MeshData } from '../geometry/types';
 import { fuzzySkin, type FuzzySkinOptions } from './fuzzySkin';
-import { knitTexture, type KnitTextureOptions } from './knitTexture';
+import { knitTextureUV, type KnitTextureOptions } from './knitTexture';
 import { cableKnit, type CableKnitOptions } from './cableKnit';
 import { waffleStitch, type WaffleStitchOptions } from './waffleStitch';
 import { furVelvet, type FurVelvetOptions } from './furVelvet';
@@ -118,7 +118,7 @@ export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierMani
 }
 
 export function applyKnit(mesh: MeshData, opts: KnitTextureOptions): ModifierManifoldResult {
-  const baked = knitTexture(mesh, opts);
+  const baked = knitTextureUV(mesh, opts);
   return {
     kind: 'manifold',
     label: 'knit texture',

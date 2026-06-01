@@ -1,4 +1,4 @@
-// Surface modifiers UI — a small modal for applying fuzzy skin, smooth/round,
+// Surface modifiers UI — a floating panel for applying fuzzy skin, smooth/round,
 // and voxelize to the current model. It drives the public console API
 // (`partwright.applyFuzzySkin` / `smoothModel` / `voxelizeModel`), so the modal
 // stays decoupled from the editor internals; each apply produces a new version
@@ -12,6 +12,8 @@
 
 import { registerCommands } from './commandPalette';
 import { getConfig } from '../config/appConfig';
+import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
+import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize';
@@ -38,6 +40,15 @@ const BTN_BASE =
   'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur border border-zinc-700 text-zinc-200 hover:bg-zinc-700';
 
 let openModal: HTMLDivElement | null = null;
+let currentSurfaceClose: (() => void) | null = null;
+
+const surfaceRegistryEntry = { close(): void { currentSurfaceClose?.(); } };
+
+function onSurfaceEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  if (document.querySelector('[role="dialog"]')) return;
+  currentSurfaceClose?.();
+}
 
 /** Current model's largest bbox dimension, for size-relative slider ranges. */
 function modelSpan(api: SurfaceApi): number {
@@ -83,49 +94,35 @@ function checkbox(label: string, checked: boolean, onChange: () => void) {
   return { wrap, get: () => input.checked };
 }
 
+/** Find the viewport container used by the other overlay panels. */
+function getViewportContainer(): HTMLElement {
+  return (document.getElementById('clip-controls')?.offsetParent as HTMLElement | null) ?? document.body;
+}
+
 export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): void {
-  if (openModal) openModal.remove();
+  if (openModal) { openModal.remove(); openModal = null; currentSurfaceClose = null; }
   const span = modelSpan(api);
   const painted = (() => { try { return api.modelHasColor(); } catch { return false; } })();
 
-  // No backdrop overlay — the model must stay fully visible so live preview is
-  // useful. Use pointer-events-none on the wrapper so the viewport stays
-  // interactive (orbit/zoom) while sliders are open, like Paint/Relief panels.
-  const backdrop = el('div', 'fixed inset-0 z-[60] pointer-events-none flex items-end justify-end p-3');
-  const panel = el('div', 'pointer-events-auto bg-zinc-900 text-zinc-100 rounded-lg border border-zinc-700 shadow-xl w-[min(94vw,440px)] max-h-[90vh] overflow-auto p-5');
-  backdrop.append(panel);
+  const container = getViewportContainer();
 
-  // --- Drag state ---
-  let dragActive = false;
-  let dragStartX = 0, dragStartY = 0, offsetX = 0, offsetY = 0;
+  // Floating panel — absolutely positioned inside the viewport container.
+  const panel = el('div', 'absolute z-[60] bg-zinc-900 text-zinc-100 rounded-lg border border-zinc-700 shadow-xl w-[min(94vw,400px)] select-none flex flex-col') as HTMLDivElement;
 
-  const titleRow = el('div', 'flex items-center justify-between mb-1 select-none');
-  titleRow.style.cursor = 'grab';
-  titleRow.append(el('h2', 'text-sm font-semibold', 'Surface modifiers'));
+  // Header — drag handle + title + × button.
+  const header = el('div', 'flex items-center justify-between px-4 py-3 border-b border-zinc-700 shrink-0');
+  header.append(el('h2', 'text-sm font-semibold', 'Surface modifiers'));
   const closeBtn = el('button', 'text-zinc-400 hover:text-zinc-100 text-lg leading-none', '×');
-  titleRow.append(closeBtn);
+  closeBtn.setAttribute('aria-label', 'Close surface panel');
+  header.append(closeBtn);
+  panel.append(header);
+  attachViewportPanelDrag(header, panel);
 
-  titleRow.addEventListener('pointerdown', e => {
-    if ((e.target as HTMLElement).closest('button')) return;
-    dragActive = true;
-    dragStartX = e.clientX - offsetX;
-    dragStartY = e.clientY - offsetY;
-    titleRow.style.cursor = 'grabbing';
-    titleRow.setPointerCapture(e.pointerId);
-  });
-  titleRow.addEventListener('pointermove', e => {
-    if (!dragActive) return;
-    offsetX = e.clientX - dragStartX;
-    offsetY = e.clientY - dragStartY;
-    panel.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
-  });
-  titleRow.addEventListener('pointerup', () => {
-    dragActive = false;
-    titleRow.style.cursor = 'grab';
-  });
+  // Scrollable body.
+  const scrollBody = el('div', 'overflow-y-auto flex-1 p-4 max-h-[min(80vh,30rem)]');
+  panel.append(scrollBody);
 
-  panel.append(titleRow);
-  panel.append(el('p', 'text-[11px] text-zinc-500 mb-3', 'Previews live in the viewport; Apply saves a new version (undo via version history).'));
+  scrollBody.append(el('p', 'text-[11px] text-zinc-500 mb-3', 'Previews live in the viewport; Apply saves a new version (undo via version history).'));
 
   // Tab strip — wraps to a second line when there are too many to fit on one row.
   const tabRow = el('div', 'flex flex-wrap gap-1 mb-4');
@@ -325,22 +322,27 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     tabRow.append(b);
   }
 
-  panel.append(tabRow, body);
-  if (painted) panel.append(colorRow);
-  panel.append(status);
+  scrollBody.append(tabRow, body);
+  if (painted) scrollBody.append(colorRow);
+  scrollBody.append(status);
 
-  // Footer: Cancel | Apply. (Preview is automatic — it updates live as controls
-  // change, so there's no explicit Preview button.)
+  // Footer: Cancel | Apply.
   const footer = el('div', 'flex justify-end gap-2 mt-2');
   const cancelBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs', 'Cancel');
   const applyBtn = el('button', 'px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium', 'Apply');
   footer.append(cancelBtn, applyBtn);
-  panel.append(footer);
+  scrollBody.append(footer);
 
-  const close = () => { clearPreviewIfDirty(); backdrop.remove(); openModal = null; };
+  const close = () => {
+    clearPreviewIfDirty();
+    panel.remove();
+    openModal = null;
+    currentSurfaceClose = null;
+    closeViewportPanel(surfaceRegistryEntry);
+    document.removeEventListener('keydown', onSurfaceEscape);
+  };
   closeBtn.addEventListener('click', close);
   cancelBtn.addEventListener('click', close);
-  backdrop.addEventListener('click', e => { if (e.target === backdrop) close(); });
 
   applyBtn.addEventListener('click', async () => {
     // The preview swapped the displayed mesh; clear it so the apply re-runs from
@@ -378,8 +380,12 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   styleTabs();
   renderTab(); // kicks off the first preview
 
-  document.body.append(backdrop);
-  openModal = backdrop;
+  container.append(panel);
+  setInitialPanelPosition(panel);
+  currentSurfaceClose = close;
+  openViewportPanel(surfaceRegistryEntry);
+  document.addEventListener('keydown', onSurfaceEscape);
+  openModal = panel;
 }
 
 /** Wire the surface modifiers into the viewport overlay and command palette. */
@@ -404,7 +410,8 @@ export function initSurfaceUI(api: SurfaceApi): void {
       ?? document.getElementById('paint-toggle')
       ?? document.querySelector<HTMLElement>('[id$="-viewport-toggle"]');
     if (!anchor || !anchor.parentElement) return;
-    const btn = el('button', anchor.className || BTN_BASE);
+    const btnCls = anchor.className.split(' ').filter(c => c !== 'hidden').join(' ') || BTN_BASE;
+    const btn = el('button', btnCls);
     btn.id = 'surface-viewport-toggle';
     btn.textContent = '✦ Surface';
     btn.title = 'Apply fuzzy skin, smooth/round, or voxelize the current model';

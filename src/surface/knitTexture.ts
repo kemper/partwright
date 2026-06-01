@@ -30,6 +30,7 @@ import {
   bboxOf,
   triplanarCoords,
 } from './meshSubdivide';
+import { bfsUnwrapMesh } from './uvUnwrap';
 
 export interface KnitTextureOptions {
   /** Peak outward displacement in world units. */
@@ -136,6 +137,96 @@ export function knitTexture(mesh: MeshData, opts: KnitTextureOptions): MeshData 
       const vShape = (1 + Math.cos(vf * TAU)) / 2;
       d += weights[i] * amplitude * stitchScale * uWave * (1 - roundness + roundness * vShape);
     }
+
+    positions[v * 3]     = px + nx * d;
+    positions[v * 3 + 1] = py + ny * d;
+    positions[v * 3 + 2] = pz + nz * d;
+  }
+
+  return {
+    vertProperties: positions,
+    triVerts: base.triVerts,
+    numVert: base.numVert,
+    numTri: base.numTri,
+    numProp: 3,
+    triColors: base.triColors,
+  };
+}
+
+// --- UV-unwrap path -----------------------------------------------------------
+
+/**
+ * Apply knit-stitch displacement using BFS surface-following UV coordinates.
+ *
+ * Unlike `knitTexture` (which uses triplanar world-space projection), this
+ * variant first unwraps the mesh surface into a local UV plane and tiles the
+ * stitch pattern in that coordinate space.  The texture follows the surface
+ * topology — stitches curve around a sphere instead of projecting from fixed
+ * world axes — at the cost of a single BFS traversal (~1–5 ms for typical
+ * models) before the per-vertex displacement loop.
+ *
+ * The seam where the BFS "wraps around" will show a slight discontinuity on
+ * closed surfaces (expected — same as any UV-atlas approach).
+ */
+export function knitTextureUV(mesh: MeshData, opts: KnitTextureOptions): MeshData {
+  const amplitude = Math.max(0, opts.amplitude);
+  const stitchW = Math.max(1e-4, opts.stitchWidth);
+  const stitchH = Math.max(1e-4, opts.stitchHeight ?? stitchW * 1.4);
+  const rowOffset = opts.rowOffset ?? 0.5;
+  const roundness = Math.max(0, Math.min(1, opts.roundness ?? 0.5));
+  const variation = Math.max(0, Math.min(1, opts.variation ?? 0.1));
+  const seed = (opts.seed ?? 1) | 0;
+  const angleRad = ((opts.grainAngleDeg ?? 0) * Math.PI) / 180;
+  const cosA = Math.cos(angleRad);
+  const sinA = Math.sin(angleRad);
+
+  // Densify mesh
+  let base: MeshData = mesh;
+  if (opts.subdivide !== false && amplitude > 0) {
+    const quality = Math.max(1, Math.min(5, Math.round(opts.quality ?? 3)));
+    const qScale = 2 ** ((quality - 3) / 2);
+    const diag = Math.hypot(...bboxOf(extractPositions(mesh)).size);
+    const targetEdge = Math.max(Math.min(stitchW, stitchH) / (4 * qScale), diag / (400 * qScale));
+    base = subdivideToMaxEdge(mesh, { maxEdge: targetEdge, maxRounds: 6 });
+  }
+
+  const positions = base.numProp === 3
+    ? Float32Array.from(base.vertProperties)
+    : extractPositions(base);
+  const normals = computeVertexNormals(positions, base.triVerts);
+
+  // BFS UV unwrap on the densified mesh
+  const { uvs } = bfsUnwrapMesh(positions, base.triVerts);
+
+  const TAU = 2 * Math.PI;
+
+  for (let v = 0; v < base.numVert; v++) {
+    const px = positions[v * 3], py = positions[v * 3 + 1], pz = positions[v * 3 + 2];
+    const nx = normals[v * 3], ny = normals[v * 3 + 1], nz = normals[v * 3 + 2];
+
+    // Raw UV from surface following parameterization (world-unit distances)
+    const rawU = uvs[v * 2], rawV = uvs[v * 2 + 1];
+
+    // Apply grain rotation in UV space so grainAngleDeg controls stitch direction
+    const gu = cosA * rawU + sinA * rawV;
+    const gv = -sinA * rawU + cosA * rawV;
+
+    const col = gu / stitchW;
+    const row = gv / stitchH;
+
+    const rowInt = Math.floor(row);
+    const evenRow = ((rowInt % 2) + 2) % 2 === 0;
+    const colShifted = col + (evenRow ? 0 : rowOffset);
+
+    const uf = ((colShifted % 1) + 1) % 1;
+    const vf = ((row % 1) + 1) % 1;
+
+    const colInt = Math.floor(colShifted);
+    const stitchScale = 1 + variation * (hash2(colInt, rowInt, seed) * 2 - 1);
+
+    const uWave = Math.cos(uf * TAU);
+    const vShape = (1 + Math.cos(vf * TAU)) / 2;
+    const d = amplitude * stitchScale * uWave * (1 - roundness + roundness * vShape);
 
     positions[v * 3]     = px + nx * d;
     positions[v * 3 + 1] = py + ny * d;
