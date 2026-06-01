@@ -63,6 +63,10 @@ let panelEl: HTMLElement | null = null;
 let viewportPaneRef: HTMLElement | null = null;
 let radioEls: HTMLInputElement[] = [];
 let openState = false;
+// JS quality saved before entering a SCAD session so it can be restored on
+// switch-back (prevents SCAD's medium default from permanently overwriting
+// the user's JS quality preference in the shared main quality key).
+let savedNonScadQuality: QualitySettings | null = null;
 
 // ---- Public API --------------------------------------------------------
 
@@ -83,14 +87,20 @@ export function notifyLanguageChange(lang: Language): void {
   const nextIsScad = isScad(lang);
   currentLang = lang;
 
-  if (prevIsScad !== nextIsScad) {
-    // Apply the new language's quality silently (no extra re-run from the
-    // quality listener — the language-switch re-run already fires).
-    const next = getSettingsForLang(lang);
-    saveQualitySettingsSilent(next);
-    // Also persist it under the appropriate key so getDefaultCircularSegments()
-    // reads the right value in the Worker.
-    if (nextIsScad) saveScadSettings(next);
+  if (!prevIsScad && nextIsScad) {
+    // Entering SCAD: save the current JS quality and apply the SCAD default
+    // silently so the language-switch re-run uses the right segment count
+    // without firing an extra re-run from the quality listener.
+    savedNonScadQuality = loadQualitySettings();
+    saveQualitySettingsSilent(loadScadSettings());
+    refreshRadios();
+  } else if (prevIsScad && !nextIsScad) {
+    // Leaving SCAD: restore the saved JS quality (or keep whatever is in the
+    // main key if we never saved one — e.g. app started in SCAD mode).
+    if (savedNonScadQuality) {
+      saveQualitySettingsSilent(savedNonScadQuality);
+      savedNonScadQuality = null;
+    }
     refreshRadios();
   }
 }

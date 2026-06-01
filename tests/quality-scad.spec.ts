@@ -39,13 +39,13 @@ test('SCAD engine applies the chosen $fn from quality preset', async ({ page }) 
 
   const scadCode = 'sphere(5);';
 
-  // Run under Highest (default) — many triangles.
+  // Run under Medium (SCAD default = 32 segments) — produces a visible mesh.
   const high = await page.evaluate(async (code) => {
     const api = (window as unknown as { partwright: PartwrightApi }).partwright;
     return api.run(code);
   }, scadCode);
   expect(high.error).toBeFalsy();
-  expect(high.triangleCount ?? 0).toBeGreaterThan(2000);
+  expect(high.triangleCount ?? 0).toBeGreaterThan(100);
 
   // Drop to Low.
   await page.locator('#btn-quality').click();
