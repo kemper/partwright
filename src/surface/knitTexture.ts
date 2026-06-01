@@ -31,6 +31,7 @@ import {
   triplanarCoords,
 } from './meshSubdivide';
 import { bfsUnwrapMesh } from './uvUnwrap';
+import { knitDisplaceGPU, type KnitGPUParams } from './knitTextureGPU';
 
 export interface KnitTextureOptions {
   /** Peak outward displacement in world units. */
@@ -211,55 +212,107 @@ export function knitTextureUV(mesh: MeshData, opts: KnitTextureOptions): MeshDat
   // BFS UV unwrap on the densified mesh
   const { uvs } = bfsUnwrapMesh(positions, base.triVerts);
 
-  for (let v = 0; v < base.numVert; v++) {
+  displaceKnitJS(positions, normals, uvs, base.numVert,
+    amplitude, stitchW, stitchH, rowOffset, yarnRadius, cosA, sinA, variation, seed);
+
+  return knitMeshResult(base, positions);
+}
+
+/**
+ * Async variant of knitTextureUV: same setup, but runs the displacement loop
+ * on the GPU when WebGPU is available.  Falls back to the JS path silently.
+ * Use this for the "apply" path where quality matters; the preview path uses
+ * the sync knitTextureUV so slider updates stay responsive.
+ */
+export async function knitTextureUVAsync(mesh: MeshData, opts: KnitTextureOptions): Promise<MeshData> {
+  const amplitude  = Math.max(0, opts.amplitude);
+  const stitchW    = Math.max(1e-4, opts.stitchWidth);
+  const stitchH    = Math.max(1e-4, opts.stitchHeight ?? stitchW * 1.4);
+  const rowOffset  = opts.rowOffset ?? 0.5;
+  const roundness  = Math.max(0, Math.min(1, opts.roundness ?? 0.5));
+  const variation  = Math.max(0, Math.min(1, opts.variation ?? 0.1));
+  const seed       = (opts.seed ?? 1) | 0;
+  const angleRad   = ((opts.grainAngleDeg ?? 0) * Math.PI) / 180;
+  const cosA       = Math.cos(angleRad);
+  const sinA       = Math.sin(angleRad);
+  const yarnRadius = stitchW * (0.22 + roundness * 0.18);
+
+  let base: MeshData = mesh;
+  if (opts.subdivide !== false && amplitude > 0) {
+    const quality    = Math.max(1, Math.min(5, Math.round(opts.quality ?? 3)));
+    const qScale     = 2 ** ((quality - 3) / 2);
+    const diag       = Math.hypot(...bboxOf(extractPositions(mesh)).size);
+    const targetEdge = Math.max(
+      Math.min(stitchW, stitchH) / (6 * qScale),
+      diag / (500 * qScale),
+    );
+    base = subdivideToMaxEdge(mesh, { maxEdge: targetEdge, maxRounds: 6, maxTriangles: 600_000 });
+  }
+
+  const positions = base.numProp === 3
+    ? Float32Array.from(base.vertProperties)
+    : extractPositions(base);
+  const normals = computeVertexNormals(positions, base.triVerts);
+  const { uvs }  = bfsUnwrapMesh(positions, base.triVerts);
+
+  const gpuParams: KnitGPUParams = {
+    amplitude, stitchW, stitchH, rowOffset, yarnRadius, cosA, sinA, variation, seed,
+  };
+  const gpuResult = await knitDisplaceGPU(positions, normals, uvs, base.numVert, gpuParams);
+
+  if (gpuResult) {
+    return knitMeshResult(base, gpuResult);
+  }
+
+  // JS fallback — same algorithm as knitTextureUV
+  displaceKnitJS(positions, normals, uvs, base.numVert,
+    amplitude, stitchW, stitchH, rowOffset, yarnRadius, cosA, sinA, variation, seed);
+  return knitMeshResult(base, positions);
+}
+
+// ---- Shared helpers ----------------------------------------------------------
+
+/** Shared displacement loop — mutates `positions` in place. */
+function displaceKnitJS(
+  positions: Float32Array, normals: Float32Array, uvs: Float32Array, numVert: number,
+  amplitude: number, stitchW: number, stitchH: number, rowOffset: number,
+  yarnRadius: number, cosA: number, sinA: number, variation: number, seed: number,
+): void {
+  for (let v = 0; v < numVert; v++) {
     const px = positions[v * 3], py = positions[v * 3 + 1], pz = positions[v * 3 + 2];
     const nx = normals[v * 3], ny = normals[v * 3 + 1], nz = normals[v * 3 + 2];
 
     const rawU = uvs[v * 2], rawV = uvs[v * 2 + 1];
-
-    // Grain rotation in UV space
     const gu = cosA * rawU + sinA * rawV;
     const gv = -sinA * rawU + cosA * rawV;
 
-    const rowF   = gv / stitchH;
-    const rowInt = Math.floor(rowF);
-
+    const rowInt = Math.floor(gv / stitchH);
     let d = 0;
 
-    // Sample a 3×3 neighbourhood of stitch cells. Each cell contributes two
-    // V-legs (left: tip→uL, right: tip→uR). Combining with max() — rather
-    // than summing — produces a visible over-under where strands cross.
-    // Even-row strands are elevated ~20% over odd-row strands at junctions.
     for (let dr = -1; dr <= 1; dr++) {
-      const ri   = rowInt + dr;
-      const even = ((ri % 2) + 2) % 2 === 0;
+      const ri    = rowInt + dr;
+      const even  = ((ri % 2) + 2) % 2 === 0;
       const shift = even ? 0 : rowOffset;
 
-      // V-tip is at the bottom of each row's cell; legs exit at the top.
-      const vTip  = ri * stitchH;
-      const vExit = (ri + 1) * stitchH;
-
-      const colF   = gu / stitchW - shift;
-      const colInt = Math.floor(colF);
+      const vTip   = ri * stitchH;
+      const vExit  = (ri + 1) * stitchH;
+      const colInt = Math.floor(gu / stitchW - shift);
 
       for (let dc = -1; dc <= 1; dc++) {
         const ci   = colInt + dc;
-        const uTip = (ci + 0.5 + shift) * stitchW;   // V tip (bottom-centre)
-        const uL   = (ci       + shift) * stitchW;   // left  exit (top-left)
-        const uR   = (ci + 1   + shift) * stitchW;   // right exit (top-right)
+        const uTip = (ci + 0.5 + shift) * stitchW;
+        const uL   = (ci       + shift) * stitchW;
+        const uR   = (ci + 1   + shift) * stitchW;
 
-        const sv = 1 + variation * (hash2(ci, ri, seed) * 2 - 1);
-
-        const dL   = distToSeg(gu, gv, uTip, vTip, uL, vExit);
-        const dR   = distToSeg(gu, gv, uTip, vTip, uR, vExit);
-        const dist = Math.min(dL, dR);
-        const r    = dist / yarnRadius;
+        const sv   = 1 + variation * (hash2(ci, ri, seed) * 2 - 1);
+        const dist = Math.min(
+          distToSeg(gu, gv, uTip, vTip, uL, vExit),
+          distToSeg(gu, gv, uTip, vTip, uR, vExit),
+        );
+        const r = dist / yarnRadius;
         if (r < 1) {
-          // Semicircle cross-section gives the rounded-tube yarn look.
-          const profile  = Math.sqrt(1 - r * r);
-          // Odd-row strands sit 20% lower at crossings for over-under depth.
           const layerBias = even ? 0 : -amplitude * 0.2;
-          const contrib   = amplitude * sv * profile + layerBias;
+          const contrib   = amplitude * sv * Math.sqrt(1 - r * r) + layerBias;
           if (contrib > d) d = contrib;
         }
       }
@@ -269,7 +322,9 @@ export function knitTextureUV(mesh: MeshData, opts: KnitTextureOptions): MeshDat
     positions[v * 3 + 1] = py + ny * d;
     positions[v * 3 + 2] = pz + nz * d;
   }
+}
 
+function knitMeshResult(base: MeshData, positions: Float32Array): MeshData {
   return {
     vertProperties: positions,
     triVerts: base.triVerts,

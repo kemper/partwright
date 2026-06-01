@@ -108,7 +108,7 @@ import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
-import { applyFuzzy, applyKnit, applyCable, applyWaffle, applyFur, applyWoven, applySmooth, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applyKnit, applyKnitAsync, applyCable, applyWaffle, applyFur, applyWoven, applySmooth, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, type ModifierResult } from './surface/modifiers';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
@@ -6067,7 +6067,20 @@ async function main() {
         const preserve = opts?.preserveColor ?? true;
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('knit', opts ?? {}, mesh);
-        const result = await commitSurfaceModifier(buildSurfaceModifier('knit', opts, preserve), preserve);
+        const base = defaultKnitOptions(mesh);
+        const modifier = await applyKnitAsync(mesh, {
+          amplitude:    (opts?.amplitude    as number) ?? base.amplitude,
+          stitchWidth:  (opts?.stitchWidth  as number) ?? base.stitchWidth,
+          stitchHeight: (opts?.stitchHeight as number) ?? base.stitchHeight,
+          rowOffset:    (opts?.rowOffset    as number) ?? base.rowOffset,
+          roundness:    (opts?.roundness    as number) ?? base.roundness,
+          grainAngleDeg:(opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+          variation:    (opts?.variation    as number) ?? base.variation,
+          seed:         (opts?.seed         as number) ?? base.seed,
+          quality:      (opts?.quality      as number) ?? base.quality,
+          subdivide:    true,
+        });
+        const result = await commitSurfaceModifier(modifier, preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
           return { ...result, warnings: [...warns, ...(existing ?? [])] };

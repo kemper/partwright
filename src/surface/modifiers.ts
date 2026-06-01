@@ -14,7 +14,7 @@
 
 import type { MeshData } from '../geometry/types';
 import { fuzzySkin, type FuzzySkinOptions } from './fuzzySkin';
-import { knitTextureUV, type KnitTextureOptions } from './knitTexture';
+import { knitTextureUV, knitTextureUVAsync, type KnitTextureOptions } from './knitTexture';
 import { cableKnit, type CableKnitOptions } from './cableKnit';
 import { waffleStitch, type WaffleStitchOptions } from './waffleStitch';
 import { furVelvet, type FurVelvetOptions } from './furVelvet';
@@ -119,10 +119,20 @@ export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierMani
 
 export function applyKnit(mesh: MeshData, opts: KnitTextureOptions): ModifierManifoldResult {
   const baked = knitTextureUV(mesh, opts);
+  return knitManifoldResult(opts, baked);
+}
+
+/** Async variant used by the applyKnitTexture API — runs displacement on the GPU when available. */
+export async function applyKnitAsync(mesh: MeshData, opts: KnitTextureOptions): Promise<ModifierManifoldResult> {
+  const baked = await knitTextureUVAsync(mesh, opts);
+  return knitManifoldResult(opts, baked);
+}
+
+function knitManifoldResult(opts: KnitTextureOptions, mesh: MeshData): ModifierManifoldResult {
   return {
     kind: 'manifold',
     label: 'knit texture',
-    mesh: baked,
+    mesh,
     code: manifoldWrapper([
       `Knit texture applied on ${today()} — stitch ${opts.stitchWidth.toFixed(2)} × ${(opts.stitchHeight ?? opts.stitchWidth * 1.4).toFixed(2)}, amplitude ${opts.amplitude}.`,
       `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
