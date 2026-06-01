@@ -13,10 +13,16 @@
     "test:unit": "vitest run",
     "test:e2e": "playwright test",
     "generate:catalog": "playwright test --config=playwright.generators.config.ts",
-    "refresh-models": "node scripts/refreshModelsSnapshot.mjs"
+    "refresh-models": "node scripts/refreshModelsSnapshot.mjs",
+    "lint:consistency": "ast-grep scan",
+    "lint:deadcode": "knip",
+    "lint:deps": "madge --circular --extensions ts,tsx src"
   },
   "devDependencies": {
+    "@ast-grep/cli": "^0.43.0",
     "@types/three": "^0.183.1",
+    "knip": "^6.15.0",
+    "madge": "^8.0.0",
     "playwright": "^1.58.2",
     "typescript": "~5.8.3",
     "vite": "^6.3.5",
