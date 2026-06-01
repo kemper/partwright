@@ -152,7 +152,7 @@ A "👁" button in the panel header opens `src/ui/aiReviewModal.ts`. The user pi
 
 #### AI Call Log (per-provider diagnostics)
 
-A "🩺" button in the panel header opens `src/ui/aiDiagnosticsModal.ts`. Shows the last 50 provider API calls from an in-memory ring buffer (`src/ai/diagnostics.ts`): provider/model/kind, duration, status, full error messages (errors auto-expand), token usage, stop reason, request summary. Filter (all/errors/successes), Clear, Copy JSON. This is distinct from the app-wide **Diagnostic Log** (`src/diagnostics/errorLog.ts`, toolbar ⚠ button) which captures uncaught errors/console warnings; the AI Call Log adds per-call detail (successes, tokens, the "empty_final" non-error case) the general log intentionally doesn't. To avoid double-listing, the AI Call Log mirrors to `console.info`/`console.debug` (not `warn`/`error`), and hard provider errors reach the app-wide log via `chatLoop`'s `onError → errorLog.capture({source:'ai'})`.
+A "🩺" button in the panel header opens `src/ui/aiDiagnosticsModal.ts`. Shows the last 50 provider API calls from an in-memory ring buffer (`src/ai/diagnostics.ts`): provider/model/kind, duration, status, full error messages (errors auto-expand), token usage, stop reason, request summary. Filter (all/errors/successes), Clear, Copy JSON. This is distinct from the app-wide **Diagnostic Log** (`src/diagnostics/errorLog.ts`, toolbar ⚠ button) which captures uncaught errors, intercepted `console.warn`/`console.error`, and every toast (see [User Messaging & the Diagnostic Log](#user-messaging--the-diagnostic-log)); the AI Call Log adds per-call detail (successes, tokens, the "empty_final" non-error case) the general log intentionally doesn't. To avoid double-listing, the AI Call Log mirrors to `console.info`/`console.debug` (not `warn`/`error`), and hard provider errors reach the app-wide log via `chatLoop`'s `onError → errorLog.capture({source:'ai'})`.
 
 #### Slash commands
 
@@ -314,6 +314,16 @@ The only exceptions are values that are truly structural constants (array indice
 ### Dead Code
 
 Don't export functions unless they're imported elsewhere. When removing usage of an exported function, delete the export too. Periodically grep for exported symbols to verify they have importers.
+
+### User Messaging & the Diagnostic Log
+
+There is **one** messaging system; use it, don't invent parallel ones. Every error, warning, or notice a user sees must also land in the central **Diagnostic Log** (`src/diagnostics/errorLog.ts`, toolbar ⚠ button) so there's a durable, reviewable record — the on-screen surface is transient, the log is the history.
+
+- **Transient notifications → `showToast` (`src/ui/toast.ts`).** A toast is the standard bottom-center, fades-away message for save/export confirmations, action feedback, and recoverable failures. Every `showToast` is **automatically mirrored** into the Diagnostic Log, so you don't capture separately for toasts. Variant maps to log level: `warn` → `'warn'`; `success`/`neutral` → `'info'` (routine activity, recorded but kept out of the unseen-error badge). Pass `{ log: false }` only for the rare toast that must stay screen-only, and `{ source }` to tag the subsystem (`'import'`, `'export'`, …).
+- **Variant semantics.** `success` = it worked; `neutral` = informational/in-progress; `warn` = something went wrong or was blocked. Pick by meaning, not color. Don't hand-roll `position:fixed` message nodes — route through `showToast`.
+- **Failures that don't toast → `errorLog.capture({ level, source, message, detail })` directly** with an explicit `source` tag. Anything caught in a `catch` that the user won't otherwise see (Worker/engine failures, background tasks) belongs in the log even when there's no toast.
+- **Persistent status ≠ transient notification.** Standing indicators that reflect *current* state — e.g. the viewport **printability pill** (`printabilityIndicatorEl` in `src/main.ts`), which stays up while the live model has print-blocking structural issues — are *status*, not toasts. They persist until the underlying state changes and must not be implemented as (or mistaken for) fading messages. Give them a `title` so users understand what they are.
+- **Don't assert what you didn't measure.** Render-only imports (e.g. colour reliefs) carry no `Manifold`, so `isManifold` is `false` for lack of measurement — *not* because the mesh is non-watertight. `computePrintability` treats that case (`manifoldStatus === 'render-only (not manifold)'`) as unverified rather than failed, so the pill doesn't cry "not watertight" about a mesh that was verified watertight at build time.
 
 ### Internal Links and Paths
 
