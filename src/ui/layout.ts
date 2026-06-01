@@ -1,5 +1,5 @@
 import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
-import { showQualitySettingsModal } from './qualitySettingsModal';
+import { showAdvancedSettingsModal } from './advancedSettingsModal';
 import { showAboutModal } from './aboutModal';
 import { loadSettings, saveSettings } from '../ai/settings';
 
@@ -222,9 +222,9 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // Separator + push-to-bottom anchor for the whole utility cluster.
   catalogNavBtn.classList.add('md:mt-auto', 'md:border-t', 'md:border-zinc-800');
 
-  const qualityNavBtn = makeAction('btn-quality', '⚙', 'Settings', () => { showQualitySettingsModal(); });
-  qualityNavBtn.title = 'Modeling quality (default curve resolution)';
-  qualityNavBtn.setAttribute('aria-label', 'Modeling quality settings');
+  const qualityNavBtn = makeAction('btn-quality', '⚙', 'Settings', () => { showAdvancedSettingsModal(); });
+  qualityNavBtn.title = 'Settings';
+  qualityNavBtn.setAttribute('aria-label', 'Settings');
 
   const diagNavBtn = makeAction('btn-diagnostics', '⚠', 'Diagnostics', () => opts.onToggleDiagnostics?.());
   diagNavBtn.classList.add('relative');

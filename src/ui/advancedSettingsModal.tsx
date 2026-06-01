@@ -755,7 +755,7 @@ export function showAdvancedSettingsModal(): void {
   }
 
   mountPreactModal(
-    { title: 'Advanced Settings', scrollable: true },
+    { title: 'Settings', scrollable: true },
     close => ({
       body: <AdvancedSettingsBody cfg={cfg} onReset={handleReset} />,
       footer: (
