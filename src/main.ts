@@ -5265,6 +5265,11 @@ async function main() {
     const { mesh, childToParent } = buildRefinedMeshFromSet(currentMeshData, toSubdivide, maxEdge);
     const parentToChildren = childrenByParent(childToParent);
     currentMeshData = mesh;
+    // Advance paintBaseMesh to the subdivided mesh so the paint reconciler
+    // (triggered by addRegion after we return) sees currentMeshData ===
+    // paintBaseMesh and skips the rebuild-from-base step that would otherwise
+    // revert our subdivision back to the coarse geometry.
+    paintBaseMesh = mesh;
     updatePaintMesh(mesh);
 
     // Step 4: Remap existing paint regions onto the subdivided mesh.
