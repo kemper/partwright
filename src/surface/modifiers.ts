@@ -66,12 +66,12 @@ export function defaultFuzzyOptions(mesh: MeshData): Required<FuzzySkinOptions> 
   return { amplitude: d * 0.01, scale: d * 0.04, octaves: 2, seed: 1, quality: 3, subdivide: true };
 }
 
-/** Size-relative starting parameters for knit texture (~3% amplitude, ~5% stitch width). */
+/** Size-relative starting parameters for knit texture (~3.5% amplitude, ~5% stitch width). */
 export function defaultKnitOptions(mesh: MeshData): Required<KnitTextureOptions> {
   const d = modelDiagonal(mesh) || 10;
   const sw = d * 0.05;
   return {
-    amplitude: d * 0.03,
+    amplitude: d * 0.035,
     stitchWidth: sw,
     stitchHeight: sw * 1.4,
     rowOffset: 0.5,

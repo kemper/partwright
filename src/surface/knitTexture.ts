@@ -61,7 +61,7 @@ export interface KnitTextureOptions {
   quality?: number;
 }
 
-// --- Per-stitch variation noise -----------------------------------------------
+// --- Helpers ------------------------------------------------------------------
 
 /** 2-D integer hash → [0, 1). Used for per-stitch amplitude variation. */
 function hash2(ix: number, iz: number, seed: number): number {
@@ -70,6 +70,15 @@ function hash2(ix: number, iz: number, seed: number): number {
   h = Math.imul(h, 1274126177) | 0;
   h = (h ^ (h >>> 16)) >>> 0;
   return h / 4294967296;
+}
+
+/** 2-D point-to-segment distance (world units). */
+function distToSeg(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-14) return Math.hypot(px - ax, py - ay);
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+  return Math.hypot(px - ax - t * dx, py - ay - t * dy);
 }
 
 // --- Main algorithm -----------------------------------------------------------
@@ -158,15 +167,13 @@ export function knitTexture(mesh: MeshData, opts: KnitTextureOptions): MeshData 
 /**
  * Apply knit-stitch displacement using BFS surface-following UV coordinates.
  *
- * Unlike `knitTexture` (which uses triplanar world-space projection), this
- * variant first unwraps the mesh surface into a local UV plane and tiles the
- * stitch pattern in that coordinate space.  The texture follows the surface
- * topology — stitches curve around a sphere instead of projecting from fixed
- * world axes — at the cost of a single BFS traversal (~1–5 ms for typical
- * models) before the per-vertex displacement loop.
+ * Models yarn strands as V-shaped paths in UV space: each stitch cell has two
+ * legs running from a shared tip (bottom of the V) up to the left and right
+ * column boundaries at the top. Displacement is a semicircle cross-section
+ * based on perpendicular distance to each leg, combined with max() so
+ * crossing strands show a clear over-under depth relationship.
  *
- * The seam where the BFS "wraps around" will show a slight discontinuity on
- * closed surfaces (expected — same as any UV-atlas approach).
+ * `roundness` controls yarn plumpness: 0 = thin strand, 1 = fat/round yarn.
  */
 export function knitTextureUV(mesh: MeshData, opts: KnitTextureOptions): MeshData {
   const amplitude = Math.max(0, opts.amplitude);
@@ -180,14 +187,20 @@ export function knitTextureUV(mesh: MeshData, opts: KnitTextureOptions): MeshDat
   const cosA = Math.cos(angleRad);
   const sinA = Math.sin(angleRad);
 
-  // Densify mesh
+  // Yarn strand radius: roundness blends thin (0.22×W) → plump (0.40×W).
+  const yarnRadius = stitchW * (0.22 + roundness * 0.18);
+
+  // Densify mesh — tighter target so yarn cross-sections resolve clearly.
   let base: MeshData = mesh;
   if (opts.subdivide !== false && amplitude > 0) {
     const quality = Math.max(1, Math.min(5, Math.round(opts.quality ?? 3)));
     const qScale = 2 ** ((quality - 3) / 2);
     const diag = Math.hypot(...bboxOf(extractPositions(mesh)).size);
-    const targetEdge = Math.max(Math.min(stitchW, stitchH) / (4 * qScale), diag / (400 * qScale));
-    base = subdivideToMaxEdge(mesh, { maxEdge: targetEdge, maxRounds: 6 });
+    const targetEdge = Math.max(
+      Math.min(stitchW, stitchH) / (6 * qScale),
+      diag / (500 * qScale),
+    );
+    base = subdivideToMaxEdge(mesh, { maxEdge: targetEdge, maxRounds: 6, maxTriangles: 600_000 });
   }
 
   const positions = base.numProp === 3
@@ -198,35 +211,59 @@ export function knitTextureUV(mesh: MeshData, opts: KnitTextureOptions): MeshDat
   // BFS UV unwrap on the densified mesh
   const { uvs } = bfsUnwrapMesh(positions, base.triVerts);
 
-  const TAU = 2 * Math.PI;
-
   for (let v = 0; v < base.numVert; v++) {
     const px = positions[v * 3], py = positions[v * 3 + 1], pz = positions[v * 3 + 2];
     const nx = normals[v * 3], ny = normals[v * 3 + 1], nz = normals[v * 3 + 2];
 
-    // Raw UV from surface following parameterization (world-unit distances)
     const rawU = uvs[v * 2], rawV = uvs[v * 2 + 1];
 
-    // Apply grain rotation in UV space so grainAngleDeg controls stitch direction
+    // Grain rotation in UV space
     const gu = cosA * rawU + sinA * rawV;
     const gv = -sinA * rawU + cosA * rawV;
 
-    const col = gu / stitchW;
-    const row = gv / stitchH;
+    const rowF   = gv / stitchH;
+    const rowInt = Math.floor(rowF);
 
-    const rowInt = Math.floor(row);
-    const evenRow = ((rowInt % 2) + 2) % 2 === 0;
-    const colShifted = col + (evenRow ? 0 : rowOffset);
+    let d = 0;
 
-    const uf = ((colShifted % 1) + 1) % 1;
-    const vf = ((row % 1) + 1) % 1;
+    // Sample a 3×3 neighbourhood of stitch cells. Each cell contributes two
+    // V-legs (left: tip→uL, right: tip→uR). Combining with max() — rather
+    // than summing — produces a visible over-under where strands cross.
+    // Even-row strands are elevated ~20% over odd-row strands at junctions.
+    for (let dr = -1; dr <= 1; dr++) {
+      const ri   = rowInt + dr;
+      const even = ((ri % 2) + 2) % 2 === 0;
+      const shift = even ? 0 : rowOffset;
 
-    const colInt = Math.floor(colShifted);
-    const stitchScale = 1 + variation * (hash2(colInt, rowInt, seed) * 2 - 1);
+      // V-tip is at the bottom of each row's cell; legs exit at the top.
+      const vTip  = ri * stitchH;
+      const vExit = (ri + 1) * stitchH;
 
-    const uWave = Math.cos(uf * TAU);
-    const vShape = (1 + Math.cos(vf * TAU)) / 2;
-    const d = amplitude * stitchScale * uWave * (1 - roundness + roundness * vShape);
+      const colF   = gu / stitchW - shift;
+      const colInt = Math.floor(colF);
+
+      for (let dc = -1; dc <= 1; dc++) {
+        const ci   = colInt + dc;
+        const uTip = (ci + 0.5 + shift) * stitchW;   // V tip (bottom-centre)
+        const uL   = (ci       + shift) * stitchW;   // left  exit (top-left)
+        const uR   = (ci + 1   + shift) * stitchW;   // right exit (top-right)
+
+        const sv = 1 + variation * (hash2(ci, ri, seed) * 2 - 1);
+
+        const dL   = distToSeg(gu, gv, uTip, vTip, uL, vExit);
+        const dR   = distToSeg(gu, gv, uTip, vTip, uR, vExit);
+        const dist = Math.min(dL, dR);
+        const r    = dist / yarnRadius;
+        if (r < 1) {
+          // Semicircle cross-section gives the rounded-tube yarn look.
+          const profile  = Math.sqrt(1 - r * r);
+          // Odd-row strands sit 20% lower at crossings for over-under depth.
+          const layerBias = even ? 0 : -amplitude * 0.2;
+          const contrib   = amplitude * sv * profile + layerBias;
+          if (contrib > d) d = contrib;
+        }
+      }
+    }
 
     positions[v * 3]     = px + nx * d;
     positions[v * 3 + 1] = py + ny * d;

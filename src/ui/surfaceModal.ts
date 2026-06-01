@@ -180,13 +180,13 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     } else if (active === 'knit') {
       const sw = slider('Stitch width', span * 0.01, span * 0.25, span * 0.05, span * 0.005, n => n.toFixed(3), schedulePreview);
       const sh = slider('Stitch height', span * 0.01, span * 0.35, span * 0.07, span * 0.005, n => n.toFixed(3), schedulePreview);
-      const amp = slider('Amplitude (depth)', 0, span * 0.08, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
+      const amp = slider('Amplitude (depth)', 0, span * 0.15, span * 0.035, span * 0.001, n => n.toFixed(3), schedulePreview);
       const round = slider('Roundness', 0, 1, 0.5, 0.05, n => n.toFixed(2), schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
       const variation = slider('Variation', 0, 0.5, 0.1, 0.01, n => n.toFixed(2), schedulePreview);
       const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);
       body.append(sw.wrap, sh.wrap, amp.wrap, round.wrap, grain.wrap, variation.wrap, seed.wrap, detail.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'Stockinette (V-stitch) pattern via brick-offset cosine bumps. Roundness 0 = sharp ridges; 1 = soft round bumps. Grain angle rotates the stitch direction.'));
+      body.append(el('p', 'text-[11px] text-zinc-500', 'V-shaped yarn strands with semicircle cross-section and over-under depth at crossings. Roundness controls yarn plumpness (0 = thin strand, 1 = fat/round yarn). Grain angle rotates stitch direction.'));
       currentOpts = () => ({
         stitchWidth: sw.get(),
         stitchHeight: sh.get(),
