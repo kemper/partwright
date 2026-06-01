@@ -23,6 +23,7 @@ import { listModels as listCustomModels, validateConnection as validateCustomCon
 import { formatUsd } from '../../ai/cost';
 import { providerKeyMeta, validateAndStoreKey, type HostedProvider } from '../aiKeyModal';
 import { renderLocalPicker } from '../aiLocalModal';
+import { confirmDialog } from '../dialogs';
 import { showSystemPromptModal } from '../aiSystemPromptModal';
 import {
   loadSettings,
@@ -271,7 +272,7 @@ function KeySection(props: {
         class="self-start text-[11px] text-red-300 hover:text-red-200 underline"
         title="Delete this key from the browser. Your chat history is kept; you can paste a new key any time."
         onClick={async () => {
-          if (!confirm(`Remove your ${label} key? Your chat history is kept; only the key is removed.`)) return;
+          if (!(await confirmDialog(`Remove your ${label} key? Your chat history is kept; only the key is removed.`, { title: `Remove ${label} key`, confirmLabel: 'Remove', danger: true }))) return;
           await deleteKey(provider);
           resetClientFor(provider);
           cb.onChange();

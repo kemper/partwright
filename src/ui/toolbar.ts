@@ -17,7 +17,6 @@ import {
 
 export interface ToolbarCallbacks {
   onRun: () => void;
-  onCancelRun: () => void;
   onExportGLB: () => void;
   onExportSTL: () => void;
   onExportOBJ: () => void;
@@ -171,7 +170,7 @@ export function createToolbar(
   logo.className = 'flex items-center gap-2 mr-4 bg-transparent border-0 p-0 cursor-pointer hover:opacity-80 transition-opacity';
   logo.title = 'Back to home';
   logo.setAttribute('aria-label', 'Partwright home');
-  logo.innerHTML = `${partwrightMarkSvg(20)}<span class="text-zinc-100 font-semibold tracking-tight">Partwright</span>`;
+  logo.innerHTML = `${partwrightMarkSvg(20)}<span class="text-zinc-100 font-semibold tracking-tight">Partwright</span><span class="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/25">Beta</span>`;
   logo.addEventListener('click', callbacks.onGoHome);
   toolbar.appendChild(logo);
 
@@ -210,15 +209,6 @@ export function createToolbar(
     if (_autoRun) callbacks.onRun();
   });
 
-  // Cancel button — visible only while a render is in flight
-  const btnCancelRun = document.createElement('button');
-  btnCancelRun.id = 'btn-cancel-run';
-  btnCancelRun.type = 'button';
-  btnCancelRun.className = 'hidden px-2 py-1 rounded text-xs text-red-400 hover:bg-zinc-700 transition-colors';
-  btnCancelRun.textContent = '× Cancel';
-  btnCancelRun.title = 'Cancel the current render';
-  btnCancelRun.addEventListener('click', callbacks.onCancelRun);
-
   // Elapsed time label — updated every 100 ms during a render
   const runElapsedEl = document.createElement('span');
   runElapsedEl.id = 'run-elapsed';
@@ -226,11 +216,9 @@ export function createToolbar(
 
   _setRunState = (running, elapsedMs) => {
     if (running) {
-      btnCancelRun.classList.remove('hidden');
       runElapsedEl.classList.remove('hidden');
       runElapsedEl.textContent = `${(elapsedMs / 1000).toFixed(1)}s`;
     } else {
-      btnCancelRun.classList.add('hidden');
       runElapsedEl.classList.add('hidden');
       runElapsedEl.textContent = '';
     }
@@ -240,7 +228,6 @@ export function createToolbar(
   runGroup.appendChild(autoRunBtn);
   runGroup.appendChild(btnRun);
   runGroup.appendChild(runElapsedEl);
-  runGroup.appendChild(btnCancelRun);
   toolbar.appendChild(runGroup);
 
   // Language toggle — segmented JS / SCAD control

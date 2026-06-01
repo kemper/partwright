@@ -156,7 +156,6 @@ test.describe('AI slash commands', () => {
   });
 
   test('/clear empties the seeded transcript', async ({ page }) => {
-    page.on('dialog', d => d.accept()); // the clear confirmation
     await page.goto('/editor');
     await waitForEditorReady(page);
     const id = await createSession(page, 'Slash Clear');
@@ -171,6 +170,9 @@ test.describe('AI slash commands', () => {
     const input = panel.locator('textarea');
     await input.fill('/clear');
     await input.press('Enter');
+
+    // /clear now raises the in-app confirm dialog (was a native confirm).
+    await page.getByRole('dialog').getByRole('button', { name: 'Clear' }).click();
 
     await expect(panel).toContainText('Chat cleared.');
     await expect(panel).not.toContainText('Design a widget bracket');
