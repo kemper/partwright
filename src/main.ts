@@ -9116,20 +9116,18 @@ async function main() {
       return this.setRegionVisibility(id, true);
     },
 
-    /** Read or write the bucket-tool tolerance used by the interactive paint
-     *  panel and by `paintRegion` when no `tolerance` argument is passed.
-     *  Value is the cosine of the maximum allowed bend angle (1 = strict
-     *  coplanar, -1 = whole connected component). Use the angle form via
-     *  `paintRegion({tolerance})` if you'd rather think in degrees.
+    /** Read or write the bucket-tool color tolerance used by the interactive
+     *  paint panel. Value is in [0, 1] where 0 = exact color match only and
+     *  1 = fill the entire connected mesh component regardless of color.
      *  Returns the previous + new value on set. */
     getBucketTolerance() {
       return { tolerance: getPaintBucketTolerance() };
     },
     setBucketTolerance(tolerance: number) {
       if (typeof tolerance !== 'number' || !Number.isFinite(tolerance)) {
-        return { error: 'setBucketTolerance(tolerance): tolerance must be a finite number in [-1, 1] (cosine of max bend angle)' };
+        return { error: 'setBucketTolerance(tolerance): tolerance must be a finite number in [0, 1]' };
       }
-      const clamped = Math.max(-1, Math.min(1, tolerance));
+      const clamped = Math.max(0, Math.min(1, tolerance));
       const previous = getPaintBucketTolerance();
       setPaintBucketTolerance(clamped);
       return { previous, tolerance: clamped };
@@ -10231,8 +10229,8 @@ async function main() {
         'showRegion':      { signature: 'showRegion(id) -- Shorthand for setRegionVisibility(id, true).', docs: '/ai/colors.md' },
         'undoLastPaint':   { signature: 'undoLastPaint() -- Undo the most recent paint op. Removed region goes on a redo stack.', docs: '/ai/colors.md' },
         'redoLastPaint':   { signature: 'redoLastPaint() -- Reapply the most recently undone paint op.', docs: '/ai/colors.md' },
-        'getBucketTolerance': { signature: 'getBucketTolerance() -- Read the bucket flood-fill tolerance (cosine of max bend angle).', docs: '/ai/colors.md' },
-        'setBucketTolerance': { signature: 'setBucketTolerance(tolerance) -- Set the bucket flood-fill tolerance (-1..1). Affects the UI bucket tool and the default for paintRegion.', docs: '/ai/colors.md' },
+        'getBucketTolerance': { signature: 'getBucketTolerance() -- Read the bucket flood-fill color tolerance (0 = exact match, 1 = any color).', docs: '/ai/colors.md' },
+        'setBucketTolerance': { signature: 'setBucketTolerance(tolerance) -- Set the bucket flood-fill color tolerance (0..1). 0 = exact color match only, 1 = fill entire connected mesh.', docs: '/ai/colors.md' },
         'getBrushSize':    { signature: 'getBrushSize() -- Read the UI brush radius (mesh units). 0 = single triangle.', docs: '/ai/colors.md' },
         'setBrushSize':    { signature: 'setBrushSize(radius) -- Set the UI brush radius (mesh units, >= 0). Affects only the interactive brush tool; programmatic painting uses paintNear / paintFaces.', docs: '/ai/colors.md' },
         // Annotations

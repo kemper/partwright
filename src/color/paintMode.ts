@@ -4,8 +4,8 @@
 import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
 import { pickFace } from './facePicker';
-import { buildAdjacency, findCoplanarRegion, getTriangleNormal, type AdjacencyGraph } from './adjacency';
-import { addRegion, getRegions } from './regions';
+import { buildAdjacency, findColorRegion, type AdjacencyGraph } from './adjacency';
+import { addRegion, getRegions, buildTriColors } from './regions';
 import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
@@ -19,7 +19,10 @@ export type { BrushShape };
 let active = false;
 let currentColor: [number, number, number] = [1, 0.2, 0.2]; // default red
 let currentTool: PaintTool = 'brush';
-let bucketTolerance = 0.9995;
+/** Color-distance tolerance for the bucket tool. Range [0, 1] where 0 = exact
+ *  color match only and 1 = fill entire connected component regardless of color.
+ *  Default 0.05 (5 % of maximum RGB distance). */
+let bucketColorTolerance = 0.05;
 /** Brush radius in mesh units. Default 1. 0 = single-triangle (legacy). */
 let brushRadius = 1;
 let brushShape: BrushShape = 'circle';
@@ -135,11 +138,11 @@ export function getTool(): PaintTool {
 }
 
 export function setBucketTolerance(tol: number): void {
-  bucketTolerance = Math.max(-1, Math.min(1, tol));
+  bucketColorTolerance = Math.max(0, Math.min(1, tol));
 }
 
 export function getBucketTolerance(): number {
-  return bucketTolerance;
+  return bucketColorTolerance;
 }
 
 export function setBrushRadius(r: number): void {
@@ -417,7 +420,7 @@ function processMouseMove(event: MouseEvent): void {
     addBrushFootprint(result.triangleIndex, result.point, region);
   } else {
     clearBrushRing();
-    region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
+    region = findColorRegion(result.triangleIndex, adjacency, buildTriColors(currentMesh.numTri), bucketColorTolerance);
   }
 
   if (hoveredTriangles && setsEqual(hoveredTriangles, region)) {
@@ -741,20 +744,15 @@ function onPointerUp(event: PointerEvent): void {
   const result = pickFace(event);
   if (!result) return;
 
-  const region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
-  const normal = getTriangleNormal(result.triangleIndex, adjacency);
+  const triColors = buildTriColors(currentMesh.numTri);
+  const region = findColorRegion(result.triangleIndex, adjacency, triColors, bucketColorTolerance);
 
   const existingCount = getRegions().length;
   addRegion(
     `Region ${existingCount + 1}`,
     [...currentColor] as [number, number, number],
     'face-pick',
-    {
-      kind: 'coplanar',
-      seedPoint: result.point,
-      seedNormal: normal,
-      normalTolerance: bucketTolerance,
-    },
+    { kind: 'triangles', ids: [...region] },
     region,
   );
 

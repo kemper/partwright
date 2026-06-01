@@ -427,12 +427,11 @@ function createBucketControls(): HTMLElement {
 
   const label = document.createElement('div');
   label.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium';
-  label.textContent = 'Bucket tolerance';
+  label.textContent = 'Color tolerance';
   wrap.appendChild(label);
 
-  // Slider 0..100 maps to angle 0\u00B0..180\u00B0 (where tolerance = cos(angle)).
-  // Number input is the same angle in degrees, two-way synced with the slider
-  // so users who already know the angle they want (e.g. 5\u00B0) can just type it.
+  // Slider 0..100 maps linearly to color tolerance 0..1 (fraction of max RGB distance).
+  // Number input is the same value as a percentage, two-way synced with the slider.
   const row = document.createElement('div');
   row.className = 'flex items-center gap-2';
 
@@ -441,43 +440,43 @@ function createBucketControls(): HTMLElement {
   slider.min = '0';
   slider.max = '100';
   slider.step = '1';
-  slider.value = String(toleranceToSliderPct(getBucketTolerance()));
+  slider.value = String(Math.round(getBucketTolerance() * 100));
   slider.className = 'flex-1 accent-blue-500 min-w-0';
-  slider.title = 'Maximum bend angle (0\u00B0\u2013180\u00B0) between adjacent faces the flood-fill is allowed to cross';
+  slider.title = 'Color distance tolerance (0 = exact color match only, 100 = fill entire connected mesh)';
 
   const input = document.createElement('input');
   input.type = 'number';
   input.min = '0';
-  input.max = '180';
-  input.step = '0.1';
-  input.value = toleranceToAngleDeg(getBucketTolerance()).toFixed(1);
+  input.max = '100';
+  input.step = '1';
+  input.value = String(Math.round(getBucketTolerance() * 100));
   input.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
-  input.title = 'Bend angle in degrees (0\u2013180)';
+  input.title = 'Color tolerance (0\u2013100)';
 
   const unit = document.createElement('span');
   unit.className = 'text-[10px] text-zinc-500';
-  unit.textContent = '\u00B0';
+  unit.textContent = '%';
 
   slider.addEventListener('input', () => {
-    const tol = sliderPctToTolerance(parseInt(slider.value, 10));
+    const tol = parseInt(slider.value, 10) / 100;
     setBucketTolerance(tol);
-    input.value = toleranceToAngleDeg(tol).toFixed(1);
+    input.value = String(Math.round(tol * 100));
   });
 
-  const applyAngle = (): void => {
+  const applyPct = (): void => {
     const raw = parseFloat(input.value);
     if (!Number.isFinite(raw)) {
-      input.value = toleranceToAngleDeg(getBucketTolerance()).toFixed(1);
+      input.value = String(Math.round(getBucketTolerance() * 100));
       return;
     }
-    const angle = Math.max(0, Math.min(180, raw));
-    const tol = Math.cos(angle * Math.PI / 180);
+    const pct = Math.max(0, Math.min(100, Math.round(raw)));
+    const tol = pct / 100;
     setBucketTolerance(tol);
-    slider.value = String(toleranceToSliderPct(tol));
-    input.value = angle.toFixed(1);
+    slider.value = String(pct);
+    input.value = String(pct);
   };
-  input.addEventListener('change', applyAngle);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyAngle(); input.blur(); } });
+  input.addEventListener('change', applyPct);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyPct(); input.blur(); } });
 
   row.appendChild(slider);
   row.appendChild(input);
@@ -486,7 +485,7 @@ function createBucketControls(): HTMLElement {
 
   const help = document.createElement('div');
   help.className = 'text-[10px] text-zinc-500 mt-1';
-  help.textContent = 'Coplanar only \u2190\u2014\u2014\u2192 Whole connected mesh';
+  help.textContent = 'Exact match \u2190\u2014\u2014\u2192 Any color';
   wrap.appendChild(help);
 
   return wrap;
@@ -828,22 +827,6 @@ function createBrushControls(): HTMLElement {
   return wrap;
 }
 
-function toleranceToSliderPct(tol: number): number {
-  // Slider 0..100 maps to angle 0°..180° (i.e. tol = cos(angle)).
-  // 0 = strict (only exactly-coplanar adjacent faces);
-  // 100 = no limit (paints the whole connected component).
-  const angleDeg = Math.acos(Math.max(-1, Math.min(1, tol))) * 180 / Math.PI;
-  return Math.round(Math.max(0, Math.min(180, angleDeg)) / 180 * 100);
-}
-
-function sliderPctToTolerance(pct: number): number {
-  const angleDeg = Math.max(0, Math.min(100, pct)) / 100 * 180;
-  return Math.cos(angleDeg * Math.PI / 180);
-}
-
-function toleranceToAngleDeg(tol: number): number {
-  return Math.acos(Math.max(-1, Math.min(1, tol))) * 180 / Math.PI;
-}
 
 function createSlabControls(): HTMLElement {
   const wrap = document.createElement('div');
