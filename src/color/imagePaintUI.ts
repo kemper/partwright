@@ -72,8 +72,9 @@ let opts: {
 // Stamp settings
 let stampSize = 20;        // world units
 let stampRotation = 0;     // degrees
-let stampSmooth = false;   // subdivide mesh boundary for crisp edges
-let stampMaxEdge = 2;      // target edge length for smooth mode
+let stampSmooth = false;   // subdivide the stamp footprint for crisp detail
+let stampDetail = 96;      // smooth mode: target triangle rows across the stamp
+                           // width (higher = finer; maxEdge = stampSize/detail)
 
 // Stamp mode (active when panel is open and image is loaded)
 let stampModeActive = false;
@@ -317,10 +318,16 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
 
   let result: ImagePaintResult;
 
-  if (stampSmooth && stampMaxEdge > 0 && smoothStampCb) {
-    // Smooth mode: callback stamps on the current mesh, finds boundary triangles,
-    // subdivides them to maxEdge, then re-stamps — giving crisp edges.
-    const refined = smoothStampCb(pickedImageData, stampOpts, stampMaxEdge);
+  // Convert the size-independent Detail level (triangle rows across the stamp)
+  // into an absolute target edge length for the subdivision. Stored on the
+  // descriptor so a reloaded session reproduces the same tessellation regardless
+  // of how the slider is later expressed.
+  const maxEdge = stampDetail > 0 ? stampSize / stampDetail : 0;
+
+  if (stampSmooth && maxEdge > 0 && smoothStampCb) {
+    // Smooth mode: callback subdivides the stamp footprint to maxEdge (confined
+    // to the stamp square), then stamps on the fine mesh — giving crisp detail.
+    const refined = smoothStampCb(pickedImageData, stampOpts, maxEdge);
     if (!refined || refined.result.entries.length === 0) return;
     result = refined.result;
   } else {
@@ -341,7 +348,7 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
       entries: result.entries,
       avgColor: result.avgColor,
       ...(stampSmooth ? {
-        smooth: true, maxEdge: stampMaxEdge,
+        smooth: true, maxEdge,
         hitPoint, hitNormal, stampSize, rotationDeg: stampRotation,
       } : {}),
     },
@@ -729,7 +736,7 @@ function buildStampSettingsSection(): HTMLElement {
     maxEdgeRow.classList.toggle('hidden', !on);
   };
 
-  smoothToggle.title = 'Subdivide the mesh at the stamp boundary so the edge is smooth rather than following coarse triangles';
+  smoothToggle.title = 'Subdivide the stamp footprint so fine image detail is preserved rather than following the coarse base triangles';
   smoothToggle.addEventListener('click', () => {
     stampSmooth = !stampSmooth;
     syncSmoothUI(stampSmooth);
@@ -737,14 +744,17 @@ function buildStampSettingsSection(): HTMLElement {
   smoothRow.appendChild(smoothToggle);
   grid.appendChild(smoothRow);
 
-  addSlider(maxEdgeRow, 'Max edge (units)', 0.1, 20, 0.1, 2,
-    () => stampMaxEdge,
-    v => { stampMaxEdge = v; },
+  // Detail = triangle rows across the stamp width (size-independent). The actual
+  // target edge length is stampSize / detail, computed at stamp time — so the
+  // same Detail gives the same quality regardless of how big the stamp is.
+  addSlider(maxEdgeRow, 'Detail', 16, 256, 1, 96,
+    () => stampDetail,
+    v => { stampDetail = v; },
     true, true /* uncappedInput */);
 
   const smoothHelp = document.createElement('div');
   smoothHelp.className = 'text-[10px] text-zinc-500';
-  smoothHelp.textContent = 'Max edge · smaller = more triangles, crisper stamp';
+  smoothHelp.textContent = 'Detail · higher = finer triangles, crisper stamp';
   maxEdgeRow.appendChild(smoothHelp);
   grid.appendChild(maxEdgeRow);
 

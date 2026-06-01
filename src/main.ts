@@ -5253,16 +5253,32 @@ async function main() {
 
     if (footprintTris.size === 0) return null;
 
-    // Step 2: Expand by one neighbor ring for fine tessellation on both sides
-    // of the stamp boundary.
-    const toSubdivide = new Set<number>(footprintTris);
-    for (const t of footprintTris) {
-      for (const n of adjacency.neighbors[t]) toSubdivide.add(n);
-    }
+    // Step 2: Confined subdivision. `overlapsStamp` keeps refinement inside the
+    // stamp square (+ a thin margin) and the depth slab: as a big seed triangle
+    // splits 1→4, children that land outside the square stop refining, so the
+    // fine tessellation stays within the stamp footprint instead of flooding the
+    // whole base triangle. This is the paint-tool's "refine only within the
+    // region" strategy — a 12-tri cube now grows a few thousand triangles inside
+    // the stamp, not 500k across the whole face.
+    const REFINE_MARGIN = 0.03;
+    const ov = -(1 + REFINE_MARGIN), oh = 1 + REFINE_MARGIN;
+    const sampleInStamp = (px: number, py: number, pz: number): boolean => {
+      const dx = px - hpX, dy = py - hpY, dz = pz - hpZ;
+      if (dx * nx + dy * ny + dz * nz < -halfSize) return false; // depth slab
+      const u = (dx * trX + dy * trY + dz * trZ) / halfSize;
+      const v = (dx * brX + dy * brY + dz * brZ) / halfSize;
+      return u >= ov && u <= oh && v >= ov && v <= oh;
+    };
+    const overlapsStamp = (a: number[], b: number[], c: number[]): boolean => {
+      const cx = (a[0] + b[0] + c[0]) / 3, cy = (a[1] + b[1] + c[1]) / 3, cz = (a[2] + b[2] + c[2]) / 3;
+      return sampleInStamp(cx, cy, cz)
+        || sampleInStamp(a[0], a[1], a[2])
+        || sampleInStamp(b[0], b[1], b[2])
+        || sampleInStamp(c[0], c[1], c[2]);
+    };
 
-    // Step 3: Subdivide footprint + ring to maxEdge. Works on 2-triangle models —
-    // the large triangles are tessellated to thousands before the stamp is applied.
-    const { mesh, childToParent } = buildRefinedMeshFromSet(currentMeshData, toSubdivide, maxEdge);
+    // Step 3: Subdivide the footprint to maxEdge, confined by overlapsStamp.
+    const { mesh, childToParent } = buildRefinedMeshFromSet(currentMeshData, footprintTris, maxEdge, overlapsStamp);
     const parentToChildren = childrenByParent(childToParent);
     currentMeshData = mesh;
     // Advance paintBaseMesh to the subdivided mesh so the paint reconciler

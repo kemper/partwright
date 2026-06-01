@@ -144,32 +144,23 @@ export function stampImageOntoMesh(
     // normal happens to match hitNormal (face-normal check alone isn't sufficient).
     if ((cx - hpX) * nx + (cy - hpY) * ny + (cz - hpZ) * nz < -halfSize) continue;
 
-    // Project centroid and all three vertices onto the rotated tangent frame,
-    // normalised to [-1, 1]. The triangle is included if ANY of the four
-    // sample points lands inside the stamp square — this handles coarse meshes
-    // where the centroid may fall outside a large triangle's overlap with the stamp.
-    const projectU = (px: number, py: number, pz: number) =>
-      ((px - hpX) * trX + (py - hpY) * trY + (pz - hpZ) * trZ) / halfSize;
-    const projectV = (px: number, py: number, pz: number) =>
-      ((px - hpX) * brX + (py - hpY) * brY + (pz - hpZ) * brZ) / halfSize;
+    // Project the centroid onto the rotated tangent frame, normalised to
+    // [-1, 1]. A triangle is painted only when its centroid lands inside the
+    // stamp square. (We deliberately do NOT use an "any vertex inside" test +
+    // clamp-to-edge sample: that let a coarse triangle grazing the stamp edge
+    // sample a clamped border pixel — often the dark background — and flood a
+    // large area with it, producing the scattered black-triangle artifacts.
+    // After smooth-mode subdivision the footprint triangles are fine enough that
+    // centroid coverage tiles the stamp cleanly.)
+    const uC = ((cx - hpX) * trX + (cy - hpY) * trY + (cz - hpZ) * trZ) / halfSize;
+    const vC = ((cx - hpX) * brX + (cy - hpY) * brY + (cz - hpZ) * brZ) / halfSize;
 
-    const inStamp = (u: number, v: number) => u >= -1 && u <= 1 && v >= -1 && v <= 1;
+    if (uC < -1 || uC > 1 || vC < -1 || vC > 1) continue;
 
-    const uC = projectU(cx, cy, cz), vC = projectV(cx, cy, cz);
-    const u0 = projectU(x0, y0, z0), v0p = projectV(x0, y0, z0);
-    const u1 = projectU(x1, y1, z1), v1p = projectV(x1, y1, z1);
-    const u2 = projectU(x2, y2, z2), v2p = projectV(x2, y2, z2);
-
-    if (!inStamp(uC, vC) && !inStamp(u0, v0p) && !inStamp(u1, v1p) && !inStamp(u2, v2p)) continue;
-
-    // Sample the image at the centroid's projected UV
-    // (centroid gives a stable representative position; clamp to image bounds)
-    const sampleU = Math.max(-1, Math.min(1, uC));
-    const sampleV = Math.max(-1, Math.min(1, vC));
-
-    // Map to image coordinates (image is top-down, v flipped)
-    const imgU = (sampleU + 1) / 2;
-    const imgV = (1 - sampleV) / 2;
+    // Map the in-square centroid UV straight to image coordinates (no clamp
+    // needed — it is already inside the stamp; image is top-down, v flipped).
+    const imgU = (uC + 1) / 2;
+    const imgV = (1 - vC) / 2;
 
     // Nearest-neighbor sample
     const px = Math.max(0, Math.min(imgW - 1, Math.floor(imgU * imgW)));

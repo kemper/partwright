@@ -760,11 +760,18 @@ function subdivideSelected(
 /** Refine a specific set of triangles until all their edges are ≤ maxEdge.
  *  Unlike buildRefinedMesh (which takes a spatial RefineRegion), this accepts
  *  an explicit triangle index set — useful for stamp smooth mode where the
- *  boundary is determined by the paint result, not a geometric predicate. */
+ *  boundary is determined by the paint result, not a geometric predicate.
+ *
+ *  `overlaps` (optional) confines the refinement: each pass only subdivides a
+ *  tracked triangle when it still overlaps the region. As a big seed triangle
+ *  splits 1→4, children that fall outside the region fail `overlaps` and stop,
+ *  so the fine tessellation stays inside the stamp footprint instead of flooding
+ *  the whole base triangle (which is what made a 12-tri cube balloon to 500k). */
 export function buildRefinedMeshFromSet(
   base: MeshData,
   seedTris: Set<number>,
   maxEdge: number,
+  overlaps?: (a: number[], b: number[], c: number[]) => boolean,
 ): { mesh: MeshData; childToParent: Int32Array } {
   if (seedTris.size === 0) {
     const id = new Int32Array(base.numTri);
@@ -786,7 +793,9 @@ export function buildRefinedMeshFromSet(
       const a = triVertex(mesh, mesh.triVerts[t * 3]);
       const b = triVertex(mesh, mesh.triVerts[t * 3 + 1]);
       const c = triVertex(mesh, mesh.triVerts[t * 3 + 2]);
-      if (maxEdgeLen2(a, b, c) > maxEdge2) selected.add(t);
+      if (maxEdgeLen2(a, b, c) <= maxEdge2) continue;
+      if (overlaps && !overlaps(a, b, c)) continue;
+      selected.add(t);
     }
     if (selected.size === 0) break;
     if (mesh.numTri + selected.size * 3 > MAX_REFINED_TRIANGLES) break;
