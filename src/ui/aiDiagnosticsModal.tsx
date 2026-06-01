@@ -16,6 +16,7 @@ import {
 } from '../ai/diagnostics';
 import { providerLabel } from '../ai/settings';
 import { mountPreactModal } from './preact/mount';
+import { confirmDialog } from './dialogs';
 
 type FilterMode = 'all' | 'error' | 'ok';
 
@@ -75,8 +76,8 @@ function DiagnosticsBody() {
           <button
             type="button"
             class="px-2 py-1 rounded text-xs text-red-300 bg-red-900/40 hover:bg-red-800/60"
-            onClick={() => {
-              if (!confirm('Clear all diagnostics events?')) return;
+            onClick={async () => {
+              if (!(await confirmDialog('Clear all diagnostics events?', { title: 'Clear diagnostics', confirmLabel: 'Clear', danger: true }))) return;
               clearEvents();
             }}
           >Clear</button>

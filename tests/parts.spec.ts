@@ -265,9 +265,10 @@ test.describe('Multi-part sessions', () => {
     await expect(delBtn).toBeEnabled();
 
     // Confirm and delete; the current part (Gamma) was selected, so the active
-    // part must fall back to a survivor and the editor title follows.
-    page.once('dialog', d => d.accept());
+    // part must fall back to a survivor and the editor title follows. The
+    // confirm is now the in-app dialog (was a native confirm).
     await delBtn.click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Delete' }).click();
 
     await expect
       .poll(() => page.evaluate(() =>
