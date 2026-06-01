@@ -138,6 +138,11 @@ export interface AppConfig {
     sessionLockHeartbeatMs: number;
     /** Time (ms) after which a session lock heartbeat is considered stale. */
     sessionLockStaleMs: number;
+    /** Default circular segment count for manifold-js / BREP geometry renders.
+     *  Picks the nearest named preset; non-preset values use "custom" mode. */
+    defaultQuality: number;
+    /** Default circular segment count for OpenSCAD ($fn) geometry renders. */
+    scadDefaultQuality: number;
   };
 }
 
@@ -207,6 +212,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     progressModalShowDelayMs: 250,
     sessionLockHeartbeatMs: 3000,
     sessionLockStaleMs: 8000,
+    defaultQuality: 128,
+    scadDefaultQuality: 32,
   },
 };
 
