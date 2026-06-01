@@ -73,7 +73,7 @@ let opts: {
 let stampSize = 20;        // world units
 let stampRotation = 0;     // degrees
 let stampSmooth = false;   // subdivide mesh boundary for crisp edges
-let stampMaxEdge = 10;     // target edge length for smooth mode
+let stampMaxEdge = 2;      // target edge length for smooth mode
 
 // Stamp mode (active when panel is open and image is loaded)
 let stampModeActive = false;
@@ -385,6 +385,9 @@ function buildPanel(): HTMLElement {
   // Drag-to-move
   header.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || !el) return;
+    // Don't capture drag when the user is clicking an interactive child (e.g. the
+    // close button) — setPointerCapture + preventDefault would swallow the click.
+    if ((e.target as HTMLElement).closest('button')) return;
     const rect = el.getBoundingClientRect();
     // Initialize absolute left/top from current render position on first drag
     if (panelLeft < 0) {
@@ -734,14 +737,14 @@ function buildStampSettingsSection(): HTMLElement {
   smoothRow.appendChild(smoothToggle);
   grid.appendChild(smoothRow);
 
-  addSlider(maxEdgeRow, 'Detail', 1, 200, 1, 10,
+  addSlider(maxEdgeRow, 'Max edge (units)', 0.1, 20, 0.1, 2,
     () => stampMaxEdge,
     v => { stampMaxEdge = v; },
     true, true /* uncappedInput */);
 
   const smoothHelp = document.createElement('div');
   smoothHelp.className = 'text-[10px] text-zinc-500';
-  smoothHelp.textContent = 'Detail · lower → finer triangles, crisper edge';
+  smoothHelp.textContent = 'Max edge · smaller = more triangles, crisper stamp';
   maxEdgeRow.appendChild(smoothHelp);
   grid.appendChild(maxEdgeRow);
 
