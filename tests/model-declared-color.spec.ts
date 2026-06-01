@@ -82,7 +82,7 @@ test.describe('Model-declared color', () => {
     await expect(page.locator('#editor-lock-overlay')).toHaveCount(0);
   });
 
-  test('manual paint composites on top and is the thing that locks the editor', async ({ page }) => {
+  test('manual paint composites on top of model-declared colors', async ({ page }) => {
     const res = await page.evaluate(async (code) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pw = (window as any).partwright;
@@ -101,8 +101,6 @@ test.describe('Model-declared color', () => {
     expect(res.beforeRegions).toBe(0); // before painting: no user regions, only the model underlay
     expect(res.afterRegions).toBe(1);  // the manual paint added exactly one user region
     expect(res.modelStillThere).toBe(2); // model colors persist underneath the paint
-    // Painting a user region locks the editor, exactly as before this feature.
-    await expect(page.locator('#editor-lock-overlay')).toHaveCount(1);
   });
 
   test('model-declared colors flow into OBJ/3MF export (not only the live GLB scene)', async ({ page }) => {

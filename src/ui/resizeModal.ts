@@ -6,6 +6,8 @@
 // untouched; the scaled result is its own version.
 
 import { registerCommands } from './commandPalette';
+import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
+import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 
@@ -20,6 +22,15 @@ export interface ResizeApi {
 type ScaleMode = 'percent' | 'units';
 
 let openModal: HTMLDivElement | null = null;
+let currentResizeClose: (() => void) | null = null;
+
+const resizeRegistryEntry = { close(): void { currentResizeClose?.(); } };
+
+function onResizeEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  if (document.querySelector('[role="dialog"]')) return;
+  currentResizeClose?.();
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text = ''): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -45,8 +56,13 @@ function getBbox(api: ResizeApi): { size: [number, number, number]; min: [number
   return null;
 }
 
+/** Find the viewport container used by the other overlay panels. */
+function getViewportContainer(): HTMLElement {
+  return (document.getElementById('clip-controls')?.offsetParent as HTMLElement | null) ?? document.body;
+}
+
 export function openResizeModal(api: ResizeApi): void {
-  if (openModal) { openModal.remove(); openModal = null; }
+  if (openModal) { openModal.remove(); openModal = null; currentResizeClose = null; }
 
   const bbox = getBbox(api);
   const size = bbox?.size ?? [10, 10, 10];
@@ -68,57 +84,21 @@ export function openResizeModal(api: ResizeApi): void {
   let previewDirty = false;
   let previewTimer: number | undefined;
 
-  // The panel is absolutely positioned so the user can drag it anywhere.
-  // Default: right edge of the viewport, vertically centered.
-  const panel = el('div', 'fixed z-[60] bg-zinc-900 text-zinc-100 rounded-lg border border-zinc-700 shadow-xl w-[min(94vw,360px)] select-none');
-  panel.style.right = '12px';
-  panel.style.top = '50%';
-  panel.style.transform = 'translateY(-50%)';
+  const container = getViewportContainer();
 
-  // Drag logic for the panel header
-  let dragState: { startX: number; startY: number; origLeft: number; origTop: number } | null = null;
+  // Absolutely positioned inside the viewport container, below the toolbar.
+  const panel = el('div', 'absolute z-[60] bg-zinc-900 text-zinc-100 rounded-lg border border-zinc-700 shadow-xl w-[min(94vw,360px)] select-none flex flex-col');
 
-  function startDrag(e: PointerEvent) {
-    if ((e.target as HTMLElement).closest('button,input,select,label')) return;
-    e.preventDefault();
-    const rect = panel.getBoundingClientRect();
-    panel.style.transform = '';
-    panel.style.left = `${rect.left}px`;
-    panel.style.top = `${rect.top}px`;
-    panel.style.right = '';
-    dragState = { startX: e.clientX, startY: e.clientY, origLeft: rect.left, origTop: rect.top };
-    panel.setPointerCapture(e.pointerId);
-    document.body.style.userSelect = 'none';
-  }
-  function moveDrag(e: PointerEvent) {
-    if (!dragState || !panel.hasPointerCapture(e.pointerId)) return;
-    const left = dragState.origLeft + e.clientX - dragState.startX;
-    const top = dragState.origTop + e.clientY - dragState.startY;
-    const maxLeft = window.innerWidth - 20;
-    const maxTop = window.innerHeight - 20;
-    panel.style.left = `${Math.max(0, Math.min(left, maxLeft))}px`;
-    panel.style.top = `${Math.max(0, Math.min(top, maxTop))}px`;
-  }
-  function endDrag(e: PointerEvent) {
-    if (!dragState || !panel.hasPointerCapture(e.pointerId)) return;
-    panel.releasePointerCapture(e.pointerId);
-    dragState = null;
-    document.body.style.userSelect = '';
-  }
-  panel.addEventListener('pointerdown', startDrag);
-  panel.addEventListener('pointermove', moveDrag);
-  panel.addEventListener('pointerup', endDrag);
-  panel.addEventListener('pointercancel', endDrag);
-
-  // Header
-  const header = el('div', 'flex items-center justify-between px-4 py-3 border-b border-zinc-700 cursor-move');
+  // Header — drag handle + title + × button.
+  const header = el('div', 'flex items-center justify-between px-4 py-3 border-b border-zinc-700 shrink-0');
   header.append(el('h2', 'text-sm font-semibold', 'Resize model'));
   const closeBtn = el('button', 'text-zinc-400 hover:text-zinc-100 text-lg leading-none cursor-pointer', '×');
-  closeBtn.style.cursor = 'pointer';
+  closeBtn.setAttribute('aria-label', 'Close resize panel');
   header.append(closeBtn);
   panel.append(header);
+  attachViewportPanelDrag(header, panel);
 
-  const body = el('div', 'p-4');
+  const body = el('div', 'p-4 overflow-y-auto flex-1');
   panel.append(body);
 
   const status = el('div', 'text-[11px] text-zinc-400 min-h-[1rem] mt-1');
@@ -212,7 +192,7 @@ export function openResizeModal(api: ResizeApi): void {
   body.append(status);
 
   // Footer
-  const footer = el('div', 'flex justify-end gap-2 px-4 pb-4');
+  const footer = el('div', 'flex justify-end gap-2 px-4 pb-4 shrink-0');
   const resetBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs', 'Reset');
   const cancelBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs', 'Cancel');
   const applyBtn = el('button', 'px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium', 'Apply');
@@ -332,6 +312,9 @@ export function openResizeModal(api: ResizeApi): void {
     clearPreview();
     panel.remove();
     openModal = null;
+    currentResizeClose = null;
+    closeViewportPanel(resizeRegistryEntry);
+    document.removeEventListener('keydown', onResizeEscape);
   };
 
   closeBtn.addEventListener('click', close);
@@ -369,8 +352,12 @@ export function openResizeModal(api: ResizeApi): void {
   });
 
   renderControls();
-  document.body.append(panel);
-  openModal = panel;
+  container.append(panel);
+  setInitialPanelPosition(panel);
+  currentResizeClose = close;
+  openViewportPanel(resizeRegistryEntry);
+  document.addEventListener('keydown', onResizeEscape);
+  openModal = panel as HTMLDivElement;
 }
 
 const BTN_BASE =
@@ -394,7 +381,8 @@ export function initResizeUI(api: ResizeApi): void {
       ?? document.getElementById('paint-toggle')
       ?? document.querySelector<HTMLElement>('[id$="-viewport-toggle"]');
     if (!anchor || !anchor.parentElement) return;
-    const btn = el('button', anchor.className || BTN_BASE);
+    const btnCls = anchor.className.split(' ').filter(c => c !== 'hidden').join(' ') || BTN_BASE;
+    const btn = el('button', btnCls);
     btn.id = 'resize-viewport-toggle';
     btn.textContent = '⇲ Resize';
     btn.title = 'Scale the model along X, Y, and Z';
@@ -408,4 +396,3 @@ export function initResizeUI(api: ResizeApi): void {
   }, 250);
   mount();
 }
-

@@ -3,6 +3,7 @@ import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnos
 import { createCurvesNamespace } from '../curves';
 import { createMeshOpsNamespace } from '../meshOps';
 import { createParamCapture } from '../params';
+import { preloadTextFonts } from '../textGlyphs';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { getActiveImports } from '../../import/importedMesh';
 import { createSdfNamespace, SdfNode } from '../sdf';
@@ -106,6 +107,10 @@ export const manifoldJsEngine: Engine = {
     manifoldModule.setup();
     curvesNamespace = createCurvesNamespace(manifoldModule);
     meshOpsNamespace = createMeshOpsNamespace(manifoldModule);
+    // Kick off font pre-loading in the background so they're ready by the
+    // time the first api.text() call hits, even if the per-run regex didn't
+    // fire (e.g. destructured alias or api.Curves.text).
+    preloadTextFonts().catch(() => { /* will surface as a clear error at call time */ });
   },
 
   isReady() {
@@ -245,6 +250,9 @@ export const manifoldJsEngine: Engine = {
       BREP,
       meshOps: meshOpsNamespace,
       sdf: sdfNamespace,
+      // Text helpers — flat aliases so agents can write api.text(...) directly.
+      text: curvesNamespace.text,
+      textSection: curvesNamespace.textSection,
       // Flat aliases for the most-used meshOps verbs — agents reach for shorter
       // names like `api.intersects(a,b)` and `api.placeOn(part, table)` much more
       // often than they reach for the namespace, so we promote those to api.* too.

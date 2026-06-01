@@ -73,6 +73,11 @@ export function presetIndex(label: string | undefined): number {
 type LegacyImageAngle = 'front' | 'right' | 'back' | 'left' | 'top' | 'perspective';
 const LEGACY_ANGLES: readonly LegacyImageAngle[] = ['front', 'right', 'back', 'left', 'top', 'perspective'];
 
+/** The mesh-level operation that produced a version. Set alongside
+ *  {@link Version.parentVersionId} when a version is derived from another
+ *  (e.g. a simplify run that wraps the result in `Manifold.ofMesh`). */
+export type VersionOperation = 'simplify' | 'enhance' | 'paint' | 'import' | 'manual';
+
 export interface Version {
   id: string;
   sessionId: string;
@@ -112,16 +117,26 @@ export interface Version {
    *  `include <models.scad>` inside the main code resolves at compile time.
    *  Only present for SCAD sessions that need companion files. */
   companionFiles?: Record<string, string>;
+  /** The version this was derived from. Set when a mesh-capture operation
+   *  (simplify, enhance, paint-bake, import) creates a child version from an
+   *  existing parametric version. Absent for versions created from scratch.
+   *  The reference may become null if the parent is later deleted. */
+  parentVersionId?: string | null;
+  /** The operation that produced this version. Set alongside
+   *  {@link parentVersionId} when the version is derived from another. */
+  operation?: VersionOperation | null;
 }
 
-/** Editor working buffer scoped to (session, language). One per language per
- *  session: switching the toolbar's language toggle stashes the previous
- *  language's code here and restores the target language's. Persisted so a
- *  reload doesn't lose in-progress work in either language. Cascade-deleted
- *  with the session. */
+/** Editor working buffer scoped to (session, part, language). One slot per
+ *  (part, language): switching parts or the toolbar language toggle stashes the
+ *  outgoing code here and restores the target slot's. Persisted so a reload
+ *  doesn't lose in-progress work. Cascade-deleted with the session (sessionId
+ *  index); individual part drafts are also pruned when the part is deleted. */
 export interface SessionDraft {
-  /** Composite key: `${sessionId}:${language}`. Lets the cascade delete on
-   *  session removal walk a simple `sessionId` index. */
+  /** Composite key: `${sessionId}:${partId}:${language}` (with partId) or
+   *  legacy `${sessionId}:${language}` (pre-per-part drafts). The cascade
+   *  delete on session removal uses the `sessionId` index, which covers both
+   *  formats. */
   id: string;
   sessionId: string;
   language: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
@@ -129,8 +144,8 @@ export interface SessionDraft {
   updatedAt: number;
 }
 
-function draftId(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): string {
-  return `${sessionId}:${language}`;
+function draftId(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): string {
+  return partId ? `${sessionId}:${partId}:${language}` : `${sessionId}:${language}`;
 }
 
 export interface SessionNote {
@@ -735,6 +750,12 @@ export async function saveVersion(
   paramValues?: Record<string, number | boolean | string>,
   /** Companion SCAD files (path → source) for this version (opaque to the db layer). */
   companionFiles?: Record<string, string>,
+  /** The version this was derived from (e.g. the parametric version before
+   *  simplify/enhance was applied). Stored so the UI can show provenance and
+   *  offer a one-click jump back to the source. */
+  parentVersionId?: string | null,
+  /** The operation that produced this version. */
+  operation?: VersionOperation | null,
 ): Promise<Version> {
   // Compute the next index and write the version inside ONE readwrite
   // transaction. IndexedDB serializes overlapping readwrite transactions on
@@ -773,6 +794,8 @@ export async function saveVersion(
         ...(importedMeshes && importedMeshes.length > 0 ? { importedMeshes } : {}),
         ...(paramValues && Object.keys(paramValues).length > 0 ? { paramValues } : {}),
         ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
+        ...(parentVersionId ? { parentVersionId } : {}),
+        ...(operation ? { operation } : {}),
       };
       const putReq = store.put(v);
       putReq.onsuccess = () => resolve(v);
@@ -846,6 +869,40 @@ export async function deleteVersion(id: string): Promise<void> {
   const db = await openDB();
   const txn = db.transaction('versions', 'readwrite');
   txn.objectStore('versions').delete(id);
+  await txComplete(txn);
+}
+
+/** Find all versions in a part whose parentVersionId points to the given id.
+ *  Used to warn the user before deleting a version that other versions depend on. */
+export async function findVersionChildren(parentId: string, partId: string): Promise<Version[]> {
+  const versions = await listVersions(partId);
+  return versions.filter(v => v.parentVersionId === parentId);
+}
+
+/** Clear the parentVersionId field on all versions that reference the given id.
+ *  Called after the user confirms deletion of a parent version. */
+export async function clearVersionParentRefs(parentId: string, partId: string): Promise<void> {
+  const children = await findVersionChildren(parentId, partId);
+  if (children.length === 0) return;
+  const db = await openDB();
+  const txn = db.transaction('versions', 'readwrite');
+  const store = txn.objectStore('versions');
+  // Chain all reads and writes without awaiting between them inside the transaction.
+  let pending = children.length;
+  await new Promise<void>((resolve, reject) => {
+    for (const child of children) {
+      const getReq = store.get(child.id);
+      getReq.onsuccess = () => {
+        const v = getReq.result as Version | null;
+        if (v) {
+          v.parentVersionId = null;
+          store.put(v);
+        }
+        if (--pending === 0) resolve();
+      };
+      getReq.onerror = () => reject(getReq.error);
+    }
+  });
   await txComplete(txn);
 }
 
@@ -938,17 +995,17 @@ export async function clearAllData(): Promise<void> {
   await txComplete(txn);
 }
 
-// === Editor drafts (per session, per language) ===
+// === Editor drafts (per session, per part, per language) ===
 
-export async function getDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<SessionDraft | null> {
+export async function getDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<SessionDraft | null> {
   const store = await tx('drafts', 'readonly');
-  return reqToPromise(store.get(draftId(sessionId, language))) as Promise<SessionDraft | null>;
+  return reqToPromise(store.get(draftId(sessionId, language, partId))) as Promise<SessionDraft | null>;
 }
 
-export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string): Promise<void> {
+export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string): Promise<void> {
   const store = await tx('drafts', 'readwrite');
   const row: SessionDraft = {
-    id: draftId(sessionId, language),
+    id: draftId(sessionId, language, partId),
     sessionId,
     language,
     code,
@@ -958,9 +1015,9 @@ export async function setDraft(sessionId: string, language: 'manifold-js' | 'sca
   await txComplete(store.transaction);
 }
 
-export async function deleteDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<void> {
+export async function deleteDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<void> {
   const store = await tx('drafts', 'readwrite');
-  store.delete(draftId(sessionId, language));
+  store.delete(draftId(sessionId, language, partId));
   await txComplete(store.transaction);
 }
 
@@ -968,6 +1025,18 @@ export async function listDrafts(sessionId: string): Promise<SessionDraft[]> {
   const store = await tx('drafts', 'readonly');
   const index = store.index('sessionId');
   return reqToPromise(index.getAll(IDBKeyRange.only(sessionId))) as Promise<SessionDraft[]>;
+}
+
+/** Delete all per-part drafts for a given part. Called when a part is removed
+ *  so its stashed buffers don't accumulate. */
+export async function deletePartDrafts(sessionId: string, partId: string): Promise<void> {
+  const all = await listDrafts(sessionId);
+  const prefix = `${sessionId}:${partId}:`;
+  const toDelete = all.filter(d => d.id.startsWith(prefix));
+  if (toDelete.length === 0) return;
+  const store = await tx('drafts', 'readwrite');
+  for (const d of toDelete) store.delete(d.id);
+  await txComplete(store.transaction);
 }
 
 // === Relief source images (per session) ===
