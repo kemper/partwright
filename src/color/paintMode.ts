@@ -37,19 +37,23 @@ let brushSmooth = true;
 let brushSmoothDivisor = 64;
 export const SMOOTH_DIVISOR_MIN = 2;
 export const SMOOTH_DIVISOR_MAX = 1024;
-/** Brush surface mode. `geodesic` (default for new painting) flood-fills the
- *  footprint along the connected surface so paint never bleeds through a wall and
- *  needs no depth tuning; `slab` keeps a thin shell within `depth` of the surface
- *  (the depth knob below). Old sessions resolve as `slab` for back-compat. */
-let brushSurface: 'geodesic' | 'slab' = 'geodesic';
+/** Brush surface mode. `slab` (the default for new painting) keeps a thin shell
+ *  within `depth` of the picked surface (the depth knob below) so paint can't
+ *  bleed through a wall thicker than `depth`; `geodesic` instead flood-fills the
+ *  footprint along the connected surface — pick it for curved/organic shapes or
+ *  gap-separated geometry, where a thin slab would clip the dab or a generous one
+ *  would reach a nearby surface. Old sessions resolve as `slab` for back-compat. */
+let brushSurface: 'geodesic' | 'slab' = 'slab';
 /** Paint depth in mesh units: how far through the surface a slab-mode stroke may
  *  reach. 0 = auto (half the brush radius), resolved at commit time. */
 let brushPaintDepth = 0;
 
-/** Airbrush spray: when on, the brush sprays a soft geodesic speckle instead of
- *  a solid fill. `strength` is the core density (light by default), `softness`
- *  the feather fraction. Each committed stroke gets the next seed so overlapping
- *  sprays vary; the seed is persisted per stroke so the speckle reloads exactly. */
+/** Airbrush spray: when on, the brush sprays a soft speckle instead of a solid
+ *  fill. It honours the active surface mode (slab by default, geodesic if
+ *  picked), so a slab spray can't bleed through a wall thicker than `depth`.
+ *  `strength` is the core density (light by default), `softness` the feather
+ *  fraction. Each committed stroke gets the next seed so overlapping sprays vary;
+ *  the seed is persisted per stroke so the speckle reloads exactly. */
 let brushSpray = false;
 let brushSprayStrength = 0.4;
 let brushSpraySoftness = 0.5;
@@ -531,8 +535,7 @@ function commitBrushStroke(): void {
         radius: brushRadius,
         shape: brushShape,
         maxEdge: brushTargetEdge(),
-        // A spray is always geodesic; descriptorToStroke also forces this.
-        surface: brushSpray ? 'geodesic' : brushSurface,
+        surface: brushSurface,
         depth: brushPaintDepth,
         spray: brushSpray ? { strength: brushSprayStrength, softness: brushSpraySoftness, seed: spraySeed++ } : undefined,
       },

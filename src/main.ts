@@ -821,8 +821,10 @@ function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }
   const cacheBase = paintBaseMesh ?? currentMeshData;
   const cached = strokeCache.get(d);
   if (cached && cached.base === cacheBase) return cached.stroke;
-  // An airbrush spray is always geodesic (surface-following, no through-wall).
-  const surface = d.spray ? 'geodesic' : (d.surface ?? 'slab');
+  // Surface mode is whatever the stroke was painted with (slab by default);
+  // old descriptors without the field — and old geodesic-forced sprays —
+  // resolve from their stored `surface`, falling back to slab for back-compat.
+  const surface = d.surface ?? 'slab';
   const stroke: BrushStroke = {
     samples: d.samples,
     radius: d.radius,
@@ -9277,7 +9279,7 @@ async function main() {
       const target = maxEdge !== undefined ? Math.max(maxEdge, radius / SMOOTH_DIVISOR_MAX) : radius / res;
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
         kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target,
-        surface: (surface as 'geodesic' | 'slab') ?? 'geodesic', depth: depth ?? 0,
+        surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0,
       };
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
@@ -9318,11 +9320,13 @@ async function main() {
       seed?: number;
       resolution?: number;
       maxEdge?: number;
+      surface?: string;
+      depth?: number;
       name?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first, then paint.' };
       if (!opts || typeof opts !== 'object') return { error: 'paintAirbrush(opts): opts object required' };
-      const { points, radius, color, shape, strength, softness, seed, resolution, maxEdge, name } = opts;
+      const { points, radius, color, shape, strength, softness, seed, resolution, maxEdge, surface, depth, name } = opts;
       if (!Array.isArray(points) || points.length === 0) {
         return { error: 'paintAirbrush: points must be a non-empty array of [x,y,z] surface points (use probePixel to get them)' };
       }
@@ -9353,6 +9357,12 @@ async function main() {
       if (maxEdge !== undefined && (typeof maxEdge !== 'number' || !Number.isFinite(maxEdge) || maxEdge <= 0)) {
         return { error: 'paintAirbrush: maxEdge must be a positive finite number when provided' };
       }
+      if (surface !== undefined && surface !== 'geodesic' && surface !== 'slab') {
+        return { error: "paintAirbrush: surface must be 'geodesic' or 'slab' when provided" };
+      }
+      if (depth !== undefined && (typeof depth !== 'number' || !Number.isFinite(depth) || depth < 0)) {
+        return { error: 'paintAirbrush: depth must be a non-negative finite number (mesh units) when provided' };
+      }
       const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
       const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 96));
       const target = maxEdge !== undefined ? Math.max(maxEdge, radius / SMOOTH_DIVISOR_MAX) : radius / res;
@@ -9362,7 +9372,8 @@ async function main() {
         seed: seed !== undefined ? (seed | 0) : 1,
       };
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
-        kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target, surface: 'geodesic', spray,
+        kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target,
+        surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0, spray,
       };
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
