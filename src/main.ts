@@ -40,7 +40,7 @@ import { registerCommands } from './ui/commandPalette';
 import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
-import { confirmDialog } from './ui/dialogs';
+import { confirmDialog, promptDialog } from './ui/dialogs';
 import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput } from './ui/aiPanel';
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
@@ -5053,7 +5053,7 @@ async function main() {
         path,
         _companionActiveTab === path,
         () => switchToCompanionTab(path),
-        () => confirmRemoveCompanion(path),
+        () => { void confirmRemoveCompanion(path); },
       );
       companionFilesBar.appendChild(tab);
     }
@@ -5122,7 +5122,7 @@ async function main() {
   }
 
   async function promptAddCompanion(): Promise<void> {
-    const filename = window.prompt('Companion file name (e.g. models or lib/utils):');
+    const filename = await promptDialog('Companion file name (e.g. models or lib/utils):');
     if (!filename || !filename.trim()) return;
     let path = filename.trim().startsWith('./') ? filename.trim().slice(2) : filename.trim();
     if (!path.endsWith('.scad')) path += '.scad';
@@ -5135,8 +5135,8 @@ async function main() {
     switchToCompanionTab(path);
   }
 
-  function confirmRemoveCompanion(path: string): void {
-    if (!window.confirm(`Remove companion file "${path}"?\n\nThis removes it from the session. The next run will no longer include it.`)) return;
+  async function confirmRemoveCompanion(path: string): Promise<void> {
+    if (!await confirmDialog(`Remove companion file "${path}"?`, { danger: true, confirmLabel: 'Remove' })) return;
     removeCompanionFileFromRegistry(path);
     if (_companionActiveTab === path) switchToMainTab();
     else renderCompanionFilesBar();
