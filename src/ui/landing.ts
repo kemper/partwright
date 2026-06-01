@@ -107,7 +107,7 @@ function buildNav(callbacks: LandingCallbacks): HTMLElement {
   // reading as the leading "P" of "Partwright".
   const brand = document.createElement('div');
   brand.className = 'flex items-center gap-2.5';
-  brand.innerHTML = `${partwrightMarkSvg(30)}<span class="font-display font-bold text-lg tracking-tight text-zinc-50">Partwright</span>`;
+  brand.innerHTML = `${partwrightMarkSvg(30)}<span class="font-display font-bold text-lg tracking-tight text-zinc-50">Partwright</span><span class="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/25">Beta</span>`;
   nav.appendChild(brand);
 
   // Center links (desktop only)

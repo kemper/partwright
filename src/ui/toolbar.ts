@@ -171,7 +171,7 @@ export function createToolbar(
   logo.className = 'flex items-center gap-2 mr-4 bg-transparent border-0 p-0 cursor-pointer hover:opacity-80 transition-opacity';
   logo.title = 'Back to home';
   logo.setAttribute('aria-label', 'Partwright home');
-  logo.innerHTML = `${partwrightMarkSvg(20)}<span class="text-zinc-100 font-semibold tracking-tight">Partwright</span>`;
+  logo.innerHTML = `${partwrightMarkSvg(20)}<span class="text-zinc-100 font-semibold tracking-tight">Partwright</span><span class="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/25">Beta</span>`;
   logo.addEventListener('click', callbacks.onGoHome);
   toolbar.appendChild(logo);
 
