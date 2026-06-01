@@ -197,8 +197,6 @@ export interface PrintFitDeps {
   text?: (str: string, opts?: any) => any;
 }
 
-export type PrintFitNamespace = ReturnType<typeof createPrintFitNamespace>;
-
 export function createPrintFitNamespace(module: any, deps: PrintFitDeps = {}) {
   const { Manifold, CrossSection } = module;
 
