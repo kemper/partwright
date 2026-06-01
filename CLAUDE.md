@@ -35,8 +35,8 @@ Hosted on **Cloudflare Pages**. Three branches map to three environments, wired 
 Feature work follows a **draft-PR-first** flow: open the PR as a draft the moment the implementation looks good, and PR-checks runs the full suite — build + unit *and* the e2e shards — on every push, draft or ready. Marking the PR ready for review is a review-readiness signal, not a CI trigger; your task is done once every PR-checks shard goes green. The full sequence:
 
 1. **Start from the latest `main`.** Before writing any code, run `git fetch origin main` and base your feature branch on `origin/main`. Do this at the *start* of the task, not just before the final push.
-2. **Implement** until the change looks good and working by your own lightweight checks (render/stat verification, a quick read-through of the diff). You needn't run the slow e2e suite locally yet — CI runs it on the draft once it's up.
-3. **Pre-flight, then push a draft PR.** Re-sync with the latest main (`git fetch origin main`, then merge `origin/main` into your branch, or rebase onto it if the branch hasn't been pushed yet, resolving conflicts), run the fast `npm run build` + `npm run test:unit` to catch type errors and logic regressions, push the branch, and open the PR into `main` **as a draft** (`create_pull_request` with `draft: true`). Keep the pre-flight light — build + unit only; let CI run the slow suite. The PR-checks CI (`.github/workflows/pr-checks.yml`) runs build + unit **and** the sharded `npm run test:e2e` shards on every PR push, draft or ready — so the full suite fires on the draft immediately, no need to flip to ready first. See [Pull Requests](#pull-requests--open-a-draft-when-the-work-looks-good).
+2. **Implement, then manually verify in the browser.** Once the change looks right, start the dev server (`npm run dev`) and use the Playwright MCP to exercise the feature in a real browser — navigate to it, interact with it, take a screenshot, and post the screenshot in the chat so the user can see it working. See [Manual Verification](#manual-verification--checking-your-work-in-the-browser) for the scope by change type. You don't need the full automated e2e suite at this stage; CI runs it on the draft. But do run a targeted spec if one exists for the area you changed: `npx playwright test --grep "describe block"` (~30 s for one spec) catches obvious regressions before the push.
+3. **Pre-flight, then push a draft PR.** Re-sync with the latest main (`git fetch origin main`, then merge `origin/main` into your branch, or rebase onto it if the branch hasn't been pushed yet, resolving conflicts), run `npm run build` + `npm run test:unit` to catch type errors and logic regressions, push the branch, and open the PR into `main` **as a draft** (`create_pull_request` with `draft: true`). The PR-checks CI (`.github/workflows/pr-checks.yml`) runs build + unit **and** the sharded `npm run test:e2e` shards on every PR push, draft or ready — so the full suite fires on the draft immediately. See [Pull Requests](#pull-requests--open-a-draft-when-the-work-looks-good).
 4. **Watch the full suite green on the draft.** PR-checks runs build + unit + the 3 e2e shards on every draft push — no flip to ready required. Subscribe to PR activity, follow the shards, and run any deeper or manual verification the change warrants alongside CI. Fix failures on the same branch (each push re-runs build + unit + e2e). Only fall back to local `npm run test:e2e` if you need a tight loop on a failure CI surfaced. **The task is not done until every PR-checks shard is green.** See [After Opening a PR](#after-opening-a-pr).
 5. **Mark the PR ready for review.** Once every PR-checks shard is green and your own light checks (render/stat verification, code review of the diff) look good, mark the PR ready (`update_pull_request` with `draft: false`). This is purely a review-readiness signal — CI already ran on the draft, so flipping to ready doesn't re-run it.
 6. After the feature PR merges to `main`, the staging gate runs the full e2e suite; on green it advances `staging`, which auto-deploys to the staging preview. Once validated there, open a PR from `staging` → `production` for the production release.
@@ -47,7 +47,7 @@ Feature work follows a **draft-PR-first** flow: open the PR as a draft the momen
 
 When an implementation looks good and working, **open a draft pull request into `main`** — don't wait until you've run the slow verification. This is a standing instruction that overrides any default "don't open a PR unless explicitly asked" behavior: treat "the implementation looks done" as the authorization to open the draft. Don't pause to ask whether to create one, and don't report a task as done without it.
 
-Open it as a **draft** (`create_pull_request` with `draft: true`) after a fast pre-flight only — re-sync `origin/main` and run `npm run build` + `npm run test:unit`. **Defer the slow `test:e2e` run and any deeper verification until after the draft is up** (see [After Opening a PR](#after-opening-a-pr)); the draft PR is what *kicks off* that verification phase. PR-checks runs the full suite — build + unit **and** the e2e shards — on every draft push, so you watch e2e on the draft itself. Marking the PR ready for review (`update_pull_request` with `draft: false`) is a review-readiness signal, not a CI trigger. The task is done once every PR-checks shard is green.
+Open it as a **draft** (`create_pull_request` with `draft: true`) after a fast pre-flight — re-sync `origin/main`, run `npm run build` + `npm run test:unit`, and do a quick manual browser check (Playwright MCP + screenshot) if not already done. **Defer the full `test:e2e` suite until after the draft is up** (see [After Opening a PR](#after-opening-a-pr)); the draft PR is what *kicks off* the CI verification phase. PR-checks runs the full suite — build + unit **and** the e2e shards — on every draft push, so you watch e2e on the draft itself. Marking the PR ready for review (`update_pull_request` with `draft: false`) is a review-readiness signal, not a CI trigger. The task is done once every PR-checks shard is green.
 
 Skip the PR only when the user explicitly scoped you away from it — a request to "just commit" or "push to the branch" is *not* a request for a PR — or for a pure throwaway experiment. If you genuinely can't tell whether the work is a complete, reviewable unit, ask. Follow the [commit & PR conventions](#commit--pr-conventions) below for the title, prefix, and labels.
 
@@ -86,8 +86,9 @@ assembly in a real browser).
 
 `tests/*.spec.ts`, run against a Vite dev server Playwright starts
 automatically. **Run this whenever you touch UI, routing, or anything in
-`src/ai/` or `src/ui/ai*`** — it covers landing → editor → AI panel toggle →
-key modal → toggle pills → ai.md serving, plus paint/export/import flows.
+`src/ai/`, `src/ui/ai*`, `src/surface/`, or paint/import/export pipelines** —
+it covers landing → editor → AI panel toggle → key modal → toggle pills →
+ai.md serving, plus paint/export/import/surface-modifier flows.
 
 Each e2e test boots WASM in its own browser page, which is CPU-heavy, so the
 suite runs **serially on any single machine** (`playwright.config.ts` pins
@@ -102,15 +103,34 @@ tier's `.test.ts` files stay out of the Playwright run.
 
 See `docs/playwright-guide.md` for sandbox vs laptop Chromium binary detection and Playwright agent gotchas.
 
-## Smoke Test — Verifying the App Works
+## Manual Verification — Checking Your Work in the Browser
 
-Run `/smoke-test` to manually verify these flows after touching routing, Vite config, index.html, or initialization code.
+**Manually verify any UI-visible change in a real browser before pushing.** The pattern:
+
+1. Start the dev server: `npm run dev`
+2. Use the Playwright MCP (`playwright_navigate`, `playwright_click`, `playwright_screenshot`, etc.) to open the app and exercise the changed feature
+3. **Take a screenshot and post it in the chat** — this is the most valuable thing you can do. The user is watching the session and wants to see the feature working (or not) at each meaningful step — opened panel, rendered output, before/after comparison, edge case
+
+This takes 2–5 tool calls and catches wiring mistakes, visual regressions, and WASM timing issues that TypeScript can't see. It's your own eyes-on check before CI runs the headless suite.
+
+**Scope by change type:**
+
+| Changed area | Required verification |
+|---|---|
+| Routing, Vite config, `index.html`, init | Run `/smoke-test` (16-item checklist) |
+| New UI feature or changed visible behavior | Navigate to it, exercise golden path, screenshot |
+| AI panel / provider changes | Open panel, verify connection indicator, basic interaction |
+| Surface modifiers (fuzzy/smooth/voxelize/scale) | Trigger the modifier, verify the result renders correctly |
+| Paint, import, export | Trigger the specific flow, verify output |
+| Pure logic, no UI | Unit tests sufficient; Playwright not required |
+
+**When to add a Playwright spec:** When you land a new UI feature, add a `tests/*.spec.ts` that covers its golden path. Not exhaustive coverage — one `test()` that opens the feature, performs the core interaction, and asserts the key visible outcome is enough to catch future regressions.
 
 ## AI Agent Workflow & API Reference
 
 For the full Manifold/CrossSection API, `window.partwright` console API, session workflow, verification patterns, and photo-to-model workflow, see `public/ai.md`. The legacy `window.mainifold` alias remains available for older prompts.
 
-### In-app AI chat — four providers
+### In-app AI chat — five providers
 
 The right-side AI drawer can drive Partwright through any of:
 
@@ -118,8 +138,9 @@ The right-side AI drawer can drive Partwright through any of:
 - **OpenAI (cloud)** — `src/ai/openai.ts`. Raw `fetch` with SSE streaming; no extra SDK. Routes per model: reasoning models (`gpt-5*`, `o1/o3/o4`) use the Responses API (`/v1/responses`); all others use Chat Completions (`/v1/chat/completions`). See `docs/ai-internals.md` for routing details.
 - **Google Gemini (cloud)** — `src/ai/gemini.ts`. Raw `fetch` against `generativelanguage.googleapis.com` with SSE streaming via `:streamGenerateContent?alt=sse`; no extra SDK. Requires careful handling of `functionResponse.response` (plain object, not JSON string) and `thoughtSignature` echo-back. See `docs/ai-internals.md` for thought-signature and routing details.
 - **Local (WebGPU)** — runs a model entirely in the browser via [WebLLM](https://webllm.mlc.ai) (`src/ai/local.ts`). The user opts in from the AI settings modal and the weights download once into the browser cache. No API key, no network traffic per turn.
+- **Custom (OpenAI-compatible)** — `src/ai/custom.ts`. Points to any OpenAI-compatible endpoint (llama.cpp, vLLM, LM Studio, Ollama, …). User sets a base URL in AI settings; optional API key stored in `aiKeys` keyed by `'custom'`. Model id and base URL live on `ChatToggles` as `customModel` / `customBaseUrl`.
 
-API keys live in IndexedDB (`aiKeys` store, keyed by provider). `ChatToggles` carries a separate model id per provider (`anthropicModel`, `openaiModel`, `geminiModel`, `localModel`) so switching providers preserves each one's previous selection — see `activeModel(toggles)` in `src/ai/types.ts`.
+API keys live in IndexedDB (`aiKeys` store, keyed by provider). `ChatToggles` carries a separate model id per provider (`anthropicModel`, `openaiModel`, `geminiModel`, `localModel`, `customModel`) so switching providers preserves each one's previous selection — see `activeModel(toggles)` in `src/ai/types.ts`.
 
 All providers share the same chat loop (`src/ai/chatLoop.ts`), the same tool schemas (`src/ai/tools.ts`), and the same `public/ai.md` system prompt (or its slim local variant) — only the request transport differs. `chatLoop` dispatches by `toggles.provider` via an if/else chain at the streamTurn call site. The WebLLM SDK is still loaded via dynamic `import()` so users who stick with hosted providers never pay the ~6 MB chunk download.
 
@@ -132,6 +153,21 @@ A "👁" button in the panel header opens `src/ui/aiReviewModal.ts`. The user pi
 #### AI Call Log (per-provider diagnostics)
 
 A "🩺" button in the panel header opens `src/ui/aiDiagnosticsModal.ts`. Shows the last 50 provider API calls from an in-memory ring buffer (`src/ai/diagnostics.ts`): provider/model/kind, duration, status, full error messages (errors auto-expand), token usage, stop reason, request summary. Filter (all/errors/successes), Clear, Copy JSON. This is distinct from the app-wide **Diagnostic Log** (`src/diagnostics/errorLog.ts`, toolbar ⚠ button) which captures uncaught errors/console warnings; the AI Call Log adds per-call detail (successes, tokens, the "empty_final" non-error case) the general log intentionally doesn't. To avoid double-listing, the AI Call Log mirrors to `console.info`/`console.debug` (not `warn`/`error`), and hard provider errors reach the app-wide log via `chatLoop`'s `onError → errorLog.capture({source:'ai'})`.
+
+#### Slash commands
+
+The AI chat input supports `/command` shortcuts (`src/ai/slashCommands.ts`). A lone `/word` is parsed before being sent to the model; anything else (a path like `/usr/bin`, or `/think it over`) is forwarded normally.
+
+| Command | What it does |
+|---|---|
+| `/compact` | Summarize older turns and promote insights to session notes |
+| `/clear` | Delete this chat (saved versions & notes are kept) |
+| `/review` | Open the cross-provider review modal |
+| `/export` | Download the conversation as Markdown |
+| `/models` (alias `/settings`) | Open AI settings modal |
+| `/help` (alias `/commands`) | List all commands in chat |
+
+The command names and descriptions are defined in `SLASH_COMMANDS` in `slashCommands.ts`; the panel's handler map is type-checked against `SlashCommandName` so a name can't exist without a handler. Tests: `tests/unit/slashCommands.test.ts` (unit), `tests/ai-slash-commands.spec.ts` (e2e).
 
 #### Adding a new hosted provider
 
@@ -171,6 +207,7 @@ Static site, no backend. Vanilla TypeScript + Vite.
 - `src/import/parsers/stl.ts` — STL import (binary + ASCII)
 - `src/import/codegen.ts` — Generates `Manifold.ofMesh(api.imports[i])` wrapper code
 - `src/import/importedMesh.ts` — Active-imports register exposed to the sandbox as `api.imports`
+- `src/surface/modifiers.ts` — Surface modifier pipeline: `applyFuzzy` (noise-displaced skin), `applySmooth` (Taubin smoothing pass), `applyVoxelize` (mesh → voxel grid), `applyScale` (non-destructive resize). Each returns a `ModifierResult` — either `'manifold'` (baked mesh + wrapper code, mirroring the STL import path) or `'voxel'` (encoded grid + inline `voxels.decode(…)` code). Pure math lives in sibling modules: `fuzzySkin.ts`, `smoothSurface.ts`, `voxelizeMesh.ts`, `meshSubdivide.ts`, `colorTransfer.ts`, `scaleMesh.ts`. Unit tests: `tests/unit/surface.test.ts`.
 
 ### Modeling engines (three of them)
 
@@ -336,11 +373,12 @@ Guardrails for automated work, learned the hard way:
 Opening the draft is the start of the verification phase, not the finish line. The task is done when every PR-checks shard is green.
 
 1. **Subscribe and watch CI.** Call `subscribe_pr_activity`. PR-checks runs build + unit + 3 e2e shards on every push, draft or ready — don't flip to ready to trigger it. Fix failures on the branch (each push re-runs the suite); fall back to local `npm run test:e2e` only when iterating tight on a CI failure.
-2. **Launch a review subagent** (Agent tool) over the diff vs `origin/main`. Hunt for: defects and unhandled cases; functionality silently dropped in a merge; backwards-incompatible schema changes (old IndexedDB sessions and exported files must still load); security issues (XSS, leaked keys, weakened CSP/COEP/COOP). Surface findings as PR comments or fold clear fixes into the branch; raise ambiguous/large ones with the user.
-3. **Auto-fix CI failures you're confident about.** Reproduce locally first. Re-sync `origin/main` if the branch has drifted, then push the fix. Ask the user for anything ambiguous, unrelated to your changes, or requiring a large refactor.
-4. **Resolve merge conflicts when `main` advances.** Treat a stale/conflicting branch like a CI failure — actionable, not parkable. Fetch + merge `origin/main`, resolve conflicts by reconciling both sides (never drop recently-merged work to make your side apply cleanly), then prove it still works: `npm run build` + `npm run test:unit`, let CI re-run e2e, redo any manual verification the touched area warrants. Stop and ask if the conflict is large or lands in code you don't understand.
-5. **Keep the PR description in sync** with the totality of what's on the branch — update Summary, Test plan, title/prefix/labels any time you push follow-up work.
-6. **Mark ready, label, confirm green.** Once every shard and the Cloudflare preview are green and the review pass is clean: `update_pull_request` with `draft: false`, apply [release-note labels](#commit--pr-conventions).
+2. **Confirm manual browser verification happened.** If you haven't yet exercised the feature with the Playwright MCP and posted a screenshot in the chat, do it now — `npm run dev`, navigate to the changed feature, screenshot the result. The user is watching this session and this is the most direct signal that the feature works.
+3. **Launch a review subagent** (Agent tool) over the diff vs `origin/main`. Hunt for: defects and unhandled cases; functionality silently dropped in a merge; backwards-incompatible schema changes (old IndexedDB sessions and exported files must still load); security issues (XSS, leaked keys, weakened CSP/COEP/COOP). Surface findings as PR comments or fold clear fixes into the branch; raise ambiguous/large ones with the user.
+4. **Auto-fix CI failures you're confident about.** Reproduce locally first. Re-sync `origin/main` if the branch has drifted, then push the fix. Ask the user for anything ambiguous, unrelated to your changes, or requiring a large refactor.
+5. **Resolve merge conflicts when `main` advances.** Treat a stale/conflicting branch like a CI failure — actionable, not parkable. Fetch + merge `origin/main`, resolve conflicts by reconciling both sides (never drop recently-merged work to make your side apply cleanly), then prove it still works: `npm run build` + `npm run test:unit`, let CI re-run e2e, redo any manual verification the touched area warrants. Stop and ask if the conflict is large or lands in code you don't understand.
+6. **Keep the PR description in sync** with the totality of what's on the branch — update Summary, Test plan, title/prefix/labels any time you push follow-up work.
+7. **Mark ready, label, confirm green.** Once every shard and the Cloudflare preview are green and the review pass is clean: `update_pull_request` with `draft: false`, apply [release-note labels](#commit--pr-conventions).
 
 ## Common Errors
 
