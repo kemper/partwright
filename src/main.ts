@@ -3685,7 +3685,12 @@ async function main() {
   // has structural issues that would prevent 3D printing (non-manifold or
   // disconnected components). Hidden when the model is printable.
   printabilityIndicatorEl = document.createElement('span');
-  printabilityIndicatorEl.className = 'absolute top-8 left-2 z-20 text-xs text-amber-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-amber-700/60 pointer-events-none';
+  printabilityIndicatorEl.className = 'absolute top-8 left-2 z-20 text-xs text-amber-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-amber-700/60 cursor-help';
+  // A persistent status indicator, not a transient toast: it stays up while the
+  // current model has structural issues that would prevent a clean 3D print.
+  // The title explains what it is so it doesn't read as a stray message (and is
+  // hoverable — hence no `pointer-events-none`).
+  printabilityIndicatorEl.title = 'This model has structural issues that may prevent a clean 3D print. Open the ⚠ Diagnostic Log in the toolbar for details.';
   printabilityIndicatorEl.style.display = 'none';
   viewportPane.appendChild(printabilityIndicatorEl);
 
@@ -10850,12 +10855,26 @@ async function main() {
     const warnings: string[] = [];
     const isBrep = getActiveLanguage() === 'replicad';
     if (geo.isManifold === false) {
-      warnings.push(
-        'isManifold: false — the mesh has non-manifold edges or gaps, so it is ' +
-        'not a watertight solid and will fail to slice / 3D-print with most tools. ' +
-        'Fix before finalizing: ensure boolean operands overlap by ≥ 0.5 units, ' +
-        'avoid zero-thickness walls, and check for duplicate faces.',
-      );
+      if (geo.manifoldStatus === 'render-only (not manifold)') {
+        // Render-only imports (colour reliefs, sculpted STLs) carry no Manifold,
+        // so watertightness was never measured — isManifold is false for lack of
+        // measurement, NOT a detected defect. Don't claim the mesh will fail to
+        // print; state the actual situation so the agent doesn't chase a phantom.
+        warnings.push(
+          'render-only import — no Manifold is available, so watertightness is ' +
+          'unverified (this is not a detected defect). Reliefs and sculpted STL ' +
+          'imports come in render-only to preserve per-vertex colour / order; they ' +
+          'still slice and print. Convert to a Manifold (e.g. re-run through ' +
+          'Manifold.ofMesh) only if you need booleans or a verified-solid check.',
+        );
+      } else {
+        warnings.push(
+          'isManifold: false — the mesh has non-manifold edges or gaps, so it is ' +
+          'not a watertight solid and will fail to slice / 3D-print with most tools. ' +
+          'Fix before finalizing: ensure boolean operands overlap by ≥ 0.5 units, ' +
+          'avoid zero-thickness walls, and check for duplicate faces.',
+        );
+      }
     }
     if (typeof geo.componentCount === 'number' && geo.componentCount > 1) {
       const cc = geo.componentCount;
