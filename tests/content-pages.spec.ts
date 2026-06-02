@@ -49,6 +49,26 @@ test.describe("What's new page (static)", () => {
 });
 
 test.describe('Shared content-page chrome', () => {
+  // The header must be identical across every non-editor surface.
+  const EXPECTED_LINKS = ['Ideas', 'Catalog', 'How it works', 'For AI agents', 'What’s new'];
+
+  for (const route of ['/catalog', '/help', '/legal', '/whats-new']) {
+    test(`the shared header is identical on ${route}`, async ({ page }) => {
+      await page.goto(route);
+      const header = page.locator('header.pw-header');
+      await expect(header).toHaveCount(1);
+      // Brand cluster: logo link home + "Partwright" wordmark + Beta pill.
+      await expect(header.locator('a[aria-label="Partwright home"]')).toHaveAttribute('href', '/');
+      await expect(header).toContainText('Partwright');
+      await expect(header).toContainText('Beta');
+      // The full, ordered nav-link set.
+      const labels = await header.locator('nav.pw-navlinks a').allInnerTexts();
+      expect(labels).toEqual(EXPECTED_LINKS);
+      // The "Open editor" CTA.
+      await expect(header.getByRole('link', { name: /Open editor/i })).toHaveAttribute('href', '/editor');
+    });
+  }
+
   test('nav cross-links between the static pages without booting the app', async ({ page }) => {
     await page.goto('/legal');
     await page.locator('header nav').getByRole('link', { name: 'How it works' }).click();

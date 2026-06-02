@@ -7,42 +7,9 @@
 // These pages deliberately load NO app JavaScript — just the Tailwind CSS —
 // so they paint instantly for users and crawlers without booting the editor.
 
-import { partwrightMarkSvg } from '../../ui/brand';
-
-interface NavLink {
-  href: string;
-  label: string;
-  /** Marks the link for the current page (rendered inert + highlighted). */
-  current?: boolean;
-}
-
-/** Top navigation bar, shared across all content pages. `currentPath` lets the
- *  active page render its own link as a non-link highlight. */
-export function navHtml(currentPath: string): string {
-  const links: NavLink[] = [
-    { href: '/catalog', label: 'Catalog', current: currentPath === '/catalog' },
-    { href: '/ideas', label: 'Ideas' },
-    { href: '/help', label: 'How it works', current: currentPath === '/help' },
-    { href: '/whats-new', label: "What's new", current: currentPath === '/whats-new' },
-  ];
-  const linksHtml = links
-    .map((l) =>
-      l.current
-        ? `<span class="text-sm text-zinc-200 font-medium" aria-current="page">${l.label}</span>`
-        : `<a href="${l.href}" class="text-sm text-zinc-400 hover:text-zinc-100 transition-colors">${l.label}</a>`,
-    )
-    .join('');
-  return `<header class="w-full border-b border-zinc-800 bg-zinc-900/80 sticky top-0 z-10 backdrop-blur">
-  <nav class="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between gap-4">
-    <a href="/" class="flex items-center gap-2.5 shrink-0" aria-label="Partwright home">
-      ${partwrightMarkSvg(30)}
-      <span class="text-base font-semibold tracking-tight text-zinc-100">Partwright</span>
-    </a>
-    <div class="hidden md:flex items-center gap-6">${linksHtml}</div>
-    <a href="/editor" class="shrink-0 px-4 py-2 rounded-lg text-sm font-semibold text-zinc-900" style="background:linear-gradient(135deg,#fcd34d,#f59e0b)">Open editor &#8594;</a>
-  </nav>
-</header>`;
-}
+// The top navigation is the shared header used by every non-editor surface
+// (landing, content pages, ideas) — see src/content/chrome.ts.
+import { contentHeaderHtml } from '../chrome';
 
 /** Shared footer with cross-links + a non-commercial note. */
 export function footerHtml(): string {
@@ -86,9 +53,10 @@ export function footerHtml(): string {
 </footer>`;
 }
 
-/** Wrap a page's inner content with the shared nav + footer. */
+/** Wrap a page's inner content with the shared header + footer. The main column
+ *  matches the header's 72rem max width so the two align (like the landing). */
 export function pageShell(currentPath: string, innerHtml: string): string {
-  return `${navHtml(currentPath)}
-<main class="mx-auto max-w-5xl px-6 py-12 w-full">${innerHtml}</main>
+  return `${contentHeaderHtml(currentPath)}
+<main class="mx-auto max-w-6xl px-6 pt-4 pb-12 w-full">${innerHtml}</main>
 ${footerHtml()}`;
 }

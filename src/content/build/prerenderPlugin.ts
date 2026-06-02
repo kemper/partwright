@@ -10,8 +10,12 @@
 
 import type { Plugin, Connect } from 'vite';
 import { renderContentBody, CONTENT_PAGES, type ContentPage } from './render';
+import { contentHeaderHtml } from '../chrome';
 
 const PLACEHOLDER = '<!--PW-CONTENT-->';
+// The landing page (index.html) shares the exact same header via this marker,
+// so the top nav is single-sourced across every non-editor surface.
+const NAV_PLACEHOLDER = '<!--PW-NAV-->';
 
 /** Clean route → content-page id, for the dev/preview URL rewrite. */
 const ROUTE_TO_PAGE: Record<string, ContentPage> = Object.fromEntries(
@@ -50,9 +54,13 @@ export function prerenderContentPages(): Plugin {
     transformIndexHtml: {
       order: 'pre',
       handler(html, ctx) {
+        // The landing page injects just the shared header (it has its own body).
+        if (html.includes(NAV_PLACEHOLDER)) {
+          html = html.replace(NAV_PLACEHOLDER, () => contentHeaderHtml('/'));
+        }
         const page = pageForHtml(ctx.path) ?? pageForHtml(ctx.filename);
-        if (!page) return html; // index.html and others pass through untouched
-        return html.replace(PLACEHOLDER, () => renderContentBody(page));
+        if (page) html = html.replace(PLACEHOLDER, () => renderContentBody(page));
+        return html;
       },
     },
     configureServer(server) {
