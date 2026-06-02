@@ -22,6 +22,16 @@
             "statusMessage": "Checking PR safety guard…"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/promptlog-guard.sh\"",
+            "statusMessage": "Checking for prompt log…"
+          }
+        ]
       }
     ]
   }
