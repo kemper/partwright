@@ -9,7 +9,7 @@ import type { MeshData } from '../geometry/types';
 import { getMeshGroup, getRenderer, getCamera, getScene } from '../renderer/viewport';
 import { addRegion, getRegions } from './regions';
 import { findSlabTriangles, projectionRange, AXIS_NORMALS } from './slabPaint';
-import { getColor, getCurrentMesh, shapeSmoothDescriptorFields } from './paintMode';
+import { getColor, getCurrentMesh, shapeSmoothDescriptorFields } from './paintAccessors';
 
 export type SlabAxis = 'x' | 'y' | 'z';
 

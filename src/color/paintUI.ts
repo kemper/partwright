@@ -69,6 +69,7 @@ import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, setShapeType, g
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
+import { registerExclusiveMode } from '../ui/modeExclusion';
 
 const PRESET_COLORS: [number, number, number][] = [
   // Warm
@@ -1492,6 +1493,9 @@ export function forceDeactivate(): void {
     pickerPanel?.classList.add('hidden');
   }
 }
+
+// Let the annotate sub-modes deactivate paint without importing this module.
+registerExclusiveMode('paint', forceDeactivate);
 
 /** True if the paint menu is open (paint mode is active). */
 export function isPaintOpen(): boolean {

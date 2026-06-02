@@ -21,10 +21,8 @@ import {
   setUserOrbitLock,
   isUserOrbitLocked,
 } from '../renderer/viewport';
-import { forceDeactivate as forceDeactivatePaint } from '../color/paintUI';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
-import { forceDeactivate as forceDeactivatePen } from './annotateMode';
-import { forceDeactivate as forceDeactivateSelect } from './selectMode';
+import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
 
 const DEFAULT_COLOR: [number, number, number] = [0.95, 0.20, 0.45];
 const DEFAULT_FONT_SIZE = 28;
@@ -69,9 +67,9 @@ function notifyActiveChange(): void {
 
 export function activate(): void {
   if (active) return;
-  forceDeactivatePaint();
+  deactivateMode('paint');
   closeSimplifyMenu();
-  forceDeactivateSelect();
+  deactivateMode('select');
 
   // Reuse existing session if there is one (pen→text switch); otherwise start.
   if (!getActiveSession()) startSession();
@@ -90,7 +88,7 @@ export function activate(): void {
   notifyActiveChange();
 
   // Stop pen mode but keep the session alive so we share the plane.
-  forceDeactivatePen({ keepSession: true });
+  deactivateMode('pen', { keepSession: true });
 }
 
 export function deactivate(): void {
@@ -116,6 +114,9 @@ export function forceDeactivate(opts: DeactivateOpts = {}): void {
     endSession();
   }
 }
+
+// Let sibling tools deactivate text mode without importing this module.
+registerExclusiveMode('text', forceDeactivate);
 
 function cancelInProgress(): void {
   removeInput();
