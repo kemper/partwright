@@ -3154,6 +3154,10 @@ async function main() {
     };
 
     if (!state.session || currentPartIsExpendable()) {
+      // No real "current part" to attach to (no session, or just starter code) —
+      // import straight into a fresh session. The placement modal (and its
+      // companion-attach choice) is intentionally skipped here; any modal-
+      // supplied companions still ride along via applyCompanions.
       await importCodePayload(code, lang, sessionName);
       await applyCompanions();
       return true;
@@ -3372,30 +3376,29 @@ async function main() {
       });
 
       if (mainCandidates.length === 1) {
-        // One file imports the others — treat the rest as companions.
+        // One file imports the others — treat the rest as companions. Match the
+        // dropped companions to the main file's include paths, then route the
+        // main file through placeImportedCodeFile so the drop inherits the same
+        // placement modal + unsaved-edit preservation as a single-file import
+        // (rather than silently clobbering the current session).
         const { f: mainFile, code: mainCode } = mainCandidates[0];
         const companionContents = contents.filter(c => c.f !== mainFile);
-        const sessionName = mainFile.name.replace(/\.scad$/i, '');
-        await importCodePayload(mainCode, 'scad', sessionName);
-
-        // Detect needed include paths and match to dropped files.
         const missing = detectMissingIncludes(mainCode);
+        const companionsMap: Record<string, string> = {};
         for (const { f: cf, code: cfCode } of companionContents) {
           const matchedPath = missing.find(p => p === cf.name || p.endsWith(`/${cf.name}`)) ?? cf.name;
-          addCompanionFileToRegistry(matchedPath, cfCode);
+          companionsMap[matchedPath] = cfCode;
         }
-        renderCompanionFilesBar();
-        // Re-run with companions now in place, then save so the first DB
-        // version already carries the companions (not save-on-reload-loss).
-        await runCodeSync(getValue());
-        await saveCurrentVersion();
-        // Warn about any still-missing includes.
-        const stillMissing = missing.filter(p => getCompanionFiles()[p] === undefined);
-        if (stillMissing.length > 0) {
-          showToast(
-            `Still missing companion files: ${stillMissing.join(', ')}. Use the "+" tab to add them.`,
-            { variant: 'warn', durationMs: 8000 },
-          );
+        const committed = await placeImportedCodeFile(mainCode, 'scad', mainFile.name, companionsMap);
+        // Warn about any include the drop didn't supply a file for.
+        if (committed) {
+          const stillMissing = missing.filter(p => getCompanionFiles()[p] === undefined);
+          if (stillMissing.length > 0) {
+            showToast(
+              `Still missing companion files: ${stillMissing.join(', ')}. Use the "+" tab to add them.`,
+              { variant: 'warn', durationMs: 8000 },
+            );
+          }
         }
         return;
       }

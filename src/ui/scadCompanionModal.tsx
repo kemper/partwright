@@ -142,7 +142,7 @@ function ScadCompanionBody({ filename, candidates, refine, onImport }: {
       dismissed.current = true;
       onImport({});
     }
-  });
+  }, [unresolved, actionable.length, onImport]);
 
   const count = actionable.length;
 
