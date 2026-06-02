@@ -108,7 +108,7 @@ import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
-import { applyFuzzy, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyWaffle, applyFur, applyWoven, applySmooth, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, type ModifierResult } from './surface/modifiers';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
@@ -5927,15 +5927,18 @@ async function main() {
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
   ): ModifierResult {
+    const sel = opts?.selectedTriangles as Set<number> | undefined;
     if (id === 'fuzzy') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultFuzzyOptions(mesh);
-      return applyFuzzy(mesh, {
+      const fuzzyOpts = {
         amplitude: (opts?.amplitude as number) ?? base.amplitude,
         scale: (opts?.scale as number) ?? base.scale,
         octaves: (opts?.octaves as number) ?? base.octaves,
         seed: (opts?.seed as number) ?? base.seed,
-      });
+      };
+      if (sel && sel.size > 0) return applyFuzzyPatch(mesh, fuzzyOpts, sel);
+      return applyFuzzy(mesh, fuzzyOpts);
     }
     if (id === 'knit') {
       const mesh = meshForModifier(preserveColor);
@@ -5951,16 +5954,13 @@ async function main() {
         seed: (opts?.seed as number) ?? base.seed,
         algorithm: (opts?.algorithm as typeof base.algorithm) ?? base.algorithm,
       };
-      const selectedTriangles = opts?.selectedTriangles as Set<number> | undefined;
-      if (selectedTriangles && selectedTriangles.size > 0) {
-        return applyKnitPatch(mesh, knitOpts, selectedTriangles);
-      }
+      if (sel && sel.size > 0) return applyKnitPatch(mesh, knitOpts, sel);
       return applyKnit(mesh, knitOpts);
     }
     if (id === 'cable') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultCableOptions(mesh);
-      return applyCable(mesh, {
+      const cableOpts = {
         amplitude: (opts?.amplitude as number) ?? base.amplitude,
         cableWidth: (opts?.cableWidth as number) ?? base.cableWidth,
         cablePitch: (opts?.cablePitch as number) ?? base.cablePitch,
@@ -5968,51 +5968,61 @@ async function main() {
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         variation: (opts?.variation as number) ?? base.variation,
         seed: (opts?.seed as number) ?? base.seed,
-      });
+      };
+      if (sel && sel.size > 0) return applyCablePatch(mesh, cableOpts, sel);
+      return applyCable(mesh, cableOpts);
     }
     if (id === 'waffle') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultWaffleOptions(mesh);
-      return applyWaffle(mesh, {
+      const waffleOpts = {
         amplitude: (opts?.amplitude as number) ?? base.amplitude,
         cellWidth: (opts?.cellWidth as number) ?? base.cellWidth,
         cellHeight: (opts?.cellHeight as number) ?? base.cellHeight,
         sharpness: (opts?.sharpness as number) ?? base.sharpness,
         rowOffset: (opts?.rowOffset as number) ?? base.rowOffset,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
-      });
+      };
+      if (sel && sel.size > 0) return applyWafflePatch(mesh, waffleOpts, sel);
+      return applyWaffle(mesh, waffleOpts);
     }
     if (id === 'fur') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultFurOptions(mesh);
-      return applyFur(mesh, {
+      const furOpts = {
         amplitude: (opts?.amplitude as number) ?? base.amplitude,
         fiberSpacing: (opts?.fiberSpacing as number) ?? base.fiberSpacing,
         fiberLength: (opts?.fiberLength as number) ?? base.fiberLength,
         octaves: (opts?.octaves as number) ?? base.octaves,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         seed: (opts?.seed as number) ?? base.seed,
-      });
+      };
+      if (sel && sel.size > 0) return applyFurPatch(mesh, furOpts, sel);
+      return applyFur(mesh, furOpts);
     }
     if (id === 'woven') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultWovenOptions(mesh);
-      return applyWoven(mesh, {
+      const wovenOpts = {
         amplitude: (opts?.amplitude as number) ?? base.amplitude,
         threadSpacing: (opts?.threadSpacing as number) ?? base.threadSpacing,
         threadWidth: (opts?.threadWidth as number) ?? base.threadWidth,
         underDepth: (opts?.underDepth as number) ?? base.underDepth,
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         seed: (opts?.seed as number) ?? base.seed,
-      });
+      };
+      if (sel && sel.size > 0) return applyWovenPatch(mesh, wovenOpts, sel);
+      return applyWoven(mesh, wovenOpts);
     }
     if (id === 'smooth') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultSmoothOptions();
-      return applySmooth(mesh, {
+      const smoothOpts = {
         iterations: (opts?.iterations as number) ?? base.iterations,
         subdivide: (opts?.subdivide as boolean) ?? base.subdivide,
-      });
+      };
+      if (sel && sel.size > 0) return applySmoothPatch(mesh, smoothOpts, sel);
+      return applySmooth(mesh, smoothOpts);
     }
     // voxelize: feed the color-baked mesh when preserving so per-voxel color is sampled.
     return applyVoxelize(meshForModifier(preserveColor), {

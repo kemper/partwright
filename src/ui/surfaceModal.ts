@@ -292,6 +292,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
 
   function renderTab() {
     body.innerHTML = '';
+    regionSection.style.display = active === 'voxelize' ? 'none' : '';
     if (active === 'fuzzy') {
       const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.01, span * 0.001, n => n.toFixed(3), schedulePreview);
       const scale = slider('Feature size', span * 0.005, span * 0.25, span * 0.04, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -299,7 +300,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);
       body.append(amp.wrap, scale.wrap, oct.wrap, seed.wrap, detail.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Densifies the mesh, then jitters the surface along its normals — the 3D-print "fuzzy skin" finish.'));
-      currentOpts = () => ({ amplitude: amp.get(), scale: scale.get(), octaves: oct.get(), seed: seed.get(), quality: detail.get() });
+      currentOpts = () => ({ amplitude: amp.get(), scale: scale.get(), octaves: oct.get(), seed: seed.get(), quality: detail.get(), selectedTriangles: regionSelection ?? undefined });
     } else if (active === 'knit') {
       const sw = slider('Stitch width', span * 0.01, span * 0.25, span * 0.05, span * 0.005, n => n.toFixed(3), schedulePreview);
       const sh = slider('Stitch height', span * 0.01, span * 0.35, span * 0.07, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -313,7 +314,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         ['lscm', 'Conformal / LSCM'],
         ['harmonic', 'Harmonic field rows'],
       ], 'bfs', schedulePreview);
-      body.append(sw.wrap, sh.wrap, amp.wrap, round.wrap, grain.wrap, variation.wrap, seed.wrap, algo.wrap, regionSection, detail.wrap);
+      body.append(sw.wrap, sh.wrap, amp.wrap, round.wrap, grain.wrap, variation.wrap, seed.wrap, algo.wrap, detail.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'V-shaped yarn strands with over-under depth at crossings. UV layout sets how the stitch grid follows the surface: triangle-unfold is fastest; conformal (LSCM) minimizes stitch distortion; harmonic-field gives smooth latitude rows. LSCM/harmonic work best on a selected patch (disk topology).'));
       currentOpts = () => ({
         stitchWidth: sw.get(),
@@ -346,6 +347,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         variation: variation.get(),
         seed: seed.get(),
         quality: detail.get(),
+        selectedTriangles: regionSelection ?? undefined,
       });
     } else if (active === 'waffle') {
       const cw = slider('Cell width', span * 0.01, span * 0.3, span * 0.06, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -364,6 +366,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         rowOffset: rowOff.get(),
         grainAngleDeg: grain.get(),
         quality: detail.get(),
+        selectedTriangles: regionSelection ?? undefined,
       });
     } else if (active === 'fur') {
       const fs = slider('Fiber spacing', span * 0.003, span * 0.1, span * 0.02, span * 0.001, n => n.toFixed(3), schedulePreview);
@@ -382,6 +385,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         grainAngleDeg: grain.get(),
         seed: seed.get(),
         quality: detail.get(),
+        selectedTriangles: regionSelection ?? undefined,
       });
     } else if (active === 'woven') {
       const ts = slider('Thread spacing', span * 0.005, span * 0.2, span * 0.04, span * 0.002, n => n.toFixed(3), schedulePreview);
@@ -398,13 +402,14 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         underDepth: ud.get(),
         grainAngleDeg: grain.get(),
         quality: detail.get(),
+        selectedTriangles: regionSelection ?? undefined,
       });
     } else if (active === 'smooth') {
       const iter = slider('Rounding strength', 1, 12, 4, 1, n => String(n), schedulePreview);
       const sub = checkbox('Subdivide first (rounds sharp corners)', true, schedulePreview);
       body.append(iter.wrap, sub.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Taubin smoothing relaxes edges into a softer form without shrinking the model. Great for low-poly or blocky parts.'));
-      currentOpts = () => ({ iterations: iter.get(), subdivide: sub.get() });
+      currentOpts = () => ({ iterations: iter.get(), subdivide: sub.get(), selectedTriangles: regionSelection ?? undefined });
     } else {
       const res = slider('Resolution (voxels)', 8, 128, 32, 1, n => String(n), schedulePreview);
       const sm = checkbox('Smooth voxels (rounded corners)', false, schedulePreview);
@@ -452,7 +457,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     tabRow.append(b);
   }
 
-  scrollBody.append(tabRow, body);
+  scrollBody.append(tabRow, body, regionSection);
   if (painted) scrollBody.append(colorRow);
   scrollBody.append(status);
 

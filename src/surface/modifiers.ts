@@ -151,6 +151,138 @@ export async function applyKnitPatchAsync(mesh: MeshData, opts: KnitTextureOptio
   return knitManifoldResult(opts, baked, 'knit texture (patch)');
 }
 
+// --- General patch helper (all non-knit modifiers) ---
+
+function extractPatchMesh(mesh: MeshData, selectedTris: Set<number>): {
+  patchMesh: MeshData;
+  localToGlobal: number[];
+  hopDist: Float32Array;
+} {
+  const patchVertSet = new Set<number>();
+  for (const t of selectedTris) {
+    patchVertSet.add(mesh.triVerts[t * 3]);
+    patchVertSet.add(mesh.triVerts[t * 3 + 1]);
+    patchVertSet.add(mesh.triVerts[t * 3 + 2]);
+  }
+  const localToGlobal = Array.from(patchVertSet);
+  const globalToLocal = new Map<number, number>();
+  for (let i = 0; i < localToGlobal.length; i++) globalToLocal.set(localToGlobal[i], i);
+  const numPatchVert = localToGlobal.length;
+
+  const fullPos = mesh.numProp === 3 ? mesh.vertProperties : extractPositions(mesh);
+  const patchPos = new Float32Array(numPatchVert * 3);
+  for (let i = 0; i < numPatchVert; i++) {
+    const g = localToGlobal[i];
+    patchPos[i * 3]     = fullPos[g * 3];
+    patchPos[i * 3 + 1] = fullPos[g * 3 + 1];
+    patchPos[i * 3 + 2] = fullPos[g * 3 + 2];
+  }
+
+  const patchTriVerts = new Uint32Array(selectedTris.size * 3);
+  let tIdx = 0;
+  for (const t of selectedTris) {
+    patchTriVerts[tIdx++] = globalToLocal.get(mesh.triVerts[t * 3])!;
+    patchTriVerts[tIdx++] = globalToLocal.get(mesh.triVerts[t * 3 + 1])!;
+    patchTriVerts[tIdx++] = globalToLocal.get(mesh.triVerts[t * 3 + 2])!;
+  }
+
+  // BFS hop distance from boundary vertices for displacement falloff
+  const patchNeighbors: Set<number>[] = Array.from({ length: numPatchVert }, () => new Set());
+  for (let i = 0; i < selectedTris.size; i++) {
+    const v0 = patchTriVerts[i * 3], v1 = patchTriVerts[i * 3 + 1], v2 = patchTriVerts[i * 3 + 2];
+    patchNeighbors[v0].add(v1); patchNeighbors[v0].add(v2);
+    patchNeighbors[v1].add(v0); patchNeighbors[v1].add(v2);
+    patchNeighbors[v2].add(v0); patchNeighbors[v2].add(v1);
+  }
+  const hopDist = new Float32Array(numPatchVert).fill(Infinity);
+  const bfsQueue: number[] = [];
+  for (let t = 0; t < mesh.numTri; t++) {
+    if (selectedTris.has(t)) continue;
+    for (let k = 0; k < 3; k++) {
+      const l = globalToLocal.get(mesh.triVerts[t * 3 + k]);
+      if (l !== undefined && hopDist[l] === Infinity) { hopDist[l] = 0; bfsQueue.push(l); }
+    }
+  }
+  for (let qi = 0; qi < bfsQueue.length; qi++) {
+    const v = bfsQueue[qi];
+    for (const nb of patchNeighbors[v]) {
+      if (hopDist[nb] === Infinity) { hopDist[nb] = hopDist[v] + 1; bfsQueue.push(nb); }
+    }
+  }
+
+  return {
+    patchMesh: { vertProperties: patchPos, triVerts: patchTriVerts, numVert: numPatchVert, numTri: selectedTris.size, numProp: 3 },
+    localToGlobal,
+    hopDist,
+  };
+}
+
+const PATCH_FALLOFF_HOPS = 2;
+
+/** Apply any displacement modifier to a selected patch only.
+ *  Runs the modifier without subdivision so vertex count stays 1:1.
+ *  Displacement fades to zero over PATCH_FALLOFF_HOPS topology hops for seamless blending. */
+function runOnPatch(
+  mesh: MeshData,
+  selectedTris: Set<number>,
+  modFn: (sub: MeshData) => MeshData,
+): MeshData {
+  const { patchMesh, localToGlobal, hopDist } = extractPatchMesh(mesh, selectedTris);
+  const numPatchVert = localToGlobal.length;
+  const origPos = patchMesh.vertProperties as Float32Array;
+
+  const modified = modFn(patchMesh);
+  if (modified.numVert !== numPatchVert) return mesh; // unexpected subdivision — bail cleanly
+
+  const modPos = modified.numProp === 3
+    ? modified.vertProperties as Float32Array
+    : extractPositions(modified);
+
+  const fullPos = mesh.numProp === 3
+    ? Float32Array.from(mesh.vertProperties)
+    : extractPositions(mesh);
+
+  for (let i = 0; i < numPatchVert; i++) {
+    const w = Math.min(1, hopDist[i] / PATCH_FALLOFF_HOPS);
+    const g = localToGlobal[i];
+    fullPos[g * 3]     = origPos[i * 3]     + (modPos[i * 3]     - origPos[i * 3])     * w;
+    fullPos[g * 3 + 1] = origPos[i * 3 + 1] + (modPos[i * 3 + 1] - origPos[i * 3 + 1]) * w;
+    fullPos[g * 3 + 2] = origPos[i * 3 + 2] + (modPos[i * 3 + 2] - origPos[i * 3 + 2]) * w;
+  }
+
+  return { vertProperties: fullPos, triVerts: mesh.triVerts, numVert: mesh.numVert, numTri: mesh.numTri, numProp: 3, triColors: mesh.triColors };
+}
+
+export function applyFuzzyPatch(mesh: MeshData, opts: FuzzySkinOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const patched = runOnPatch(mesh, selectedTris, (sub) => fuzzySkin(sub, { ...opts, subdivide: false }));
+  return { kind: 'manifold', label: 'fuzzy skin (patch)', mesh: patched, code: manifoldWrapper([`Fuzzy skin patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
+}
+
+export function applyCablePatch(mesh: MeshData, opts: CableKnitOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const patched = runOnPatch(mesh, selectedTris, (sub) => cableKnit(sub, { ...opts, subdivide: false }));
+  return { kind: 'manifold', label: 'cable knit (patch)', mesh: patched, code: manifoldWrapper([`Cable knit patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
+}
+
+export function applyWafflePatch(mesh: MeshData, opts: WaffleStitchOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const patched = runOnPatch(mesh, selectedTris, (sub) => waffleStitch(sub, { ...opts, subdivide: false }));
+  return { kind: 'manifold', label: 'waffle stitch (patch)', mesh: patched, code: manifoldWrapper([`Waffle stitch patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
+}
+
+export function applyFurPatch(mesh: MeshData, opts: FurVelvetOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const patched = runOnPatch(mesh, selectedTris, (sub) => furVelvet(sub, { ...opts, subdivide: false }));
+  return { kind: 'manifold', label: 'fur / velvet (patch)', mesh: patched, code: manifoldWrapper([`Fur/velvet patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
+}
+
+export function applyWovenPatch(mesh: MeshData, opts: WovenFabricOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const patched = runOnPatch(mesh, selectedTris, (sub) => wovenFabric(sub, { ...opts, subdivide: false }));
+  return { kind: 'manifold', label: 'woven fabric (patch)', mesh: patched, code: manifoldWrapper([`Woven fabric patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
+}
+
+export function applySmoothPatch(mesh: MeshData, opts: SmoothOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const patched = runOnPatch(mesh, selectedTris, (sub) => smoothSurface(sub, { ...opts, subdivide: false }));
+  return { kind: 'manifold', label: 'smoothed (patch)', mesh: patched, code: manifoldWrapper([`Smooth patch applied on ${today()}.`, `The rounded mesh is baked onto api.imports[0].`]) };
+}
+
 export function defaultCableOptions(mesh: MeshData): Required<CableKnitOptions> {
   const d = modelDiagonal(mesh) || 10;
   const cw = d * 0.08;
