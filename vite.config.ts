@@ -158,15 +158,24 @@ export default defineConfig({
     chunkSizeWarningLimit: 520,
     rollupOptions: {
       output: {
-        manualChunks: {
-          'three': ['three'],
-          'codemirror': [
-            '@codemirror/state',
-            '@codemirror/view',
-            '@codemirror/lang-javascript',
-            '@codemirror/theme-one-dark',
-          ],
-          'manifold': ['manifold-3d'],
+        // Function form (not the object map) so we can isolate Vite's
+        // `__vite_preload` helper into its own tiny chunk. With the object
+        // form, Rollup folded that helper into the `manifold` chunk, which
+        // meant the entry (src/entry.ts) imported manifold (~44 KB) just to
+        // get the helper — pulling engine glue onto the landing route, which
+        // must stay app-free. Keeping it standalone lets the landing entry
+        // load only itself + storage/db.
+        manualChunks(id) {
+          if (id.includes('vite/preload-helper')) return 'vite-preload';
+          if (id.includes('node_modules/three/')) return 'three';
+          if (
+            id.includes('node_modules/@codemirror/state') ||
+            id.includes('node_modules/@codemirror/view') ||
+            id.includes('node_modules/@codemirror/lang-javascript') ||
+            id.includes('node_modules/@codemirror/theme-one-dark')
+          ) return 'codemirror';
+          if (id.includes('node_modules/manifold-3d')) return 'manifold';
+          return undefined;
         },
       },
     },

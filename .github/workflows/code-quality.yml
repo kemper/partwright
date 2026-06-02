@@ -43,8 +43,8 @@ jobs:
       - name: UI consistency (ast-grep) — gates on error-severity rules
         run: npm run lint:consistency
 
-      - name: Dead code (knip) — advisory
-        run: npm run lint:deadcode || echo "::warning::knip reported findings (advisory, non-blocking)"
+      - name: Dead code (knip) — gates on deps/unlisted/unresolved; exports advisory
+        run: npm run lint:deadcode
 
       - name: Circular deps (madge) — advisory
         run: npm run lint:deps || echo "::warning::madge reported circular dependencies (advisory, non-blocking)"

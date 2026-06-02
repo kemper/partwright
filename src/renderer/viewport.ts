@@ -5,8 +5,8 @@ import type { MeshData } from '../geometry/types';
 import { createDefaultMaterial, createWireframeMaterial } from './materials';
 import { initPhantomGroup } from './phantomGeometry';
 import { initMeasureOverlay } from './measureOverlay';
-import { initOrientationGizmo, renderGizmo, updateGizmo, disposeGizmo, isGizmoAnimating } from './orientationGizmo';
-import { initDimensionLines, updateDimensionLines, disposeDimensionLines, setDimensionsVisible as setDimensionsVisibleImpl, isDimensionsVisible } from './dimensionLines';
+import { initOrientationGizmo, renderGizmo, updateGizmo, isGizmoAnimating } from './orientationGizmo';
+import { initDimensionLines, updateDimensionLines, setDimensionsVisible as setDimensionsVisibleImpl, isDimensionsVisible } from './dimensionLines';
 import { initAnnotationOverlay, setLiveResolution as setAnnotationResolution } from '../annotations/annotationOverlay';
 import { configureSessionPlane } from '../annotations/sessionPlane';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
@@ -785,10 +785,3 @@ export function onWireframeChange(cb: (visible: boolean) => void): void {
   wireframeChangeListener = cb;
 }
 
-export function dispose(): void {
-  cancelAnimationFrame(animationId);
-  disposeGizmo();
-  disposeDimensionLines();
-  controls.dispose();
-  renderer.dispose();
-}

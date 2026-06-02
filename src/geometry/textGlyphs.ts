@@ -111,17 +111,6 @@ export function textToContours(text: string, opts: TextOptions = {}): Vec2[][] {
 }
 
 /** Bounding rect of a set of contours. */
-export function contourBounds(contours: Vec2[]): { minX: number; maxX: number; minY: number; maxY: number } {
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const pt of contours) {
-    if (pt[0] < minX) minX = pt[0];
-    if (pt[0] > maxX) maxX = pt[0];
-    if (pt[1] < minY) minY = pt[1];
-    if (pt[1] > maxY) maxY = pt[1];
-  }
-  return { minX, maxX, minY, maxY };
-}
-
 // ---------------------------------------------------------------------------
 
 function sampleBezier(pts: Vec2[], segments: number): Vec2[] {

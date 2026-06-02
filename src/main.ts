@@ -45,7 +45,6 @@ import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, tog
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
-import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
 import { createLegalPage } from './ui/legal';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
@@ -144,7 +143,8 @@ import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
-import { updatePaintMesh, setOnRegionPainted } from './color/paintMode';
+import { updatePaintMesh, setOnRegionPainted, setTriangleToBaseMapper } from './color/paintMode';
+import { baseTriangleOf } from './color/baseRemap';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu } from './annotations/annotateUI';
 import { isActive as isSelectActive, getSelectedId as getSelectedAnnotationId } from './annotations/selectMode';
 import {
@@ -824,8 +824,10 @@ function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }
   const cacheBase = paintBaseMesh ?? currentMeshData;
   const cached = strokeCache.get(d);
   if (cached && cached.base === cacheBase) return cached.stroke;
-  // An airbrush spray is always geodesic (surface-following, no through-wall).
-  const surface = d.spray ? 'geodesic' : (d.surface ?? 'slab');
+  // Surface mode is whatever the stroke was painted with (slab by default);
+  // old descriptors without the field — and old geodesic-forced sprays —
+  // resolve from their stored `surface`, falling back to slab for back-compat.
+  const surface = d.surface ?? 'slab';
   const stroke: BrushStroke = {
     samples: d.samples,
     radius: d.radius,
@@ -3614,8 +3616,9 @@ async function main() {
   // Create toolbar
   createToolbar(editorUI, {
     onGoHome: () => {
-      updateAppHistory('/', 'push');
-      void syncRouteFromURL();
+      // The landing page is a separate static document that does NOT load this
+      // app bundle, so going home is a real navigation, not an in-app render.
+      window.location.assign('/');
     },
     onRun: () => runCode(),
     onExportGLB: actionExportGLB,
@@ -4153,27 +4156,6 @@ async function main() {
     runCode(defaultCode);
   }
 
-  async function openSessionFromLanding(sid: string) {
-    updateAppHistory(`/editor?session=${sid}`, 'push');
-    transitionToEditor();
-    await ensureEditorReady();
-    await ensureEngineStarted();
-    if (!engineOk) return;
-    if (getSessionIdFromURL() !== sid) return;
-    const version = await openSession(sid);
-    if (version) {
-      await loadVersionIntoEditor(version);
-    } else {
-      // openSession returned null — either the session doesn't exist
-      // (e.g. stale tile from another device's data) or it has no saved
-      // versions yet. Run defaults so the viewport renders and the
-      // status doesn't stay stuck on "Loading WASM...".
-      setStatus(statusBar, 'ready', 'Ready');
-      runCode(defaultCode);
-    }
-    updateDocumentTitle({ page: 'editor' });
-  }
-
   // Launch the guided tour from an entry point outside the editor (the landing
   // CTA or the help page button): the tour spotlights editor chrome, so make
   // sure we're in the editor with a live session before it starts.
@@ -4190,46 +4172,14 @@ async function main() {
     startTour();
   }
 
-  function ensureLandingPage() {
-    if (!landingEl) {
-      landingEl = createLandingPage(overlayContainer, {
-        onOpenEditor: openEditorFromLanding,
-        onOpenHelp: () => showHelp(),
-        onOpenCatalog: () => { void showCatalogPage(); },
-        onOpenIdeas: () => { showIdeasPage(); },
-        onOpenWhatsNew: () => showWhatsNewPage(),
-        onTakeTour: () => { void takeGuidedTour(); },
-        onOpenSession: openSessionFromLanding,
-        onLoadCatalogEntry: handleCatalogEntryLoad,
-      });
-    }
-    return landingEl;
-  }
-
-  async function showLandingPage() {
-    const page = ensureLandingPage();
-    overlayContainer.classList.remove('hidden');
-    editorUI.classList.add('hidden');
-    helpEl?.classList.add('hidden');
-    notFoundEl?.classList.add('hidden');
-    catalogEl?.classList.add('hidden');
-    ideasEl?.classList.add('hidden');
-    legalEl?.classList.add('hidden');
-    whatsNewEl?.classList.add('hidden');
-    page.classList.remove('hidden');
-    updateDocumentTitle({ page: 'landing' });
-    // Build and render the JS page behind the static overlay, then remove the
-    // overlay only after fonts are settled — both pages then share the same
-    // metrics, making the swap invisible. Copy scroll position so the user's
-    // reading position is preserved if they scrolled before JS finished.
-    await document.fonts.ready;
-    requestAnimationFrame(() => {
-      const li = document.getElementById('landing-inline');
-      if (li) {
-        page.scrollTop = li.scrollTop;
-        li.remove();
-      }
-    });
+  // The landing page is a separate, static document — index.html's
+  // #landing-inline markup, enhanced in place by src/landing/landingEntry.ts.
+  // This app bundle is never loaded on the landing route, so "showing" the
+  // landing from within the app is a real navigation back to "/", which loads
+  // the lightweight landing entry instead of this bundle. (Callers: the boot
+  // router and syncRouteFromURL's popstate handler.)
+  function showLandingPage() {
+    window.location.assign('/');
   }
 
   function showNotFoundPage() {
@@ -4395,6 +4345,35 @@ async function main() {
     if (!engineOk) return;
     await importSessionPayload(payload);
     updateDocumentTitle({ page: 'editor' });
+  }
+
+  // Fetch a catalog entry by file name and import it. Used by the /editor?catalog=
+  // deep-link from the static landing page. Mirrors handleCatalogEntryLoad but
+  // sources the payload from the URL rather than an in-memory tile click. The
+  // editor is already entered (this runs inside syncEditorFromURL), so no
+  // history push is needed — importSessionPayload's openSession replaceState
+  // rewrites the URL to /editor?session=<id>.
+  async function loadCatalogFileIntoEditor(file: string): Promise<void> {
+    try {
+      const res = await fetch(`/catalog/${file}`, { cache: 'no-cache' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const payload = await res.json() as ExportedSession;
+      await importSessionPayload(payload);
+      // importSessionPayload's openSession appended ?session=&v= but preserved
+      // the one-shot ?catalog= param; drop it now for a clean editor URL.
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('catalog')) {
+        url.searchParams.delete('catalog');
+        history.replaceState(history.state, '', url.pathname + url.search);
+      }
+      updateDocumentTitle({ page: 'editor' });
+    } catch {
+      // Couldn't load the entry (bad/removed file, offline). Don't leave the
+      // editor stuck on "Loading WASM…" — fall back to a default session.
+      if (!getState().session) await createSession();
+      setStatus(statusBar, 'ready', 'Ready');
+      runCode(defaultCode);
+    }
   }
 
   // === Ideas page handlers ===
@@ -4663,6 +4642,15 @@ async function main() {
     await ensureEditorReady();
     await ensureEngineStarted();
     if (!engineOk) return;
+
+    // Catalog deep-link: /editor?catalog=<file> imports that catalog entry as a
+    // fresh session. The static landing page links its catalog tiles here
+    // because it can't hand an in-memory payload across a real navigation.
+    const catalogFile = new URLSearchParams(window.location.search).get('catalog');
+    if (catalogFile) {
+      await loadCatalogFileIntoEditor(catalogFile);
+      return;
+    }
 
     const sessionId = getSessionIdFromURL();
     if (sessionId) {
@@ -5574,6 +5562,16 @@ async function main() {
     scheduleColorRefresh();
   });
 
+  // Projection paint collects triangle ids in the current working mesh's index
+  // space; this maps them back to pristine-base ids before storage so a later
+  // refine remaps them correctly. Reads live state: identity (no work) while the
+  // mesh is unrefined, a base-mesh closest-point lookup once it's been refined.
+  setTriangleToBaseMapper((t) => {
+    const cm = currentMeshData, base = paintBaseMesh;
+    if (!cm || !base || cm === base) return t;
+    return baseTriangleOf(cm, base, t);
+  });
+
   // Any region change reconciles the working mesh: incremental stroke append,
   // full rebuild, or the lightweight no-subdivision refresh. The async variant
   // runs the heavy subdivision in a Web Worker (with a Cancel button) so a
@@ -5592,6 +5590,15 @@ async function main() {
 
   // Start guided tour on first visit (after editor fully renders) — but not over
   // a shared preview, which is a read-only landing surface for an external link.
+  // /editor?tour=1 (the static landing's "Take the guided tour" CTA): force the
+  // guided tour even for users who already completed it once, then strip the
+  // param so a refresh doesn't relaunch it. maybeStartTour() below then fires on
+  // the now-clean editor URL.
+  if (new URLSearchParams(window.location.search).get('tour') === '1') {
+    resetTour();
+    history.replaceState(history.state, '', '/editor');
+  }
+
   if (!showLanding && !showHelpPage && !showCatalog && !showIdeas && !showLegalPage && !showWhatsNew && !show404 && !hasShareHash()) {
     maybeStartTour();
     maybeShowShortcutsHint();
@@ -9541,7 +9548,7 @@ async function main() {
       const target = maxEdge !== undefined ? Math.max(maxEdge, radius / SMOOTH_DIVISOR_MAX) : radius / res;
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
         kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target,
-        surface: (surface as 'geodesic' | 'slab') ?? 'geodesic', depth: depth ?? 0,
+        surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0,
       };
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
@@ -9582,11 +9589,13 @@ async function main() {
       seed?: number;
       resolution?: number;
       maxEdge?: number;
+      surface?: string;
+      depth?: number;
       name?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first, then paint.' };
       if (!opts || typeof opts !== 'object') return { error: 'paintAirbrush(opts): opts object required' };
-      const { points, radius, color, shape, strength, softness, seed, resolution, maxEdge, name } = opts;
+      const { points, radius, color, shape, strength, softness, seed, resolution, maxEdge, surface, depth, name } = opts;
       if (!Array.isArray(points) || points.length === 0) {
         return { error: 'paintAirbrush: points must be a non-empty array of [x,y,z] surface points (use probePixel to get them)' };
       }
@@ -9617,6 +9626,12 @@ async function main() {
       if (maxEdge !== undefined && (typeof maxEdge !== 'number' || !Number.isFinite(maxEdge) || maxEdge <= 0)) {
         return { error: 'paintAirbrush: maxEdge must be a positive finite number when provided' };
       }
+      if (surface !== undefined && surface !== 'geodesic' && surface !== 'slab') {
+        return { error: "paintAirbrush: surface must be 'geodesic' or 'slab' when provided" };
+      }
+      if (depth !== undefined && (typeof depth !== 'number' || !Number.isFinite(depth) || depth < 0)) {
+        return { error: 'paintAirbrush: depth must be a non-negative finite number (mesh units) when provided' };
+      }
       const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
       const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 96));
       const target = maxEdge !== undefined ? Math.max(maxEdge, radius / SMOOTH_DIVISOR_MAX) : radius / res;
@@ -9626,7 +9641,8 @@ async function main() {
         seed: seed !== undefined ? (seed | 0) : 1,
       };
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
-        kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target, surface: 'geodesic', spray,
+        kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target,
+        surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0, spray,
       };
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
