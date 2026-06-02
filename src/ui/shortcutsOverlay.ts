@@ -7,10 +7,6 @@ import { getShortcutDocs } from './shortcutDefs';
 
 let isOpen = false;
 
-export function isShortcutsOverlayOpen(): boolean {
-  return isOpen;
-}
-
 export function openShortcutsOverlay(): void {
   if (isOpen) return;
   isOpen = true;

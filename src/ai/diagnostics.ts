@@ -147,6 +147,3 @@ export function onEventsChange(fn: () => void): () => void {
 /** True when there's at least one error event since the last clear. The
  *  panel status bar uses this to decide whether to surface a "View
  *  diagnostics" affordance after an error. */
-export function hasRecentError(): boolean {
-  return events.some(e => e.status === 'error');
-}

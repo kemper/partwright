@@ -31,8 +31,6 @@ import {
   updateNote as dbUpdateNote,
   getDraft as dbGetDraft,
   setDraft as dbSetDraft,
-  deleteDraft as dbDeleteDraft,
-  listDrafts as dbListDrafts,
   deletePartDrafts as dbDeletePartDrafts,
   legacyImagesObjectToArray,
   generateId,
@@ -574,21 +572,6 @@ export async function writeDraft(sessionId: string, language: 'manifold-js' | 's
   await dbSetDraft(sessionId, language, code, partId);
 }
 
-/** Drop the working buffer for a (session, part, language) triple. */
-export async function clearDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<void> {
-  await dbDeleteDraft(sessionId, language, partId);
-}
-
-/** Delete all drafts stashed for a specific part (all languages). Called when
- *  the part is removed so its buffers don't accumulate. */
-export async function deletePartDrafts(sessionId: string, partId: string): Promise<void> {
-  await dbDeletePartDrafts(sessionId, partId);
-}
-
-/** All drafts stashed for a session, ordered by language. */
-export async function listSessionDrafts(sessionId: string) {
-  return dbListDrafts(sessionId);
-}
 
 // === Per-session AI preference ===
 

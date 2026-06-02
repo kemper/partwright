@@ -132,8 +132,6 @@ export function setAutoRun(enabled: boolean): void {
 }
 
 /** Register a callback for when auto-run state changes */
-export function onAutoRunChange(cb: (on: boolean) => void): void { _onAutoRunChange = cb; }
-
 // Language toggle state — managed externally via setToolbarLanguage()
 let _langBtnJs: HTMLButtonElement | null = null;
 let _langBtnScad: HTMLButtonElement | null = null;

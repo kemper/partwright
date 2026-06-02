@@ -296,8 +296,3 @@ export function resetAppConfig(): void {
   for (const fn of listeners) fn(cachedConfig);
 }
 
-/** Subscribe to config saves/resets. Returns an unsubscribe function. */
-export function onAppConfigChange(fn: (cfg: AppConfig) => void): () => void {
-  listeners.add(fn);
-  return () => { listeners.delete(fn); };
-}

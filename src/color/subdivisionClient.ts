@@ -133,10 +133,6 @@ export function refineInWorker(input: RefineJobInput): Promise<RefinedResult> {
 }
 
 /** True if a subdivision job is currently running in the worker. */
-export function isSubdivisionInFlight(): boolean {
-  return inFlight !== null;
-}
-
 /** Terminate the worker (test cleanup / hard reset). Any in-flight job is
  *  rejected with an abort error. */
 export function terminateSubdivisionWorker(): void {
