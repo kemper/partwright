@@ -10,7 +10,7 @@ npm run test:e2e     # Playwright browser suite (auto-starts dev server)
 npm test             # Both tiers: unit, then e2e
 npm run lint:consistency  # ast-grep UI-convention scan (advisory)
 npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (advisory)
-npm run lint:deps         # madge: circular dependencies (advisory)
+npm run lint:deps         # madge: circular dependencies (gate — graph is acyclic)
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -341,7 +341,17 @@ This repo ships custom Claude Code subagents and a deterministic static-analysis
 
 - **`work-reviewer`** (`.claude/agents/work-reviewer.md`, Opus, read-only) reviews the branch diff vs `origin/main` for correctness, back-compat, security, and **UI consistency** against the shared component layer (`modalShell`, `styleConstants` `BUTTON_*`, `showToast`, `commandPalette` keyboard model). Launch it before marking a PR ready.
 - **`explore`** (`.claude/agents/explore.md`, Sonnet, read-only) overrides the built-in Haiku Explore agent for sharper codebase discovery, preferring the TypeScript LSP MCP (`mcp__typescript__*`, configured in `.mcp.json`) for reference/definition queries.
-- **`lint:consistency`** (ast-grep), **`lint:deadcode`** (knip), and **`lint:deps`** (madge) run in CI (`code-quality.yml`). `lint:consistency` gates on `error`-severity ast-grep rules (`no-native-dialogs` is `error`; the rest are `warning`/`hint` — promote one to `error` once the codebase is clean for it). `lint:deadcode` gates on knip's trustworthy categories (`dependencies`/`unlisted`/`unresolved`/`files`) but keeps `exports`/`types` advisory (knip can't see exports used only via the e2e suite's dynamic `import('/src/…')`, and the dead-export backlog needs per-symbol triage). `lint:deps` (madge circular deps) is advisory. Scope each advisory hit to the diff — they over-report by design. See `docs/agent-tooling.md`.
+- **`lint:consistency`** (ast-grep), **`lint:deadcode`** (knip), and **`lint:deps`** (madge) run in CI (`code-quality.yml`). `lint:consistency` gates on `error`-severity ast-grep rules (`no-native-dialogs` is `error`; the rest are `warning`/`hint` — promote one to `error` once the codebase is clean for it). `lint:deadcode` gates on knip's trustworthy categories (`dependencies`/`unlisted`/`unresolved`/`files`) but keeps `exports`/`types` advisory (knip can't see exports used only via the e2e suite's dynamic `import('/src/…')`, and the dead-export backlog needs per-symbol triage). `lint:deps` (madge circular deps) is a **gate**: the module graph is acyclic, so any new cycle fails CI. Scope each advisory hit to the diff — they over-report by design. See `docs/agent-tooling.md`.
+
+### Module Layering — keep the dependency graph acyclic
+
+The module graph is **cycle-free** and CI gates on it (`lint:deps`). To keep it that way, follow the dependency direction and the patterns below — they're the ones used to untangle the original cycles, and each has a canonical example in the tree:
+
+- **Direction:** the renderer (`src/renderer/viewport.ts`) is a *low* layer; feature layers (`src/annotations/`, `src/color/`) sit above it and may import it (`requestRender`, camera accessors), but **the renderer must never import a feature layer.** When the viewport needs to drive a feature subsystem (phantom geometry, annotation overlay, session plane), the subsystem registers a lifecycle hook via the leaf `src/renderer/viewportRegistry.ts` (wired in `src/renderer/viewportSubsystems.ts`, imported once for side effects in `main.ts`) instead of the viewport importing it.
+- **Mutually-exclusive tools coordinate through a leaf, never each other.** Paint and the annotate sub-modes (pen/text/select) register their `forceDeactivate` with `src/ui/modeExclusion.ts` and call `deactivateMode(id, opts)` to turn a sibling off. No mode imports another mode.
+- **Shared state that two mutually-importing modules both need goes in a leaf.** Selection state lives in `src/annotations/selectionState.ts` (so the overlay can observe it without importing `selectMode`); paint-state accessors the drag tools read live in `src/color/paintAccessors.ts` (published once by `paintMode`). The owning module sets the leaf; consumers read it.
+
+When you add a feature that would otherwise import "sideways" or "down into" a lower layer, reach for one of these leaf patterns rather than adding the back-edge. Run `npm run lint:deps` before pushing.
 
 ### User Messaging & the Diagnostic Log
 

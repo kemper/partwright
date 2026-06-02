@@ -10,6 +10,7 @@ import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOve
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 import { smoothEdgeForResolution } from './slabPaint';
+import { setPaintAccessors } from './paintAccessors';
 import { tangentBasis, type BrushShape } from './subdivide';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
@@ -221,7 +222,7 @@ export function getShapeSmoothResolution(): number { return shapeSmoothResolutio
 /** Smoothing fields to stamp onto a slab/box descriptor at paint time, resolved
  *  against `mesh` at the current shape-smoothing settings. With smoothing off
  *  the fields refine nothing (preserving the original blocky edge). */
-export function shapeSmoothDescriptorFields(mesh: MeshData): { smooth: boolean; maxEdge: number } {
+function shapeSmoothDescriptorFields(mesh: MeshData): { smooth: boolean; maxEdge: number } {
   if (!shapeSmooth) return { smooth: false, maxEdge: 0 };
   return { smooth: true, maxEdge: smoothEdgeForResolution(mesh, shapeSmoothResolution) };
 }
@@ -234,6 +235,10 @@ export function setOnRegionPainted(fn: () => void): void {
 export function getCurrentMesh(): MeshData | null {
   return currentMesh;
 }
+
+// Publish the state accessors the drag tools (boxDrag/slabDrag) need, so they
+// don't import this module back (which would be a circular dependency).
+setPaintAccessors({ getColor, getCurrentMesh, shapeSmoothDescriptorFields });
 
 
 /** Rebuild adjacency graph for a new mesh. Call this whenever updateMesh fires. */
