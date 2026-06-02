@@ -33,11 +33,10 @@ test.describe('Guided tour entry points', () => {
 
   test('landing CTA opens the editor and starts the tour', async ({ page }) => {
     await page.goto('/');
-    // Scope to the landing subtree: the editor chrome (mounted but hidden in
-    // the same SPA DOM) carries a rail button #btn-tour with the same
-    // accessible name, so an unscoped getByRole can resolve to that hidden
-    // control on slower startups and time out waiting for it to be clickable.
-    const cta = page.locator('#landing-page').getByRole('button', { name: 'Take the guided tour' });
+    // The landing page is the static #landing-inline document; its "Take the
+    // guided tour" CTA is a link to /editor?tour=1 — a real navigation that
+    // loads the app bundle and force-starts the tour on arrival.
+    const cta = page.locator('#landing-inline').getByRole('link', { name: 'Take the guided tour' });
     await expect(cta).toBeVisible();
 
     await cta.click();

@@ -112,11 +112,19 @@
   <meta name="theme-color" content="#18181b" />
   <link rel="manifest" href="/manifest.json" />
   <link rel="stylesheet" href="/src/style.css" />
-  <!-- Preload landing-page fonts so they're ready before the JS handoff -->
+  <!-- Preload every brand font the landing page uses. Paired with
+       font-display:optional (src/style.css), this makes the real fonts ready
+       at first paint so text never reflows. The landing route no longer loads
+       the app bundle, so there's ample bandwidth for these small woff2s. -->
   <link rel="preload" href="/fonts/spacegrotesk-400.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/spacegrotesk-500.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
   <link rel="preload" href="/fonts/spacegrotesk-600.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/spacegrotesk-700.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/sora-600.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
   <link rel="preload" href="/fonts/sora-700.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
   <link rel="preload" href="/fonts/sora-800.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/jetbrainsmono-400.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/jetbrainsmono-500.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
   <script src="coi-serviceworker.js"></script>
   <link rel="ai-instructions" href="ai.md" type="text/markdown" />
   <meta name="ai-instructions" content="See /llms.txt" />
@@ -148,9 +156,16 @@
     </div>
   </noscript>
 
-  <!-- Inline landing page — rendered immediately on / before any JS loads.
-       Removed by main.ts once the JS-built landing page is ready.
-       Hidden by the sync script below on all non-landing routes. -->
+  <!-- Landing page — THE canonical landing markup, rendered immediately on /.
+       The app bundle (src/main.ts) is never loaded on the landing route; only
+       the tiny src/landing/landingEntry.ts enhances this DOM in place (fills
+       the catalog + recent-session grids, wires the copy button). So this is
+       what the user sees from first paint with no later swap or reflow — the
+       only things that change after load are the async catalog/session tiles
+       filling into their skeletons. Every CTA here is a plain <a href> that
+       hard-navigates to a route the app honors (the app loads then). The
+       route-init.js script below hides this on non-landing routes.
+       Tests: tests/landing-static.spec.ts. -->
   <div id="landing-inline" style="position:fixed;inset:0;z-index:50;overflow-y:auto;background:#18181b;color:#fafafa;font-family:'Space Grotesk',system-ui,-apple-system,sans-serif">
     <style>
       #li-hero{display:grid;grid-template-columns:1fr 1.1fr;gap:48px;align-items:center}
@@ -222,11 +237,13 @@
             <rect x="1" y="1" width="102" height="102" rx="23" fill="none" stroke="#f59e0b" stroke-width="1.4" stroke-opacity="0.45"/>
           </svg>
           <span style="font-weight:700;font-size:18px;letter-spacing:-0.025em;color:#fafafa;font-family:'Sora',system-ui,sans-serif">Partwright</span>
+          <span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;padding:2px 6px;border-radius:999px;background:rgba(245,158,11,0.15);color:#fbbf24;border:1px solid rgba(245,158,11,0.25)">Beta</span>
         </div>
         <nav id="li-nav-links" style="display:flex;align-items:center;gap:28px;font-size:14px">
           <a href="/ideas" style="color:#a1a1aa;text-decoration:none">Ideas</a>
           <a href="/catalog" style="color:#a1a1aa;text-decoration:none">Catalog</a>
           <a href="/help" style="color:#a1a1aa;text-decoration:none">How it works</a>
+          <a href="#li-agent-section" style="color:#a1a1aa;text-decoration:none">For AI agents</a>
           <a href="/whats-new" style="color:#a1a1aa;text-decoration:none">What&#39;s new</a>
         </nav>
         <div style="display:flex;align-items:center;gap:12px">
@@ -253,7 +270,8 @@
             </p>
             <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:32px">
               <a href="/editor" style="padding:12px 24px;border-radius:12px;font-size:14px;font-weight:600;color:#1c1917;text-decoration:none;background:linear-gradient(135deg,#fcd34d,#f59e0b)">Open the editor</a>
-              <a href="/editor" style="padding:12px 24px;border-radius:12px;font-size:14px;font-weight:600;color:#f4f4f5;text-decoration:none;background:rgba(255,255,255,0.05);border:1px solid #3f3f46">Take the guided tour</a>
+              <a href="/editor?tour=1" style="padding:12px 24px;border-radius:12px;font-size:14px;font-weight:600;color:#f4f4f5;text-decoration:none;background:rgba(255,255,255,0.05);border:1px solid #3f3f46">Take the guided tour</a>
+              <a href="#li-agent-section" style="padding:12px 8px;font-size:14px;font-weight:500;color:#a1a1aa;text-decoration:none">Try with an AI agent &#8594;</a>
             </div>
             <div style="display:flex;flex-wrap:wrap;gap:8px 28px;font-size:14px;color:#71717a">
               <span><b style="color:#d4d4d8;font-weight:600">0</b> installs</span>
@@ -306,7 +324,7 @@
       </section>
 
       <!-- How it works -->
-      <section style="width:100%;max-width:80rem;padding:48px 24px;border-top:1px solid #27272a;box-sizing:border-box">
+      <section style="width:100%;max-width:64rem;padding:48px 24px;border-top:1px solid #27272a;box-sizing:border-box">
         <p style="text-align:center;font-size:12px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 40px">How it works</p>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:24px">
           <div style="background:rgba(39,39,42,0.4);border:1px solid #27272a;border-radius:12px;padding:24px">
@@ -328,11 +346,12 @@
       </section>
 
       <!-- Catalog skeleton (populated by JS) -->
-      <section style="width:100%;max-width:80rem;padding:48px 24px;border-top:1px solid #27272a;box-sizing:border-box">
+      <section style="width:100%;max-width:64rem;padding:48px 24px;border-top:1px solid #27272a;box-sizing:border-box">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px">
           <p style="font-size:12px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:0.1em;margin:0">What you can build</p>
+          <a href="/catalog" style="flex-shrink:0;display:inline-flex;align-items:center;gap:4px;padding:6px 12px;border-radius:6px;font-size:14px;font-weight:500;text-decoration:none;border:1px solid rgba(20,184,166,0.6);color:#5eead4">Browse the full catalog &#8594;</a>
         </div>
-        <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+        <div id="li-catalog-grid" style="display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
           <div style="border-radius:8px;overflow:hidden;background:rgba(39,39,42,0.6);border:1px solid #27272a"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:14px;background:rgba(63,63,70,0.5);border-radius:4px;width:75%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:50%"></div></div></div>
           <div style="border-radius:8px;overflow:hidden;background:rgba(39,39,42,0.6);border:1px solid #27272a"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:14px;background:rgba(63,63,70,0.5);border-radius:4px;width:60%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:45%"></div></div></div>
           <div style="border-radius:8px;overflow:hidden;background:rgba(39,39,42,0.6);border:1px solid #27272a"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:14px;background:rgba(63,63,70,0.5);border-radius:4px;width:80%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:55%"></div></div></div>
@@ -344,10 +363,46 @@
         </div>
       </section>
 
+      <!-- Built for AI agents -->
+      <section id="li-agent-section" style="width:100%;max-width:64rem;padding:56px 24px;border-top:1px solid #27272a;box-sizing:border-box">
+        <div style="display:grid;gap:32px;align-items:start" id="li-agent-grid">
+          <style>@media(min-width:768px){#li-agent-grid{grid-template-columns:1fr 1fr}}</style>
+          <!-- Left: pitch -->
+          <div>
+            <p style="font-size:12px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 12px">Built for AI agents</p>
+            <h3 style="font-size:24px;font-weight:700;line-height:1.25;color:#f4f4f5;margin:0 0 16px;font-family:'Sora',system-ui,sans-serif">Hand the keyboard to your agent.</h3>
+            <p style="font-size:14px;color:#a1a1aa;line-height:1.625;margin:0 0 20px">Most CAD tools assume a human at the mouse. Partwright is built around a programmatic API so an agent can model, verify, iterate, and hand you a gallery for review &mdash; no clicks required.</p>
+            <ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px;font-size:14px;color:#d4d4d8">
+              <li style="display:flex;align-items:flex-start;gap:8px"><span style="color:#2dd4bf;margin-top:2px">&#8594;</span><span>window.partwright console API for sessions, runs, validation, exports</span></li>
+              <li style="display:flex;align-items:flex-start;gap:8px"><span style="color:#2dd4bf;margin-top:2px">&#8594;</span><span>Geometry stats published as JSON in #geometry-data for verification</span></li>
+              <li style="display:flex;align-items:flex-start;gap:8px"><span style="color:#2dd4bf;margin-top:2px">&#8594;</span><span>Headless renderViews/renderView API for all-angle visual verification</span></li>
+              <li style="display:flex;align-items:flex-start;gap:8px"><span style="color:#2dd4bf;margin-top:2px">&#8594;</span><span>Session notes record [REQUIREMENT], [DECISION], [FEEDBACK] for resume</span></li>
+            </ul>
+            <a href="/ai.md" style="display:inline-block;margin-top:20px;font-size:14px;color:#2dd4bf;text-decoration:none">Read the agent instructions &#8594;</a>
+          </div>
+          <!-- Right: copyable prompt -->
+          <div style="background:#09090b;border:1px solid #27272a;border-radius:12px;overflow:hidden">
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 16px;border-bottom:1px solid #27272a;background:#18181b">
+              <span style="font-size:12px;font-weight:500;color:#a1a1aa">Try this prompt with Claude / ChatGPT</span>
+              <button id="li-copy-prompt" type="button" style="font-size:12px;color:#a1a1aa;background:none;border:0;cursor:pointer;padding:0">Copy</button>
+            </div>
+            <pre id="li-prompt" style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;line-height:1.625;color:#d4d4d8;padding:12px 16px;max-height:18rem;overflow:auto;white-space:pre-wrap;margin:0">Read the AI agent instructions at https://www.partwrightstudio.com/ai.md to understand how to use this tool.
+
+Then navigate to https://www.partwrightstudio.com/editor and use the window.partwright console API to:
+
+1. Create a session called "Standard Lego Brick"
+2. Build a standard 2x4 Lego brick (approximately 31.8mm x 15.8mm x 11.4mm with studs on top and hollow underside with tubes)
+3. Save each major step as a version (e.g. v1 - base block, v2 - add studs, v3 - hollow underside with tubes)
+4. Use assertions to verify each version is a valid manifold with maxComponents: 1
+5. Give me a share link (partwright.getShareLink()) when done so I can open the design</pre>
+          </div>
+        </div>
+      </section>
+
       <!-- Recent sessions skeleton (populated by JS) -->
-      <section style="width:100%;max-width:80rem;padding:48px 24px;border-top:1px solid #27272a;box-sizing:border-box">
-        <p style="font-size:12px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 24px">Recent sessions</p>
-        <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(180px,1fr))">
+      <section style="width:100%;max-width:64rem;padding:48px 24px;border-top:1px solid #27272a;box-sizing:border-box">
+        <p style="font-size:12px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 16px">Your recent sessions</p>
+        <div id="li-sessions-grid" style="display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
           <div style="border-radius:8px;overflow:hidden;background:#27272a;border:1px solid #3f3f46"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:8px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:12px;background:rgba(63,63,70,0.5);border-radius:4px;width:66%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:33%"></div></div></div>
           <div style="border-radius:8px;overflow:hidden;background:#27272a;border:1px solid #3f3f46"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:8px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:12px;background:rgba(63,63,70,0.5);border-radius:4px;width:55%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:38%"></div></div></div>
           <div style="border-radius:8px;overflow:hidden;background:#27272a;border:1px solid #3f3f46"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:8px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:12px;background:rgba(63,63,70,0.5);border-radius:4px;width:70%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:30%"></div></div></div>
@@ -355,18 +410,31 @@
         </div>
       </section>
 
+      <!-- Built on open foundations -->
+      <section style="width:100%;max-width:64rem;padding:48px 24px;border-top:1px solid #27272a;box-sizing:border-box">
+        <p style="text-align:center;font-size:12px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 24px">Built on open foundations</p>
+        <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:12px 32px;font-size:14px;color:#a1a1aa">
+          <a href="https://github.com/elalish/manifold" target="_blank" rel="noopener noreferrer" style="color:#a1a1aa;text-decoration:none">manifold-3d</a>
+          <a href="https://threejs.org/" target="_blank" rel="noopener noreferrer" style="color:#a1a1aa;text-decoration:none">Three.js</a>
+          <a href="https://codemirror.net/" target="_blank" rel="noopener noreferrer" style="color:#a1a1aa;text-decoration:none">CodeMirror</a>
+          <a href="https://github.com/openscad/openscad" target="_blank" rel="noopener noreferrer" style="color:#a1a1aa;text-decoration:none">OpenSCAD WASM</a>
+          <a href="https://pages.cloudflare.com/" target="_blank" rel="noopener noreferrer" style="color:#a1a1aa;text-decoration:none">Cloudflare Pages</a>
+        </div>
+        <p style="text-align:center;font-size:12px;color:#52525b;margin:24px auto 0;max-width:36rem;line-height:1.625">No backend, no analytics, no outbound network requests. Everything runs in your browser, and you can verify the source on GitHub.</p>
+      </section>
+
       <!-- Footer -->
-      <footer style="width:100%;max-width:80rem;padding:32px 24px;border-top:1px solid #27272a;margin-top:auto;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:16px;box-sizing:border-box">
-        <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:#52525b">
-          <span style="font-weight:600;color:#71717a">Partwright</span>
-          <span>&mdash;</span>
-          <span>Free for non-commercial use</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:20px;font-size:13px">
-          <a href="/help" style="color:#71717a;text-decoration:none">Docs</a>
-          <a href="/ai.md" style="color:#71717a;text-decoration:none">AI instructions</a>
+      <footer style="width:100%;max-width:64rem;padding:32px 24px;border-top:1px solid #27272a;text-align:center;font-size:12px;color:#52525b;box-sizing:border-box">
+        <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:8px 20px;margin-bottom:12px">
+          <a href="/editor" style="color:#71717a;text-decoration:none">Editor</a>
           <a href="/catalog" style="color:#71717a;text-decoration:none">Catalog</a>
+          <a href="/whats-new" style="color:#71717a;text-decoration:none">What&#39;s new</a>
+          <a href="/help" style="color:#71717a;text-decoration:none">How it works</a>
+          <a href="/legal" style="color:#71717a;text-decoration:none">Legal</a>
+          <a href="/ai.md" style="color:#71717a;text-decoration:none">AI agent docs</a>
+          <a href="https://github.com/kemper/mainifold" target="_blank" rel="noopener noreferrer" style="color:#71717a;text-decoration:none">GitHub</a>
         </div>
+        <div>&copy; 2026 Partwright Studio. Source-available &middot; free for non-commercial use.</div>
       </footer>
     </div>
   </div>
@@ -383,6 +451,6 @@
   <script src="/route-init.js"></script>
 
   <div id="app" class="flex flex-col h-screen w-screen"></div>
-  <script type="module" src="/src/main.ts"></script>
+  <script type="module" src="/src/entry.ts"></script>
 </body>
 </html>
