@@ -30,7 +30,7 @@ import {
   bboxOf,
   triplanarCoords,
 } from './meshSubdivide';
-import { bfsUnwrapMesh } from './uvUnwrap';
+import { unwrapMesh, type UVAlgorithm } from './uvParameterize';
 import { knitDisplaceGPU, type KnitGPUParams } from './knitTextureGPU';
 
 export interface KnitTextureOptions {
@@ -60,6 +60,10 @@ export interface KnitTextureOptions {
    *  tessellated before displacement. Higher = smoother curves, more triangles.
    *  Default 3 (medium). */
   quality?: number;
+  /** UV parameterization strategy for the surface-following knit (knitTextureUV
+   *  path only). 'bfs' (default) = triangle unfolding; 'lscm' = conformal map;
+   *  'harmonic' = harmonic-field rows + azimuthal columns. */
+  algorithm?: UVAlgorithm;
 }
 
 // --- Helpers ------------------------------------------------------------------
@@ -209,8 +213,8 @@ export function knitTextureUV(mesh: MeshData, opts: KnitTextureOptions): MeshDat
     : extractPositions(base);
   const normals = computeVertexNormals(positions, base.triVerts);
 
-  // BFS UV unwrap on the densified mesh
-  const { uvs } = bfsUnwrapMesh(positions, base.triVerts);
+  // Surface-following UV unwrap on the densified mesh.
+  const { uvs } = unwrapMesh(positions, base.triVerts, opts.algorithm ?? 'bfs');
 
   displaceKnitJS(positions, normals, uvs, base.numVert,
     amplitude, stitchW, stitchH, rowOffset, yarnRadius, cosA, sinA, variation, seed);
@@ -253,7 +257,7 @@ export async function knitTextureUVAsync(mesh: MeshData, opts: KnitTextureOption
     ? Float32Array.from(base.vertProperties)
     : extractPositions(base);
   const normals = computeVertexNormals(positions, base.triVerts);
-  const { uvs }  = bfsUnwrapMesh(positions, base.triVerts);
+  const { uvs }  = unwrapMesh(positions, base.triVerts, opts.algorithm ?? 'bfs');
 
   const gpuParams: KnitGPUParams = {
     amplitude, stitchW, stitchH, rowOffset, yarnRadius, cosA, sinA, variation, seed,

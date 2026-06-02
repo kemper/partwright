@@ -81,6 +81,7 @@ export function defaultKnitOptions(mesh: MeshData): Required<KnitTextureOptions>
     seed: 1,
     quality: 3,
     subdivide: true,
+    algorithm: 'bfs',
   };
 }
 

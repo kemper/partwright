@@ -21,7 +21,7 @@ type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' 
 /** The subset of the console API the surface UI needs. */
 export interface SurfaceApi {
   applyFuzzySkin(opts?: { amplitude?: number; scale?: number; octaves?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
-  applyKnitTexture(opts?: { amplitude?: number; stitchWidth?: number; stitchHeight?: number; rowOffset?: number; roundness?: number; grainAngleDeg?: number; variation?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyKnitTexture(opts?: { amplitude?: number; stitchWidth?: number; stitchHeight?: number; rowOffset?: number; roundness?: number; grainAngleDeg?: number; variation?: number; seed?: number; quality?: number; algorithm?: 'bfs' | 'lscm' | 'harmonic'; preserveColor?: boolean }): Promise<ApplyResult>;
   applyCableKnit(opts?: { amplitude?: number; cableWidth?: number; cablePitch?: number; plyWidth?: number; grainAngleDeg?: number; variation?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyWaffleStitch(opts?: { amplitude?: number; cellWidth?: number; cellHeight?: number; sharpness?: number; rowOffset?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyFurVelvet(opts?: { amplitude?: number; fiberSpacing?: number; fiberLength?: number; octaves?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
@@ -92,6 +92,27 @@ function checkbox(label: string, checked: boolean, onChange: () => void) {
   input.addEventListener('change', onChange);
   wrap.append(input, el('span', '', label));
   return { wrap, get: () => input.checked };
+}
+
+/** A labeled <select> dropdown. `options` is [value, label] pairs. */
+function dropdown<T extends string>(
+  label: string,
+  options: [T, string][],
+  value: T,
+  onChange: () => void,
+) {
+  const wrap = el('label', 'block mb-3 text-xs text-zinc-300');
+  wrap.append(el('div', 'mb-1', label));
+  const sel = el('select', 'w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-100');
+  for (const [v, lbl] of options) {
+    const o = el('option', '', lbl);
+    o.value = v;
+    if (v === value) o.selected = true;
+    sel.append(o);
+  }
+  sel.addEventListener('change', onChange);
+  wrap.append(sel);
+  return { wrap, get: () => sel.value as T };
 }
 
 /** Find the viewport container used by the other overlay panels. */
@@ -185,8 +206,13 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
       const variation = slider('Variation', 0, 0.5, 0.1, 0.01, n => n.toFixed(2), schedulePreview);
       const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);
-      body.append(sw.wrap, sh.wrap, amp.wrap, round.wrap, grain.wrap, variation.wrap, seed.wrap, detail.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'V-shaped yarn strands with semicircle cross-section and over-under depth at crossings. Roundness controls yarn plumpness (0 = thin strand, 1 = fat/round yarn). Grain angle rotates stitch direction.'));
+      const algo = dropdown<'bfs' | 'lscm' | 'harmonic'>('UV layout', [
+        ['bfs', 'Triangle unfold (fast)'],
+        ['lscm', 'Conformal / LSCM'],
+        ['harmonic', 'Harmonic field rows'],
+      ], 'bfs', schedulePreview);
+      body.append(sw.wrap, sh.wrap, amp.wrap, round.wrap, grain.wrap, variation.wrap, seed.wrap, algo.wrap, detail.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'V-shaped yarn strands with over-under depth at crossings. UV layout sets how the stitch grid follows the surface: triangle-unfold is fastest; conformal (LSCM) minimizes stitch distortion; harmonic-field gives smooth latitude rows. LSCM/harmonic solve on the CPU and are slower to apply.'));
       currentOpts = () => ({
         stitchWidth: sw.get(),
         stitchHeight: sh.get(),
@@ -196,6 +222,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         variation: variation.get(),
         seed: seed.get(),
         quality: detail.get(),
+        algorithm: algo.get(),
       });
     } else if (active === 'cable') {
       const cw = slider('Cable width', span * 0.02, span * 0.3, span * 0.08, span * 0.005, n => n.toFixed(3), schedulePreview);

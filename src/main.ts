@@ -5949,6 +5949,7 @@ async function main() {
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         variation: (opts?.variation as number) ?? base.variation,
         seed: (opts?.seed as number) ?? base.seed,
+        algorithm: (opts?.algorithm as typeof base.algorithm) ?? base.algorithm,
       });
     }
     if (id === 'cable') {
@@ -6061,6 +6062,7 @@ async function main() {
       variation?: number;
       seed?: number;
       quality?: number;
+      algorithm?: 'bfs' | 'lscm' | 'harmonic';
       preserveColor?: boolean;
     }) {
       try {
@@ -6078,6 +6080,7 @@ async function main() {
           variation:    (opts?.variation    as number) ?? base.variation,
           seed:         (opts?.seed         as number) ?? base.seed,
           quality:      (opts?.quality      as number) ?? base.quality,
+          algorithm:    (opts?.algorithm    as typeof base.algorithm) ?? base.algorithm,
           subdivide:    true,
         });
         const result = await commitSurfaceModifier(modifier, preserve);
