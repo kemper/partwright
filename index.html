@@ -112,11 +112,19 @@
   <meta name="theme-color" content="#18181b" />
   <link rel="manifest" href="/manifest.json" />
   <link rel="stylesheet" href="/src/style.css" />
-  <!-- Preload landing-page fonts so they're ready before the JS handoff -->
+  <!-- Preload every brand font the landing page uses. Paired with
+       font-display:optional (src/style.css), this makes the real fonts ready
+       at first paint so text never reflows. The landing route no longer loads
+       the app bundle, so there's ample bandwidth for these small woff2s. -->
   <link rel="preload" href="/fonts/spacegrotesk-400.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/spacegrotesk-500.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
   <link rel="preload" href="/fonts/spacegrotesk-600.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/spacegrotesk-700.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/sora-600.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
   <link rel="preload" href="/fonts/sora-700.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
   <link rel="preload" href="/fonts/sora-800.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/jetbrainsmono-400.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
+  <link rel="preload" href="/fonts/jetbrainsmono-500.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
   <script src="coi-serviceworker.js"></script>
   <link rel="ai-instructions" href="ai.md" type="text/markdown" />
   <meta name="ai-instructions" content="See /llms.txt" />
@@ -148,18 +156,16 @@
     </div>
   </noscript>
 
-  <!-- Inline landing page — rendered immediately on / before any JS loads.
-       Removed by main.ts once the JS-built landing page is ready.
-       Hidden by the sync script below on all non-landing routes.
-
-       IMPORTANT: this markup must stay a faithful STRUCTURAL TWIN of the
-       JS-built landing page in src/ui/landing.ts (same sections, widths,
-       grids, headings, footer). When the JS page swaps in (~the JS bundle's
-       boot time later), any structural difference shows up as a jarring
-       layout shift. The only things allowed to change at the swap are the
-       genuinely-async tiles (catalog + recent sessions), which both pages
-       render as identically-sized skeletons until data arrives. The e2e
-       guard in tests/landing-no-layout-shift.spec.ts fails if they drift. -->
+  <!-- Landing page — THE canonical landing markup, rendered immediately on /.
+       The app bundle (src/main.ts) is never loaded on the landing route; only
+       the tiny src/landing/landingEntry.ts enhances this DOM in place (fills
+       the catalog + recent-session grids, wires the copy button). So this is
+       what the user sees from first paint with no later swap or reflow — the
+       only things that change after load are the async catalog/session tiles
+       filling into their skeletons. Every CTA here is a plain <a href> that
+       hard-navigates to a route the app honors (the app loads then). The
+       route-init.js script below hides this on non-landing routes.
+       Tests: tests/landing-static.spec.ts. -->
   <div id="landing-inline" style="position:fixed;inset:0;z-index:50;overflow-y:auto;background:#18181b;color:#fafafa;font-family:'Space Grotesk',system-ui,-apple-system,sans-serif">
     <style>
       #li-hero{display:grid;grid-template-columns:1fr 1.1fr;gap:48px;align-items:center}
@@ -241,7 +247,6 @@
           <a href="/whats-new" style="color:#a1a1aa;text-decoration:none">What&#39;s new</a>
         </nav>
         <div style="display:flex;align-items:center;gap:12px">
-          <span style="padding:6px 12px;border-radius:8px;font-size:12px;font-weight:500;background:rgba(255,255,255,0.05);border:1px solid #3f3f46;color:#d4d4d8">Dark</span>
           <a href="/editor" style="padding:8px 16px;border-radius:8px;font-size:14px;font-weight:600;color:#1c1917;text-decoration:none;background:linear-gradient(135deg,#fcd34d,#f59e0b)">Open editor &#8594;</a>
         </div>
       </header>
@@ -265,7 +270,7 @@
             </p>
             <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:32px">
               <a href="/editor" style="padding:12px 24px;border-radius:12px;font-size:14px;font-weight:600;color:#1c1917;text-decoration:none;background:linear-gradient(135deg,#fcd34d,#f59e0b)">Open the editor</a>
-              <a href="/editor" style="padding:12px 24px;border-radius:12px;font-size:14px;font-weight:600;color:#f4f4f5;text-decoration:none;background:rgba(255,255,255,0.05);border:1px solid #3f3f46">Take the guided tour</a>
+              <a href="/editor?tour=1" style="padding:12px 24px;border-radius:12px;font-size:14px;font-weight:600;color:#f4f4f5;text-decoration:none;background:rgba(255,255,255,0.05);border:1px solid #3f3f46">Take the guided tour</a>
               <a href="#li-agent-section" style="padding:12px 8px;font-size:14px;font-weight:500;color:#a1a1aa;text-decoration:none">Try with an AI agent &#8594;</a>
             </div>
             <div style="display:flex;flex-wrap:wrap;gap:8px 28px;font-size:14px;color:#71717a">
@@ -346,7 +351,7 @@
           <p style="font-size:12px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:0.1em;margin:0">What you can build</p>
           <a href="/catalog" style="flex-shrink:0;display:inline-flex;align-items:center;gap:4px;padding:6px 12px;border-radius:6px;font-size:14px;font-weight:500;text-decoration:none;border:1px solid rgba(20,184,166,0.6);color:#5eead4">Browse the full catalog &#8594;</a>
         </div>
-        <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
+        <div id="li-catalog-grid" style="display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(200px,1fr))">
           <div style="border-radius:8px;overflow:hidden;background:rgba(39,39,42,0.6);border:1px solid #27272a"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:14px;background:rgba(63,63,70,0.5);border-radius:4px;width:75%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:50%"></div></div></div>
           <div style="border-radius:8px;overflow:hidden;background:rgba(39,39,42,0.6);border:1px solid #27272a"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:14px;background:rgba(63,63,70,0.5);border-radius:4px;width:60%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:45%"></div></div></div>
           <div style="border-radius:8px;overflow:hidden;background:rgba(39,39,42,0.6);border:1px solid #27272a"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:10px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:14px;background:rgba(63,63,70,0.5);border-radius:4px;width:80%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:55%"></div></div></div>
@@ -379,9 +384,9 @@
           <div style="background:#09090b;border:1px solid #27272a;border-radius:12px;overflow:hidden">
             <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 16px;border-bottom:1px solid #27272a;background:#18181b">
               <span style="font-size:12px;font-weight:500;color:#a1a1aa">Try this prompt with Claude / ChatGPT</span>
-              <span style="font-size:12px;color:#a1a1aa">Copy</span>
+              <button id="li-copy-prompt" type="button" style="font-size:12px;color:#a1a1aa;background:none;border:0;cursor:pointer;padding:0">Copy</button>
             </div>
-            <pre style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;line-height:1.625;color:#d4d4d8;padding:12px 16px;max-height:18rem;overflow:auto;white-space:pre-wrap;margin:0">Read the AI agent instructions at https://www.partwrightstudio.com/ai.md to understand how to use this tool.
+            <pre id="li-prompt" style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;line-height:1.625;color:#d4d4d8;padding:12px 16px;max-height:18rem;overflow:auto;white-space:pre-wrap;margin:0">Read the AI agent instructions at https://www.partwrightstudio.com/ai.md to understand how to use this tool.
 
 Then navigate to https://www.partwrightstudio.com/editor and use the window.partwright console API to:
 
@@ -397,7 +402,7 @@ Then navigate to https://www.partwrightstudio.com/editor and use the window.part
       <!-- Recent sessions skeleton (populated by JS) -->
       <section style="width:100%;max-width:64rem;padding:48px 24px;border-top:1px solid #27272a;box-sizing:border-box">
         <p style="font-size:12px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:0.1em;margin:0 0 16px">Your recent sessions</p>
-        <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
+        <div id="li-sessions-grid" style="display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">
           <div style="border-radius:8px;overflow:hidden;background:#27272a;border:1px solid #3f3f46"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:8px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:12px;background:rgba(63,63,70,0.5);border-radius:4px;width:66%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:33%"></div></div></div>
           <div style="border-radius:8px;overflow:hidden;background:#27272a;border:1px solid #3f3f46"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:8px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:12px;background:rgba(63,63,70,0.5);border-radius:4px;width:55%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:38%"></div></div></div>
           <div style="border-radius:8px;overflow:hidden;background:#27272a;border:1px solid #3f3f46"><div class="li-sk" style="aspect-ratio:1;background:rgba(63,63,70,0.5)"></div><div style="padding:8px 12px;display:flex;flex-direction:column;gap:6px"><div class="li-sk" style="height:12px;background:rgba(63,63,70,0.5);border-radius:4px;width:70%"></div><div class="li-sk" style="height:10px;background:rgba(63,63,70,0.4);border-radius:4px;width:30%"></div></div></div>
@@ -446,6 +451,6 @@ Then navigate to https://www.partwrightstudio.com/editor and use the window.part
   <script src="/route-init.js"></script>
 
   <div id="app" class="flex flex-col h-screen w-screen"></div>
-  <script type="module" src="/src/main.ts"></script>
+  <script type="module" src="/src/entry.ts"></script>
 </body>
 </html>
