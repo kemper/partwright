@@ -500,10 +500,6 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
   return validateCode(source, l);
 }
 
-export function isEngineReady(lang: Language): boolean {
-  return engines[lang].isReady();
-}
-
 /** Ask the engine Worker for a STEP blob of the most recent BREP-engine
  *  result. Returns `null` (with no rejection) when no shape is available so
  *  the caller can surface a user-friendly "save your BREP model first"

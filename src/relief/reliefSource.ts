@@ -8,7 +8,6 @@
 import {
   getReliefSourceRecord,
   setReliefSourceRecord,
-  deleteReliefSourceRecord,
   type ReliefSourceRecord,
 } from '../storage/db';
 
@@ -42,10 +41,3 @@ export async function getReliefSource(sessionId: string): Promise<ReliefSource |
   return { file, isSvg: record.isSvg };
 }
 
-export async function deleteReliefSource(sessionId: string): Promise<void> {
-  try {
-    await deleteReliefSourceRecord(sessionId);
-  } catch {
-    /* best-effort */
-  }
-}

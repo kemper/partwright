@@ -43,10 +43,6 @@ export function isActive(): boolean {
   return active;
 }
 
-export function getColor(): [number, number, number] {
-  return [...currentColor] as [number, number, number];
-}
-
 export function setColor(c: [number, number, number]): void {
   currentColor = [c[0], c[1], c[2]];
 }

@@ -1,24 +1,9 @@
-// Shared Tailwind class fragments and z-index values used across modals,
-// overlays, and panels. Keep these as the single source of truth — when
-// theming changes (e.g. button color, modal padding), update once here
-// rather than chasing copies through the UI tree.
+// Shared Tailwind class fragments used across modals, overlays, and dialogs.
+// Keep these as the single source of truth — when theming changes (e.g. button
+// color), update once here rather than chasing copies through the UI tree.
 
-/** Z-index layers. Higher values render on top.
- *  - Side panels (AI drawer) sit below modals so that opening a modal
- *    from inside the panel doesn't get hidden underneath it. */
-export const Z_PANEL = 40;
-export const Z_MODAL = 50;
-/** Confirm / prompt dialogs ({@link ./dialogs}) stack above modals so a
- *  confirmation raised from inside a modal layers on top of it. */
-export const Z_DIALOG = 70;
-
-/** Standard modal overlay (dim only, no blur). */
-export const OVERLAY_CENTERED = 'fixed inset-0 bg-black/60 flex items-center justify-center z-50';
-
-/** Modal overlay with backdrop blur — used by the import/export confirm dialogs. */
-export const OVERLAY_CENTERED_BLURRED = 'fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center';
-
-/** Overlay for the stackable confirm/prompt dialogs — sits above modals (z-70). */
+/** Overlay for the stackable confirm/prompt dialogs ({@link ./dialogs}) —
+ *  sits above modals (z-70). */
 export const OVERLAY_DIALOG = 'fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4';
 
 /** Standard primary action button (blue, white text). */
