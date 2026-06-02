@@ -34,6 +34,29 @@ export function updateCompanionFile(path: string, content: string): void {
   active = { ...active, [path]: content };
 }
 
+/** Compare two companion-file maps for equality (same keys, same content) so a
+ *  save or draft-restore that only touches a companion file is still detected as
+ *  a change. */
+export function companionFilesEqual(
+  a: Record<string, string> | undefined,
+  b: Record<string, string> | undefined,
+): boolean {
+  const aKeys = a ? Object.keys(a).sort() : [];
+  const bKeys = b ? Object.keys(b).sort() : [];
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((k, i) => bKeys[i] === k && a![k] === b![k]);
+}
+
+/** Normalize a user- or import-supplied name into a MEMFS-relative companion
+ *  key: trim, strip a leading `./`, and ensure a `.scad` extension — so it
+ *  matches what an `include <name>` in the main source resolves against. */
+export function normalizeCompanionPath(name: string): string {
+  let p = name.trim();
+  if (p.startsWith('./')) p = p.slice(2);
+  if (!p.endsWith('.scad')) p += '.scad';
+  return p;
+}
+
 /** Parse non-BOSL2 `include`/`use` paths out of a SCAD source string.
  *  Returns MEMFS-relative paths (leading `./` stripped, BOSL2 and builtins
  *  excluded). */

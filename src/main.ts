@@ -22,7 +22,7 @@
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
+import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
@@ -110,7 +110,7 @@ import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
-import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes } from './import/companionFiles';
+import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
 import { applyFuzzy, applySmooth, applyVoxelize, applyScale, defaultFuzzyOptions, defaultSmoothOptions, type ModifierResult } from './surface/modifiers';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
@@ -2216,9 +2216,15 @@ async function main() {
       scadCode = await file.text();
       const missing = detectMissingIncludes(scadCode);
       if (missing.length > 0) {
+        // Open the modal immediately on the static regex candidates, and kick
+        // off a fast OpenSCAD compile probe in parallel that narrows the list to
+        // the dependencies OpenSCAD genuinely can't resolve. `null` from the
+        // probe means it couldn't run — the modal keeps all candidates.
+        const refine = detectScadIncludesAsync(scadCode).catch(() => null);
         const result = await showScadCompanionModal({
           filename: file.name,
           missingIncludes: missing,
+          refine,
         });
         if (result === null) return false; // user cancelled
         scadCompanions = result;
@@ -2234,16 +2240,11 @@ async function main() {
       } else if (source === 'JS' || source === 'SCAD') {
         const code = scadCode ?? await file.text();
         const lang: Language = source === 'SCAD' ? 'scad' : 'manifold-js';
-        committed = await placeImportedCodeFile(code, lang, file.name);
-        // Register any companion files supplied through the modal, re-run with
-        // them in place, then save so the first DB version already carries them.
-        if (committed && scadCompanions !== undefined && Object.keys(scadCompanions).length > 0) {
-          for (const [path, content] of Object.entries(scadCompanions)) {
-            addCompanionFileToRegistry(path, content);
-          }
-          await runCodeSync(getValue());
-          await saveCurrentVersion();
-        }
+        // placeImportedCodeFile registers any modal-supplied companions itself
+        // (after the placement is chosen), so the first saved version carries
+        // them — and so the "companion file of current part" choice can attach
+        // the imported file too.
+        committed = await placeImportedCodeFile(code, lang, file.name, scadCompanions);
       } else if (source === 'STL') {
         const parsed = await parseSTLFile(file);
         if (parsed) {
@@ -3124,11 +3125,37 @@ async function main() {
    *  modal when there is real existing work. Options: new part, replace current
    *  part, or new session. Distinct from placeImportedCode (which handles
    *  generated code / voxel / BREP with a compose-into current-part path). */
-  async function placeImportedCodeFile(code: string, lang: Language, filename: string): Promise<boolean> {
+  async function placeImportedCodeFile(
+    code: string,
+    lang: Language,
+    filename: string,
+    companions?: Record<string, string>,
+  ): Promise<boolean> {
     const sessionName = filename.replace(/\.(js|scad)$/i, '');
     const state = getState();
+
+    // Register any companion files that rode along with the import (the modal's
+    // supplied deps, plus optionally the imported file itself), re-run with them
+    // in place, and persist so the saved version already carries them. A no-op
+    // when there's nothing to add — the seeding path saves its own base version.
+    const applyCompanions = async (self?: { path: string; content: string }): Promise<void> => {
+      let any = false;
+      if (self) { addCompanionFileToRegistry(self.path, self.content); any = true; }
+      if (companions) {
+        for (const [path, content] of Object.entries(companions)) {
+          addCompanionFileToRegistry(path, content);
+          any = true;
+        }
+      }
+      if (any) {
+        await runCodeSync(getValue());
+        await saveCurrentVersion();
+      }
+    };
+
     if (!state.session || currentPartIsExpendable()) {
       await importCodePayload(code, lang, sessionName);
+      await applyCompanions();
       return true;
     }
     const partLabel = state.currentPart?.name ? `"${state.currentPart.name}"` : 'the current part';
@@ -3139,9 +3166,20 @@ async function main() {
       canAddToCurrent: true,
       currentPartTitle: `Replace current part — ${partLabel}`,
       currentPartDesc: "Replace this part's code with the imported file. The current code is saved as a version first.",
+      // Companion attach only makes sense for a .scad imported into a SCAD part.
+      canAddAsCompanion: lang === 'scad' && getActiveLanguage() === 'scad',
       recommend: 'new-part',
     });
     if (!target) return false;
+    if (target === 'companion-file') {
+      // Attach the imported file as a dependency of the current part — keep the
+      // current code, just make `include <name.scad>` resolvable.
+      await preserveCurrentEditsIfNeeded();
+      const companionPath = normalizeCompanionPath(filename);
+      await applyCompanions({ path: companionPath, content: code });
+      showToast(`Added ${companionPath} as a companion of this part.`, { variant: 'success', source: 'import' });
+      return true;
+    }
     if (target === 'new-session') {
       await importCodePayload(code, lang, sessionName);
     } else if (target === 'new-part') {
@@ -3152,6 +3190,7 @@ async function main() {
       await preserveCurrentEditsIfNeeded();
       await applyCodeToCurrentPart(code, lang);
     }
+    await applyCompanions();
     return true;
   }
 
@@ -3782,7 +3821,7 @@ async function main() {
       // saving inside loadVersionIntoEditor would land under the wrong id.
       const { session, currentPart } = getState();
       if (session && currentPart) {
-        await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id);
+        await writeDraft(session.id, getActiveLanguage(), getValue(), currentPart.id, getCompanionFiles());
       }
       const version = await changePart(partId);
       // skipDraftSave: the outgoing draft was already saved above.
@@ -4114,7 +4153,7 @@ async function main() {
       if (!opts.skipDraftSave) {
         const sid = getState().session?.id;
         const pid = getState().currentPart?.id;
-        if (sid) await writeDraft(sid, getActiveLanguage(), getValue(), pid);
+        if (sid) await writeDraft(sid, getActiveLanguage(), getValue(), pid, getCompanionFiles());
       }
       await switchLanguage(versionLang);
     } else {
@@ -4629,9 +4668,16 @@ async function main() {
       if (current.index !== latestIndex) return;
     }
     const draft = await readDraft(sid, getActiveLanguage(), pid);
-    if (draft == null || draft === getValue()) return;
-    setValue(draft);
-    await runCodeSync(draft);
+    if (draft == null) return;
+    // Recover unsaved companion edits too: a draft whose code matches the loaded
+    // version but whose companions differ still represents unsaved work.
+    const isScad = getActiveLanguage() === 'scad';
+    const draftCompanions = isScad ? (draft.companionFiles ?? {}) : {};
+    const companionsDiffer = isScad && !companionFilesEqual(getCompanionFiles(), draftCompanions);
+    if (draft.code === getValue() && !companionsDiffer) return;
+    if (isScad) setCompanionFiles(draftCompanions);
+    setValue(draft.code);
+    await runCodeSync(draft.code);
   }
 
   async function syncEditorFromURL() {
@@ -4958,7 +5004,7 @@ async function main() {
     const pid = getState().currentPart?.id;
     const lang = getActiveLanguage();
     const code = getValue();
-    void writeDraft(sid, lang, code, pid).catch((e) => {
+    void writeDraft(sid, lang, code, pid, getCompanionFiles()).catch((e) => {
       if (isQuotaError(e)) {
         showToast('Storage full — could not autosave your draft. Free up space or export your work.', { variant: 'warn' });
       }
@@ -4998,6 +5044,18 @@ async function main() {
   let _lastSyncedVersionId: string | undefined;
   const companionEditorPanel = document.getElementById('companion-editor-panel') as HTMLElement;
 
+  // Debounced draft autosave for companion-file edits — mirrors the main
+  // editor's idle autosave so companion typing survives a reload without an
+  // explicit save, but coalesces keystrokes so IndexedDB isn't hit per-key.
+  let _companionDraftTimer: number | undefined;
+  function scheduleCompanionDraftSave(): void {
+    if (_companionDraftTimer !== undefined) clearTimeout(_companionDraftTimer);
+    _companionDraftTimer = window.setTimeout(() => {
+      _companionDraftTimer = undefined;
+      autosaveDraft();
+    }, getConfig().ui.companionDraftDebounceMs);
+  }
+
   // CodeMirror editor for companion SCAD files — created once, content swapped
   // when switching between companion tabs.
   let _companionEditor: CMEditorView | null = null;
@@ -5007,6 +5065,7 @@ async function main() {
       if (_companionActiveTab === null) return;
       updateCompanionFile(_companionActiveTab, content);
       runCode(getValue(), { surfaceErrors: false });
+      scheduleCompanionDraftSave();
     });
     return _companionEditor;
   }
@@ -5112,8 +5171,7 @@ async function main() {
   async function promptAddCompanion(): Promise<void> {
     const filename = await promptDialog('Companion file name (e.g. models or lib/utils):');
     if (!filename || !filename.trim()) return;
-    let path = filename.trim().startsWith('./') ? filename.trim().slice(2) : filename.trim();
-    if (!path.endsWith('.scad')) path += '.scad';
+    const path = normalizeCompanionPath(filename);
     if (getCompanionFiles()[path] !== undefined) {
       showToast(`${path} is already a companion file.`, { variant: 'warn' });
       return;
@@ -5121,6 +5179,10 @@ async function main() {
     addCompanionFileToRegistry(path, '');
     renderCompanionFilesBar();
     switchToCompanionTab(path);
+    // Persist immediately so a freshly-added companion survives a reload even if
+    // the user navigates away before saving — mirrors the remove path, which
+    // already saves. (Add was previously registry-only and silently lost.)
+    void saveCurrentVersion();
   }
 
   async function confirmRemoveCompanion(path: string): Promise<void> {
@@ -5851,18 +5913,25 @@ async function main() {
     if (sid) {
       // Persist the previous language's working buffer so flipping back
       // restores it exactly. Both languages stay live in IDB until the
-      // part/session is deleted.
-      await writeDraft(sid, prevLang, currentCode, pid);
+      // part/session is deleted. Companions ride along for the SCAD buffer.
+      await writeDraft(sid, prevLang, currentCode, pid, getCompanionFiles());
     }
     await applyEngineLanguage(lang);
     let nextCode: string | null = null;
-    if (sid) nextCode = await readDraft(sid, lang, pid);
+    let nextCompanions: Record<string, string> | undefined;
+    if (sid) {
+      const draft = await readDraft(sid, lang, pid);
+      if (draft) { nextCode = draft.code; nextCompanions = draft.companionFiles; }
+    }
     if (nextCode === null) {
       nextCode = lang === 'scad' ? DRAFT_STUB_SCAD
         : lang === 'replicad' ? DRAFT_STUB_REPLICAD
         : lang === 'voxel' ? DRAFT_STUB_VOXEL
         : DRAFT_STUB_JS;
     }
+    // Restore the target language's companion set: the SCAD draft's saved
+    // companions, or empty for any non-SCAD buffer (which never has them).
+    setCompanionFiles(lang === 'scad' ? (nextCompanions ?? {}) : {});
     setValue(nextCode);
     runCode(nextCode);
   }

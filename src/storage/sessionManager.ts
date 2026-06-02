@@ -56,7 +56,7 @@ import {
   type SerializedAnnotation,
 } from '../annotations/annotations';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
-import { setCompanionFiles } from '../import/companionFiles';
+import { setCompanionFiles, companionFilesEqual } from '../import/companionFiles';
 import { getActiveLanguage } from '../geometry/engine';
 import { effectiveVersionLanguage, asLanguage } from './languageFallback';
 
@@ -576,18 +576,28 @@ export async function renameSession(id: string, newName: string): Promise<void> 
 // Drafts are persisted so a reload doesn't lose them; they're cascade-deleted
 // with the session (via sessionId index) and pruned when a part is deleted.
 
+/** The recoverable contents of an editor draft: the main buffer plus, for SCAD
+ *  drafts, any unsaved companion files. */
+export interface DraftContents {
+  code: string;
+  companionFiles?: Record<string, string>;
+}
+
 /** Read the working buffer for a (session, part, language) triple. Pass
  *  `partId` to scope the draft to a specific part; omit for legacy session-
  *  wide access. Returns null when no draft exists yet. */
-export async function readDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<string | null> {
+export async function readDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<DraftContents | null> {
   const row = await dbGetDraft(sessionId, language, partId);
-  return row ? row.code : null;
+  if (!row) return null;
+  return { code: row.code, companionFiles: row.companionFiles };
 }
 
 /** Write the working buffer for a (session, part, language) triple. Idempotent
- *  — the row is upserted by composite key. */
-export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string): Promise<void> {
-  await dbSetDraft(sessionId, language, code, partId);
+ *  — the row is upserted by composite key. `companionFiles` is persisted for
+ *  SCAD drafts so companion edits survive a reload; pass `{}` (or omit) for
+ *  languages that don't use them. */
+export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>): Promise<void> {
+  await dbSetDraft(sessionId, language, code, partId, companionFiles);
 }
 
 
@@ -879,18 +889,6 @@ function annotationsEqual(a: unknown[] | undefined, b: unknown[] | undefined): b
  *  code is identical (params live in code; values are overrides), but the dialed
  *  geometry is the change. Key order is irrelevant, so compare sorted entries. */
 function paramValuesEqual(a: Record<string, unknown> | undefined, b: Record<string, unknown> | undefined): boolean {
-  const aKeys = a ? Object.keys(a).sort() : [];
-  const bKeys = b ? Object.keys(b).sort() : [];
-  if (aKeys.length !== bKeys.length) return false;
-  return aKeys.every((k, i) => bKeys[i] === k && a![k] === b![k]);
-}
-
-/** Compare companion-file maps so a save that only adds/edits a companion file
- *  still creates a new version. */
-function companionFilesEqual(
-  a: Record<string, string> | undefined,
-  b: Record<string, string> | undefined,
-): boolean {
   const aKeys = a ? Object.keys(a).sort() : [];
   const bKeys = b ? Object.keys(b).sort() : [];
   if (aKeys.length !== bKeys.length) return false;

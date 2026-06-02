@@ -183,6 +183,66 @@ function writeCompanionFilesToMemfs(instance: any, companionFiles: Record<string
   }
 }
 
+/** Pull the paths OpenSCAD couldn't resolve out of a captured stderr blob.
+ *  Matches the family of "Can't open …" warnings OpenSCAD emits for a missing
+ *  `include <>` / `use <>` target. Returns MEMFS-relative paths (leading `./`
+ *  and `/` stripped) so they line up with the companion-file registry keys. */
+function parseUnresolvedIncludes(stderr: string[]): string[] {
+  const re = /can'?t open (?:include file|library|use file|use\/include file)\s+'([^']+)'/i;
+  const found: string[] = [];
+  for (const line of stderr) {
+    const m = re.exec(line);
+    if (!m) continue;
+    let p = m[1].trim();
+    if (p.startsWith('./')) p = p.slice(2);
+    if (p.startsWith('/')) p = p.slice(1);
+    if (p) found.push(p);
+  }
+  return [...new Set(found)];
+}
+
+/** Compile `source` just far enough to resolve its `include`/`use` references
+ *  and report which ones OpenSCAD can't open. Uses a CSG export so includes are
+ *  resolved at parse time without paying for tessellation, making it fast enough
+ *  to run on import. By design it ignores every other compile error (syntax,
+ *  geometry, etc.) — only genuinely-missing dependencies are returned, so a file
+ *  the user still needs to fix manually doesn't block the dependency prompt.
+ *
+ *  `companionFiles`, if supplied, are written into MEMFS first so deps the user
+ *  has already provided aren't reported as missing (used when re-checking after
+ *  the import modal). BOSL2 is seeded the same way the run path does it. Any
+ *  internal failure degrades to an empty list — the caller falls back to its
+ *  static regex candidates. */
+export async function detectUnresolvedIncludes(
+  source: string,
+  companionFiles?: Record<string, string>,
+): Promise<string[]> {
+  if (!createFn) return [];
+  let instance: any;
+  let stderr: string[];
+  try {
+    ({ instance, stderr } = await createInstance());
+  } catch {
+    return [];
+  }
+  try {
+    if (sourceUsesBosl2(source)) {
+      try { await ensureBosl2InMemfs(instance); } catch { /* missing BOSL2 isn't what we're probing */ }
+    }
+    writeCompanionFilesToMemfs(instance, companionFiles);
+    instance.FS.writeFile('/in.scad', source);
+    // CSG export resolves include/use targets at parse time but skips meshing.
+    // A hard parse failure still leaves the "Can't open" warnings on stderr, so
+    // we read them regardless of the exit code.
+    try {
+      instance.callMain(['--export-format=csg', '-o', '/out.csg', '/in.scad']);
+    } catch { /* parse/runtime throw — stderr still holds the include warnings */ }
+    return parseUnresolvedIncludes(stderr);
+  } catch {
+    return [];
+  }
+}
+
 async function runScadInner(
   source: string,
   defines: string[],

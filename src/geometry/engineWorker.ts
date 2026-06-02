@@ -8,6 +8,7 @@
 //   { type: 'init' }
 //   { type: 'execute',           callId, code, lang?, imports?, circularSegments?, params? }
 //   { type: 'validate',          callId, code, lang? }
+//   { type: 'detect_includes',   callId, code }
 //   { type: 'exportSTEP',        callId }
 //   { type: 'importSTEPToBrep',  callId, bytes, filename }
 //   { type: 'importSTEPToMesh',  callId, bytes }
@@ -22,6 +23,7 @@
 //   { type: 'ready' }
 //   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, lostLabels, paramsSchema }
 //   { type: 'validate_result',         callId, result }
+//   { type: 'detect_includes_result',  callId, result }
 //   { type: 'exportSTEP_result',       callId, blob, error }
 //   { type: 'importSTEPToBrep_result', callId, filename, error }
 //   { type: 'importSTEPToMesh_result', callId, mesh, error }
@@ -37,7 +39,7 @@
 // labelMap (Map<string, Set<number>>) is serialised as [string, number[]][].
 
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
-import { runScadAsync, openscadEngine } from './engines/openscad';
+import { runScadAsync, openscadEngine, detectUnresolvedIncludes } from './engines/openscad';
 import { runReplicadAsync, replicadEngine, getLastBrepShape, clearLastBrepShape } from './engines/replicad';
 import { voxelEngine } from './engines/voxel';
 import { ensureBrepLoaded, sourceUsesBrep, parseStepBlob, pushPendingBrepImport, clearPendingBrepImports } from './brepRuntime';
@@ -396,6 +398,25 @@ self.onmessage = async (event: MessageEvent) => {
   if (msg.type === 'enhance_cancel') {
     const { callId } = msg as unknown as { callId: string };
     if (enhanceCancelFlags.has(callId)) enhanceCancelFlags.set(callId, true);
+    return;
+  }
+
+  // ── detect_includes ──────────────────────────────────────────────────────
+  // Fast import-time dependency probe: compile the SCAD source far enough to
+  // resolve include/use targets and report the ones OpenSCAD can't open.
+  if (msg.type === 'detect_includes') {
+    const { callId, code } = msg as unknown as { callId: string; code: string };
+    try {
+      if (!openscadEngine.isReady()) await openscadEngine.init();
+      const result = await detectUnresolvedIncludes(code);
+      self.postMessage({ type: 'detect_includes_result', callId, result });
+    } catch (err) {
+      self.postMessage({
+        type: 'error',
+        callId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
     return;
   }
 

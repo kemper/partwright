@@ -141,6 +141,10 @@ export interface SessionDraft {
   sessionId: string;
   language: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
   code: string;
+  /** Unsaved companion SCAD files (path → content) for this draft, so a reload
+   *  recovers companion-file edits the same way it recovers main-code edits.
+   *  Only written for SCAD drafts that have companions; absent otherwise. */
+  companionFiles?: Record<string, string>;
   updatedAt: number;
 }
 
@@ -1002,13 +1006,14 @@ export async function getDraft(sessionId: string, language: 'manifold-js' | 'sca
   return reqToPromise(store.get(draftId(sessionId, language, partId))) as Promise<SessionDraft | null>;
 }
 
-export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string): Promise<void> {
+export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>): Promise<void> {
   const store = await tx('drafts', 'readwrite');
   const row: SessionDraft = {
     id: draftId(sessionId, language, partId),
     sessionId,
     language,
     code,
+    ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
     updatedAt: Date.now(),
   };
   store.put(row);
