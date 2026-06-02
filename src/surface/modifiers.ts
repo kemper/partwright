@@ -14,7 +14,7 @@
 
 import type { MeshData } from '../geometry/types';
 import { fuzzySkin, type FuzzySkinOptions } from './fuzzySkin';
-import { knitTextureUV, knitTextureUVAsync, type KnitTextureOptions } from './knitTexture';
+import { knitTextureUV, knitTextureUVAsync, knitTextureUVPatch, knitTextureUVPatchAsync, type KnitTextureOptions } from './knitTexture';
 import { cableKnit, type CableKnitOptions } from './cableKnit';
 import { waffleStitch, type WaffleStitchOptions } from './waffleStitch';
 import { furVelvet, type FurVelvetOptions } from './furVelvet';
@@ -129,16 +129,26 @@ export async function applyKnitAsync(mesh: MeshData, opts: KnitTextureOptions): 
   return knitManifoldResult(opts, baked);
 }
 
-function knitManifoldResult(opts: KnitTextureOptions, mesh: MeshData): ModifierManifoldResult {
+function knitManifoldResult(opts: KnitTextureOptions, mesh: MeshData, label = 'knit texture'): ModifierManifoldResult {
   return {
     kind: 'manifold',
-    label: 'knit texture',
+    label,
     mesh,
     code: manifoldWrapper([
       `Knit texture applied on ${today()} — stitch ${opts.stitchWidth.toFixed(2)} × ${(opts.stitchHeight ?? opts.stitchWidth * 1.4).toFixed(2)}, amplitude ${opts.amplitude}.`,
       `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
     ]),
   };
+}
+
+export function applyKnitPatch(mesh: MeshData, opts: KnitTextureOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const baked = knitTextureUVPatch(mesh, opts, selectedTris);
+  return knitManifoldResult(opts, baked, 'knit texture (patch)');
+}
+
+export async function applyKnitPatchAsync(mesh: MeshData, opts: KnitTextureOptions, selectedTris: Set<number>): Promise<ModifierManifoldResult> {
+  const baked = await knitTextureUVPatchAsync(mesh, opts, selectedTris);
+  return knitManifoldResult(opts, baked, 'knit texture (patch)');
 }
 
 export function defaultCableOptions(mesh: MeshData): Required<CableKnitOptions> {

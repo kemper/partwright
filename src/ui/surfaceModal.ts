@@ -14,6 +14,10 @@ import { registerCommands } from './commandPalette';
 import { getConfig } from '../config/appConfig';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
+import { pickFace } from '../color/facePicker';
+import { addPointerSuppressor } from '../renderer/viewport';
+import { buildAdjacency, findConnectedFromSeed } from '../color/adjacency';
+import { getCurrentMesh, previewTriangles } from '../color/paintMode';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize';
@@ -21,7 +25,7 @@ type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' 
 /** The subset of the console API the surface UI needs. */
 export interface SurfaceApi {
   applyFuzzySkin(opts?: { amplitude?: number; scale?: number; octaves?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
-  applyKnitTexture(opts?: { amplitude?: number; stitchWidth?: number; stitchHeight?: number; rowOffset?: number; roundness?: number; grainAngleDeg?: number; variation?: number; seed?: number; quality?: number; algorithm?: 'bfs' | 'lscm' | 'harmonic'; preserveColor?: boolean }): Promise<ApplyResult>;
+  applyKnitTexture(opts?: { amplitude?: number; stitchWidth?: number; stitchHeight?: number; rowOffset?: number; roundness?: number; grainAngleDeg?: number; variation?: number; seed?: number; quality?: number; algorithm?: 'bfs' | 'lscm' | 'harmonic'; selectedTriangles?: Set<number>; preserveColor?: boolean }): Promise<ApplyResult>;
   applyCableKnit(opts?: { amplitude?: number; cableWidth?: number; cablePitch?: number; plyWidth?: number; grainAngleDeg?: number; variation?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyWaffleStitch(opts?: { amplitude?: number; cellWidth?: number; cellHeight?: number; sharpness?: number; rowOffset?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
   applyFurVelvet(opts?: { amplitude?: number; fiberSpacing?: number; fiberLength?: number; octaves?: number; grainAngleDeg?: number; seed?: number; quality?: number; preserveColor?: boolean }): Promise<ApplyResult>;
@@ -166,6 +170,104 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   // Default to preserve; the toggle lets the user clear instead. The warning
   // only shows when the model is actually painted.
   let preserveColor = true;
+
+  // --- Region selector state (persists across tab switches) ---
+  let regionSelection: Set<number> | null = null;
+  let regionTeardown: (() => void) | null = null;
+  let selectionSuppressor: (() => void) | null = null;
+  let inSelectionMode = false;
+  let lastSeedTri: number | null = null;
+
+  // Region selector UI elements — created once, appended to knit tab on each renderTab().
+  const regionStatus = el('div', 'text-[11px] text-zinc-400 min-h-[1rem] mt-1 mb-1');
+  regionStatus.textContent = 'No region — applies to whole model';
+
+  const selectBtn = el('button', BTN_BASE + ' flex-1 text-left', 'Select region');
+  const clearRegionBtn = el('button', BTN_BASE, 'Clear');
+  clearRegionBtn.disabled = true;
+  const regionBtns = el('div', 'flex gap-2 mb-1');
+  regionBtns.append(selectBtn, clearRegionBtn);
+
+  const spreadSlider = slider('Spread', 10, 80, 45, 5, n => n + '°', () => {
+    if (lastSeedTri !== null) scheduleReselect();
+  });
+
+  const regionSection = el('div', 'mt-1 mb-2 pt-2 border-t border-zinc-700/50');
+  regionSection.append(
+    el('div', 'text-[11px] text-zinc-500 mb-1', 'Region (optional — LSCM/harmonic work best on a patch)'),
+    regionBtns, regionStatus, spreadSlider.wrap,
+  );
+
+  function exitSelectionMode() {
+    inSelectionMode = false;
+    selectionSuppressor?.();
+    selectionSuppressor = null;
+    document.body.style.cursor = '';
+    selectBtn.textContent = 'Select region';
+    selectBtn.classList.remove('ring-2', 'ring-sky-500');
+  }
+
+  function clearRegion() {
+    exitSelectionMode();
+    regionTeardown?.();
+    regionTeardown = null;
+    regionSelection = null;
+    lastSeedTri = null;
+    clearRegionBtn.disabled = true;
+    regionStatus.textContent = 'No region — applies to whole model';
+    schedulePreview();
+  }
+
+  let reselectTimer: number | undefined;
+  function scheduleReselect() {
+    if (reselectTimer !== undefined) clearTimeout(reselectTimer);
+    reselectTimer = window.setTimeout(() => {
+      reselectTimer = undefined;
+      if (lastSeedTri === null) return;
+      const mesh = getCurrentMesh();
+      if (!mesh) return;
+      const adjacency = buildAdjacency(mesh);
+      const maxDevCos = Math.cos((spreadSlider.get() * Math.PI) / 180);
+      const tris = findConnectedFromSeed(lastSeedTri, adjacency, maxDevCos);
+      regionTeardown?.();
+      regionTeardown = previewTriangles(tris, [0.15, 0.75, 0.85]);
+      regionSelection = tris;
+      clearRegionBtn.disabled = false;
+      regionStatus.textContent = `${tris.size.toLocaleString()} triangles selected`;
+      schedulePreview();
+    }, 150);
+  }
+
+  selectBtn.addEventListener('click', () => {
+    if (inSelectionMode) { exitSelectionMode(); regionStatus.textContent = regionSelection ? `${regionSelection.size.toLocaleString()} triangles selected` : 'No region — applies to whole model'; return; }
+    clearPreviewIfDirty();
+    inSelectionMode = true;
+    selectBtn.textContent = 'Cancel';
+    selectBtn.classList.add('ring-2', 'ring-sky-500');
+    regionStatus.textContent = 'Click on the model to flood-fill a patch…';
+    document.body.style.cursor = 'crosshair';
+    selectionSuppressor = addPointerSuppressor((evt: PointerEvent) => {
+      if (evt.type !== 'pointerdown') return false;
+      const mesh = getCurrentMesh();
+      if (!mesh) { exitSelectionMode(); return true; }
+      const hit = pickFace(evt as MouseEvent);
+      if (!hit) return true; // clicked empty space — veto orbit but keep waiting
+      lastSeedTri = hit.triangleIndex;
+      const adjacency = buildAdjacency(mesh);
+      const maxDevCos = Math.cos((spreadSlider.get() * Math.PI) / 180);
+      const tris = findConnectedFromSeed(hit.triangleIndex, adjacency, maxDevCos);
+      regionTeardown?.();
+      regionTeardown = previewTriangles(tris, [0.15, 0.75, 0.85]);
+      regionSelection = tris;
+      clearRegionBtn.disabled = false;
+      regionStatus.textContent = `${tris.size.toLocaleString()} triangles selected`;
+      exitSelectionMode();
+      schedulePreview();
+      return true;
+    });
+  });
+
+  clearRegionBtn.addEventListener('click', clearRegion);
   const colorRow = el('div', 'mb-3');
   if (painted) {
     const colorBox = checkbox('Preserve colors (best-effort)', true, () => {
@@ -211,8 +313,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         ['lscm', 'Conformal / LSCM'],
         ['harmonic', 'Harmonic field rows'],
       ], 'bfs', schedulePreview);
-      body.append(sw.wrap, sh.wrap, amp.wrap, round.wrap, grain.wrap, variation.wrap, seed.wrap, algo.wrap, detail.wrap);
-      body.append(el('p', 'text-[11px] text-zinc-500', 'V-shaped yarn strands with over-under depth at crossings. UV layout sets how the stitch grid follows the surface: triangle-unfold is fastest; conformal (LSCM) minimizes stitch distortion; harmonic-field gives smooth latitude rows. LSCM/harmonic solve on the CPU and are slower to apply.'));
+      body.append(sw.wrap, sh.wrap, amp.wrap, round.wrap, grain.wrap, variation.wrap, seed.wrap, algo.wrap, regionSection, detail.wrap);
+      body.append(el('p', 'text-[11px] text-zinc-500', 'V-shaped yarn strands with over-under depth at crossings. UV layout sets how the stitch grid follows the surface: triangle-unfold is fastest; conformal (LSCM) minimizes stitch distortion; harmonic-field gives smooth latitude rows. LSCM/harmonic work best on a selected patch (disk topology).'));
       currentOpts = () => ({
         stitchWidth: sw.get(),
         stitchHeight: sh.get(),
@@ -223,6 +325,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         seed: seed.get(),
         quality: detail.get(),
         algorithm: algo.get(),
+        selectedTriangles: regionSelection ?? undefined,
       });
     } else if (active === 'cable') {
       const cw = slider('Cable width', span * 0.02, span * 0.3, span * 0.08, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -361,6 +464,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   scrollBody.append(footer);
 
   const close = () => {
+    exitSelectionMode();
+    regionTeardown?.(); regionTeardown = null;
     clearPreviewIfDirty();
     panel.remove();
     openModal = null;

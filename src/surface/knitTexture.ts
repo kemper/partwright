@@ -338,3 +338,177 @@ function knitMeshResult(base: MeshData, positions: Float32Array): MeshData {
     triColors: base.triColors,
   };
 }
+
+// ---- Patch / region-select path -----------------------------------------------
+
+interface PatchSetup {
+  fullPositions: Float32Array;
+  patchPositions: Float32Array;
+  patchNormals:   Float32Array;
+  patchTriVerts:  Uint32Array;
+  patchUVs:       Float32Array;
+  hopDist:        Float32Array;
+  localToGlobal:  number[];
+  numPatchVert:   number;
+  amplitude: number; stitchW: number; stitchH: number; rowOffset: number;
+  yarnRadius: number; cosA: number; sinA: number; variation: number; seed: number;
+}
+
+function extractKnitPatch(mesh: MeshData, opts: KnitTextureOptions, selectedTris: Set<number>): PatchSetup {
+  const amplitude  = Math.max(0, opts.amplitude);
+  const stitchW    = Math.max(1e-4, opts.stitchWidth);
+  const stitchH    = Math.max(1e-4, opts.stitchHeight ?? stitchW * 1.4);
+  const rowOffset  = opts.rowOffset ?? 0.5;
+  const roundness  = Math.max(0, Math.min(1, opts.roundness ?? 0.5));
+  const variation  = Math.max(0, Math.min(1, opts.variation ?? 0.1));
+  const seed       = (opts.seed ?? 1) | 0;
+  const angleRad   = ((opts.grainAngleDeg ?? 0) * Math.PI) / 180;
+  const cosA       = Math.cos(angleRad);
+  const sinA       = Math.sin(angleRad);
+  const yarnRadius = stitchW * (0.22 + roundness * 0.18);
+
+  const fullPositions = mesh.numProp === 3
+    ? Float32Array.from(mesh.vertProperties)
+    : extractPositions(mesh);
+  const fullNormals = computeVertexNormals(fullPositions, mesh.triVerts);
+
+  // Build local ↔ global vertex maps for the patch.
+  const patchVertSet = new Set<number>();
+  for (const t of selectedTris) {
+    patchVertSet.add(mesh.triVerts[t * 3]);
+    patchVertSet.add(mesh.triVerts[t * 3 + 1]);
+    patchVertSet.add(mesh.triVerts[t * 3 + 2]);
+  }
+  const localToGlobal = Array.from(patchVertSet);
+  const globalToLocal = new Map<number, number>();
+  for (let i = 0; i < localToGlobal.length; i++) globalToLocal.set(localToGlobal[i], i);
+  const numPatchVert = localToGlobal.length;
+
+  const patchPositions = new Float32Array(numPatchVert * 3);
+  const patchNormals   = new Float32Array(numPatchVert * 3);
+  for (let i = 0; i < numPatchVert; i++) {
+    const g = localToGlobal[i];
+    patchPositions[i * 3]     = fullPositions[g * 3];
+    patchPositions[i * 3 + 1] = fullPositions[g * 3 + 1];
+    patchPositions[i * 3 + 2] = fullPositions[g * 3 + 2];
+    patchNormals[i * 3]       = fullNormals[g * 3];
+    patchNormals[i * 3 + 1]   = fullNormals[g * 3 + 1];
+    patchNormals[i * 3 + 2]   = fullNormals[g * 3 + 2];
+  }
+
+  const patchTriVerts = new Uint32Array(selectedTris.size * 3);
+  let tIdx = 0;
+  for (const t of selectedTris) {
+    patchTriVerts[tIdx++] = globalToLocal.get(mesh.triVerts[t * 3])!;
+    patchTriVerts[tIdx++] = globalToLocal.get(mesh.triVerts[t * 3 + 1])!;
+    patchTriVerts[tIdx++] = globalToLocal.get(mesh.triVerts[t * 3 + 2])!;
+  }
+
+  const { uvs: patchUVs } = unwrapMesh(patchPositions, patchTriVerts, opts.algorithm ?? 'bfs');
+
+  // Vertex neighbor graph within the patch (for BFS falloff).
+  const patchNeighbors: Set<number>[] = Array.from({ length: numPatchVert }, () => new Set());
+  for (let i = 0; i < selectedTris.size; i++) {
+    const v0 = patchTriVerts[i * 3], v1 = patchTriVerts[i * 3 + 1], v2 = patchTriVerts[i * 3 + 2];
+    patchNeighbors[v0].add(v1); patchNeighbors[v0].add(v2);
+    patchNeighbors[v1].add(v0); patchNeighbors[v1].add(v2);
+    patchNeighbors[v2].add(v0); patchNeighbors[v2].add(v1);
+  }
+
+  // BFS from boundary vertices to compute topological hop distance.
+  // Displacement fades 0→1 over FALLOFF_HOPS so the patch blends seamlessly.
+  const hopDist   = new Float32Array(numPatchVert).fill(Infinity);
+  const bfsQueue: number[] = [];
+  for (let t = 0; t < mesh.numTri; t++) {
+    if (selectedTris.has(t)) continue;
+    for (let k = 0; k < 3; k++) {
+      const l = globalToLocal.get(mesh.triVerts[t * 3 + k]);
+      if (l !== undefined && hopDist[l] === Infinity) { hopDist[l] = 0; bfsQueue.push(l); }
+    }
+  }
+  for (let qi = 0; qi < bfsQueue.length; qi++) {
+    const v = bfsQueue[qi];
+    for (const nb of patchNeighbors[v]) {
+      if (hopDist[nb] === Infinity) { hopDist[nb] = hopDist[v] + 1; bfsQueue.push(nb); }
+    }
+  }
+
+  return {
+    fullPositions, patchPositions, patchNormals, patchTriVerts, patchUVs, hopDist,
+    localToGlobal, numPatchVert,
+    amplitude, stitchW, stitchH, rowOffset, yarnRadius, cosA, sinA, variation, seed,
+  };
+}
+
+const PATCH_FALLOFF_HOPS = 2;
+
+function writePatchBack(
+  fullPositions: Float32Array,
+  patchPositions: Float32Array,
+  displaced: Float32Array,
+  localToGlobal: number[],
+  hopDist: Float32Array,
+): void {
+  for (let i = 0; i < localToGlobal.length; i++) {
+    const w = Math.min(1, hopDist[i] / PATCH_FALLOFF_HOPS);
+    const g = localToGlobal[i];
+    fullPositions[g * 3]     = patchPositions[i * 3]     + (displaced[i * 3]     - patchPositions[i * 3])     * w;
+    fullPositions[g * 3 + 1] = patchPositions[i * 3 + 1] + (displaced[i * 3 + 1] - patchPositions[i * 3 + 1]) * w;
+    fullPositions[g * 3 + 2] = patchPositions[i * 3 + 2] + (displaced[i * 3 + 2] - patchPositions[i * 3 + 2]) * w;
+  }
+}
+
+/**
+ * Applies knit displacement to a user-selected triangle patch only.
+ * UV unwrap is solved on the disk-topology sub-mesh for better conformal quality.
+ * Displacement fades to zero at patch boundary vertices for a seamless blend.
+ */
+export function knitTextureUVPatch(
+  mesh: MeshData,
+  opts: KnitTextureOptions,
+  selectedTris: Set<number>,
+): MeshData {
+  if (selectedTris.size === 0) return knitTextureUV(mesh, opts);
+
+  const p = extractKnitPatch(mesh, opts, selectedTris);
+  const displaced = Float32Array.from(p.patchPositions);
+  displaceKnitJS(displaced, p.patchNormals, p.patchUVs, p.numPatchVert,
+    p.amplitude, p.stitchW, p.stitchH, p.rowOffset, p.yarnRadius,
+    p.cosA, p.sinA, p.variation, p.seed);
+  writePatchBack(p.fullPositions, p.patchPositions, displaced, p.localToGlobal, p.hopDist);
+  return knitMeshResult(mesh, p.fullPositions);
+}
+
+/**
+ * Async variant of knitTextureUVPatch — uses WebGPU when available, JS fallback otherwise.
+ */
+export async function knitTextureUVPatchAsync(
+  mesh: MeshData,
+  opts: KnitTextureOptions,
+  selectedTris: Set<number>,
+): Promise<MeshData> {
+  if (selectedTris.size === 0) return knitTextureUVAsync(mesh, opts);
+
+  const p = extractKnitPatch(mesh, opts, selectedTris);
+  const gpuParams: KnitGPUParams = {
+    amplitude: p.amplitude, stitchW: p.stitchW, stitchH: p.stitchH,
+    rowOffset: p.rowOffset, yarnRadius: p.yarnRadius,
+    cosA: p.cosA, sinA: p.sinA, variation: p.variation, seed: p.seed,
+  };
+  const gpuResult = await knitDisplaceGPU(
+    p.patchPositions, p.patchNormals, p.patchUVs, p.numPatchVert, gpuParams,
+  );
+
+  let displaced: Float32Array;
+  if (gpuResult) {
+    displaced = gpuResult;
+  } else {
+    displaced = Float32Array.from(p.patchPositions);
+    displaceKnitJS(displaced, p.patchNormals, p.patchUVs, p.numPatchVert,
+      p.amplitude, p.stitchW, p.stitchH, p.rowOffset, p.yarnRadius,
+      p.cosA, p.sinA, p.variation, p.seed);
+  }
+
+  writePatchBack(p.fullPositions, p.patchPositions, displaced, p.localToGlobal, p.hopDist);
+  return knitMeshResult(mesh, p.fullPositions);
+}

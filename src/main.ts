@@ -108,7 +108,7 @@ import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
-import { applyFuzzy, applyKnit, applyKnitAsync, applyCable, applyWaffle, applyFur, applyWoven, applySmooth, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyWaffle, applyFur, applyWoven, applySmooth, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, type ModifierResult } from './surface/modifiers';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
@@ -5940,7 +5940,7 @@ async function main() {
     if (id === 'knit') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultKnitOptions(mesh);
-      return applyKnit(mesh, {
+      const knitOpts = {
         amplitude: (opts?.amplitude as number) ?? base.amplitude,
         stitchWidth: (opts?.stitchWidth as number) ?? base.stitchWidth,
         stitchHeight: (opts?.stitchHeight as number) ?? base.stitchHeight,
@@ -5950,7 +5950,12 @@ async function main() {
         variation: (opts?.variation as number) ?? base.variation,
         seed: (opts?.seed as number) ?? base.seed,
         algorithm: (opts?.algorithm as typeof base.algorithm) ?? base.algorithm,
-      });
+      };
+      const selectedTriangles = opts?.selectedTriangles as Set<number> | undefined;
+      if (selectedTriangles && selectedTriangles.size > 0) {
+        return applyKnitPatch(mesh, knitOpts, selectedTriangles);
+      }
+      return applyKnit(mesh, knitOpts);
     }
     if (id === 'cable') {
       const mesh = meshForModifier(preserveColor);
@@ -6063,6 +6068,7 @@ async function main() {
       seed?: number;
       quality?: number;
       algorithm?: 'bfs' | 'lscm' | 'harmonic';
+      selectedTriangles?: Set<number>;
       preserveColor?: boolean;
     }) {
       try {
@@ -6070,19 +6076,23 @@ async function main() {
         const mesh = requireCurrentMeshForModifier();
         const warns = textureWarnings('knit', opts ?? {}, mesh);
         const base = defaultKnitOptions(mesh);
-        const modifier = await applyKnitAsync(mesh, {
-          amplitude:    (opts?.amplitude    as number) ?? base.amplitude,
-          stitchWidth:  (opts?.stitchWidth  as number) ?? base.stitchWidth,
-          stitchHeight: (opts?.stitchHeight as number) ?? base.stitchHeight,
-          rowOffset:    (opts?.rowOffset    as number) ?? base.rowOffset,
-          roundness:    (opts?.roundness    as number) ?? base.roundness,
-          grainAngleDeg:(opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
-          variation:    (opts?.variation    as number) ?? base.variation,
-          seed:         (opts?.seed         as number) ?? base.seed,
-          quality:      (opts?.quality      as number) ?? base.quality,
-          algorithm:    (opts?.algorithm    as typeof base.algorithm) ?? base.algorithm,
-          subdivide:    true,
-        });
+        const knitOpts = {
+          amplitude:     (opts?.amplitude     as number) ?? base.amplitude,
+          stitchWidth:   (opts?.stitchWidth   as number) ?? base.stitchWidth,
+          stitchHeight:  (opts?.stitchHeight  as number) ?? base.stitchHeight,
+          rowOffset:     (opts?.rowOffset     as number) ?? base.rowOffset,
+          roundness:     (opts?.roundness     as number) ?? base.roundness,
+          grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+          variation:     (opts?.variation     as number) ?? base.variation,
+          seed:          (opts?.seed          as number) ?? base.seed,
+          quality:       (opts?.quality       as number) ?? base.quality,
+          algorithm:     (opts?.algorithm     as typeof base.algorithm) ?? base.algorithm,
+          subdivide:     true,
+        };
+        const selectedTriangles = opts?.selectedTriangles;
+        const modifier = (selectedTriangles && selectedTriangles.size > 0)
+          ? await applyKnitPatchAsync(mesh, knitOpts, selectedTriangles)
+          : await applyKnitAsync(mesh, knitOpts);
         const result = await commitSurfaceModifier(modifier, preserve);
         if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
           const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
