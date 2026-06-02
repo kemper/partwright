@@ -2,13 +2,15 @@
 /agent /ai.md 301
 /api /ai.md 301
 
-# Pre-rendered, app-free content pages. Clean URL → static HTML (200 rewrite,
-# not a redirect, so the address bar keeps the clean path). The in-app SPA
-# still soft-renders these routes via pushState when the editor is already
-# loaded; only real navigations / reloads hit these rewrites.
-/catalog /catalog.html 200
-/help /help.html 200
-/legal /legal.html 200
-/whats-new /whats-new.html 200
-
+# Pre-rendered, app-free content pages (catalog.html / help.html / legal.html /
+# whats-new.html) are served by Cloudflare Pages at their CLEAN URLs
+# (/catalog, /help, …) automatically — Pages maps an `.html` asset to its
+# extensionless path and canonicalizes /foo.html → /foo with a 308. So NO
+# explicit rule is needed here; an explicit `/catalog /catalog.html 200` rewrite
+# actually fights that canonicalization and produces a /catalog → /catalog
+# redirect loop. The dev/preview server reproduces the clean-URL serving via
+# the prerenderContentPages middleware (src/content/build) instead.
+#
+# Specific assets (incl. the four content pages) resolve before this SPA
+# fallback, which only catches app routes like /editor.
 /* /index.html 200
