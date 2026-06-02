@@ -1,4 +1,14 @@
 /ai /ai.md 301
 /agent /ai.md 301
 /api /ai.md 301
+
+# Pre-rendered, app-free content pages. Clean URL → static HTML (200 rewrite,
+# not a redirect, so the address bar keeps the clean path). The in-app SPA
+# still soft-renders these routes via pushState when the editor is already
+# loaded; only real navigations / reloads hit these rewrites.
+/catalog /catalog.html 200
+/help /help.html 200
+/legal /legal.html 200
+/whats-new /whats-new.html 200
+
 /* /index.html 200
