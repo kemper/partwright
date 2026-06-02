@@ -202,45 +202,36 @@ function parseUnresolvedIncludes(stderr: string[]): string[] {
 }
 
 /** Compile `source` just far enough to resolve its `include`/`use` references
- *  and report which ones OpenSCAD can't open. Uses a CSG export so includes are
- *  resolved at parse time without paying for tessellation, making it fast enough
- *  to run on import. By design it ignores every other compile error (syntax,
- *  geometry, etc.) — only genuinely-missing dependencies are returned, so a file
- *  the user still needs to fix manually doesn't block the dependency prompt.
+ *  and report which ones OpenSCAD can't open. Uses binstl export (the same
+ *  format as the real render path) because it reliably emits "Can't open
+ *  include file" warnings before tessellation even starts — so include errors
+ *  surface immediately while the probe stays fast. Uses $fn=1 to minimise
+ *  tessellation work if all includes do happen to resolve.
  *
  *  `companionFiles`, if supplied, are written into MEMFS first so deps the user
- *  has already provided aren't reported as missing (used when re-checking after
- *  the import modal). BOSL2 is seeded the same way the run path does it. Any
- *  internal failure degrades to an empty list — the caller falls back to its
- *  static regex candidates. */
+ *  has already provided aren't reported as missing. BOSL2 is seeded the same
+ *  way the run path does it. On any internal failure the function throws so the
+ *  worker-level catch converts it to an `error` message and the engine layer
+ *  resolves to `null` ("couldn't determine") — distinct from `[]` ("all
+ *  resolved"), which only fires when the probe genuinely ran clean. */
 export async function detectUnresolvedIncludes(
   source: string,
   companionFiles?: Record<string, string>,
 ): Promise<string[]> {
-  if (!createFn) return [];
-  let instance: any;
-  let stderr: string[];
-  try {
-    ({ instance, stderr } = await createInstance());
-  } catch {
-    return [];
+  if (!createFn) throw new Error('OpenSCAD not initialised');
+  const { instance, stderr } = await createInstance();
+  if (sourceUsesBosl2(source)) {
+    try { await ensureBosl2InMemfs(instance); } catch { /* BOSL2 absence is not what we're probing */ }
   }
+  writeCompanionFilesToMemfs(instance, companionFiles);
+  instance.FS.writeFile('/in.scad', source);
+  // binstl is the proven format that emits "Can't open include file" warnings.
+  // Include resolution happens at parse time so the probe fails fast; $fn=1
+  // caps any accidental tessellation cost if all includes resolve.
   try {
-    if (sourceUsesBosl2(source)) {
-      try { await ensureBosl2InMemfs(instance); } catch { /* missing BOSL2 isn't what we're probing */ }
-    }
-    writeCompanionFilesToMemfs(instance, companionFiles);
-    instance.FS.writeFile('/in.scad', source);
-    // CSG export resolves include/use targets at parse time but skips meshing.
-    // A hard parse failure still leaves the "Can't open" warnings on stderr, so
-    // we read them regardless of the exit code.
-    try {
-      instance.callMain(['--export-format=csg', '-o', '/out.csg', '/in.scad']);
-    } catch { /* parse/runtime throw — stderr still holds the include warnings */ }
-    return parseUnresolvedIncludes(stderr);
-  } catch {
-    return [];
-  }
+    instance.callMain(['-D', '$fn=1', '--export-format=binstl', '-o', '/out.stl', '/in.scad']);
+  } catch { /* parse/runtime throw — stderr still has the include warnings */ }
+  return parseUnresolvedIncludes(stderr);
 }
 
 async function runScadInner(
