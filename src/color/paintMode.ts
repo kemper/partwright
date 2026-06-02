@@ -245,17 +245,11 @@ export function setOnRegionPainted(fn: () => void): void {
   onRegionPainted = fn;
 }
 
-export function setOnToolChange(fn: (tool: PaintTool) => void): void {
-  onToolChange = fn;
-}
 
 export function getCurrentMesh(): MeshData | null {
   return currentMesh;
 }
 
-export function getAdjacency(): AdjacencyGraph | null {
-  return adjacency;
-}
 
 /** Rebuild adjacency graph for a new mesh. Call this whenever updateMesh fires. */
 export function updatePaintMesh(mesh: MeshData): void {

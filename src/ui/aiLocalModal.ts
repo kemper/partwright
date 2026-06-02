@@ -24,6 +24,7 @@ import {
 } from '../ai/local';
 import { getModelCeiling } from '../ai/modelMetadata';
 import { loadSettings, saveSettings, setLocalModel, setProvider, addCustomLocalModel, removeCustomLocalModel, BuiltInModelIdCollision, type CustomLocalModel } from '../ai/settings';
+import { confirmDialog } from './dialogs';
 
 let modalEl: HTMLElement | null = null;
 let escHandler: ((e: KeyboardEvent) => void) | null = null;
@@ -303,7 +304,7 @@ function renderCustomModelCard(
   remove.textContent = 'Forget';
   remove.title = `Remove this custom model from the list (cached weights, if any, stay until you Remove them too).`;
   remove.addEventListener('click', async () => {
-    if (!confirm(`Remove "${custom.label || custom.id}" from your custom model list?`)) return;
+    if (!(await confirmDialog(`Remove "${custom.label || custom.id}" from your custom model list?`, { title: 'Forget custom model', confirmLabel: 'Forget', danger: true }))) return;
     saveSettings(removeCustomLocalModel(loadSettings(), custom.id));
     cb.onChange();
     await renderLocalPicker(parentBody, cb, opts);
@@ -790,7 +791,7 @@ function renderModelCard(
     remove.textContent = 'Remove';
     remove.title = `Delete the cached weights for ${model.label}.`;
     remove.addEventListener('click', async () => {
-      if (!confirm(`Delete cached weights for ${model.label}? You'll need to re-download to use it again.`)) return;
+      if (!(await confirmDialog(`Delete cached weights for ${model.label}? You'll need to re-download to use it again.`, { title: 'Delete cached weights', confirmLabel: 'Delete', danger: true }))) return;
       // If this was the active model, clear it from settings — otherwise
       // the chat panel tries to send to a model whose weights are gone.
       let s = loadSettings();

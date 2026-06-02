@@ -170,18 +170,3 @@ export function isGizmoAnimating(): boolean {
   return snapAnimating;
 }
 
-export function disposeGizmo(): void {
-  if (canvasEl) {
-    canvasEl.removeEventListener('click', onGizmoClick);
-    canvasEl.removeEventListener('pointermove', onGizmoPointerMove);
-    if (gizmoCursorActive) {
-      canvasEl.style.cursor = '';
-      gizmoCursorActive = false;
-    }
-  }
-  viewHelper?.dispose();
-  viewHelper = null;
-  mainCamera = null;
-  mainControls = null;
-  canvasEl = null;
-}

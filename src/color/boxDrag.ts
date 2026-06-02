@@ -33,7 +33,6 @@ let gizmoHelper: THREE.Object3D | null = null;
 const changeListeners: Array<(box: OrientedBox) => void> = [];
 const visibilityListeners: Array<() => void> = [];
 
-export function isBoxActive(): boolean { return active; }
 
 export function onBoxChange(fn: (box: OrientedBox) => void): () => void {
   changeListeners.push(fn);
@@ -289,9 +288,6 @@ function syncVisuals(): void {
   (shapeEdges.material as THREE.LineBasicMaterial).color.setHex(hex);
 }
 
-export function refreshColor(): void {
-  if (active) syncVisuals();
-}
 
 /** Commit the shape's current footprint as a paint region. Returns the painted
  *  triangle count, or 0 if the shape was empty or no mesh was loaded. */

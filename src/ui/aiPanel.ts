@@ -14,6 +14,7 @@ import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
 import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
+import { confirmDialog } from './dialogs';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
@@ -1592,7 +1593,7 @@ async function clearCurrentChat(): Promise<void> {
   const scope = state.sessionId === GLOBAL_CHAT_BUCKET
     ? 'the global chat (before any session was opened)'
     : 'this session';
-  if (!confirm(`Clear chat for ${scope}? ${state.history.length} message(s) will be deleted from your browser. Saved versions and session notes are untouched.`)) return;
+  if (!(await confirmDialog(`Clear chat for ${scope}? ${state.history.length} message(s) will be deleted from your browser. Saved versions and session notes are untouched.`, { title: 'Clear chat', confirmLabel: 'Clear', danger: true }))) return;
   try {
     await clearChat(state.sessionId);
   } catch (err) {

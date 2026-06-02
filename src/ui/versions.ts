@@ -17,6 +17,7 @@ import {
 } from '../storage/sessionManager';
 import { createVersionTile, type VersionTileControl } from './versionTile';
 import { createModalShell } from './modalShell';
+import { confirmDialog } from './dialogs';
 import { BUTTON_PRIMARY, BUTTON_CANCEL, BUTTON_SMALL_SECONDARY } from './styleConstants';
 
 export interface VersionsViewCallbacks {
@@ -167,9 +168,10 @@ async function performDelete(version: Version): Promise<void> {
   if (children.length > 0) {
     const childList = children.map(c => `"${c.label}"`).join(', ');
     const noun = children.length === 1 ? 'version' : 'versions';
-    const confirmed = window.confirm(
+    const confirmed = await confirmDialog(
       `"${version.label}" is the source for ${children.length} derived ${noun} (${childList}).\n\n` +
       `Deleting it will remove the provenance link from those ${noun}. Continue?`,
+      { title: 'Delete version', confirmLabel: 'Delete', danger: true },
     );
     if (!confirmed) return;
     await clearVersionParentRefs(version.id);

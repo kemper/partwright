@@ -7,5 +7,26 @@
     "scripts/*.mjs"
   ],
   "project": ["src/**/*.{ts,tsx}"],
-  "ignoreExportsUsedInFile": true
+  "paths": {
+    "/src/*": ["src/*"]
+  },
+  "ignoreDependencies": [
+    "tailwindcss",
+    "replicad-opencascadejs"
+  ],
+  "ignoreExportsUsedInFile": true,
+  "rules": {
+    "dependencies": "error",
+    "unlisted": "error",
+    "unresolved": "error",
+    "files": "error",
+    "binaries": "error",
+    "exports": "warn",
+    "types": "warn",
+    "nsExports": "warn",
+    "nsTypes": "warn",
+    "enumMembers": "warn",
+    "classMembers": "warn",
+    "duplicates": "warn"
+  }
 }

@@ -71,14 +71,6 @@ export function isAnnotationsVisible(): boolean {
   return visible;
 }
 
-export function onVisibilityChange(fn: (visible: boolean) => void): () => void {
-  visibilityListeners.push(fn);
-  return () => {
-    const i = visibilityListeners.indexOf(fn);
-    if (i >= 0) visibilityListeners.splice(i, 1);
-  };
-}
-
 function rebuildLiveOverlay(): void {
   if (!overlayGroup) return;
   // Annotation children are tagged with userData.annotationId; everything
