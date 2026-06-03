@@ -1116,6 +1116,23 @@ export async function saveImages(images: AttachedImage[] | null): Promise<void> 
   publishTabSync({ kind: 'session-meta', sessionId: id });
 }
 
+/** Persist the Self-Modeling Studio import history on a session (by id, since
+ *  the studio writes to a freshly-created session). Pass null to clear it. */
+export async function saveStudioImport(sessionId: string, record: Record<string, unknown> | null): Promise<void> {
+  await dbUpdateSession(sessionId, { studioImport: record, updated: Date.now() });
+  if (currentState.session?.id === sessionId) {
+    currentState = { ...currentState, session: { ...currentState.session, studioImport: record } };
+    notify();
+    publishTabSync({ kind: 'session-meta', sessionId });
+  }
+}
+
+/** Read back a session's Studio import history, or null if it has none. */
+export async function getStudioImport(sessionId: string): Promise<Record<string, unknown> | null> {
+  const session = await getSession(sessionId);
+  return (session?.studioImport as Record<string, unknown> | undefined) ?? null;
+}
+
 export async function getImagesFromSession(): Promise<AttachedImage[] | null> {
   if (!currentState.session) return null;
   // Refresh from DB in case it was updated externally

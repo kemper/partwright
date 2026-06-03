@@ -105,6 +105,8 @@ import { parseVox } from './import/parsers/vox';
 import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import { carveVisualHull, imageToMask, type SilhouetteView, type Vec3 as ReconVec3 } from './recon/visualHull';
+import { deserializeStudio, type StudioImportRecord } from './recon/studioModel';
+import { openSelfModelingStudio } from './ui/selfModelingStudio';
 import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
@@ -213,6 +215,8 @@ import {
   clearAllSessions,
   saveImages as persistImages,
   getImagesFromSession,
+  saveStudioImport,
+  getStudioImport,
   addSessionNote,
   listSessionNotes,
   deleteIfEmpty,
@@ -2578,6 +2582,28 @@ async function main() {
     return finishVoxelImport(result);
   }
 
+  /** Open the Self-Modeling Studio (photo → multi-view silhouette → voxel). If
+   *  the active session already carries a saved Studio import, reopen it
+   *  prefilled so no Gemini calls are wasted. The Build step delegates to the
+   *  console API's `reconstructFromSilhouettes` and persists the import history
+   *  onto the resulting session. */
+  async function openSelfModelingStudioFlow(): Promise<void> {
+    let initialState = null;
+    const sid = getState().session?.id ?? null;
+    if (sid) {
+      try {
+        const rec = await getStudioImport(sid);
+        if (rec) initialState = deserializeStudio(rec as unknown as StudioImportRecord);
+      } catch { /* corrupt/old record — start fresh */ }
+    }
+    openSelfModelingStudio({
+      initialState,
+      onBuild: (input) => partwrightAPI.reconstructFromSilhouettes(input),
+      onPersist: (sessionId, record) =>
+        saveStudioImport(sessionId, record as unknown as Record<string, unknown>),
+    });
+  }
+
   /** Import a MagicaVoxel `.vox` file as a voxel session. Mirrors the image
    *  flow: parse → grid → bake as `voxels.decode(...)` editor code so the
    *  session persists as code with no schema change. */
@@ -3568,6 +3594,7 @@ async function main() {
       else openReliefImportFlow();
     },
     onCreateVoxel: () => { void openVoxelImportFlow(); },
+    onOpenSelfModelingStudio: () => { void openSelfModelingStudioFlow(); },
     onLanguageHelp: async () => { await showLanguageHelpModal(); },
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => {
@@ -6282,6 +6309,13 @@ async function main() {
       const code = generateVoxelImportCode(grid, 'reconstruction');
       const result = await importCodePayload(code, 'voxel', 'self-reconstruction');
       return { sessionId: result.sessionId, voxelCount: grid.size, views: silhouettes.length };
+    },
+
+    /** Open the Self-Modeling Studio UI (photo → multi-view silhouette → voxel).
+     *  Reopens the active session's saved import if present. */
+    openSelfModelingStudio() {
+      void openSelfModelingStudioFlow();
+      return { ok: true };
     },
 
     // === Recent Exports inbox ===

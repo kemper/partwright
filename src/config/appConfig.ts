@@ -68,6 +68,10 @@ export interface AppConfig {
     localAttentionSinkMargin: number;
     /** Hard cap on attention-sink tokens for local models. */
     localAttentionSinkMax: number;
+    /** Fallback Gemini image-generation model id for the Self-Modeling Studio,
+     *  used when the user's key offers no discoverable `*-image` model. The
+     *  studio normally picks the newest image-capable model from the key. */
+    geminiImageModel: string;
   };
   renderer: {
     /** Three.js camera field-of-view in degrees. Takes effect on page reload. */
@@ -169,6 +173,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     localToolsBudgetPromptEngineered: 500,
     localAttentionSinkMargin: 200,
     localAttentionSinkMax: 2048,
+    geminiImageModel: 'gemini-2.5-flash-image',
   },
   renderer: {
     fov: 50,

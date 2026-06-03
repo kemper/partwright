@@ -23,6 +23,12 @@ export interface Session {
    *  from the AI types) and `preset` mirrors the settings preset. Sessions saved
    *  before this field gains `toggles` simply restore provider/model only. */
   aiPreference?: { provider: string; model: string; toggles?: Record<string, unknown>; preset?: string };
+  /** Self-Modeling Studio import history: the source photo, the per-angle
+   *  images (generated or uploaded), and the carve settings, so reopening the
+   *  import repopulates the studio without re-calling Gemini. Stored opaquely
+   *  (a serialized {@link import('../recon/studioModel').StudioImportRecord}) to
+   *  keep this storage layer decoupled from the recon types. */
+  studioImport?: Record<string, unknown> | null;
 }
 
 /** A modeling target within a session. A session holds one or more parts; each
@@ -553,7 +559,7 @@ export function legacyImagesObjectToArray(obj: LegacyImagesObject): AttachedImag
   return result;
 }
 
-export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'currentPartId' | 'aiPreference'>>): Promise<void> {
+export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'currentPartId' | 'aiPreference' | 'studioImport'>>): Promise<void> {
   const store = await tx('sessions', 'readwrite');
   // Read-modify-write inside one transaction: queue the put from the get's
   // callback (awaiting between them risks auto-commit), then await oncomplete.

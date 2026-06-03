@@ -33,6 +33,25 @@ correctly. Put it on a plain, contrasting background so the silhouette extracts
 cleanly (transparent PNGs are used via their alpha channel; opaque images are
 chroma-keyed against an auto-detected background colour).
 
+## Self-Modeling Studio (UI)
+
+The **Import → "Photo → 3D (Self-Modeling Studio)…"** menu opens a guided modal
+for this whole pipeline:
+
+1. **Upload a source photo** (the Front view).
+2. **Generate angles** — with a connected Google Gemini key, the studio uses the
+   newest image-capable model on your key ("nano banana") to re-render the photo
+   at each turntable angle; tiles fill in as they return. No key? Connect it from
+   the banner, or **upload your own** image per angle.
+3. **Curate** — toggle views in/out of the carve, regenerate or replace any tile.
+4. **Build** — carves the included silhouettes into a voxel session.
+
+The whole import (source + per-angle images + carve settings) is saved on the
+resulting session, so reopening the studio for it repopulates everything with no
+further Gemini calls. Start a fresh import any time to begin over.
+
+`partwright.openSelfModelingStudio()` opens it programmatically.
+
 ## API
 
 ```js
