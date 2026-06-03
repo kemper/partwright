@@ -2300,7 +2300,7 @@ async function main() {
       // voxel options + thumbnail it needs to stash for a faithful re-import).
       // Snapshot the bytes so a later re-import doesn't depend on the original
       // (possibly moved/dropped) OS file handle.
-      if (committed && source !== 'IMAGE') await registerImportSnapshot(file, file.name, source);
+      if (committed && source !== 'IMAGE') await registerImportSnapshot(file, file.name, source, undefined, undefined, scadCompanions);
       return committed;
     } catch (e) {
       showToast(`Failed to import "${file.name}": ${(e as Error).message}`, { variant: 'warn', source: 'import' });
@@ -3375,7 +3375,9 @@ async function main() {
       // the user can choose new part, replace current, or new session.
       const code = await entry.blob.text();
       const lang: Language = entry.source === 'SCAD' ? 'scad' : 'manifold-js';
-      await placeImportedCodeFile(code, lang, entry.filename);
+      // Restore companions captured at import time so re-imports from history
+      // don't lose the companion files the user originally provided.
+      await placeImportedCodeFile(code, lang, entry.filename, entry.companions);
     } catch (e) {
       showToast(`Failed to re-import "${entry.filename}": ${(e as Error).message}`, { variant: 'warn', source: 'import' });
     }
