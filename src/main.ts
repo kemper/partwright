@@ -2896,7 +2896,11 @@ async function main() {
     if (s.currentVersion && !editorContentDiffersFrom(s.currentVersion.code)) return;
     const thumbnail = await captureThumbnail();
     const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
-    await saveVersion(code, geometryData, thumbnail);
+    // Include companions so the dedup check in saveVersion works when a
+    // concurrent applyCodeToCurrentPart already saved a version with companions
+    // (avoids the "new-part import + navigate away" phantom second version).
+    const companionFiles = getActiveLanguage() === 'scad' ? getCompanionFiles() : undefined;
+    await saveVersion(code, geometryData, thumbnail, undefined, undefined, { companionFiles });
   }
 
   /** Drop an import wrapper for `components` into the current part: set the
@@ -2986,8 +2990,21 @@ async function main() {
     // the new model is loading.
     syncParamsPanel(undefined);
     setValue(code);
-    await runCodeSync(code);
+    // Snapshot the active part before the (possibly slow) compile.  If the
+    // user navigates away mid-compile or during the async thumbnail capture,
+    // changePart will have already run by the time we reach saveVersion — which
+    // would write to the wrong part or create a second version on the original
+    // (preserveCurrentEditsIfNeeded already captured the draft on navigation).
+    const partIdBeforeRun = getState().currentPart?.id;
+    const ran = await runCodeSync(code);
+    // Cancelled (user navigated away mid-compile): preserveCurrentEditsIfNeeded
+    // will have saved a draft version; don't double-save here.
+    if (!ran) return;
+    if (getState().currentPart?.id !== partIdBeforeRun) return;
     const thumbnail = await captureThumbnail();
+    // captureThumbnail uses macro-task callbacks (toBlob/setTimeout), so a
+    // click event can fire between runCodeSync returning and here.  Recheck.
+    if (getState().currentPart?.id !== partIdBeforeRun) return;
     const geometryData = getGeometryDataObj();
     await saveVersion(code, geometryData, thumbnail, 'imported', undefined, { force: true, companionFiles: companions });
   }
