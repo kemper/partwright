@@ -1614,10 +1614,17 @@ async function main() {
     if (keyed.some(Boolean)) void requestPersistentStorage();
   })();
 
-  // Remove loading overlays as soon as JS takes over.
-  // landing-inline stays visible on the landing route until showLandingPage()
-  // replaces it with the JS-built version; remove it immediately on all other routes.
-  document.getElementById('loading-splash')?.remove();
+  // Remove loading overlays as soon as JS takes over — EXCEPT on /ideas, the
+  // one app-rendered overlay page. It boots the whole app before painting any
+  // content, so dropping the spinner here would leave a blank screen until the
+  // page renders; instead showIdeasPage() removes it once the content is up
+  // (with a timeout fallback so it can never get stuck).
+  const onIdeasRoute = window.location.pathname === '/ideas';
+  if (!onIdeasRoute) {
+    document.getElementById('loading-splash')?.remove();
+  } else {
+    setTimeout(() => document.getElementById('loading-splash')?.remove(), 12000);
+  }
   if (!shouldShowLanding()) {
     document.getElementById('landing-inline')?.remove();
   }
@@ -4378,6 +4385,8 @@ async function main() {
     if (whatsNewEl) whatsNewEl.classList.add('hidden');
     ideasEl.classList.remove('hidden');
     setAiPanelRouteActive(false); // full-width page; panel restores in the editor
+    // Content is up — drop the boot spinner that was held over the app load.
+    document.getElementById('loading-splash')?.remove();
     updateDocumentTitle({ page: 'ideas' });
   }
 

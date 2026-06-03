@@ -41,7 +41,7 @@ export function contentHeaderHtml(currentPath: string): string {
   // page. The bar is a subtle frosted layer over whatever scrolls beneath it.
   return `<style>@media(max-width:767px){.pw-navlinks{display:none!important}}</style>
 <div class="pw-headerbar" style="position:sticky;top:0;z-index:30;width:100%;background:rgba(24,24,27,0.72);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid rgba(39,39,42,0.6)">
-  <header class="pw-header" style="width:100%;max-width:72rem;margin:0 auto;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box">
+  <header class="pw-header" style="width:100%;max-width:72rem;margin:0 auto;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;font-family:'Space Grotesk',system-ui,-apple-system,sans-serif">
     <a href="/" aria-label="Partwright home" style="display:flex;align-items:center;gap:10px;text-decoration:none">
       ${partwrightMarkSvg(30)}
       <span style="font-weight:700;font-size:18px;letter-spacing:-0.025em;color:#fafafa;font-family:'Sora',system-ui,sans-serif">Partwright</span>

@@ -25,6 +25,9 @@ test.describe('Ideas page', () => {
     await expect(page.locator('#ai-panel')).toBeHidden();
     const headerWidth = await header.evaluate((el) => el.getBoundingClientRect().width);
     expect(headerWidth).toBeGreaterThan(1000); // full width, not the ~860px panel-squished width
+    // The boot spinner (held over the app load on /ideas) is removed once the
+    // content is up — never left covering the page.
+    await expect(page.locator('#loading-splash')).toHaveCount(0);
   });
 
   test('renders category sections in order, each with a count, blurb, and tiles', async ({ page }) => {
