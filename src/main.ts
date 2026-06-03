@@ -1739,9 +1739,18 @@ async function main() {
   }
 
   // Import a raw code payload as a new session. Shared between file drop and the AI API.
-  async function importCodePayload(code: string, language: Language, sessionName?: string): Promise<{ sessionId: string }> {
+  async function importCodePayload(code: string, language: Language, sessionName?: string, companions?: Record<string, string>): Promise<{ sessionId: string }> {
     if (language !== getActiveLanguage()) await switchLanguage(language);
     const session = await createSession(sessionName, language);
+    // Register companions right after session creation so their tabs appear in
+    // the bar immediately — before the (potentially slow) first compile. createSession
+    // calls setCompanionFiles({}) internally, so companions must be re-applied here.
+    if (companions && Object.keys(companions).length > 0) {
+      for (const [path, content] of Object.entries(companions)) {
+        addCompanionFileToRegistry(path, content);
+      }
+      renderCompanionFilesBar();
+    }
     // A freshly imported model starts unpainted. Clear the previous session's
     // live voxel paint and color regions before running, or runCodeSync
     // re-resolves those stale regions onto the new mesh — e.g. a painted part's
@@ -3166,11 +3175,13 @@ async function main() {
 
     if (!state.session || currentPartIsExpendable()) {
       // No real "current part" to attach to (no session, or just starter code) —
-      // import straight into a fresh session. The placement modal (and its
-      // companion-attach choice) is intentionally skipped here; any modal-
-      // supplied companions still ride along via applyCompanions.
-      await importCodePayload(code, lang, sessionName);
-      await applyCompanions();
+      // import straight into a fresh session. Pass companions directly so they're
+      // registered before the first compile (tabs appear immediately) and MEMFS
+      // already contains them on that one compile — no second run needed.
+      await importCodePayload(code, lang, sessionName, companions);
+      if (companions && Object.keys(companions).length > 0) {
+        await saveCurrentVersion();
+      }
       return true;
     }
     const partLabel = state.currentPart?.name ? `"${state.currentPart.name}"` : 'the current part';
