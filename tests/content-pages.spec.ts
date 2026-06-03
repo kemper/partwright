@@ -66,6 +66,9 @@ test.describe('Shared content-page chrome', () => {
       expect(labels).toEqual(EXPECTED_LINKS);
       // The "Open editor" CTA.
       await expect(header.getByRole('link', { name: /Open editor/i })).toHaveAttribute('href', '/editor');
+      // The header bar is sticky so it stays visible on scroll / anchor jumps.
+      const pos = await page.locator('.pw-headerbar').evaluate((el) => getComputedStyle(el).position);
+      expect(pos).toBe('sticky');
     });
   }
 

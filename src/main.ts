@@ -40,7 +40,7 @@ import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { confirmDialog } from './ui/dialogs';
-import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput } from './ui/aiPanel';
+import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive } from './ui/aiPanel';
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
@@ -4008,6 +4008,9 @@ async function main() {
     if (ideasEl) ideasEl.classList.add('hidden');
     if (legalEl) legalEl.classList.add('hidden');
     overlayContainer.classList.add('hidden');
+    // The docked AI panel is an editor tool — restore it here (it only takes
+    // layout space on the editor route; overlay pages render full-width).
+    setAiPanelRouteActive(true);
     window.dispatchEvent(new Event('resize'));
     void ensureEngineStarted();
   }
@@ -4118,6 +4121,7 @@ async function main() {
     legalEl?.classList.add('hidden');
     whatsNewEl?.classList.add('hidden');
     notFoundEl.classList.remove('hidden');
+    setAiPanelRouteActive(false);
     updateDocumentTitle({ page: '404' });
   }
 
@@ -4150,6 +4154,7 @@ async function main() {
     if (legalEl) legalEl.classList.add('hidden');
     if (whatsNewEl) whatsNewEl.classList.add('hidden');
     helpEl.classList.remove('hidden');
+    setAiPanelRouteActive(false);
     updateDocumentTitle({ page: 'help' });
   }
 
@@ -4180,6 +4185,7 @@ async function main() {
     if (ideasEl) ideasEl.classList.add('hidden');
     if (helpEl) helpEl.classList.add('hidden');
     legalEl.classList.remove('hidden');
+    setAiPanelRouteActive(false);
     updateDocumentTitle({ page: 'legal' });
   }
 
@@ -4214,6 +4220,7 @@ async function main() {
     if (whatsNewEl) whatsNewEl.classList.add('hidden');
     if (ideasEl) ideasEl.classList.add('hidden');
     catalogEl.classList.remove('hidden');
+    setAiPanelRouteActive(false);
     updateDocumentTitle({ page: 'catalog' });
   }
 
@@ -4246,6 +4253,7 @@ async function main() {
     if (ideasEl) ideasEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
     whatsNewEl.classList.remove('hidden');
+    setAiPanelRouteActive(false);
     updateDocumentTitle({ page: 'whats-new' });
   }
 
@@ -4369,6 +4377,7 @@ async function main() {
     if (catalogEl) catalogEl.classList.add('hidden');
     if (whatsNewEl) whatsNewEl.classList.add('hidden');
     ideasEl.classList.remove('hidden');
+    setAiPanelRouteActive(false); // full-width page; panel restores in the editor
     updateDocumentTitle({ page: 'ideas' });
   }
 

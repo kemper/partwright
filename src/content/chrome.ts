@@ -36,16 +36,21 @@ export function contentHeaderHtml(currentPath: string): string {
       return `<a href="${l.href}" style="color:${color};text-decoration:none"${current ? ' aria-current="page"' : ''}>${l.label}</a>`;
     })
     .join('');
+  // Wrapped in a full-width sticky bar so the nav stays visible on scroll —
+  // including when an in-page anchor like "For AI agents" jumps deep into a
+  // page. The bar is a subtle frosted layer over whatever scrolls beneath it.
   return `<style>@media(max-width:767px){.pw-navlinks{display:none!important}}</style>
-<header class="pw-header" style="width:100%;max-width:72rem;margin:0 auto;padding:20px 24px;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box">
-  <a href="/" aria-label="Partwright home" style="display:flex;align-items:center;gap:10px;text-decoration:none">
-    ${partwrightMarkSvg(30)}
-    <span style="font-weight:700;font-size:18px;letter-spacing:-0.025em;color:#fafafa;font-family:'Sora',system-ui,sans-serif">Partwright</span>
-    <span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;padding:2px 6px;border-radius:999px;background:rgba(245,158,11,0.15);color:#fbbf24;border:1px solid rgba(245,158,11,0.25)">Beta</span>
-  </a>
-  <nav class="pw-navlinks" style="display:flex;align-items:center;gap:28px;font-size:14px">${linksHtml}</nav>
-  <div style="display:flex;align-items:center;gap:12px">
-    <a href="/editor" style="padding:8px 16px;border-radius:8px;font-size:14px;font-weight:600;color:#1c1917;text-decoration:none;background:linear-gradient(135deg,#fcd34d,#f59e0b)">Open editor &#8594;</a>
-  </div>
-</header>`;
+<div class="pw-headerbar" style="position:sticky;top:0;z-index:30;width:100%;background:rgba(24,24,27,0.72);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid rgba(39,39,42,0.6)">
+  <header class="pw-header" style="width:100%;max-width:72rem;margin:0 auto;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box">
+    <a href="/" aria-label="Partwright home" style="display:flex;align-items:center;gap:10px;text-decoration:none">
+      ${partwrightMarkSvg(30)}
+      <span style="font-weight:700;font-size:18px;letter-spacing:-0.025em;color:#fafafa;font-family:'Sora',system-ui,sans-serif">Partwright</span>
+      <span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;padding:2px 6px;border-radius:999px;background:rgba(245,158,11,0.15);color:#fbbf24;border:1px solid rgba(245,158,11,0.25)">Beta</span>
+    </a>
+    <nav class="pw-navlinks" style="display:flex;align-items:center;gap:28px;font-size:14px">${linksHtml}</nav>
+    <div style="display:flex;align-items:center;gap:12px">
+      <a href="/editor" style="padding:8px 16px;border-radius:8px;font-size:14px;font-weight:600;color:#1c1917;text-decoration:none;background:linear-gradient(135deg,#fcd34d,#f59e0b)">Open editor &#8594;</a>
+    </div>
+  </header>
+</div>`;
 }

@@ -13,6 +13,20 @@ async function gotoIdeas(page: Page) {
 }
 
 test.describe('Ideas page', () => {
+  test('carries the shared header and is not squished by the docked AI panel', async ({ page }) => {
+    await gotoIdeas(page);
+    // Same shared header as the landing + static content pages.
+    const header = page.locator('#ideas-page header.pw-header');
+    await expect(header).toHaveCount(1);
+    await expect(header).toContainText('Partwright');
+    await expect(header.locator('nav.pw-navlinks a')).toHaveCount(5);
+    // The docked AI panel is an editor tool — it must NOT take layout space on
+    // /ideas, so the page (and its header) render full-width.
+    await expect(page.locator('#ai-panel')).toBeHidden();
+    const headerWidth = await header.evaluate((el) => el.getBoundingClientRect().width);
+    expect(headerWidth).toBeGreaterThan(1000); // full width, not the ~860px panel-squished width
+  });
+
   test('renders category sections in order, each with a count, blurb, and tiles', async ({ page }) => {
     await gotoIdeas(page);
 
