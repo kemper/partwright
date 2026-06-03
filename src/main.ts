@@ -2574,11 +2574,11 @@ async function main() {
     return finishVoxelImport(result);
   }
 
-  /** Open the Self-Modeling Studio (photo → multi-view silhouette → voxel). If
-   *  the active session already carries a saved Studio import, reopen it
-   *  prefilled so no Gemini calls are wasted. The Build step delegates to the
-   *  console API's `reconstructFromSilhouettes` and persists the import history
-   *  onto the resulting session. */
+  /** Open the Self-Modeling Studio (photo → multi-angle views → AI-built model).
+   *  If the active session already carries a saved Studio import, reopen it
+   *  prefilled so no Gemini calls are wasted. The handoff attaches the gathered
+   *  angles as reference images, opens the AI panel with a modeling brief
+   *  prefilled (not sent), and persists the import on the session. */
   async function openSelfModelingStudioFlow(): Promise<void> {
     let initialState = null;
     const sid = getState().session?.id ?? null;
@@ -2590,9 +2590,19 @@ async function main() {
     }
     openSelfModelingStudio({
       initialState,
-      onBuild: (input) => partwrightAPI.reconstructFromSilhouettes(input),
-      onPersist: (sessionId, record) =>
-        saveStudioImport(sessionId, record as unknown as Record<string, unknown>),
+      onHandoff: async ({ images, brief, record }) => {
+        try {
+          // Need a session to attach references + AI chat to.
+          if (!getState().session) await createSession('photo-model');
+          partwrightAPI.setImages(images);
+          prefillAiInput(brief); // opens the AI panel and fills the input (no send)
+          const activeId = getState().session?.id;
+          if (activeId) await saveStudioImport(activeId, record as unknown as Record<string, unknown>);
+          return { ok: true };
+        } catch (e) {
+          return { error: (e as Error).message };
+        }
+      },
     });
   }
 

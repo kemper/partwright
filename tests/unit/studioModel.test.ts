@@ -6,6 +6,8 @@ import {
   anglePrompt,
   carveableViews,
   buildReconInput,
+  referenceImages,
+  buildModelingBrief,
   readiness,
   serializeStudio,
   deserializeStudio,
@@ -80,13 +82,43 @@ describe('carve input', () => {
     expect(carveableViews(s).length).toBe(2);
   });
 
-  it('readiness needs at least two carveable views', () => {
+  it('readiness needs at least two ready views', () => {
     const s = newStudioState('quick8');
-    expect(readiness(s).canCarve).toBe(false);
+    expect(readiness(s).canBuild).toBe(false);
     const one = s.views[0]; one.src = 'data:,x'; one.status = 'ready';
-    expect(readiness(s).canCarve).toBe(false);
+    expect(readiness(s).canBuild).toBe(false);
     const two = s.views[1]; two.src = 'data:,y'; two.status = 'ready';
-    expect(readiness(s).canCarve).toBe(true);
+    expect(readiness(s).canBuild).toBe(true);
+  });
+});
+
+describe('AI handoff', () => {
+  function withReadyAngles(): StudioState {
+    const s = newStudioState('quick8');
+    for (const az of [0, 90, 180]) {
+      const v = s.views.find(x => x.angle.azimuth === az && x.angle.elevation === 0)!;
+      v.src = `data:image/png;base64,IMG${az}`;
+      v.status = 'ready';
+    }
+    return s;
+  }
+
+  it('referenceImages returns included ready views with angle captions', () => {
+    const s = withReadyAngles();
+    s.views.find(v => v.angle.azimuth === 180)!.include = false;
+    const refs = referenceImages(s);
+    expect(refs.map(r => r.label).sort()).toEqual(['Front', 'Right']);
+    expect(refs.every(r => r.src.startsWith('data:image/png'))).toBe(true);
+  });
+
+  it('buildModelingBrief lists the angles and asks the AI to pick an engine + iterate', () => {
+    const brief = buildModelingBrief(withReadyAngles());
+    expect(brief).toMatch(/3 reference views/);
+    expect(brief).toMatch(/Front/);
+    expect(brief).toMatch(/Right/);
+    expect(brief).toMatch(/azimuth 90/);
+    expect(brief).toMatch(/engine/i);
+    expect(brief).toMatch(/renderViews?/);
   });
 });
 

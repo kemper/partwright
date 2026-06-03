@@ -159,10 +159,40 @@ export function buildReconInput(state: StudioState): {
   };
 }
 
-/** How many views are ready to carve, and whether that's enough. */
-export function readiness(state: StudioState): { ready: number; total: number; canCarve: boolean } {
+/** How many views are ready to use, and whether that's enough to proceed. */
+export function readiness(state: StudioState): { ready: number; total: number; canBuild: boolean } {
   const ready = carveableViews(state).length;
-  return { ready, total: state.views.length, canCarve: ready >= 2 };
+  return { ready, total: state.views.length, canBuild: ready >= 2 };
+}
+
+/** The included, ready views as reference images (src + angle caption) to
+ *  attach to the session for the AI to study. */
+export function referenceImages(state: StudioState): Array<{ src: string; label: string }> {
+  return carveableViews(state).map(v => ({ src: v.src!, label: v.angle.label }));
+}
+
+/**
+ * The modeling brief handed to the in-app AI: a prompt that lists the attached
+ * reference angles and asks the AI to build a matching 3D model with the
+ * partwright tools, choosing whichever engine fits the form and iterating
+ * against the references with renderViews. (Populated into the chat input — the
+ * user reviews and sends it; nothing auto-runs.)
+ */
+export function buildModelingBrief(state: StudioState): string {
+  const views = carveableViews(state);
+  const lines = views
+    .map(v => `- ${v.angle.label} — azimuth ${v.angle.azimuth}°, elevation ${v.angle.elevation}°`)
+    .join('\n');
+  return [
+    `I've attached ${views.length} reference views of one subject from different angles (also in the Images tab):`,
+    lines,
+    '',
+    'Please build a 3D model that matches this subject as closely as you can, using the partwright tools.',
+    'Pick whichever engine best fits the form: manifold-js (mesh) for organic/curved shapes like faces and bodies (warp, levelSet, smoothOut help here); BREP/replicad for hard-surface CAD parts with exact fillets; OpenSCAD for parametric mechanical parts; voxel only if a blocky look is wanted.',
+    'Work coarse-to-fine: block in the major masses and get the overall proportions and silhouette right first, then add detail.',
+    'After each significant change, call renderViews (or renderView at the matching azimuth/elevation) and compare your render to the reference at that same angle — iterate until the silhouettes and proportions line up.',
+    'Save progress with runAndSave, and record key decisions with addSessionNote.',
+  ].join('\n');
 }
 
 // ── Persistence ─────────────────────────────────────────────────────────────

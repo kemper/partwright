@@ -13,13 +13,13 @@ import {
   newStudioState,
   frontView,
   anglePrompt,
-  buildReconInput,
+  referenceImages,
+  buildModelingBrief,
   readiness,
   serializeStudio,
   type StudioState,
   type StudioView,
   type StudioImportRecord,
-  type CarveSettings,
 } from '../recon/studioModel';
 import { getKey } from '../ai/db';
 import { listGeminiImageModels, generateAngleImage, pickImageModel, dataUrlToInline } from '../ai/geminiImage';
@@ -31,12 +31,14 @@ import { BUTTON_PRIMARY, BUTTON_CANCEL, BUTTON_SMALL_SECONDARY } from './styleCo
 export interface SelfModelingStudioOptions {
   /** Reopen a previously-saved import instead of starting fresh. */
   initialState?: StudioState | null;
-  /** Carve the included views into a voxel session. Implemented by the host as
-   *  `partwright.reconstructFromSilhouettes`. */
-  onBuild: (input: { views: Array<{ src: string; azimuth: number; elevation: number }>; options: CarveSettings }) =>
-    Promise<{ sessionId?: string; voxelCount?: number; views?: number; error?: string }>;
-  /** Persist the import history onto the newly-built session. */
-  onPersist?: (sessionId: string, record: StudioImportRecord) => Promise<void>;
+  /** Hand the gathered angles to the AI: attach them as reference images, open
+   *  the AI panel with the modeling brief prefilled (not sent), and persist the
+   *  import on the session. Implemented by the host. */
+  onHandoff: (args: {
+    images: Array<{ src: string; label: string }>;
+    brief: string;
+    record: StudioImportRecord;
+  }) => Promise<{ ok?: boolean; error?: string }>;
 }
 
 let isOpen = false;
@@ -89,25 +91,26 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
   }
 
   // ── Sections (built once, refreshed on state change) ──────────────────────
+  const intro = document.createElement('div');
+  intro.className = 'text-xs text-zinc-400 leading-relaxed';
+  intro.textContent = 'Gather views of your subject from several angles (generate them from one photo with Gemini, or upload your own), then hand them to the AI — it attaches them as references and drafts a 3D model to match, using whichever engine fits. You review the prefilled brief and hit send.';
   const keyBanner = document.createElement('div');
   const sourceSection = document.createElement('div');
   const controlsSection = document.createElement('div');
   const gridSection = document.createElement('div');
   gridSection.className = 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2';
-  const carveSection = document.createElement('div');
   const statusEl = document.createElement('div');
   statusEl.className = 'text-xs text-zinc-400 min-h-[1rem]';
-  body.append(keyBanner, sourceSection, controlsSection,
-    sectionLabel('Angles'), gridSection,
-    sectionLabel('Carve settings'), carveSection, statusEl);
+  body.append(intro, keyBanner, sourceSection, controlsSection,
+    sectionLabel('Angles'), gridSection, statusEl);
 
-  // Footer: readiness + Build / Cancel.
+  // Footer: readiness + Send / Close.
   const readyEl = document.createElement('div');
   readyEl.className = 'text-xs text-zinc-400';
   const footBtns = document.createElement('div');
   footBtns.className = 'flex items-center gap-2';
   const cancelBtn = button('Close', BUTTON_CANCEL, () => close());
-  const buildBtn = button('Build 3D model', BUTTON_PRIMARY, () => void doBuild());
+  const buildBtn = button('Send to AI modeler', BUTTON_PRIMARY, () => void doHandoff());
   footBtns.append(cancelBtn, buildBtn);
   footer.append(readyEl, footBtns);
 
@@ -278,28 +281,16 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
     return tile;
   }
 
-  // ── Carve settings ───────────────────────────────────────────────────────
-  function renderCarve(): void {
-    carveSection.innerHTML = '';
-    carveSection.className = 'grid grid-cols-2 gap-x-4 gap-y-2';
-    carveSection.append(
-      numberRow('Resolution', state.carve.resolution, 8, 256, 1, (n) => { state.carve.resolution = n; }),
-      numberRow('Smoothing', state.carve.smooth, 0, 8, 1, (n) => { state.carve.smooth = n; }),
-      numberRow('Frame fill', state.carve.frameFill, 0.1, 2, 0.05, (n) => { state.carve.frameFill = n; }),
-      checkboxRow('Colour from views', state.carve.colorFromViews, (b) => { state.carve.colorFromViews = b; }),
-    );
-  }
-
   function renderFooter(): void {
     const r = readiness(state);
-    readyEl.textContent = `${r.ready} of ${r.total} views ready${r.canCarve ? '' : ' — need at least 2'}`;
-    (buildBtn as HTMLButtonElement).disabled = !r.canCarve || generating;
+    readyEl.textContent = `${r.ready} of ${r.total} views ready${r.canBuild ? '' : ' — need at least 2'}`;
+    (buildBtn as HTMLButtonElement).disabled = !r.canBuild || generating;
     buildBtn.classList.toggle('opacity-50', (buildBtn as HTMLButtonElement).disabled);
     buildBtn.classList.toggle('cursor-not-allowed', (buildBtn as HTMLButtonElement).disabled);
   }
 
   function renderAll(): void {
-    renderSource(); renderControls(); renderGrid(); renderCarve(); renderFooter();
+    renderSource(); renderControls(); renderGrid(); renderFooter();
   }
 
   // ── Generation ───────────────────────────────────────────────────────────
@@ -353,27 +344,26 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
     renderAll();
   }
 
-  // ── Build ────────────────────────────────────────────────────────────────
-  async function doBuild(): Promise<void> {
-    if (!readiness(state).canCarve) return;
-    setStatus('Carving the visual hull…');
+  // ── Hand off to the AI modeler ────────────────────────────────────────────
+  async function doHandoff(): Promise<void> {
+    if (!readiness(state).canBuild) return;
+    const images = referenceImages(state);
+    setStatus('Attaching reference views and briefing the AI…');
     (buildBtn as HTMLButtonElement).disabled = true;
     try {
-      const res = await options.onBuild(buildReconInput(state));
-      if (res.error || !res.sessionId) {
-        const msg = `Build failed: ${res.error ?? 'no model produced'}`;
-        setStatus(msg, 'error');
-        showToast(msg, { variant: 'warn', source: 'app' });
+      const res = await options.onHandoff({ images, brief: buildModelingBrief(state), record: serializeStudio(state) });
+      if (res.error) {
+        setStatus(`Couldn’t hand off to the AI: ${res.error}`, 'error');
+        showToast(`Self-Modeling Studio: ${res.error}`, { variant: 'warn', source: 'app' });
         renderFooter();
         return;
       }
-      await options.onPersist?.(res.sessionId, serializeStudio(state));
-      setStatus(`Built a ${res.voxelCount?.toLocaleString() ?? ''}-voxel model from ${res.views ?? 0} views.`);
+      setStatus(`Sent ${images.length} reference views to the AI.`);
       close();
     } catch (e) {
-      const msg = `Build failed: ${(e as Error).message}`;
-      setStatus(msg, 'error');
-      showToast(msg, { variant: 'warn', source: 'app' });
+      const msg = (e as Error).message;
+      setStatus(`Couldn’t hand off to the AI: ${msg}`, 'error');
+      showToast(`Self-Modeling Studio: ${msg}`, { variant: 'warn', source: 'app' });
       renderFooter();
     }
   }
@@ -406,36 +396,6 @@ function iconBtn(glyph: string, title: string, onClick: () => void): HTMLButtonE
   b.textContent = glyph; b.title = title;
   b.addEventListener('click', onClick);
   return b;
-}
-
-function numberRow(label: string, value: number, min: number, max: number, step: number, onChange: (n: number) => void): HTMLElement {
-  const wrap = document.createElement('label');
-  wrap.className = 'flex items-center justify-between gap-2 text-xs text-zinc-300';
-  const span = document.createElement('span'); span.textContent = label;
-  const input = document.createElement('input');
-  input.type = 'number'; input.min = String(min); input.max = String(max); input.step = String(step);
-  input.value = String(value);
-  input.className = 'w-20 bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200';
-  input.addEventListener('change', () => {
-    let n = Number(input.value);
-    if (!Number.isFinite(n)) n = value;
-    n = Math.min(max, Math.max(min, n));
-    input.value = String(n);
-    onChange(n);
-  });
-  wrap.append(span, input);
-  return wrap;
-}
-
-function checkboxRow(label: string, checked: boolean, onChange: (b: boolean) => void): HTMLElement {
-  const wrap = document.createElement('label');
-  wrap.className = 'flex items-center justify-between gap-2 text-xs text-zinc-300';
-  const span = document.createElement('span'); span.textContent = label;
-  const input = document.createElement('input');
-  input.type = 'checkbox'; input.checked = checked; input.className = 'accent-blue-500';
-  input.addEventListener('change', () => onChange(input.checked));
-  wrap.append(span, input);
-  return wrap;
 }
 
 /** Open a file picker and hand back the chosen image as a data URL + media type. */

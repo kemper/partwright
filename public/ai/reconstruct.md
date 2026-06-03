@@ -36,23 +36,33 @@ chroma-keyed against an auto-detected background colour).
 ## Self-Modeling Studio (UI)
 
 The **Import → "Photo → 3D (Self-Modeling Studio)…"** menu opens a guided modal
-for this whole pipeline:
+that gathers multiple angles of a subject and hands them to the **in-app AI**,
+which then builds a model with the partwright tools:
 
 1. **Upload a source photo** (the Front view).
 2. **Generate angles** — with a connected Google Gemini key, the studio uses the
    newest image-capable model on your key ("nano banana") to re-render the photo
    at each turntable angle; tiles fill in as they return. No key? Connect it from
    the banner, or **upload your own** image per angle.
-3. **Curate** — toggle views in/out of the carve, regenerate or replace any tile.
-4. **Build** — carves the included silhouettes into a voxel session.
+3. **Curate** — toggle views in/out, regenerate or replace any tile.
+4. **Send to AI modeler** — attaches the chosen views as **reference images**
+   (one per angle, captioned) and opens the AI panel with a **modeling brief
+   prefilled** (not sent): it asks the AI to study the references, pick whichever
+   engine fits the form, block in the major masses, and iterate against the
+   references with `renderViews`. You review the brief and hit send.
 
-The whole import (source + per-angle images + carve settings) is saved on the
-resulting session, so reopening the studio for it repopulates everything with no
-further Gemini calls. Start a fresh import any time to begin over.
+The whole import (source + per-angle images) is saved on the session, so
+reopening the studio repopulates everything with no further Gemini calls. Start
+a fresh import any time to begin over.
+
+> The studio does **not** auto-generate geometry — the AI does the modeling, so
+> the result is a real editable model in the engine it chose, not a fixed voxel
+> blob. The silhouette-carve below remains available as a low-level API/tool the
+> AI may call if it wants a rough starting block.
 
 `partwright.openSelfModelingStudio()` opens it programmatically.
 
-## API
+## Low-level carve API
 
 ```js
 // Reconstruct from supplied silhouette images (the Gemini-turntable workflow).
