@@ -5322,6 +5322,29 @@ async function main() {
 
     if (footprintTris.size === 0) return null;
 
+    // Supplement the BFS with a full forward-face scan for any triangle that
+    // passes the footprint bounds but wasn't reachable via adjacency. Prior
+    // stamp subdivisions create T-junctions between fine (stamp) and medium
+    // (outer) triangles — the BFS can't cross T-junctions, so medium boundary
+    // triangles are missed. stampImageOntoMesh colors triangles by centroid
+    // (not adjacency), so a missed medium triangle would get painted at full
+    // coarse size and appear as a large triangular patch outside the circle.
+    // Depth-slab + back-face checks keep far-side triangles excluded.
+    for (let t = 0; t < currentMeshData.numTri; t++) {
+      if (visited.has(t)) continue;
+      const sv0 = triVerts[t * 3], sv1 = triVerts[t * 3 + 1], sv2 = triVerts[t * 3 + 2];
+      const sx0 = vertProperties[sv0 * numProp], sy0 = vertProperties[sv0 * numProp + 1], sz0 = vertProperties[sv0 * numProp + 2];
+      const sx1 = vertProperties[sv1 * numProp], sy1 = vertProperties[sv1 * numProp + 1], sz1 = vertProperties[sv1 * numProp + 2];
+      const sx2 = vertProperties[sv2 * numProp], sy2 = vertProperties[sv2 * numProp + 1], sz2 = vertProperties[sv2 * numProp + 2];
+      const sex = sx1 - sx0, sey = sy1 - sy0, sez = sz1 - sz0;
+      const sfx = sx2 - sx0, sfy = sy2 - sy0, sfz = sz2 - sz0;
+      if ((sey * sfz - sez * sfy) * nx + (sez * sfx - sex * sfz) * ny + (sex * sfy - sey * sfx) * nz <= 0) continue;
+      const scx = (sx0 + sx1 + sx2) / 3, scy = (sy0 + sy1 + sy2) / 3, scz = (sz0 + sz1 + sz2) / 3;
+      if (inFootprint(scx, scy, scz) || inFootprint(sx0, sy0, sz0) || inFootprint(sx1, sy1, sz1) || inFootprint(sx2, sy2, sz2)) {
+        footprintTris.add(t);
+      }
+    }
+
     // Step 2: Confined subdivision. `overlapsStamp` keeps refinement inside the
     // stamp square (+ a thin margin) and the depth slab: as a big seed triangle
     // splits 1→4, children that land outside the square stop refining, so the
