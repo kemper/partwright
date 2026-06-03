@@ -25,6 +25,7 @@ import { getKey } from '../ai/db';
 import { listGeminiImageModels, generateAngleImage, pickImageModel, dataUrlToInline } from '../ai/geminiImage';
 import { getConfig } from '../config/appConfig';
 import { showAiKeyModal } from './aiKeyModal';
+import { showToast } from './toast';
 import { BUTTON_PRIMARY, BUTTON_CANCEL, BUTTON_SMALL_SECONDARY } from './styleConstants';
 
 export interface SelfModelingStudioOptions {
@@ -78,7 +79,7 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
 
   const escHandler = (e: KeyboardEvent) => { if (e.key === 'Escape' && !generating) close(); };
   document.addEventListener('keydown', escHandler);
-  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay && !generating) close(); });
+  overlay.addEventListener('pointerdown', (e) => { if (e.target === overlay && !generating) close(); });
 
   function close(): void {
     abort?.abort();
@@ -251,6 +252,7 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
     const inc = document.createElement('input');
     inc.type = 'checkbox'; inc.checked = v.include; inc.title = 'Include in carve';
     inc.className = 'accent-blue-500';
+    inc.disabled = generating;
     inc.addEventListener('change', () => { v.include = inc.checked; renderAll(); });
     meta.append(lbl, inc);
     tile.appendChild(meta);
@@ -262,11 +264,15 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
       (regen as HTMLButtonElement).disabled = generating || !frontView(state)?.src;
       actions.appendChild(regen);
     }
-    actions.appendChild(iconBtn('⬆', 'Upload an image for this angle', () => {
+    const upBtn = iconBtn('⬆', 'Upload an image for this angle', () => {
       pickImageFile((dataUrl) => { v.src = dataUrl; v.status = 'ready'; v.origin = 'upload'; renderAll(); });
-    }));
+    });
+    (upBtn as HTMLButtonElement).disabled = generating;
+    actions.appendChild(upBtn);
     if (v.src && v.origin !== 'source') {
-      actions.appendChild(iconBtn('🗑', 'Clear this image', () => { v.src = null; v.status = 'empty'; renderAll(); }));
+      const clrBtn = iconBtn('🗑', 'Clear this image', () => { v.src = null; v.status = 'empty'; renderAll(); });
+      (clrBtn as HTMLButtonElement).disabled = generating;
+      actions.appendChild(clrBtn);
     }
     tile.appendChild(actions);
     return tile;
@@ -355,7 +361,9 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
     try {
       const res = await options.onBuild(buildReconInput(state));
       if (res.error || !res.sessionId) {
-        setStatus(`Build failed: ${res.error ?? 'no model produced'}`, 'error');
+        const msg = `Build failed: ${res.error ?? 'no model produced'}`;
+        setStatus(msg, 'error');
+        showToast(msg, { variant: 'warn', source: 'app' });
         renderFooter();
         return;
       }
@@ -363,7 +371,9 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
       setStatus(`Built a ${res.voxelCount?.toLocaleString() ?? ''}-voxel model from ${res.views ?? 0} views.`);
       close();
     } catch (e) {
-      setStatus(`Build failed: ${(e as Error).message}`, 'error');
+      const msg = `Build failed: ${(e as Error).message}`;
+      setStatus(msg, 'error');
+      showToast(msg, { variant: 'warn', source: 'app' });
       renderFooter();
     }
   }

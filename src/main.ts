@@ -6423,11 +6423,12 @@ async function main() {
         });
       }
 
+      const reconCfg = getConfig().recon;
       let grid;
       try {
         grid = carveVisualHull(silhouettes, {
-          resolution: opts.resolution ?? 96,
-          frameFill: opts.frameFill ?? 1,
+          resolution: opts.resolution ?? reconCfg.defaultResolution,
+          frameFill: opts.frameFill ?? reconCfg.defaultFrameFill,
           color: opts.color as ReconVec3 | undefined,
           colorFromViews,
         });
@@ -6437,7 +6438,7 @@ async function main() {
       if (grid.size === 0)
         return { error: 'reconstructFromSilhouettes: the silhouettes carved away everything — check that the subject is centred and the same scale in every view, and tune frameFill.' };
 
-      const smooth = opts.smooth ?? 2;
+      const smooth = opts.smooth ?? reconCfg.defaultSmooth;
       if (smooth > 0) grid.smooth({ iterations: smooth });
       const code = generateVoxelImportCode(grid, 'reconstruction');
       const result = await importCodePayload(code, 'voxel', 'silhouette-reconstruction');
@@ -6464,12 +6465,14 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       if (!currentMeshData) return { error: 'reconstructFromCurrentModel: no model in the viewport — run some code first.' };
 
+      const reconCfg = getConfig().recon;
       const azimuthCount = opts.azimuthCount ?? 12;
-      const renderSize = opts.renderSize ?? 256;
+      const renderSize = opts.renderSize ?? reconCfg.selfTestRenderSize;
       const angles: Array<{ azimuth: number; elevation: number }> = [];
       for (let i = 0; i < azimuthCount; i++) angles.push({ azimuth: (360 / azimuthCount) * i, elevation: 0 });
       if (opts.includePoles ?? true) {
-        angles.push({ azimuth: 0, elevation: 80 }, { azimuth: 0, elevation: -80 });
+        const pole = reconCfg.selfTestPoleElevation;
+        angles.push({ azimuth: 0, elevation: pole }, { azimuth: 0, elevation: -pole });
       }
 
       const silhouettes: SilhouetteView[] = [];
@@ -6488,17 +6491,17 @@ async function main() {
       let grid;
       try {
         grid = carveVisualHull(silhouettes, {
-          resolution: opts.resolution ?? 96,
+          resolution: opts.resolution ?? reconCfg.defaultResolution,
           // renderSingleView frames the model at halfExtent = 0.7 * maxDim, so
           // the model edge sits at ~0.71 of the half-frame — match that here.
-          frameFill: opts.frameFill ?? 0.71,
+          frameFill: opts.frameFill ?? reconCfg.selfTestFrameFill,
         });
       } catch (e) {
         return { error: `reconstructFromCurrentModel: ${(e as Error).message}` };
       }
       if (grid.size === 0) return { error: 'reconstructFromCurrentModel: carved away everything (try a lower frameFill).' };
 
-      const smooth = opts.smooth ?? 2;
+      const smooth = opts.smooth ?? reconCfg.defaultSmooth;
       if (smooth > 0) grid.smooth({ iterations: smooth });
       const code = generateVoxelImportCode(grid, 'reconstruction');
       const result = await importCodePayload(code, 'voxel', 'self-reconstruction');

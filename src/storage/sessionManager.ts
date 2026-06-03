@@ -147,7 +147,7 @@ export interface ExportedSession {
   mainifold?: string;
   /** Images may be the array form or the legacy object map ({front, right, ...}).
    * Both also exist under `referenceImages` for pre-rename exports. */
-  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel' };
+  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; studioImport?: Record<string, unknown> | null };
   /**
    * The session's parts, ordered by `order`. Present from schema 1.7. Pre-1.7
    * files omit this; on import they collapse into a single default part.
@@ -1555,7 +1555,7 @@ export async function exportSession(
 
   return {
     partwright: SCHEMA_VERSION,
-    session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}) },
+    session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}), ...(session.studioImport ? { studioImport: session.studioImport } : {}) },
     parts: parts.map(p => ({ name: p.name, order: p.order })),
     versions: flat.map(({ v, partOrder }, i) => {
       const colorRegions = opts.includeColorRegions ? extractColorRegions(v.geometryData) : undefined;
@@ -1626,6 +1626,13 @@ export async function importSession(
       ? rawImages
       : legacyImagesObjectToArray(rawImages);
     await dbUpdateSession(session.id, { images: imagesArr });
+  }
+
+  // Restore the Self-Modeling Studio import history (source + per-angle images +
+  // carve settings) so a re-imported session can reopen the studio without
+  // re-calling Gemini, matching the IndexedDB-side persistence.
+  if (data.session.studioImport) {
+    await dbUpdateSession(session.id, { studioImport: data.session.studioImport });
   }
 
   // Determine the index of the latest exported version. Schema 1.2 stored

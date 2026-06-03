@@ -22,6 +22,7 @@ import { showUninstallModal } from './uninstallModal';
 function cloneConfig(c: AppConfig): AppConfig {
   return {
     ai: { ...c.ai },
+    recon: { ...c.recon },
     renderer: { ...c.renderer },
     import: { ...c.import },
     ui: { ...c.ui },
@@ -130,6 +131,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
     const d = APP_CONFIG_DEFAULTS;
     return (
       Object.entries(c.ai).some(([k, v]) => v !== (d.ai as Record<string, unknown>)[k]) ||
+      Object.entries(c.recon).some(([k, v]) => v !== (d.recon as Record<string, unknown>)[k]) ||
       Object.entries(c.renderer).some(([k, v]) => v !== (d.renderer as Record<string, unknown>)[k]) ||
       Object.entries(c.import).some(([k, v]) => v !== (d.import as Record<string, unknown>)[k]) ||
       Object.entries(c.ui).some(([k, v]) => v !== (d.ui as Record<string, unknown>)[k])
@@ -411,6 +413,67 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ai.imageTokenEstimate}
           min={100} max={10_000} integer
           onChange={v => set('ai', 'imageTokenEstimate', v)}
+        />
+      </Section>
+
+      <Section title="Reconstruction (photo → 3D)">
+        <Field
+          label="Default carve resolution"
+          unit="cells/axis"
+          hint="Voxel grid resolution for a silhouette carve. Higher = finer detail, slower."
+          tooltip="Multi-view silhouette reconstruction (Self-Modeling Studio and reconstructFromSilhouettes/reconstructFromCurrentModel) carves a voxel grid of this many cells per axis. Higher values recover finer surface detail but the carve and mesh cost rises with the cube of the resolution."
+          defaultValue={APP_CONFIG_DEFAULTS.recon.defaultResolution}
+          value={c.recon.defaultResolution}
+          min={8} max={256} integer
+          onChange={v => set('recon', 'defaultResolution', v)}
+        />
+        <Field
+          label="Default smoothing"
+          unit="iterations"
+          hint="Voxel surfacing iterations applied to a carved hull. 0 = blocky."
+          tooltip="After carving, the blocky voxel hull is rounded with this many Taubin-smoothing iterations to read as an organic surface. 0 keeps hard cube faces."
+          defaultValue={APP_CONFIG_DEFAULTS.recon.defaultSmooth}
+          value={c.recon.defaultSmooth}
+          min={0} max={8} integer
+          onChange={v => set('recon', 'defaultSmooth', v)}
+        />
+        <Field
+          label="Default frame fill"
+          hint="Fraction of each supplied image the subject is assumed to span (1 = touches the edges)."
+          tooltip="Calibrates the carve's normalized extent to the images. Set it to roughly how much of the frame the subject fills — lower it when there's margin around the subject so the grid isn't wasted on empty space."
+          defaultValue={APP_CONFIG_DEFAULTS.recon.defaultFrameFill}
+          value={c.recon.defaultFrameFill}
+          min={0.1} max={2} step={0.01}
+          onChange={v => set('recon', 'defaultFrameFill', v)}
+        />
+        <Field
+          label="Self-test frame fill"
+          hint="Frame fill for reconstructFromCurrentModel, matched to the renderer's 0.7×maxDim framing."
+          tooltip="The self-test carve renders the live model's own silhouettes via renderSingleView, which frames the model at halfExtent = 0.7 × maxDim — so the model edge sits at ~0.71 of the half-frame. This value keeps the carve aligned to that framing; change it only if renderSingleView's framing changes."
+          defaultValue={APP_CONFIG_DEFAULTS.recon.selfTestFrameFill}
+          value={c.recon.selfTestFrameFill}
+          min={0.1} max={2} step={0.01}
+          onChange={v => set('recon', 'selfTestFrameFill', v)}
+        />
+        <Field
+          label="Self-test render size"
+          unit="px"
+          hint="Offscreen render size for the self-test silhouettes."
+          tooltip="reconstructFromCurrentModel renders each turntable silhouette at this pixel size before carving. Higher captures a crisper outline at more render cost."
+          defaultValue={APP_CONFIG_DEFAULTS.recon.selfTestRenderSize}
+          value={c.recon.selfTestRenderSize}
+          min={64} max={1024} integer
+          onChange={v => set('recon', 'selfTestRenderSize', v)}
+        />
+        <Field
+          label="Self-test pole elevation"
+          unit="°"
+          hint="Elevation of the top/bottom polar caps in the self-test turntable."
+          tooltip="The self-test turntable adds a high and low view at ±this elevation to cap the top and bottom of the hull. Stay below 90° — exactly 90° is gimbal-degenerate for the camera basis."
+          defaultValue={APP_CONFIG_DEFAULTS.recon.selfTestPoleElevation}
+          value={c.recon.selfTestPoleElevation}
+          min={10} max={89} integer
+          onChange={v => set('recon', 'selfTestPoleElevation', v)}
         />
       </Section>
 
