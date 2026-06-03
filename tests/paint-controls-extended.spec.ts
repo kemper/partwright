@@ -1,6 +1,6 @@
 // Smoke tests for the extended paint UI:
 //  - brush size controls (slider + number input) appear when the brush tool is selected
-//  - bucket tolerance has a typeable degree input
+//  - bucket color tolerance has a typeable percentage input
 //  - per-region eye + trash icons appear in the region list and drive the API
 //  - partwright API exposes setBrushSize / setBucketTolerance / hideRegion / showRegion
 //
@@ -39,24 +39,26 @@ test.describe('extended paint controls', () => {
     await expect(brushHelp).toBeHidden();
   });
 
-  test('typing a bucket tolerance angle updates the underlying value', async ({ page }) => {
+  test('typing a bucket color tolerance updates the underlying value', async ({ page }) => {
     await openEditor(page);
     await page.locator('#paint-toggle').dispatchEvent('click');
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
     // Bucket is no longer the default tool — switch to it to reveal its controls.
     await page.locator('#paint-picker-panel button:has-text("Bucket")').dispatchEvent('click');
 
-    const angleInput = page.locator('#paint-picker-panel input[type="number"][title*="Bend angle"]');
-    await expect(angleInput).toBeVisible();
+    // Bucket sensitivity is now color-distance based: the number input is a
+    // 0–100 % tolerance, where the underlying value is the fraction (pct / 100).
+    const tolInput = page.locator('#paint-picker-panel input[type="number"][title*="Color tolerance"]');
+    await expect(tolInput).toBeVisible();
 
-    await angleInput.fill('45');
-    await angleInput.press('Enter');
+    await tolInput.fill('45');
+    await tolInput.press('Enter');
 
     const tol = await page.evaluate(() => {
-      const pw = (window as unknown as { partwright: { getBucketTolerance(): { tolerance: number } } }).partwright;
-      return pw.getBucketTolerance().tolerance;
+      const pw = (window as unknown as { partwright: { getBucketColorTolerance(): { tolerance: number } } }).partwright;
+      return pw.getBucketColorTolerance().tolerance;
     });
-    expect(tol).toBeCloseTo(Math.cos(45 * Math.PI / 180), 3);
+    expect(tol).toBeCloseTo(0.45, 3);
   });
 
   test('setBrushSize partwright API rejects bad input and accepts good input', async ({ page }) => {
