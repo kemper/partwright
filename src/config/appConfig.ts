@@ -143,6 +143,10 @@ export interface AppConfig {
     defaultQuality: number;
     /** Default circular segment count for OpenSCAD ($fn) geometry renders. */
     scadDefaultQuality: number;
+    /** Default colour-palette slot capacity — how many filament slots the
+     *  target printer has (e.g. 4 for one Bambu AMS). Drives the paint panel's
+     *  over-budget warning; never blocks painting or export. */
+    defaultPaletteCapacity: number;
   };
 }
 
@@ -214,6 +218,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     sessionLockStaleMs: 8000,
     defaultQuality: 128,
     scadDefaultQuality: 32,
+    defaultPaletteCapacity: 4,
   },
 };
 

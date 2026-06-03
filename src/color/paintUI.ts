@@ -7,6 +7,8 @@ import {
   isActive,
   setColor,
   getColor,
+  setSlot,
+  getSlotId,
   setTool,
   getTool,
   setBucketTolerance,
@@ -43,6 +45,19 @@ import {
   type BrushShape,
 } from './paintMode';
 import {
+  getActivePalette,
+  getPaletteCapacity,
+  setPaletteCapacity,
+  isPaletteConstrained,
+  addFilament,
+  updateFilament,
+  removeFilament,
+  onPaletteChange,
+  hexToRgb,
+  type Filament,
+} from './palette';
+import { recolorRegionsForSlot, usedSlotIds } from './regions';
+import {
   getRegions,
   onChange as onRegionsChange,
   onRedoChange,
@@ -70,29 +85,6 @@ import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
 import { registerExclusiveMode } from '../ui/modeExclusion';
-
-const PRESET_COLORS: [number, number, number][] = [
-  // Warm
-  [0.92, 0.26, 0.21], // red
-  [1.00, 0.60, 0.00], // orange
-  [1.00, 0.76, 0.03], // yellow
-  [0.55, 0.36, 0.22], // brown
-  // Cool
-  [0.55, 0.85, 0.20], // lime
-  [0.30, 0.69, 0.31], // green
-  [0.00, 0.74, 0.83], // teal
-  [0.13, 0.59, 0.95], // blue
-  // Purples / pinks
-  [0.10, 0.20, 0.55], // navy
-  [0.61, 0.15, 0.69], // purple
-  [0.93, 0.05, 0.65], // magenta
-  [0.91, 0.12, 0.39], // pink
-  // Neutrals
-  [1.00, 1.00, 1.00], // white
-  [0.75, 0.75, 0.75], // light gray
-  [0.35, 0.35, 0.35], // dark gray
-  [0.00, 0.00, 0.00], // black
-];
 
 let paintBtn: HTMLButtonElement | null = null;
 let pickerPanel: HTMLElement | null = null;
@@ -194,6 +186,189 @@ function updateButtonState(active: boolean): void {
   }
 }
 
+/** Build the palette section: the slot swatch grid, an over-budget badge, the
+ *  custom-colour picker (hidden when the palette is constrained), and a
+ *  collapsible inline palette editor. */
+function createPaletteSection(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'mb-2';
+
+  // Header: "Palette" + over-budget badge + edit toggle.
+  const head = document.createElement('div');
+  head.className = 'flex items-center justify-between mb-1.5';
+  const title = document.createElement('div');
+  title.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
+  title.textContent = 'Palette';
+  head.appendChild(title);
+
+  const headRight = document.createElement('div');
+  headRight.className = 'flex items-center gap-1.5';
+  const budget = document.createElement('span');
+  budget.className = 'hidden px-1.5 py-0.5 rounded text-[9px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40';
+  headRight.appendChild(budget);
+  const editBtn = document.createElement('button');
+  editBtn.className = 'text-[10px] text-zinc-400 hover:text-zinc-200 transition-colors';
+  editBtn.textContent = 'Edit';
+  editBtn.title = 'Edit palette slots and capacity';
+  headRight.appendChild(editBtn);
+  head.appendChild(headRight);
+  wrap.appendChild(head);
+
+  // Swatch grid (one swatch per palette slot).
+  const grid = document.createElement('div');
+  grid.className = 'grid grid-cols-4 gap-1.5 mb-2';
+  wrap.appendChild(grid);
+
+  // Custom (ad-hoc, unslotted) colour — hidden when the palette is constrained.
+  const customRow = document.createElement('div');
+  customRow.className = 'flex items-center gap-1.5';
+  const colorInput = document.createElement('input');
+  colorInput.type = 'color';
+  colorInput.className = 'w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent';
+  colorInput.title = 'Custom color (unslotted)';
+  colorInput.addEventListener('input', () => {
+    const hex = colorInput.value;
+    setColor([
+      parseInt(hex.slice(1, 3), 16) / 255,
+      parseInt(hex.slice(3, 5), 16) / 255,
+      parseInt(hex.slice(5, 7), 16) / 255,
+    ]);
+    renderSwatches(); // drop the active-slot ring — we're now on an ad-hoc colour
+  });
+  const customLabel = document.createElement('span');
+  customLabel.className = 'text-[10px] text-zinc-500';
+  customLabel.textContent = 'Custom';
+  customRow.appendChild(colorInput);
+  customRow.appendChild(customLabel);
+  wrap.appendChild(customRow);
+
+  // Collapsible editor (built on demand).
+  const editor = document.createElement('div');
+  editor.className = 'hidden mt-2 border-t border-zinc-700 pt-2';
+  wrap.appendChild(editor);
+  let editorOpen = false;
+  editBtn.addEventListener('click', () => {
+    editorOpen = !editorOpen;
+    editor.classList.toggle('hidden', !editorOpen);
+    editBtn.textContent = editorOpen ? 'Done' : 'Edit';
+    if (editorOpen) renderEditor();
+  });
+
+  function renderSwatches(): void {
+    grid.replaceChildren();
+    const slots = getActivePalette().slots;
+    const activeId = getSlotId();
+    slots.forEach((slot, i) => {
+      const swatch = document.createElement('button');
+      swatch.className = 'w-6 h-6 rounded border-2 border-transparent hover:border-white/50 transition-colors';
+      swatch.style.backgroundColor = slot.hex;
+      swatch.title = `Slot ${i + 1}: ${slot.name} (${slot.hex})`;
+      if (slot.id === activeId) swatch.classList.add('border-white/80', 'ring-1', 'ring-white/30');
+      swatch.addEventListener('click', () => {
+        setSlot(slot.id);
+        renderSwatches();
+      });
+      grid.appendChild(swatch);
+    });
+  }
+
+  function renderBudget(): void {
+    const used = usedSlotIds().size;
+    const cap = getPaletteCapacity();
+    if (used > cap) {
+      budget.textContent = `${used}/${cap} slots`;
+      budget.title = `This model uses ${used} filament colours but the palette capacity is ${cap}. Your printer may not have enough slots.`;
+      budget.classList.remove('hidden');
+    } else {
+      budget.classList.add('hidden');
+    }
+  }
+
+  function renderConstrain(): void {
+    customRow.classList.toggle('hidden', isPaletteConstrained());
+  }
+
+  function renderEditor(): void {
+    editor.replaceChildren();
+    for (const slot of getActivePalette().slots) {
+      editor.appendChild(buildSlotRow(slot));
+    }
+    const addBtn = document.createElement('button');
+    addBtn.className = 'mt-1 w-full px-2 py-1 rounded text-[10px] bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600/60 transition-colors';
+    addBtn.textContent = '+ Add color';
+    addBtn.addEventListener('click', () => {
+      addFilament({ name: 'New', hex: '#cccccc', td: 1 });
+      renderEditor();
+    });
+    editor.appendChild(addBtn);
+
+    const capRow = document.createElement('div');
+    capRow.className = 'flex items-center justify-between gap-2 mt-2';
+    const capLabel = document.createElement('span');
+    capLabel.className = 'text-[10px] text-zinc-500';
+    capLabel.textContent = 'Printer slots';
+    const capInput = document.createElement('input');
+    capInput.type = 'number';
+    capInput.min = '1';
+    capInput.max = '64';
+    capInput.value = String(getPaletteCapacity());
+    capInput.className = 'w-14 px-1 py-0.5 rounded text-[10px] bg-zinc-900/60 text-zinc-200 border border-zinc-700';
+    capInput.title = 'How many filament slots your printer has (e.g. 4 for one AMS)';
+    capInput.addEventListener('change', () => {
+      const n = parseInt(capInput.value, 10);
+      if (Number.isFinite(n) && n > 0) setPaletteCapacity(n);
+    });
+    capRow.appendChild(capLabel);
+    capRow.appendChild(capInput);
+    editor.appendChild(capRow);
+  }
+
+  function buildSlotRow(slot: Filament): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-1.5 mb-1';
+    const colorEl = document.createElement('input');
+    colorEl.type = 'color';
+    colorEl.value = slot.hex;
+    colorEl.className = 'w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent shrink-0';
+    colorEl.addEventListener('input', () => {
+      updateFilament(slot.id, { hex: colorEl.value });
+      recolorRegionsForSlot(slot.id, hexToRgb(colorEl.value));
+      // Keep the active paint colour in sync if this is the selected slot.
+      if (getSlotId() === slot.id) setSlot(slot.id);
+    });
+    const nameEl = document.createElement('input');
+    nameEl.type = 'text';
+    nameEl.value = slot.name;
+    nameEl.className = 'flex-1 min-w-0 px-1 py-0.5 rounded text-[10px] bg-zinc-900/60 text-zinc-200 border border-zinc-700';
+    nameEl.addEventListener('change', () => updateFilament(slot.id, { name: nameEl.value }));
+    const delEl = document.createElement('button');
+    delEl.className = 'shrink-0 w-5 h-5 flex items-center justify-center rounded text-zinc-500 hover:text-red-300 hover:bg-zinc-700/60 transition-colors';
+    delEl.textContent = '×';
+    delEl.title = 'Remove this slot';
+    delEl.addEventListener('click', () => {
+      removeFilament(slot.id);
+      renderEditor();
+    });
+    row.appendChild(colorEl);
+    row.appendChild(nameEl);
+    row.appendChild(delEl);
+    return row;
+  }
+
+  // Default the active colour to the first slot so a swatch reads as selected.
+  if (!getSlotId()) {
+    const first = getActivePalette().slots[0];
+    if (first) setSlot(first.id);
+  }
+  renderSwatches();
+  renderBudget();
+  renderConstrain();
+  onPaletteChange(() => { renderSwatches(); renderBudget(); renderConstrain(); });
+  onRegionsChange(() => { renderBudget(); renderSwatches(); });
+
+  return wrap;
+}
+
 function updateBadge(): void {
   if (!regionCountBadge) return;
   const count = getRegions().length;
@@ -252,56 +427,14 @@ function createPickerPanel(): HTMLElement {
   toolRow.appendChild(createToolButton('box', '\u25C6 Shape', 'Paint everything inside a positionable, rotatable, scalable 3D shape (box, sphere, cylinder, or cone)'));
   content.appendChild(toolRow);
 
-  // === Color picker ===
-  const title = document.createElement('div');
-  title.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5 font-medium';
-  title.textContent = 'Color';
-  content.appendChild(title);
-
-  const grid = document.createElement('div');
-  grid.className = 'grid grid-cols-4 gap-1.5 mb-2';
-
-  for (const color of PRESET_COLORS) {
-    const swatch = document.createElement('button');
-    swatch.className = 'w-6 h-6 rounded border-2 border-transparent hover:border-white/50 transition-colors';
-    swatch.style.backgroundColor = rgbToCSS(color);
-    swatch.title = rgbToHex(color);
-    swatch.addEventListener('click', () => {
-      setColor(color);
-      updateActiveSwatch(grid, swatch);
-    });
-    grid.appendChild(swatch);
-  }
-  const first = grid.children[0] as HTMLElement;
-  if (first) first.classList.add('border-white/80', 'ring-1', 'ring-white/30');
-  content.appendChild(grid);
-
-  const customRow = document.createElement('div');
-  customRow.className = 'flex items-center gap-1.5';
-
-  const colorInput = document.createElement('input');
-  colorInput.type = 'color';
-  colorInput.value = rgbToHex(PRESET_COLORS[0]);
-  colorInput.className = 'w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent';
-  colorInput.title = 'Custom color';
-  colorInput.addEventListener('input', () => {
-    const hex = colorInput.value;
-    const r = parseInt(hex.slice(1, 3), 16) / 255;
-    const g = parseInt(hex.slice(3, 5), 16) / 255;
-    const b = parseInt(hex.slice(5, 7), 16) / 255;
-    setColor([r, g, b]);
-    for (const child of Array.from(grid.children)) {
-      (child as HTMLElement).classList.remove('border-white/80', 'ring-1', 'ring-white/30');
-    }
-  });
-
-  const customLabel = document.createElement('span');
-  customLabel.className = 'text-[10px] text-zinc-500';
-  customLabel.textContent = 'Custom';
-
-  customRow.appendChild(colorInput);
-  customRow.appendChild(customLabel);
-  content.appendChild(customRow);
+  // === Palette (filament slots) ===
+  // The swatch grid is driven by the shared colour palette, so each swatch maps
+  // to a filament/AMS slot. Painting with a swatch attributes the region to that
+  // slot, so recolouring a slot recolours every region on it and export can group
+  // by slot order. The custom picker still allows ad-hoc (unslotted) colour
+  // unless the palette is constrained.
+  const paletteSection = createPaletteSection();
+  content.appendChild(paletteSection);
 
   // === Bucket tool controls (tolerance slider + number input) ===
   bucketControls = createBucketControls();
@@ -1220,13 +1353,6 @@ function updateRedoButton(): void {
   redoBtn.classList.toggle('cursor-not-allowed', !can);
 }
 
-function updateActiveSwatch(grid: HTMLElement, activeSwatch: HTMLElement): void {
-  for (const child of Array.from(grid.children)) {
-    (child as HTMLElement).classList.remove('border-white/80', 'ring-1', 'ring-white/30');
-  }
-  activeSwatch.classList.add('border-white/80', 'ring-1', 'ring-white/30');
-}
-
 // Active hover-release closure for the labels list. Releasing it inside
 // `updateLabelList` before `innerHTML = ''` matters: if a fresh run fires
 // `setPaintLabels` while the user's pointer is over a row, the row DOM is
@@ -1342,6 +1468,8 @@ function createLabelRow(label: LabelInfo, alreadyPainted: boolean): HTMLElement 
       'paintbrush',
       { kind: 'byLabel', label: label.name },
       new Set(label.triangles),
+      true,
+      getSlotId() ?? undefined,
     );
   });
 

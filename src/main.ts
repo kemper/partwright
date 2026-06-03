@@ -904,7 +904,7 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { 
   for (const region of regions) {
     const triangles = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren);
     if (triangles.size > 0) {
-      addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false);
+      addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false, region.slotId);
       report.carried.push(region.name);
     } else {
       report.dropped.push(region.name);

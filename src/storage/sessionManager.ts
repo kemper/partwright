@@ -124,8 +124,13 @@ import { effectiveVersionLanguage, asLanguage } from './languageFallback';
  *           with them (and matches its saved thumbnail/stats). Only non-default
  *           keys are written; pre-1.9 files have none and import with all
  *           defaults. Older readers ignore the field.
+ *  - `1.10` — per-region palette-slot attribution (`colorRegions[].slotId`).
+ *           Painting with a palette slot stamps its id so the region maps onto a
+ *           filament/AMS slot and follows slot recolours. Additive: pre-1.10
+ *           regions omit it and import as unslotted (ad-hoc colour). Older
+ *           readers ignore the field.
  */
-export const SCHEMA_VERSION = '1.9';
+export const SCHEMA_VERSION = '1.10';
 
 const CURRENT_MAJOR = 1;
 

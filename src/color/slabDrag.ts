@@ -9,7 +9,7 @@ import type { MeshData } from '../geometry/types';
 import { getMeshGroup, getRenderer, getCamera, getScene } from '../renderer/viewport';
 import { addRegion, getRegions } from './regions';
 import { findSlabTriangles, projectionRange, AXIS_NORMALS } from './slabPaint';
-import { getColor, getCurrentMesh, shapeSmoothDescriptorFields } from './paintAccessors';
+import { getColor, getSlotId, getCurrentMesh, shapeSmoothDescriptorFields } from './paintAccessors';
 
 export type SlabAxis = 'x' | 'y' | 'z';
 
@@ -316,6 +316,8 @@ function commitSlab(offset: number, thickness: number): void {
     'slab',
     { kind: 'slab', normal: [...normal] as [number, number, number], offset, thickness, smooth, maxEdge },
     triangles,
+    true,
+    getSlotId() ?? undefined,
   );
 }
 
