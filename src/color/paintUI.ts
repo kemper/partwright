@@ -67,10 +67,9 @@ import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/t
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
 import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, setShapeType, getShapeType, getShapeVisible, setShapeVisible, onShapeVisibilityChange, type BoxMode, type ShapeType } from './boxDrag';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
-import { forceDeactivate as closeImagePaintMenu } from './imagePaintUI';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
-import { registerExclusiveMode } from '../ui/modeExclusion';
+import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
 
 const PRESET_COLORS: [number, number, number][] = [
   // Warm
@@ -176,7 +175,7 @@ function togglePaintMode(): void {
     forceDeactivateAnnotateText();
     forceDeactivateAnnotateSelect();
     closeSimplifyMenu();
-    closeImagePaintMenu();
+    deactivateMode('imagePaint');
     activate();
     updateButtonState(true);
     if (pickerPanel) setInitialPanelPosition(pickerPanel);

@@ -30,7 +30,7 @@ import {
   redoLastRegion,
 } from './regions';
 import { getCurrentMesh as getPaintMesh } from './paintMode';
-import { forceDeactivate as closePaintMenu } from './paintUI';
+import { deactivateMode, registerExclusiveMode } from '../ui/modeExclusion';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { forceDeactivate as closeAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as closeAnnotateText } from '../annotations/textMode';
@@ -157,7 +157,7 @@ function toggleImagePaint(): void {
     closePanel();
   } else {
     // Close conflicting modes
-    closePaintMenu();
+    deactivateMode('paint');
     closeSimplifyMenu();
     closeAnnotate();
     closeAnnotateText();
@@ -183,10 +183,7 @@ function closePanel(): void {
 export function forceDeactivate(): void {
   if (isOpen) closePanel();
 }
-
-export function isImagePaintOpen(): boolean {
-  return isOpen;
-}
+registerExclusiveMode('imagePaint', forceDeactivate);
 
 // ─── Stamp mode ───────────────────────────────────────────────────────────────
 
