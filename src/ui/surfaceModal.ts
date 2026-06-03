@@ -180,7 +180,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   let seedTriangles: number[] = [];          // all seeds clicked so far
   let regionMode: 'region' | 'whole' = 'region'; // default: region mode
 
-  // --- Region selector UI (created once, shown/hidden via renderTab) ---
+  // --- Region selector UI (created once, moved above tabs) ---
 
   // Mode toggle: Region | Whole model
   const MODE_ACTIVE = 'px-2.5 py-1 rounded text-xs bg-sky-600 text-white';
@@ -190,15 +190,22 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   const modeRow = el('div', 'flex gap-1 mb-2');
   modeRow.append(modeRegionBtn, modeWholeBtn);
 
-  // Region controls (visible only in region mode)
-  const selectingBtn  = el('button', BTN_BASE + ' flex-1', 'Select regions');
-  const clearAllBtn   = el('button', BTN_BASE, 'Clear');
+  // Cursor-arrow icon for the pick-regions toggle
+  const PICK_ICON_SVG = `<svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.917-3.286-.672Zm-7.518-.267A8.25 8.25 0 1 1 20.25 10.5M8.288 14.212A5.25 5.25 0 1 1 17.25 10.5"/></svg>`;
+  const SEL_IDLE   = BTN_BASE + ' flex items-center gap-1.5';
+  const SEL_ACTIVE = 'flex items-center gap-1.5 px-2.5 py-1 rounded text-xs bg-sky-700 text-white border border-sky-500 ring-2 ring-sky-500 ring-offset-1 ring-offset-zinc-900';
+  const selectingBtn = el('button', SEL_IDLE);
+  selectingBtn.innerHTML = PICK_ICON_SVG + '<span>Pick regions</span>';
+  selectingBtn.title = 'Click faces on the model to flood-fill select regions';
+
+  const clearAllBtn = el('button', 'text-xs text-zinc-500 hover:text-zinc-300 px-1');
+  clearAllBtn.textContent = 'Clear all';
   clearAllBtn.disabled = true;
-  const regionBtns = el('div', 'flex gap-2 mb-1');
+  const regionBtns = el('div', 'flex items-center gap-3 mb-1');
   regionBtns.append(selectingBtn, clearAllBtn);
 
   const regionStatus = el('div', 'text-[11px] text-zinc-400 min-h-[1rem] mt-1 mb-1');
-  regionStatus.textContent = 'No region selected (applies to whole model)';
+  regionStatus.textContent = 'Pick at least one region to preview.';
 
   const spreadSlider    = slider('Spread', 10, 80, 45, 5, n => n + '°', () => scheduleReselect());
   const colorSensSlider = slider('Color sensitivity', 0, 100, 0, 5, n => n + '%', () => scheduleReselect());
@@ -206,9 +213,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   const regionControls = el('div', '');
   regionControls.append(regionBtns, regionStatus, spreadSlider.wrap, colorSensSlider.wrap);
 
-  const regionSection = el('div', 'mt-1 mb-2 pt-2 border-t border-zinc-700/50');
+  const regionSection = el('div', 'mb-3 pb-3 border-b border-zinc-700/50');
   regionSection.append(
-    el('div', 'text-[11px] text-zinc-500 mb-2', 'Region'),
+    el('div', 'text-[11px] text-zinc-500 uppercase tracking-wide mb-2', 'Region'),
     modeRow,
     regionControls,
   );
@@ -218,26 +225,49 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     return regionMode === 'region' ? regionSelection ?? undefined : undefined;
   }
 
+  /** Whether Apply/preview should be blocked (region mode, nothing picked yet). */
+  function regionBlocked(): boolean {
+    return regionMode === 'region' && !regionSelection;
+  }
+
+  function updateApplyBtn() {
+    const blocked = regionBlocked();
+    applyBtn.disabled = blocked;
+    applyBtn.className = blocked
+      ? 'px-3 py-1.5 rounded bg-sky-900/40 text-sky-300/40 text-xs font-medium cursor-not-allowed'
+      : 'px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium';
+  }
+
+  function reapplySelectionOverlay() {
+    if (regionSelection && regionMode === 'region') {
+      regionTeardown?.();
+      regionTeardown = previewTriangles(regionSelection, [0.9, 0.7, 0.1]);
+    }
+  }
+
   function exitSelectionMode() {
     if (!inSelectionMode) return;
     inSelectionMode = false;
     selectionSuppressor?.();
     selectionSuppressor = null;
     document.body.style.cursor = '';
-    selectingBtn.textContent = 'Select regions';
-    selectingBtn.classList.remove('ring-2', 'ring-sky-500');
+    selectingBtn.className = SEL_IDLE;
+    selectingBtn.innerHTML = PICK_ICON_SVG + '<span>Pick regions</span>';
   }
 
   function updateRegionStatus() {
     const count = regionSelection?.size ?? 0;
     const seeds = seedTriangles.length;
     if (count === 0) {
-      regionStatus.textContent = 'No region selected (applies to whole model)';
+      regionStatus.textContent = 'Pick at least one region to preview.';
+      regionStatus.className = 'text-[11px] text-sky-400/80 min-h-[1rem] mt-1 mb-1';
     } else {
       const regionWord = seeds === 1 ? 'region' : 'regions';
       const suffix = inSelectionMode ? ' — click to add more' : '';
       regionStatus.textContent = `${count.toLocaleString()} triangles (${seeds} ${regionWord})${suffix}`;
+      regionStatus.className = 'text-[11px] text-zinc-400 min-h-[1rem] mt-1 mb-1';
     }
+    updateApplyBtn();
   }
 
   function runFloodFill() {
@@ -258,7 +288,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     }
 
     regionTeardown?.();
-    regionTeardown = combined.size > 0 ? previewTriangles(combined, [0.15, 0.75, 0.85]) : null;
+    regionTeardown = combined.size > 0 ? previewTriangles(combined, [0.9, 0.7, 0.1]) : null;
     regionSelection = combined.size > 0 ? combined : null;
     clearAllBtn.disabled = combined.size === 0;
     updateRegionStatus();
@@ -288,6 +318,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     modeWholeBtn.className  = mode === 'whole'  ? MODE_ACTIVE : MODE_IDLE;
     regionControls.style.display = mode === 'region' ? '' : 'none';
     if (mode === 'whole') exitSelectionMode();
+    updateApplyBtn();
     schedulePreview();
   }
 
@@ -302,10 +333,11 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     }
     clearPreviewIfDirty();
     inSelectionMode = true;
-    selectingBtn.textContent = 'Stop selecting';
-    selectingBtn.classList.add('ring-2', 'ring-sky-500');
+    selectingBtn.className = SEL_ACTIVE;
+    selectingBtn.innerHTML = PICK_ICON_SVG + '<span>Stop picking</span>';
     if (seedTriangles.length === 0) {
       regionStatus.textContent = 'Click the model to add regions…';
+      regionStatus.className = 'text-[11px] text-sky-400/80 min-h-[1rem] mt-1 mb-1';
     } else {
       updateRegionStatus();
     }
@@ -340,7 +372,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   // chosen quality level is preserved when comparing different textures.
   // Not shown for smooth/voxelize (those have their own quality controls).
   const detailLabels = ['Draft', 'Low', 'Medium', 'High', 'Ultra'];
-  const detail = slider('Mesh detail', 1, 5, 3, 1, n => detailLabels[n - 1], schedulePreview);
+  const detail = slider('Mesh detail', 1, 5, 4, 1, n => detailLabels[n - 1], schedulePreview);
 
   // Per-tab option getters → modifier options object for preview/apply.
   let currentOpts: () => Record<string, unknown> = () => ({});
@@ -357,9 +389,9 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       body.append(el('p', 'text-[11px] text-zinc-500', 'Densifies the mesh, then jitters the surface along its normals — the 3D-print "fuzzy skin" finish.'));
       currentOpts = () => ({ amplitude: amp.get(), scale: scale.get(), octaves: oct.get(), seed: seed.get(), quality: detail.get(), selectedTriangles: activeSelection() });
     } else if (active === 'knit') {
-      const sw = slider('Stitch width', span * 0.01, span * 0.25, span * 0.05, span * 0.005, n => n.toFixed(3), schedulePreview);
-      const sh = slider('Stitch height', span * 0.01, span * 0.35, span * 0.07, span * 0.005, n => n.toFixed(3), schedulePreview);
-      const amp = slider('Amplitude (depth)', 0, span * 0.15, span * 0.035, span * 0.001, n => n.toFixed(3), schedulePreview);
+      const sw = slider('Stitch width', span * 0.01, span * 0.25, span * 0.09, span * 0.005, n => n.toFixed(3), schedulePreview);
+      const sh = slider('Stitch height', span * 0.01, span * 0.35, span * 0.12, span * 0.005, n => n.toFixed(3), schedulePreview);
+      const amp = slider('Amplitude (depth)', 0, span * 0.15, span * 0.07, span * 0.001, n => n.toFixed(3), schedulePreview);
       const round = slider('Roundness', 0, 1, 0.5, 0.05, n => n.toFixed(2), schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
       const variation = slider('Variation', 0, 0.5, 0.1, 0.01, n => n.toFixed(2), schedulePreview);
@@ -387,7 +419,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const cw = slider('Cable width', span * 0.02, span * 0.3, span * 0.08, span * 0.005, n => n.toFixed(3), schedulePreview);
       const cp = slider('Cable pitch', span * 0.05, span * 0.6, span * 0.2, span * 0.005, n => n.toFixed(3), schedulePreview);
       const pw = slider('Ply width', span * 0.005, span * 0.1, span * 0.024, span * 0.001, n => n.toFixed(3), schedulePreview);
-      const amp = slider('Amplitude (depth)', 0, span * 0.08, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
+      const amp = slider('Amplitude (depth)', 0, span * 0.08, span * 0.055, span * 0.001, n => n.toFixed(3), schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
       const variation = slider('Variation', 0, 0.4, 0.08, 0.01, n => n.toFixed(2), schedulePreview);
       const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);
@@ -407,7 +439,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     } else if (active === 'waffle') {
       const cw = slider('Cell width', span * 0.01, span * 0.3, span * 0.06, span * 0.005, n => n.toFixed(3), schedulePreview);
       const ch = slider('Cell height', span * 0.01, span * 0.3, span * 0.06, span * 0.005, n => n.toFixed(3), schedulePreview);
-      const amp = slider('Amplitude (border height)', 0, span * 0.08, span * 0.025, span * 0.001, n => n.toFixed(3), schedulePreview);
+      const amp = slider('Amplitude (border height)', 0, span * 0.08, span * 0.05, span * 0.001, n => n.toFixed(3), schedulePreview);
       const sharp = slider('Sharpness', 1, 10, 3, 0.5, n => n.toFixed(1), schedulePreview);
       const rowOff = slider('Row offset (0=grid, 0.5=honeycomb)', 0, 1, 0, 0.05, n => n.toFixed(2), schedulePreview);
       const grain = slider('Grain angle (°)', 0, 180, 0, 5, n => String(n) + '°', schedulePreview);
@@ -485,16 +517,29 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     } else {
       previewDirty = true;
       status.textContent = 'Previewing — Apply to save a version.';
+      // updateMesh clears meshGroup children — re-draw the selection overlay on top
+      reapplySelectionOverlay();
     }
   }
   function schedulePreview() {
     if (previewTimer !== undefined) clearTimeout(previewTimer);
+    // Region mode with nothing selected: don't fire a preview at all
+    if (regionBlocked()) {
+      clearPreviewIfDirty();
+      updateRegionStatus(); // ensures the sky-400 nudge text is shown
+      return;
+    }
     status.textContent = 'Updating preview…';
     previewTimer = window.setTimeout(runPreview, getConfig().ui.surfacePreviewDebounceMs);
   }
   function clearPreviewIfDirty() {
     if (previewTimer !== undefined) { clearTimeout(previewTimer); previewTimer = undefined; }
-    if (previewDirty) { api.clearSurfacePreview(); previewDirty = false; }
+    if (previewDirty) {
+      api.clearSurfacePreview();
+      previewDirty = false;
+      // clearSurfacePreview calls updateMesh — re-draw the overlay so it persists
+      reapplySelectionOverlay();
+    }
   }
 
   const tabBtns = new Map<Tab, HTMLButtonElement>();
@@ -512,7 +557,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     tabRow.append(b);
   }
 
-  scrollBody.append(tabRow, body, regionSection);
+  scrollBody.append(regionSection, tabRow, body);
   if (painted) scrollBody.append(colorRow);
   scrollBody.append(status);
 
