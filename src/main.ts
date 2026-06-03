@@ -2967,7 +2967,7 @@ async function main() {
    *  right kernel and saveVersion (which snapshots getActiveLanguage()) tags the
    *  version correctly — a voxel part must read back as `voxel`, a BREP part as
    *  `replicad` (per-version language). */
-  async function applyCodeToCurrentPart(code: string, language: Language): Promise<void> {
+  async function applyCodeToCurrentPart(code: string, language: Language, companions?: Record<string, string>): Promise<void> {
     // An import replaces the part's geometry, so the previous part's regions /
     // live paint can't survive — clear them before running, or runCodeSync
     // re-resolves stale regions onto the new mesh and locks the editor.
@@ -2975,6 +2975,13 @@ async function main() {
     dropPaintState();
     clearMesh();
     if (getActiveLanguage() !== language) await switchLanguage(language);
+    // Register companions before the compile so their tabs appear immediately and
+    // MEMFS already contains them on the first (and only) run. createPart clears
+    // the registry, so we always set here — don't addCompanionFileToRegistry.
+    if (companions !== undefined) {
+      setCompanionFiles(companions);
+      renderCompanionFilesBar();
+    }
     // Clear stale params panel immediately so old controls don't linger while
     // the new model is loading.
     syncParamsPanel(undefined);
@@ -2982,16 +2989,16 @@ async function main() {
     await runCodeSync(code);
     const thumbnail = await captureThumbnail();
     const geometryData = getGeometryDataObj();
-    await saveVersion(code, geometryData, thumbnail, 'imported', undefined, { force: true });
+    await saveVersion(code, geometryData, thumbnail, 'imported', undefined, { force: true, companionFiles: companions });
   }
 
   /** Add code (voxel / BREP starter) as a brand-new part's first version.
    *  Mirrors seedNewPartWithMesh but for editor code + a language tag instead
    *  of a parsed mesh. */
-  async function seedNewPartWithCode(code: string, name: string, language: Language): Promise<void> {
+  async function seedNewPartWithCode(code: string, name: string, language: Language, companions?: Record<string, string>): Promise<void> {
     const part = await createPart(name);
     if (!part) return;
-    await applyCodeToCurrentPart(code, language);
+    await applyCodeToCurrentPart(code, language, companions);
   }
 
   /** Run `code` under `language` off-editor and capture its geometry as a single
@@ -3207,16 +3214,16 @@ async function main() {
       return true;
     }
     if (target === 'new-session') {
-      await importCodePayload(code, lang, sessionName);
+      await importCodePayload(code, lang, sessionName, companions);
+      if (companions && Object.keys(companions).length > 0) await saveCurrentVersion();
     } else if (target === 'new-part') {
       await preserveCurrentEditsIfNeeded();
-      await seedNewPartWithCode(code, sessionName, lang);
+      await seedNewPartWithCode(code, sessionName, lang, companions);
     } else {
       // current-part: replace current part's code with the imported file.
       await preserveCurrentEditsIfNeeded();
-      await applyCodeToCurrentPart(code, lang);
+      await applyCodeToCurrentPart(code, lang, companions);
     }
-    await applyCompanions();
     return true;
   }
 
