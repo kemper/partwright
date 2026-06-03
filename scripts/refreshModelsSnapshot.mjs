@@ -6,10 +6,13 @@
 // parse them inline — used when models.dev is unreachable (sandboxed CI,
 // restrictive corporate proxy) so the bootstrap and refresh still works.
 //
-// Wired into Vite via the catalogSnapshot plugin in vite.config.ts:
-// `buildStart` runs this so every build/dev start tries to refresh. On any
-// failure (network down, schema drift, parse error) the committed snapshot is
-// preserved and the build proceeds, so the catalog can never break the build.
+// Run by the `Refresh models catalog` GitHub workflow
+// (.github/workflows/refresh-models-catalog.yml), which opens a PR into main
+// with any changes — main is protected, so the snapshot reaches it through a
+// PR, never a direct bot push. Also runnable locally via `npm run
+// refresh-models`. On any failure (network down, schema drift, parse error)
+// the committed snapshot is preserved and the script soft-exits, so a flaky
+// upstream can never produce a broken snapshot.
 //
 // Filter: only providers we wire up (anthropic / openai / google) and only
 // models whose release_date is within the last MAX_AGE_DAYS days. Filtering

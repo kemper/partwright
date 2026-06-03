@@ -129,10 +129,6 @@ export function onChange(fn: ChangeListener): void {
   listeners.push(fn);
 }
 
-export function removeChangeListener(fn: ChangeListener): void {
-  const idx = listeners.indexOf(fn);
-  if (idx >= 0) listeners.splice(idx, 1);
-}
 
 export function onVisibilityChange(fn: ChangeListener): () => void {
   visibilityListeners.push(fn);
@@ -219,9 +215,6 @@ export function addRegion(
   return region;
 }
 
-export function getRegion(id: number): ColorRegion | undefined {
-  return regions.find(r => r.id === id);
-}
 
 export function setRegionVisibility(id: number, visible: boolean): boolean {
   const region = regions.find(r => r.id === id);
@@ -232,10 +225,6 @@ export function setRegionVisibility(id: number, visible: boolean): boolean {
   return true;
 }
 
-export function isRegionVisible(id: number): boolean | undefined {
-  const region = regions.find(r => r.id === id);
-  return region?.visible;
-}
 
 export function removeRegion(id: number): boolean {
   const idx = regions.findIndex(r => r.id === id);

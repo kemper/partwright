@@ -118,10 +118,6 @@ export async function registerImportSnapshot(blob: Blob, filename: string, sourc
 }
 
 /** Look up a single entry by id. */
-export function getImport(id: string): ImportInboxEntry | null {
-  return entries.find(e => e.id === id) ?? null;
-}
-
 /** Drop everything from the inbox. */
 export function clearImports(): void {
   if (entries.length === 0) return;

@@ -21,8 +21,6 @@ import { encodeGrid } from '../geometry/voxel/grid';
 import { scaleMesh } from './scaleMesh';
 import { meshGrid } from '../geometry/voxel/mesher';
 
-export type SurfaceModifierId = 'fuzzy' | 'smooth' | 'voxelize';
-
 export interface ModifierManifoldResult {
   kind: 'manifold';
   /** Short version label, e.g. "fuzzy skin". */

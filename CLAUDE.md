@@ -9,8 +9,8 @@ npm run test:unit    # Fast vitest unit tier (pure-logic, no browser) — ~1s
 npm run test:e2e     # Playwright browser suite (auto-starts dev server)
 npm test             # Both tiers: unit, then e2e
 npm run lint:consistency  # ast-grep UI-convention scan (advisory)
-npm run lint:deadcode     # knip: unused exports/files (advisory)
-npm run lint:deps         # madge: circular dependencies (advisory)
+npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (advisory)
+npm run lint:deps         # madge: circular dependencies (gate — graph is acyclic)
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -38,7 +38,7 @@ Hosted on **Cloudflare Pages**. Three branches map to three environments, wired 
 Feature work follows a **draft-PR-first** flow: open the PR as a draft the moment the implementation looks good, and PR-checks runs the full suite — build + unit *and* the e2e shards — on every push, draft or ready. Marking the PR ready for review is a review-readiness signal, not a CI trigger; your task is done once every PR-checks shard goes green. The full sequence:
 
 1. **Start from the latest `main`.** Before writing any code, run `git fetch origin main` and base your feature branch on `origin/main`. Do this at the *start* of the task, not just before the final push.
-2. **Implement, then manually verify in the browser.** Once the change looks right, start the dev server (`npm run dev`) and use the Playwright MCP to exercise the feature in a real browser — navigate to it, interact with it, take a screenshot, and post the screenshot in the chat so the user can see it working. See [Manual Verification](#manual-verification--checking-your-work-in-the-browser) for the scope by change type. You don't need the full automated e2e suite at this stage; CI runs it on the draft. But do run a targeted spec if one exists for the area you changed: `npx playwright test --grep "describe block"` (~30 s for one spec) catches obvious regressions before the push.
+2. **Implement, then manually verify in the browser.** Once the change looks right, exercise the feature in a real browser by writing and running a short Playwright spec that navigates to it, interacts, and writes a screenshot file — then view the PNG and post it in the chat so the user can see it working. (There is **no** Playwright MCP in this environment; the spec-driven screenshot *is* the manual check.) See [Manual Verification](#manual-verification--checking-your-work-in-the-browser) for the full pattern and the scope by change type. You don't need the full automated e2e suite at this stage; CI runs it on the draft. But do run a targeted spec if one exists for the area you changed: `npx playwright test --grep "describe block"` (~30 s for one spec) catches obvious regressions before the push.
 3. **Pre-flight, then push a draft PR.** Re-sync with the latest main (`git fetch origin main`, then merge `origin/main` into your branch, or rebase onto it if the branch hasn't been pushed yet, resolving conflicts), run `npm run build` + `npm run test:unit` to catch type errors and logic regressions, push the branch, and open the PR into `main` **as a draft** (`create_pull_request` with `draft: true`). The PR-checks CI (`.github/workflows/pr-checks.yml`) runs build + unit **and** the sharded `npm run test:e2e` shards on every PR push, draft or ready — so the full suite fires on the draft immediately. See [Pull Requests](#pull-requests--open-a-draft-when-the-work-looks-good).
 4. **Watch the full suite green on the draft.** PR-checks runs build + unit + the 3 e2e shards on every draft push — no flip to ready required. Subscribe to PR activity, follow the shards, and run any deeper or manual verification the change warrants alongside CI. Fix failures on the same branch (each push re-runs build + unit + e2e). Only fall back to local `npm run test:e2e` if you need a tight loop on a failure CI surfaced. **The task is not done until every PR-checks shard is green.** See [After Opening a PR](#after-opening-a-pr).
 5. **Mark the PR ready for review.** Once every PR-checks shard is green and your own light checks (render/stat verification, code review of the diff) look good, mark the PR ready (`update_pull_request` with `draft: false`). This is purely a review-readiness signal — CI already ran on the draft, so flipping to ready doesn't re-run it.
@@ -50,7 +50,7 @@ Feature work follows a **draft-PR-first** flow: open the PR as a draft the momen
 
 When an implementation looks good and working, **open a draft pull request into `main`** — don't wait until you've run the slow verification. This is a standing instruction that overrides any default "don't open a PR unless explicitly asked" behavior: treat "the implementation looks done" as the authorization to open the draft. Don't pause to ask whether to create one, and don't report a task as done without it.
 
-Open it as a **draft** (`create_pull_request` with `draft: true`) after a fast pre-flight — re-sync `origin/main`, run `npm run build` + `npm run test:unit`, and do a quick manual browser check (Playwright MCP + screenshot) if not already done. **Defer the full `test:e2e` suite until after the draft is up** (see [After Opening a PR](#after-opening-a-pr)); the draft PR is what *kicks off* the CI verification phase. PR-checks runs the full suite — build + unit **and** the e2e shards — on every draft push, so you watch e2e on the draft itself. Marking the PR ready for review (`update_pull_request` with `draft: false`) is a review-readiness signal, not a CI trigger. The task is done once every PR-checks shard is green.
+Open it as a **draft** (`create_pull_request` with `draft: true`) after a fast pre-flight — re-sync `origin/main`, run `npm run build` + `npm run test:unit`, and do a quick manual browser check (run a Playwright spec that screenshots the change — see [Manual Verification](#manual-verification--checking-your-work-in-the-browser)) if not already done. **Defer the full `test:e2e` suite until after the draft is up** (see [After Opening a PR](#after-opening-a-pr)); the draft PR is what *kicks off* the CI verification phase. PR-checks runs the full suite — build + unit **and** the e2e shards — on every draft push, so you watch e2e on the draft itself. Marking the PR ready for review (`update_pull_request` with `draft: false`) is a review-readiness signal, not a CI trigger. The task is done once every PR-checks shard is green.
 
 Skip the PR only when the user explicitly scoped you away from it — a request to "just commit" or "push to the branch" is *not* a request for a PR — or for a pure throwaway experiment. If you genuinely can't tell whether the work is a complete, reviewable unit, ask. Follow the [commit & PR conventions](#commit--pr-conventions) below for the title, prefix, and labels.
 
@@ -108,13 +108,30 @@ See `docs/playwright-guide.md` for sandbox vs laptop Chromium binary detection a
 
 ## Manual Verification — Checking Your Work in the Browser
 
-**Manually verify any UI-visible change in a real browser before pushing.** The pattern:
+**Manually verify any UI-visible change in a real browser before pushing.**
 
-1. Start the dev server: `npm run dev`
-2. Use the Playwright MCP (`playwright_navigate`, `playwright_click`, `playwright_screenshot`, etc.) to open the app and exercise the changed feature
-3. **Take a screenshot and post it in the chat** — this is the most valuable thing you can do. The user is watching the session and wants to see the feature working (or not) at each meaningful step — opened panel, rendered output, before/after comparison, edge case
+> **How to drive the browser in this environment: write and run a Playwright spec — there is no Playwright MCP.** The remote/web execution environment only configures the `typescript` MCP server (see `.mcp.json`); the `playwright_navigate` / `playwright_click` / `playwright_screenshot` tools do **not** exist here. Don't waste turns calling them. The real eyes-on check is a short `.spec.ts` that navigates, interacts, and writes a screenshot file you then view.
 
-This takes 2–5 tool calls and catches wiring mistakes, visual regressions, and WASM timing issues that TypeScript can't see. It's your own eyes-on check before CI runs the headless suite.
+The pattern:
+
+1. **Install deps once per container:** a fresh remote container starts with no `node_modules` — run `npm ci` before your first `npx playwright test` (you'll get `Cannot find package 'playwright'` otherwise).
+2. **Write a spec that screenshots the feature.** It can be a throwaway probe (`tests/_scratch-*.spec.ts`, delete it after) or — better, for a new feature — the permanent golden-path spec you'd add anyway. Navigate, exercise the change, and capture the result:
+
+   ```ts
+   import { test } from 'playwright/test';
+
+   test('scratch: my feature renders', async ({ page }) => {
+     await page.goto('/editor');
+     await page.waitForTimeout(4000);            // let WASM + viewport settle
+     // ...click/type to exercise the change...
+     await page.screenshot({ path: 'test-results/my-feature.png' });
+   });
+   ```
+
+3. **Run it:** `npx playwright test _scratch-` (or the spec name). You do **not** need to start the dev server yourself — `playwright.config.ts`'s `webServer` block boots `npm run dev` automatically and reuses an already-running one, and the config auto-detects the sandbox Chromium under `/opt/pw-browsers/`.
+4. **View the screenshot and post it in the chat** — `Read` the PNG to see it inline, then `SendUserFile` to surface it to the user. This is the most valuable thing you can do: the user is watching the session and wants to see the feature working (or not) at each meaningful step — opened panel, rendered output, before/after comparison, edge case.
+
+This takes a handful of tool calls and catches wiring mistakes, visual regressions, and WASM timing issues that TypeScript can't see. It's your own eyes-on check before CI runs the headless suite. If you used a throwaway `_scratch-*.spec.ts`, delete it (and its `test-results/*.png`) before pushing.
 
 **Scope by change type:**
 
@@ -324,7 +341,30 @@ This repo ships custom Claude Code subagents and a deterministic static-analysis
 
 - **`work-reviewer`** (`.claude/agents/work-reviewer.md`, Opus, read-only) reviews the branch diff vs `origin/main` for correctness, back-compat, security, and **UI consistency** against the shared component layer (`modalShell`, `styleConstants` `BUTTON_*`, `showToast`, `commandPalette` keyboard model). Launch it before marking a PR ready.
 - **`explore`** (`.claude/agents/explore.md`, Sonnet, read-only) overrides the built-in Haiku Explore agent for sharper codebase discovery, preferring the TypeScript LSP MCP (`mcp__typescript__*`, configured in `.mcp.json`) for reference/definition queries.
-- **`lint:consistency`** (ast-grep), **`lint:deadcode`** (knip), **`lint:deps`** (madge) are **advisory candidate-finders** — they over-report by design; scope each hit to the diff. `lint:consistency` runs in CI (`code-quality.yml`) and gates only on `error`-severity ast-grep rules (all rules are `warning`/`hint` today, so it's green; promote a rule to `error` once the codebase is clean for it).
+- **`lint:consistency`** (ast-grep), **`lint:deadcode`** (knip), and **`lint:deps`** (madge) run in CI (`code-quality.yml`). `lint:consistency` gates on `error`-severity ast-grep rules (`no-native-dialogs` is `error`; the rest are `warning`/`hint` — promote one to `error` once the codebase is clean for it). `lint:deadcode` gates on knip's trustworthy categories (`dependencies`/`unlisted`/`unresolved`/`files`) but keeps `exports`/`types` advisory (knip can't see exports used only via the e2e suite's dynamic `import('/src/…')`, and the dead-export backlog needs per-symbol triage). `lint:deps` (madge circular deps) is a **gate**: the module graph is acyclic, so any new cycle fails CI. Scope each advisory hit to the diff — they over-report by design. See `docs/agent-tooling.md`.
+
+### Module Layering — keep the dependency graph acyclic
+
+The module graph is **cycle-free** and CI gates on it (`lint:deps`). To keep it that way, follow the dependency direction and the patterns below — they're the ones used to untangle the original cycles, and each has a canonical example in the tree:
+
+- **Direction:** the renderer (`src/renderer/viewport.ts`) is a *low* layer; feature layers (`src/annotations/`, `src/color/`) sit above it and may import it (`requestRender`, camera accessors), but **the renderer must never import a feature layer.** When the viewport needs to drive a feature subsystem (phantom geometry, annotation overlay, session plane), the subsystem registers a lifecycle hook via the leaf `src/renderer/viewportRegistry.ts` (wired in `src/renderer/viewportSubsystems.ts`, imported once for side effects in `main.ts`) instead of the viewport importing it.
+- **Mutually-exclusive tools coordinate through a leaf, never each other.** Paint and the annotate sub-modes (pen/text/select) register their `forceDeactivate` with `src/ui/modeExclusion.ts` and call `deactivateMode(id, opts)` to turn a sibling off. No mode imports another mode.
+- **Shared state that two mutually-importing modules both need goes in a leaf.** Selection state lives in `src/annotations/selectionState.ts` (so the overlay can observe it without importing `selectMode`); paint-state accessors the drag tools read live in `src/color/paintAccessors.ts` (published once by `paintMode`). The owning module sets the leaf; consumers read it.
+
+When you add a feature that would otherwise import "sideways" or "down into" a lower layer, reach for one of these leaf patterns rather than adding the back-edge. Run `npm run lint:deps` before pushing.
+
+### Retros — continuous improvement loop
+
+This repo runs a lightweight self-improving loop so agents make the *next* agent faster and more reliable. See `retros/README.md` for the full picture.
+
+- **When you finish a meaningful task (≈ a PR), run `/retro`** (`.claude/skills/retro.md`). It drops a short **4-Ls** reflection — *Liked · Lacked · Learned · Longed for* — into `retros/inbox/`. Think like an engineer about your own toolchain: the most valuable note is what would have made delivery faster (the "Longed for" bucket), not just what broke. A `Stop` hook nudges you when the tree is dirty, but the call is yours — skip it when nothing was notable. Entries are append-only and commit with the work.
+- **`/retro-review`** (`.claude/skills/retro-review.md`) is the weekly facilitator, fired by a scheduled trigger. It clusters the inbox (frequency across independent agents = the vote), applies the confident process diffs to `CLAUDE.md`/`docs`/skills, files tooling asks as backlog items, writes a durable report to `retros/reports/`, archives the entries, and opens a **draft PR** for human review. It never merges itself.
+
+### Prompt Logs
+
+Every commit that changes non-prompt files must also stage a sanitized **prompt log** under `prompts/`, documenting the human request and your key decisions behind the change. See `.claude/skills/promptlog.md` for the format (one YAML frontmatter block, `## Human` / `## Assistant` decision-focused sections — write *why*, not a changelog). A `PreToolUse` guard (`.claude/hooks/promptlog-guard.sh`) **blocks** any `git commit` that touches non-prompt files without one; for a genuinely mechanical commit (merge/rebase/backfill) re-run with `--no-verify`.
+
+> This guard is the harness-level replacement for the old `lefthook` `prompt-log` pre-commit rule, which silently stopped firing in web/remote sessions because git hooks are never installed there (no `npm install` → no `lefthook install` → empty `.git/hooks`). A skill on disk doesn't run itself; the hook is what makes the workflow actually fire.
 
 ### User Messaging & the Diagnostic Log
 
@@ -394,7 +434,7 @@ Guardrails for automated work, learned the hard way:
 Opening the draft is the start of the verification phase, not the finish line. The task is done when every PR-checks shard is green.
 
 1. **Subscribe and watch CI.** Call `subscribe_pr_activity`. PR-checks runs build + unit + 3 e2e shards on every push, draft or ready — don't flip to ready to trigger it. Fix failures on the branch (each push re-runs the suite); fall back to local `npm run test:e2e` only when iterating tight on a CI failure.
-2. **Confirm manual browser verification happened.** If you haven't yet exercised the feature with the Playwright MCP and posted a screenshot in the chat, do it now — `npm run dev`, navigate to the changed feature, screenshot the result. The user is watching this session and this is the most direct signal that the feature works.
+2. **Confirm manual browser verification happened.** If you haven't yet exercised the feature in the browser and posted a screenshot in the chat, do it now — write/run a Playwright spec that navigates to the changed feature and screenshots the result, then view and post the PNG (see [Manual Verification](#manual-verification--checking-your-work-in-the-browser)). There is no Playwright MCP here; the spec is the check. The user is watching this session and this is the most direct signal that the feature works.
 3. **Launch a review subagent** (Agent tool) over the diff vs `origin/main`. Hunt for: defects and unhandled cases; functionality silently dropped in a merge; backwards-incompatible schema changes (old IndexedDB sessions and exported files must still load); security issues (XSS, leaked keys, weakened CSP/COEP/COOP). Surface findings as PR comments or fold clear fixes into the branch; raise ambiguous/large ones with the user.
 4. **Auto-fix CI failures you're confident about.** Reproduce locally first. Re-sync `origin/main` if the branch has drifted, then push the fix. Ask the user for anything ambiguous, unrelated to your changes, or requiring a large refactor.
 5. **Resolve merge conflicts when `main` advances.** Treat a stale/conflicting branch like a CI failure — actionable, not parkable. Fetch + merge `origin/main`, resolve conflicts by reconciling both sides (never drop recently-merged work to make your side apply cleanly), then prove it still works: `npm run build` + `npm run test:unit`, let CI re-run e2e, redo any manual verification the touched area warrants. Stop and ask if the conflict is large or lands in code you don't understand.

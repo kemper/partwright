@@ -78,6 +78,7 @@ import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, setShapeType, g
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
+import { registerExclusiveMode } from '../ui/modeExclusion';
 
 const PRESET_COLORS: [number, number, number][] = [
   // Warm
@@ -791,29 +792,23 @@ function createBrushControls(): HTMLElement {
   const surfaceButtons: Partial<Record<'geodesic' | 'slab', HTMLButtonElement>> = {};
   // Reassigned once their elements exist; called on every mode change.
   let syncDepthVisibility = (): void => {};
-  // Reflect the active surface on the buttons, and grey out Slab while spraying
-  // (a spray is geodesic-only \u2014 it can't punch through a wall).
+  // Reflect the active surface on the buttons. Both modes work for spray now
+  // (a slab spray is gated by depth, a geodesic one by surface connectivity).
   const refreshSurfaceButtons = (): void => {
-    const spraying = isBrushSpray();
     for (const [k, b] of Object.entries(surfaceButtons)) {
       if (!b) continue;
       b.className = axisButtonClass(k === getBrushSurface());
-      if (k === 'slab') {
-        b.disabled = spraying;
-        if (spraying) b.classList.add('opacity-40', 'cursor-not-allowed');
-      }
     }
   };
   for (const [mode, labelText, tip] of [
-    ['geodesic', 'Geodesic', 'Paint follows the connected surface and never bleeds through walls \u2014 no depth needed. Recommended.'],
-    ['slab', 'Slab', 'Paint a thin shell within Paint depth of the surface. Use the depth knob to control how far through a wall paint reaches.'],
+    ['slab', 'Slab', 'Paint a thin shell within Paint depth of the surface. Use the depth knob to control how far through a wall paint reaches. Default.'],
+    ['geodesic', 'Geodesic', 'Paint follows the connected surface and never bleeds through walls \u2014 no depth needed. Best for curved/organic shapes or geometry with nearby surfaces.'],
   ] as const) {
     const btn = document.createElement('button');
     btn.textContent = labelText;
     btn.title = tip;
     btn.className = axisButtonClass(mode === getBrushSurface());
     btn.addEventListener('click', () => {
-      if (mode === 'slab' && isBrushSpray()) return; // disabled while spraying
       setBrushSurface(mode);
       refreshSurfaceButtons();
       syncDepthVisibility();
@@ -940,7 +935,8 @@ function createBrushControls(): HTMLElement {
       ? 'w-full px-2 py-1 rounded text-[11px] bg-blue-500/30 text-blue-200 border border-blue-500/50 transition-colors'
       : 'w-full px-2 py-1 rounded text-[11px] bg-zinc-700/60 text-zinc-300 border border-zinc-600/50 hover:bg-zinc-700 transition-colors';
     sprayWrap.classList.toggle('hidden', !on);
-    if (on && getBrushSurface() !== 'geodesic') setBrushSurface('geodesic'); // spray is geodesic-only
+    // Spray keeps the active surface mode (slab or geodesic) — the depth slider
+    // stays visible whenever slab is selected, spraying or not.
     refreshSurfaceButtons();
     syncDepthVisibility();
   };
@@ -1702,6 +1698,9 @@ export function forceDeactivate(): void {
     pickerPanel?.classList.add('hidden');
   }
 }
+
+// Let the annotate sub-modes deactivate paint without importing this module.
+registerExclusiveMode('paint', forceDeactivate);
 
 /** True if the paint menu is open (paint mode is active). */
 export function isPaintOpen(): boolean {

@@ -6,9 +6,8 @@
 // Mirrors the structure of src/ui/catalog.ts (theme toggle, back header,
 // category sections, tile grid) so the two pages feel like siblings.
 
-import { partwrightMarkSvg } from './brand';
-import { getTheme, onThemeChange, toggleTheme } from './theme';
 import { IDEAS, IDEA_CATEGORIES, type Idea, type IdeaCategoryDef } from '../ideas/ideas';
+import { contentHeaderHtml } from '../content/chrome';
 
 export interface IdeasCallbacks {
   onBack: () => void;
@@ -26,48 +25,29 @@ export function createIdeasPage(
 ): HTMLElement {
   const page = document.createElement('div');
   page.id = 'ideas-page';
-  page.className = 'flex flex-col items-center w-full h-full overflow-auto bg-zinc-900 text-zinc-100 relative';
+  page.className = 'flex flex-col items-center w-full h-full overflow-auto bg-zinc-900 text-zinc-100';
 
-  // Top-right theme toggle (mirrors catalog / landing).
-  const themeBtn = document.createElement('button');
-  themeBtn.textContent = 'Dark Mode';
-  const themeActive = 'absolute top-4 right-4 px-3 py-1 rounded text-xs font-medium transition-colors bg-zinc-700 text-zinc-100';
-  const themeInactive = 'absolute top-4 right-4 px-3 py-1 rounded text-xs font-medium transition-colors text-zinc-500 hover:text-zinc-300 border border-zinc-600';
-  const syncThemeBtn = (theme: 'light' | 'dark') => {
-    const on = theme === 'dark';
-    themeBtn.className = on ? themeActive : themeInactive;
-    themeBtn.title = on ? 'Dark mode on — click to switch to light' : 'Dark mode off — click to switch to dark';
-    themeBtn.setAttribute('aria-pressed', String(on));
-  };
-  syncThemeBtn(getTheme());
-  themeBtn.addEventListener('click', () => { toggleTheme(); });
-  onThemeChange(syncThemeBtn);
-  page.appendChild(themeBtn);
-
-  // Header: back button + logo + title
-  const header = document.createElement('div');
-  header.className = 'w-full max-w-5xl px-6 pt-10 pb-6 flex items-center gap-4';
-
-  const back = document.createElement('button');
-  back.className = 'flex items-center gap-1.5 px-3 py-1.5 rounded text-xs text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors';
-  back.innerHTML = '← Back';
-  back.addEventListener('click', callbacks.onBack);
-  header.appendChild(back);
+  // Shared top navigation — identical across every non-editor page. `onBack`
+  // is intentionally unused now: the header's logo (home) and nav cover it,
+  // matching the landing and the static content pages.
+  void callbacks.onBack;
+  const headerHost = document.createElement('div');
+  headerHost.className = 'w-full';
+  headerHost.innerHTML = contentHeaderHtml('/ideas');
+  page.appendChild(headerHost);
 
   const titleWrap = document.createElement('div');
-  titleWrap.className = 'flex items-center gap-3';
-  titleWrap.innerHTML = `${partwrightMarkSvg(28)}<h1 class="text-2xl font-semibold tracking-tight">Ideas</h1>`;
-  header.appendChild(titleWrap);
-
-  page.appendChild(header);
+  titleWrap.className = 'w-full max-w-6xl px-6 pt-4';
+  titleWrap.innerHTML = '<h1 class="text-3xl font-bold tracking-tight">Ideas</h1>';
+  page.appendChild(titleWrap);
 
   const intro = document.createElement('p');
-  intro.className = 'w-full max-w-5xl px-6 -mt-4 mb-6 text-sm text-zinc-400 leading-relaxed';
+  intro.className = 'w-full max-w-6xl px-6 mt-2 mb-6 text-sm text-zinc-400 leading-relaxed';
   intro.textContent = 'Not sure what Partwright can do? Start here. Pick a starter prompt to hand the AI, try a technique you didn’t know was possible, or turn one of your own photos into a model. Looking for finished models to remix instead? Browse the Catalog.';
   page.appendChild(intro);
 
   const body = document.createElement('div');
-  body.className = 'w-full max-w-5xl px-6 pb-16';
+  body.className = 'w-full max-w-6xl px-6 pb-16';
   page.appendChild(body);
 
   // Bucket ideas by category, render the non-empty sections in IDEA_CATEGORIES

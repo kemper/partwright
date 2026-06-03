@@ -161,6 +161,12 @@ let transcriptEl: HTMLElement | null = null;
 let inputEl: HTMLTextAreaElement | null = null;
 let planApprovalBarEl: HTMLElement | null = null;
 
+// The docked panel is an editor tool: it only takes layout space on the editor
+// route. On overlay pages (e.g. /ideas) it's force-hidden so those pages render
+// full-width, WITHOUT disturbing the remembered `drawerOpen` preference — the
+// panel reappears (if it was open) the moment we're back in the editor.
+let routeActive = true;
+
 // Slash-command autocomplete menu state. The menu sits just above the input
 // row and shows while the user is typing a "/command" token. `slashMenuItems`
 // is the currently-filtered list; `slashMenuIndex` is the keyboard highlight;
@@ -389,12 +395,12 @@ function applyDockLayout(): void {
 function showDrawer(focusInput = true): void {
   if (!drawerEl) return;
   state.open = true;
-  drawerEl.classList.remove('hidden');
+  drawerEl.classList.toggle('hidden', !routeActive);
   applyDockLayout();
-  window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: true } }));
+  window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: routeActive } }));
   window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: true });
-  if (focusInput) inputEl?.focus();
+  if (focusInput && routeActive) inputEl?.focus();
 }
 
 function hideDrawer(): void {
@@ -404,6 +410,21 @@ function hideDrawer(): void {
   window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: false } }));
   window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: false });
+}
+
+/** Mark whether the current route is the editor. The docked panel only occupies
+ *  layout space on the editor route; on overlay pages it's hidden so they get
+ *  full width. Does NOT change `state.open` or the saved `drawerOpen` setting,
+ *  so the panel restores to its prior state when the editor returns. */
+export function setAiPanelRouteActive(active: boolean): void {
+  if (routeActive === active) return;
+  routeActive = active;
+  if (!drawerEl) return;
+  const visible = state.open && routeActive;
+  drawerEl.classList.toggle('hidden', !visible);
+  if (visible) applyDockLayout();
+  window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: visible } }));
+  window.dispatchEvent(new Event('resize'));
 }
 
 async function loadHistoryForCurrentSession(): Promise<void> {

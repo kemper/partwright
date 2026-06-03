@@ -7,9 +7,12 @@ name: Code quality
 #     only on `error`-severity rules. Today's rules are all warning/hint, so
 #     this step is green now while still surfacing candidates in the log — and
 #     it auto-gates the moment a rule is promoted to `error` after cleanup.
-#   - dead-code (knip) and circular-deps (madge) are ADVISORY: they print
-#     findings for reviewers but never fail the job, because the codebase has
-#     known pre-existing hits being worked down. See docs/agent-tooling.md.
+#   - circular-deps (madge) is a GATE. The graph is acyclic as of the
+#     dependency-untangling work; `npm run lint:deps` exits non-zero on any new
+#     cycle, so regressions fail the job. See docs/agent-tooling.md.
+#   - dead-code (knip) is ADVISORY for exports/types: it prints findings for
+#     reviewers but never fails the job on those, because the codebase has known
+#     pre-existing hits being worked down. See docs/agent-tooling.md.
 #
 # This job runs on PRs only — it does not gate the main->staging promotion.
 
@@ -43,8 +46,8 @@ jobs:
       - name: UI consistency (ast-grep) — gates on error-severity rules
         run: npm run lint:consistency
 
-      - name: Dead code (knip) — advisory
-        run: npm run lint:deadcode || echo "::warning::knip reported findings (advisory, non-blocking)"
+      - name: Dead code (knip) — gates on deps/unlisted/unresolved; exports advisory
+        run: npm run lint:deadcode
 
-      - name: Circular deps (madge) — advisory
-        run: npm run lint:deps || echo "::warning::madge reported circular dependencies (advisory, non-blocking)"
+      - name: Circular deps (madge) — gates on any cycle
+        run: npm run lint:deps

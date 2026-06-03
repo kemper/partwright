@@ -2,10 +2,36 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
     "index.html",
+    "catalog.html",
+    "help.html",
+    "legal.html",
+    "whats-new.html",
+    "src/content/catalogEntry.ts",
     "tests/**/*.spec.ts",
     "tests/unit/**/*.test.ts",
     "scripts/*.mjs"
   ],
   "project": ["src/**/*.{ts,tsx}"],
-  "ignoreExportsUsedInFile": true
+  "paths": {
+    "/src/*": ["src/*"]
+  },
+  "ignoreDependencies": [
+    "tailwindcss",
+    "replicad-opencascadejs"
+  ],
+  "ignoreExportsUsedInFile": true,
+  "rules": {
+    "dependencies": "error",
+    "unlisted": "error",
+    "unresolved": "error",
+    "files": "error",
+    "binaries": "error",
+    "exports": "warn",
+    "types": "warn",
+    "nsExports": "warn",
+    "nsTypes": "warn",
+    "enumMembers": "warn",
+    "classMembers": "warn",
+    "duplicates": "warn"
+  }
 }

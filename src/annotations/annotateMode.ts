@@ -28,10 +28,8 @@ import {
   setUserOrbitLock,
   isUserOrbitLocked,
 } from '../renderer/viewport';
-import { forceDeactivate as forceDeactivatePaint } from '../color/paintUI';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
-import { forceDeactivate as forceDeactivateText } from './textMode';
-import { forceDeactivate as forceDeactivateSelect } from './selectMode';
+import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
 
 const DEFAULT_COLOR: [number, number, number] = [0.95, 0.20, 0.45]; // hot pink
 const DEFAULT_WIDTH = 4; // pixels
@@ -53,10 +51,6 @@ const listeners: Array<(active: boolean) => void> = [];
 
 export function isActive(): boolean {
   return active;
-}
-
-export function getColor(): [number, number, number] {
-  return [...currentColor] as [number, number, number];
 }
 
 export function setColor(c: [number, number, number]): void {
@@ -85,12 +79,12 @@ function notifyActiveChange(): void {
 
 export function activate(): void {
   if (active) return;
-  forceDeactivatePaint();
+  deactivateMode('paint');
   closeSimplifyMenu();
-  forceDeactivateSelect();
+  deactivateMode('select');
   // Detach text mode's handlers but keep the session plane alive — pen and
   // text share the plane within one Annotate activation.
-  forceDeactivateText({ keepSession: true });
+  deactivateMode('text', { keepSession: true });
 
   // First activation (or after a full toggle off): create a fresh session.
   // Switching from text → pen reuses the existing plane.
@@ -140,6 +134,9 @@ export function forceDeactivate(opts: DeactivateOpts = {}): void {
     endSession();
   }
 }
+
+// Let sibling tools deactivate pen mode without importing this module.
+registerExclusiveMode('pen', forceDeactivate);
 
 function cancelInProgress(): void {
   drawing = false;
