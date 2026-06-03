@@ -242,8 +242,19 @@ function runOnPatch(
     ? Float32Array.from(mesh.vertProperties)
     : extractPositions(mesh);
 
+  // When the selection is very small or the mesh is coarse, every patch vertex
+  // may also appear in a non-selected triangle (all hopDist = 0). Normal falloff
+  // would give weight 0 everywhere → invisible result. Detect this and apply
+  // full displacement instead; the slight boundary ripple is far less bad than
+  // seeing nothing.
+  let maxFiniteHop = 0;
   for (let i = 0; i < numPatchVert; i++) {
-    const w = Math.min(1, hopDist[i] / PATCH_FALLOFF_HOPS);
+    if (hopDist[i] !== Infinity && hopDist[i] > maxFiniteHop) maxFiniteHop = hopDist[i];
+  }
+  const allBoundary = maxFiniteHop === 0;
+
+  for (let i = 0; i < numPatchVert; i++) {
+    const w = allBoundary ? 1 : Math.min(1, hopDist[i] / PATCH_FALLOFF_HOPS);
     const g = localToGlobal[i];
     fullPos[g * 3]     = origPos[i * 3]     + (modPos[i * 3]     - origPos[i * 3])     * w;
     fullPos[g * 3 + 1] = origPos[i * 3 + 1] + (modPos[i * 3 + 1] - origPos[i * 3 + 1]) * w;

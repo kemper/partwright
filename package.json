@@ -13,10 +13,16 @@
     "test:unit": "vitest run",
     "test:e2e": "playwright test",
     "generate:catalog": "playwright test --config=playwright.generators.config.ts",
-    "refresh-models": "node scripts/refreshModelsSnapshot.mjs"
+    "refresh-models": "node scripts/refreshModelsSnapshot.mjs",
+    "lint:consistency": "ast-grep scan",
+    "lint:deadcode": "knip",
+    "lint:deps": "madge --circular --extensions ts,tsx src"
   },
   "devDependencies": {
+    "@ast-grep/cli": "^0.43.0",
     "@types/three": "^0.183.1",
+    "knip": "^6.15.0",
+    "madge": "^8.0.0",
     "playwright": "^1.58.2",
     "typescript": "~5.8.3",
     "vite": "^6.3.5",
@@ -24,9 +30,12 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0",
+    "@codemirror/autocomplete": "^6.20.1",
     "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/language": "^6.12.2",
     "@codemirror/lint": "^6.9.5",
     "@codemirror/merge": "^6.12.1",
+    "@codemirror/search": "^6.6.0",
     "@codemirror/state": "^6.5.4",
     "@codemirror/theme-one-dark": "^6.1.3",
     "@codemirror/view": "^6.39.16",
@@ -43,6 +52,7 @@
     "replicad": "^0.23.1",
     "replicad-opencascadejs": "^0.23.0",
     "tailwindcss": "^4.2.1",
-    "three": "^0.183.2"
+    "three": "^0.183.2",
+    "three-mesh-bvh": "^0.9.10"
   }
 }

@@ -1007,11 +1007,6 @@ export async function setDraft(sessionId: string, language: 'manifold-js' | 'sca
   await txComplete(store.transaction);
 }
 
-export async function deleteDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<void> {
-  const store = await tx('drafts', 'readwrite');
-  store.delete(draftId(sessionId, language, partId));
-  await txComplete(store.transaction);
-}
 
 export async function listDrafts(sessionId: string): Promise<SessionDraft[]> {
   const store = await tx('drafts', 'readonly');
@@ -1061,13 +1056,6 @@ export async function setReliefSourceRecord(record: ReliefSourceRecord): Promise
   await txComplete(txn);
 }
 
-export async function deleteReliefSourceRecord(sessionId: string): Promise<void> {
-  const db = await openDB();
-  if (!db.objectStoreNames.contains('reliefSources')) return;
-  const txn = db.transaction('reliefSources', 'readwrite');
-  txn.objectStore('reliefSources').delete(sessionId);
-  await txComplete(txn);
-}
 
 // === Recent-imports / recent-exports inboxes (persisted ring buffers) ===
 //

@@ -3,12 +3,10 @@ import { Timer } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { MeshData } from '../geometry/types';
 import { createDefaultMaterial, createWireframeMaterial } from './materials';
-import { initPhantomGroup } from './phantomGeometry';
 import { initMeasureOverlay } from './measureOverlay';
-import { initOrientationGizmo, renderGizmo, updateGizmo, disposeGizmo, isGizmoAnimating } from './orientationGizmo';
-import { initDimensionLines, updateDimensionLines, disposeDimensionLines, setDimensionsVisible as setDimensionsVisibleImpl, isDimensionsVisible } from './dimensionLines';
-import { initAnnotationOverlay, setLiveResolution as setAnnotationResolution } from '../annotations/annotationOverlay';
-import { configureSessionPlane } from '../annotations/sessionPlane';
+import { initOrientationGizmo, renderGizmo, updateGizmo, isGizmoAnimating } from './orientationGizmo';
+import { initDimensionLines, updateDimensionLines, setDimensionsVisible as setDimensionsVisibleImpl, isDimensionsVisible } from './dimensionLines';
+import { runViewportInitHooks, runViewportResizeHooks } from './viewportRegistry';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
 import { getConfig } from '../config/appConfig';
 
@@ -270,9 +268,6 @@ export function initViewport(container: HTMLElement): {
   meshGroup = new THREE.Group();
   scene.add(meshGroup);
 
-  // Phantom geometry group (for reference/fitment overlays)
-  initPhantomGroup(scene);
-
   // Measure overlay group
   initMeasureOverlay(scene, camera, renderer);
 
@@ -282,9 +277,10 @@ export function initViewport(container: HTMLElement): {
   // Bounding box dimension annotations
   initDimensionLines(scene);
 
-  // Freehand annotation overlay (drawn surface marks)
-  initAnnotationOverlay(scene);
-  configureSessionPlane(controls);
+  // Feature-layer subsystems (phantom geometry, annotation overlay, session
+  // plane) hook in here without the viewport importing them — see
+  // viewportRegistry.ts / viewportSubsystems.ts.
+  runViewportInitHooks({ scene, camera, renderer, controls, container, canvas });
 
   // ResizeObserver
   const observer = new ResizeObserver(entries => {
@@ -295,14 +291,14 @@ export function initViewport(container: HTMLElement): {
     applyRenderScale(interacting ? getConfig().renderer.interactionRenderScale : 1);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
-    setAnnotationResolution(width * window.devicePixelRatio, height * window.devicePixelRatio);
+    runViewportResizeHooks(width * window.devicePixelRatio, height * window.devicePixelRatio);
     needsRender = true;
   });
   observer.observe(container);
 
   // Initialize annotation resolution to current canvas size so the first
   // strokes drawn before any resize event fire still get correct widths.
-  setAnnotationResolution(
+  runViewportResizeHooks(
     canvas.width || container.clientWidth * window.devicePixelRatio,
     canvas.height || container.clientHeight * window.devicePixelRatio,
   );
@@ -785,10 +781,3 @@ export function onWireframeChange(cb: (visible: boolean) => void): void {
   wireframeChangeListener = cb;
 }
 
-export function dispose(): void {
-  cancelAnimationFrame(animationId);
-  disposeGizmo();
-  disposeDimensionLines();
-  controls.dispose();
-  renderer.dispose();
-}

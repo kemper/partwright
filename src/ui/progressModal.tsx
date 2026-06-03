@@ -194,14 +194,4 @@ export function endProgress(id: number): void {
 
 /** True when a progress job is in flight (badge may not be visible yet —
  *  it waits out the show delay). */
-export function isProgressActive(): boolean {
-  return currentJob !== null;
-}
 
-/** Read the active job's title + current fraction. Used by panels (simplify)
- *  that want to mirror the modal's state into their own status line on
- *  reopen — purely a query, no side-effects. */
-export function getCurrentProgress(): { title: string; fraction: number; message: string } | null {
-  if (!currentJob) return null;
-  return { title: currentJob.title, fraction: currentJob.fraction, message: currentJob.message };
-}

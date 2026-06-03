@@ -27,8 +27,6 @@ permissions:
 jobs:
   build-unit:
     runs-on: ubuntu-latest
-    outputs:
-      promote-sha: ${{ steps.commit-catalog.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -36,20 +34,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Refresh models catalog snapshot
-        id: commit-catalog
-        run: |
-          node scripts/refreshModelsSnapshot.mjs
-          if ! git diff --quiet src/ai/generated/modelsCatalog.json; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add src/ai/generated/modelsCatalog.json
-            git commit -m "chore: refresh models catalog snapshot"
-            git push origin HEAD:main
-            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          else
-            echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-          fi
       - name: Build (type-check + vite build)
         run: npm run build
       - name: Unit tests
@@ -94,15 +78,13 @@ jobs:
         with:
           fetch-depth: 0
       # Reached only when build + unit + every e2e shard pass. Promotes the
-      # green commit to staging, which Cloudflare deploys to the known-good
-      # staging preview. Uses the SHA from build-unit, which may be one commit
-      # ahead of GITHUB_SHA if the catalog snapshot was refreshed.
+      # green commit (the one this run was triggered on) to staging, which
+      # Cloudflare deploys to the known-good staging preview.
       - name: Promote to staging
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin staging main
           git checkout -B staging origin/staging
-          PROMOTE_SHA="${{ needs.build-unit.outputs.promote-sha }}"
-          git merge --ff-only "$PROMOTE_SHA" || git merge --no-edit "$PROMOTE_SHA"
+          git merge --ff-only "$GITHUB_SHA" || git merge --no-edit "$GITHUB_SHA"
           git push origin staging

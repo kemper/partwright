@@ -243,6 +243,71 @@ export function findConnectedFromSeed(
   return result;
 }
 
+/** BFS from a seed triangle, accepting each neighbor whose color is within
+ *  `colorTolerance` of the SEED triangle's color (magic-wand semantics — the
+ *  threshold is anchored to the seed, so it doesn't accumulate over the surface).
+ *
+ *  `triColors` is a Uint8Array of 3 bytes (R, G, B, 0–255) per triangle as
+ *  produced by `buildTriColors`. Pass null for an unpainted mesh — the entire
+ *  connected component is returned (all triangles look the same).
+ *
+ *  `colorTolerance` is in [0, 1] — the maximum normalised Euclidean RGB distance
+ *  from the seed color. 0 = exact match only; 1 = accept any color (whole
+ *  connected component). Default 0.05. */
+export function findColorRegion(
+  seedTri: number,
+  adjacency: AdjacencyGraph,
+  triColors: Uint8Array | null,
+  colorTolerance = 0.05,
+): Set<number> {
+  const { neighbors } = adjacency;
+  const result = new Set<number>();
+
+  if (colorTolerance >= 1 || !triColors) {
+    // Fast path: accept the entire connected component
+    const queue = [seedTri];
+    result.add(seedTri);
+    while (queue.length > 0) {
+      const current = queue.pop()!;
+      const adj = neighbors[current];
+      for (let i = 0; i < adj.length; i++) {
+        const nb = adj[i];
+        if (!result.has(nb)) { result.add(nb); queue.push(nb); }
+      }
+    }
+    return result;
+  }
+
+  const sr = triColors[seedTri * 3];
+  const sg = triColors[seedTri * 3 + 1];
+  const sb = triColors[seedTri * 3 + 2];
+
+  // Max squared distance in normalised [0,1]³ space is 3.
+  const maxDistSq = colorTolerance * colorTolerance * 3;
+
+  const queue = [seedTri];
+  result.add(seedTri);
+
+  while (queue.length > 0) {
+    const current = queue.pop()!;
+    const adj = neighbors[current];
+    for (let i = 0; i < adj.length; i++) {
+      const nb = adj[i];
+      if (result.has(nb)) continue;
+
+      const dr = (triColors[nb * 3]     - sr) / 255;
+      const dg = (triColors[nb * 3 + 1] - sg) / 255;
+      const db = (triColors[nb * 3 + 2] - sb) / 255;
+      if (dr * dr + dg * dg + db * db <= maxDistSq) {
+        result.add(nb);
+        queue.push(nb);
+      }
+    }
+  }
+
+  return result;
+}
+
 /** Get the normal of a specific triangle. */
 export function getTriangleNormal(triIndex: number, adjacency: AdjacencyGraph): [number, number, number] {
   return [

@@ -121,7 +121,20 @@ self.onmessage = async (event: MessageEvent) => {
       } else if (effectiveLang === 'scad') {
         // Ensure the OpenSCAD engine is loaded (lazy init).
         if (!openscadEngine.isReady()) await openscadEngine.init();
-        result = await runScadAsync(code as string, params ?? undefined);
+        // Preview callback: post the rough mesh to the main thread so it can
+        // update the viewport immediately while Phase 2 (full quality) runs.
+        const onScadPreview = (previewResult: { mesh: import('./types').MeshData | null }) => {
+          const mesh = previewResult.mesh;
+          if (!mesh) return;
+          const transfer: Transferable[] = [mesh.vertProperties.buffer, mesh.triVerts.buffer];
+          if (mesh.mergeFromVert) transfer.push(mesh.mergeFromVert.buffer);
+          if (mesh.mergeToVert)   transfer.push(mesh.mergeToVert.buffer);
+          if (mesh.runIndex)      transfer.push(mesh.runIndex.buffer);
+          if (mesh.runOriginalID) transfer.push(mesh.runOriginalID.buffer);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (self as any).postMessage({ type: 'execute_preview', callId, mesh }, transfer);
+        };
+        result = await runScadAsync(code as string, params ?? undefined, onScadPreview);
       } else if (effectiveLang === 'replicad') {
         // Full replicad-language session — lazy-init OCCT then evaluate as
         // BREP. Tessellation happens inside the engine before returning.

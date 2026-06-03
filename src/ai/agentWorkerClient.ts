@@ -146,12 +146,6 @@ export function pushQueuedBlocks(blocks: ChatBlock[]): void {
 }
 
 /** Terminate and discard the Worker (e.g. on hard reset). */
-export function terminateAgentWorker(): void {
-  worker?.terminate();
-  worker = null;
-  cleanup();
-}
-
 /** Drop-in replacement for chatLoop.runTurn — same signature, Worker-backed. */
 export async function runTurn(
   input: RunTurnInput,

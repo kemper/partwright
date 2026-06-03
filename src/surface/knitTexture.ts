@@ -449,8 +449,16 @@ function writePatchBack(
   localToGlobal: number[],
   hopDist: Float32Array,
 ): void {
+  // If the selection is small/coarse and every vertex borders a non-selected
+  // triangle (all hopDist = 0), normal falloff gives weight 0 everywhere and
+  // nothing moves. Detect this and use full weight instead.
+  let maxFiniteHop = 0;
   for (let i = 0; i < localToGlobal.length; i++) {
-    const w = Math.min(1, hopDist[i] / PATCH_FALLOFF_HOPS);
+    if (hopDist[i] !== Infinity && hopDist[i] > maxFiniteHop) maxFiniteHop = hopDist[i];
+  }
+  const allBoundary = maxFiniteHop === 0;
+  for (let i = 0; i < localToGlobal.length; i++) {
+    const w = allBoundary ? 1 : Math.min(1, hopDist[i] / PATCH_FALLOFF_HOPS);
     const g = localToGlobal[i];
     fullPositions[g * 3]     = patchPositions[i * 3]     + (displaced[i * 3]     - patchPositions[i * 3])     * w;
     fullPositions[g * 3 + 1] = patchPositions[i * 3 + 1] + (displaced[i * 3 + 1] - patchPositions[i * 3 + 1]) * w;

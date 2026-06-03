@@ -42,8 +42,10 @@ export function buildBrushStrokeFromDescriptor(
   d: Extract<RegionDescriptor, { kind: 'brushStroke' }>,
   base: MeshData,
 ): BrushStroke {
-  // A spray is always geodesic (surface-following, no through-wall).
-  const surface = d.spray ? 'geodesic' : (d.surface ?? 'slab');
+  // Surface mode is whatever the stroke was painted with (slab by default);
+  // old descriptors — and old geodesic-forced sprays — resolve from their
+  // stored `surface`, falling back to slab for back-compat.
+  const surface = d.surface ?? 'slab';
   const stroke: BrushStroke = {
     samples: d.samples,
     radius: d.radius,

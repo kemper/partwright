@@ -28,6 +28,9 @@ import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue }
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
 import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
+// Side-effect import: registers the phantom/annotation/session-plane viewport
+// hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
+import './renderer/viewportSubsystems';
 import { renderCompositeCanvas, renderSingleView, renderSingleViewCanvas, renderSliceSVG, setImages as _setImages, clearImages as _clearImages, getImages as _getImages, buildViewCamera, RENDER_VIEW_MODES, EDGE_MODES, STANDARD_VIEWS, type AttachedImage, type RenderViewMode, type EdgeMode } from './renderer/multiview';
 import { generateId, getLatestVersion } from './storage/db';
 import { setPhantom, clearPhantom, hasPhantom, type PhantomOptions } from './renderer/phantomGeometry';
@@ -36,14 +39,14 @@ import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { registerCommands } from './ui/commandPalette';
-import { showQualitySettingsModal } from './ui/qualitySettingsModal';
+import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
-import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput } from './ui/aiPanel';
+import { confirmDialog } from './ui/dialogs';
+import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive } from './ui/aiPanel';
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
-import { createLandingPage } from './ui/landing';
 import { createHelpPage } from './ui/help';
 import { createLegalPage } from './ui/legal';
 import { showExportOptionsDialog } from './ui/exportOptionsDialog';
@@ -127,7 +130,7 @@ import type { BuiltExport } from './export/gltf';
 function registerExportFromBuilt(built: BuiltExport, source: string): void {
   registerInboxExport(built.blob, built.filename, source, built.mimeType);
 }
-import type { MeshData, SourceDiagnostic } from './geometry/types';
+import type { MeshData, MeshResult, SourceDiagnostic } from './geometry/types';
 import { analyzeZProfile, type ZProfile } from './geometry/profileAnalysis';
 import { probeAtXY, probeRay, probePixel, measureDistance, type ProbeResult, type GeneralRayResult, type PixelHit, type PixelMiss } from './geometry/rayCast';
 import { checkContainment, type ContainmentWarning } from './geometry/containmentCheck';
@@ -139,8 +142,9 @@ import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
-import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, type SimplifyHandlers } from './ui/simplifyUI';
-import { updatePaintMesh, setOnRegionPainted } from './color/paintMode';
+import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
+import { updatePaintMesh, setOnRegionPainted, setTriangleToBaseMapper } from './color/paintMode';
+import { baseTriangleOf } from './color/baseRemap';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu } from './annotations/annotateUI';
 import { isActive as isSelectActive, getSelectedId as getSelectedAnnotationId } from './annotations/selectMode';
 import {
@@ -164,7 +168,7 @@ import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontS
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
-import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
+import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
 import { buildStrokeMesh, buildRefinedMesh, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
 import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
@@ -820,8 +824,10 @@ function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }
   const cacheBase = paintBaseMesh ?? currentMeshData;
   const cached = strokeCache.get(d);
   if (cached && cached.base === cacheBase) return cached.stroke;
-  // An airbrush spray is always geodesic (surface-following, no through-wall).
-  const surface = d.spray ? 'geodesic' : (d.surface ?? 'slab');
+  // Surface mode is whatever the stroke was painted with (slab by default);
+  // old descriptors without the field — and old geodesic-forced sprays —
+  // resolve from their stored `surface`, falling back to slab for back-compat.
+  const surface = d.surface ?? 'slab';
   const stroke: BrushStroke = {
     samples: d.samples,
     radius: d.radius,
@@ -1614,10 +1620,17 @@ async function main() {
     if (keyed.some(Boolean)) void requestPersistentStorage();
   })();
 
-  // Remove loading overlays as soon as JS takes over.
-  // landing-inline stays visible on the landing route until showLandingPage()
-  // replaces it with the JS-built version; remove it immediately on all other routes.
-  document.getElementById('loading-splash')?.remove();
+  // Remove loading overlays as soon as JS takes over — EXCEPT on /ideas, the
+  // one app-rendered overlay page. It boots the whole app before painting any
+  // content, so dropping the spinner here would leave a blank screen until the
+  // page renders; instead showIdeasPage() removes it once the content is up
+  // (with a timeout fallback so it can never get stuck).
+  const onIdeasRoute = window.location.pathname === '/ideas';
+  if (!onIdeasRoute) {
+    document.getElementById('loading-splash')?.remove();
+  } else {
+    setTimeout(() => document.getElementById('loading-splash')?.remove(), 12000);
+  }
   if (!shouldShowLanding()) {
     document.getElementById('landing-inline')?.remove();
   }
@@ -2050,7 +2063,7 @@ async function main() {
 
   // Seed color regions from an imported stepped-relief STL's existing Z plateaus so the
   // user can recolor each printed layer band. Reuses the slab selector.
-  function detectReliefLevels(): void {
+  async function detectReliefLevels(): Promise<void> {
     if (!currentMeshData) return;
     const bounds = meshBounds(currentMeshData);
     const span = bounds.max[2] - bounds.min[2];
@@ -2058,7 +2071,9 @@ async function main() {
     // Replace-instead-of-stack: clicking the button twice used to pile 24+
     // overlapping slab regions on the mesh. Ask first, then start clean.
     if (getRegions().length > 0) {
-      const ok = window.confirm('Replace existing colour regions with detected levels?');
+      const ok = await confirmDialog('Replace existing colour regions with detected levels?', {
+        confirmLabel: 'Replace',
+      });
       if (!ok) return;
       clearRegions();
     }
@@ -2168,12 +2183,12 @@ async function main() {
     try {
       parsed = JSON.parse(text);
     } catch {
-      alert(`Could not parse "${filename}" as JSON.`);
+      showToast(`Could not parse "${filename}" as JSON.`, { variant: 'warn', source: 'import' });
       return false;
     }
     const data = validateSessionPayload(parsed);
     if (!data) {
-      alert(`"${filename}" doesn't look like a Partwright session file.`);
+      showToast(`"${filename}" doesn't look like a Partwright session file.`, { variant: 'warn', source: 'import' });
       return false;
     }
     // Show the destination chooser (new session vs merge) and import. The merge
@@ -2193,7 +2208,10 @@ async function main() {
   async function handleImportFile(file: File): Promise<boolean> {
     const source = classifyImportSource(file.name);
     if (!source) {
-      alert(`Unsupported file type: ${file.name}\n\nSupported: .partwright.json, .js, .scad, .stl, .step / .stp, .vox, .svg, .png / .jpg / .gif / .webp / .avif`);
+      showToast(
+        `Unsupported file type: ${file.name}. Supported: .partwright.json, .js, .scad, .stl, .step / .stp, .vox, .svg, .png / .jpg / .gif / .webp / .avif`,
+        { variant: 'warn', source: 'import' },
+      );
       return false;
     }
 
@@ -2245,7 +2263,7 @@ async function main() {
       if (committed && source !== 'IMAGE') await registerImportSnapshot(file, file.name, source);
       return committed;
     } catch (e) {
-      alert(`Failed to import "${file.name}": ${(e as Error).message}`);
+      showToast(`Failed to import "${file.name}": ${(e as Error).message}`, { variant: 'warn', source: 'import' });
       return false;
     }
   }
@@ -2486,7 +2504,7 @@ async function main() {
     const sourceFile = chosenFile ?? fallbackFile ?? null;
     const grid = imageDataToVoxelGrid(chosenImage, opts);
     if (grid.size === 0) {
-      alert(`"${chosenName}" produced no voxels at the chosen settings. Try lowering the transparency cutoff.`);
+      showToast(`"${chosenName}" produced no voxels at the chosen settings. Try lowering the transparency cutoff.`, { variant: 'warn', source: 'import' });
       return false;
     }
     const code = generateVoxelImportCode(grid, chosenName, { style: opts.codeStyle });
@@ -2528,7 +2546,7 @@ async function main() {
     try {
       imageData = await decodeImageToImageData(file);
     } catch (e) {
-      alert(`Could not read image "${file.name}": ${(e as Error).message}`);
+      showToast(`Could not read image "${file.name}": ${(e as Error).message}`, { variant: 'warn', source: 'import' });
       return false;
     }
     // Let the user dial in resolution / mode / depth / color before
@@ -2560,11 +2578,11 @@ async function main() {
       const bytes = new Uint8Array(await file.arrayBuffer());
       grid = parseVox(bytes);
     } catch (e) {
-      alert(`Could not read .vox file "${file.name}": ${(e as Error).message}`);
+      showToast(`Could not read .vox file "${file.name}": ${(e as Error).message}`, { variant: 'warn', source: 'import' });
       return false;
     }
     if (grid.size === 0) {
-      alert(`"${file.name}" contained no voxels.`);
+      showToast(`"${file.name}" contained no voxels.`, { variant: 'warn', source: 'import' });
       return false;
     }
     const code = generateVoxelImportCode(grid, file.name);
@@ -2616,7 +2634,7 @@ async function main() {
           await importSTEPToBrep(file, file.name);
           return true;
         } catch (e) {
-          alert(`Failed to parse STEP file: ${(e as Error).message}`);
+          showToast(`Failed to parse STEP file: ${(e as Error).message}`, { variant: 'warn', source: 'import' });
           return false;
         }
       };
@@ -2686,11 +2704,11 @@ async function main() {
     try {
       mesh = await importSTEPToMesh(file);
     } catch (e) {
-      alert(`Failed to parse STEP file: ${(e as Error).message}`);
+      showToast(`Failed to parse STEP file: ${(e as Error).message}`, { variant: 'warn', source: 'import' });
       return false;
     }
     if (!mesh || mesh.numTri === 0) {
-      alert(`STEP file produced no geometry: ${file.name}`);
+      showToast(`STEP file produced no geometry: ${file.name}`, { variant: 'warn', source: 'import' });
       return false;
     }
     // Mirror STL flow: try to construct a Manifold from the tessellation so
@@ -2717,7 +2735,7 @@ async function main() {
     // expensive ofMesh trial.
     const probe = parseSTL(bytes);
     if (!probe || probe.numTri === 0) {
-      alert(`Could not parse "${file.name}" as an STL file.`);
+      showToast(`Could not parse "${file.name}" as an STL file.`, { variant: 'warn', source: 'import' });
       return null;
     }
 
@@ -3250,7 +3268,7 @@ async function main() {
       const lang: Language = entry.source === 'SCAD' ? 'scad' : 'manifold-js';
       await placeImportedCodeFile(code, lang, entry.filename);
     } catch (e) {
-      alert(`Failed to re-import "${entry.filename}": ${(e as Error).message}`);
+      showToast(`Failed to re-import "${entry.filename}": ${(e as Error).message}`, { variant: 'warn', source: 'import' });
     }
   }
 
@@ -3529,11 +3547,11 @@ async function main() {
   // Create toolbar
   createToolbar(editorUI, {
     onGoHome: () => {
-      updateAppHistory('/', 'push');
-      void syncRouteFromURL();
+      // The landing page is a separate static document that does NOT load this
+      // app bundle, so going home is a real navigation, not an in-app render.
+      window.location.assign('/');
     },
     onRun: () => runCode(),
-    onCancelRun: () => { cancelCurrentExecution(); },
     onExportGLB: actionExportGLB,
     onExportSTL: actionExportSTL,
     onExportOBJ: actionExportOBJ,
@@ -3542,7 +3560,7 @@ async function main() {
     onExportSTEP: actionExportSTEP,
     onExportSessionJSON: async () => {
       if (!getState().session) {
-        alert('No active session to export. Save a version first.');
+        showToast('No active session to export. Save a version first.', { variant: 'warn', source: 'export' });
         return;
       }
       // Imported meshes (STL) ride along in the export from schema 1.7 (their
@@ -3554,7 +3572,7 @@ async function main() {
       );
       if (!opts) return;
       const ok = await exportSessionJSON(undefined, opts);
-      if (!ok) alert('No active session to export. Save a version first.');
+      if (!ok) showToast('No active session to export. Save a version first.', { variant: 'warn', source: 'export' });
     },
     onShareLink: () => { void actionShareLink(); },
     onExportRawCode: () => {
@@ -3658,7 +3676,7 @@ async function main() {
   });
 
   // Create layout
-  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
+  const { editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, partsRail, togglePartsRail, collapseEditor, expandEditor } = createLayout(editorUI, {
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
@@ -3672,13 +3690,21 @@ async function main() {
   // has structural issues that would prevent 3D printing (non-manifold or
   // disconnected components). Hidden when the model is printable.
   printabilityIndicatorEl = document.createElement('span');
-  printabilityIndicatorEl.className = 'absolute top-8 left-2 z-20 text-xs text-amber-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-amber-700/60 pointer-events-none';
+  printabilityIndicatorEl.className = 'absolute top-8 left-2 z-20 text-xs text-amber-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-amber-700/60 cursor-help';
+  // A persistent status indicator, not a transient toast: it stays up while the
+  // current model has structural issues that would prevent a clean 3D print.
+  // The title explains what it is so it doesn't read as a stray message (and is
+  // hoverable — hence no `pointer-events-none`).
+  printabilityIndicatorEl.title = 'This model has structural issues that may prevent a clean 3D print. Open the ⚠ Diagnostic Log in the toolbar for details.';
   printabilityIndicatorEl.style.display = 'none';
   viewportPane.appendChild(printabilityIndicatorEl);
 
   // Parts rail — IDE-style list of the session's parts.
   createPartList(partsRail, {
     onSelectPart: async (partId: string) => {
+      // Cancel any in-flight render so stale Part N previews can't land on
+      // the viewport after we've switched away to a different part.
+      cancelCurrentExecution();
       // Save any unsaved non-starter edits as a version (imported SCAD with
       // errors, etc.) so they survive the switch and are loadable on return.
       await preserveCurrentEditsIfNeeded();
@@ -3839,7 +3865,7 @@ async function main() {
     { id: 'open-ideas', title: 'Open ideas', hint: 'Navigate', keywords: 'prompts examples inspiration showcase what can i do', run: () => { showIdeasPage(); } },
     { id: 'open-help', title: 'Open help', hint: 'Navigate', keywords: 'docs documentation guide', run: () => showHelp() },
     { id: 'open-whats-new', title: "Open what's new", hint: 'Navigate', keywords: 'changelog recent features updates release notes', run: () => showWhatsNewPage() },
-    { id: 'open-quality', title: 'Modeling quality settings', hint: 'Settings', keywords: 'resolution curve segments smoothness', run: () => showQualitySettingsModal() },
+    { id: 'open-quality', title: 'Settings', hint: 'Settings', keywords: 'resolution curve segments smoothness advanced', run: () => showAdvancedSettingsModal() },
     { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); }, enabled: isEditorActive },
   ]);
 
@@ -3995,6 +4021,9 @@ async function main() {
     if (ideasEl) ideasEl.classList.add('hidden');
     if (legalEl) legalEl.classList.add('hidden');
     overlayContainer.classList.add('hidden');
+    // The docked AI panel is an editor tool — restore it here (it only takes
+    // layout space on the editor route; overlay pages render full-width).
+    setAiPanelRouteActive(true);
     window.dispatchEvent(new Event('resize'));
     void ensureEngineStarted();
   }
@@ -4061,27 +4090,6 @@ async function main() {
     runCode(defaultCode);
   }
 
-  async function openSessionFromLanding(sid: string) {
-    updateAppHistory(`/editor?session=${sid}`, 'push');
-    transitionToEditor();
-    await ensureEditorReady();
-    await ensureEngineStarted();
-    if (!engineOk) return;
-    if (getSessionIdFromURL() !== sid) return;
-    const version = await openSession(sid);
-    if (version) {
-      await loadVersionIntoEditor(version);
-    } else {
-      // openSession returned null — either the session doesn't exist
-      // (e.g. stale tile from another device's data) or it has no saved
-      // versions yet. Run defaults so the viewport renders and the
-      // status doesn't stay stuck on "Loading WASM...".
-      setStatus(statusBar, 'ready', 'Ready');
-      runCode(defaultCode);
-    }
-    updateDocumentTitle({ page: 'editor' });
-  }
-
   // Launch the guided tour from an entry point outside the editor (the landing
   // CTA or the help page button): the tour spotlights editor chrome, so make
   // sure we're in the editor with a live session before it starts.
@@ -4098,46 +4106,14 @@ async function main() {
     startTour();
   }
 
-  function ensureLandingPage() {
-    if (!landingEl) {
-      landingEl = createLandingPage(overlayContainer, {
-        onOpenEditor: openEditorFromLanding,
-        onOpenHelp: () => showHelp(),
-        onOpenCatalog: () => { void showCatalogPage(); },
-        onOpenIdeas: () => { showIdeasPage(); },
-        onOpenWhatsNew: () => showWhatsNewPage(),
-        onTakeTour: () => { void takeGuidedTour(); },
-        onOpenSession: openSessionFromLanding,
-        onLoadCatalogEntry: handleCatalogEntryLoad,
-      });
-    }
-    return landingEl;
-  }
-
-  async function showLandingPage() {
-    const page = ensureLandingPage();
-    overlayContainer.classList.remove('hidden');
-    editorUI.classList.add('hidden');
-    helpEl?.classList.add('hidden');
-    notFoundEl?.classList.add('hidden');
-    catalogEl?.classList.add('hidden');
-    ideasEl?.classList.add('hidden');
-    legalEl?.classList.add('hidden');
-    whatsNewEl?.classList.add('hidden');
-    page.classList.remove('hidden');
-    updateDocumentTitle({ page: 'landing' });
-    // Build and render the JS page behind the static overlay, then remove the
-    // overlay only after fonts are settled — both pages then share the same
-    // metrics, making the swap invisible. Copy scroll position so the user's
-    // reading position is preserved if they scrolled before JS finished.
-    await document.fonts.ready;
-    requestAnimationFrame(() => {
-      const li = document.getElementById('landing-inline');
-      if (li) {
-        page.scrollTop = li.scrollTop;
-        li.remove();
-      }
-    });
+  // The landing page is a separate, static document — index.html's
+  // #landing-inline markup, enhanced in place by src/landing/landingEntry.ts.
+  // This app bundle is never loaded on the landing route, so "showing" the
+  // landing from within the app is a real navigation back to "/", which loads
+  // the lightweight landing entry instead of this bundle. (Callers: the boot
+  // router and syncRouteFromURL's popstate handler.)
+  function showLandingPage() {
+    window.location.assign('/');
   }
 
   function showNotFoundPage() {
@@ -4158,6 +4134,7 @@ async function main() {
     legalEl?.classList.add('hidden');
     whatsNewEl?.classList.add('hidden');
     notFoundEl.classList.remove('hidden');
+    setAiPanelRouteActive(false);
     updateDocumentTitle({ page: '404' });
   }
 
@@ -4190,6 +4167,7 @@ async function main() {
     if (legalEl) legalEl.classList.add('hidden');
     if (whatsNewEl) whatsNewEl.classList.add('hidden');
     helpEl.classList.remove('hidden');
+    setAiPanelRouteActive(false);
     updateDocumentTitle({ page: 'help' });
   }
 
@@ -4220,6 +4198,7 @@ async function main() {
     if (ideasEl) ideasEl.classList.add('hidden');
     if (helpEl) helpEl.classList.add('hidden');
     legalEl.classList.remove('hidden');
+    setAiPanelRouteActive(false);
     updateDocumentTitle({ page: 'legal' });
   }
 
@@ -4254,6 +4233,7 @@ async function main() {
     if (whatsNewEl) whatsNewEl.classList.add('hidden');
     if (ideasEl) ideasEl.classList.add('hidden');
     catalogEl.classList.remove('hidden');
+    setAiPanelRouteActive(false);
     updateDocumentTitle({ page: 'catalog' });
   }
 
@@ -4286,6 +4266,7 @@ async function main() {
     if (ideasEl) ideasEl.classList.add('hidden');
     if (notFoundEl) notFoundEl.classList.add('hidden');
     whatsNewEl.classList.remove('hidden');
+    setAiPanelRouteActive(false);
     updateDocumentTitle({ page: 'whats-new' });
   }
 
@@ -4303,6 +4284,35 @@ async function main() {
     if (!engineOk) return;
     await importSessionPayload(payload);
     updateDocumentTitle({ page: 'editor' });
+  }
+
+  // Fetch a catalog entry by file name and import it. Used by the /editor?catalog=
+  // deep-link from the static landing page. Mirrors handleCatalogEntryLoad but
+  // sources the payload from the URL rather than an in-memory tile click. The
+  // editor is already entered (this runs inside syncEditorFromURL), so no
+  // history push is needed — importSessionPayload's openSession replaceState
+  // rewrites the URL to /editor?session=<id>.
+  async function loadCatalogFileIntoEditor(file: string): Promise<void> {
+    try {
+      const res = await fetch(`/catalog/${file}`, { cache: 'no-cache' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const payload = await res.json() as ExportedSession;
+      await importSessionPayload(payload);
+      // importSessionPayload's openSession appended ?session=&v= but preserved
+      // the one-shot ?catalog= param; drop it now for a clean editor URL.
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('catalog')) {
+        url.searchParams.delete('catalog');
+        history.replaceState(history.state, '', url.pathname + url.search);
+      }
+      updateDocumentTitle({ page: 'editor' });
+    } catch {
+      // Couldn't load the entry (bad/removed file, offline). Don't leave the
+      // editor stuck on "Loading WASM…" — fall back to a default session.
+      if (!getState().session) await createSession();
+      setStatus(statusBar, 'ready', 'Ready');
+      runCode(defaultCode);
+    }
   }
 
   // === Ideas page handlers ===
@@ -4380,6 +4390,9 @@ async function main() {
     if (catalogEl) catalogEl.classList.add('hidden');
     if (whatsNewEl) whatsNewEl.classList.add('hidden');
     ideasEl.classList.remove('hidden');
+    setAiPanelRouteActive(false); // full-width page; panel restores in the editor
+    // Content is up — drop the boot spinner that was held over the app load.
+    document.getElementById('loading-splash')?.remove();
     updateDocumentTitle({ page: 'ideas' });
   }
 
@@ -4571,6 +4584,15 @@ async function main() {
     await ensureEditorReady();
     await ensureEngineStarted();
     if (!engineOk) return;
+
+    // Catalog deep-link: /editor?catalog=<file> imports that catalog entry as a
+    // fresh session. The static landing page links its catalog tiles here
+    // because it can't hand an in-memory payload across a real navigation.
+    const catalogFile = new URLSearchParams(window.location.search).get('catalog');
+    if (catalogFile) {
+      await loadCatalogFileIntoEditor(catalogFile);
+      return;
+    }
 
     const sessionId = getSessionIdFromURL();
     if (sessionId) {
@@ -5232,7 +5254,7 @@ async function main() {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
       }, currentParamValues);
-      if (err) alert(`Voxel paint: ${err}`);
+      if (err) showToast(`Voxel paint: ${err}`, { variant: 'warn' });
       syncVoxelPaintUI();
     },
     deactivate: async () => {
@@ -5242,7 +5264,7 @@ async function main() {
     },
     bake: async () => {
       const result = await bakePaintedVoxelsAsVersion('painted');
-      if ('error' in result) alert(`Voxel paint: ${result.error}`);
+      if ('error' in result) showToast(`Voxel paint: ${result.error}`, { variant: 'warn' });
       syncVoxelPaintUI();
     },
   });
@@ -5271,7 +5293,10 @@ async function main() {
     const v = await saveVersion(code, geometryData, thumbnail, label);
     return { versionIndex: v?.index ?? null, voxelCount: count };
   }
-  initSimplifyUI(clipControls, simplifyHandlers);
+  initSimplifyUI(clipControls, simplifyHandlers, {
+    initialLang: getActiveLanguage(),
+    onCancelRender: () => { cancelCurrentExecution(); },
+  });
   initMeasureToggle(clipControls);
   initOrbitLockToggle(clipControls);
 
@@ -5296,6 +5321,16 @@ async function main() {
     scheduleColorRefresh();
   });
 
+  // Projection paint collects triangle ids in the current working mesh's index
+  // space; this maps them back to pristine-base ids before storage so a later
+  // refine remaps them correctly. Reads live state: identity (no work) while the
+  // mesh is unrefined, a base-mesh closest-point lookup once it's been refined.
+  setTriangleToBaseMapper((t) => {
+    const cm = currentMeshData, base = paintBaseMesh;
+    if (!cm || !base || cm === base) return t;
+    return baseTriangleOf(cm, base, t);
+  });
+
   // Any region change reconciles the working mesh: incremental stroke append,
   // full rebuild, or the lightweight no-subdivision refresh. The async variant
   // runs the heavy subdivision in a Web Worker (with a Cancel button) so a
@@ -5314,6 +5349,15 @@ async function main() {
 
   // Start guided tour on first visit (after editor fully renders) — but not over
   // a shared preview, which is a read-only landing surface for an external link.
+  // /editor?tour=1 (the static landing's "Take the guided tour" CTA): force the
+  // guided tour even for users who already completed it once, then strip the
+  // param so a refresh doesn't relaunch it. maybeStartTour() below then fires on
+  // the now-clean editor URL.
+  if (new URLSearchParams(window.location.search).get('tour') === '1') {
+    resetTour();
+    history.replaceState(history.state, '', '/editor');
+  }
+
   if (!showLanding && !showHelpPage && !showCatalog && !showIdeas && !showLegalPage && !showWhatsNew && !show404 && !hasShareHash()) {
     maybeStartTour();
     maybeShowShortcutsHint();
@@ -5483,6 +5527,7 @@ async function main() {
     setEditorLanguage(lang);
     setToolbarLanguage(lang);
     setVoxelPaintAvailable(lang === 'voxel');
+    notifyQualityLangChanged(lang);
     syncEditorTitle(getState());
     const loadingLabel =
       lang === 'scad' ? 'Loading OpenSCAD...' :
@@ -9490,11 +9535,9 @@ async function main() {
       return this.setRegionVisibility(id, true);
     },
 
-    /** Read or write the bucket-tool tolerance used by the interactive paint
-     *  panel and by `paintRegion` when no `tolerance` argument is passed.
-     *  Value is the cosine of the maximum allowed bend angle (1 = strict
-     *  coplanar, -1 = whole connected component). Use the angle form via
-     *  `paintRegion({tolerance})` if you'd rather think in degrees.
+    /** Read or write the geometry-mode bucket tolerance (cosine of the max
+     *  allowed bend angle between adjacent faces). Range [-1, 1] where
+     *  1 = strict coplanar, -1 = whole connected component.
      *  Returns the previous + new value on set. */
     getBucketTolerance() {
       return { tolerance: getPaintBucketTolerance() };
@@ -9507,6 +9550,36 @@ async function main() {
       const previous = getPaintBucketTolerance();
       setPaintBucketTolerance(clamped);
       return { previous, tolerance: clamped };
+    },
+    /** Read or write the color-mode bucket tolerance (normalised Euclidean
+     *  RGB distance from the seed). Range [0, 1] where 0 = exact match only
+     *  and 1 = fill entire connected component regardless of color.
+     *  Returns the previous + new value on set. */
+    getBucketColorTolerance() {
+      return { tolerance: getPaintBucketColorTolerance() };
+    },
+    setBucketColorTolerance(tolerance: number) {
+      if (typeof tolerance !== 'number' || !Number.isFinite(tolerance)) {
+        return { error: 'setBucketColorTolerance(tolerance): tolerance must be a finite number in [0, 1]' };
+      }
+      const clamped = Math.max(0, Math.min(1, tolerance));
+      const previous = getPaintBucketColorTolerance();
+      setPaintBucketColorTolerance(clamped);
+      return { previous, tolerance: clamped };
+    },
+    /** Read or write which flood-fill strategy the bucket tool uses:
+     *  'color' (magic-wand by RGB similarity) or 'geometry' (coplanar faces
+     *  by bend angle). */
+    getBucketMode() {
+      return { mode: getPaintBucketMode() };
+    },
+    setBucketMode(mode: string) {
+      if (mode !== 'color' && mode !== 'geometry') {
+        return { error: "setBucketMode(mode): mode must be 'color' or 'geometry'" };
+      }
+      const previous = getPaintBucketMode();
+      setPaintBucketMode(mode as 'color' | 'geometry');
+      return { previous, mode };
     },
 
     /** Read or write the brush-tool radius (in mesh units) used by the
@@ -9640,7 +9713,7 @@ async function main() {
       const target = maxEdge !== undefined ? Math.max(maxEdge, radius / SMOOTH_DIVISOR_MAX) : radius / res;
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
         kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target,
-        surface: (surface as 'geodesic' | 'slab') ?? 'geodesic', depth: depth ?? 0,
+        surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0,
       };
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
@@ -9681,11 +9754,13 @@ async function main() {
       seed?: number;
       resolution?: number;
       maxEdge?: number;
+      surface?: string;
+      depth?: number;
       name?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first, then paint.' };
       if (!opts || typeof opts !== 'object') return { error: 'paintAirbrush(opts): opts object required' };
-      const { points, radius, color, shape, strength, softness, seed, resolution, maxEdge, name } = opts;
+      const { points, radius, color, shape, strength, softness, seed, resolution, maxEdge, surface, depth, name } = opts;
       if (!Array.isArray(points) || points.length === 0) {
         return { error: 'paintAirbrush: points must be a non-empty array of [x,y,z] surface points (use probePixel to get them)' };
       }
@@ -9716,6 +9791,12 @@ async function main() {
       if (maxEdge !== undefined && (typeof maxEdge !== 'number' || !Number.isFinite(maxEdge) || maxEdge <= 0)) {
         return { error: 'paintAirbrush: maxEdge must be a positive finite number when provided' };
       }
+      if (surface !== undefined && surface !== 'geodesic' && surface !== 'slab') {
+        return { error: "paintAirbrush: surface must be 'geodesic' or 'slab' when provided" };
+      }
+      if (depth !== undefined && (typeof depth !== 'number' || !Number.isFinite(depth) || depth < 0)) {
+        return { error: 'paintAirbrush: depth must be a non-negative finite number (mesh units) when provided' };
+      }
       const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
       const res = Math.max(SMOOTH_DIVISOR_MIN, Math.min(SMOOTH_DIVISOR_MAX, resolution ?? 96));
       const target = maxEdge !== undefined ? Math.max(maxEdge, radius / SMOOTH_DIVISOR_MAX) : radius / res;
@@ -9725,7 +9806,8 @@ async function main() {
         seed: seed !== undefined ? (seed | 0) : 1,
       };
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
-        kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target, surface: 'geodesic', spray,
+        kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target,
+        surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0, spray,
       };
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,
@@ -10605,8 +10687,12 @@ async function main() {
         'showRegion':      { signature: 'showRegion(id) -- Shorthand for setRegionVisibility(id, true).', docs: '/ai/colors.md' },
         'undoLastPaint':   { signature: 'undoLastPaint() -- Undo the most recent paint op. Removed region goes on a redo stack.', docs: '/ai/colors.md' },
         'redoLastPaint':   { signature: 'redoLastPaint() -- Reapply the most recently undone paint op.', docs: '/ai/colors.md' },
-        'getBucketTolerance': { signature: 'getBucketTolerance() -- Read the bucket flood-fill tolerance (cosine of max bend angle).', docs: '/ai/colors.md' },
-        'setBucketTolerance': { signature: 'setBucketTolerance(tolerance) -- Set the bucket flood-fill tolerance (-1..1). Affects the UI bucket tool and the default for paintRegion.', docs: '/ai/colors.md' },
+        'getBucketTolerance': { signature: 'getBucketTolerance() -- Read the geometry-mode bucket tolerance (cosine of max bend angle, -1..1).', docs: '/ai/colors.md' },
+        'setBucketTolerance': { signature: 'setBucketTolerance(tolerance) -- Set geometry-mode bucket tolerance (-1..1, cosine). 1 = coplanar only, -1 = whole component.', docs: '/ai/colors.md' },
+        'getBucketColorTolerance': { signature: 'getBucketColorTolerance() -- Read the color-mode bucket tolerance (0 = exact match, 1 = any color).', docs: '/ai/colors.md' },
+        'setBucketColorTolerance': { signature: 'setBucketColorTolerance(tolerance) -- Set color-mode bucket tolerance (0..1). 0 = exact match, 1 = fill entire connected mesh.', docs: '/ai/colors.md' },
+        'getBucketMode': { signature: "getBucketMode() -- Read the bucket flood-fill mode ('color' or 'geometry').", docs: '/ai/colors.md' },
+        'setBucketMode': { signature: "setBucketMode(mode) -- Set the bucket flood-fill mode: 'color' (magic-wand by RGB) or 'geometry' (coplanar by bend angle).", docs: '/ai/colors.md' },
         'getBrushSize':    { signature: 'getBrushSize() -- Read the UI brush radius (mesh units). 0 = single triangle.', docs: '/ai/colors.md' },
         'setBrushSize':    { signature: 'setBrushSize(radius) -- Set the UI brush radius (mesh units, >= 0). Affects only the interactive brush tool; programmatic painting uses paintNear / paintFaces.', docs: '/ai/colors.md' },
         // Annotations
@@ -11216,12 +11302,26 @@ async function main() {
     const warnings: string[] = [];
     const isBrep = getActiveLanguage() === 'replicad';
     if (geo.isManifold === false) {
-      warnings.push(
-        'isManifold: false — the mesh has non-manifold edges or gaps, so it is ' +
-        'not a watertight solid and will fail to slice / 3D-print with most tools. ' +
-        'Fix before finalizing: ensure boolean operands overlap by ≥ 0.5 units, ' +
-        'avoid zero-thickness walls, and check for duplicate faces.',
-      );
+      if (geo.manifoldStatus === 'render-only (not manifold)') {
+        // Render-only imports (colour reliefs, sculpted STLs) carry no Manifold,
+        // so watertightness was never measured — isManifold is false for lack of
+        // measurement, NOT a detected defect. Don't claim the mesh will fail to
+        // print; state the actual situation so the agent doesn't chase a phantom.
+        warnings.push(
+          'render-only import — no Manifold is available, so watertightness is ' +
+          'unverified (this is not a detected defect). Reliefs and sculpted STL ' +
+          'imports come in render-only to preserve per-vertex colour / order; they ' +
+          'still slice and print. Convert to a Manifold (e.g. re-run through ' +
+          'Manifold.ofMesh) only if you need booleans or a verified-solid check.',
+        );
+      } else {
+        warnings.push(
+          'isManifold: false — the mesh has non-manifold edges or gaps, so it is ' +
+          'not a watertight solid and will fail to slice / 3D-print with most tools. ' +
+          'Fix before finalizing: ensure boolean operands overlap by ≥ 0.5 units, ' +
+          'avoid zero-thickness walls, and check for duplicate faces.',
+        );
+      }
     }
     if (typeof geo.componentCount === 'number' && geo.componentCount > 1) {
       const cc = geo.componentCount;
@@ -11361,12 +11461,16 @@ async function main() {
   // Start the elapsed-time display for a render. The cancel button and timer
   // are delayed 400 ms so fast runs (manifold-js is typically < 100 ms) never
   // flash them. stopRunTimer() always cancels the pending show before it fires.
+  cancelInlineBtn.addEventListener('click', () => { cancelCurrentExecution(); });
+
   function startRunTimer(t0: number): void {
     _runTimerStart = t0;
     stopRunTimer();
     _runShowTimer = window.setTimeout(() => {
       _runShowTimer = null;
       setRunState(true, performance.now() - _runTimerStart);
+      setQualityRenderState(true);
+      cancelInlineBtn.classList.remove('hidden');
       _runTimerInterval = window.setInterval(() => {
         const ms = performance.now() - _runTimerStart;
         setRunState(true, ms);
@@ -11379,6 +11483,8 @@ async function main() {
     if (_runShowTimer !== null) { clearTimeout(_runShowTimer); _runShowTimer = null; }
     if (_runTimerInterval !== null) { clearInterval(_runTimerInterval); _runTimerInterval = null; }
     setRunState(false);
+    setQualityRenderState(false);
+    cancelInlineBtn.classList.add('hidden');
   }
 
   async function runCodeSync(src: string, opts: { surfaceErrors?: boolean } = {}): Promise<boolean> {
@@ -11400,10 +11506,21 @@ async function main() {
     clearEditorErrorPanel(editorErrorPanel);
     const t0 = performance.now();
     startRunTimer(t0);
+
+    // SCAD preview callback: receives the fast Phase 1 mesh and updates the
+    // viewport immediately so the user sees geometry while Phase 2 renders.
+    const onScadPreview = getActiveLanguage() === 'scad'
+      ? (previewResult: MeshResult) => {
+          if (myGen !== _runGeneration || !previewResult.mesh) return;
+          currentMeshData = previewResult.mesh;
+          updateMesh(previewResult.mesh);
+        }
+      : undefined;
+
     // Feed the Customizer's current overrides into the model's api.params(...).
     let result: Awaited<ReturnType<typeof executeCodeAsync>>;
     try {
-      result = await executeCodeAsync(src, undefined, currentParamValues);
+      result = await executeCodeAsync(src, undefined, currentParamValues, onScadPreview);
     } catch (err) {
       // Worker was terminated (cancelled by user, cancelled for a newer run,
       // timeout, or crash). Only clean up if we're still the active run —

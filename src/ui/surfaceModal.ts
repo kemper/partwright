@@ -329,6 +329,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     if (inSelectionMode) {
       exitSelectionMode();
       updateRegionStatus();
+      schedulePreview(); // fire preview now that selection is finalised
       return;
     }
     clearPreviewIfDirty();
@@ -381,7 +382,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     body.innerHTML = '';
     regionSection.style.display = active === 'voxelize' ? 'none' : '';
     if (active === 'fuzzy') {
-      const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.01, span * 0.001, n => n.toFixed(3), schedulePreview);
+      const amp = slider('Amplitude (depth)', 0, span * 0.1, span * 0.03, span * 0.001, n => n.toFixed(3), schedulePreview);
       const scale = slider('Feature size', span * 0.005, span * 0.25, span * 0.04, span * 0.005, n => n.toFixed(3), schedulePreview);
       const oct = slider('Detail (octaves)', 1, 4, 2, 1, n => String(n), schedulePreview);
       const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);

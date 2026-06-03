@@ -49,6 +49,32 @@ test.describe('Diagnostic log', () => {
     expect(diagZ).toBeGreaterThan(aiZ);
   });
 
+  // Every toast is mirrored into the Diagnostic Log so on-screen messaging has
+  // a durable record. warn → WARN (problem), success/neutral → INFO (routine
+  // activity, recorded but kept out of the unseen-error badge).
+  test('toasts are captured in the diagnostic log', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('#btn-diagnostics');
+
+    await page.evaluate(async () => {
+      const { showToast } = await import('/src/ui/toast.ts');
+      showToast('toast-warn-marker', { variant: 'warn' });
+      showToast('toast-success-marker', { variant: 'success' });
+    });
+
+    await page.click('#btn-diagnostics');
+    const panel = page.locator('#diagnostics-panel');
+    await expect(panel).toBeVisible();
+
+    const warnRow = panel.locator('div.border-b', { hasText: 'toast-warn-marker' }).first();
+    await expect(warnRow).toBeVisible();
+    await expect(warnRow.getByText('● WARN')).toBeVisible();
+
+    const infoRow = panel.locator('div.border-b', { hasText: 'toast-success-marker' }).first();
+    await expect(infoRow).toBeVisible();
+    await expect(infoRow.getByText('● INFO')).toBeVisible();
+  });
+
   test('clicking a row expands it to show more detail', async ({ page }) => {
     const marker = 'diagnostic-expand-test-marker';
 
