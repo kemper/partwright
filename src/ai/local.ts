@@ -330,10 +330,6 @@ export function isModelLoaded(modelId: string): boolean {
 }
 
 /** Get the currently loaded model id, or null. */
-export function loadedModelId(): string | null {
-  return loaded?.modelId ?? null;
-}
-
 /** Load (download if needed + activate) a model. Idempotent — calling again
  *  with the same id is a no-op; calling with a different id swaps. Single-
  *  flighted so two concurrent UI clicks don't race. Accepts both curated

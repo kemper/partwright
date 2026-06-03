@@ -11,7 +11,7 @@ import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import type { MeshData } from '../geometry/types';
 import { getScene, getCamera, getRenderer, setGizmoLock } from '../renderer/viewport';
 import { addRegion, getRegions } from './regions';
-import { getColor, getCurrentMesh, shapeSmoothDescriptorFields } from './paintMode';
+import { getColor, getCurrentMesh, shapeSmoothDescriptorFields } from './paintAccessors';
 import { findShapeTriangles, type OrientedBox, type ShapeType } from './boxPaint';
 import { meshBounds } from './slabPaint';
 
@@ -33,7 +33,6 @@ let gizmoHelper: THREE.Object3D | null = null;
 const changeListeners: Array<(box: OrientedBox) => void> = [];
 const visibilityListeners: Array<() => void> = [];
 
-export function isBoxActive(): boolean { return active; }
 
 export function onBoxChange(fn: (box: OrientedBox) => void): () => void {
   changeListeners.push(fn);
@@ -289,9 +288,6 @@ function syncVisuals(): void {
   (shapeEdges.material as THREE.LineBasicMaterial).color.setHex(hex);
 }
 
-export function refreshColor(): void {
-  if (active) syncVisuals();
-}
 
 /** Commit the shape's current footprint as a paint region. Returns the painted
  *  triangle count, or 0 if the shape was empty or no mesh was loaded. */

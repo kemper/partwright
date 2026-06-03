@@ -169,7 +169,7 @@ test.describe('smooth paintbrush', () => {
     expect(out.deep).toBeGreaterThan(out.thin); // a deep slab reaches the back face; the shallow one doesn't
   });
 
-  test('geodesic surface mode (the default) never bleeds through a wall', async ({ page }) => {
+  test('geodesic surface mode never bleeds through a wall', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -184,7 +184,7 @@ test.describe('smooth paintbrush', () => {
       const slabDeep = pw.paintStroke({ points: [[0, 0, 1]], radius: 4, maxEdge: 0.5, surface: 'slab', depth: 5, color: [0, 1, 0] }).triangles;
       return { geo, slabDeep, surface: pw.getBrushSurface().surface };
     });
-    expect(out.surface).toBe('geodesic');        // new painting defaults to geodesic
+    expect(out.surface).toBe('slab');            // new painting now defaults to slab
     expect(out.geo).toBeGreaterThan(0);          // the top surface was painted
     expect(out.slabDeep).toBeGreaterThan(out.geo); // geodesic stayed on the top; the deep slab reached the back
   });

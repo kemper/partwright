@@ -40,7 +40,7 @@ const CARDS: LanguageCard[] = [
       'CSG-style construction (union { ... }, difference { ... })',
       'OpenSCAD users who already know the language',
     ],
-    tradeoffs: 'No exact BREP fillets (BOSL2 fakes them with bevels), no STEP, no text() (font data not loaded). Painting on cylinder/revolve outputs is awkward because of radial-fan triangle topology.',
+    tradeoffs: 'No exact BREP fillets (BOSL2 fakes them with bevels), no STEP. Painting on cylinder/revolve outputs is awkward because of radial-fan triangle topology.',
   },
   {
     language: 'replicad',

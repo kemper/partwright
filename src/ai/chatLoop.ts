@@ -527,11 +527,18 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       // Map stop reason to a UI-friendly outcome so the panel can show
       // "✓ done" vs "⚠ model exited without final text" vs other.
       const hasText = result.text.trim().length > 0;
+      // In plan mode the tool list is empty; if the model still tried to call a
+      // tool it gets malformed_function_call from Anthropic. Any text it generated
+      // before the failed attempt is still valid, so treat it as end_turn rather
+      // than surfacing a confusing "stopped early" banner.
+      const effectiveStopReason = (result.stopReason === 'malformed_function_call' && toggles.planFirst)
+        ? 'end_turn'
+        : result.stopReason;
       let reason: TurnOutcomeReason = 'other';
-      if (result.stopReason === 'end_turn') reason = hasText ? 'end_turn' : 'empty_final';
-      else if (result.stopReason === 'max_tokens') reason = 'max_tokens';
-      else if (result.stopReason === 'refusal') reason = 'refusal';
-      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason, detail: result.stopReason, iterations: iter + 1 });
+      if (effectiveStopReason === 'end_turn') reason = hasText ? 'end_turn' : 'empty_final';
+      else if (effectiveStopReason === 'max_tokens') reason = 'max_tokens';
+      else if (effectiveStopReason === 'refusal') reason = 'refusal';
+      callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason, detail: effectiveStopReason, iterations: iter + 1 });
       return workingHistory;
     }
 

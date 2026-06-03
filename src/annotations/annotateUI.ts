@@ -40,6 +40,8 @@ import {
 } from './annotations';
 import { setAnnotationsVisible, isAnnotationsVisible } from './annotationOverlay';
 import { endSession as endSessionPlane, hidePlaneOutline } from './sessionPlane';
+import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
+import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
 
 const PRESET_COLORS: [number, number, number][] = [
   [0.95, 0.20, 0.45], // hot pink (default)
@@ -105,7 +107,10 @@ export function initAnnotateUI(controlsContainer: HTMLElement): void {
   else controlsContainer.appendChild(annotateBtn);
 
   pickerPanel = createPickerPanel();
-  controlsContainer.appendChild(pickerPanel);
+  // Parent to the viewport container (same as paint panel) so the panel can be
+  // positioned relative to the full viewport rather than the clip-controls box.
+  const overlayHost = controlsContainer.parentElement ?? controlsContainer;
+  overlayHost.appendChild(pickerPanel);
 
   onStrokesChange(updateCountBadge);
   onRedoChange(updateRedoButton);
@@ -152,12 +157,33 @@ function selectSelectSubMode(): void {
   activateSelect();
 }
 
+const annotateRegistryEntry = { close(): void { closeAnnotatePanel(); } };
+
+function onAnnotateEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  if (document.querySelector('[role="dialog"]')) return;
+  closeAnnotatePanel();
+}
+
 function updatePanelState(): void {
   if (!annotateBtn) return;
   const open = isAnyActive();
+  const wasOpen = pickerPanel ? !pickerPanel.classList.contains('hidden') : false;
   annotateBtn.className = open ? activeBtnClass : inactiveBtnClass;
-  if (open) pickerPanel?.classList.remove('hidden');
-  else pickerPanel?.classList.add('hidden');
+  if (open) {
+    pickerPanel?.classList.remove('hidden');
+    if (!wasOpen && pickerPanel) {
+      setInitialPanelPosition(pickerPanel);
+      openViewportPanel(annotateRegistryEntry);
+      document.addEventListener('keydown', onAnnotateEscape);
+    }
+  } else {
+    pickerPanel?.classList.add('hidden');
+    if (wasOpen) {
+      closeViewportPanel(annotateRegistryEntry);
+      document.removeEventListener('keydown', onAnnotateEscape);
+    }
+  }
 
   if (penTabBtn && textTabBtn && selectTabBtn) {
     penTabBtn.className = isPenActive() ? tabActiveClass : tabInactiveClass;
@@ -203,14 +229,36 @@ function updateCountBadge(): void {
 function createPickerPanel(): HTMLElement {
   const panel = document.createElement('div');
   panel.id = 'annotate-picker-panel';
-  panel.className = 'hidden absolute top-10 right-2 z-20 bg-zinc-800/95 backdrop-blur border border-zinc-600/60 rounded-lg p-2.5 shadow-xl';
+  panel.className = 'hidden absolute z-20 bg-zinc-800/95 backdrop-blur border border-zinc-600/60 rounded-lg shadow-xl';
   panel.style.minWidth = '220px';
+
+  // Header: drag handle + title + × close button.
+  const header = document.createElement('div');
+  header.className = 'flex items-center justify-between px-2.5 py-2 border-b border-zinc-700/70';
+  const headerTitle = document.createElement('div');
+  headerTitle.className = 'text-[11px] text-zinc-300 font-medium';
+  headerTitle.textContent = '✏️ Annotate';
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'text-zinc-400 hover:text-zinc-200 transition-colors leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-zinc-700/60';
+  closeBtn.textContent = '×';
+  closeBtn.title = 'Close annotate menu';
+  closeBtn.setAttribute('aria-label', 'Close annotate menu');
+  closeBtn.addEventListener('click', () => { toggleAnnotateMode(); });
+  header.appendChild(headerTitle);
+  header.appendChild(closeBtn);
+  panel.appendChild(header);
+  attachViewportPanelDrag(header, panel);
+
+  // Padded content beneath the header.
+  const content = document.createElement('div');
+  content.className = 'p-2.5';
+  panel.appendChild(content);
 
   // Info banner — explains the purpose of annotations to the user.
   const info = document.createElement('div');
   info.className = 'mb-2 p-2 rounded bg-pink-500/10 border border-pink-400/30 text-[10px] text-pink-200 leading-snug';
   info.textContent = 'Annotations are saved with this session and exported in the JSON. Use them to point out specific improvements for an AI working on the model.';
-  panel.appendChild(info);
+  content.appendChild(info);
 
   // Sub-mode tabs
   const tabsRow = document.createElement('div');
@@ -237,13 +285,13 @@ function createPickerPanel(): HTMLElement {
   selectTabBtn.addEventListener('click', selectSelectSubMode);
   tabsRow.appendChild(selectTabBtn);
 
-  panel.appendChild(tabsRow);
+  content.appendChild(tabsRow);
 
   // Color
   const title = document.createElement('div');
   title.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5 font-medium';
   title.textContent = 'Color';
-  panel.appendChild(title);
+  content.appendChild(title);
 
   const grid = document.createElement('div');
   grid.className = 'grid grid-cols-4 gap-1.5 mb-2';
@@ -262,7 +310,7 @@ function createPickerPanel(): HTMLElement {
   }
   const first = grid.children[0] as HTMLElement;
   if (first) first.classList.add('border-white/80', 'ring-1', 'ring-white/30');
-  panel.appendChild(grid);
+  content.appendChild(grid);
 
   // Custom color
   const customRow = document.createElement('div');
@@ -288,7 +336,7 @@ function createPickerPanel(): HTMLElement {
   customLabel.textContent = 'Custom';
   customRow.appendChild(colorInput);
   customRow.appendChild(customLabel);
-  panel.appendChild(customRow);
+  content.appendChild(customRow);
 
   // Width row (Pen mode)
   widthRow = document.createElement('div');
@@ -323,7 +371,7 @@ function createPickerPanel(): HTMLElement {
   widthRow.appendChild(widthBtns);
   const initialWidthIdx = PRESET_WIDTHS.findIndex(w => w.value === getPenWidth());
   if (initialWidthIdx >= 0) markActiveSizeButton(widthButtonRefs, widthButtonRefs[initialWidthIdx]);
-  panel.appendChild(widthRow);
+  content.appendChild(widthRow);
 
   // Font size row (Text mode)
   fontRow = document.createElement('div');
@@ -350,13 +398,13 @@ function createPickerPanel(): HTMLElement {
   fontRow.appendChild(fontBtns);
   const initialFontIdx = PRESET_FONT_SIZES.findIndex(f => f.value === getTextFontSize());
   if (initialFontIdx >= 0) markActiveSizeButton(fontButtonRefs, fontButtonRefs[initialFontIdx]);
-  panel.appendChild(fontRow);
+  content.appendChild(fontRow);
 
   // Selection info row (Select mode)
   selectionInfo = document.createElement('div');
   selectionInfo.className = 'hidden mt-2 pt-2 border-t border-zinc-700 text-[10px] text-zinc-400';
-  selectionInfo.textContent = 'Drag to move. Delete to remove. Esc to deselect.';
-  panel.appendChild(selectionInfo);
+  selectionInfo.textContent = 'Drag to move. Delete to remove.';
+  content.appendChild(selectionInfo);
 
   // Action row: visibility, restore-view, undo, redo, clear
   const actions = document.createElement('div');
@@ -413,7 +461,7 @@ function createPickerPanel(): HTMLElement {
   clearAllBtn.addEventListener('click', () => { clearAll(); });
   actions.appendChild(clearAllBtn);
 
-  panel.appendChild(actions);
+  content.appendChild(actions);
 
   return panel;
 }
@@ -443,6 +491,23 @@ function rgbToHex(color: [number, number, number]): string {
   const g = Math.round(color[1] * 255).toString(16).padStart(2, '0');
   const b = Math.round(color[2] * 255).toString(16).padStart(2, '0');
   return `#${r}${g}${b}`;
+}
+
+function closeAnnotatePanel(): void {
+  if (!isAnyActive() && (!pickerPanel || pickerPanel.classList.contains('hidden'))) return;
+  deactivatePen();
+  deactivateText();
+  deactivateSelect();
+  hidePlaneOutline();
+  endSessionPlane();
+  // updatePanelState fires via onXActiveChange callbacks and handles hiding + registry cleanup.
+  // Fallback: if all modes were already inactive the callbacks don't fire — clean up directly.
+  if (!isAnyActive() && pickerPanel && !pickerPanel.classList.contains('hidden')) {
+    pickerPanel.classList.add('hidden');
+    if (annotateBtn) annotateBtn.className = inactiveBtnClass;
+    closeViewportPanel(annotateRegistryEntry);
+    document.removeEventListener('keydown', onAnnotateEscape);
+  }
 }
 
 /** Force-deactivate annotate (pen) externally — used by the paint mode UI for
