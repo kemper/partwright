@@ -5952,7 +5952,11 @@ async function main() {
         grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
         variation: (opts?.variation as number) ?? base.variation,
         seed: (opts?.seed as number) ?? base.seed,
-        algorithm: (opts?.algorithm as typeof base.algorithm) ?? base.algorithm,
+        // LSCM/harmonic require disk topology — only use them on a selected patch.
+        // On a closed mesh they produce partial coverage; fall back to BFS.
+        algorithm: (sel && sel.size > 0)
+          ? ((opts?.algorithm as typeof base.algorithm) ?? base.algorithm)
+          : 'bfs',
       };
       if (sel && sel.size > 0) return applyKnitPatch(mesh, knitOpts, sel);
       return applyKnit(mesh, knitOpts);

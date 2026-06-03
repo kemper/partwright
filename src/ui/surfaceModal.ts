@@ -18,6 +18,7 @@ import { pickFace } from '../color/facePicker';
 import { addPointerSuppressor } from '../renderer/viewport';
 import { buildAdjacency, findConnectedFromSeed } from '../color/adjacency';
 import { getCurrentMesh, previewTriangles } from '../color/paintMode';
+import { buildTriColors } from '../color/regions';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 type ModId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize';
@@ -176,98 +177,152 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   let regionTeardown: (() => void) | null = null;
   let selectionSuppressor: (() => void) | null = null;
   let inSelectionMode = false;
-  let lastSeedTri: number | null = null;
+  let seedTriangles: number[] = [];          // all seeds clicked so far
+  let regionMode: 'region' | 'whole' = 'region'; // default: region mode
 
-  // Region selector UI elements — created once, appended to knit tab on each renderTab().
-  const regionStatus = el('div', 'text-[11px] text-zinc-400 min-h-[1rem] mt-1 mb-1');
-  regionStatus.textContent = 'No region — applies to whole model';
+  // --- Region selector UI (created once, shown/hidden via renderTab) ---
 
-  const selectBtn = el('button', BTN_BASE + ' flex-1 text-left', 'Select region');
-  const clearRegionBtn = el('button', BTN_BASE, 'Clear');
-  clearRegionBtn.disabled = true;
+  // Mode toggle: Region | Whole model
+  const MODE_ACTIVE = 'px-2.5 py-1 rounded text-xs bg-sky-600 text-white';
+  const MODE_IDLE   = 'px-2.5 py-1 rounded text-xs bg-zinc-800 text-zinc-300 hover:bg-zinc-700';
+  const modeRegionBtn = el('button', MODE_ACTIVE, 'Region');
+  const modeWholeBtn  = el('button', MODE_IDLE, 'Whole model');
+  const modeRow = el('div', 'flex gap-1 mb-2');
+  modeRow.append(modeRegionBtn, modeWholeBtn);
+
+  // Region controls (visible only in region mode)
+  const selectingBtn  = el('button', BTN_BASE + ' flex-1', 'Select regions');
+  const clearAllBtn   = el('button', BTN_BASE, 'Clear');
+  clearAllBtn.disabled = true;
   const regionBtns = el('div', 'flex gap-2 mb-1');
-  regionBtns.append(selectBtn, clearRegionBtn);
+  regionBtns.append(selectingBtn, clearAllBtn);
 
-  const spreadSlider = slider('Spread', 10, 80, 45, 5, n => n + '°', () => {
-    if (lastSeedTri !== null) scheduleReselect();
-  });
+  const regionStatus = el('div', 'text-[11px] text-zinc-400 min-h-[1rem] mt-1 mb-1');
+  regionStatus.textContent = 'No region selected (applies to whole model)';
+
+  const spreadSlider    = slider('Spread', 10, 80, 45, 5, n => n + '°', () => scheduleReselect());
+  const colorSensSlider = slider('Color sensitivity', 0, 100, 0, 5, n => n + '%', () => scheduleReselect());
+
+  const regionControls = el('div', '');
+  regionControls.append(regionBtns, regionStatus, spreadSlider.wrap, colorSensSlider.wrap);
 
   const regionSection = el('div', 'mt-1 mb-2 pt-2 border-t border-zinc-700/50');
   regionSection.append(
-    el('div', 'text-[11px] text-zinc-500 mb-1', 'Region (optional — LSCM/harmonic work best on a patch)'),
-    regionBtns, regionStatus, spreadSlider.wrap,
+    el('div', 'text-[11px] text-zinc-500 mb-2', 'Region'),
+    modeRow,
+    regionControls,
   );
 
+  /** Returns the effective selectedTriangles for currentOpts(). */
+  function activeSelection(): Set<number> | undefined {
+    return regionMode === 'region' ? regionSelection ?? undefined : undefined;
+  }
+
   function exitSelectionMode() {
+    if (!inSelectionMode) return;
     inSelectionMode = false;
     selectionSuppressor?.();
     selectionSuppressor = null;
     document.body.style.cursor = '';
-    selectBtn.textContent = 'Select region';
-    selectBtn.classList.remove('ring-2', 'ring-sky-500');
+    selectingBtn.textContent = 'Select regions';
+    selectingBtn.classList.remove('ring-2', 'ring-sky-500');
   }
 
-  function clearRegion() {
-    exitSelectionMode();
+  function updateRegionStatus() {
+    const count = regionSelection?.size ?? 0;
+    const seeds = seedTriangles.length;
+    if (count === 0) {
+      regionStatus.textContent = 'No region selected (applies to whole model)';
+    } else {
+      const regionWord = seeds === 1 ? 'region' : 'regions';
+      const suffix = inSelectionMode ? ' — click to add more' : '';
+      regionStatus.textContent = `${count.toLocaleString()} triangles (${seeds} ${regionWord})${suffix}`;
+    }
+  }
+
+  function runFloodFill() {
+    const mesh = getCurrentMesh();
+    if (!mesh || seedTriangles.length === 0) return;
+    const adjacency = buildAdjacency(mesh);
+    const maxDevCos = Math.cos((spreadSlider.get() * Math.PI) / 180);
+    const colorSens = colorSensSlider.get() / 100;
+    const triColors = colorSens > 0 ? buildTriColors(mesh.numTri, false) : null;
+
+    const combined = new Set<number>();
+    for (const seed of seedTriangles) {
+      const colorOpts = triColors
+        ? { triColors, maxColorDist: 1 - colorSens }
+        : undefined;
+      const tris = findConnectedFromSeed(seed, adjacency, maxDevCos, undefined, colorOpts);
+      for (const t of tris) combined.add(t);
+    }
+
     regionTeardown?.();
-    regionTeardown = null;
-    regionSelection = null;
-    lastSeedTri = null;
-    clearRegionBtn.disabled = true;
-    regionStatus.textContent = 'No region — applies to whole model';
+    regionTeardown = combined.size > 0 ? previewTriangles(combined, [0.15, 0.75, 0.85]) : null;
+    regionSelection = combined.size > 0 ? combined : null;
+    clearAllBtn.disabled = combined.size === 0;
+    updateRegionStatus();
     schedulePreview();
   }
 
   let reselectTimer: number | undefined;
   function scheduleReselect() {
+    if (seedTriangles.length === 0) return;
     if (reselectTimer !== undefined) clearTimeout(reselectTimer);
-    reselectTimer = window.setTimeout(() => {
-      reselectTimer = undefined;
-      if (lastSeedTri === null) return;
-      const mesh = getCurrentMesh();
-      if (!mesh) return;
-      const adjacency = buildAdjacency(mesh);
-      const maxDevCos = Math.cos((spreadSlider.get() * Math.PI) / 180);
-      const tris = findConnectedFromSeed(lastSeedTri, adjacency, maxDevCos);
-      regionTeardown?.();
-      regionTeardown = previewTriangles(tris, [0.15, 0.75, 0.85]);
-      regionSelection = tris;
-      clearRegionBtn.disabled = false;
-      regionStatus.textContent = `${tris.size.toLocaleString()} triangles selected`;
-      schedulePreview();
-    }, 150);
+    reselectTimer = window.setTimeout(() => { reselectTimer = undefined; runFloodFill(); }, 150);
   }
 
-  selectBtn.addEventListener('click', () => {
-    if (inSelectionMode) { exitSelectionMode(); regionStatus.textContent = regionSelection ? `${regionSelection.size.toLocaleString()} triangles selected` : 'No region — applies to whole model'; return; }
+  function clearRegion() {
+    regionTeardown?.();
+    regionTeardown = null;
+    regionSelection = null;
+    seedTriangles = [];
+    clearAllBtn.disabled = true;
+    updateRegionStatus();
+    schedulePreview();
+  }
+
+  function setRegionMode(mode: 'region' | 'whole') {
+    regionMode = mode;
+    modeRegionBtn.className = mode === 'region' ? MODE_ACTIVE : MODE_IDLE;
+    modeWholeBtn.className  = mode === 'whole'  ? MODE_ACTIVE : MODE_IDLE;
+    regionControls.style.display = mode === 'region' ? '' : 'none';
+    if (mode === 'whole') exitSelectionMode();
+    schedulePreview();
+  }
+
+  modeRegionBtn.addEventListener('click', () => setRegionMode('region'));
+  modeWholeBtn.addEventListener('click',  () => setRegionMode('whole'));
+
+  selectingBtn.addEventListener('click', () => {
+    if (inSelectionMode) {
+      exitSelectionMode();
+      updateRegionStatus();
+      return;
+    }
     clearPreviewIfDirty();
     inSelectionMode = true;
-    selectBtn.textContent = 'Cancel';
-    selectBtn.classList.add('ring-2', 'ring-sky-500');
-    regionStatus.textContent = 'Click on the model to flood-fill a patch…';
+    selectingBtn.textContent = 'Stop selecting';
+    selectingBtn.classList.add('ring-2', 'ring-sky-500');
+    if (seedTriangles.length === 0) {
+      regionStatus.textContent = 'Click the model to add regions…';
+    } else {
+      updateRegionStatus();
+    }
     document.body.style.cursor = 'crosshair';
     selectionSuppressor = addPointerSuppressor((evt: PointerEvent) => {
       if (evt.type !== 'pointerdown') return false;
       const mesh = getCurrentMesh();
-      if (!mesh) { exitSelectionMode(); return true; }
+      if (!mesh) return true;
       const hit = pickFace(evt as MouseEvent);
-      if (!hit) return true; // clicked empty space — veto orbit but keep waiting
-      lastSeedTri = hit.triangleIndex;
-      const adjacency = buildAdjacency(mesh);
-      const maxDevCos = Math.cos((spreadSlider.get() * Math.PI) / 180);
-      const tris = findConnectedFromSeed(hit.triangleIndex, adjacency, maxDevCos);
-      regionTeardown?.();
-      regionTeardown = previewTriangles(tris, [0.15, 0.75, 0.85]);
-      regionSelection = tris;
-      clearRegionBtn.disabled = false;
-      regionStatus.textContent = `${tris.size.toLocaleString()} triangles selected`;
-      exitSelectionMode();
-      schedulePreview();
+      if (!hit) return true; // empty space — veto orbit, keep listening
+      seedTriangles.push(hit.triangleIndex);
+      runFloodFill();
       return true;
     });
   });
 
-  clearRegionBtn.addEventListener('click', clearRegion);
+  clearAllBtn.addEventListener('click', clearRegion);
   const colorRow = el('div', 'mb-3');
   if (painted) {
     const colorBox = checkbox('Preserve colors (best-effort)', true, () => {
@@ -300,7 +355,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
       const seed = slider('Seed', 1, 99, 1, 1, n => String(n), schedulePreview);
       body.append(amp.wrap, scale.wrap, oct.wrap, seed.wrap, detail.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Densifies the mesh, then jitters the surface along its normals — the 3D-print "fuzzy skin" finish.'));
-      currentOpts = () => ({ amplitude: amp.get(), scale: scale.get(), octaves: oct.get(), seed: seed.get(), quality: detail.get(), selectedTriangles: regionSelection ?? undefined });
+      currentOpts = () => ({ amplitude: amp.get(), scale: scale.get(), octaves: oct.get(), seed: seed.get(), quality: detail.get(), selectedTriangles: activeSelection() });
     } else if (active === 'knit') {
       const sw = slider('Stitch width', span * 0.01, span * 0.25, span * 0.05, span * 0.005, n => n.toFixed(3), schedulePreview);
       const sh = slider('Stitch height', span * 0.01, span * 0.35, span * 0.07, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -326,7 +381,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         seed: seed.get(),
         quality: detail.get(),
         algorithm: algo.get(),
-        selectedTriangles: regionSelection ?? undefined,
+        selectedTriangles: activeSelection(),
       });
     } else if (active === 'cable') {
       const cw = slider('Cable width', span * 0.02, span * 0.3, span * 0.08, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -347,7 +402,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         variation: variation.get(),
         seed: seed.get(),
         quality: detail.get(),
-        selectedTriangles: regionSelection ?? undefined,
+        selectedTriangles: activeSelection(),
       });
     } else if (active === 'waffle') {
       const cw = slider('Cell width', span * 0.01, span * 0.3, span * 0.06, span * 0.005, n => n.toFixed(3), schedulePreview);
@@ -366,7 +421,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         rowOffset: rowOff.get(),
         grainAngleDeg: grain.get(),
         quality: detail.get(),
-        selectedTriangles: regionSelection ?? undefined,
+        selectedTriangles: activeSelection(),
       });
     } else if (active === 'fur') {
       const fs = slider('Fiber spacing', span * 0.003, span * 0.1, span * 0.02, span * 0.001, n => n.toFixed(3), schedulePreview);
@@ -385,7 +440,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         grainAngleDeg: grain.get(),
         seed: seed.get(),
         quality: detail.get(),
-        selectedTriangles: regionSelection ?? undefined,
+        selectedTriangles: activeSelection(),
       });
     } else if (active === 'woven') {
       const ts = slider('Thread spacing', span * 0.005, span * 0.2, span * 0.04, span * 0.002, n => n.toFixed(3), schedulePreview);
@@ -402,14 +457,14 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
         underDepth: ud.get(),
         grainAngleDeg: grain.get(),
         quality: detail.get(),
-        selectedTriangles: regionSelection ?? undefined,
+        selectedTriangles: activeSelection(),
       });
     } else if (active === 'smooth') {
       const iter = slider('Rounding strength', 1, 12, 4, 1, n => String(n), schedulePreview);
       const sub = checkbox('Subdivide first (rounds sharp corners)', true, schedulePreview);
       body.append(iter.wrap, sub.wrap);
       body.append(el('p', 'text-[11px] text-zinc-500', 'Taubin smoothing relaxes edges into a softer form without shrinking the model. Great for low-poly or blocky parts.'));
-      currentOpts = () => ({ iterations: iter.get(), subdivide: sub.get(), selectedTriangles: regionSelection ?? undefined });
+      currentOpts = () => ({ iterations: iter.get(), subdivide: sub.get(), selectedTriangles: activeSelection() });
     } else {
       const res = slider('Resolution (voxels)', 8, 128, 32, 1, n => String(n), schedulePreview);
       const sm = checkbox('Smooth voxels (rounded corners)', false, schedulePreview);
