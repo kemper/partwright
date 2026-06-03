@@ -6,19 +6,16 @@ import type { ExportedSession } from '../storage/sessionManager';
 import { partwrightMarkSvg } from './brand';
 import { languageBadge } from './languageBadge';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
+import {
+  CATEGORIES,
+  categorizeOf,
+  deriveCharacteristics as deriveTraits,
+  type CategoryId,
+  type CategoryDef,
+  type CatalogManifestEntry,
+} from '../content/data/catalogCategories';
 
-export interface CatalogManifestEntry {
-  /** Stable id used as a slug; also serves as the manifest dedupe key. */
-  id: string;
-  /** Display name for the tile. */
-  name: string;
-  /** Short blurb shown under the name. */
-  description?: string;
-  /** Path (relative to /catalog/) of the .partwright.json file. */
-  file: string;
-  /** Optional language hint for the badge before the JSON loads. */
-  language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
-}
+export type { CatalogManifestEntry };
 
 interface CatalogManifest {
   entries: CatalogManifestEntry[];
@@ -45,37 +42,10 @@ interface LoadedEntry {
   error: string | null;
 }
 
-/** The catalog is sectioned so each tile's reason for being here is obvious.
- *  Categories are mutually exclusive and assigned in {@link categorize}; the
- *  array order is the on-page section order. */
-type CategoryId = 'customizable' | 'manifold' | 'sdf' | 'voxel' | 'scad' | 'brep';
-
-interface CategoryDef {
-  id: CategoryId;
-  title: string;
-  blurb: string;
-}
-
-const CATEGORIES: CategoryDef[] = [
-  { id: 'customizable', title: 'Customizable', blurb: 'Tweak these live with sliders and toggles — open the 🎛 Customize panel in the editor, no code changes needed.' },
-  { id: 'manifold', title: 'JavaScript Models', blurb: 'Built with the default manifold-3d mesh API — the everyday JS modeling path.' },
-  { id: 'sdf', title: 'Implicit Surfaces (SDF)', blurb: 'Signed-distance-field models via the Sdf builder — gyroids, lattices, and organic blends.' },
-  { id: 'voxel', title: 'Voxel Models', blurb: 'Built by painting and baking a voxel grid.' },
-  { id: 'scad', title: 'OpenSCAD', blurb: 'Authored in OpenSCAD with the BOSL2 library — gears, threads, and machined parts.' },
-  { id: 'brep', title: 'Solid CAD (BREP)', blurb: 'Exact OpenCASCADE solids (replicad) with true fillets and STEP export.' },
-];
-
-/** Assign one category per entry. Parametric models lead (it's the trait users
- *  most want to find); otherwise we split by engine, with SDF pulled out of the
- *  manifold-js bucket as its own showcase. */
+/** Assign one category per entry (delegates to the shared, pure categorizer). */
 function categorize(entry: LoadedEntry): CategoryId {
-  if (entry.hasParams) return 'customizable';
-  const lang = entry.payload?.session.language ?? entry.manifest.language ?? 'manifold-js';
-  if (lang === 'scad') return 'scad';
-  if (lang === 'replicad') return 'brep';
-  if (lang === 'voxel') return 'voxel';
-  if (entry.isSDF) return 'sdf';
-  return 'manifold';
+  const language = entry.payload?.session.language ?? entry.manifest.language ?? 'manifold-js';
+  return categorizeOf({ hasParams: entry.hasParams, isSDF: entry.isSDF, language });
 }
 
 /** Inspect a payload's code for the characteristics that drive categorization
@@ -83,15 +53,7 @@ function categorize(entry: LoadedEntry): CategoryId {
  *  version still counts. */
 function deriveCharacteristics(entry: CatalogManifestEntry, payload: ExportedSession | null): { hasParams: boolean; isSDF: boolean } {
   const code = (payload?.versions ?? []).map(v => v.code ?? '').join('\n');
-  const hasParams = /\bapi\.params\s*\(/.test(code);
-  // SDF catalog entries reach the surface builder through the `sdf` api
-  // namespace — either `api.sdf.…` or, more often, destructured as
-  // `const { sdf, Manifold } = api`. Detect both, plus the raw manifold
-  // `levelSet`, and fall back to the `sdf-` id prefix so a thumbnail-only or
-  // differently-authored entry still classifies.
-  const usesSdfApi = /\bapi\.sdf\b/.test(code) || /[{,]\s*sdf\s*[,}]/.test(code);
-  const isSDF = usesSdfApi || /\blevelSet\s*\(/.test(code) || /^sdf[-_]/i.test(entry.id);
-  return { hasParams, isSDF };
+  return deriveTraits(entry.id, code);
 }
 
 export async function createCatalogPage(
