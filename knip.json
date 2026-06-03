@@ -2,6 +2,11 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
     "index.html",
+    "catalog.html",
+    "help.html",
+    "legal.html",
+    "whats-new.html",
+    "src/content/catalogEntry.ts",
     "tests/**/*.spec.ts",
     "tests/unit/**/*.test.ts",
     "scripts/*.mjs"

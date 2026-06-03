@@ -10,7 +10,7 @@ npm run test:e2e     # Playwright browser suite (auto-starts dev server)
 npm test             # Both tiers: unit, then e2e
 npm run lint:consistency  # ast-grep UI-convention scan (advisory)
 npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (advisory)
-npm run lint:deps         # madge: circular dependencies (advisory)
+npm run lint:deps         # madge: circular dependencies (gate — graph is acyclic)
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -341,7 +341,30 @@ This repo ships custom Claude Code subagents and a deterministic static-analysis
 
 - **`work-reviewer`** (`.claude/agents/work-reviewer.md`, Opus, read-only) reviews the branch diff vs `origin/main` for correctness, back-compat, security, and **UI consistency** against the shared component layer (`modalShell`, `styleConstants` `BUTTON_*`, `showToast`, `commandPalette` keyboard model). Launch it before marking a PR ready.
 - **`explore`** (`.claude/agents/explore.md`, Sonnet, read-only) overrides the built-in Haiku Explore agent for sharper codebase discovery, preferring the TypeScript LSP MCP (`mcp__typescript__*`, configured in `.mcp.json`) for reference/definition queries.
-- **`lint:consistency`** (ast-grep), **`lint:deadcode`** (knip), and **`lint:deps`** (madge) run in CI (`code-quality.yml`). `lint:consistency` gates on `error`-severity ast-grep rules (`no-native-dialogs` is `error`; the rest are `warning`/`hint` — promote one to `error` once the codebase is clean for it). `lint:deadcode` gates on knip's trustworthy categories (`dependencies`/`unlisted`/`unresolved`/`files`) but keeps `exports`/`types` advisory (knip can't see exports used only via the e2e suite's dynamic `import('/src/…')`, and the dead-export backlog needs per-symbol triage). `lint:deps` (madge circular deps) is advisory. Scope each advisory hit to the diff — they over-report by design. See `docs/agent-tooling.md`.
+- **`lint:consistency`** (ast-grep), **`lint:deadcode`** (knip), and **`lint:deps`** (madge) run in CI (`code-quality.yml`). `lint:consistency` gates on `error`-severity ast-grep rules (`no-native-dialogs` is `error`; the rest are `warning`/`hint` — promote one to `error` once the codebase is clean for it). `lint:deadcode` gates on knip's trustworthy categories (`dependencies`/`unlisted`/`unresolved`/`files`) but keeps `exports`/`types` advisory (knip can't see exports used only via the e2e suite's dynamic `import('/src/…')`, and the dead-export backlog needs per-symbol triage). `lint:deps` (madge circular deps) is a **gate**: the module graph is acyclic, so any new cycle fails CI. Scope each advisory hit to the diff — they over-report by design. See `docs/agent-tooling.md`.
+
+### Module Layering — keep the dependency graph acyclic
+
+The module graph is **cycle-free** and CI gates on it (`lint:deps`). To keep it that way, follow the dependency direction and the patterns below — they're the ones used to untangle the original cycles, and each has a canonical example in the tree:
+
+- **Direction:** the renderer (`src/renderer/viewport.ts`) is a *low* layer; feature layers (`src/annotations/`, `src/color/`) sit above it and may import it (`requestRender`, camera accessors), but **the renderer must never import a feature layer.** When the viewport needs to drive a feature subsystem (phantom geometry, annotation overlay, session plane), the subsystem registers a lifecycle hook via the leaf `src/renderer/viewportRegistry.ts` (wired in `src/renderer/viewportSubsystems.ts`, imported once for side effects in `main.ts`) instead of the viewport importing it.
+- **Mutually-exclusive tools coordinate through a leaf, never each other.** Paint and the annotate sub-modes (pen/text/select) register their `forceDeactivate` with `src/ui/modeExclusion.ts` and call `deactivateMode(id, opts)` to turn a sibling off. No mode imports another mode.
+- **Shared state that two mutually-importing modules both need goes in a leaf.** Selection state lives in `src/annotations/selectionState.ts` (so the overlay can observe it without importing `selectMode`); paint-state accessors the drag tools read live in `src/color/paintAccessors.ts` (published once by `paintMode`). The owning module sets the leaf; consumers read it.
+
+When you add a feature that would otherwise import "sideways" or "down into" a lower layer, reach for one of these leaf patterns rather than adding the back-edge. Run `npm run lint:deps` before pushing.
+
+### Retros — continuous improvement loop
+
+This repo runs a lightweight self-improving loop so agents make the *next* agent faster and more reliable. See `retros/README.md` for the full picture.
+
+- **When you finish a meaningful task (≈ a PR), run `/retro`** (`.claude/skills/retro.md`). It drops a short **4-Ls** reflection — *Liked · Lacked · Learned · Longed for* — into `retros/inbox/`. Think like an engineer about your own toolchain: the most valuable note is what would have made delivery faster (the "Longed for" bucket), not just what broke. A `Stop` hook nudges you when the tree is dirty, but the call is yours — skip it when nothing was notable. Entries are append-only and commit with the work.
+- **`/retro-review`** (`.claude/skills/retro-review.md`) is the weekly facilitator, fired by a scheduled trigger. It clusters the inbox (frequency across independent agents = the vote), applies the confident process diffs to `CLAUDE.md`/`docs`/skills, files tooling asks as backlog items, writes a durable report to `retros/reports/`, archives the entries, and opens a **draft PR** for human review. It never merges itself.
+
+### Prompt Logs
+
+Every commit that changes non-prompt files must also stage a sanitized **prompt log** under `prompts/`, documenting the human request and your key decisions behind the change. See `.claude/skills/promptlog.md` for the format (one YAML frontmatter block, `## Human` / `## Assistant` decision-focused sections — write *why*, not a changelog). A `PreToolUse` guard (`.claude/hooks/promptlog-guard.sh`) **blocks** any `git commit` that touches non-prompt files without one; for a genuinely mechanical commit (merge/rebase/backfill) re-run with `--no-verify`.
+
+> This guard is the harness-level replacement for the old `lefthook` `prompt-log` pre-commit rule, which silently stopped firing in web/remote sessions because git hooks are never installed there (no `npm install` → no `lefthook install` → empty `.git/hooks`). A skill on disk doesn't run itself; the hook is what makes the workflow actually fire.
 
 ### User Messaging & the Diagnostic Log
 

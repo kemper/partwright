@@ -18,7 +18,7 @@ import {
   type StrokeAnnotation,
   type TextAnnotation,
 } from './annotations';
-import { onSelectionChange, getSelectedId } from './selectMode';
+import { onSelectionChange, getSelectedId } from './selectionState';
 import { requestRender } from '../renderer/viewport';
 
 let overlayGroup: THREE.Group | null = null;

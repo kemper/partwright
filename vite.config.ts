@@ -4,6 +4,7 @@ import { execSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { buildSitemapXml } from './src/seo/sitemap';
+import { prerenderContentPages } from './src/content/build/prerenderPlugin';
 
 // Set charset=utf-8 on .md and .txt files served from public/ during dev.
 // Prevents em-dashes and other UTF-8 chars from rendering as mojibake.
@@ -115,7 +116,7 @@ export default defineConfig({
   define: {
     __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
   },
-  plugins: [tailwindcss(), absoluteUrls(), markdownCharset(), dynamicSitemap()],
+  plugins: [tailwindcss(), prerenderContentPages(), absoluteUrls(), markdownCharset(), dynamicSitemap()],
   esbuild: {
     // .tsx files compile JSX via preact/jsx-runtime — keeps the bundle on
     // Preact without pulling in React. Vanilla .ts files in the rest of
@@ -157,6 +158,16 @@ export default defineConfig({
   build: {
     chunkSizeWarningLimit: 520,
     rollupOptions: {
+      // Multi-page: the editor SPA (index.html) plus the four pre-rendered,
+      // app-free content pages. Each content page ships only the shared
+      // Tailwind CSS — no app JS — so it paints instantly for users + crawlers.
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        catalog: resolve(__dirname, 'catalog.html'),
+        help: resolve(__dirname, 'help.html'),
+        legal: resolve(__dirname, 'legal.html'),
+        'whats-new': resolve(__dirname, 'whats-new.html'),
+      },
       output: {
         // Function form (not the object map) so we can isolate Vite's
         // `__vite_preload` helper into its own tiny chunk. With the object

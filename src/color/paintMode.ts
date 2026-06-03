@@ -12,6 +12,7 @@ import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOve
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 import { smoothEdgeForResolution } from './slabPaint';
+import { setPaintAccessors } from './paintAccessors';
 import { tangentBasis, type BrushShape } from './subdivide';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
@@ -236,7 +237,7 @@ export function getShapeSmoothResolution(): number { return shapeSmoothResolutio
 /** Smoothing fields to stamp onto a slab/box descriptor at paint time, resolved
  *  against `mesh` at the current shape-smoothing settings. With smoothing off
  *  the fields refine nothing (preserving the original blocky edge). */
-export function shapeSmoothDescriptorFields(mesh: MeshData): { smooth: boolean; maxEdge: number } {
+function shapeSmoothDescriptorFields(mesh: MeshData): { smooth: boolean; maxEdge: number } {
   if (!shapeSmooth) return { smooth: false, maxEdge: 0 };
   return { smooth: true, maxEdge: smoothEdgeForResolution(mesh, shapeSmoothResolution) };
 }
@@ -249,6 +250,10 @@ export function setOnRegionPainted(fn: () => void): void {
 export function getCurrentMesh(): MeshData | null {
   return currentMesh;
 }
+
+// Publish the state accessors the drag tools (boxDrag/slabDrag) need, so they
+// don't import this module back (which would be a circular dependency).
+setPaintAccessors({ getColor, getCurrentMesh, shapeSmoothDescriptorFields });
 
 
 /** Rebuild adjacency graph for a new mesh. Call this whenever updateMesh fires. */
@@ -383,6 +388,18 @@ function processMouseMove(event: MouseEvent): void {
 
   // Brush drag: collect triangles into the active brush session.
   if (currentTool === 'brush' && brushPainting && brushSession) {
+    // Safety net: if we think we're painting but no button is held, a pointerup
+    // was missed (e.g. it landed on an overlay that captured the pointer). Treat
+    // the button-less move as the release — commit and stop — instead of
+    // painting a runaway stroke that only a page refresh would clear.
+    if (event.buttons === 0) {
+      if (hasActiveStroke()) commitBrushStroke();
+      brushPainting = false;
+      brushSession = null;
+      strokeSamples = [];
+      clearHighlight();
+      return;
+    }
     const result = pickFace(event);
     if (result) {
       const added = recordStrokeSample(result.point);
@@ -450,6 +467,15 @@ function onPointerDown(event: PointerEvent): void {
   if (!adjacency || !currentMesh) return;
   if (event.button !== 0) return;
   if (currentTool === 'slab' || currentTool === 'box') return;
+
+  // This listener is registered on the container in the CAPTURE phase, so it
+  // also sees pointerdowns on overlay panels (paint picker, AI drawer, modals)
+  // that sit in front of the 3D view. Only start a stroke when the press landed
+  // on the canvas itself — otherwise a click on a panel raycasts a hit on the
+  // model *behind* it and paints, and setPointerCapture binds the pointer to the
+  // panel, so the matching pointerup never reaches our canvas handler and
+  // `brushPainting` stays stuck on (every later move then paints with no button).
+  if (event.target !== getRenderer().domElement) return;
 
   // Off-model click → OrbitControls is rotating; remember so pointerup doesn't
   // paint if the user happens to release over the model after a rotation.

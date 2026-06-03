@@ -323,33 +323,62 @@ function brushClassifier(stroke: BrushStroke): TriClassifier {
  *  the geometric normal of the base triangle whose surface is closest to it.
  *  Used for the `slab` constraint when a stroke descriptor doesn't carry stored
  *  normals (old sessions, or console paints that omit them). The sign is
- *  irrelevant — the slab test uses |offset| — so winding is not normalized. */
+ *  irrelevant — the slab test uses |offset| — so winding is not normalized.
+ *
+ *  Samples lie on the surface, so the closest base triangle sits in the sample's
+ *  own grid cell. We use the cached per-mesh triangle grid (already warm from the
+ *  footprint/geodesic passes) to test only that cell neighbourhood instead of
+ *  every triangle — turning the old O(samples × numTri) brute force, which is on
+ *  the default slab path, into O(samples × triangles-near-the-sample). The result
+ *  is identical: lowest triangle index wins ties (matching a linear scan), and a
+ *  full scan still backs up the rare empty-neighbourhood (off-surface) sample. */
 export function deriveSampleNormals(
   samples: [number, number, number][],
   base: MeshData,
 ): [number, number, number][] {
   const { triVerts, numTri } = base;
+  const grid = triGridFor(base);
+
+  // Unit geometric normal of base triangle t (winding not normalized).
+  const triNormal = (t: number): [number, number, number] => {
+    const a = triVertex(base, triVerts[t * 3]);
+    const b = triVertex(base, triVerts[t * 3 + 1]);
+    const c = triVertex(base, triVerts[t * 3 + 2]);
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+    const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    return [nx / len, ny / len, nz / len];
+  };
+
+  const dist2 = (sx: number, sy: number, sz: number, t: number): number => {
+    const a = triVertex(base, triVerts[t * 3]);
+    const b = triVertex(base, triVerts[t * 3 + 1]);
+    const c = triVertex(base, triVerts[t * 3 + 2]);
+    const cp = closestPointOnTriangle(sx, sy, sz, a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+    const dx = cp[0] - sx, dy = cp[1] - sy, dz = cp[2] - sz;
+    return dx * dx + dy * dy + dz * dz;
+  };
+
   const out: [number, number, number][] = [];
   for (const s of samples) {
-    let best = Infinity;
-    let bn: [number, number, number] = [0, 0, 1];
-    for (let t = 0; t < numTri; t++) {
-      const a = triVertex(base, triVerts[t * 3]);
-      const b = triVertex(base, triVerts[t * 3 + 1]);
-      const c = triVertex(base, triVerts[t * 3 + 2]);
-      const cp = closestPointOnTriangle(s[0], s[1], s[2], a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
-      const dx = cp[0] - s[0], dy = cp[1] - s[1], dz = cp[2] - s[2];
-      const d2 = dx * dx + dy * dy + dz * dz;
-      if (d2 < best) {
-        best = d2;
-        const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
-        const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
-        const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-        const len = Math.hypot(nx, ny, nz) || 1;
-        bn = [nx / len, ny / len, nz / len];
+    let best = Infinity, bi = -1;
+    const box: Aabb = { min: [s[0], s[1], s[2]], max: [s[0], s[1], s[2]] };
+    for (const t of grid.query(box)) {
+      const d2 = dist2(s[0], s[1], s[2], t);
+      // Strictly-nearer wins; on an exact tie (sample on a shared edge) keep the
+      // lower index, so the result matches a 0..numTri linear scan's first-min.
+      if (d2 < best || (d2 === best && t < bi)) { best = d2; bi = t; }
+    }
+    if (bi < 0) {
+      // Empty neighbourhood — sample is off the surface. Fall back to a full
+      // scan so the normal is still the globally-closest triangle's.
+      for (let t = 0; t < numTri; t++) {
+        const d2 = dist2(s[0], s[1], s[2], t);
+        if (d2 < best) { best = d2; bi = t; }
       }
     }
-    out.push(bn);
+    out.push(bi >= 0 ? triNormal(bi) : [0, 0, 1]);
   }
   return out;
 }

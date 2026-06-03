@@ -169,7 +169,7 @@
   <div id="landing-inline" style="position:fixed;inset:0;z-index:50;overflow-y:auto;background:#18181b;color:#fafafa;font-family:'Space Grotesk',system-ui,-apple-system,sans-serif">
     <style>
       #li-hero{display:grid;grid-template-columns:1fr 1.1fr;gap:48px;align-items:center}
-      @media(max-width:767px){#li-hero{grid-template-columns:1fr}#li-frame,#li-nav-links{display:none!important}}
+      @media(max-width:767px){#li-hero{grid-template-columns:1fr}#li-frame{display:none!important}}
       @keyframes li-pulse{0%,100%{opacity:1}50%{opacity:.45}}
       .li-sk{animation:li-pulse 2s ease-in-out infinite}
       /* Match JS landing: text-5xl (3rem) below md, text-6xl (3.75rem) at md+ */
@@ -178,78 +178,7 @@
     </style>
     <div style="display:flex;flex-direction:column;align-items:center;min-height:100%">
 
-      <!-- Nav -->
-      <header style="width:100%;max-width:72rem;padding:20px 24px;display:flex;align-items:center;justify-content:space-between;box-sizing:border-box">
-        <div style="display:flex;align-items:center;gap:10px">
-          <svg width="30" height="30" viewBox="0 0 104 104" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <defs>
-              <linearGradient id="li-tile" x1="0" y1="0" x2="104" y2="104" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1c1408"/><stop offset="1" stop-color="#0a0703"/></linearGradient>
-              <clipPath id="li-clip"><rect x="0" y="0" width="104" height="104" rx="24"/></clipPath>
-            </defs>
-            <rect x="0" y="0" width="104" height="104" rx="24" fill="url(#li-tile)"/>
-            <g clip-path="url(#li-clip)"><g transform="translate(4 6) scale(1.5)">
-              <polygon points="24,47 24,53 28,50.6 28,44.6" fill="#b45309"/>
-              <polygon points="18,47 24,47 28,44.6 22,44.6" fill="#fde68a"/>
-              <polygon points="18,47 24,47 24,53 18,53" fill="#f59e0b"/>
-              <polygon points="24,41 24,47 28,44.6 28,38.6" fill="#b45309"/>
-              <polygon points="18,41 24,41 28,38.6 22,38.6" fill="#fde68a"/>
-              <polygon points="18,41 24,41 24,47 18,47" fill="#f59e0b"/>
-              <polygon points="24,35 24,41 28,38.6 28,32.6" fill="#b45309"/>
-              <polygon points="18,35 24,35 28,32.6 22,32.6" fill="#fde68a"/>
-              <polygon points="18,35 24,35 24,41 18,41" fill="#f59e0b"/>
-              <polygon points="24,29 24,35 28,32.6 28,26.6" fill="#b45309"/>
-              <polygon points="18,29 24,29 28,26.6 22,26.6" fill="#fde68a"/>
-              <polygon points="18,29 24,29 24,35 18,35" fill="#f59e0b"/>
-              <polygon points="30,29 30,35 34,32.6 34,26.6" fill="#b45309"/>
-              <polygon points="24,29 30,29 34,26.6 28,26.6" fill="#fde68a"/>
-              <polygon points="24,29 30,29 30,35 24,35" fill="#f59e0b"/>
-              <polygon points="36,29 36,35 40,32.6 40,26.6" fill="#b45309"/>
-              <polygon points="30,29 36,29 40,26.6 34,26.6" fill="#fde68a"/>
-              <polygon points="30,29 36,29 36,35 30,35" fill="#f59e0b"/>
-              <polygon points="42,29 42,35 46,32.6 46,26.6" fill="#b45309"/>
-              <polygon points="36,29 42,29 46,26.6 40,26.6" fill="#fde68a"/>
-              <polygon points="36,29 42,29 42,35 36,35" fill="#f59e0b"/>
-              <polygon points="24,23 24,29 28,26.6 28,20.6" fill="#b45309"/>
-              <polygon points="18,23 24,23 28,20.6 22,20.6" fill="#fde68a"/>
-              <polygon points="18,23 24,23 24,29 18,29" fill="#f59e0b"/>
-              <polygon points="42,23 42,29 46,26.6 46,20.6" fill="#b45309"/>
-              <polygon points="36,23 42,23 46,20.6 40,20.6" fill="#fde68a"/>
-              <polygon points="36,23 42,23 42,29 36,29" fill="#f59e0b"/>
-              <polygon points="24,17 24,23 28,20.6 28,14.6" fill="#b45309"/>
-              <polygon points="18,17 24,17 28,14.6 22,14.6" fill="#fde68a"/>
-              <polygon points="18,17 24,17 24,23 18,23" fill="#f59e0b"/>
-              <polygon points="42,17 42,23 46,20.6 46,14.6" fill="#b45309"/>
-              <polygon points="36,17 42,17 46,14.6 40,14.6" fill="#fde68a"/>
-              <polygon points="36,17 42,17 42,23 36,23" fill="#f59e0b"/>
-              <polygon points="24,11 24,17 28,14.6 28,8.6" fill="#b45309"/>
-              <polygon points="18,11 24,11 28,8.6 22,8.6" fill="#fde68a"/>
-              <polygon points="18,11 24,11 24,17 18,17" fill="#f59e0b"/>
-              <polygon points="30,11 30,17 34,14.6 34,8.6" fill="#b45309"/>
-              <polygon points="24,11 30,11 34,8.6 28,8.6" fill="#fde68a"/>
-              <polygon points="24,11 30,11 30,17 24,17" fill="#f59e0b"/>
-              <polygon points="36,11 36,17 40,14.6 40,8.6" fill="#b45309"/>
-              <polygon points="30,11 36,11 40,8.6 34,8.6" fill="#fde68a"/>
-              <polygon points="30,11 36,11 36,17 30,17" fill="#f59e0b"/>
-              <polygon points="42,11 42,17 46,14.6 46,8.6" fill="#b45309"/>
-              <polygon points="36,11 42,11 46,8.6 40,8.6" fill="#fde68a"/>
-              <polygon points="36,11 42,11 42,17 36,17" fill="#f59e0b"/>
-            </g></g>
-            <rect x="1" y="1" width="102" height="102" rx="23" fill="none" stroke="#f59e0b" stroke-width="1.4" stroke-opacity="0.45"/>
-          </svg>
-          <span style="font-weight:700;font-size:18px;letter-spacing:-0.025em;color:#fafafa;font-family:'Sora',system-ui,sans-serif">Partwright</span>
-          <span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;padding:2px 6px;border-radius:999px;background:rgba(245,158,11,0.15);color:#fbbf24;border:1px solid rgba(245,158,11,0.25)">Beta</span>
-        </div>
-        <nav id="li-nav-links" style="display:flex;align-items:center;gap:28px;font-size:14px">
-          <a href="/ideas" style="color:#a1a1aa;text-decoration:none">Ideas</a>
-          <a href="/catalog" style="color:#a1a1aa;text-decoration:none">Catalog</a>
-          <a href="/help" style="color:#a1a1aa;text-decoration:none">How it works</a>
-          <a href="#li-agent-section" style="color:#a1a1aa;text-decoration:none">For AI agents</a>
-          <a href="/whats-new" style="color:#a1a1aa;text-decoration:none">What&#39;s new</a>
-        </nav>
-        <div style="display:flex;align-items:center;gap:12px">
-          <a href="/editor" style="padding:8px 16px;border-radius:8px;font-size:14px;font-weight:600;color:#1c1917;text-decoration:none;background:linear-gradient(135deg,#fcd34d,#f59e0b)">Open editor &#8594;</a>
-        </div>
-      </header>
+      <!--PW-NAV-->
 
       <!-- Hero -->
       <section style="position:relative;width:100%;box-sizing:border-box">

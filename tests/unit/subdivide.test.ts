@@ -2,7 +2,7 @@
 // in/out test and the boundary-conforming clip). Pure geometry — no browser.
 
 import { describe, test, expect } from 'vitest';
-import { strokeSignedDist, sprayCoverage, airbrushDither, strokeFootprintTriangles, buildGeodesicField, type BrushStroke } from '../../src/color/subdivide';
+import { strokeSignedDist, sprayCoverage, airbrushDither, strokeFootprintTriangles, buildGeodesicField, deriveSampleNormals, type BrushStroke } from '../../src/color/subdivide';
 import { closestPointOnTriangle } from '../../src/color/adjacency';
 import type { MeshData } from '../../src/geometry/types';
 
@@ -260,6 +260,98 @@ describe('buildGeodesicField', () => {
     expect(field.reachableAt(6, 5, 0)).toBe(true);    // near sheet, within radius
     expect(field.reachableAt(5, 5, 0.5)).toBe(false); // directly above, far sheet — gapped
     expect(field.reachableAt(6, 5, 0.5)).toBe(false); // far sheet, within radius but disconnected
+  });
+});
+
+describe('deriveSampleNormals', () => {
+  // Shared-vertex wrinkled plane grid: (n+1)² verts, 2·n² tris, each with a
+  // distinct orientation (the wrinkle tilts every triangle), so a wrong nearest
+  // pick would surface as a wrong normal.
+  function wrinkledGrid(n: number, wrinkle: number): MeshData {
+    const side = n + 1;
+    const verts: number[] = [];
+    for (let j = 0; j < side; j++) {
+      for (let i = 0; i < side; i++) {
+        verts.push(i, j, wrinkle * Math.sin(i * 0.6) * Math.cos(j * 0.6));
+      }
+    }
+    const tris: number[] = [];
+    const vi = (i: number, j: number) => j * side + i;
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        tris.push(vi(i, j), vi(i + 1, j), vi(i + 1, j + 1));
+        tris.push(vi(i, j), vi(i + 1, j + 1), vi(i, j + 1));
+      }
+    }
+    return {
+      vertProperties: new Float32Array(verts),
+      triVerts: new Uint32Array(tris),
+      numVert: side * side, numTri: tris.length / 3, numProp: 3,
+    };
+  }
+
+  /** The old brute-force algorithm: nearest triangle over the whole mesh
+   *  (lowest index wins ties), then its geometric normal. */
+  function brute(samples: [number, number, number][], base: MeshData): [number, number, number][] {
+    const { triVerts, numTri } = base;
+    const tv = (vi: number): [number, number, number] => [
+      base.vertProperties[vi * 3], base.vertProperties[vi * 3 + 1], base.vertProperties[vi * 3 + 2],
+    ];
+    return samples.map((s) => {
+      let best = Infinity; let bn: [number, number, number] = [0, 0, 1];
+      for (let t = 0; t < numTri; t++) {
+        const a = tv(triVerts[t * 3]), b = tv(triVerts[t * 3 + 1]), c = tv(triVerts[t * 3 + 2]);
+        const cp = closestPointOnTriangle(s[0], s[1], s[2], a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+        const d2 = (cp[0] - s[0]) ** 2 + (cp[1] - s[1]) ** 2 + (cp[2] - s[2]) ** 2;
+        if (d2 < best) {
+          best = d2;
+          const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+          const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+          const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+          const len = Math.hypot(nx, ny, nz) || 1;
+          bn = [nx / len, ny / len, nz / len];
+        }
+      }
+      return bn;
+    });
+  }
+
+  test('grid result matches the brute-force scan for on-surface samples', () => {
+    const base = wrinkledGrid(12, 0.5); // 288 tris
+    const { triVerts } = base;
+    const tv = (vi: number): [number, number, number] => [
+      base.vertProperties[vi * 3], base.vertProperties[vi * 3 + 1], base.vertProperties[vi * 3 + 2],
+    ];
+    // Sample at every triangle centroid (unambiguously on that triangle).
+    const samples: [number, number, number][] = [];
+    for (let t = 0; t < base.numTri; t++) {
+      const a = tv(triVerts[t * 3]), b = tv(triVerts[t * 3 + 1]), c = tv(triVerts[t * 3 + 2]);
+      samples.push([(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3]);
+    }
+    const got = deriveSampleNormals(samples, base);
+    const ref = brute(samples, base);
+    expect(got.length).toBe(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      expect(got[i][0]).toBeCloseTo(ref[i][0], 6);
+      expect(got[i][1]).toBeCloseTo(ref[i][1], 6);
+      expect(got[i][2]).toBeCloseTo(ref[i][2], 6);
+    }
+  });
+
+  test('matches brute force for slightly off-surface samples and falls back when far', () => {
+    const base = wrinkledGrid(10, 0.4);
+    // A near-surface point (nudged off a centroid) and a far one (well outside
+    // the grid, exercising the full-scan fallback).
+    const samples: [number, number, number][] = [
+      [3.4, 4.7, 0.05], [7.1, 2.2, -0.1], [5.5, 5.5, 0.2], [100, 100, 100],
+    ];
+    const got = deriveSampleNormals(samples, base);
+    const ref = brute(samples, base);
+    for (let i = 0; i < samples.length; i++) {
+      expect(got[i][0]).toBeCloseTo(ref[i][0], 6);
+      expect(got[i][1]).toBeCloseTo(ref[i][1], 6);
+      expect(got[i][2]).toBeCloseTo(ref[i][2], 6);
+    }
   });
 });
 
