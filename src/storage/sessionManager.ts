@@ -15,6 +15,8 @@ import {
   deleteVersion as dbDeleteVersion,
   putVersion as dbPutVersion,
   renameVersion as dbRenameVersion,
+  findVersionChildren as dbFindVersionChildren,
+  clearVersionParentRefs as dbClearVersionParentRefs,
   clearAllData,
   updateSession as dbUpdateSession,
   createPart as dbCreatePart,
@@ -29,13 +31,13 @@ import {
   updateNote as dbUpdateNote,
   getDraft as dbGetDraft,
   setDraft as dbSetDraft,
-  deleteDraft as dbDeleteDraft,
-  listDrafts as dbListDrafts,
+  deletePartDrafts as dbDeletePartDrafts,
   legacyImagesObjectToArray,
   generateId,
   type Session,
   type Part,
   type Version,
+  type VersionOperation,
   type SessionNote,
   type AttachedImage,
 } from './db';
@@ -337,7 +339,7 @@ export function getSchemaCompatibilityWarning(data: ExportedSession): string | n
   return null;
 }
 
-export type { Session, Part, Version, SessionNote, AttachedImage, SessionDraft } from './db';
+export type { Session, Part, Version, VersionOperation, SessionNote, AttachedImage, SessionDraft } from './db';
 
 // Pure resolver for a version's effective modeling language — re-exported from
 // its own tiny module so unit tests can import it without dragging in the
@@ -548,37 +550,28 @@ export async function renameSession(id: string, newName: string): Promise<void> 
   publishTabSync({ kind: 'session-meta', sessionId: id });
 }
 
-// === Editor drafts (per session, per language) ===
+// === Editor drafts (per session, per part, per language) ===
 //
-// Each session keeps a per-language draft slot — manifold-js, SCAD, and
-// replicad (BREP) each get their own — so flipping the toolbar's language
-// toggle preserves whatever the user (or the AI) was writing in the previous
-// language. Drafts are persisted so a reload doesn't lose them; they're
-// cascade-deleted when the session is.
+// Each part keeps a per-language draft slot — manifold-js, SCAD, replicad,
+// and voxel each get their own — so switching parts or flipping the toolbar's
+// language toggle preserves whatever the user (or the AI) was writing.
+// Drafts are persisted so a reload doesn't lose them; they're cascade-deleted
+// with the session (via sessionId index) and pruned when a part is deleted.
 
-/** Read the working buffer for a session in a given language. Returns null
- *  when no draft has been stashed yet (caller should fall back to a stub). */
-export async function readDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<string | null> {
-  const row = await dbGetDraft(sessionId, language);
+/** Read the working buffer for a (session, part, language) triple. Pass
+ *  `partId` to scope the draft to a specific part; omit for legacy session-
+ *  wide access. Returns null when no draft exists yet. */
+export async function readDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<string | null> {
+  const row = await dbGetDraft(sessionId, language, partId);
   return row ? row.code : null;
 }
 
-/** Write the working buffer for a session in a given language. Idempotent —
- *  the row is upserted by composite key. */
-export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string): Promise<void> {
-  await dbSetDraft(sessionId, language, code);
+/** Write the working buffer for a (session, part, language) triple. Idempotent
+ *  — the row is upserted by composite key. */
+export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string): Promise<void> {
+  await dbSetDraft(sessionId, language, code, partId);
 }
 
-/** Drop the working buffer for a (session, language) pair — used when the
- *  caller wants to force the next language switch to land on a stub. */
-export async function clearDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<void> {
-  await dbDeleteDraft(sessionId, language);
-}
-
-/** All drafts stashed for a session, ordered by language. */
-export async function listSessionDrafts(sessionId: string) {
-  return dbListDrafts(sessionId);
-}
 
 // === Per-session AI preference ===
 
@@ -746,6 +739,7 @@ export async function deletePart(partId: string): Promise<DeletePartResult | nul
   if (parts.length <= 1) return null; // keep at least one part
 
   await dbDeletePart(partId);
+  void dbDeletePartDrafts(currentState.session.id, partId).catch(() => {});
 
   const remaining = parts.filter(p => p.id !== partId);
   const wasCurrent = currentState.currentPart?.id === partId;
@@ -791,6 +785,8 @@ export async function deleteParts(partIds: string[]): Promise<DeletePartsResult 
 
   const deletedSet = new Set(targets.map(p => p.id));
   await dbDeleteParts(targets.map(p => p.id));
+  const sid = currentState.session.id;
+  for (const id of deletedSet) void dbDeletePartDrafts(sid, id).catch(() => {});
 
   const remaining = parts.filter(p => !deletedSet.has(p.id));
   const currentId = currentState.currentPart?.id;
@@ -888,7 +884,13 @@ export async function saveVersion(
   thumbnail: Blob | null,
   label?: string,
   notes?: string,
-  options?: { force?: boolean; importedMeshes?: ImportedMesh[]; paramValues?: Record<string, number | boolean | string> },
+  options?: {
+    force?: boolean;
+    importedMeshes?: ImportedMesh[];
+    paramValues?: Record<string, number | boolean | string>;
+    parentVersionId?: string | null;
+    operation?: VersionOperation | null;
+  },
 ): Promise<Version | null> {
   if (!currentState.session || !currentState.currentPart) return null;
 
@@ -933,6 +935,8 @@ export async function saveVersion(
     // engine independently of the session's default.
     getActiveLanguage(),
     paramValues,
+    options?.parentVersionId ?? null,
+    options?.operation ?? null,
   );
 
   currentState = {
@@ -1009,6 +1013,19 @@ export interface DeleteVersionResult {
   wasCurrent: boolean;
   /** The version that became active after deletion (only set when wasCurrent). */
   newCurrent: Version | null;
+}
+
+/** Return versions in the active part whose parentVersionId points to the given id. */
+export async function findVersionChildren(versionId: string): Promise<Version[]> {
+  if (!currentState.currentPart) return [];
+  return dbFindVersionChildren(versionId, currentState.currentPart.id);
+}
+
+/** Clear the parentVersionId field on all versions in the active part that
+ *  reference the given id. Call this after confirming deletion of a parent. */
+export async function clearVersionParentRefs(versionId: string): Promise<void> {
+  if (!currentState.currentPart) return;
+  await dbClearVersionParentRefs(versionId, currentState.currentPart.id);
 }
 
 /**

@@ -6,6 +6,8 @@ import * as THREE from 'three';
 import {
   stampImageOntoMesh,
   resizeImageData,
+  imageDataToDataUrl,
+  loadImageDataFromUrl,
   defaultPreprocess,
   buildTangentFrame,
   type StampImageOptions,
@@ -42,6 +44,8 @@ const STAMP_MAX = 1024;
 // Max for the in-panel preview thumbnail (display only, can be lower).
 const THUMB_MAX = 512;
 
+const STORAGE_KEY = 'imagePaint_savedImage';
+
 let imagePaintBtn: HTMLButtonElement | null = null;
 let panel: HTMLElement | null = null;
 let isOpen = false;
@@ -66,13 +70,13 @@ let opts: {
   manualBgColor?: [number, number, number];
 } = {
   preprocess: defaultPreprocess(),
-  removeBackground: false,
+  removeBackground: true,
 };
 
 // Stamp settings
-let stampSize = 20;        // world units
+let stampSize = 5;         // world units
 let stampRotation = 0;     // degrees
-let stampSmooth = false;   // subdivide the stamp footprint for crisp detail
+let stampSmooth = true;    // subdivide the stamp footprint for crisp detail
 let stampDetail = 96;      // smooth mode: target triangle rows across the stamp
                            // width (higher = finer; maxEdge = stampSize/detail)
 
@@ -145,6 +149,7 @@ export function initImagePaintUI(controlsContainer: HTMLElement): void {
   onClearSnapshotChange(updateFooterButtons);
   updateBadge();
   updateFooterButtons();
+  restorePersistedImage();
 }
 
 function toggleImagePaint(): void {
@@ -567,10 +572,34 @@ async function applyImageFile(file: File): Promise<void> {
     pickedImageData = resizeImageData(raw, STAMP_MAX);
     pickedImageThumb = resizeImageData(raw, THUMB_MAX);
     if (sourceLabel) sourceLabel.textContent = file.name;
+    persistImage(pickedImageData);
     renderPreview();
     updateStampMode();
   } catch {
     if (sourceLabel) sourceLabel.textContent = 'Failed to load image';
+  }
+}
+
+function persistImage(imageData: ImageData): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, imageDataToDataUrl(imageData, 0.85));
+  } catch {
+    // localStorage may be full; silently ignore
+  }
+}
+
+async function restorePersistedImage(): Promise<void> {
+  try {
+    const dataUrl = localStorage.getItem(STORAGE_KEY);
+    if (!dataUrl) return;
+    const raw = await loadImageDataFromUrl(dataUrl);
+    pickedImageData = resizeImageData(raw, STAMP_MAX);
+    pickedImageThumb = resizeImageData(raw, THUMB_MAX);
+    if (sourceLabel) sourceLabel.textContent = 'Saved image';
+    renderPreview();
+    updateStampMode();
+  } catch {
+    localStorage.removeItem(STORAGE_KEY);
   }
 }
 

@@ -16,6 +16,10 @@ export interface ImportTargetOptions {
   addDisabledReason?: string;
   recommend?: ImportTarget;
   addReplacesStarter?: boolean;
+  /** Override title text for the 'current-part' choice (e.g. for code imports). */
+  currentPartTitle?: string;
+  /** Override description text for the 'current-part' choice. */
+  currentPartDesc?: string;
   /** Modal heading. Defaults to "Import mesh"; image/voxel/BREP imports pass a
    *  noun-appropriate title (e.g. "Import voxels", "Import STEP"). */
   title?: string;
@@ -42,10 +46,10 @@ function buildChoices(opts: ImportTargetOptions): Choice[] {
     },
     {
       target: 'current-part',
-      title: opts.addReplacesStarter ? `Use for current part — ${partLabel}` : `Add to current part — ${partLabel}`,
-      desc: opts.addReplacesStarter
+      title: opts.currentPartTitle ?? (opts.addReplacesStarter ? `Use for current part — ${partLabel}` : `Add to current part — ${partLabel}`),
+      desc: opts.currentPartDesc ?? (opts.addReplacesStarter
         ? 'Make this mesh the contents of the current (empty) part.'
-        : 'Combine it with the geometry already in this part (composed as separate components).',
+        : 'Combine it with the geometry already in this part (composed as separate components).'),
       disabled: !opts.canAddToCurrent,
       disabledReason: opts.addDisabledReason,
     },

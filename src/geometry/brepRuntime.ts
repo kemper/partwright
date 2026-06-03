@@ -110,10 +110,6 @@ async function doInit(): Promise<void> {
   occtModule = OC;
 }
 
-export function isBrepLoaded(): boolean {
-  return replicadModule !== null;
-}
-
 // ── Type-light shape wrapper ─────────────────────────────────────────────────
 //
 // We don't re-export replicad's types into Partwright's surface because the

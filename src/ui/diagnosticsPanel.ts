@@ -66,11 +66,18 @@ function buildEntryEl(entry: LogEntry): HTMLElement {
   top.appendChild(time);
 
   const levelEl = document.createElement('span');
-  levelEl.className =
-    entry.level === 'error'
-      ? 'text-[9px] font-bold tracking-wider text-red-400 shrink-0'
-      : 'text-[9px] font-bold tracking-wider text-amber-400 shrink-0';
-  levelEl.textContent = entry.level === 'error' ? '● ERR' : '● WARN';
+  const LEVEL_STYLE: Record<ErrorLevel, string> = {
+    error: 'text-red-400',
+    warn: 'text-amber-400',
+    info: 'text-sky-400',
+  };
+  const LEVEL_LABEL: Record<ErrorLevel, string> = {
+    error: '● ERR',
+    warn: '● WARN',
+    info: '● INFO',
+  };
+  levelEl.className = `text-[9px] font-bold tracking-wider shrink-0 ${LEVEL_STYLE[entry.level]}`;
+  levelEl.textContent = LEVEL_LABEL[entry.level];
   top.appendChild(levelEl);
 
   const sourceEl = document.createElement('span');
@@ -175,6 +182,7 @@ function buildPanel(): HTMLElement {
   filterGroup.appendChild(makeFilterChip('All', 'all'));
   filterGroup.appendChild(makeFilterChip('Errors', 'error'));
   filterGroup.appendChild(makeFilterChip('Warnings', 'warn'));
+  filterGroup.appendChild(makeFilterChip('Info', 'info'));
   header.appendChild(filterGroup);
   syncFilterChips();
 
@@ -241,10 +249,13 @@ export function initDiagnosticsPanel(): void {
 
   errorLog.subscribe((entries) => {
     if (!_isOpen) {
-      // entries.length === 0 means the log was cleared.
+      // entries.length === 0 means the log was cleared. Otherwise the newest
+      // entry sits at index 0 (capture unshifts). Only errors/warnings count
+      // toward the unseen-error badge — routine 'info' activity (save/export
+      // toasts) is logged for the record but must not nag the ⚠ button.
       if (entries.length === 0) {
         _unseenCount = 0;
-      } else {
+      } else if (entries[0] && entries[0].level !== 'info') {
         _unseenCount++;
       }
       setDiagnosticsToolbarBadge(_unseenCount);

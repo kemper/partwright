@@ -191,7 +191,14 @@ export function computeGeometryStats(
 export function computePrintability(geo: Record<string, unknown>): { printable: boolean; issues: string[] } {
   if (!geo || geo.status !== 'ok') return { printable: false, issues: ['no geometry'] };
   const issues: string[] = [];
-  if (geo.isManifold === false) issues.push('non-manifold mesh (not watertight)');
+  // Render-only imports (e.g. colour reliefs, which keep their per-colour seed
+  // ids by skipping Manifold.ofMesh) carry no Manifold to measure, so isManifold
+  // is false purely for lack of measurement — not because the mesh was found
+  // non-watertight. Claiming "not watertight" here is a false positive (a relief
+  // mesh is verified watertight at build time). Treat printability as unverified
+  // rather than failed in that case so we don't surface a bogus warning.
+  const renderOnly = geo.manifoldStatus === 'render-only (not manifold)';
+  if (geo.isManifold === false && !renderOnly) issues.push('non-manifold mesh (not watertight)');
   if (typeof geo.componentCount === 'number' && geo.componentCount > 1) {
     const enclosed = typeof geo.containedComponents === 'number' ? geo.containedComponents : 0;
     const floating = geo.componentCount - enclosed;
