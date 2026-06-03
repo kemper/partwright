@@ -3148,6 +3148,7 @@ async function main() {
         }
       }
       if (any) {
+        renderCompanionFilesBar();
         await runCodeSync(getValue());
         await saveCurrentVersion();
       }
