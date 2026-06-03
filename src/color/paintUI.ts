@@ -355,11 +355,10 @@ function createPaletteSection(): HTMLElement {
     return row;
   }
 
-  // Default the active colour to the first slot so a swatch reads as selected.
-  if (!getSlotId()) {
-    const first = getActivePalette().slots[0];
-    if (first) setSlot(first.id);
-  }
+  // Don't pre-select a slot: that would override the default paint colour with
+  // the first slot's (white), surprising the user and any code relying on the
+  // red default. Slots are opt-in — the swatch grid shows no active ring until
+  // the user picks one, and the custom colour stays the unslotted default.
   renderSwatches();
   renderBudget();
   renderConstrain();
