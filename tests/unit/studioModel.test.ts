@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
-  turntableAngles,
+  presetAngles,
   newStudioState,
+  setPreset,
   frontView,
   anglePrompt,
   carveableViews,
@@ -14,37 +15,56 @@ import {
   type StudioState,
 } from '../../src/recon/studioModel';
 
-describe('turntableAngles', () => {
-  it('spaces azimuths evenly and adds a top cap', () => {
-    const a = turntableAngles('quick8');
-    expect(a.length).toBe(9); // 8 azimuths + top
-    const horizon = a.filter(x => x.elevation === 0);
-    expect(horizon.map(x => x.azimuth)).toEqual([0, 45, 90, 135, 180, 225, 270, 315]);
-    expect(a.some(x => x.elevation >= 45)).toBe(true); // a top view exists
-  });
-
-  it('labels cardinal azimuths and the top view', () => {
-    const a = turntableAngles('standard12');
-    expect(a.find(x => x.azimuth === 0 && x.elevation === 0)!.label).toBe('Front');
-    expect(a.find(x => x.azimuth === 90)!.label).toBe('Right');
+describe('presetAngles', () => {
+  it('cardinal = 6 ortho views (front/sides/back + top + bottom), Front first', () => {
+    const a = presetAngles('cardinal');
+    expect(a.length).toBe(6);
+    expect(a[0]).toMatchObject({ azimuth: 0, elevation: 0, label: 'Front' });
+    expect(a.map(x => x.azimuth)).toEqual(expect.arrayContaining([0, 90, 180, 270]));
     expect(a.find(x => x.elevation >= 45)!.label).toBe('Top');
+    expect(a.find(x => x.elevation <= -45)!.label).toBe('Bottom');
   });
 
-  it('detailed16 has more views than standard12 than quick8', () => {
-    expect(turntableAngles('detailed16').length).toBeGreaterThan(turntableAngles('standard12').length);
-    expect(turntableAngles('standard12').length).toBeGreaterThan(turntableAngles('quick8').length);
+  it('isometric = 6 angled 3/4 views, Front first', () => {
+    const a = presetAngles('isometric');
+    expect(a.length).toBe(6);
+    expect(a[0]).toMatchObject({ azimuth: 0, elevation: 0 });
+    expect(a.filter(x => x.elevation === 30).length).toBe(4); // four 3/4 corners
+  });
+
+  it('full = 13 views (12 azimuths + top), Front first', () => {
+    const a = presetAngles('full');
+    expect(a.length).toBe(13);
+    expect(a[0]).toMatchObject({ azimuth: 0, elevation: 0 });
+    expect(a.filter(x => x.elevation === 0).length).toBe(12);
+    expect(a.some(x => x.elevation >= 45)).toBe(true);
   });
 });
 
-describe('newStudioState', () => {
-  it('makes the first view the source (Front) slot, rest gemini', () => {
-    const s = newStudioState('quick8');
+describe('newStudioState / setPreset', () => {
+  it('defaults to cardinal with the Front slot as source, rest gemini', () => {
+    const s = newStudioState();
+    expect(s.preset).toBe('cardinal');
     const front = frontView(s)!;
     expect(front.origin).toBe('source');
-    expect(front.angle.azimuth).toBe(0);
-    expect(front.angle.elevation).toBe(0);
+    expect(front.angle).toMatchObject({ azimuth: 0, elevation: 0 });
     expect(s.views.filter(v => v.origin === 'gemini').length).toBe(s.views.length - 1);
     expect(s.views.every(v => v.status === 'empty' && v.src === null && v.include)).toBe(true);
+  });
+
+  it('switching presets preserves the source photo and overlapping angles', () => {
+    const s = newStudioState('cardinal');
+    const front = frontView(s)!;
+    front.src = 'data:image/png;base64,SRC'; front.status = 'ready';
+    const right = s.views.find(v => v.angle.azimuth === 90 && v.angle.elevation === 0)!;
+    right.src = 'data:image/png;base64,RIGHT'; right.status = 'ready';
+
+    setPreset(s, 'full');
+    expect(s.preset).toBe('full');
+    expect(s.views.length).toBe(13);
+    // Front (source) + Right both carry over (same angles exist in 'full').
+    expect(frontView(s)!.src).toBe('data:image/png;base64,SRC');
+    expect(s.views.find(v => v.angle.azimuth === 90 && v.angle.elevation === 0)!.src).toBe('data:image/png;base64,RIGHT');
   });
 });
 
@@ -61,7 +81,7 @@ describe('anglePrompt', () => {
 
 describe('carve input', () => {
   function withReadyViews(): StudioState {
-    const s = newStudioState('quick8');
+    const s = newStudioState('cardinal');
     // Mark the front + two sides ready with fake images.
     for (const az of [0, 90, 270]) {
       const v = s.views.find(x => x.angle.azimuth === az && x.angle.elevation === 0)!;
@@ -83,7 +103,7 @@ describe('carve input', () => {
   });
 
   it('readiness needs at least two ready views', () => {
-    const s = newStudioState('quick8');
+    const s = newStudioState('cardinal');
     expect(readiness(s).canBuild).toBe(false);
     const one = s.views[0]; one.src = 'data:,x'; one.status = 'ready';
     expect(readiness(s).canBuild).toBe(false);
@@ -94,7 +114,7 @@ describe('carve input', () => {
 
 describe('AI handoff', () => {
   function withReadyAngles(): StudioState {
-    const s = newStudioState('quick8');
+    const s = newStudioState('cardinal');
     for (const az of [0, 90, 180]) {
       const v = s.views.find(x => x.angle.azimuth === az && x.angle.elevation === 0)!;
       v.src = `data:image/png;base64,IMG${az}`;
@@ -124,7 +144,7 @@ describe('AI handoff', () => {
 
 describe('serialize/deserialize', () => {
   it('round-trips state including images and carve settings', () => {
-    const s = newStudioState('standard12');
+    const s = newStudioState('full');
     s.model = 'gemini-3-flash-image';
     s.sourceMediaType = 'image/jpeg';
     s.carve.smooth = 4;
@@ -149,7 +169,7 @@ describe('serialize/deserialize', () => {
   });
 
   it('demotes an interrupted "generating" view on reload', () => {
-    const s = newStudioState('quick8');
+    const s = newStudioState('cardinal');
     s.views[1].status = 'generating'; // in-flight when persisted
     const restored = deserializeStudio(serializeStudio(s));
     expect(restored.views[1].status).toBe('empty');

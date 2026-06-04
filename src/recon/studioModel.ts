@@ -48,9 +48,9 @@ export interface StudioState {
   carve: CarveSettings;
   /** Chosen Gemini image model id (null until resolved). */
   model: string | null;
+  /** Which angle-set preset the views were built from. */
+  preset: AnglePreset;
 }
-
-export type TurntablePreset = 'quick8' | 'standard12' | 'detailed16';
 
 export const DEFAULT_CARVE: CarveSettings = {
   resolution: 96,
@@ -72,6 +72,7 @@ function azimuthLabel(azimuth: number): string {
 function angleLabel(azimuth: number, elevation: number): string {
   const base = azimuthLabel(azimuth);
   if (elevation >= 45) return base === 'Front' ? 'Top' : `${base} (high)`;
+  if (elevation <= -45) return base === 'Front' ? 'Bottom' : `${base} (low)`;
   if (elevation >= 15) return `${base} (above)`;
   if (elevation <= -15) return `${base} (below)`;
   return base;
@@ -81,33 +82,74 @@ function makeAngle(azimuth: number, elevation: number): StudioAngle {
   return { azimuth, elevation, label: angleLabel(azimuth, elevation) };
 }
 
-/** The angle set for a preset: evenly spaced azimuths at the horizon plus a
- *  high "top" cap (a single photo rarely affords a true under-view). */
-export function turntableAngles(preset: TurntablePreset): StudioAngle[] {
-  const counts: Record<TurntablePreset, number> = { quick8: 8, standard12: 12, detailed16: 16 };
-  const n = counts[preset];
-  const angles: StudioAngle[] = [];
-  for (let i = 0; i < n; i++) angles.push(makeAngle(Math.round((360 / n) * i), 0));
-  angles.push(makeAngle(0, 75)); // top cap
-  if (preset === 'detailed16') angles.push(makeAngle(45, 35)); // extra 3/4-high
-  return angles;
+/** Which set of angles the studio gathers. */
+export type AnglePreset = 'cardinal' | 'isometric' | 'full';
+
+/** Dropdown options (order = display order). */
+export const ANGLE_PRESETS: { id: AnglePreset; label: string }[] = [
+  { id: 'cardinal', label: 'Cardinal — 6 views (front · sides · back · top · bottom)' },
+  { id: 'isometric', label: 'Isometric — 6 angled 3/4 views' },
+  { id: 'full', label: 'Full turntable — 13 views' },
+];
+
+/** The angle set for a preset. Every preset starts with Front (az0/el0) — the
+ *  slot the source photo fills. Poles stay at ±80° (90° is gimbal-degenerate). */
+export function presetAngles(preset: AnglePreset): StudioAngle[] {
+  switch (preset) {
+    case 'cardinal':
+      return [
+        makeAngle(0, 0), makeAngle(90, 0), makeAngle(180, 0), makeAngle(270, 0),
+        makeAngle(0, 80), makeAngle(0, -80),
+      ];
+    case 'isometric':
+      return [
+        makeAngle(0, 0),
+        makeAngle(45, 30), makeAngle(135, 30), makeAngle(225, 30), makeAngle(315, 30),
+        makeAngle(0, 60),
+      ];
+    case 'full':
+    default: {
+      const angles: StudioAngle[] = [];
+      for (let i = 0; i < 12; i++) angles.push(makeAngle(Math.round(30 * i), 0));
+      angles.push(makeAngle(0, 75)); // top cap
+      return angles;
+    }
+  }
 }
 
 let _idCounter = 0;
 function nextId(): string { return `v${(_idCounter++).toString(36)}_${Math.random().toString(36).slice(2, 7)}`; }
 
+function viewsForPreset(preset: AnglePreset, prev?: StudioView[]): StudioView[] {
+  return presetAngles(preset).map((angle, i) => {
+    // Carry over a matching existing view's image (same angle) when switching
+    // presets, so the source photo and any overlapping generations survive.
+    const match = prev?.find(v => v.angle.azimuth === angle.azimuth && v.angle.elevation === angle.elevation);
+    const origin: StudioView['origin'] = i === 0
+      ? 'source'
+      : (match && match.origin !== 'source' ? match.origin : 'gemini');
+    return {
+      id: nextId(),
+      angle,
+      src: match?.src ?? null,
+      origin,
+      include: match?.include ?? true,
+      status: match?.src ? 'ready' : 'empty',
+    };
+  });
+}
+
 /** Fresh studio for a preset. The first view (Front, az0/el0) is the slot the
  *  source photo fills; all others start empty. */
-export function newStudioState(preset: TurntablePreset = 'standard12'): StudioState {
-  const views: StudioView[] = turntableAngles(preset).map((angle, i) => ({
-    id: nextId(),
-    angle,
-    src: null,
-    origin: i === 0 ? 'source' : 'gemini',
-    include: true,
-    status: 'empty',
-  }));
-  return { sourceMediaType: null, views, carve: { ...DEFAULT_CARVE }, model: null };
+export function newStudioState(preset: AnglePreset = 'cardinal'): StudioState {
+  return { sourceMediaType: null, views: viewsForPreset(preset), carve: { ...DEFAULT_CARVE }, model: null, preset };
+}
+
+/** Switch the angle-set preset in place, preserving images for angles that
+ *  carry over (and the source photo). */
+export function setPreset(state: StudioState, preset: AnglePreset): void {
+  state.views = viewsForPreset(preset, state.views);
+  state.preset = preset;
 }
 
 /** The Front (source) view, if present. */
@@ -206,6 +248,7 @@ export interface StudioImportRecord {
   v: 1;
   sourceMediaType: string | null;
   model: string | null;
+  preset?: AnglePreset;
   carve: CarveSettings;
   views: Array<{
     azimuth: number; elevation: number; label: string;
@@ -218,6 +261,7 @@ export function serializeStudio(state: StudioState): StudioImportRecord {
     v: 1,
     sourceMediaType: state.sourceMediaType,
     model: state.model,
+    preset: state.preset,
     carve: { ...state.carve },
     views: state.views.map(v => ({
       azimuth: v.angle.azimuth, elevation: v.angle.elevation, label: v.angle.label,
@@ -232,6 +276,7 @@ export function deserializeStudio(rec: StudioImportRecord): StudioState {
   return {
     sourceMediaType: rec.sourceMediaType ?? null,
     model: rec.model ?? null,
+    preset: rec.preset ?? 'cardinal',
     carve: { ...DEFAULT_CARVE, ...rec.carve },
     views: rec.views.map(v => ({
       id: nextId(),

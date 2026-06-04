@@ -1,10 +1,11 @@
-// Self-Modeling Studio — the UI for multi-view silhouette reconstruction.
+// Self-Modeling Studio — gather multi-angle views and hand them to the AI.
 //
-// Flow: upload a source photo → generate a turntable of alternate angles with
-// Gemini "nano banana" (or upload them by hand) → watch the tiles fill in →
-// curate (toggle / regenerate / replace) → carve the included views into a
-// voxel model. The whole import (source + per-angle images + carve settings) is
-// handed back via onPersist so reopening it doesn't re-spend Gemini calls.
+// Flow: pick an angle-set preset → upload a source photo → generate the
+// alternate angles with Gemini "nano banana" (or upload them by hand) → watch
+// the tiles fill in → curate (toggle / regenerate / replace) → "Send to AI
+// modeler", which attaches the views as reference images and opens the AI panel
+// with a modeling brief prefilled (not sent) so the AI builds a real model. The
+// whole import is persisted on the session so reopening it re-spends no Gemini.
 //
 // This is a self-owned overlay (not createModalShell) so the AI-key modal can
 // pop over it without the single-shell guard dismissing the studio.
@@ -17,6 +18,8 @@ import {
   buildModelingBrief,
   readiness,
   serializeStudio,
+  setPreset,
+  ANGLE_PRESETS,
   type StudioState,
   type StudioView,
   type StudioImportRecord,
@@ -47,7 +50,7 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
   if (isOpen) return;
   isOpen = true;
 
-  const state: StudioState = options.initialState ?? newStudioState('standard12');
+  const state: StudioState = options.initialState ?? newStudioState('cardinal');
   let apiKey: string | null = null;
   let availableModels: string[] = [];
   let generating = false;
@@ -97,12 +100,13 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
   const keyBanner = document.createElement('div');
   const sourceSection = document.createElement('div');
   const controlsSection = document.createElement('div');
+  const presetRow = document.createElement('div');
   const gridSection = document.createElement('div');
   gridSection.className = 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2';
   const statusEl = document.createElement('div');
   statusEl.className = 'text-xs text-zinc-400 min-h-[1rem]';
   body.append(intro, keyBanner, sourceSection, controlsSection,
-    sectionLabel('Angles'), gridSection, statusEl);
+    presetRow, gridSection, statusEl);
 
   // Footer: readiness + Send / Close.
   const readyEl = document.createElement('div');
@@ -289,8 +293,31 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
     buildBtn.classList.toggle('cursor-not-allowed', (buildBtn as HTMLButtonElement).disabled);
   }
 
+  // ── Angle-set preset ──────────────────────────────────────────────────────
+  function renderPreset(): void {
+    presetRow.innerHTML = '';
+    presetRow.className = 'flex items-center justify-between gap-2';
+    const label = sectionLabel('Angles');
+    const wrap = document.createElement('label');
+    wrap.className = 'flex items-center gap-1.5 text-[11px] text-zinc-400';
+    const sel = document.createElement('select');
+    sel.className = 'bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200';
+    sel.disabled = generating;
+    for (const p of ANGLE_PRESETS) {
+      const o = document.createElement('option');
+      o.value = p.id; o.textContent = p.label; o.selected = p.id === state.preset;
+      sel.appendChild(o);
+    }
+    sel.addEventListener('change', () => {
+      setPreset(state, sel.value as typeof ANGLE_PRESETS[number]['id']);
+      renderAll();
+    });
+    wrap.append(document.createTextNode('Angle set'), sel);
+    presetRow.append(label, wrap);
+  }
+
   function renderAll(): void {
-    renderSource(); renderControls(); renderGrid(); renderFooter();
+    renderSource(); renderControls(); renderPreset(); renderGrid(); renderFooter();
   }
 
   // ── Generation ───────────────────────────────────────────────────────────
