@@ -35,6 +35,20 @@ export function maxEdgeLength(positions: Float32Array, triVerts: Uint32Array): n
   return max;
 }
 
+/** Shortest positive edge length across all triangles (sampled from positions).
+ *  Zero-length edges (degenerate / fully-welded) are ignored so a single sliver
+ *  can't drag the result to 0. Returns 0 only when every edge is degenerate. */
+export function minEdgeLength(positions: Float32Array, triVerts: Uint32Array): number {
+  let min = Infinity;
+  for (let t = 0; t < triVerts.length; t += 3) {
+    const a = triVerts[t], b = triVerts[t + 1], c = triVerts[t + 2];
+    for (const e of [edgeLen(positions, a, b), edgeLen(positions, b, c), edgeLen(positions, c, a)]) {
+      if (e > 0 && e < min) min = e;
+    }
+  }
+  return Number.isFinite(min) ? min : 0;
+}
+
 function edgeLen(p: Float32Array, i: number, j: number): number {
   const dx = p[i * 3] - p[j * 3];
   const dy = p[i * 3 + 1] - p[j * 3 + 1];

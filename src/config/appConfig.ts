@@ -48,13 +48,15 @@ export interface AppConfig {
     charsPerToken: number;
     /** Estimated tokens per image block at standard resolution. */
     imageTokenEstimate: number;
-    /** Geometry execution timeout for the manifold-js (mesh) engine (ms). */
-    geometryTimeoutManifoldMs: number;
-    /** Geometry execution timeout for the OpenSCAD engine (ms). SCAD compiles
-     *  BOSL2-style libraries from source per call — complex gear/thread models
-     *  can exceed a minute on slow hardware. */
+    /** Safety timeout (ms) for SCAD Worker operations with no cancel button —
+     *  OpenSCAD validation and include-detection. (The render path has no
+     *  timeout; it's bounded by the elapsed counter + Cancel button instead.)
+     *  SCAD compiles BOSL2-style libraries from source per call, so this needs
+     *  generous headroom. */
     geometryTimeoutScadMs: number;
-    /** Geometry execution timeout for the replicad/BREP (OpenCASCADE) engine (ms). */
+    /** Safety timeout (ms) for replicad/BREP (OpenCASCADE) Worker operations
+     *  with no cancel button — STEP export/import and BREP-shape cleanup. (The
+     *  render path has no timeout; see the render counter + Cancel button.) */
     geometryTimeoutReplicadMs: number;
     /** Token budget for the system-prompt block in local (WebLLM) medium-tier models. */
     localPromptBudgetMedium: number;
@@ -179,7 +181,6 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     maxOutputTokensGemini: 32768,
     charsPerToken: 4,
     imageTokenEstimate: 1500,
-    geometryTimeoutManifoldMs: 60_000,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
     localPromptBudgetMedium: 1300,

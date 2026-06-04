@@ -206,20 +206,11 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
       </Section>
 
       <Section title="AI — geometry timeouts">
-        <div class="text-[10px] text-zinc-500 leading-snug">Execution timeout per modeling engine. The engine Worker is restarted if a run exceeds the ceiling.</div>
-        <Field
-          label="Manifold-JS timeout"
-          unit="ms"
-          tooltip="Wall-clock ceiling for a single manifold-js geometry evaluation. If the code run exceeds this, the engine Worker is restarted and an error is surfaced. The manifold-3d kernel is typically fast — this mainly guards against infinite loops in user code. Increase for extremely complex mesh operations."
-          defaultValue={APP_CONFIG_DEFAULTS.ai.geometryTimeoutManifoldMs}
-          value={c.ai.geometryTimeoutManifoldMs}
-          min={5_000} max={600_000} integer
-          onChange={v => set('ai', 'geometryTimeoutManifoldMs', v)}
-        />
+        <div class="text-[10px] text-zinc-500 leading-snug">Safety timeouts for background Worker operations that have no Cancel button. Rendering itself is <em>not</em> timed out — a slow run is bounded by the elapsed-time counter and the Cancel button instead.</div>
         <Field
           label="OpenSCAD timeout"
           unit="ms"
-          tooltip="Wall-clock ceiling for a single OpenSCAD evaluation. SCAD compiles BOSL2-style libraries from source on every run, and complex gear or thread models can legitimately take over a minute on slow hardware. The 3-minute default gives ample headroom for heavy parametric models."
+          tooltip="Wall-clock ceiling for OpenSCAD Worker operations that have no Cancel affordance — source validation and include-dependency detection. SCAD compiles BOSL2-style libraries from source on every run, so the 3-minute default gives ample headroom. (The render path itself has no timeout.)"
           defaultValue={APP_CONFIG_DEFAULTS.ai.geometryTimeoutScadMs}
           value={c.ai.geometryTimeoutScadMs}
           min={5_000} max={600_000} integer
@@ -228,7 +219,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field
           label="BREP/replicad timeout"
           unit="ms"
-          tooltip="Wall-clock ceiling for a single replicad/OpenCASCADE evaluation. OCCT Boolean operations on complex STEP-imported assemblies can rival SCAD's worst cases. Increase if you're working with large imported STEP files or heavily-filleted BREP models."
+          tooltip="Wall-clock ceiling for replicad/OpenCASCADE Worker operations that have no Cancel affordance — STEP export/import and BREP-shape cleanup. OCCT operations on complex STEP assemblies can be slow, so increase this if you work with large imported STEP files. (The render path itself has no timeout.)"
           defaultValue={APP_CONFIG_DEFAULTS.ai.geometryTimeoutReplicadMs}
           value={c.ai.geometryTimeoutReplicadMs}
           min={5_000} max={600_000} integer
