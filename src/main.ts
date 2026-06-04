@@ -23,11 +23,12 @@ import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
+import { formatEngineMemory } from './geometry/engineMemory';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, resetView } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -300,6 +301,11 @@ function syncParamsPanel(schema: ParamSpec[] | undefined): void {
 }
 
 let currentMeshData: MeshData | null = null;
+/** WASM heap high-water (bytes) reported by the geometry Worker for the most
+ *  recent manifold-js run. Surfaced in the geometry-data stats and engine-error
+ *  log so users can see how close a run came to the ~4 GB ceiling. Undefined
+ *  for non-manifold-js engines (separate heaps) or before the first run. */
+let lastEngineHeapBytes: number | undefined;
 /** The pristine mesh produced by the authored code, before any smooth brush
  *  subdivision. `currentMeshData` equals this until a `brushStroke` region
  *  exists, at which point it becomes the refined (subdivided) mesh rebuilt by
@@ -380,6 +386,11 @@ let currentLostLabels: string[] | null = null;
 let geometryDataEl: HTMLElement;
 // Viewport overlay pill — shows printability issues after each successful run.
 let printabilityIndicatorEl: HTMLElement | null = null;
+// The disconnected-components warning is surfaced as a transient toast (recorded
+// in the Diagnostic Log) rather than the persistent pill. Track the last one we
+// toasted so re-runs of an unchanged broken model don't re-spam the same toast;
+// reset to null whenever the warning clears so its next occurrence toasts again.
+let lastDisconnectedWarning: string | null = null;
 
 // === Shared-link preview mode ===
 //
@@ -543,6 +554,11 @@ function withSessionContext(data: Record<string, unknown>): Record<string, unkno
     data.sessionUrl = getSessionUrl();
     data.galleryUrl = getGalleryUrl();
   }
+  // Engine WASM heap high-water for the last run, so the Data panel doubles as a
+  // memory readout — watch it climb as a model scales up toward the ceiling.
+  if (lastEngineHeapBytes !== undefined) {
+    data.engineMemory = formatEngineMemory(lastEngineHeapBytes);
+  }
   return data;
 }
 
@@ -557,13 +573,23 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
   const data = withSessionContext(computeGeometryStats(currentManifold, currentMeshData, executionTimeMs, sourceCode));
   geometryDataEl.textContent = JSON.stringify(data, null, 2);
   if (printabilityIndicatorEl) {
-    const { printable, issues } = computePrintability(data);
-    if (printable) {
+    const { issues } = computePrintability(data);
+    // The disconnected-components warning surfaces as a transient toast (which
+    // also records it in the Diagnostic Log) rather than the persistent pill;
+    // every other issue (e.g. non-manifold) stays on the pill as standing status.
+    const disconnected = issues.find((i) => i.includes('disconnected component')) ?? null;
+    const pillIssues = issues.filter((i) => i !== disconnected);
+    if (pillIssues.length === 0) {
       printabilityIndicatorEl.style.display = 'none';
     } else {
-      printabilityIndicatorEl.textContent = '⚠ ' + issues.join(' · ');
+      printabilityIndicatorEl.textContent = '⚠ ' + pillIssues.join(' · ');
       printabilityIndicatorEl.style.display = '';
     }
+    // Toast once per change so re-running an unchanged broken model isn't spammy.
+    if (disconnected && disconnected !== lastDisconnectedWarning) {
+      showToast('⚠ ' + disconnected, { variant: 'warn', source: 'engine' });
+    }
+    lastDisconnectedWarning = disconnected;
   }
 }
 
@@ -3864,8 +3890,10 @@ async function main() {
   });
 
   // Printability indicator pill — shown in the viewport overlay when the model
-  // has structural issues that would prevent 3D printing (non-manifold or
-  // disconnected components). Hidden when the model is printable.
+  // has standing structural issues that would prevent 3D printing (e.g.
+  // non-manifold mesh). The disconnected-components warning is split off into a
+  // transient toast (see updateGeometryData); the pill is hidden when no
+  // pill-level issue remains.
   printabilityIndicatorEl = document.createElement('span');
   printabilityIndicatorEl.className = 'absolute top-8 left-2 z-20 text-xs text-amber-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-amber-700/60 cursor-help';
   // A persistent status indicator, not a transient toast: it stays up while the
@@ -5702,6 +5730,7 @@ async function main() {
   });
   initMeasureToggle(clipControls);
   initOrbitLockToggle(clipControls);
+  initResetViewButton(clipControls);
 
   // Relief / Edit colors toggle in the viewport overlay — paint/simplify are
   // alongside this button so the colour palette is discoverable from the
@@ -6071,6 +6100,12 @@ async function main() {
     const result = await executeCodeAsync(code, lang);
     const elapsed = Math.round(performance.now() - t0);
 
+    // Engine WASM heap high-water for this run (manifold-js only) so isolated
+    // runs report memory in their stats just like the editor's Data panel.
+    const engineMemory = result.engineHeapBytes !== undefined
+      ? formatEngineMemory(result.engineHeapBytes)
+      : undefined;
+
     if (result.error) {
       recordError(result.error);
       return {
@@ -6080,6 +6115,7 @@ async function main() {
           diagnostics: result.diagnostics ?? [],
           executionTimeMs: elapsed,
           codeHash: simpleHash(code),
+          ...(engineMemory !== undefined ? { engineMemory } : {}),
         },
         meshData: null as MeshData | null,
         manifold: null as unknown,
@@ -6090,6 +6126,7 @@ async function main() {
     const mod = getModule();
     const manifold = result.manifold ?? (mod && result.mesh ? mod.Manifold.ofMesh(result.mesh) : null);
     const stats = computeGeometryStats(manifold, result.mesh!, elapsed, code);
+    if (engineMemory !== undefined) stats.engineMemory = engineMemory;
     return {
       geometryData: stats,
       meshData: result.mesh,
@@ -6390,7 +6427,8 @@ async function main() {
 
     /** Set one or more Customizer parameter overrides and re-run the model —
      *  the language-based equivalent of dragging the panel's sliders. Unknown
-     *  keys are ignored and out-of-range / wrong-type values are clamped or
+     *  keys are ignored; a numeric value beyond the declared min/max is honored
+     *  as typed (the bounds only size the slider), and only wrong-type values
      *  fall back to the declared default (never throws on a bad value). Returns
      *  the updated geometry data plus the resolved parameter values, or
      *  `{ error }` if the model declares no parameters. */
@@ -6888,6 +6926,12 @@ async function main() {
     /** Whether camera orbit is currently locked */
     isOrbitLocked(): boolean {
       return isUserOrbitLocked();
+    },
+
+    /** Reset the camera to the default framing of the current model (same view
+     *  applied after a fresh run). */
+    resetView(): void {
+      resetView();
     },
 
     // === Theme API ===
@@ -10660,6 +10704,7 @@ async function main() {
         'areDimensionsVisible': { signature: 'areDimensionsVisible() -- Whether dimensions overlay is visible', docs: '/ai.md#viewport-controls' },
         'setOrbitLock':         { signature: 'setOrbitLock(on?) -- Lock/unlock camera rotation (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'isOrbitLocked':        { signature: 'isOrbitLocked() -- Whether camera orbit is locked', docs: '/ai.md#viewport-controls' },
+        'resetView':            { signature: 'resetView() -- Reset the camera to the default framing of the current model', docs: '/ai.md#viewport-controls' },
         'setTheme':             { signature: 'setTheme("dark"|"light") -- Set color theme', docs: '/ai.md#viewport-controls' },
         'getTheme':             { signature: 'getTheme() -- Current color theme', docs: '/ai.md#viewport-controls' },
         'setAutoRun':           { signature: 'setAutoRun(enabled) -- Enable/disable auto-render on edit', docs: '/ai.md#viewport-controls' },
@@ -11575,6 +11620,11 @@ async function main() {
     _running = false;
     stopRunTimer();
 
+    // Record the engine WASM heap high-water for this run (undefined for non
+    // manifold-js engines, which own separate heaps). Surfaced in the Data panel
+    // and engine-error log so users can see how close a run came to the ceiling.
+    lastEngineHeapBytes = result.engineHeapBytes;
+
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel
     // stays visible (and editable) even while the model is mid-error. Prune
@@ -11586,17 +11636,29 @@ async function main() {
       const diagnostics = result.diagnostics ?? [];
       setStatus(statusBar, 'error', summarizeDiagnostics(result.error, diagnostics));
       if (printabilityIndicatorEl) printabilityIndicatorEl.style.display = 'none';
+      lastDisconnectedWarning = null;
       geometryDataEl.textContent = JSON.stringify({
         status: 'error',
         error: result.error,
         diagnostics,
         executionTimeMs: elapsed,
         codeHash: simpleHash(src),
+        ...(lastEngineHeapBytes !== undefined ? { engineMemory: formatEngineMemory(lastEngineHeapBytes) } : {}),
       });
       if (surfaceErrors) {
         // Explicit run: record + show + log + jump to the first diagnostic now.
         recordError(result.error);
-        errorLog.capture({ level: 'error', source: 'engine', message: result.error });
+        // Engine errors carry no JS stack (the fault is inside the WASM kernel,
+        // off-thread), so attach the diagnostics + run metadata as the log detail
+        // — otherwise the diagnostics panel shows "No stack trace or origin
+        // captured" for what is often a memory/complexity fault worth context.
+        const engineDetail = [
+          `language: ${getActiveLanguage()}`,
+          `executionTimeMs: ${elapsed}`,
+          ...(lastEngineHeapBytes !== undefined ? [`WASM heap: ${formatEngineMemory(lastEngineHeapBytes)}`] : []),
+          ...diagnostics.map(d => `${d.severity ?? 'error'} (${d.source ?? 'engine'}): ${d.message}`),
+        ].join('\n');
+        errorLog.capture({ level: 'error', source: 'engine', message: result.error, detail: engineDetail });
         setEditorDiagnostics(diagnostics);
         renderEditorError(editorErrorPanel, result.error, diagnostics);
         revealFirstDiagnostic();
@@ -11913,6 +11975,12 @@ async function main() {
     // (e.g. pen/text/select activate, programmatic API).
     onUserOrbitLockChange(reflect);
     reflect(isUserOrbitLocked());
+  }
+
+  function initResetViewButton(container: HTMLElement) {
+    const resetBtn = container.querySelector('#reset-view') as HTMLButtonElement;
+    if (!resetBtn) return;
+    resetBtn.addEventListener('click', () => { resetView(); });
   }
 }
 

@@ -393,38 +393,8 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
   }
 
   // Auto-frame the camera (skip when only colors changed)
-  const box = new THREE.Box3().setFromObject(meshGroup);
-
   if (!options?.skipAutoFrame) {
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-
-    // Update model bounds for clip slider
-    modelBounds = { min: box.min.z, max: box.max.z };
-
-    // Position grid at the bottom of the model
-    grid.position.z = box.min.z;
-
-    // Update bounding box dimension annotations
-    updateDimensionLines(box);
-
-    controls.target.copy(center);
-    camera.position.set(
-      center.x + maxDim * 1.2,
-      center.y - maxDim * 1.2,
-      center.z + maxDim * 1.2,
-    );
-    // Adapt the clip planes to the model size. With a fixed far plane a large
-    // model (e.g. scaled to ~890mm) auto-frames the camera far enough away that
-    // the geometry falls beyond the frustum and disappears; a fixed near plane
-    // would z-fight on tiny models. Scale both with the model's largest dim.
-    if (maxDim > 0) {
-      camera.near = Math.max(0.05, maxDim * 0.005);
-      camera.far = Math.max(1000, maxDim * 50);
-      camera.updateProjectionMatrix();
-    }
-    controls.update();
+    frameModel();
 
     // Update clip plane position if clipping
     if (clippingEnabled) {
@@ -434,6 +404,59 @@ export function updateMesh(meshData: MeshData, options?: { skipAutoFrame?: boole
 
   needsRender = true;
   onMeshUpdate?.(meshData);
+}
+
+/** Frame the camera to the default 3/4 view of the current model and refresh
+ *  everything derived from its bounds: clip-slider range, grid height, dimension
+ *  annotations, near/far planes, and the zoom-out (maxDistance) limit. Shared by
+ *  updateMesh's auto-frame and the viewport "Reset view" button. No-op when the
+ *  mesh group is empty. */
+function frameModel(): void {
+  const box = new THREE.Box3().setFromObject(meshGroup);
+  if (box.isEmpty()) return;
+
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+
+  // Update model bounds for clip slider
+  modelBounds = { min: box.min.z, max: box.max.z };
+
+  // Position grid at the bottom of the model
+  grid.position.z = box.min.z;
+
+  // Update bounding box dimension annotations
+  updateDimensionLines(box);
+
+  controls.target.copy(center);
+  camera.position.set(
+    center.x + maxDim * 1.2,
+    center.y - maxDim * 1.2,
+    center.z + maxDim * 1.2,
+  );
+  // Adapt the clip planes to the model size. With a fixed far plane a large
+  // model (e.g. scaled to ~890mm) auto-frames the camera far enough away that
+  // the geometry falls beyond the frustum and disappears; a fixed near plane
+  // would z-fight on tiny models. Scale both with the model's largest dim.
+  if (maxDim > 0) {
+    camera.near = Math.max(0.05, maxDim * 0.005);
+    camera.far = Math.max(1000, maxDim * 50);
+    camera.updateProjectionMatrix();
+    // Bound how far the user can dolly out so the model can't shrink to a
+    // speck (and drift toward the far plane). The default framing distance is
+    // ~maxDim*2.1, so a multiple well above that still leaves generous room.
+    controls.maxDistance = maxDim * getConfig().renderer.maxZoomOutFactor;
+  }
+  controls.update();
+}
+
+/** Re-frame the camera to the default view of the current model — the same
+ *  framing applied after a fresh run. Bound to the viewport "Reset view" button
+ *  and exposed on the partwright API. */
+export function resetView(): void {
+  frameModel();
+  if (clippingEnabled) updateClipPlaneVisual();
+  needsRender = true;
 }
 
 // === Clipping API ===

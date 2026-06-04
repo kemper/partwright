@@ -129,8 +129,8 @@ describe('buildScadDefines — override flags', () => {
     expect(args).toEqual([]);
   });
 
-  it('clamps out-of-range numeric overrides before emitting', () => {
-    expect(buildScadDefines(SRC, { width: 999 })).toEqual(['-D', 'width=100']);
+  it('emits out-of-range numeric overrides as-is (the field can exceed the slider range)', () => {
+    expect(buildScadDefines(SRC, { width: 999 })).toEqual(['-D', 'width=999']);
   });
 
   it('escapes quotes/backslashes in string overrides', () => {

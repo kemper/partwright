@@ -239,11 +239,10 @@ function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue)
     numInput.type = 'number';
     // Narrow, mono, right-aligned — reads like the old readout but is editable.
     numInput.className = 'w-16 text-[11px] font-mono tabular-nums text-right text-zinc-200 bg-zinc-800 border border-zinc-600 rounded px-1 py-0.5 focus:border-blue-400 focus:outline-none';
-    // Only constrain the field by limits the author declared, so an undeclared
-    // bound doesn't silently clamp a typed value (the slider keeps its own
-    // synthesized range for the thumb).
-    if (spec.min !== undefined) numInput.min = String(spec.min);
-    if (spec.max !== undefined) numInput.max = String(spec.max);
+    // The field is intentionally *unconstrained* — no min/max attributes — so
+    // the user can type (and spinner-step) a value beyond the author's declared
+    // bounds. min/max only size the slider's convenient range; params.ts honors
+    // an out-of-range typed value rather than clamping it.
     numInput.step = String(step);
     labelRow.appendChild(numInput);
     row.appendChild(labelRow);
@@ -254,10 +253,22 @@ function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue)
     slider.min = String(min);
     slider.max = String(max);
     slider.step = String(step);
+
+    // Push a value into both controls. When it falls outside the declared
+    // [min, max] (a typed/persisted override that exceeds the slider's range),
+    // grow the slider's bounds to include it so the thumb tracks the true value
+    // instead of pinning at an edge; values inside the range restore it.
+    const reflect = (n: number) => {
+      slider.min = String(Math.min(min, n));
+      slider.max = String(Math.max(max, n));
+      slider.value = String(n);
+      numInput.value = String(n);
+    };
+
     slider.addEventListener('input', () => { numInput.value = slider.value; });
     slider.addEventListener('change', () => {
       const n = isInt ? Math.round(Number(slider.value)) : Number(slider.value);
-      numInput.value = String(n);
+      reflect(n);
       onChange(spec.key, n);
     });
     row.appendChild(slider);
@@ -270,11 +281,7 @@ function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue)
         return;
       }
       const n = isInt ? Math.round(raw) : raw;
-      // Reflect the typed value on the slider thumb (the browser clamps it into
-      // the slider's range; the field keeps the true value). The post-run
-      // sync via setValue will reconcile both to params.ts's coerced result.
-      slider.value = String(n);
-      if (isInt) numInput.value = String(n);
+      reflect(n);
       onChange(spec.key, n);
     };
     numInput.addEventListener('change', commitField);
@@ -283,8 +290,7 @@ function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue)
 
     setValue = (v) => {
       const n = typeof v === 'number' ? v : Number(v);
-      slider.value = String(n);
-      numInput.value = String(n);
+      reflect(n);
     };
   } else if (spec.type === 'boolean') {
     const wrap = document.createElement('div');

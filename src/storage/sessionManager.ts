@@ -1760,8 +1760,9 @@ export async function importSession(
         asLanguage(v.language),
         // Customizer parameter overrides (schema 1.9+). Pre-1.9 files omit it;
         // the version then runs at the model's declared defaults. Validation of
-        // the values against the model's schema happens at run time (coerced /
-        // clamped in resolveParamValues), so a stale value can't break a load.
+        // the values against the model's schema happens at run time (coerced in
+        // resolveParamValues — numerics honored as-is, non-numerics validated),
+        // so a stale value can't break a load.
         v.paramValues && typeof v.paramValues === 'object' ? v.paramValues : undefined,
         // Companion SCAD files (schema 1.10+). Pre-1.10 files omit this field;
         // those versions import with no companions, which is correct for all

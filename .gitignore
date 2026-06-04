@@ -37,6 +37,11 @@ playwright/.cache/
 # Interstitial planning files
 .plans/
 
+# Environment files — may contain API keys; never commit
+.env
+.env.*
+!.env.example
+
 # Top-level screenshots/images from testing
 /*.png
 /*.jpg
