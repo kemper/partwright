@@ -273,15 +273,20 @@ export function resizeImageData(imageData: ImageData, maxDim: number): ImageData
   return dCtx.getImageData(0, 0, dw, dh);
 }
 
-/** Convert an ImageData to a JPEG data URL at the given quality. */
-export function imageDataToDataUrl(imageData: ImageData, quality = 0.75): string {
+/** Convert an ImageData to a PNG data URL. PNG (not JPEG) is required so the
+ *  alpha channel survives the round-trip: background removal relies on
+ *  transparency to tell foreground from background, and JPEG would flatten a
+ *  transparent backdrop to opaque black — which then gets mis-detected as the
+ *  dominant background colour and strips any black foreground (e.g. a smiley's
+ *  eyes) along with it. */
+export function imageDataToDataUrl(imageData: ImageData): string {
   const canvas = document.createElement('canvas');
   canvas.width = imageData.width;
   canvas.height = imageData.height;
   const ctx = canvas.getContext('2d');
   if (!ctx) return '';
   ctx.putImageData(imageData, 0, 0);
-  return canvas.toDataURL('image/jpeg', quality);
+  return canvas.toDataURL('image/png');
 }
 
 /** Return default no-op preprocess options. */

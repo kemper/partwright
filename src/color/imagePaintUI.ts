@@ -579,7 +579,7 @@ async function applyImageFile(file: File): Promise<void> {
 
 function persistImage(imageData: ImageData): void {
   try {
-    localStorage.setItem(STORAGE_KEY, imageDataToDataUrl(imageData, 0.85));
+    localStorage.setItem(STORAGE_KEY, imageDataToDataUrl(imageData));
   } catch {
     // localStorage may be full; silently ignore
   }
