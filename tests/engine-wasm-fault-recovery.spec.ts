@@ -39,14 +39,21 @@ test.describe('engine WASM fault recovery', () => {
 
     const cube = 'return api.Manifold.cube([10,10,10], true);';
 
-    // 1) Baseline: a normal model runs fine.
-    expect((await run(cube)).status).toBe('ok');
+    // 1) Baseline: a normal model runs fine, and its stats report the engine's
+    //    WASM heap high-water (the diagnostics memory readout) as "N MB / 4096
+    //    MB (P%)" — so users can see how close a run is to the ~4 GB ceiling.
+    const baseline = await run(cube);
+    expect(baseline.status).toBe('ok');
+    expect(baseline.engineMemory).toMatch(/^\d+ MB \/ 4096 MB \(\d+%\)$/);
 
     // 2) A fatal WASM-memory fault surfaces as an error with the actionable,
     //    memory-aware hint (instead of the raw, opaque trap text).
     const fault = await run("throw new Error('memory access out of bounds');");
     expect(fault.status).toBe('error');
     expect(fault.error).toMatch(/ran out of memory/i);
+    // The fault stats still carry the heap high-water, so an OOM report shows
+    // how far memory actually grew (often well below the ceiling).
+    expect(fault.engineMemory).toMatch(/^\d+ MB \/ 4096 MB \(\d+%\)$/);
 
     // 3) The engine must have recycled the poisoned Worker. This log fires only
     //    when the recovery wiring runs — it is absent on pre-fix code.

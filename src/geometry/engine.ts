@@ -266,6 +266,7 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       renderOnly: !!msg.renderOnly,
       lostLabels: lostLabels && lostLabels.length > 0 ? lostLabels : undefined,
       paramsSchema: (msg.paramsSchema as MeshResult['paramsSchema']) ?? undefined,
+      engineHeapBytes: msg.engineHeapBytes as number | undefined,
     };
     pending.resolve(result);
     // A WASM trap (OOM / abort) reported as a *result* leaves the Worker's
