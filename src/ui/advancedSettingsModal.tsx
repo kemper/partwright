@@ -492,6 +492,14 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'orbitDampingFactor', v)}
         />
         <Field
+          label="Max zoom-out factor"
+          tooltip="How far you can zoom the camera out, as a multiple of the model's largest dimension. The default framing sits at roughly 2× that dimension, so a value of 12 lets you pull back about 6× from the default before hitting the limit. Lower it to keep the model filling more of the view; raise it for more room. Re-applied each time the model is framed."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.maxZoomOutFactor}
+          value={c.renderer.maxZoomOutFactor}
+          min={3} max={100} step={1}
+          onChange={v => set('renderer', 'maxZoomOutFactor', v)}
+        />
+        <Field
           label="Orientation gizmo size"
           unit="px"
           tooltip="The canvas size in CSS pixels of the orientation gizmo (the XYZ cube in the viewport corner). Larger makes the axis labels easier to read; smaller keeps it out of the way. Takes effect after a page reload."
