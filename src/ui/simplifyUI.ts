@@ -15,6 +15,7 @@
 // they open, and opening Simplify closes them via the injected handlers.open().
 
 import { startProgress, updateProgress, endProgress } from './progressModal';
+import { showToast } from './toast';
 import { isWireframeVisible, setWireframeVisible } from '../renderer/viewport';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
@@ -27,6 +28,16 @@ export interface SimplifyOpenInfo {
   currentTriangles: number;
   /** True when the model carries paint that could be preserved. */
   hasColor: boolean;
+  /** Baseline bounding-box diagonal (mesh units) — bounds the simplify
+   *  tolerance / size knobs. */
+  bboxDiagonal: number;
+  /** Longest edge in the baseline mesh (mesh units) — the upper bound for the
+   *  enhance edge-length knob (refining at this length is a no-op). */
+  maxEdge: number;
+  /** Shortest positive edge in the baseline mesh (mesh units) — a natural
+   *  lower bound / default for the enhance edge-length knob ("bring big
+   *  triangles down to the size of the small ones"). */
+  minEdge: number;
 }
 
 export interface SimplifySaveResult {
@@ -38,6 +49,14 @@ export interface SimplifySaveResult {
 export type SimplifyProgress = (fraction: number) => void | Promise<void>;
 
 export type SimplifyMode = 'simplify' | 'enhance';
+
+/** Which knob drives the target:
+ *  - `count` — target triangle count (binary-searched, the original behavior).
+ *  - `edge`  — a direct edge length / tolerance in mesh units (single pass).
+ *  - `size`  — a triangle-size threshold + a strength "amount" (single pass);
+ *              enhance refines triangles larger than the threshold, simplify
+ *              collapses features smaller than it. */
+export type KnobMode = 'count' | 'edge' | 'size';
 
 export interface SimplifyHandlers {
   /** Snapshot the current model as the baseline. Returns its triangle count
@@ -59,6 +78,27 @@ export interface SimplifyHandlers {
    *  `preserveColor` carries paint through the topology change. */
   enhance(
     targetTriangles: number,
+    preserveColor: boolean,
+    onProgress: SimplifyProgress,
+    signal?: AbortSignal,
+  ): Promise<{ triangleCount: number } | null>;
+  /** Simplify the baseline with a single direct `simplify(tolerance)` pass
+   *  (the "by edge length / feature size" knob) and show it live. Returns the
+   *  achieved triangle count, or null when nothing fell below the tolerance
+   *  (the panel surfaces that as a "nothing to simplify" warning). */
+  simplifyByTolerance(
+    tolerance: number,
+    preserveColor: boolean,
+    onProgress: SimplifyProgress,
+    signal?: AbortSignal,
+  ): Promise<{ triangleCount: number } | null>;
+  /** Enhance the baseline with a single direct `refineToLength(edgeLength)`
+   *  pass (the "by edge length / triangle size" knob) and show it live. Splits
+   *  only edges longer than `edgeLength`, so the larger triangles densify
+   *  first. Returns the achieved triangle count, or null when no edge was long
+   *  enough (surfaced as a "nothing to enhance" warning). */
+  enhanceByEdgeLength(
+    edgeLength: number,
     preserveColor: boolean,
     onProgress: SimplifyProgress,
     signal?: AbortSignal,
@@ -95,13 +135,26 @@ let colorCheckbox: HTMLInputElement | null = null;
 let colorRow: HTMLElement | null = null;
 let simplifyModeBtn: HTMLButtonElement | null = null;
 let enhanceModeBtn: HTMLButtonElement | null = null;
+// Knob-mode pills (Count / Edge length / Size) + the controls each owns.
+let knobCountBtn: HTMLButtonElement | null = null;
+let knobEdgeBtn: HTMLButtonElement | null = null;
+let knobSizeBtn: HTMLButtonElement | null = null;
+let countControls: HTMLElement | null = null;
+let lengthControls: HTMLElement | null = null;
+let lengthLabel: HTMLLabelElement | null = null;
+let lengthSlider: HTMLInputElement | null = null;
+let lengthInput: HTMLInputElement | null = null;
+let amountRow: HTMLElement | null = null;
+let amountSlider: HTMLInputElement | null = null;
+let amountValueEl: HTMLElement | null = null;
 let handlers: SimplifyHandlers | null = null;
 let info: SimplifyOpenInfo | null = null;
 let mode: SimplifyMode = 'simplify';
-// The target reflected in the live mesh (Apply is a no-op until it changes).
-let appliedTarget = 0;
-// The mode that was active when the last apply ran.
-let appliedMode: SimplifyMode = 'simplify';
+let knobMode: KnobMode = 'count';
+// A signature of the request reflected in the live mesh, so Apply stays a
+// no-op until the user changes mode / knob / value. Set after each apply,
+// refresh, and reset.
+let appliedKey = '';
 // The triangle count currently on screen (drives the Save button's enabled
 // state) — set every time the applied result changes.
 let appliedCount = 0;
@@ -234,7 +287,7 @@ function refresh(userInitiated: boolean): void {
   if (colorRow) colorRow.classList.toggle('hidden', !info.hasColor);
 
   syncModeUI();
-  if (!applying) appliedTarget = info.currentTriangles;
+  if (!applying) appliedKey = requestKey(currentRequest());
   if (originalEl) originalEl.textContent = `Original: ${info.baseTriangles.toLocaleString()} triangles`;
   if (statusEl) statusEl.textContent = applying ? 'Working… (progress shown in the modal)' : '';
   showResult(info.currentTriangles);
@@ -242,7 +295,35 @@ function refresh(userInitiated: boolean): void {
   else updateApplyEnabled();
 }
 
-/** Sync slider/input bounds and label for the current mode. */
+/** Round a length to 3 significant figures for display. */
+function fmtLen(v: number): number {
+  if (!(v > 0)) return 0;
+  return Number(v.toPrecision(3));
+}
+
+/** Slider bounds + default for the edge-length / size-threshold knob, derived
+ *  from the baseline mesh geometry. Enhance targets an edge length (smaller =
+ *  denser); simplify targets a geometric tolerance (larger = coarser). */
+function lengthBounds(): { lo: number; hi: number; def: number } {
+  if (!info) return { lo: 0, hi: 1, def: 0.5 };
+  const maxE = info.maxEdge > 0 ? info.maxEdge : (info.bboxDiagonal || 1);
+  const minE = info.minEdge > 0 ? info.minEdge : maxE / 64;
+  if (mode === 'enhance') {
+    const lo = Math.max(minE, maxE / 64);
+    const hi = Math.max(lo * 2, maxE);
+    const def = Math.max(lo, Math.min(hi, maxE / 2));
+    return { lo, hi, def };
+  }
+  // simplify: tolerance in mesh units.
+  const diag = info.bboxDiagonal > 0 ? info.bboxDiagonal : maxE * 8;
+  const hi = diag * 0.25;
+  const lo = Math.max(diag * 0.0005, hi / 500);
+  const def = Math.max(lo, Math.min(hi, diag * 0.02));
+  return { lo, hi, def };
+}
+
+/** Sync slider/input bounds, labels, and which control group is visible for the
+ *  current mode (simplify/enhance) and knob (count/edge/size). */
 function syncModeUI(): void {
   if (!info || !slider || !numberInput) return;
   const base = info.baseTriangles;
@@ -250,6 +331,15 @@ function syncModeUI(): void {
   if (simplifyModeBtn) simplifyModeBtn.className = mode === 'simplify' ? MODE_ACTIVE : MODE_INACTIVE;
   if (enhanceModeBtn)  enhanceModeBtn.className  = mode === 'enhance'  ? MODE_ACTIVE : MODE_INACTIVE;
 
+  if (knobCountBtn) knobCountBtn.className = knobMode === 'count' ? MODE_ACTIVE : MODE_INACTIVE;
+  if (knobEdgeBtn)  knobEdgeBtn.className  = knobMode === 'edge'  ? MODE_ACTIVE : MODE_INACTIVE;
+  if (knobSizeBtn)  knobSizeBtn.className  = knobMode === 'size'  ? MODE_ACTIVE : MODE_INACTIVE;
+
+  if (countControls) countControls.classList.toggle('hidden', knobMode !== 'count');
+  if (lengthControls) lengthControls.classList.toggle('hidden', knobMode === 'count');
+  if (amountRow) amountRow.classList.toggle('hidden', knobMode !== 'size');
+
+  // Count knob: the original target-triangle slider.
   if (mode === 'simplify') {
     const min = Math.max(4, Math.min(base, Math.round(base * 0.02) || 4));
     slider.min = String(min);
@@ -259,8 +349,6 @@ function syncModeUI(): void {
     numberInput.max = String(base);
     numberInput.value = String(info.currentTriangles);
   } else {
-    // Enhance: slider goes up to 8× base, but the number input accepts any
-    // value ≥ base — the user can type beyond the slider range.
     const max = base * 8;
     const defaultTarget = base * 2;
     slider.min = String(base);
@@ -270,6 +358,73 @@ function syncModeUI(): void {
     numberInput.removeAttribute('max');
     numberInput.value = String(defaultTarget);
   }
+
+  // Edge-length / size knob: a length slider in mesh units (+ amount for size).
+  if (lengthSlider && lengthInput) {
+    const { lo, hi, def } = lengthBounds();
+    const step = Math.max((hi - lo) / 200, 1e-6);
+    lengthSlider.min = String(lo);
+    lengthSlider.max = String(hi);
+    lengthSlider.step = String(step);
+    lengthSlider.value = String(def);
+    lengthInput.min = String(fmtLen(lo));
+    lengthInput.step = String(fmtLen(step) || step);
+    lengthInput.removeAttribute('max'); // user may type beyond the slider range
+    lengthInput.value = String(fmtLen(def));
+  }
+  if (lengthLabel) lengthLabel.textContent = lengthLabelText();
+}
+
+/** Label for the length/threshold input, per mode + knob. */
+function lengthLabelText(): string {
+  if (knobMode === 'size') {
+    return mode === 'simplify' ? 'Min feature size (remove smaller)' : 'Refine triangles larger than';
+  }
+  return mode === 'simplify' ? 'Tolerance (feature size)' : 'Target edge length';
+}
+
+/** The length/threshold value typed into the length knob (mesh units). */
+function lengthVal(): number {
+  const n = Number(lengthInput?.value);
+  if (Number.isFinite(n) && n > 0) return n;
+  const s = Number(lengthSlider?.value);
+  return Number.isFinite(s) && s > 0 ? s : 0;
+}
+
+/** The integer "amount" (strength / detail levels) for the size knob. */
+function amountVal(): number {
+  const a = Math.round(Number(amountSlider?.value));
+  return Number.isFinite(a) && a >= 1 ? a : 1;
+}
+
+interface MeshOpRequest {
+  kind: 'count' | 'simplifyTol' | 'enhanceLen' | 'noop';
+  /** Target triangle count (count), tolerance (simplifyTol), or edge length
+   *  (enhanceLen). */
+  value: number;
+}
+
+/** Translate the current mode + knob + control values into the operation to
+ *  run. Size-knob math: simplify scales the tolerance up by the amount
+ *  (stronger), enhance divides the target edge length by 2^(amount-1) (more
+ *  detail levels on the over-threshold triangles). */
+function currentRequest(): MeshOpRequest {
+  if (!info) return { kind: 'noop', value: 0 };
+  if (knobMode === 'count') return { kind: 'count', value: currentTarget() };
+  const L = lengthVal();
+  if (!(L > 0)) return { kind: 'noop', value: 0 };
+  if (mode === 'simplify') {
+    return { kind: 'simplifyTol', value: knobMode === 'size' ? L * amountVal() : L };
+  }
+  return { kind: 'enhanceLen', value: knobMode === 'size' ? L / Math.pow(2, amountVal() - 1) : L };
+}
+
+function requestKey(r: MeshOpRequest): string {
+  // Full precision: the number input accepts arbitrary precision, so quantizing
+  // here could mask a genuine change and leave Apply stuck disabled. The value
+  // is computed deterministically from the same inputs, so equal requests
+  // produce equal floats.
+  return `${knobMode}:${r.kind}:${r.value > 0 ? String(r.value) : '0'}`;
 }
 
 function closePanel(): void {
@@ -323,12 +478,13 @@ function clampTarget(raw: number): number {
 }
 
 function currentTarget(): number {
-  return clampTarget(Number(numberInput?.value ?? slider?.value ?? appliedTarget));
+  return clampTarget(Number(numberInput?.value ?? slider?.value ?? info?.currentTriangles ?? 0));
 }
 
 function updateApplyEnabled(): void {
   if (!applyBtn) return;
-  applyBtn.disabled = applying || !info || (currentTarget() === appliedTarget && mode === appliedMode);
+  const r = currentRequest();
+  applyBtn.disabled = applying || !info || r.kind === 'noop' || requestKey(r) === appliedKey;
 }
 
 function updateSaveEnabled(): void {
@@ -339,9 +495,15 @@ function updateSaveEnabled(): void {
 function setControlsDisabled(disabled: boolean): void {
   if (slider) slider.disabled = disabled;
   if (numberInput) numberInput.disabled = disabled;
+  if (lengthSlider) lengthSlider.disabled = disabled;
+  if (lengthInput) lengthInput.disabled = disabled;
+  if (amountSlider) amountSlider.disabled = disabled;
   if (resetBtn) resetBtn.disabled = disabled;
   if (simplifyModeBtn) simplifyModeBtn.disabled = disabled;
   if (enhanceModeBtn) enhanceModeBtn.disabled = disabled;
+  if (knobCountBtn) knobCountBtn.disabled = disabled;
+  if (knobEdgeBtn) knobEdgeBtn.disabled = disabled;
+  if (knobSizeBtn) knobSizeBtn.disabled = disabled;
   if (colorCheckbox) colorCheckbox.disabled = disabled;
   if (disabled) {
     if (applyBtn) applyBtn.disabled = true;
@@ -354,10 +516,11 @@ function setControlsDisabled(disabled: boolean): void {
 
 async function runApply(): Promise<void> {
   if (!handlers || !info || applying) return;
-  const target = currentTarget();
-  if (target === appliedTarget && mode === appliedMode) return;
+  const req = currentRequest();
+  if (req.kind === 'noop' || requestKey(req) === appliedKey) return;
   const baseline = info;
   const currentMode = mode;
+  const isDirect = req.kind !== 'count';
   const doPreserveColor = preserveColor && info.hasColor;
 
   applying = true;
@@ -367,9 +530,10 @@ async function runApply(): Promise<void> {
   if (statusEl) statusEl.textContent = '';
 
   const title = currentMode === 'simplify' ? 'Simplifying mesh' : 'Enhancing mesh';
-  const searchMsg = currentMode === 'simplify'
-    ? 'Searching for the gentlest tolerance…'
-    : 'Searching for the finest edge length…';
+  // The count knob binary-searches; the direct knobs run a single pass.
+  const searchMsg = isDirect
+    ? (currentMode === 'simplify' ? 'Simplifying mesh…' : 'Enhancing mesh…')
+    : (currentMode === 'simplify' ? 'Searching for the gentlest tolerance…' : 'Searching for the finest edge length…');
 
   const progressId = startProgress({
     title,
@@ -377,22 +541,34 @@ async function runApply(): Promise<void> {
     onCancel: () => abort.abort(),
   });
 
+  const onProgress = (fraction: number): void => {
+    const pct = Math.max(0, Math.min(100, Math.round(fraction * 100)));
+    updateProgress(progressId, fraction, `${currentMode === 'simplify' ? 'Simplifying' : 'Enhancing'}… ${pct}%`);
+  };
+
   try {
-    const handler = currentMode === 'simplify' ? handlers.apply : handlers.enhance;
-    const r = await handler.call(
-      handlers,
-      target,
-      doPreserveColor,
-      (fraction) => {
-        const pct = Math.max(0, Math.min(100, Math.round(fraction * 100)));
-        updateProgress(progressId, fraction, `${currentMode === 'simplify' ? 'Simplifying' : 'Enhancing'}… ${pct}%`);
-      },
-      abort.signal,
-    );
-    appliedTarget = target;
-    appliedMode = currentMode;
+    let r: { triangleCount: number } | null;
+    if (req.kind === 'count') {
+      const handler = currentMode === 'simplify' ? handlers.apply : handlers.enhance;
+      r = await handler.call(handlers, req.value, doPreserveColor, onProgress, abort.signal);
+    } else if (req.kind === 'simplifyTol') {
+      r = await handlers.simplifyByTolerance(req.value, doPreserveColor, onProgress, abort.signal);
+    } else {
+      r = await handlers.enhanceByEdgeLength(req.value, doPreserveColor, onProgress, abort.signal);
+    }
+    appliedKey = requestKey(req);
     showResult(r ? r.triangleCount : baseline.baseTriangles);
-    if (statusEl) statusEl.textContent = '';
+    if (!r && isDirect) {
+      // A direct pass that changed nothing means the threshold matched no
+      // edges / triangles — warn so the user knows to adjust the knob.
+      const warn = currentMode === 'simplify'
+        ? 'Nothing to simplify at that setting — no detail was below the tolerance. Try a larger value.'
+        : 'Nothing to enhance at that setting — no edge was longer than that. Try a smaller value.';
+      if (statusEl) statusEl.textContent = warn;
+      showToast(warn, { variant: 'warn', source: 'engine' });
+    } else if (statusEl) {
+      statusEl.textContent = '';
+    }
   } catch (e) {
     const err = e as Error;
     if (err?.name === 'AbortError') {
@@ -538,11 +714,38 @@ function buildPanel(): HTMLElement {
   // Controls wrapper (hidden when no model is available)
   controlsEl = document.createElement('div');
 
+  // Knob-mode pills: Count | Edge length | Size. Each picks how the target is
+  // expressed; syncModeUI shows the matching control group.
+  const makeKnobBtn = (text: string, km: KnobMode, title: string): HTMLButtonElement => {
+    const b = document.createElement('button');
+    b.id = `simplify-knob-${km}`;
+    b.textContent = text;
+    b.title = title;
+    b.className = km === knobMode ? MODE_ACTIVE : MODE_INACTIVE;
+    b.addEventListener('click', () => {
+      if (applying || knobMode === km) return;
+      knobMode = km;
+      if (info) syncModeUI();
+      updateApplyEnabled();
+    });
+    return b;
+  };
+  const knobRow = document.createElement('div');
+  knobRow.className = 'flex gap-1 mb-2';
+  knobCountBtn = makeKnobBtn('Count', 'count', 'Target a triangle count');
+  knobEdgeBtn = makeKnobBtn('Edge', 'edge', 'Target an edge length (mesh units) — affects the larger triangles first');
+  knobSizeBtn = makeKnobBtn('Size', 'size', 'Target a triangle-size threshold with a strength amount');
+  knobRow.append(knobCountBtn, knobEdgeBtn, knobSizeBtn);
+  controlsEl.appendChild(knobRow);
+
+  // --- Count knob: target triangle count ---
+  countControls = document.createElement('div');
+
   const label = document.createElement('label');
   label.className = 'block text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium';
   label.textContent = 'Target triangles';
   label.htmlFor = 'simplify-input';
-  controlsEl.appendChild(label);
+  countControls.appendChild(label);
 
   const row = document.createElement('div');
   row.className = 'flex items-center gap-2 mb-2';
@@ -583,7 +786,77 @@ function buildPanel(): HTMLElement {
     updateApplyEnabled();
   });
   row.appendChild(numberInput);
-  controlsEl.appendChild(row);
+  countControls.appendChild(row);
+  controlsEl.appendChild(countControls);
+
+  // --- Edge length / Size knob: a length in mesh units (+ amount for Size) ---
+  lengthControls = document.createElement('div');
+  lengthControls.classList.add('hidden');
+
+  lengthLabel = document.createElement('label');
+  lengthLabel.className = 'block text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium';
+  lengthLabel.htmlFor = 'simplify-length-input';
+  lengthLabel.textContent = 'Target edge length';
+  lengthControls.appendChild(lengthLabel);
+
+  const lengthRow = document.createElement('div');
+  lengthRow.className = 'flex items-center gap-2 mb-2';
+
+  lengthSlider = document.createElement('input');
+  lengthSlider.type = 'range';
+  lengthSlider.id = 'simplify-length-slider';
+  lengthSlider.className = 'flex-1 accent-blue-400 cursor-pointer';
+  lengthSlider.addEventListener('input', () => {
+    if (applying) return;
+    if (lengthInput) lengthInput.value = String(fmtLen(Number(lengthSlider!.value)));
+    updateApplyEnabled();
+  });
+  lengthRow.appendChild(lengthSlider);
+
+  lengthInput = document.createElement('input');
+  lengthInput.type = 'number';
+  lengthInput.id = 'simplify-length-input';
+  lengthInput.className = 'w-20 px-1.5 py-1 text-xs text-right rounded bg-zinc-900/80 border border-zinc-600/60 text-zinc-200 focus:outline-none focus:border-blue-500/60';
+  lengthInput.min = '0';
+  const syncLengthFromInput = (): void => {
+    if (applying) return;
+    const v = Number(lengthInput!.value);
+    if (lengthSlider && Number.isFinite(v) && v > 0) {
+      lengthSlider.value = String(Math.max(Number(lengthSlider.min), Math.min(Number(lengthSlider.max), v)));
+    }
+    updateApplyEnabled();
+  };
+  lengthInput.addEventListener('input', syncLengthFromInput);
+  lengthInput.addEventListener('change', syncLengthFromInput);
+  lengthRow.appendChild(lengthInput);
+  lengthControls.appendChild(lengthRow);
+
+  // Amount (size knob only): strength for simplify / detail levels for enhance.
+  amountRow = document.createElement('div');
+  amountRow.className = 'flex items-center gap-2 mb-2';
+  amountRow.classList.add('hidden');
+  const amountLabel = document.createElement('span');
+  amountLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
+  amountLabel.textContent = 'Amount';
+  amountSlider = document.createElement('input');
+  amountSlider.type = 'range';
+  amountSlider.id = 'simplify-amount-slider';
+  amountSlider.className = 'flex-1 accent-blue-400 cursor-pointer';
+  amountSlider.min = '1';
+  amountSlider.max = '6';
+  amountSlider.step = '1';
+  amountSlider.value = '2';
+  amountValueEl = document.createElement('span');
+  amountValueEl.className = 'text-xs text-zinc-300 tabular-nums w-6 text-right';
+  amountValueEl.textContent = '2';
+  amountSlider.addEventListener('input', () => {
+    if (applying) return;
+    if (amountValueEl) amountValueEl.textContent = String(amountVal());
+    updateApplyEnabled();
+  });
+  amountRow.append(amountLabel, amountSlider, amountValueEl);
+  lengthControls.appendChild(amountRow);
+  controlsEl.appendChild(lengthControls);
 
   // Color preservation (hidden when model has no paint)
   colorRow = document.createElement('div');
@@ -630,13 +903,10 @@ function buildPanel(): HTMLElement {
   resetBtn.addEventListener('click', () => {
     if (!info || applying) return;
     handlers?.reset();
-    appliedTarget = info.baseTriangles;
-    appliedMode = 'simplify';
-    if (slider) slider.value = String(info.currentTriangles);
-    if (numberInput) numberInput.value = String(info.currentTriangles);
-    showResult(info.baseTriangles);
+    // Re-read the (now restored) baseline so every control returns to its
+    // default and Apply goes idle until the user changes something.
+    refresh(false);
     if (statusEl) statusEl.textContent = '';
-    updateApplyEnabled();
   });
   actions.appendChild(resetBtn);
 

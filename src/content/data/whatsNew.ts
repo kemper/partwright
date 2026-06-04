@@ -26,6 +26,82 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'June 4, 2026',
+    headline: 'Fabric textures, image paint, region-targeted modifiers, and a catalog refresh',
+    groups: [
+      {
+        label: 'Surface textures',
+        items: [
+          {
+            title: 'Fabric & knit textures',
+            body: 'A new family of surface modifiers wraps a model in stitched fabric: V-strand knit (stockinette), cable knit, waffle stitch, fur / velvet, and woven fabric. The displacement follows the surface via UV unwrapping — BFS triangle unfolding, with LSCM and harmonic-field layouts for cleaner whole-mesh maps — and runs on a WebGPU compute shader where the browser supports it. A mesh-detail slider trades triangle count for fidelity, and the textures are available to the AI assistant too.',
+          },
+          {
+            title: 'Apply modifiers to part of a model',
+            body: 'Every surface modifier — fuzzy skin, smooth, voxelize, and the new fabric textures — now takes a click-to-select flood-fill region selector, so you can texture just one area. Additive multi-region selection, a color-sensitivity control, and triplanar blending round out a redesigned selector UX inside a draggable Surface panel.',
+          },
+        ],
+      },
+      {
+        label: 'Painting',
+        items: [
+          {
+            title: 'Image paint',
+            body: 'Project an image onto the model surface as color regions: click to stamp it where you point, with a hover preview, rotation, and a smooth (stamp-then-refine) mode that subdivides the footprint so the picture conforms to curvature. Alpha-channel flood fill drops the background, and SVG inputs stamp at full vector quality.',
+          },
+          {
+            title: 'Smarter color bucket',
+            body: 'The bucket now walks and persists the real connected region, with a live flood-fill preview that tracks the tolerance slider. Region selection uses an explicit Preview button instead of auto-previewing on every click.',
+          },
+        ],
+      },
+      {
+        label: 'Catalog',
+        items: [
+          {
+            title: 'Catalog quality pass',
+            body: 'Redesigned 8 catalog entries and colorized 6 more, added 5 voxel creatures, and shipped five new models — a chain, a hot dog, a voxel castle, a watchtower, and a retro TV.',
+          },
+        ],
+      },
+      {
+        label: 'Viewport & rendering',
+        items: [
+          {
+            title: 'Reset view & zoom limit',
+            body: 'A reset-view button returns the camera to its default framing, and a zoom-out limit keeps a model from shrinking away into the distance.',
+          },
+          {
+            title: 'Cancel long renders instead of timing out',
+            body: 'Heavy renders no longer hit a hard execution timeout — they run until you cancel them with the Cancel button, so a slow-but-valid model finishes instead of being killed. Out-of-memory failures in the manifold-js engine now surface a clear hint instead of an opaque crash.',
+          },
+          {
+            title: 'Mesh-quality knobs',
+            body: 'The Quality panel’s simplify / enhance controls gained edge-length and size-threshold knobs for finer command over triangle reduction and refinement.',
+          },
+        ],
+      },
+      {
+        label: 'Diagnostics',
+        items: [
+          {
+            title: 'Worker health & engine memory',
+            body: 'The diagnostics log gained a worker-health panel that surfaces the geometry Worker’s state and each engine’s WASM heap usage. Disconnected-component results now also raise a transient warning toast.',
+          },
+        ],
+      },
+      {
+        label: 'Reliability',
+        items: [
+          {
+            title: 'Resilient sessions',
+            body: 'The geometry Worker now recovers automatically after a fatal WASM fault, autosaved drafts clear on save (with a warning if you save error-state code), and paint, annotations, and parameters survive switching between parts. SCAD parts cache their mesh so flipping between parts skips a recompile, and Customizer number fields can now exceed their declared min / max.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'May 31 – June 3, 2026',
     headline: 'Multi-file OpenSCAD, unified viewport panels, and instant static pages',
     groups: [

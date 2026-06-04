@@ -94,7 +94,7 @@ import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, setShapeType, g
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
-import { registerExclusiveMode } from '../ui/modeExclusion';
+import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
 
 let paintBtn: HTMLButtonElement | null = null;
 let pickerPanel: HTMLElement | null = null;
@@ -178,6 +178,7 @@ function togglePaintMode(): void {
     forceDeactivateAnnotateText();
     forceDeactivateAnnotateSelect();
     closeSimplifyMenu();
+    deactivateMode('imagePaint');
     activate();
     updateButtonState(true);
     if (pickerPanel) setInitialPanelPosition(pickerPanel);

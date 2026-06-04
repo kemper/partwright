@@ -8,7 +8,7 @@ export interface ColorRegion {
   id: number;
   name: string;
   color: [number, number, number]; // RGB 0..1
-  source: 'face-pick' | 'slab' | 'subtree' | 'paintbrush' | 'model';
+  source: 'face-pick' | 'slab' | 'subtree' | 'paintbrush' | 'model' | 'imagePaint';
   descriptor: RegionDescriptor;
   order: number;
   visible: boolean;
@@ -18,6 +18,9 @@ export interface ColorRegion {
   // so recolouring a slot recolours every region on it, and export can group
   // by slot order. Unset = ad-hoc colour (unslotted) — back-compat default.
   slotId?: string;
+  /** Per-triangle colors for image-paint regions; overrides `color` per
+   *  triangle in buildTriColors. Transient — rebuilt from the descriptor. */
+  perTriColors?: Map<number, [number, number, number]>;
 }
 
 export type RegionDescriptor =
@@ -73,7 +76,23 @@ export type RegionDescriptor =
   // saved before this omit both and are read as `slab` with an auto depth.
   // `spray` turns the stroke into a geodesic airbrush: a soft speckle whose
   // coverage fades from the core out via a per-triangle dither (no hard edge).
-  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: 'geodesic' | 'slab'; depth?: number; spray?: { strength: number; softness: number; seed: number } };
+  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: 'geodesic' | 'slab'; depth?: number; spray?: { strength: number; softness: number; seed: number } }
+  // Image projection: per-triangle colors computed at apply-time by projecting
+  // an image onto the mesh from a chosen axis direction. The projected result is
+  // stored as a flat [triIdx, r, g, b, …] array (r/g/b in 0–255) so the region
+  // survives serialization and re-resolves correctly after mesh subdivision via
+  // the parentToChildren map. `avgColor` (0–1) is the mean of all painted
+  // triangles — used as the `color` field for the region list swatch.
+  // For smooth stamps: `imageDataUrl` (PNG, ≤256×256) + stamp params are stored
+  // so the stamp can be replayed verbatim on session reload (see rehydrateColorRegions).
+  | { kind: 'imagePaint'; entries: number[]; avgColor: [number, number, number]; axis?: string;
+      smooth?: boolean; maxEdge?: number;
+      hitPoint?: [number, number, number]; hitNormal?: [number, number, number];
+      stampSize?: number; rotationDeg?: number;
+      imageDataUrl?: string;
+      removeBackground?: boolean;
+      manualBgColor?: [number, number, number];
+      bgTolerance?: number };
 
 export interface SerializedColorRegion {
   id: number;
@@ -83,7 +102,7 @@ export interface SerializedColorRegion {
   descriptor: RegionDescriptor;
   order: number;
   visible?: boolean; // optional for backward compat — defaults to true on load
-  slotId?: string;   // palette-slot attribution (schema 1.10+); omitted = unslotted
+  slotId?: string;   // palette-slot attribution (schema 1.11+); omitted = unslotted
 }
 
 type ChangeListener = () => void;
@@ -210,6 +229,7 @@ export function addRegion(
   triangles: Set<number>,
   visible: boolean = true,
   slotId?: string,
+  perTriColors?: Map<number, [number, number, number]>,
 ): ColorRegion {
   const id = nextRegionId++;
   const region: ColorRegion = {
@@ -222,6 +242,7 @@ export function addRegion(
     visible,
     triangles,
     slotId,
+    perTriColors,
   };
   regions.push(region);
   clearRedoStack();
@@ -365,13 +386,20 @@ export function reorderRegion(id: number, toIndex: number): void {
   notify();
 }
 
-/** Replace a region's resolved triangle set in place. Used when the working
- *  mesh changes (e.g. a smooth brush stroke subdivides it) and every region
- *  must be re-resolved against the new tessellation. Does not notify — the
- *  caller drives a single re-render after re-resolving all regions. */
-export function setRegionTriangles(id: number, triangles: Set<number>): void {
+/** Replace a region's resolved triangle set (and optional per-triangle colors)
+ *  in place. Used when the working mesh changes (e.g. subdivision) and every
+ *  region must be re-resolved. Does not notify — the caller drives a single
+ *  re-render after re-resolving all regions. */
+export function setRegionTriangles(
+  id: number,
+  triangles: Set<number>,
+  perTriColors?: Map<number, [number, number, number]>,
+): void {
   const region = regions.find(r => r.id === id);
-  if (region) region.triangles = triangles;
+  if (region) {
+    region.triangles = triangles;
+    region.perTriColors = perTriColors;
+  }
 }
 
 export function clearRegions(): void {
@@ -448,11 +476,17 @@ export function buildTriColors(numTri: number, respectPerRegionVisibility = fals
     const sorted = [...eligible].sort((a, b) => a.order - b.order);
     const layerOrder = new Int32Array(numTri).fill(-1); // -1 = untouched in this layer
     for (const region of sorted) {
-      const r = Math.round(region.color[0] * 255);
-      const g = Math.round(region.color[1] * 255);
-      const b = Math.round(region.color[2] * 255);
+      const fr = Math.round(region.color[0] * 255);
+      const fg = Math.round(region.color[1] * 255);
+      const fb = Math.round(region.color[2] * 255);
+      const ptc = region.perTriColors;
       for (const tri of region.triangles) {
         if (tri >= 0 && tri < numTri && region.order >= layerOrder[tri]) {
+          let r = fr, g = fg, b = fb;
+          if (ptc) {
+            const c = ptc.get(tri);
+            if (c) { r = Math.round(c[0] * 255); g = Math.round(c[1] * 255); b = Math.round(c[2] * 255); }
+          }
           buf[tri * 3] = r;
           buf[tri * 3 + 1] = g;
           buf[tri * 3 + 2] = b;
