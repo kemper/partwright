@@ -3984,6 +3984,10 @@ async function main() {
       showToast(result.error, { variant: 'warn' });
     } else if ('skipped' in result) {
       showToast('No changes to save', { variant: 'neutral' });
+    } else if (getGeometryDataObj()?.status === 'error') {
+      // Checkpointing a broken model is allowed, but warn that this version
+      // won't render correctly so the save isn't mistaken for a clean one.
+      showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}, but the model has errors and won't render correctly`, { variant: 'warn' });
     } else {
       showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}`, { variant: 'success' });
     }
