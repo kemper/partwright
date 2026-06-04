@@ -161,19 +161,16 @@ function recordGeometryRun(
   });
 }
 
-// Per-language hard-timeout for a single execute/validate call. The Worker
-// posts no result back if its WASM hangs, so without this the promise (and
-// the UI's "Running…" state) would wait forever. Manifold-js executes pure
-// JS over the WASM kernel and is rarely slow enough to need much headroom;
-// SCAD compiles BOSL2-style libraries from source per call, and complex
-// real-thread / gear-tooth math can comfortably push past a minute on a
-// slow CI runner — so it gets a much longer ceiling.
-function getExecuteTimeoutMs(lang: Language): number {
+// Hard-timeout for the non-render Worker operations that have no on-screen
+// cancel affordance: SCAD validation / include-detection and STEP
+// export/import. The Worker posts no result back if its WASM hangs, so without
+// this the promise (and the UI waiting on it) would never settle. The render
+// path (executeCodeAsync) deliberately has *no* timeout — a slow model is
+// bounded by the user instead, via the live elapsed-time counter and the
+// "× Cancel" button that terminates the Worker on demand.
+function getWorkerOpTimeoutMs(lang: 'scad' | 'replicad'): number {
   const cfg = getConfig();
-  if (lang === 'scad') return cfg.ai.geometryTimeoutScadMs;
-  if (lang === 'replicad') return cfg.ai.geometryTimeoutReplicadMs;
-  // manifold-js and voxel share the same ceiling
-  return cfg.ai.geometryTimeoutManifoldMs;
+  return lang === 'scad' ? cfg.ai.geometryTimeoutScadMs : cfg.ai.geometryTimeoutReplicadMs;
 }
 
 function rejectAllPending(err: Error): void {
@@ -563,18 +560,15 @@ export async function executeCodeAsync(
     triVerts:       m.triVerts.slice(),
   }));
 
-  const timeoutMs = getExecuteTimeoutMs(l);
   return new Promise<MeshResult>((resolve, reject) => {
-    // A hung WASM evaluation never posts a result back. Without a timeout the
-    // promise (and the UI's "Running…" state) would wait forever.
-    const timer = setTimeout(() => {
-      if (pendingExecutions.has(callId)) {
-        restartEngineWorker(`Geometry evaluation timed out after ${timeoutMs / 1000}s (the model may be too complex)`);
-      }
-    }, timeoutMs);
+    // No hard timeout on the render path: a slow model is bounded by the user,
+    // not the clock. The live elapsed-time counter shows how long it's taking
+    // and the "× Cancel" button (cancelCurrentExecution → restartEngineWorker)
+    // terminates the Worker on demand, rejecting this promise. A genuine hang
+    // is therefore recoverable without auto-killing legitimately-heavy work.
     pendingExecutions.set(callId, {
-      resolve: (r) => { clearTimeout(timer); resolve(r); },
-      reject:  (e) => { clearTimeout(timer); reject(e); },
+      resolve,
+      reject,
       onPreview,
       meta: { startedAt: performance.now(), lang: l },
     });
@@ -616,11 +610,12 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
     initEngineWorker();
     await workerReady;
     const callId = `val-${++callIdCounter}`;
-    const timeoutMs = getExecuteTimeoutMs(l);
+    const timeoutMs = getWorkerOpTimeoutMs('scad');
     return new Promise<ValidateResult>((resolve, reject) => {
-      // A hung validate never posts a result back. Mirror executeCodeAsync's
-      // timeout so a stuck OpenSCAD parse restarts the worker (which rejects all
-      // pending validations) instead of leaving the promise unsettled forever.
+      // A hung validate never posts a result back, and (unlike the render path)
+      // there's no Cancel button on validation — so a stuck OpenSCAD parse
+      // restarts the worker (which rejects all pending validations) instead of
+      // leaving the promise unsettled forever.
       const timer = setTimeout(() => {
         if (pendingValidations.has(callId)) {
           restartEngineWorker(`OpenSCAD validation timed out after ${timeoutMs / 1000}s`);
@@ -650,7 +645,7 @@ export async function detectScadIncludesAsync(source: string): Promise<string[] 
     return null;
   }
   const callId = `det-${++callIdCounter}`;
-  const timeoutMs = getExecuteTimeoutMs('scad');
+  const timeoutMs = getWorkerOpTimeoutMs('scad');
   return new Promise<string[] | null>((resolve) => {
     const timer = setTimeout(() => {
       if (pendingDetections.has(callId)) {
@@ -681,7 +676,7 @@ export async function exportLastBrepAsSTEP(): Promise<Blob | null> {
       if (pendingStepExports.has(callId)) {
         restartEngineWorker('STEP export timed out');
       }
-    }, getExecuteTimeoutMs('replicad'));
+    }, getWorkerOpTimeoutMs('replicad'));
     pendingStepExports.set(callId, {
       resolve: (b) => { clearTimeout(timer); resolve(b); },
       reject: (e) => { clearTimeout(timer); reject(e); },
@@ -705,7 +700,7 @@ export async function importSTEPToBrep(blob: Blob, filename: string): Promise<st
       if (pendingStepBrepImports.has(callId)) {
         restartEngineWorker('STEP→BREP import timed out');
       }
-    }, getExecuteTimeoutMs('replicad'));
+    }, getWorkerOpTimeoutMs('replicad'));
     pendingStepBrepImports.set(callId, {
       resolve: (n) => { clearTimeout(timer); resolve(n); },
       reject: (e) => { clearTimeout(timer); reject(e); },
@@ -728,7 +723,7 @@ export async function importSTEPToMesh(blob: Blob): Promise<MeshData> {
       if (pendingStepMeshImports.has(callId)) {
         restartEngineWorker('STEP→mesh import timed out');
       }
-    }, getExecuteTimeoutMs('replicad'));
+    }, getWorkerOpTimeoutMs('replicad'));
     pendingStepMeshImports.set(callId, {
       resolve: (m) => { clearTimeout(timer); resolve(m); },
       reject: (e) => { clearTimeout(timer); reject(e); },
@@ -748,7 +743,7 @@ export async function clearBrepImports(): Promise<void> {
       if (pendingClearBrepImports.has(callId)) {
         restartEngineWorker('clearBrepImports timed out');
       }
-    }, getExecuteTimeoutMs('replicad'));
+    }, getWorkerOpTimeoutMs('replicad'));
     pendingClearBrepImports.set(callId, {
       resolve: () => { clearTimeout(timer); resolve(); },
       reject: (e) => { clearTimeout(timer); reject(e); },
@@ -770,7 +765,7 @@ export async function clearBrepShape(): Promise<void> {
       if (pendingClearBrepShapes.has(callId)) {
         restartEngineWorker('clearBrepShape timed out');
       }
-    }, getExecuteTimeoutMs('replicad'));
+    }, getWorkerOpTimeoutMs('replicad'));
     pendingClearBrepShapes.set(callId, {
       resolve: () => { clearTimeout(timer); resolve(); },
       reject: (e) => { clearTimeout(timer); reject(e); },
