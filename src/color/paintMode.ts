@@ -867,14 +867,23 @@ function onPointerUp(event: PointerEvent): void {
       region,
     );
   } else {
+    const seedTri = result.triangleIndex;
     const triColors = buildTriColors(currentMesh.numTri);
-    region = findColorRegion(result.triangleIndex, adjacency, triColors, bucketColorTolerance);
+    region = findColorRegion(seedTri, adjacency, triColors, bucketColorTolerance);
+    const normal = getTriangleNormal(seedTri, adjacency);
+    // The color we matched (the surface under the cursor *before* this fill
+    // recolors it). Stored on the descriptor so the region re-floods the same
+    // color on every reconcile — a `triangles` snapshot can't survive a
+    // brush-refined mesh, where the fill lives at sub-base-triangle resolution.
+    const seedColor: [number, number, number] = triColors
+      ? [triColors[seedTri * 3] / 255, triColors[seedTri * 3 + 1] / 255, triColors[seedTri * 3 + 2] / 255]
+      : [0, 0, 0];
     const existingCount = getRegions().length;
     addRegion(
       `Region ${existingCount + 1}`,
       [...currentColor] as [number, number, number],
       'face-pick',
-      { kind: 'triangles', ids: [...region] },
+      { kind: 'colorFlood', seedPoint: result.point, seedNormal: normal, seedColor, colorTolerance: bucketColorTolerance },
       region,
     );
   }
