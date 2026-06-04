@@ -266,6 +266,7 @@ import {
   type GeometryAssertions,
 } from './geometry/statsComputation';
 import { getConfig } from './config/appConfig';
+import { extractPositions, maxEdgeLength, minEdgeLength } from './surface/meshSubdivide';
 
 // Load examples as raw text — JS and SCAD
 const jsExampleModules = import.meta.glob('../examples/*.js', { query: '?raw', import: 'default' });
@@ -5682,6 +5683,33 @@ async function main() {
     return { ...dest, triColors };
   }
 
+  // Push a simplify/enhance worker result onto the live viewport, carrying
+  // colors through the topology change when a colored baseline is held. Shared
+  // by the count-based (apply/enhance) and direct edge-length/tolerance
+  // (simplifyByTolerance/enhanceByEdgeLength) handlers. Returns the achieved
+  // triangle count, or null when the baseline changed underneath us or the op
+  // produced no change (the panel surfaces null as a "nothing to do" warning).
+  function commitMeshOpResult(
+    result: { mesh: MeshData; triangleCount: number } | null,
+    baseline: MeshData,
+    coloredBaseline: MeshData | null,
+  ): { triangleCount: number } | null {
+    if (simplifyBaselineMesh !== baseline) return null;
+    if (!result) {
+      applyLiveGeometryWithColor(baseline);
+      return null;
+    }
+    if (coloredBaseline?.triColors) {
+      resetPaintWorkerState();
+      clearRegions();
+      clearModelColorRegions();
+      applyLiveGeometry(carryColorsToMesh(coloredBaseline, result.mesh));
+    } else {
+      applyLiveGeometry(result.mesh);
+    }
+    return { triangleCount: result.triangleCount };
+  }
+
   const simplifyHandlers: SimplifyHandlers = {
     open(userInitiated) {
       if (userInitiated) {
@@ -5708,12 +5736,20 @@ async function main() {
           }));
         }
       }
+      const bbox = bboxFromMesh(simplifyBaselineMesh);
+      const bboxDiagonal = bbox
+        ? Math.hypot(bbox.max[0] - bbox.min[0], bbox.max[1] - bbox.min[1], bbox.max[2] - bbox.min[2])
+        : 0;
+      const positions = extractPositions(simplifyBaselineMesh);
       return {
         ok: true,
         info: {
           baseTriangles: simplifyBaselineMesh.numTri,
           currentTriangles: currentMeshData.numTri,
           hasColor: simplifyBaselineColoredMesh != null,
+          bboxDiagonal,
+          maxEdge: maxEdgeLength(positions, simplifyBaselineMesh.triVerts),
+          minEdge: minEdgeLength(positions, simplifyBaselineMesh.triVerts),
         },
       };
     },
@@ -5742,20 +5778,7 @@ async function main() {
         (fraction) => { void onProgress(fraction); },
         signal,
       );
-      if (simplifyBaselineMesh !== baseline) return null;
-      if (!result) {
-        applyLiveGeometryWithColor(baseline);
-        return null;
-      }
-      if (coloredBaseline?.triColors) {
-        resetPaintWorkerState();
-        clearRegions();
-        clearModelColorRegions();
-        applyLiveGeometry(carryColorsToMesh(coloredBaseline, result.mesh));
-      } else {
-        applyLiveGeometry(result.mesh);
-      }
-      return { triangleCount: result.triangleCount };
+      return commitMeshOpResult(result, baseline, coloredBaseline);
     },
 
     async enhance(targetTriangles, preserveColor, onProgress, signal) {
@@ -5781,20 +5804,41 @@ async function main() {
         (fraction) => { void onProgress(fraction); },
         signal,
       );
-      if (simplifyBaselineMesh !== baseline) return null;
-      if (!result) {
-        applyLiveGeometryWithColor(baseline);
-        return null;
-      }
-      if (coloredBaseline?.triColors) {
-        resetPaintWorkerState();
-        clearRegions();
-        clearModelColorRegions();
-        applyLiveGeometry(carryColorsToMesh(coloredBaseline, result.mesh));
-      } else {
-        applyLiveGeometry(result.mesh);
-      }
-      return { triangleCount: result.triangleCount };
+      return commitMeshOpResult(result, baseline, coloredBaseline);
+    },
+
+    async simplifyByTolerance(tolerance, preserveColor, onProgress, signal) {
+      const baseline = simplifyBaselineMesh;
+      if (!baseline) return null;
+      if (!(tolerance > 0)) return null;
+      const coloredBaseline = preserveColor ? simplifyBaselineColoredMesh : null;
+
+      const result = await simplifyInWorker(
+        baseline,
+        baseline.numTri,
+        tolerance,
+        (fraction) => { void onProgress(fraction); },
+        signal,
+        tolerance,
+      );
+      return commitMeshOpResult(result, baseline, coloredBaseline);
+    },
+
+    async enhanceByEdgeLength(edgeLength, preserveColor, onProgress, signal) {
+      const baseline = simplifyBaselineMesh;
+      if (!baseline) return null;
+      if (!(edgeLength > 0)) return null;
+      const coloredBaseline = preserveColor ? simplifyBaselineColoredMesh : null;
+
+      const result = await enhanceInWorker(
+        baseline,
+        baseline.numTri,
+        edgeLength,
+        (fraction) => { void onProgress(fraction); },
+        signal,
+        edgeLength,
+      );
+      return commitMeshOpResult(result, baseline, coloredBaseline);
     },
 
     reset() {

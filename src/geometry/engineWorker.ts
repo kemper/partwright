@@ -47,7 +47,7 @@ import { sourceUsesManifoldText, preloadTextFonts } from './textGlyphs';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { setCircularSegmentsOverride } from './qualitySettings';
 import type { Language } from './engines/types';
-import { simplifyToTriangleBudget, enhanceToTriangleBudget } from './simplify';
+import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, type SimplifyResult, type EnhanceResult } from './simplify';
 import type { MeshData } from './types';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
@@ -263,11 +263,14 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── simplify ───────────────────────────────────────────────────────────
   if (msg.type === 'simplify') {
-    const { callId, mesh, targetTriangles, maxTolerance } = msg as unknown as {
+    const { callId, mesh, targetTriangles, maxTolerance, tolerance } = msg as unknown as {
       callId: string;
       mesh: MeshData;
       targetTriangles: number;
       maxTolerance: number;
+      // When set (> 0), run a single direct simplify(tolerance) pass instead of
+      // the triangle-budget binary search — the "by edge length / size" knob.
+      tolerance?: number;
     };
     if (!manifoldReady) {
       self.postMessage({
@@ -281,19 +284,32 @@ self.onmessage = async (event: MessageEvent) => {
     let baseManifold: { delete?: () => void } | null = null;
     try {
       baseManifold = mod.Manifold.ofMesh(mesh);
-      const result = await simplifyToTriangleBudget(
-        baseManifold as unknown as Parameters<typeof simplifyToTriangleBudget>[0],
-        targetTriangles,
-        maxTolerance,
-        (fraction) => {
-          self.postMessage({ type: 'simplify_progress', callId, fraction });
-          // Loop yields to the event loop between iterations so a queued
-          // 'simplify_cancel' message can flip the flag — checked here so the
-          // search bails before doing more work.
-          return new Promise<void>(r => setTimeout(r, 0));
-        },
-        () => simplifyCancelFlags.get(callId) === true,
-      );
+      const direct = typeof tolerance === 'number' && tolerance > 0;
+      let result: SimplifyResult | null;
+      if (direct) {
+        // Single synchronous pass — bracket with 0/1 progress so the modal
+        // behaves the same as the searched path.
+        self.postMessage({ type: 'simplify_progress', callId, fraction: 0 });
+        result = simplifyToTolerance(
+          baseManifold as unknown as Parameters<typeof simplifyToTolerance>[0],
+          tolerance,
+        );
+        self.postMessage({ type: 'simplify_progress', callId, fraction: 1 });
+      } else {
+        result = await simplifyToTriangleBudget(
+          baseManifold as unknown as Parameters<typeof simplifyToTriangleBudget>[0],
+          targetTriangles,
+          maxTolerance,
+          (fraction) => {
+            self.postMessage({ type: 'simplify_progress', callId, fraction });
+            // Loop yields to the event loop between iterations so a queued
+            // 'simplify_cancel' message can flip the flag — checked here so the
+            // search bails before doing more work.
+            return new Promise<void>(r => setTimeout(r, 0));
+          },
+          () => simplifyCancelFlags.get(callId) === true,
+        );
+      }
       const cancelled = simplifyCancelFlags.get(callId) === true;
       simplifyCancelFlags.delete(callId);
       if (cancelled) {
@@ -346,11 +362,16 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── enhance ────────────────────────────────────────────────────────────
   if (msg.type === 'enhance') {
-    const { callId, mesh, targetTriangles, maxEdgeLength } = msg as unknown as {
+    const { callId, mesh, targetTriangles, maxEdgeLength, edgeLength } = msg as unknown as {
       callId: string;
       mesh: MeshData;
       targetTriangles: number;
       maxEdgeLength: number;
+      // When set (> 0), run a single direct refineToLength(edgeLength) pass
+      // instead of the triangle-budget binary search — the "by edge length /
+      // size" knob. Splits only edges longer than this, so the larger triangles
+      // densify first.
+      edgeLength?: number;
     };
     if (!manifoldReady) {
       self.postMessage({
@@ -364,16 +385,27 @@ self.onmessage = async (event: MessageEvent) => {
     let baseManifold: { delete?: () => void } | null = null;
     try {
       baseManifold = mod.Manifold.ofMesh(mesh);
-      const result = await enhanceToTriangleBudget(
-        baseManifold as unknown as Parameters<typeof enhanceToTriangleBudget>[0],
-        targetTriangles,
-        maxEdgeLength,
-        (fraction) => {
-          self.postMessage({ type: 'enhance_progress', callId, fraction });
-          return new Promise<void>(r => setTimeout(r, 0));
-        },
-        () => enhanceCancelFlags.get(callId) === true,
-      );
+      const direct = typeof edgeLength === 'number' && edgeLength > 0;
+      let result: EnhanceResult | null;
+      if (direct) {
+        self.postMessage({ type: 'enhance_progress', callId, fraction: 0 });
+        result = refineToEdgeLength(
+          baseManifold as unknown as Parameters<typeof refineToEdgeLength>[0],
+          edgeLength,
+        );
+        self.postMessage({ type: 'enhance_progress', callId, fraction: 1 });
+      } else {
+        result = await enhanceToTriangleBudget(
+          baseManifold as unknown as Parameters<typeof enhanceToTriangleBudget>[0],
+          targetTriangles,
+          maxEdgeLength,
+          (fraction) => {
+            self.postMessage({ type: 'enhance_progress', callId, fraction });
+            return new Promise<void>(r => setTimeout(r, 0));
+          },
+          () => enhanceCancelFlags.get(callId) === true,
+        );
+      }
       const cancelled = enhanceCancelFlags.get(callId) === true;
       enhanceCancelFlags.delete(callId);
       if (cancelled) {
