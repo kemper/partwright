@@ -43,6 +43,16 @@ export type RegionDescriptor =
       smooth?: boolean; maxEdge?: number }
   | { kind: 'triangles'; ids: number[] }
   | { kind: 'byLabel'; label: string }
+  // Color magic-wand (the bucket tool's Color mode). Stores a stable world-space
+  // seed plus the matched color and tolerance, so it re-floods by color on every
+  // re-resolve — surviving subdivision/re-runs the way `coplanar` does for the
+  // geometry bucket. A raw `triangles` snapshot can't: a fill over a brush-refined
+  // mesh lives at sub-base-triangle resolution that base-indexed ids can't carry.
+  // `seedColor` (0–1 RGB) is the color under the cursor at paint time, used as the
+  // flood anchor so the match survives even after this region recolors those
+  // triangles (the re-resolve excludes this region's own color from the lookup).
+  | { kind: 'colorFlood'; seedPoint: [number, number, number]; seedNormal: [number, number, number];
+      seedColor: [number, number, number]; colorTolerance: number }
   | { kind: 'connectedFromSeed'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; maxDeviationDeg: number;
       // Optional AABB clamp — flood-fill won't walk into triangles whose
       // centroid falls outside this box. Used to constrain `paintConnected`
@@ -288,6 +298,43 @@ export function updateRegionColor(id: number, color: [number, number, number]): 
   }
 }
 
+/** Batch-replace the color of every user region whose color is within
+ *  `tolerance` (Euclidean distance in normalised [0,1]³ RGB) of `sourceColor`.
+ *  Returns the number of regions changed. */
+export function replaceRegionColors(
+  sourceColor: [number, number, number],
+  targetColor: [number, number, number],
+  tolerance = 0.01,
+): number {
+  let count = 0;
+  for (const r of regions) {
+    const dr = r.color[0] - sourceColor[0];
+    const dg = r.color[1] - sourceColor[1];
+    const db = r.color[2] - sourceColor[2];
+    if (Math.sqrt(dr * dr + dg * dg + db * db) <= tolerance) {
+      r.color = [...targetColor] as [number, number, number];
+      count++;
+    }
+  }
+  if (count > 0) notify();
+  return count;
+}
+
+/** Return distinct RGB colors from user paint regions, ordered by first
+ *  occurrence. Used by the Replace tool to build its source swatch row. */
+export function getDistinctRegionColors(): [number, number, number][] {
+  const seen = new Set<string>();
+  const result: [number, number, number][] = [];
+  for (const r of regions) {
+    const key = r.color.map(c => Math.round(c * 255)).join(',');
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push([...r.color] as [number, number, number]);
+    }
+  }
+  return result;
+}
+
 export function updateRegionName(id: number, name: string): void {
   const region = regions.find(r => r.id === id);
   if (region) {
@@ -373,8 +420,13 @@ export function clearModelColorRegions(): void {
  *
  *  `respectPerRegionVisibility` (default false) skips regions with `visible:false`
  *  so the viewport reflects per-region eye-toggle state. Exports leave it false
- *  so a hidden-in-UI region still ships in the GLB/3MF. */
-export function buildTriColors(numTri: number, respectPerRegionVisibility = false): Uint8Array | null {
+ *  so a hidden-in-UI region still ships in the GLB/3MF.
+ *
+ *  `excludeRegionId` omits one user region from the composite. A `colorFlood`
+ *  region re-resolves by matching colors, so it must read the surface color
+ *  *underneath* itself — without this, its own freshly-stamped color would mask
+ *  the source color it's meant to follow and the flood would collapse to the seed. */
+export function buildTriColors(numTri: number, respectPerRegionVisibility = false, excludeRegionId?: number): Uint8Array | null {
   if (regions.length === 0 && modelRegions.length === 0) return null;
 
   const buf = new Uint8Array(numTri * 3); // default 0,0,0 — ignored for un-colored tris
@@ -387,7 +439,8 @@ export function buildTriColors(numTri: number, respectPerRegionVisibility = fals
   // layer. Layers are applied in call order, so a later layer overwrites an
   // earlier one wherever they overlap.
   const stampLayer = (layer: ColorRegion[]) => {
-    const eligible = respectPerRegionVisibility ? layer.filter(r => r.visible) : layer;
+    let eligible = respectPerRegionVisibility ? layer.filter(r => r.visible) : layer;
+    if (excludeRegionId !== undefined) eligible = eligible.filter(r => r.id !== excludeRegionId);
     const sorted = [...eligible].sort((a, b) => a.order - b.order);
     const layerOrder = new Int32Array(numTri).fill(-1); // -1 = untouched in this layer
     for (const region of sorted) {

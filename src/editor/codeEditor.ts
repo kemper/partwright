@@ -1,5 +1,5 @@
 import { EditorView } from '@codemirror/view';
-import { EditorState, Compartment, type Extension } from '@codemirror/state';
+import { EditorState, Compartment, Transaction, type Extension } from '@codemirror/state';
 import { openSearchPanel } from '@codemirror/search';
 import { javascript } from '@codemirror/lang-javascript';
 import { StreamLanguage } from '@codemirror/language';
@@ -12,6 +12,10 @@ import type { SourceDiagnostic } from '../geometry/types';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
 import { readPerTabPref, writePerTabPref } from '../storage/perTabPref';
 import { getConfig } from '../config/appConfig';
+
+/** Tracks which companion editor views are currently in a programmatic content
+ *  load so the onChange listener can skip the spurious re-run. */
+const _programmaticLoad = new WeakMap<EditorView, { active: boolean }>();
 
 /** Replicad/BREP sessions reuse the JavaScript editor since they're written
  *  as JS (`api.BREP.box(...)`), but we still track them as a distinct
@@ -83,6 +87,60 @@ const scadLanguage = StreamLanguage.define({
  *  without duplicating the SCAD StreamLanguage definition. */
 export function languageExt(lang: EditorLanguage): Extension {
   return lang === 'scad' ? scadLanguage : javascript();
+}
+
+/** Create a standalone CodeMirror editor for companion SCAD files.
+ *  Uses the SCAD language extension for syntax highlighting. The caller
+ *  owns the returned EditorView and should call setCompanionEditorContent()
+ *  when switching between companion files. */
+export function createCompanionEditor(
+  parent: HTMLElement,
+  onChange: (content: string) => void,
+): EditorView {
+  const companionThemeCompartment = new Compartment();
+  const loadFlag = { active: false };
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: '',
+      extensions: [
+        basicSetup,
+        scadLanguage,
+        companionThemeCompartment.of(themeExt(getTheme())),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged && !loadFlag.active) onChange(update.state.doc.toString());
+        }),
+        EditorView.theme({
+          '&': { height: '100%', fontSize: '13px' },
+          '.cm-scroller': { overflow: 'auto' },
+          '.cm-content': { fontFamily: 'monospace' },
+        }),
+      ],
+    }),
+    parent,
+  });
+  _programmaticLoad.set(view, loadFlag);
+  onThemeChange((theme) => {
+    view.dispatch({ effects: companionThemeCompartment.reconfigure(themeExt(theme)) });
+  });
+  return view;
+}
+
+/** Replace the full document in a companion editor view (programmatic load
+ *  when switching between companion tabs or after version navigation).
+ *  Sets a flag to suppress the onChange listener so we don't trigger a
+ *  spurious recompile, and marks the transaction non-historical so that
+ *  Ctrl+Z inside a companion file doesn't walk back through tab-switch loads. */
+export function setCompanionEditorContent(view: EditorView, content: string): void {
+  const flag = _programmaticLoad.get(view);
+  if (flag) flag.active = true;
+  try {
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: content },
+      annotations: [Transaction.addToHistory.of(false)],
+    });
+  } finally {
+    if (flag) flag.active = false;
+  }
 }
 
 function clampOffset(offset: number, docLength: number): number {

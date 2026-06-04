@@ -6,8 +6,8 @@ import type { MeshData } from '../geometry/types';
 import { pickFace, type FacePickResult } from './facePicker';
 import { projectBrushFootprint, invalidateProjection, disposeProjection } from './projectionPaint';
 import { disposeBaseRemap } from './baseRemap';
-import { buildAdjacency, findCoplanarRegion, getTriangleNormal, type AdjacencyGraph } from './adjacency';
-import { addRegion, getRegions } from './regions';
+import { buildAdjacency, findColorRegion, findCoplanarRegion, getTriangleNormal, type AdjacencyGraph } from './adjacency';
+import { addRegion, getRegions, buildTriColors } from './regions';
 import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
@@ -16,13 +16,25 @@ import { setPaintAccessors } from './paintAccessors';
 import { tangentBasis, type BrushShape } from './subdivide';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
-export type PaintTool = 'bucket' | 'brush' | 'slab' | 'box';
+export type PaintTool = 'bucket' | 'brush' | 'slab' | 'box' | 'replace';
 export type { BrushShape };
 
 let active = false;
 let currentColor: [number, number, number] = [1, 0.2, 0.2]; // default red
 let currentTool: PaintTool = 'brush';
+/** Color-distance tolerance for the bucket tool in color mode. Range [0, 1]
+ *  where 0 = exact color match only, 1 = fill entire connected component.
+ *  Default 0.05 (5 % of max RGB distance). */
+let bucketColorTolerance = 0.05;
+/** Geometry tolerance for the bucket tool in geometry mode. Cosine of the
+ *  maximum allowed bend angle between adjacent faces. Range [-1, 1] where
+ *  1 = strict coplanar and -1 = whole connected component. Default 0.9995 ≈ 1.8°. */
 let bucketTolerance = 0.9995;
+/** Which flood-fill strategy the bucket tool uses. */
+let bucketMode: 'color' | 'geometry' = 'color';
+/** Color selected as the "source" by the Replace tool (null = unset). */
+let replaceSourceColor: [number, number, number] | null = null;
+let replaceSourceChangeListener: (() => void) | null = null;
 /** Brush radius in mesh units. Default 1. 0 = single-triangle (legacy). */
 let brushRadius = 1;
 let brushShape: BrushShape = 'circle';
@@ -81,6 +93,11 @@ export function setTriangleToBaseMapper(fn: ((id: number) => number) | null): vo
 // Hover highlight state
 let highlightMesh: THREE.Mesh | null = null;
 let hoveredTriangles: Set<number> | null = null;
+// Triangle the bucket cursor last hovered, so the flood-fill preview can be
+// recomputed at a new tolerance/mode without waiting for a mouse move (driven by
+// `refreshBucketPreview`). null whenever the cursor isn't over the model with the
+// bucket tool active.
+let lastBucketSeed: number | null = null;
 
 // Brush ring indicator — outline showing the brush footprint in world space
 let brushRingMesh: THREE.LineLoop | null = null;
@@ -150,12 +167,53 @@ export function getTool(): PaintTool {
   return currentTool;
 }
 
+/** Geometry-mode bucket tolerance: cosine of max bend angle, range [-1, 1]. */
 export function setBucketTolerance(tol: number): void {
   bucketTolerance = Math.max(-1, Math.min(1, tol));
 }
-
 export function getBucketTolerance(): number {
   return bucketTolerance;
+}
+/** Color-mode bucket tolerance: normalised RGB distance, range [0, 1]. */
+export function setBucketColorTolerance(tol: number): void {
+  bucketColorTolerance = Math.max(0, Math.min(1, tol));
+}
+export function getBucketColorTolerance(): number {
+  return bucketColorTolerance;
+}
+export function setBucketMode(mode: 'color' | 'geometry'): void {
+  bucketMode = mode;
+}
+export function getBucketMode(): 'color' | 'geometry' {
+  return bucketMode;
+}
+export function setReplaceSourceColor(color: [number, number, number] | null): void {
+  replaceSourceColor = color;
+  if (replaceSourceChangeListener) replaceSourceChangeListener();
+  if (color && adjacency && currentMesh) {
+    const triColors = buildTriColors(currentMesh.numTri);
+    if (triColors) {
+      const matching = new Set<number>();
+      const tol = 0.01;
+      for (let t = 0; t < currentMesh.numTri; t++) {
+        const dr = triColors[t * 3] / 255 - color[0];
+        const dg = triColors[t * 3 + 1] / 255 - color[1];
+        const db = triColors[t * 3 + 2] / 255 - color[2];
+        if (dr * dr + dg * dg + db * db <= tol * tol * 3) matching.add(t);
+      }
+      showHighlight(matching);
+    } else {
+      clearHighlight();
+    }
+  } else if (!color) {
+    clearHighlight();
+  }
+}
+export function getReplaceSourceColor(): [number, number, number] | null {
+  return replaceSourceColor;
+}
+export function onReplaceSourceColorChange(fn: () => void): void {
+  replaceSourceChangeListener = fn;
 }
 
 export function setBrushRadius(r: number): void {
@@ -260,6 +318,7 @@ setPaintAccessors({ getColor, getCurrentMesh, shapeSmoothDescriptorFields });
 export function updatePaintMesh(mesh: MeshData): void {
   currentMesh = mesh;
   adjacency = null; // invalidate — mesh changed
+  lastBucketSeed = null; // the remembered seed indexes the old tessellation
   invalidateProjection(); // the id-buffer geometry is rebuilt against the new mesh
   if (active) {
     adjacency = buildAdjacency(mesh);
@@ -372,6 +431,11 @@ function cancelPendingMove(): void {
 function processMouseMove(event: MouseEvent): void {
   if (!adjacency || !currentMesh) return;
 
+  // Default to "no bucket seed"; only the bucket branch below re-establishes it.
+  // Every other path (hover-off, other tools) leaves it null so a later tolerance
+  // tweak doesn't redraw a stale flood-fill region.
+  lastBucketSeed = null;
+
   // Slab and box tools own their own gizmo / drag interactions; the
   // bucket-vs-brush hover preview gets out of the way.
   if (currentTool === 'slab' || currentTool === 'box') {
@@ -444,9 +508,18 @@ function processMouseMove(event: MouseEvent): void {
   if (currentTool === 'brush') {
     region = new Set<number>();
     collectBrushFootprint(event, result, region);
-  } else {
+  } else if (currentTool === 'replace') {
     clearBrushRing();
-    region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
+    region = new Set<number>([result.triangleIndex]);
+  } else {
+    // bucket
+    clearBrushRing();
+    lastBucketSeed = result.triangleIndex;
+    if (bucketMode === 'geometry') {
+      region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
+    } else {
+      region = findColorRegion(result.triangleIndex, adjacency, buildTriColors(currentMesh.numTri), bucketColorTolerance);
+    }
   }
 
   if (hoveredTriangles && setsEqual(hoveredTriangles, region)) {
@@ -766,26 +839,54 @@ function onPointerUp(event: PointerEvent): void {
     return;
   }
 
-  // Bucket: paint on click release (matches the previous click behavior)
   const result = pickFace(event);
   if (!result) return;
 
-  const region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
-  const normal = getTriangleNormal(result.triangleIndex, adjacency);
+  // Replace tool: set the source color from the clicked triangle
+  if (currentTool === 'replace') {
+    const triColors = buildTriColors(currentMesh.numTri);
+    const t = result.triangleIndex;
+    const color: [number, number, number] = triColors
+      ? [triColors[t * 3] / 255, triColors[t * 3 + 1] / 255, triColors[t * 3 + 2] / 255]
+      : [0, 0, 0];
+    setReplaceSourceColor(color);
+    return;
+  }
 
-  const existingCount = getRegions().length;
-  addRegion(
-    `Region ${existingCount + 1}`,
-    [...currentColor] as [number, number, number],
-    'face-pick',
-    {
-      kind: 'coplanar',
-      seedPoint: result.point,
-      seedNormal: normal,
-      normalTolerance: bucketTolerance,
-    },
-    region,
-  );
+  // Bucket: paint on click release
+  let region: Set<number>;
+  if (bucketMode === 'geometry') {
+    region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
+    const normal = getTriangleNormal(result.triangleIndex, adjacency);
+    const existingCount = getRegions().length;
+    addRegion(
+      `Region ${existingCount + 1}`,
+      [...currentColor] as [number, number, number],
+      'face-pick',
+      { kind: 'coplanar', seedPoint: result.point, seedNormal: normal, normalTolerance: bucketTolerance },
+      region,
+    );
+  } else {
+    const seedTri = result.triangleIndex;
+    const triColors = buildTriColors(currentMesh.numTri);
+    region = findColorRegion(seedTri, adjacency, triColors, bucketColorTolerance);
+    const normal = getTriangleNormal(seedTri, adjacency);
+    // The color we matched (the surface under the cursor *before* this fill
+    // recolors it). Stored on the descriptor so the region re-floods the same
+    // color on every reconcile — a `triangles` snapshot can't survive a
+    // brush-refined mesh, where the fill lives at sub-base-triangle resolution.
+    const seedColor: [number, number, number] = triColors
+      ? [triColors[seedTri * 3] / 255, triColors[seedTri * 3 + 1] / 255, triColors[seedTri * 3 + 2] / 255]
+      : [0, 0, 0];
+    const existingCount = getRegions().length;
+    addRegion(
+      `Region ${existingCount + 1}`,
+      [...currentColor] as [number, number, number],
+      'face-pick',
+      { kind: 'colorFlood', seedPoint: result.point, seedNormal: normal, seedColor, colorTolerance: bucketColorTolerance },
+      region,
+    );
+  }
 
   clearHighlight();
   if (onRegionPainted) onRegionPainted();
@@ -814,6 +915,23 @@ function onPointerCancel(event: PointerEvent): void {
 export function previewTriangles(triangles: Set<number>, color?: [number, number, number]): () => void {
   showHighlight(triangles, color);
   return () => clearHighlight();
+}
+
+/** Recompute and redraw the bucket hover preview for the triangle the cursor is
+ *  currently over, using the *current* tolerance and mode. The paint UI calls
+ *  this from the bucket tolerance slider/input and the color/geometry mode toggle
+ *  so the previewed flood-fill region grows and shrinks live as the setting is
+ *  dialled in, instead of staying frozen until the next mouse move. No-op unless
+ *  the bucket tool is active and the cursor last hovered a triangle. */
+export function refreshBucketPreview(): void {
+  if (!active || currentTool !== 'bucket') return;
+  if (!adjacency || !currentMesh || lastBucketSeed === null) return;
+  if (lastBucketSeed >= currentMesh.numTri) { lastBucketSeed = null; return; }
+  const region = bucketMode === 'geometry'
+    ? findCoplanarRegion(lastBucketSeed, adjacency, bucketTolerance)
+    : findColorRegion(lastBucketSeed, adjacency, buildTriColors(currentMesh.numTri), bucketColorTolerance);
+  hoveredTriangles = region;
+  showHighlight(region);
 }
 
 function showHighlight(triangles: Set<number>, colorOverride?: [number, number, number]): void {

@@ -492,6 +492,14 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'orbitDampingFactor', v)}
         />
         <Field
+          label="Max zoom-out factor"
+          tooltip="How far you can zoom the camera out, as a multiple of the model's largest dimension. The default framing sits at roughly 2× that dimension, so a value of 12 lets you pull back about 6× from the default before hitting the limit. Lower it to keep the model filling more of the view; raise it for more room. Re-applied each time the model is framed."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.maxZoomOutFactor}
+          value={c.renderer.maxZoomOutFactor}
+          min={3} max={100} step={1}
+          onChange={v => set('renderer', 'maxZoomOutFactor', v)}
+        />
+        <Field
           label="Orientation gizmo size"
           unit="px"
           tooltip="The canvas size in CSS pixels of the orientation gizmo (the XYZ cube in the viewport corner). Larger makes the axis labels easier to read; smaller keeps it out of the way. Takes effect after a page reload."
@@ -657,6 +665,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'codeEditorErrorIdleMs', v)}
         />
         <Field
+          label="Companion draft autosave debounce"
+          unit="ms"
+          tooltip="After you stop typing in a SCAD companion file, the editor waits this long before autosaving the draft so the edit survives a reload. Coalesces keystrokes so IndexedDB isn't written on every key. Lower it to capture edits sooner; raise it to write less often."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.companionDraftDebounceMs}
+          value={c.ui.companionDraftDebounceMs}
+          min={0} max={5_000} integer
+          onChange={v => set('ui', 'companionDraftDebounceMs', v)}
+        />
+        <Field
           label="Surface preview debounce"
           unit="ms"
           tooltip="When adjusting parameters in the surface-modifier panel (texture, fuzzy, etc.), this debounce delays the preview render until you've stopped changing values for this long. Lower it for more responsive live preview; raise it if previewing is slow on your machine."
@@ -730,6 +747,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.scadDefaultQuality}
           min={3} max={4096} integer
           onChange={v => set('ui', 'scadDefaultQuality', v)}
+        />
+        <Field
+          label="Worker run-history size"
+          unit="runs"
+          hint="Recent geometry runs kept in the worker health panel."
+          tooltip="The Workers half of the ⚠ Diagnostics panel keeps the last N geometry runs in memory with their wall-clock and worker-side timing. Older runs are evicted when the buffer is full. Increase to keep more history for spotting slow-render patterns; decrease to reduce memory use."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.workerRunHistorySize}
+          value={c.ui.workerRunHistorySize}
+          min={10} max={500} integer
+          onChange={v => set('ui', 'workerRunHistorySize', v)}
+        />
+        <Field
+          label="Worker panel refresh"
+          unit="ms"
+          hint="How often the Diagnostics panel re-polls worker in-flight counts while open."
+          tooltip="The Workers half of the Diagnostics panel polls live values (in-flight operation counts, worker liveness) on this interval, since those change without firing an update event. Lower = snappier live readout, slightly more work while the panel is open. Only affects the panel while it's visible."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.workerPanelRefreshMs}
+          value={c.ui.workerPanelRefreshMs}
+          min={200} max={10_000} integer
+          onChange={v => set('ui', 'workerPanelRefreshMs', v)}
         />
       </Section>
 
