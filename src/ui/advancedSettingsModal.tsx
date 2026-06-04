@@ -206,20 +206,11 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
       </Section>
 
       <Section title="AI — geometry timeouts">
-        <div class="text-[10px] text-zinc-500 leading-snug">Execution timeout per modeling engine. The engine Worker is restarted if a run exceeds the ceiling.</div>
-        <Field
-          label="Manifold-JS timeout"
-          unit="ms"
-          tooltip="Wall-clock ceiling for a single manifold-js geometry evaluation. If the code run exceeds this, the engine Worker is restarted and an error is surfaced. The manifold-3d kernel is typically fast — this mainly guards against infinite loops in user code. Increase for extremely complex mesh operations."
-          defaultValue={APP_CONFIG_DEFAULTS.ai.geometryTimeoutManifoldMs}
-          value={c.ai.geometryTimeoutManifoldMs}
-          min={5_000} max={600_000} integer
-          onChange={v => set('ai', 'geometryTimeoutManifoldMs', v)}
-        />
+        <div class="text-[10px] text-zinc-500 leading-snug">Safety timeouts for background Worker operations that have no Cancel button. Rendering itself is <em>not</em> timed out — a slow run is bounded by the elapsed-time counter and the Cancel button instead.</div>
         <Field
           label="OpenSCAD timeout"
           unit="ms"
-          tooltip="Wall-clock ceiling for a single OpenSCAD evaluation. SCAD compiles BOSL2-style libraries from source on every run, and complex gear or thread models can legitimately take over a minute on slow hardware. The 3-minute default gives ample headroom for heavy parametric models."
+          tooltip="Wall-clock ceiling for OpenSCAD Worker operations that have no Cancel affordance — source validation and include-dependency detection. SCAD compiles BOSL2-style libraries from source on every run, so the 3-minute default gives ample headroom. (The render path itself has no timeout.)"
           defaultValue={APP_CONFIG_DEFAULTS.ai.geometryTimeoutScadMs}
           value={c.ai.geometryTimeoutScadMs}
           min={5_000} max={600_000} integer
@@ -228,7 +219,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
         <Field
           label="BREP/replicad timeout"
           unit="ms"
-          tooltip="Wall-clock ceiling for a single replicad/OpenCASCADE evaluation. OCCT Boolean operations on complex STEP-imported assemblies can rival SCAD's worst cases. Increase if you're working with large imported STEP files or heavily-filleted BREP models."
+          tooltip="Wall-clock ceiling for replicad/OpenCASCADE Worker operations that have no Cancel affordance — STEP export/import and BREP-shape cleanup. OCCT operations on complex STEP assemblies can be slow, so increase this if you work with large imported STEP files. (The render path itself has no timeout.)"
           defaultValue={APP_CONFIG_DEFAULTS.ai.geometryTimeoutReplicadMs}
           value={c.ai.geometryTimeoutReplicadMs}
           min={5_000} max={600_000} integer
@@ -492,6 +483,14 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('renderer', 'orbitDampingFactor', v)}
         />
         <Field
+          label="Max zoom-out factor"
+          tooltip="How far you can zoom the camera out, as a multiple of the model's largest dimension. The default framing sits at roughly 2× that dimension, so a value of 12 lets you pull back about 6× from the default before hitting the limit. Lower it to keep the model filling more of the view; raise it for more room. Re-applied each time the model is framed."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.maxZoomOutFactor}
+          value={c.renderer.maxZoomOutFactor}
+          min={3} max={100} step={1}
+          onChange={v => set('renderer', 'maxZoomOutFactor', v)}
+        />
+        <Field
           label="Orientation gizmo size"
           unit="px"
           tooltip="The canvas size in CSS pixels of the orientation gizmo (the XYZ cube in the viewport corner). Larger makes the axis labels easier to read; smaller keeps it out of the way. Takes effect after a page reload."
@@ -739,6 +738,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           value={c.ui.scadDefaultQuality}
           min={3} max={4096} integer
           onChange={v => set('ui', 'scadDefaultQuality', v)}
+        />
+        <Field
+          label="Worker run-history size"
+          unit="runs"
+          hint="Recent geometry runs kept in the worker health panel."
+          tooltip="The Workers half of the ⚠ Diagnostics panel keeps the last N geometry runs in memory with their wall-clock and worker-side timing. Older runs are evicted when the buffer is full. Increase to keep more history for spotting slow-render patterns; decrease to reduce memory use."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.workerRunHistorySize}
+          value={c.ui.workerRunHistorySize}
+          min={10} max={500} integer
+          onChange={v => set('ui', 'workerRunHistorySize', v)}
+        />
+        <Field
+          label="Worker panel refresh"
+          unit="ms"
+          hint="How often the Diagnostics panel re-polls worker in-flight counts while open."
+          tooltip="The Workers half of the Diagnostics panel polls live values (in-flight operation counts, worker liveness) on this interval, since those change without firing an update event. Lower = snappier live readout, slightly more work while the panel is open. Only affects the panel while it's visible."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.workerPanelRefreshMs}
+          value={c.ui.workerPanelRefreshMs}
+          min={200} max={10_000} integer
+          onChange={v => set('ui', 'workerPanelRefreshMs', v)}
         />
       </Section>
 

@@ -9,6 +9,15 @@ import { getActiveImports } from '../import/importedMesh';
 import { getCompanionFiles } from '../import/companionFiles';
 import { getDefaultCircularSegments } from './qualitySettings';
 import { getConfig } from '../config/appConfig';
+import { errorLog } from '../diagnostics/errorLog';
+import {
+  registerWorker,
+  markWorkerStarted,
+  markWorkerRestarted,
+  recordWorkerRun,
+  type RunStatus,
+} from '../diagnostics/workerStats';
+import { isFatalWasmFault } from './workerFaults';
 
 export type { Language };
 export { isLanguage, DEFAULT_LANGUAGE };
@@ -90,7 +99,7 @@ let workerReadyReject: ((e: Error) => void) | null = null;
 let workerReady: Promise<void> = new Promise((r, rej) => { workerReadyResolve = r; workerReadyReject = rej; });
 let callIdCounter = 0;
 
-const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void; onPreview?: (r: MeshResult) => void }>();
+const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void; onPreview?: (r: MeshResult) => void; meta?: { startedAt: number; lang: Language } }>();
 const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => void; reject: (e: Error) => void }>();
 const pendingDetections  = new Map<string, { resolve: (r: string[]) => void; reject: (e: Error) => void }>();
 const pendingStepExports = new Map<string, { resolve: (blob: Blob | null) => void; reject: (e: Error) => void }>();
@@ -109,23 +118,73 @@ const pendingEnhances = new Map<string, {
   onProgress: (fraction: number) => void;
 }>();
 
-// Per-language hard-timeout for a single execute/validate call. The Worker
-// posts no result back if its WASM hangs, so without this the promise (and
-// the UI's "Running…" state) would wait forever. Manifold-js executes pure
-// JS over the WASM kernel and is rarely slow enough to need much headroom;
-// SCAD compiles BOSL2-style libraries from source per call, and complex
-// real-thread / gear-tooth math can comfortably push past a minute on a
-// slow CI runner — so it gets a much longer ceiling.
-function getExecuteTimeoutMs(lang: Language): number {
+/** Total operations the geometry Worker is currently working on, across every
+ *  request kind. Drives the in-flight readout in the worker-health panel. */
+function geometryInFlight(): number {
+  return (
+    pendingExecutions.size +
+    pendingValidations.size +
+    pendingDetections.size +
+    pendingStepExports.size +
+    pendingStepBrepImports.size +
+    pendingStepMeshImports.size +
+    pendingClearBrepImports.size +
+    pendingClearBrepShapes.size +
+    pendingSimplifies.size +
+    pendingEnhances.size
+  );
+}
+
+// Register with the worker-health registry so the diagnostics panel can show
+// liveness + in-flight load without this module having to push an update on
+// every map mutation (the live provider is polled by the panel instead).
+registerWorker('geometry', 'Geometry (manifold / SCAD / BREP)', () => ({
+  alive: engineWorker !== null,
+  inFlight: geometryInFlight(),
+}));
+
+/** Record one settled geometry execute into the worker run-history ring. */
+function recordGeometryRun(
+  meta: { startedAt: number; lang: Language } | undefined,
+  status: RunStatus,
+  workerMs?: number,
+  detail?: string,
+): void {
+  if (!meta) return;
+  recordWorkerRun({
+    worker: 'geometry',
+    kind: meta.lang,
+    durationMs: Math.round(performance.now() - meta.startedAt),
+    workerMs,
+    status,
+    detail,
+  });
+}
+
+// Hard-timeout for the non-render Worker operations that have no on-screen
+// cancel affordance: SCAD validation / include-detection and STEP
+// export/import. The Worker posts no result back if its WASM hangs, so without
+// this the promise (and the UI waiting on it) would never settle. The render
+// path (executeCodeAsync) deliberately has *no* timeout — a slow model is
+// bounded by the user instead, via the live elapsed-time counter and the
+// "× Cancel" button that terminates the Worker on demand.
+function getWorkerOpTimeoutMs(lang: 'scad' | 'replicad'): number {
   const cfg = getConfig();
-  if (lang === 'scad') return cfg.ai.geometryTimeoutScadMs;
-  if (lang === 'replicad') return cfg.ai.geometryTimeoutReplicadMs;
-  // manifold-js and voxel share the same ceiling
-  return cfg.ai.geometryTimeoutManifoldMs;
+  return lang === 'scad' ? cfg.ai.geometryTimeoutScadMs : cfg.ai.geometryTimeoutReplicadMs;
 }
 
 function rejectAllPending(err: Error): void {
-  for (const p of pendingExecutions.values()) p.reject(err);
+  // Classify the teardown so each in-flight execute lands in the run history
+  // with the right status rather than a generic failure.
+  const teardownStatus: RunStatus = /timed out/i.test(err.message)
+    ? 'timeout'
+    : /cancel/i.test(err.message)
+      ? 'cancelled'
+      : 'error';
+  for (const p of pendingExecutions.values()) {
+    recordGeometryRun(p.meta, teardownStatus, undefined, err.message);
+    p.reject(err);
+  }
   for (const p of pendingValidations.values()) p.reject(err);
   for (const p of pendingDetections.values()) p.reject(err);
   for (const p of pendingStepExports.values()) p.reject(err);
@@ -159,8 +218,21 @@ function restartEngineWorker(reason: string): void {
   workerReadyReject = null;
   engineWorker?.terminate();
   engineWorker = null;
+  // Surface the teardown in the worker-health panel and the central
+  // Diagnostic Log. A user-initiated cancel is routine (info, kept off the
+  // unseen-error badge); a timeout/crash is a real problem (warn). This was
+  // previously a bare console.error, which the errorLog intercepted as a
+  // generic 'app' error — even for normal cancels. console.debug keeps the
+  // devtools breadcrumb without being re-captured.
+  const cancelled = /cancel/i.test(reason);
+  markWorkerRestarted('geometry', reason);
+  errorLog.capture({
+    level: cancelled ? 'info' : 'warn',
+    source: 'engine',
+    message: `Geometry worker restarted: ${reason}`,
+  });
   // eslint-disable-next-line no-console
-  console.error('[EngineWorker]', reason);
+  console.debug('[EngineWorker]', reason);
 }
 
 /** Cancel any in-flight executeCodeAsync by terminating the Worker.
@@ -170,19 +242,44 @@ export function cancelCurrentExecution(): void {
   restartEngineWorker('Execution cancelled');
 }
 
+/** Discard the Worker after a *handled* fatal WASM fault. Unlike
+ *  restartEngineWorker, the current call's result has already been delivered —
+ *  we tear the Worker down only so the *next* run boots a clean WASM module.
+ *  A WASM trap (e.g. "memory access out of bounds") can leave the kernel's C++
+ *  state half-mutated, after which every subsequent call into the same instance
+ *  faults instantly; recycling here is the only reliable recovery short of a
+ *  page reload. Any *other* in-flight calls are rejected so they reboot too. */
+function recycleEngineWorker(reason: string): void {
+  rejectAllPending(new Error(reason));
+  workerReadyReject?.(new Error(reason));
+  workerReadyReject = null;
+  engineWorker?.terminate();
+  engineWorker = null;
+  // Surface the teardown in the worker-health panel and the Diagnostic Log.
+  // A fatal-WASM-fault recycle is usually the OOM case the panel exists to
+  // make visible — so it bumps the restart counter like any other teardown.
+  // Recovery, not a crash — warn rather than error, so it doesn't read as a
+  // second hard failure to the user.
+  markWorkerRestarted('geometry', reason);
+  errorLog.capture({ level: 'warn', source: 'engine', message: `Geometry worker recycled: ${reason}` });
+  // eslint-disable-next-line no-console
+  console.debug('[EngineWorker]', reason);
+}
+
 function initEngineWorker(): void {
   if (engineWorker) return;
   // Fresh ready-gate so the restarted Worker's 'ready' message resolves it,
   // not the one that was already resolved by the previous instance.
   workerReady = new Promise((r, rej) => { workerReadyResolve = r; workerReadyReject = rej; });
   engineWorker = new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' });
+  markWorkerStarted('geometry');
   engineWorker.onmessage = handleEngineWorkerMessage;
   engineWorker.onerror = (ev) => {
     // Reject all pending calls if the Worker crashes.
     rejectAllPending(new Error(`Geometry Worker crashed: ${ev.message}`));
     engineWorker = null;
-    // eslint-disable-next-line no-console
-    console.error('[EngineWorker] crashed — next call will restart it', ev.message);
+    markWorkerRestarted('geometry', `crashed: ${ev.message}`);
+    errorLog.capture({ level: 'error', source: 'engine', message: `Geometry worker crashed — next call will restart it: ${ev.message}` });
   };
   engineWorker.onmessageerror = (ev) => {
     // A Worker→Main message that fails structured-clone on receipt is dropped
@@ -190,8 +287,10 @@ function initEngineWorker(): void {
     rejectAllPending(new Error('Geometry Worker sent an undeserializable message'));
     engineWorker?.terminate();
     engineWorker = null;
+    markWorkerRestarted('geometry', 'undeserializable message');
+    errorLog.capture({ level: 'error', source: 'engine', message: 'Geometry worker sent an undeserializable message — restarting' });
     // eslint-disable-next-line no-console
-    console.error('[EngineWorker] messageerror', ev);
+    console.debug('[EngineWorker] messageerror', ev);
   };
   engineWorker.postMessage({ type: 'init' });
 }
@@ -220,6 +319,14 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     if (!pending) return;
     pendingExecutions.delete(callId);
 
+    const resultError = msg.error as string | null;
+    recordGeometryRun(
+      pending.meta,
+      resultError ? 'error' : 'ok',
+      typeof msg.workerMs === 'number' ? msg.workerMs : undefined,
+      resultError ?? undefined,
+    );
+
     const mesh = msg.mesh as MeshResult['mesh'];
     // A worker mesh carrying triColors came from the voxel engine, whose
     // per-voxel colors are all authored. Structured clone dropped the
@@ -246,8 +353,15 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       renderOnly: !!msg.renderOnly,
       lostLabels: lostLabels && lostLabels.length > 0 ? lostLabels : undefined,
       paramsSchema: (msg.paramsSchema as MeshResult['paramsSchema']) ?? undefined,
+      engineHeapBytes: msg.engineHeapBytes as number | undefined,
     };
     pending.resolve(result);
+    // A WASM trap (OOM / abort) reported as a *result* leaves the Worker's
+    // kernel poisoned — without this, the next run could fault instantly with
+    // the same error until the page is reloaded. Recycle so it boots fresh.
+    if (result.error && isFatalWasmFault(result.error)) {
+      recycleEngineWorker(`Recycling geometry Worker after fatal WASM fault: ${result.error}`);
+    }
     return;
   }
 
@@ -390,7 +504,9 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     const callId = msg.callId as string | null;
     const err = new Error(msg.message as string);
     if (callId) {
-      pendingExecutions.get(callId)?.reject(err);
+      const failedExec = pendingExecutions.get(callId);
+      if (failedExec) recordGeometryRun(failedExec.meta, 'error', undefined, err.message);
+      failedExec?.reject(err);
       pendingExecutions.delete(callId ?? '');
       pendingValidations.get(callId)?.reject(err);
       pendingValidations.delete(callId ?? '');
@@ -444,19 +560,17 @@ export async function executeCodeAsync(
     triVerts:       m.triVerts.slice(),
   }));
 
-  const timeoutMs = getExecuteTimeoutMs(l);
   return new Promise<MeshResult>((resolve, reject) => {
-    // A hung WASM evaluation never posts a result back. Without a timeout the
-    // promise (and the UI's "Running…" state) would wait forever.
-    const timer = setTimeout(() => {
-      if (pendingExecutions.has(callId)) {
-        restartEngineWorker(`Geometry evaluation timed out after ${timeoutMs / 1000}s (the model may be too complex)`);
-      }
-    }, timeoutMs);
+    // No hard timeout on the render path: a slow model is bounded by the user,
+    // not the clock. The live elapsed-time counter shows how long it's taking
+    // and the "× Cancel" button (cancelCurrentExecution → restartEngineWorker)
+    // terminates the Worker on demand, rejecting this promise. A genuine hang
+    // is therefore recoverable without auto-killing legitimately-heavy work.
     pendingExecutions.set(callId, {
-      resolve: (r) => { clearTimeout(timer); resolve(r); },
-      reject:  (e) => { clearTimeout(timer); reject(e); },
+      resolve,
+      reject,
       onPreview,
+      meta: { startedAt: performance.now(), lang: l },
     });
     const companionFiles = getCompanionFiles();
     engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
@@ -496,11 +610,12 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
     initEngineWorker();
     await workerReady;
     const callId = `val-${++callIdCounter}`;
-    const timeoutMs = getExecuteTimeoutMs(l);
+    const timeoutMs = getWorkerOpTimeoutMs('scad');
     return new Promise<ValidateResult>((resolve, reject) => {
-      // A hung validate never posts a result back. Mirror executeCodeAsync's
-      // timeout so a stuck OpenSCAD parse restarts the worker (which rejects all
-      // pending validations) instead of leaving the promise unsettled forever.
+      // A hung validate never posts a result back, and (unlike the render path)
+      // there's no Cancel button on validation — so a stuck OpenSCAD parse
+      // restarts the worker (which rejects all pending validations) instead of
+      // leaving the promise unsettled forever.
       const timer = setTimeout(() => {
         if (pendingValidations.has(callId)) {
           restartEngineWorker(`OpenSCAD validation timed out after ${timeoutMs / 1000}s`);
@@ -530,7 +645,7 @@ export async function detectScadIncludesAsync(source: string): Promise<string[] 
     return null;
   }
   const callId = `det-${++callIdCounter}`;
-  const timeoutMs = getExecuteTimeoutMs('scad');
+  const timeoutMs = getWorkerOpTimeoutMs('scad');
   return new Promise<string[] | null>((resolve) => {
     const timer = setTimeout(() => {
       if (pendingDetections.has(callId)) {
@@ -561,7 +676,7 @@ export async function exportLastBrepAsSTEP(): Promise<Blob | null> {
       if (pendingStepExports.has(callId)) {
         restartEngineWorker('STEP export timed out');
       }
-    }, getExecuteTimeoutMs('replicad'));
+    }, getWorkerOpTimeoutMs('replicad'));
     pendingStepExports.set(callId, {
       resolve: (b) => { clearTimeout(timer); resolve(b); },
       reject: (e) => { clearTimeout(timer); reject(e); },
@@ -585,7 +700,7 @@ export async function importSTEPToBrep(blob: Blob, filename: string): Promise<st
       if (pendingStepBrepImports.has(callId)) {
         restartEngineWorker('STEP→BREP import timed out');
       }
-    }, getExecuteTimeoutMs('replicad'));
+    }, getWorkerOpTimeoutMs('replicad'));
     pendingStepBrepImports.set(callId, {
       resolve: (n) => { clearTimeout(timer); resolve(n); },
       reject: (e) => { clearTimeout(timer); reject(e); },
@@ -608,7 +723,7 @@ export async function importSTEPToMesh(blob: Blob): Promise<MeshData> {
       if (pendingStepMeshImports.has(callId)) {
         restartEngineWorker('STEP→mesh import timed out');
       }
-    }, getExecuteTimeoutMs('replicad'));
+    }, getWorkerOpTimeoutMs('replicad'));
     pendingStepMeshImports.set(callId, {
       resolve: (m) => { clearTimeout(timer); resolve(m); },
       reject: (e) => { clearTimeout(timer); reject(e); },
@@ -628,7 +743,7 @@ export async function clearBrepImports(): Promise<void> {
       if (pendingClearBrepImports.has(callId)) {
         restartEngineWorker('clearBrepImports timed out');
       }
-    }, getExecuteTimeoutMs('replicad'));
+    }, getWorkerOpTimeoutMs('replicad'));
     pendingClearBrepImports.set(callId, {
       resolve: () => { clearTimeout(timer); resolve(); },
       reject: (e) => { clearTimeout(timer); reject(e); },
@@ -650,7 +765,7 @@ export async function clearBrepShape(): Promise<void> {
       if (pendingClearBrepShapes.has(callId)) {
         restartEngineWorker('clearBrepShape timed out');
       }
-    }, getExecuteTimeoutMs('replicad'));
+    }, getWorkerOpTimeoutMs('replicad'));
     pendingClearBrepShapes.set(callId, {
       resolve: () => { clearTimeout(timer); resolve(); },
       reject: (e) => { clearTimeout(timer); reject(e); },
@@ -689,6 +804,10 @@ export async function simplifyInWorker(
   maxTolerance: number,
   onProgress: (fraction: number) => void,
   signal?: AbortSignal,
+  /** When > 0, the worker runs a single direct `simplify(tolerance)` pass
+   *  instead of binary-searching to `targetTriangles` — the "by edge length /
+   *  feature size" knob. `targetTriangles`/`maxTolerance` are then ignored. */
+  directTolerance?: number,
 ): Promise<SimplifyWorkerResult | null> {
   if (signal?.aborted) throw new SimplifyAbortError();
   initEngineWorker();
@@ -736,7 +855,8 @@ export async function simplifyInWorker(
     };
     const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
     engineWorker!.postMessage(
-      { type: 'simplify', callId, mesh: meshCopy, targetTriangles, maxTolerance },
+      { type: 'simplify', callId, mesh: meshCopy, targetTriangles, maxTolerance,
+        ...(directTolerance && directTolerance > 0 ? { tolerance: directTolerance } : {}) },
       transfer,
     );
   });
@@ -766,6 +886,11 @@ export async function enhanceInWorker(
   maxEdgeLength: number,
   onProgress: (fraction: number) => void,
   signal?: AbortSignal,
+  /** When > 0, the worker runs a single direct `refineToLength(edgeLength)`
+   *  pass instead of binary-searching to `targetTriangles` — the "by edge
+   *  length / triangle size" knob. `targetTriangles`/`maxEdgeLength` are then
+   *  ignored. */
+  directEdgeLength?: number,
 ): Promise<EnhanceWorkerResult | null> {
   if (signal?.aborted) throw new EnhanceAbortError();
   initEngineWorker();
@@ -805,7 +930,8 @@ export async function enhanceInWorker(
     };
     const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
     engineWorker!.postMessage(
-      { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength },
+      { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength,
+        ...(directEdgeLength && directEdgeLength > 0 ? { edgeLength: directEdgeLength } : {}) },
       transfer,
     );
   });

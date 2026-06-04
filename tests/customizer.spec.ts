@@ -125,6 +125,33 @@ test.describe('Customizer parameters', () => {
     expect(Number(sliderVal)).toBeCloseTo(47, 0);
   });
 
+  test('typing past the declared max keeps the exact value and grows the slider', async ({ page }) => {
+    await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code), PARAM_MODEL);
+    await expect(page.locator('#params-panel')).toBeVisible();
+
+    // Width is declared max:100 — type 250 and commit. The model must re-run to
+    // the exact typed dimension rather than clamping back to 100.
+    await page.evaluate(() => {
+      const panel = document.getElementById('params-panel')!;
+      const field = panel.querySelector('input[type="number"]') as HTMLInputElement; // first = width
+      field.value = '250';
+      field.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await expect.poll(() => currentXDim(page)).toBeCloseTo(250, 0);
+
+    // Both controls reflect the out-of-range value: the field shows 250 and the
+    // slider grew its range so the thumb tracks it instead of pinning at 100.
+    const state = await page.evaluate(() => {
+      const panel = document.getElementById('params-panel')!;
+      const field = panel.querySelector('input[type="number"]') as HTMLInputElement;
+      const slider = panel.querySelector('input[type="range"]') as HTMLInputElement;
+      return { field: field.value, sliderVal: slider.value, sliderMax: slider.max };
+    });
+    expect(Number(state.field)).toBeCloseTo(250, 0);
+    expect(Number(state.sliderVal)).toBeCloseTo(250, 0);
+    expect(Number(state.sliderMax)).toBeGreaterThanOrEqual(250);
+  });
+
   test('parameters work in a voxel session (engine-agnostic)', async ({ page }) => {
     const VOXEL_PARAM_MODEL = `
 const p = api.params({ size: { type: 'int', default: 4, min: 1, max: 20, label: 'Size' } });

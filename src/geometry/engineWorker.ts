@@ -21,7 +21,7 @@
 //
 // Protocol — Worker → Main:
 //   { type: 'ready' }
-//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, lostLabels, paramsSchema }
+//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, lostLabels, paramsSchema, workerMs }
 //   { type: 'validate_result',         callId, result }
 //   { type: 'detect_includes_result',  callId, result }
 //   { type: 'exportSTEP_result',       callId, blob, error }
@@ -47,7 +47,7 @@ import { sourceUsesManifoldText, preloadTextFonts } from './textGlyphs';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { setCircularSegmentsOverride } from './qualitySettings';
 import type { Language } from './engines/types';
-import { simplifyToTriangleBudget, enhanceToTriangleBudget } from './simplify';
+import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, type SimplifyResult, type EnhanceResult } from './simplify';
 import type { MeshData } from './types';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
@@ -58,6 +58,20 @@ const simplifyCancelFlags = new Map<string, boolean>();
 const enhanceCancelFlags = new Map<string, boolean>();
 
 let manifoldReady = false;
+
+/** Current size (bytes) of the manifold-3d WASM linear heap — its grown
+ *  high-water mark, since WASM memory never shrinks. Reported back to the main
+ *  thread so the diagnostics can show how close a run came to the 4 GB ceiling
+ *  (and, on an OOM, whether it truly hit it or failed far below). Only
+ *  meaningful for manifold-js runs; the other engines own separate WASM heaps. */
+function manifoldHeapBytes(): number | undefined {
+  try {
+    const heap = (getManifoldModule() as { HEAPU8?: { byteLength?: number } } | null)?.HEAPU8;
+    return typeof heap?.byteLength === 'number' ? heap.byteLength : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // Catch unhandled promise rejections inside the Worker (e.g. WASM panics that
 // escape an inner try-catch) and forward them as 'error' messages so the main
@@ -100,6 +114,10 @@ self.onmessage = async (event: MessageEvent) => {
       params?: Record<string, unknown> | null;
       companionFiles?: Record<string, string>;
     };
+    // Worker-side compute timer. Reported back on execute_result so the
+    // worker-health panel can separate real evaluation time from the
+    // queue + structured-clone transfer overhead the main thread also sees.
+    const execStart = performance.now();
     try {
       // Propagate the main-thread quality setting so the Worker uses the same
       // segment count. SCAD/replicad execute asynchronously, so two runs can
@@ -177,6 +195,8 @@ self.onmessage = async (event: MessageEvent) => {
         : null;
       const lostLabels = result.lostLabels ?? null;
       const paramsSchema = result.paramsSchema ?? null;
+      // Heap high-water for manifold-js runs (other engines own separate heaps).
+      const engineHeapBytes = effectiveLang === 'manifold-js' ? manifoldHeapBytes() : undefined;
 
       const mesh = result.mesh;
       if (mesh) {
@@ -195,7 +215,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes },
           transfer,
         );
       } else {
@@ -208,6 +228,8 @@ self.onmessage = async (event: MessageEvent) => {
           labelMapEntries: null,
           lostLabels: null,
           paramsSchema,
+          workerMs: Math.round(performance.now() - execStart),
+          engineHeapBytes,
         });
       }
 
@@ -241,11 +263,14 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── simplify ───────────────────────────────────────────────────────────
   if (msg.type === 'simplify') {
-    const { callId, mesh, targetTriangles, maxTolerance } = msg as unknown as {
+    const { callId, mesh, targetTriangles, maxTolerance, tolerance } = msg as unknown as {
       callId: string;
       mesh: MeshData;
       targetTriangles: number;
       maxTolerance: number;
+      // When set (> 0), run a single direct simplify(tolerance) pass instead of
+      // the triangle-budget binary search — the "by edge length / size" knob.
+      tolerance?: number;
     };
     if (!manifoldReady) {
       self.postMessage({
@@ -259,19 +284,32 @@ self.onmessage = async (event: MessageEvent) => {
     let baseManifold: { delete?: () => void } | null = null;
     try {
       baseManifold = mod.Manifold.ofMesh(mesh);
-      const result = await simplifyToTriangleBudget(
-        baseManifold as unknown as Parameters<typeof simplifyToTriangleBudget>[0],
-        targetTriangles,
-        maxTolerance,
-        (fraction) => {
-          self.postMessage({ type: 'simplify_progress', callId, fraction });
-          // Loop yields to the event loop between iterations so a queued
-          // 'simplify_cancel' message can flip the flag — checked here so the
-          // search bails before doing more work.
-          return new Promise<void>(r => setTimeout(r, 0));
-        },
-        () => simplifyCancelFlags.get(callId) === true,
-      );
+      const direct = typeof tolerance === 'number' && tolerance > 0;
+      let result: SimplifyResult | null;
+      if (direct) {
+        // Single synchronous pass — bracket with 0/1 progress so the modal
+        // behaves the same as the searched path.
+        self.postMessage({ type: 'simplify_progress', callId, fraction: 0 });
+        result = simplifyToTolerance(
+          baseManifold as unknown as Parameters<typeof simplifyToTolerance>[0],
+          tolerance,
+        );
+        self.postMessage({ type: 'simplify_progress', callId, fraction: 1 });
+      } else {
+        result = await simplifyToTriangleBudget(
+          baseManifold as unknown as Parameters<typeof simplifyToTriangleBudget>[0],
+          targetTriangles,
+          maxTolerance,
+          (fraction) => {
+            self.postMessage({ type: 'simplify_progress', callId, fraction });
+            // Loop yields to the event loop between iterations so a queued
+            // 'simplify_cancel' message can flip the flag — checked here so the
+            // search bails before doing more work.
+            return new Promise<void>(r => setTimeout(r, 0));
+          },
+          () => simplifyCancelFlags.get(callId) === true,
+        );
+      }
       const cancelled = simplifyCancelFlags.get(callId) === true;
       simplifyCancelFlags.delete(callId);
       if (cancelled) {
@@ -324,11 +362,16 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── enhance ────────────────────────────────────────────────────────────
   if (msg.type === 'enhance') {
-    const { callId, mesh, targetTriangles, maxEdgeLength } = msg as unknown as {
+    const { callId, mesh, targetTriangles, maxEdgeLength, edgeLength } = msg as unknown as {
       callId: string;
       mesh: MeshData;
       targetTriangles: number;
       maxEdgeLength: number;
+      // When set (> 0), run a single direct refineToLength(edgeLength) pass
+      // instead of the triangle-budget binary search — the "by edge length /
+      // size" knob. Splits only edges longer than this, so the larger triangles
+      // densify first.
+      edgeLength?: number;
     };
     if (!manifoldReady) {
       self.postMessage({
@@ -342,16 +385,27 @@ self.onmessage = async (event: MessageEvent) => {
     let baseManifold: { delete?: () => void } | null = null;
     try {
       baseManifold = mod.Manifold.ofMesh(mesh);
-      const result = await enhanceToTriangleBudget(
-        baseManifold as unknown as Parameters<typeof enhanceToTriangleBudget>[0],
-        targetTriangles,
-        maxEdgeLength,
-        (fraction) => {
-          self.postMessage({ type: 'enhance_progress', callId, fraction });
-          return new Promise<void>(r => setTimeout(r, 0));
-        },
-        () => enhanceCancelFlags.get(callId) === true,
-      );
+      const direct = typeof edgeLength === 'number' && edgeLength > 0;
+      let result: EnhanceResult | null;
+      if (direct) {
+        self.postMessage({ type: 'enhance_progress', callId, fraction: 0 });
+        result = refineToEdgeLength(
+          baseManifold as unknown as Parameters<typeof refineToEdgeLength>[0],
+          edgeLength,
+        );
+        self.postMessage({ type: 'enhance_progress', callId, fraction: 1 });
+      } else {
+        result = await enhanceToTriangleBudget(
+          baseManifold as unknown as Parameters<typeof enhanceToTriangleBudget>[0],
+          targetTriangles,
+          maxEdgeLength,
+          (fraction) => {
+            self.postMessage({ type: 'enhance_progress', callId, fraction });
+            return new Promise<void>(r => setTimeout(r, 0));
+          },
+          () => enhanceCancelFlags.get(callId) === true,
+        );
+      }
       const cancelled = enhanceCancelFlags.get(callId) === true;
       enhanceCancelFlags.delete(callId);
       if (cancelled) {

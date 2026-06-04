@@ -16,7 +16,7 @@
 // import edge changes.
 
 /** Identifiers for the mutually-exclusive viewport tools. */
-export type ExclusiveMode = 'paint' | 'pen' | 'text' | 'select';
+export type ExclusiveMode = 'paint' | 'imagePaint' | 'pen' | 'text' | 'select';
 
 /** Options forwarded verbatim to a mode's `forceDeactivate`. Only the annotate
  *  sub-modes honour `keepSession`; paint ignores it. */

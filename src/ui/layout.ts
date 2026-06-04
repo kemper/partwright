@@ -749,6 +749,14 @@ function createClipControls(): HTMLElement {
   lockBtn.title = 'Lock camera rotation';
   container.appendChild(lockBtn);
 
+  // Reset view \u2014 re-frames the camera to the default 3/4 angle of the model.
+  const resetBtn = document.createElement('button');
+  resetBtn.id = 'reset-view';
+  resetBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  resetBtn.textContent = '\u21BB Reset View';
+  resetBtn.title = 'Reset camera to the default view';
+  container.appendChild(resetBtn);
+
   // Visual separator between the view toggles (above) and the tools that follow
   // (Measure, Cross Section, plus the injected Paint/Annotate/Simplify buttons).
   const divider = document.createElement('div');

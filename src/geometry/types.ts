@@ -67,6 +67,12 @@ export interface MeshResult {
    *  and tells callers which knobs (and value ranges) the model exposes. Absent
    *  when the model declared no parameters. */
   paramsSchema?: ParamSpec[];
+  /** Size (bytes) of the manifold-3d WASM heap after this run — its grown
+   *  high-water mark (WASM memory never shrinks). Surfaced in the diagnostics so
+   *  users can see how close a run came to the ~4 GB ceiling, and on an OOM
+   *  whether it truly hit it or failed far below. Only set for manifold-js runs;
+   *  absent for the other engines (which own separate heaps). */
+  engineHeapBytes?: number;
 }
 
 export interface CrossSectionResult {

@@ -48,13 +48,15 @@ export interface AppConfig {
     charsPerToken: number;
     /** Estimated tokens per image block at standard resolution. */
     imageTokenEstimate: number;
-    /** Geometry execution timeout for the manifold-js (mesh) engine (ms). */
-    geometryTimeoutManifoldMs: number;
-    /** Geometry execution timeout for the OpenSCAD engine (ms). SCAD compiles
-     *  BOSL2-style libraries from source per call — complex gear/thread models
-     *  can exceed a minute on slow hardware. */
+    /** Safety timeout (ms) for SCAD Worker operations with no cancel button —
+     *  OpenSCAD validation and include-detection. (The render path has no
+     *  timeout; it's bounded by the elapsed counter + Cancel button instead.)
+     *  SCAD compiles BOSL2-style libraries from source per call, so this needs
+     *  generous headroom. */
     geometryTimeoutScadMs: number;
-    /** Geometry execution timeout for the replicad/BREP (OpenCASCADE) engine (ms). */
+    /** Safety timeout (ms) for replicad/BREP (OpenCASCADE) Worker operations
+     *  with no cancel button — STEP export/import and BREP-shape cleanup. (The
+     *  render path has no timeout; see the render counter + Cancel button.) */
     geometryTimeoutReplicadMs: number;
     /** Token budget for the system-prompt block in local (WebLLM) medium-tier models. */
     localPromptBudgetMedium: number;
@@ -90,6 +92,10 @@ export interface AppConfig {
     gizmoSnapDurationSec: number;
     /** OrbitControls damping factor — lower is snappier, higher is smoother. */
     orbitDampingFactor: number;
+    /** Zoom-out limit as a multiple of the model's largest dimension. Caps how
+     *  far the camera can dolly back (OrbitControls maxDistance) so the model
+     *  can't shrink to a speck. Re-derived from the model size on each frame. */
+    maxZoomOutFactor: number;
     /** Ambient light intensity in the 3D viewport (0–2 range). */
     ambientLightIntensity: number;
     /** Primary directional light intensity (0–2 range). */
@@ -147,6 +153,12 @@ export interface AppConfig {
     defaultQuality: number;
     /** Default circular segment count for OpenSCAD ($fn) geometry renders. */
     scadDefaultQuality: number;
+    /** In-memory ring buffer size for the worker run-history log (recent
+     *  geometry runs shown in the worker health panel). */
+    workerRunHistorySize: number;
+    /** Live-refresh interval (ms) for the worker health panel — how often it
+     *  re-polls in-flight counts and liveness while open. */
+    workerPanelRefreshMs: number;
   };
 }
 
@@ -169,7 +181,6 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     maxOutputTokensGemini: 32768,
     charsPerToken: 4,
     imageTokenEstimate: 1500,
-    geometryTimeoutManifoldMs: 60_000,
     geometryTimeoutScadMs: 180_000,
     geometryTimeoutReplicadMs: 180_000,
     localPromptBudgetMedium: 1300,
@@ -190,6 +201,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     gizmoHitRadius: 0.4,
     gizmoSnapDurationSec: 0.4,
     orbitDampingFactor: 0.1,
+    maxZoomOutFactor: 12,
     ambientLightIntensity: 0.6,
     primaryLightIntensity: 0.8,
     secondaryLightIntensity: 0.3,
@@ -219,6 +231,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     sessionLockStaleMs: 8000,
     defaultQuality: 128,
     scadDefaultQuality: 32,
+    workerRunHistorySize: 50,
+    workerPanelRefreshMs: 1000,
   },
 };
 
