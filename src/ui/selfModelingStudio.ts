@@ -38,7 +38,7 @@ export interface SelfModelingStudioOptions {
     images: Array<{ src: string; label: string }>;
     brief: string;
     record: StudioImportRecord;
-  }) => Promise<{ ok?: boolean; error?: string }>;
+  }) => Promise<{ ok?: boolean; error?: string; attached?: number }>;
 }
 
 let isOpen = false;
@@ -358,7 +358,7 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
         renderFooter();
         return;
       }
-      setStatus(`Sent ${images.length} reference views to the AI.`);
+      setStatus(`Attached ${res.attached ?? images.length} reference views to the chat and prefilled the brief — review it and send.`);
       close();
     } catch (e) {
       const msg = (e as Error).message;

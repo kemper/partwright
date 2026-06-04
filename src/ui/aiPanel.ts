@@ -2358,6 +2358,16 @@ function attachImageSource(img: ImageSource): void {
   void putAttachment(img).catch(err => console.warn('Recent attachments: write failed', err));
 }
 
+/** Attach images to the *next* AI message programmatically — the same pending
+ *  path the 📷 Show AI button uses, so they ride into the model's vision when
+ *  the message is sent (regardless of the auto-render toggle). Opens the panel.
+ *  Used by the Self-Modeling Studio to hand its reference views to the model. */
+export function attachImagesToChat(images: ImageSource[]): void {
+  if (images.length === 0) return;
+  if (!state.open) showDrawer(false);
+  for (const img of images) attachImageSource(img);
+}
+
 function renderPendingImages(): void {
   if (!pendingImagesEl) return;
   pendingImagesEl.replaceChildren();

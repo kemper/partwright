@@ -72,6 +72,11 @@ test.describe('Self-Modeling Studio', () => {
     expect(briefText).toMatch(/reference views/);
     expect(briefText).toMatch(/renderViews?/);
 
+    // Critically: the references are attached to the CHAT (pending images that
+    // ride into the model's vision on send), not just the gallery. A fresh
+    // transcript has no other images, so these are the 3 reference chips.
+    await expect(page.locator('#ai-panel img')).toHaveCount(3);
+
     // Reopen the studio for this session — the saved import repopulates with no
     // Gemini calls (persistence), so the 3 uploaded views are already ready.
     await page.evaluate(() => (window as unknown as { partwright: { openSelfModelingStudio(): unknown } }).partwright.openSelfModelingStudio());

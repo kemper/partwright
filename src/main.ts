@@ -43,7 +43,7 @@ import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
 import { confirmDialog } from './ui/dialogs';
-import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, setAiPanelRouteActive } from './ui/aiPanel';
+import { initAiPanel, setActiveSession as setAiActiveSession, toggleAiPanel, toggleAiPanelFromToolbar, prefillAiInput, attachImagesToChat, setAiPanelRouteActive } from './ui/aiPanel';
 import { getKey, mergeChatBucket } from './ai/db';
 import { requestPersistentStorage } from './storage/persist';
 import { aiConnectionMode, reloadSettingsFromStorage, getRenderBudget, getSpendingSummary, setSpendingMode as applyAiSpendingMode } from './ai/settings';
@@ -109,6 +109,8 @@ import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import { carveVisualHull, imageToMask, type SilhouetteView, type Vec3 as ReconVec3 } from './recon/visualHull';
 import { deserializeStudio, type StudioImportRecord } from './recon/studioModel';
+import { dataUrlToInline } from './ai/geminiImage';
+import type { ImageSource } from './ai/types';
 import { openSelfModelingStudio } from './ui/selfModelingStudio';
 import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
@@ -2594,11 +2596,28 @@ async function main() {
         try {
           // Need a session to attach references + AI chat to.
           if (!getState().session) await createSession('photo-model');
+          // Surface the views in the gallery for the user…
           partwrightAPI.setImages(images);
+          // …AND push them into the model's vision for the next turn. The
+          // gallery alone never reaches the model — that was the bug. Mirrors
+          // the 📷 Show AI path; sent regardless of the auto-render toggle.
+          const sources: ImageSource[] = [];
+          for (const im of images) {
+            try {
+              const inline = dataUrlToInline(im.src);
+              const mt = inline.mediaType.toLowerCase();
+              const mediaType: ImageSource['mediaType'] =
+                mt === 'image/jpeg' || mt === 'image/jpg' ? 'image/jpeg'
+                  : mt === 'image/gif' ? 'image/gif'
+                    : mt === 'image/webp' ? 'image/webp' : 'image/png';
+              sources.push({ data: inline.data, mediaType, label: im.label });
+            } catch { /* skip non-data URLs */ }
+          }
+          attachImagesToChat(sources);
           prefillAiInput(brief); // opens the AI panel and fills the input (no send)
           const activeId = getState().session?.id;
           if (activeId) await saveStudioImport(activeId, record as unknown as Record<string, unknown>);
-          return { ok: true };
+          return { ok: true, attached: sources.length };
         } catch (e) {
           return { error: (e as Error).message };
         }
