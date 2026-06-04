@@ -6,6 +6,7 @@
 // untouched; the scaled result is its own version.
 
 import { registerCommands } from './commandPalette';
+import { getConfig } from '../config/appConfig';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
 
@@ -96,7 +97,7 @@ export function openResizeModal(api: ResizeApi): void {
   closeBtn.setAttribute('aria-label', 'Close resize panel');
   header.append(closeBtn);
   panel.append(header);
-  attachViewportPanelDrag(header, panel);
+  const dragHandle = attachViewportPanelDrag(header, panel);
 
   const body = el('div', 'p-4 overflow-y-auto flex-1');
   panel.append(body);
@@ -287,9 +288,11 @@ export function openResizeModal(api: ResizeApi): void {
     status.textContent = 'Updating preview…';
     previewTimer = window.setTimeout(() => {
       const [sx, sy, sz] = getScaleFactors();
-      // Skip preview if scale is identity
+      // Identity scale: revert any preview already pushed (e.g. the user dialed
+      // every axis back to 100%/current size) instead of leaving the stale
+      // scaled mesh in the viewport.
       if (Math.abs(sx - 1) < 0.0001 && Math.abs(sy - 1) < 0.0001 && Math.abs(sz - 1) < 0.0001) {
-        status.textContent = '';
+        clearPreview();
         return;
       }
       const r = api.previewScale(sx, sy, sz, { preserveColor });
@@ -299,7 +302,7 @@ export function openResizeModal(api: ResizeApi): void {
         previewDirty = true;
         status.textContent = 'Previewing — Apply to save a new version.';
       }
-    }, 120);
+    }, getConfig().ui.surfacePreviewDebounceMs);
   }
 
   function clearPreview() {
@@ -310,6 +313,7 @@ export function openResizeModal(api: ResizeApi): void {
 
   const close = () => {
     clearPreview();
+    dragHandle.destroy();
     panel.remove();
     openModal = null;
     currentResizeClose = null;

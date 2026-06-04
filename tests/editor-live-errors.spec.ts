@@ -62,10 +62,11 @@ test.describe('editor live errors', () => {
     await page.click('#btn-diagnostics');
     const diag = page.locator('#diagnostics-panel');
     await expect(diag).toBeVisible();
-    // Scope to the diagnostic LOG list — the panel also carries a separate
-    // "Recent geometry runs" worker-health section that legitimately records the
-    // failed run; the assertion here is specifically that the transient typing
-    // error never reaches the captured log.
-    await expect(page.locator('#diagnostics-log')).not.toContainText('zzznotdefined123');
+    // Scope to the diagnostic log (lower half). The panel's upper half is
+    // worker telemetry — its "Recent geometry runs" ring buffer legitimately
+    // records every auto-run, failures included; that's run history, not the
+    // user-facing error log this test guards.
+    const log = page.locator('#diagnostics-log-list');
+    await expect(log).not.toContainText('zzznotdefined123');
   });
 });
