@@ -9,6 +9,7 @@ import { getActiveImports } from '../import/importedMesh';
 import { getCompanionFiles } from '../import/companionFiles';
 import { getDefaultCircularSegments } from './qualitySettings';
 import { getConfig } from '../config/appConfig';
+import { isFatalWasmFault } from './workerFaults';
 
 export type { Language };
 export { isLanguage, DEFAULT_LANGUAGE };
@@ -170,6 +171,25 @@ export function cancelCurrentExecution(): void {
   restartEngineWorker('Execution cancelled');
 }
 
+/** Discard the Worker after a *handled* fatal WASM fault. Unlike
+ *  restartEngineWorker, the current call's result has already been delivered —
+ *  we tear the Worker down only so the *next* run boots a clean WASM module.
+ *  A WASM trap (e.g. "memory access out of bounds") can leave the kernel's C++
+ *  state half-mutated, after which every subsequent call into the same instance
+ *  faults instantly; recycling here is the only reliable recovery short of a
+ *  page reload. Any *other* in-flight calls are rejected so they reboot too. */
+function recycleEngineWorker(reason: string): void {
+  rejectAllPending(new Error(reason));
+  workerReadyReject?.(new Error(reason));
+  workerReadyReject = null;
+  engineWorker?.terminate();
+  engineWorker = null;
+  // Recovery, not a crash — warn (still recorded in the diagnostic log) rather
+  // than error, so it doesn't read as a second hard failure to the user.
+  // eslint-disable-next-line no-console
+  console.warn('[EngineWorker]', reason);
+}
+
 function initEngineWorker(): void {
   if (engineWorker) return;
   // Fresh ready-gate so the restarted Worker's 'ready' message resolves it,
@@ -248,6 +268,12 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       paramsSchema: (msg.paramsSchema as MeshResult['paramsSchema']) ?? undefined,
     };
     pending.resolve(result);
+    // A WASM trap (OOM / abort) reported as a *result* leaves the Worker's
+    // kernel poisoned — without this, the next run could fault instantly with
+    // the same error until the page is reloaded. Recycle so it boots fresh.
+    if (result.error && isFatalWasmFault(result.error)) {
+      recycleEngineWorker(`Recycling geometry Worker after fatal WASM fault: ${result.error}`);
+    }
     return;
   }
 

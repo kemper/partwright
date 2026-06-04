@@ -11558,7 +11558,16 @@ async function main() {
       if (surfaceErrors) {
         // Explicit run: record + show + log + jump to the first diagnostic now.
         recordError(result.error);
-        errorLog.capture({ level: 'error', source: 'engine', message: result.error });
+        // Engine errors carry no JS stack (the fault is inside the WASM kernel,
+        // off-thread), so attach the diagnostics + run metadata as the log detail
+        // — otherwise the diagnostics panel shows "No stack trace or origin
+        // captured" for what is often a memory/complexity fault worth context.
+        const engineDetail = [
+          `language: ${getActiveLanguage()}`,
+          `executionTimeMs: ${elapsed}`,
+          ...diagnostics.map(d => `${d.severity ?? 'error'} (${d.source ?? 'engine'}): ${d.message}`),
+        ].join('\n');
+        errorLog.capture({ level: 'error', source: 'engine', message: result.error, detail: engineDetail });
         setEditorDiagnostics(diagnostics);
         renderEditorError(editorErrorPanel, result.error, diagnostics);
         revealFirstDiagnostic();
