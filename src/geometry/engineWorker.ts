@@ -8,6 +8,7 @@
 //   { type: 'init' }
 //   { type: 'execute',           callId, code, lang?, imports?, circularSegments?, params? }
 //   { type: 'validate',          callId, code, lang? }
+//   { type: 'detect_includes',   callId, code }
 //   { type: 'exportSTEP',        callId }
 //   { type: 'importSTEPToBrep',  callId, bytes, filename }
 //   { type: 'importSTEPToMesh',  callId, bytes }
@@ -22,6 +23,7 @@
 //   { type: 'ready' }
 //   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, lostLabels, paramsSchema }
 //   { type: 'validate_result',         callId, result }
+//   { type: 'detect_includes_result',  callId, result }
 //   { type: 'exportSTEP_result',       callId, blob, error }
 //   { type: 'importSTEPToBrep_result', callId, filename, error }
 //   { type: 'importSTEPToMesh_result', callId, mesh, error }
@@ -37,7 +39,7 @@
 // labelMap (Map<string, Set<number>>) is serialised as [string, number[]][].
 
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
-import { runScadAsync, openscadEngine } from './engines/openscad';
+import { runScadAsync, openscadEngine, detectUnresolvedIncludes } from './engines/openscad';
 import { runReplicadAsync, replicadEngine, getLastBrepShape, clearLastBrepShape } from './engines/replicad';
 import { voxelEngine } from './engines/voxel';
 import { ensureBrepLoaded, sourceUsesBrep, parseStepBlob, pushPendingBrepImport, clearPendingBrepImports } from './brepRuntime';
@@ -89,13 +91,14 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params, companionFiles } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
       imports?: ImportedMesh[];
       circularSegments?: number;
       params?: Record<string, unknown> | null;
+      companionFiles?: Record<string, string>;
     };
     try {
       // Propagate the main-thread quality setting so the Worker uses the same
@@ -134,7 +137,7 @@ self.onmessage = async (event: MessageEvent) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (self as any).postMessage({ type: 'execute_preview', callId, mesh }, transfer);
         };
-        result = await runScadAsync(code as string, params ?? undefined, onScadPreview);
+        result = await runScadAsync(code as string, params ?? undefined, onScadPreview, companionFiles);
       } else if (effectiveLang === 'replicad') {
         // Full replicad-language session — lazy-init OCCT then evaluate as
         // BREP. Tessellation happens inside the engine before returning.
@@ -395,6 +398,25 @@ self.onmessage = async (event: MessageEvent) => {
   if (msg.type === 'enhance_cancel') {
     const { callId } = msg as unknown as { callId: string };
     if (enhanceCancelFlags.has(callId)) enhanceCancelFlags.set(callId, true);
+    return;
+  }
+
+  // ── detect_includes ──────────────────────────────────────────────────────
+  // Fast import-time dependency probe: compile the SCAD source far enough to
+  // resolve include/use targets and report the ones OpenSCAD can't open.
+  if (msg.type === 'detect_includes') {
+    const { callId, code } = msg as unknown as { callId: string; code: string };
+    try {
+      if (!openscadEngine.isReady()) await openscadEngine.init();
+      const result = await detectUnresolvedIncludes(code);
+      self.postMessage({ type: 'detect_includes_result', callId, result });
+    } catch (err) {
+      self.postMessage({
+        type: 'error',
+        callId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
     return;
   }
 

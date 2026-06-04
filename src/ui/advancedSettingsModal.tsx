@@ -657,6 +657,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'codeEditorErrorIdleMs', v)}
         />
         <Field
+          label="Companion draft autosave debounce"
+          unit="ms"
+          tooltip="After you stop typing in a SCAD companion file, the editor waits this long before autosaving the draft so the edit survives a reload. Coalesces keystrokes so IndexedDB isn't written on every key. Lower it to capture edits sooner; raise it to write less often."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.companionDraftDebounceMs}
+          value={c.ui.companionDraftDebounceMs}
+          min={0} max={5_000} integer
+          onChange={v => set('ui', 'companionDraftDebounceMs', v)}
+        />
+        <Field
           label="Surface preview debounce"
           unit="ms"
           tooltip="When adjusting parameters in the surface-modifier panel (texture, fuzzy, etc.), this debounce delays the preview render until you've stopped changing values for this long. Lower it for more responsive live preview; raise it if previewing is slow on your machine."
