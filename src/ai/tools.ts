@@ -31,6 +31,7 @@ export interface ToolDefinition {
 }
 
 import type { ImageSource } from './types';
+import { compositeReferenceGrid } from './images';
 
 export interface ToolExecResult {
   content: string;
@@ -293,6 +294,11 @@ const ALL_TOOLS: ToolDefinition[] = [
         withinBox: { type: 'object', description: 'Optional {min: [x,y,z], max: [x,y,z]} — only groups whose bbox intersects.' },
       },
     },
+  },
+  {
+    name: 'getReferenceImages',
+    description: 'See the reference images the user attached to this session (the "Images" / reference panel — e.g. photos or alternate-angle views to model from or match). Returns ALL of them as ONE labeled grid image (each tile captioned with its label) plus a text list of the labels. Call this at the START of any task that refers to attached photos/views, and again whenever you need to re-check them — do NOT guess at a subject you have not actually seen. If nothing is attached, it says so.',
+    input_schema: { type: 'object', properties: {} },
   },
   {
     name: 'renderView',
@@ -1068,6 +1074,7 @@ const ALWAYS_AVAILABLE = new Set([
   'getGeometryData',
   'getMeshSummary',
   'getFeatureCentroids',
+  'getReferenceImages',
   'getSessionContext',
   'listVersions',
   // loadVersion is intentionally NOT here — it's listed in SAVE_GATED so
@@ -1203,6 +1210,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
     if (name === 'renderViews') return await executeRenderViews(api, input);
     if (name === 'runIsolated') return await executeRunIsolated(api, input);
     if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
+    if (name === 'getReferenceImages') return await executeGetReferenceImages(api);
 
     const result = await dispatch(api, name, input);
     if (result === undefined) return { content: '(ok)', isError: false };
@@ -1288,6 +1296,31 @@ function readActiveLanguage(): 'manifold-js' | 'scad' | 'replicad' | 'voxel' | n
   } catch {
     return null;
   }
+}
+
+async function executeGetReferenceImages(api: PartwrightAPI): Promise<ToolExecResult> {
+  const raw = typeof api.getImages === 'function' ? api.getImages() : [];
+  const images = (Array.isArray(raw) ? raw : []) as Array<{ src?: string; label?: string }>;
+  const usable = images
+    .filter(im => typeof im.src === 'string' && im.src.length > 0)
+    .map(im => ({ src: im.src as string, label: im.label }));
+  if (usable.length === 0) {
+    return {
+      content: 'No reference images are attached to this session. If the task refers to photos or views, ask the user to attach them in the Images panel (or via the Self-Modeling Studio) — do not invent a subject.',
+      isError: false,
+    };
+  }
+  const labels = usable.map((im, i) => `${i + 1}. ${im.label?.trim() || '(no label)'}`).join('\n');
+  let grid: ImageSource | null = null;
+  try { grid = await compositeReferenceGrid(usable); } catch { grid = null; }
+  if (!grid) {
+    return { content: `${usable.length} reference image(s) attached, but the grid could not be rendered. Labels:\n${labels}`, isError: false };
+  }
+  return {
+    content: `${usable.length} reference image(s), tiled left-to-right, top-to-bottom in the attached grid:\n${labels}`,
+    image: grid,
+    isError: false,
+  };
 }
 
 function executeRenderView(api: PartwrightAPI, input: Record<string, unknown>): ToolExecResult {

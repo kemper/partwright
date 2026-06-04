@@ -187,7 +187,7 @@ export function buildModelingBrief(state: StudioState): string {
     `I've attached ${views.length} reference views of one subject from different angles — they're attached directly to THIS message (and also in the Images tab):`,
     lines,
     '',
-    'IMPORTANT: actually look at the attached images. If you cannot see them in your input, STOP and tell me they are missing — do not guess or invent a subject. Ignore any placeholder/starter model currently in the editor; replace it with your build.',
+    'IMPORTANT: actually look at the attached images (you can also call getReferenceImages anytime to see them again as a labeled grid). If you cannot see them, STOP and tell me they are missing — do not guess or invent a subject. Ignore any placeholder/starter model currently in the editor; replace it with your build.',
     '',
     'Please build a 3D model that matches this subject as closely as you can, using the partwright tools.',
     'Pick whichever engine best fits the form: manifold-js (mesh) for organic/curved shapes like faces and bodies (warp, levelSet, smoothOut help here); BREP/replicad for hard-surface CAD parts with exact fillets; OpenSCAD for parametric mechanical parts; voxel only if a blocky look is wanted.',
