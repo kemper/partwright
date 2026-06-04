@@ -24,8 +24,6 @@ export const STANDARD_VIEWS = {
   top:   { label: 'Top',   elevation: 90, azimuth: 0,   ortho: true  },
   iso:   { label: 'Iso',   elevation: 35, azimuth: 135, ortho: false },
 } as const;
-export type StandardViewAngle = typeof STANDARD_VIEWS[keyof typeof STANDARD_VIEWS];
-
 /** Solid-shaded grey applied to triangles that have no color region.
  *  Sits between the white render background and the brightest painted
  *  RGB so silhouettes stay visible without overpowering painted

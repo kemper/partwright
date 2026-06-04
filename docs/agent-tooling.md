@@ -47,13 +47,27 @@ printing candidates. The moment the codebase is brought into compliance for a
 given rule, bump that rule to `severity: error` and it becomes a hard gate —
 no workflow change needed.
 
+### knip severity → CI gating
+
+`knip.json` sets per-category `rules`. The **trustworthy categories gate**
+(`error`): `dependencies`, `unlisted`, `unresolved`, `files`, `binaries` — these
+reflect real import-graph facts. The **judgement categories stay advisory**
+(`warn`): `exports`, `types`, `duplicates`, etc. Two reasons exports can't gate
+yet: (1) knip can't see exports used **only** through the e2e suite's dynamic
+`import('/src/…')` calls (it resolves the path via the `paths` map but can't
+track which named exports a runtime namespace access uses — e.g. `resetClient`),
+and (2) the standing dead-export backlog needs per-symbol triage (cruft vs.
+unwired-but-intentional API). `tailwindcss` (used via `@tailwindcss/vite`) and
+`replicad-opencascadejs` (dynamic sub-path `import()`) are in
+`ignoreDependencies` — they're real, just invisible to static analysis.
+
 ### CI wiring (`.github/workflows/code-quality.yml`)
 
 Runs on PRs into `main` (alongside `pr-checks.yml`, which owns build + unit +
-e2e). `lint:consistency` is a gate (green today, auto-gates on error-rules);
-`lint:deadcode` and `lint:deps` are advisory (`|| echo ::warning::`) so they
-surface findings in the log without blocking merges while the known backlog is
-worked down. This job does **not** gate the `main → staging` promotion.
+e2e). `lint:consistency` (ast-grep) and `lint:deadcode` (knip) are **gates**;
+`lint:deps` (madge) stays advisory (`|| echo ::warning::`) while the 17 known
+circular deps are worked down. This job does **not** gate the `main → staging`
+promotion.
 
 ## TypeScript LSP MCP (`.mcp.json`)
 
@@ -74,8 +88,16 @@ Caveats:
 
 ## Backlog surfaced by these tools (worth a follow-up)
 
-- ~36 native-dialog calls (`alert`/`confirm`/`prompt`, mostly `sessionList.ts`
-  and `main.ts`) to migrate to modals + `showToast`. Once gone, promote
-  `no-native-dialogs` to `severity: error`.
-- knip-reported unused exports (e.g. `OVERLAY_CENTERED_BLURRED` in
-  `styleConstants.ts`) to delete per the dead-code rule.
+- **~43 unused exports + 4 unused types** (knip, advisory). These need
+  per-symbol triage: most are cruft (query helpers, listener registrations,
+  homonyms, dead types), but some look like unwired-but-intentional API
+  (`viewport.dispose`, the `relief/filaments` CRUD, session draft management)
+  whose removal is a maintainer call. Delete in reviewable batches; once a
+  module is clean, the `exports` rule can graduate from `warn` to `error`.
+- **17 circular dependencies** (madge, advisory), clustered `annotations/` ↔
+  `color/`. Architectural; untangle opportunistically.
+
+Already cleared: the native-dialog backlog (migrated to `showToast` +
+`src/ui/dialogs.ts`; `no-native-dialogs` is now `severity: error`), and knip's
+config false-positives (unresolved `/src` test imports, `tailwindcss` /
+`replicad-opencascadejs` deps).

@@ -35,10 +35,6 @@ export function initPhantomGroup(scene: THREE.Scene): THREE.Group {
   return phantomGroup;
 }
 
-export function getPhantomGroup(): THREE.Group | null {
-  return phantomGroup;
-}
-
 export function setPhantom(meshData: MeshData, options?: PhantomOptions): void {
   if (!phantomGroup) return;
 

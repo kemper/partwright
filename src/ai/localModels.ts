@@ -117,8 +117,6 @@ export const LOCAL_GROUP_HINTS: Record<LocalSizeGroup, string> = {
 };
 
 /** Default local model picked when the user opts in but hasn't chosen yet. */
-export const DEFAULT_LOCAL_MODEL: LocalModelId = 'Hermes-3-Llama-3.1-8B-q4f16_1-MLC';
-
 /** Returns true when the browser exposes WebGPU. Local models require it. */
 export function isWebGpuAvailable(): boolean {
   return typeof navigator !== 'undefined' && 'gpu' in navigator;

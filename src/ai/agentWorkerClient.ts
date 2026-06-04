@@ -15,15 +15,24 @@ import type { RunTurnInput, RunTurnCallbacks } from './chatLoop';
 import type { ChatBlock, ChatMessage, PersistedToolResult } from './types';
 import type { AgentWorkerInput } from './agentWorker';
 import { getConfig } from '../config/appConfig';
+import { registerWorker, markWorkerStarted, markWorkerRestarted } from '../diagnostics/workerStats';
 
 let worker: Worker | null = null;
 let currentCallbacks: RunTurnCallbacks | null = null;
 let resolveCurrentTurn: ((h: ChatMessage[]) => void) | null = null;
 let rejectCurrentTurn: ((e: Error) => void) | null = null;
 
+// Surface the agent Worker's liveness + whether a turn is in flight in the
+// worker-health panel.
+registerWorker('agent', 'AI agent (chat loop)', () => ({
+  alive: worker !== null,
+  inFlight: resolveCurrentTurn ? 1 : 0,
+}));
+
 function getWorker(): Worker {
   if (worker) return worker;
   worker = new Worker(new URL('./agentWorker.ts', import.meta.url), { type: 'module' });
+  markWorkerStarted('agent');
   worker.onmessage = handleMessage;
   worker.onmessageerror = (ev) => {
     // A Worker→Main message that fails structured-clone on receipt is dropped
@@ -32,6 +41,7 @@ function getWorker(): Worker {
     cleanup();
     worker?.terminate();
     worker = null;
+    markWorkerRestarted('agent', 'undeserializable message');
     // eslint-disable-next-line no-console
     console.error('[AgentWorker] messageerror', ev);
   };
@@ -45,6 +55,7 @@ function getWorker(): Worker {
     // one on the next turn, rather than reusing a crashed instance.
     worker?.terminate();
     worker = null;
+    markWorkerRestarted('agent', `crashed: ${ev.message}`);
   };
   return worker;
 }
@@ -146,12 +157,6 @@ export function pushQueuedBlocks(blocks: ChatBlock[]): void {
 }
 
 /** Terminate and discard the Worker (e.g. on hard reset). */
-export function terminateAgentWorker(): void {
-  worker?.terminate();
-  worker = null;
-  cleanup();
-}
-
 /** Drop-in replacement for chatLoop.runTurn — same signature, Worker-backed. */
 export async function runTurn(
   input: RunTurnInput,

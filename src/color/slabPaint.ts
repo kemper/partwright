@@ -9,11 +9,6 @@ import type { MeshData } from '../geometry/types';
 import { getTriangleCentroid } from './adjacency';
 import type { RefineRegion, TriClass, Aabb } from './subdivide';
 
-export interface AxisAlignedNormal {
-  axis: 'x' | 'y' | 'z';
-  normal: [number, number, number];
-}
-
 export const AXIS_NORMALS: Record<'x' | 'y' | 'z', [number, number, number]> = {
   x: [1, 0, 0],
   y: [0, 1, 0],

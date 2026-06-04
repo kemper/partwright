@@ -10,6 +10,7 @@
 import type { MeshData } from '../geometry/types';
 import type { RegionDescriptor } from './regions';
 import type { RefineRequest, RefineResponse, RefineDone } from './subdivisionWorker';
+import { registerWorker, markWorkerStarted, markWorkerRestarted, markWorkerStopped } from '../diagnostics/workerStats';
 
 let worker: Worker | null = null;
 let nextJobId = 1;
@@ -50,9 +51,17 @@ export class SubdivisionAbortError extends Error {
   }
 }
 
+// Surface paint-subdivision worker liveness + whether a job is running in the
+// worker-health panel.
+registerWorker('subdivision', 'Paint subdivision', () => ({
+  alive: worker !== null,
+  inFlight: inFlight ? 1 : 0,
+}));
+
 function ensureWorker(): Worker {
   if (worker) return worker;
   worker = new Worker(new URL('./subdivisionWorker.ts', import.meta.url), { type: 'module' });
+  markWorkerStarted('subdivision');
   worker.onmessage = (e: MessageEvent<RefineResponse>) => {
     const msg = e.data;
     if (!inFlight || msg.id !== inFlight.id) return; // stale
@@ -76,6 +85,7 @@ function ensureWorker(): Worker {
     // Drop the dead worker; the next refine() creates a fresh one.
     worker?.terminate();
     worker = null;
+    markWorkerRestarted('subdivision', `crashed: ${ev.message}`);
   };
   return worker;
 }
@@ -133,10 +143,6 @@ export function refineInWorker(input: RefineJobInput): Promise<RefinedResult> {
 }
 
 /** True if a subdivision job is currently running in the worker. */
-export function isSubdivisionInFlight(): boolean {
-  return inFlight !== null;
-}
-
 /** Terminate the worker (test cleanup / hard reset). Any in-flight job is
  *  rejected with an abort error. */
 export function terminateSubdivisionWorker(): void {
@@ -148,4 +154,5 @@ export function terminateSubdivisionWorker(): void {
   }
   worker?.terminate();
   worker = null;
+  markWorkerStopped('subdivision');
 }

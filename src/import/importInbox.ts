@@ -35,6 +35,10 @@ export interface ImportInboxEntry {
   /** Small data-URL thumbnail of the source (image / SVG), shown beside the
    *  entry in the Recent Imports list. Optional — code/mesh imports omit it. */
   thumbnail?: string;
+  /** Companion files (SCAD only): path → content map captured at import time
+   *  so a re-import from history restores the same companion set without
+   *  requiring the user to re-upload them. */
+  companions?: Record<string, string>;
 }
 
 /** Discriminated metadata for image-based imports, so a re-import knows which
@@ -66,7 +70,7 @@ function importKey(filename: string, metadata?: unknown): string {
  *  with the same (filename, metadata) key already exists, it's bubbled to the
  *  top with a fresh timestamp instead of duplicated — re-importing the same
  *  image with the same tweaks should leave the recent list tidy. */
-export function registerImport(blob: Blob, filename: string, source: ImportSource, metadata?: unknown, thumbnail?: string): ImportInboxEntry {
+export function registerImport(blob: Blob, filename: string, source: ImportSource, metadata?: unknown, thumbnail?: string, companions?: Record<string, string>): ImportInboxEntry {
   const key = importKey(filename, metadata);
   const evicted: string[] = [];
   const existingIdx = entries.findIndex(e => importKey(e.filename, e.metadata) === key);
@@ -80,6 +84,7 @@ export function registerImport(blob: Blob, filename: string, source: ImportSourc
     timestamp: Date.now(),
     metadata,
     thumbnail,
+    companions: companions && Object.keys(companions).length > 0 ? companions : undefined,
   };
   entries.unshift(entry);
   while (entries.length > MAX_ENTRIES) {
@@ -105,7 +110,7 @@ export function listImports(): ImportInboxEntry[] {
  *  reports this as "the source image could not be decoded", and STL/JSON
  *  re-imports would hit the same read error. Materializing the bytes at import
  *  time decouples the entry from the original file so re-import always works. */
-export async function registerImportSnapshot(blob: Blob, filename: string, source: ImportSource, metadata?: unknown, thumbnail?: string): Promise<ImportInboxEntry> {
+export async function registerImportSnapshot(blob: Blob, filename: string, source: ImportSource, metadata?: unknown, thumbnail?: string, companions?: Record<string, string>): Promise<ImportInboxEntry> {
   let stable = blob;
   try {
     const buf = await blob.arrayBuffer();
@@ -114,14 +119,10 @@ export async function registerImportSnapshot(blob: Blob, filename: string, sourc
     // Reading already failed (e.g. the file is gone) — fall back to the live
     // reference; nothing more we can do, and a stale entry beats none.
   }
-  return registerImport(stable, filename, source, metadata, thumbnail);
+  return registerImport(stable, filename, source, metadata, thumbnail, companions);
 }
 
 /** Look up a single entry by id. */
-export function getImport(id: string): ImportInboxEntry | null {
-  return entries.find(e => e.id === id) ?? null;
-}
-
 /** Drop everything from the inbox. */
 export function clearImports(): void {
   if (entries.length === 0) return;
