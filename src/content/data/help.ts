@@ -145,9 +145,10 @@ export const HELP_STATIC_SECTIONS: ContentSection[] = [
   },
   {
     id: 'catalog',
-    heading: 'Catalog of premade models',
+    heading: 'Catalog & Ideas',
     body:
-      'Click <strong class="text-zinc-300">☰ Catalog</strong> in the toolbar to browse a gallery of premade models — twisted vase, retro rocket, chess rook, Christmas tree, desk organizer, spur gear, and more. Each tile shows a thumbnail, the language it\'s written in, and a short description. Click a tile to preview, then <strong class="text-zinc-300">Import</strong> to load it as a fresh session — a great starting point for learning the API or remixing into your own designs.',
+      'Click <strong class="text-zinc-300">☰ Catalog</strong> in the toolbar to browse a gallery of premade models — twisted vase, retro rocket, chess rook, Christmas tree, desk organizer, spur gear, and more. Each tile shows a thumbnail, the language it\'s written in, and a short description. Click a tile to preview, then <strong class="text-zinc-300">Import</strong> to load it as a fresh session — a great starting point for learning the API or remixing into your own designs.<br><br>' +
+      'The <strong class="text-zinc-300">Ideas</strong> page (<a href="/ideas" class="text-blue-400 hover:underline">/ideas</a>) is a separate collection of starter prompts and technique showcases. Clicking a tile populates the AI panel input — ready to send, or edit first. The same library is available inside the AI panel via the 💡 button.',
   },
   {
     id: 'import-export',
