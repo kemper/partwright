@@ -164,7 +164,71 @@ export async function simplifyToTriangleBudget(
   return result;
 }
 
+/** Single-pass simplify to an explicit geometric tolerance — collapses edges /
+ *  vertices whose removal stays within `tolerance` of the surface. Unlike
+ *  simplifyToTriangleBudget this does NOT binary-search for a triangle target;
+ *  the caller supplies the tolerance directly (the "by edge length / feature
+ *  size" knob). Returns null when the tolerance is non-positive, when the
+ *  result didn't actually drop the triangle count (nothing fell below the
+ *  tolerance — the UI surfaces this as a "nothing to simplify" warning), or
+ *  when the mesh collapsed below MIN_VALID_TRIANGLES. The input manifold is
+ *  borrowed; the single intermediate is released here. */
+export function simplifyToTolerance(
+  manifold: SimplifiableManifold,
+  tolerance: number,
+): SimplifyResult | null {
+  if (!(tolerance > 0)) return null;
+  const baseTri = manifold.numTri();
+  let candidate: SimplifiableManifold | null = null;
+  try {
+    candidate = manifold.simplify(tolerance);
+  } catch {
+    // A tolerance aggressive enough to collapse the mesh throws — treat as
+    // "nothing usable to simplify" rather than a hard error.
+    return null;
+  }
+  const n = candidate.numTri();
+  if (n < MIN_VALID_TRIANGLES || n >= baseTri) {
+    release(candidate);
+    return null;
+  }
+  const result: SimplifyResult = { mesh: toMeshData(candidate), triangleCount: n, tolerance };
+  release(candidate);
+  return result;
+}
+
 export type EnhanceResult = SimplifyResult;
+
+/** Single-pass refine so no edge exceeds `length` — subdivides every edge
+ *  longer than `length`, which inherently densifies the LARGER triangles first
+ *  and leaves already-fine ones untouched (the "by edge length / triangle size"
+ *  knob). Unlike enhanceToTriangleBudget this does NOT binary-search for a
+ *  triangle target. Returns null when refineToLength is unavailable, the length
+ *  is non-positive, or no edge was long enough to split (result == base —
+ *  surfaced as a "no edges large enough to enhance" warning). The input
+ *  manifold is borrowed; the single intermediate is released here. */
+export function refineToEdgeLength(
+  manifold: SimplifiableManifold,
+  length: number,
+): EnhanceResult | null {
+  if (typeof manifold.refineToLength !== 'function') return null;
+  if (!(length > 0)) return null;
+  const baseTri = manifold.numTri();
+  let candidate: SimplifiableManifold | null = null;
+  try {
+    candidate = manifold.refineToLength(length);
+  } catch {
+    return null;
+  }
+  const n = candidate.numTri();
+  if (n <= baseTri) {
+    release(candidate);
+    return null;
+  }
+  const result: EnhanceResult = { mesh: toMeshData(candidate), triangleCount: n, tolerance: length };
+  release(candidate);
+  return result;
+}
 
 /** Find the coarsest refineToLength pass that brings a manifold's triangle
  *  count up to at least `targetTriangles`, by binary-searching the edge-length

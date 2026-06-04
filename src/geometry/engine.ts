@@ -716,6 +716,10 @@ export async function simplifyInWorker(
   maxTolerance: number,
   onProgress: (fraction: number) => void,
   signal?: AbortSignal,
+  /** When > 0, the worker runs a single direct `simplify(tolerance)` pass
+   *  instead of binary-searching to `targetTriangles` — the "by edge length /
+   *  feature size" knob. `targetTriangles`/`maxTolerance` are then ignored. */
+  directTolerance?: number,
 ): Promise<SimplifyWorkerResult | null> {
   if (signal?.aborted) throw new SimplifyAbortError();
   initEngineWorker();
@@ -763,7 +767,8 @@ export async function simplifyInWorker(
     };
     const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
     engineWorker!.postMessage(
-      { type: 'simplify', callId, mesh: meshCopy, targetTriangles, maxTolerance },
+      { type: 'simplify', callId, mesh: meshCopy, targetTriangles, maxTolerance,
+        ...(directTolerance && directTolerance > 0 ? { tolerance: directTolerance } : {}) },
       transfer,
     );
   });
@@ -793,6 +798,11 @@ export async function enhanceInWorker(
   maxEdgeLength: number,
   onProgress: (fraction: number) => void,
   signal?: AbortSignal,
+  /** When > 0, the worker runs a single direct `refineToLength(edgeLength)`
+   *  pass instead of binary-searching to `targetTriangles` — the "by edge
+   *  length / triangle size" knob. `targetTriangles`/`maxEdgeLength` are then
+   *  ignored. */
+  directEdgeLength?: number,
 ): Promise<EnhanceWorkerResult | null> {
   if (signal?.aborted) throw new EnhanceAbortError();
   initEngineWorker();
@@ -832,7 +842,8 @@ export async function enhanceInWorker(
     };
     const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
     engineWorker!.postMessage(
-      { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength },
+      { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength,
+        ...(directEdgeLength && directEdgeLength > 0 ? { edgeLength: directEdgeLength } : {}) },
       transfer,
     );
   });
