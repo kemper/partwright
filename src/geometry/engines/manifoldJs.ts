@@ -412,6 +412,18 @@ export const manifoldJsEngine: Engine = {
         hint = 'Manifold.cube([x, y, z], center?) — first arg must be an array of 3 numbers.';
       } else if (msg.includes('Missing field')) {
         hint = 'You may have passed an array where an object was expected, or vice versa. Check the API signature.';
+      } else if (
+        msg.includes('null function or function signature mismatch') ||
+        msg.includes('memory access out of bounds') ||
+        msg.includes('table index is out of bounds') ||
+        msg.includes('Cannot enlarge memory') ||
+        msg.includes('Out of memory') ||
+        msg.includes('Aborted')
+      ) {
+        // Emscripten traps with no JS stack — almost always the WASM heap
+        // overflowing while building a mesh that's too large at the current
+        // quality (e.g. a 1024-segment profile swept over many points).
+        hint = 'The engine ran out of memory building this model — it is too large at the current quality. Lower the quality preset (e.g. from Ultra to High) or set explicit segment counts on curved primitives (e.g. CrossSection.circle(r, 64)).';
       } else if (msg.includes('unreachable') || msg.includes('RuntimeError')) {
         hint = 'WASM runtime error — likely caused by degenerate geometry, a self-intersection, or an invalid boolean. Try simplifying the operation or checking input dimensions.';
       }
