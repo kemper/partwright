@@ -7,7 +7,7 @@ import { useEffect, useRef } from 'preact/hooks';
 import { mountPreactModal } from './preact/mount';
 import { BUTTON_CANCEL } from './styleConstants';
 
-export type ImportTarget = 'new-part' | 'current-part' | 'new-session';
+export type ImportTarget = 'new-part' | 'current-part' | 'new-session' | 'companion-file';
 
 export interface ImportTargetOptions {
   filename: string;
@@ -20,6 +20,14 @@ export interface ImportTargetOptions {
   currentPartTitle?: string;
   /** Override description text for the 'current-part' choice. */
   currentPartDesc?: string;
+  /** When set, offers a fourth choice: attach the imported SCAD file as a
+   *  companion of the current part rather than treating it as part code. Only
+   *  meaningful for a .scad import while the current part is a SCAD session. */
+  canAddAsCompanion?: boolean;
+  /** Override title text for the 'companion-file' choice. */
+  companionTitle?: string;
+  /** Override description text for the 'companion-file' choice. */
+  companionDesc?: string;
   /** Modal heading. Defaults to "Import mesh"; image/voxel/BREP imports pass a
    *  noun-appropriate title (e.g. "Import voxels", "Import STEP"). */
   title?: string;
@@ -60,6 +68,14 @@ function buildChoices(opts: ImportTargetOptions): Choice[] {
       disabled: false,
     },
   ];
+  if (opts.canAddAsCompanion) {
+    raw.push({
+      target: 'companion-file',
+      title: opts.companionTitle ?? `Companion file of current part — ${partLabel}`,
+      desc: opts.companionDesc ?? `Attach it as a dependency the current part's code can include <…> — it won't replace your code.`,
+      disabled: false,
+    });
+  }
   return raw.map(c => ({ ...c, recommended: c.target === recommend && !c.disabled }));
 }
 

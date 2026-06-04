@@ -6,6 +6,7 @@ import { openscadEngine } from './engines/openscad';
 import { replicadEngine } from './engines/replicad';
 import { voxelEngine } from './engines/voxel';
 import { getActiveImports } from '../import/importedMesh';
+import { getCompanionFiles } from '../import/companionFiles';
 import { getDefaultCircularSegments } from './qualitySettings';
 import { getConfig } from '../config/appConfig';
 
@@ -91,6 +92,7 @@ let callIdCounter = 0;
 
 const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void; onPreview?: (r: MeshResult) => void }>();
 const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => void; reject: (e: Error) => void }>();
+const pendingDetections  = new Map<string, { resolve: (r: string[]) => void; reject: (e: Error) => void }>();
 const pendingStepExports = new Map<string, { resolve: (blob: Blob | null) => void; reject: (e: Error) => void }>();
 const pendingStepBrepImports = new Map<string, { resolve: (filename: string) => void; reject: (e: Error) => void }>();
 const pendingStepMeshImports = new Map<string, { resolve: (mesh: MeshData) => void; reject: (e: Error) => void }>();
@@ -125,6 +127,7 @@ function getExecuteTimeoutMs(lang: Language): number {
 function rejectAllPending(err: Error): void {
   for (const p of pendingExecutions.values()) p.reject(err);
   for (const p of pendingValidations.values()) p.reject(err);
+  for (const p of pendingDetections.values()) p.reject(err);
   for (const p of pendingStepExports.values()) p.reject(err);
   for (const p of pendingStepBrepImports.values()) p.reject(err);
   for (const p of pendingStepMeshImports.values()) p.reject(err);
@@ -134,6 +137,7 @@ function rejectAllPending(err: Error): void {
   for (const p of pendingEnhances.values()) p.reject(err);
   pendingExecutions.clear();
   pendingValidations.clear();
+  pendingDetections.clear();
   pendingStepExports.clear();
   pendingStepBrepImports.clear();
   pendingStepMeshImports.clear();
@@ -253,6 +257,15 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     if (!pending) return;
     pendingValidations.delete(callId);
     pending.resolve(msg.result as ValidateResult);
+    return;
+  }
+
+  if (msg.type === 'detect_includes_result') {
+    const callId = msg.callId as string;
+    const pending = pendingDetections.get(callId);
+    if (!pending) return;
+    pendingDetections.delete(callId);
+    pending.resolve(msg.result as string[]);
     return;
   }
 
@@ -381,6 +394,8 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingExecutions.delete(callId ?? '');
       pendingValidations.get(callId)?.reject(err);
       pendingValidations.delete(callId ?? '');
+      pendingDetections.get(callId)?.reject(err);
+      pendingDetections.delete(callId ?? '');
       pendingStepExports.get(callId)?.reject(err);
       pendingStepExports.delete(callId ?? '');
       pendingStepBrepImports.get(callId)?.reject(err);
@@ -443,7 +458,8 @@ export async function executeCodeAsync(
       reject:  (e) => { clearTimeout(timer); reject(e); },
       onPreview,
     });
-    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null });
+    const companionFiles = getCompanionFiles();
+    engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
   });
 }
 
@@ -498,6 +514,37 @@ export async function validateCodeAsync(source: string, lang?: Language): Promis
     });
   }
   return validateCode(source, l);
+}
+
+/** Probe a SCAD source for unresolved `include`/`use` dependencies. Routes a
+ *  fast CSG-compile through the Worker and returns the MEMFS-relative paths
+ *  OpenSCAD couldn't open (empty array = the probe ran and everything resolved).
+ *  Never rejects: a transport failure (timeout, worker restart, engine error)
+ *  resolves to `null`, which the caller reads as "couldn't determine" and falls
+ *  back to its static regex candidates — distinct from an empty result. */
+export async function detectScadIncludesAsync(source: string): Promise<string[] | null> {
+  initEngineWorker();
+  try {
+    await workerReady;
+  } catch {
+    return null;
+  }
+  const callId = `det-${++callIdCounter}`;
+  const timeoutMs = getExecuteTimeoutMs('scad');
+  return new Promise<string[] | null>((resolve) => {
+    const timer = setTimeout(() => {
+      if (pendingDetections.has(callId)) {
+        pendingDetections.delete(callId);
+        resolve(null);
+      }
+    }, timeoutMs);
+    pendingDetections.set(callId, {
+      resolve: (r) => { clearTimeout(timer); resolve(r); },
+      // Worker restart / hard error → "couldn't determine".
+      reject: () => { clearTimeout(timer); resolve(null); },
+    });
+    engineWorker!.postMessage({ type: 'detect_includes', callId, code: source });
+  });
 }
 
 /** Ask the engine Worker for a STEP blob of the most recent BREP-engine

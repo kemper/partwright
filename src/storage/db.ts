@@ -112,6 +112,11 @@ export interface Version {
    *  Only keys that differ from the model defaults are stored; absent when the
    *  version uses all defaults (or declares no parameters). */
   paramValues?: Record<string, number | boolean | string>;
+  /** Companion SCAD files for this version. Maps MEMFS-relative path → source
+   *  text (e.g. `{"models.scad": "function models() = ..."}`) so that
+   *  `include <models.scad>` inside the main code resolves at compile time.
+   *  Only present for SCAD sessions that need companion files. */
+  companionFiles?: Record<string, string>;
   /** The version this was derived from. Set when a mesh-capture operation
    *  (simplify, enhance, paint-bake, import) creates a child version from an
    *  existing parametric version. Absent for versions created from scratch.
@@ -136,6 +141,10 @@ export interface SessionDraft {
   sessionId: string;
   language: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
   code: string;
+  /** Unsaved companion SCAD files (path → content) for this draft, so a reload
+   *  recovers companion-file edits the same way it recovers main-code edits.
+   *  Only written for SCAD drafts that have companions; absent otherwise. */
+  companionFiles?: Record<string, string>;
   updatedAt: number;
 }
 
@@ -743,6 +752,8 @@ export async function saveVersion(
   language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel',
   /** Customizer parameter overrides for this version (opaque to the db layer). */
   paramValues?: Record<string, number | boolean | string>,
+  /** Companion SCAD files (path → source) for this version (opaque to the db layer). */
+  companionFiles?: Record<string, string>,
   /** The version this was derived from (e.g. the parametric version before
    *  simplify/enhance was applied). Stored so the UI can show provenance and
    *  offer a one-click jump back to the source. */
@@ -786,6 +797,7 @@ export async function saveVersion(
         ...(annotations && annotations.length > 0 ? { annotations } : {}),
         ...(importedMeshes && importedMeshes.length > 0 ? { importedMeshes } : {}),
         ...(paramValues && Object.keys(paramValues).length > 0 ? { paramValues } : {}),
+        ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
         ...(parentVersionId ? { parentVersionId } : {}),
         ...(operation ? { operation } : {}),
       };
@@ -994,13 +1006,14 @@ export async function getDraft(sessionId: string, language: 'manifold-js' | 'sca
   return reqToPromise(store.get(draftId(sessionId, language, partId))) as Promise<SessionDraft | null>;
 }
 
-export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string): Promise<void> {
+export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>): Promise<void> {
   const store = await tx('drafts', 'readwrite');
   const row: SessionDraft = {
     id: draftId(sessionId, language, partId),
     sessionId,
     language,
     code,
+    ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
     updatedAt: Date.now(),
   };
   store.put(row);
