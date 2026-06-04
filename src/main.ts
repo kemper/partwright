@@ -27,7 +27,7 @@ import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, resetView } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -5668,6 +5668,7 @@ async function main() {
   });
   initMeasureToggle(clipControls);
   initOrbitLockToggle(clipControls);
+  initResetViewButton(clipControls);
 
   // Relief / Edit colors toggle in the viewport overlay — paint/simplify are
   // alongside this button so the colour palette is discoverable from the
@@ -6854,6 +6855,12 @@ async function main() {
     /** Whether camera orbit is currently locked */
     isOrbitLocked(): boolean {
       return isUserOrbitLocked();
+    },
+
+    /** Reset the camera to the default framing of the current model (same view
+     *  applied after a fresh run). */
+    resetView(): void {
+      resetView();
     },
 
     // === Theme API ===
@@ -10626,6 +10633,7 @@ async function main() {
         'areDimensionsVisible': { signature: 'areDimensionsVisible() -- Whether dimensions overlay is visible', docs: '/ai.md#viewport-controls' },
         'setOrbitLock':         { signature: 'setOrbitLock(on?) -- Lock/unlock camera rotation (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'isOrbitLocked':        { signature: 'isOrbitLocked() -- Whether camera orbit is locked', docs: '/ai.md#viewport-controls' },
+        'resetView':            { signature: 'resetView() -- Reset the camera to the default framing of the current model', docs: '/ai.md#viewport-controls' },
         'setTheme':             { signature: 'setTheme("dark"|"light") -- Set color theme', docs: '/ai.md#viewport-controls' },
         'getTheme':             { signature: 'getTheme() -- Current color theme', docs: '/ai.md#viewport-controls' },
         'setAutoRun':           { signature: 'setAutoRun(enabled) -- Enable/disable auto-render on edit', docs: '/ai.md#viewport-controls' },
@@ -11879,6 +11887,12 @@ async function main() {
     // (e.g. pen/text/select activate, programmatic API).
     onUserOrbitLockChange(reflect);
     reflect(isUserOrbitLocked());
+  }
+
+  function initResetViewButton(container: HTMLElement) {
+    const resetBtn = container.querySelector('#reset-view') as HTMLButtonElement;
+    if (!resetBtn) return;
+    resetBtn.addEventListener('click', () => { resetView(); });
   }
 }
 
