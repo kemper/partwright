@@ -1,13 +1,28 @@
 import { test, expect } from 'playwright/test';
 
-// Regression: a fatal WASM kernel fault (e.g. "memory access out of bounds" from
-// a model too large for the heap) must NOT poison the geometry Worker. Before the
-// fix, the trap left the manifold-3d module in a half-mutated state and every
-// subsequent run — even a trivial cube — failed instantly with the same error
-// until the page was reloaded. The engine now recycles the Worker after such a
-// fault, so the next run boots a clean module and succeeds.
+// Regression: a fatal WASM kernel fault (e.g. "memory access out of bounds" when
+// a model exceeds the manifold-3d heap, which only grows) must NOT poison the
+// long-lived geometry Worker. Before the fix the trap left the kernel's C++
+// state half-mutated, so every subsequent run — even a trivial cube — failed
+// instantly with the same error until the page was reloaded. The engine now
+// recognises the fatal fault and recycles the Worker so the next run boots a
+// clean module.
+//
+// Why we *simulate* the trap rather than really exhausting the heap: a genuine
+// OOM is a CPU grind whose timing depends on the host's memory ceiling (it
+// trapped in ~0.1 s on a constrained sandbox but ran past 30 s on a roomier CI
+// runner). Throwing the kernel's exact message string from sandbox code flows
+// through the identical path — caught in the engine's run() try/catch, returned
+// as an `execute_result` error, classified by isFatalWasmFault, and recycled —
+// so this faithfully and deterministically exercises the recovery wiring.
 test.describe('engine WASM fault recovery', () => {
-  test('fatal memory fault recovers on the next run', async ({ page }) => {
+  test('a fatal WASM fault is classified, recycles the Worker, and recovers', async ({ page }) => {
+    const recycleLogs: string[] = [];
+    page.on('console', (m) => {
+      const t = m.text();
+      if (/Recycling geometry Worker after fatal WASM fault/i.test(t)) recycleLogs.push(t);
+    });
+
     await page.goto('/editor');
     await page.waitForFunction(
       () => !!(window as unknown as { partwright?: { runIsolated?: unknown } }).partwright?.runIsolated,
@@ -27,15 +42,17 @@ test.describe('engine WASM fault recovery', () => {
     // 1) Baseline: a normal model runs fine.
     expect((await run(cube)).status).toBe('ok');
 
-    // 2) Force a WASM memory fault: an absurd circular-segment count makes the
-    //    kernel try to allocate billions of vertices, tripping the heap ceiling.
-    const fault = await run('return api.Manifold.sphere(10, 100000);');
+    // 2) A fatal WASM-memory fault surfaces as an error with the actionable,
+    //    memory-aware hint (instead of the raw, opaque trap text).
+    const fault = await run("throw new Error('memory access out of bounds');");
     expect(fault.status).toBe('error');
-    // The opaque trap text is replaced with an actionable, memory-aware hint.
     expect(fault.error).toMatch(/ran out of memory/i);
 
-    // 3) Recovery: the same baseline model must run again. Pre-fix this failed
-    //    instantly with the same memory error (the poisoned-worker cascade).
+    // 3) The engine must have recycled the poisoned Worker. This log fires only
+    //    when the recovery wiring runs — it is absent on pre-fix code.
+    await expect.poll(() => recycleLogs.length, { timeout: 5000 }).toBeGreaterThan(0);
+
+    // 4) Recovery: the same baseline model runs again on the fresh module.
     expect((await run(cube)).status).toBe('ok');
   });
 });
