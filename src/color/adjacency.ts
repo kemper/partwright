@@ -190,6 +190,10 @@ export function findConnectedFromSeed(
    *  can't catch on its own (a fused-solid mesh is one connected component
    *  even when its features used to be separate inputs). */
   centroidPredicate?: (cx: number, cy: number, cz: number) => boolean,
+  /** Optional color gate — each candidate must have a color within
+   *  `maxColorDist` (0–1, Euclidean distance normalized by sqrt(3)×255)
+   *  of the seed triangle's color. Ignored when triColors is absent. */
+  colorOpts?: { triColors: Uint8Array; maxColorDist: number },
 ): Set<number> {
   const { neighbors, normals, centroids } = adjacency;
   const result = new Set<number>();
@@ -207,6 +211,12 @@ export function findConnectedFromSeed(
   const snx = normals[seedTri * 3];
   const sny = normals[seedTri * 3 + 1];
   const snz = normals[seedTri * 3 + 2];
+
+  // Pre-extract seed color (fixed reference, same as seed-normal approach).
+  const seedR = colorOpts ? colorOpts.triColors[seedTri * 3]     : 0;
+  const seedG = colorOpts ? colorOpts.triColors[seedTri * 3 + 1] : 0;
+  const seedB = colorOpts ? colorOpts.triColors[seedTri * 3 + 2] : 0;
+  const INV_SQRT3_255 = 1 / (1.7320508 * 255);
 
   const queue = [seedTri];
   result.add(seedTri);
@@ -230,6 +240,14 @@ export function findConnectedFromSeed(
         const cy = centroids[neighbor * 3 + 1];
         const cz = centroids[neighbor * 3 + 2];
         if (!centroidPredicate(cx, cy, cz)) continue;
+      }
+
+      if (colorOpts) {
+        const dr = colorOpts.triColors[neighbor * 3]     - seedR;
+        const dg = colorOpts.triColors[neighbor * 3 + 1] - seedG;
+        const db = colorOpts.triColors[neighbor * 3 + 2] - seedB;
+        const colorDist = Math.sqrt(dr * dr + dg * dg + db * db) * INV_SQRT3_255;
+        if (colorDist > colorOpts.maxColorDist) continue;
       }
 
       result.add(neighbor);
