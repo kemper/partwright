@@ -7,6 +7,7 @@
     "legal.html",
     "whats-new.html",
     "src/content/catalogEntry.ts",
+    "src/sw.ts",
     "tests/**/*.spec.ts",
     "tests/unit/**/*.test.ts",
     "scripts/*.mjs"
