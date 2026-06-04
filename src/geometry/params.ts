@@ -190,17 +190,21 @@ function clamp(v: number, min?: number, max?: number): number {
 
 /** Coerce one override value against its spec, or return undefined if the value
  *  can't be made valid (caller falls back to the default). Lenient by design:
- *  overrides come from persisted UI state / tool calls, not author code, so a
- *  stale or out-of-range value should degrade to the default, never throw. */
+ *  overrides come from persisted UI state / tool calls, not author code, so an
+ *  unparseable value degrades to the default rather than throwing. Numeric
+ *  overrides are honored as-is even outside spec.min/max — the slider bounds are
+ *  a convenience, and the number field intentionally allows exceeding them. */
 export function coerceParamValue(spec: ParamSpec, value: unknown): ParamValue | undefined {
   switch (spec.type) {
     case 'number':
     case 'int': {
       const n = typeof value === 'number' ? value : (typeof value === 'string' ? Number(value) : NaN);
       if (!Number.isFinite(n)) return undefined;
-      let c = clamp(n, spec.min, spec.max);
-      if (spec.type === 'int') c = Math.round(c);
-      return c;
+      // Deliberately *not* clamped to spec.min/max: those bounds size the
+      // Customizer slider's convenient range, but the paired number field lets
+      // the user type an exact value beyond them (e.g. a thickness past the
+      // slider max). We only reject non-finite input and round ints here.
+      return spec.type === 'int' ? Math.round(n) : n;
     }
     case 'boolean':
       return typeof value === 'boolean' ? value : undefined;
