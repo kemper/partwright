@@ -26,6 +26,153 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'May 31 – June 3, 2026',
+    headline: 'Multi-file OpenSCAD, unified viewport panels, and instant static pages',
+    groups: [
+      {
+        label: 'Modeling & editor',
+        items: [
+          {
+            title: '3D text in JavaScript (api.text)',
+            body: 'Build raised or cut lettering directly in a manifold-js session with api.text() and api.textSection() — no need to drop to OpenSCAD for a label. OpenSCAD’s own text() primitive now works too, backed by the Liberation Sans font family loaded into WASM.',
+          },
+          {
+            title: 'Resize panel',
+            body: 'A new ⇲ Resize tool in the viewport overlay scales a model along X / Y / Z with independent or uniform sliders, a typeable exact size, an optional “preserve colors” pass, and a live preview before you commit a new version.',
+          },
+          {
+            title: 'Find / Replace in the editor',
+            body: 'A Find/Replace control in the editor header for quickly searching and rewriting code.',
+          },
+        ],
+      },
+      {
+        label: 'OpenSCAD multi-file',
+        items: [
+          {
+            title: 'Companion files for multi-file SCAD',
+            body: 'Import a .scad file that pulls in your own include <…> / use <…> dependencies and Partwright detects the missing files (by actually compiling), then prompts you to supply them. Companion files get their own editable, syntax-highlighted tabs and persist with the session.',
+          },
+          {
+            title: 'Two-phase preview & cancel',
+            body: 'SCAD renders show a fast preview first, an elapsed-time status bar while the full render runs, and a Cancel button so a long compile never traps you.',
+          },
+        ],
+      },
+      {
+        label: 'Painting',
+        items: [
+          {
+            title: 'Color-based bucket & new Replace tool',
+            body: 'The Bucket tool can now flood-fill by color as well as by geometry, and a new 🔄 Replace tool swaps one color for another across every matching region at once. Slab is now the default paint surface (and works with spray).',
+          },
+          {
+            title: 'Projection paintbrush & no more editor lock',
+            body: 'A projection-based paintbrush with BVH-accelerated picking and a faster smooth-brush commit. Painting no longer locks the code editor — it stays fully editable, and version history is your rollback path.',
+          },
+        ],
+      },
+      {
+        label: 'Viewport panels',
+        items: [
+          {
+            title: 'Unified, draggable overlay panels',
+            body: 'The Quality, Resize, Surface, and Relief panels now share one set of UX conventions — draggable, kept on-screen (and mobile-friendly), with consistent headers and behavior.',
+          },
+          {
+            title: 'Quality panel (was Simplify)',
+            body: 'The old Simplify tool is now the ○ Quality panel: it folds curvature quality together with simplify / enhance triangle-count controls in one place.',
+          },
+        ],
+      },
+      {
+        label: 'AI assistant',
+        items: [
+          {
+            title: 'Plan-first mode',
+            body: 'A new toggle makes the assistant draft a plan and wait for your approval before it touches the model — you can keep refining the plan while approval is pending. Also fixed a Gemini retry loop on malformed function calls.',
+          },
+        ],
+      },
+      {
+        label: 'Pages & polish',
+        items: [
+          {
+            title: 'Instant static pages',
+            body: 'The landing, catalog, help, legal, and what’s-new pages are now pre-rendered as static, app-free HTML — they paint instantly without loading the editor or WASM, behind a unified top header shared across every non-editor page.',
+          },
+          {
+            title: 'In-app dialogs everywhere',
+            body: 'Native browser alert / confirm / prompt pop-ups are gone, replaced by in-app toasts and dialogs that match the rest of the UI. A “Beta” pill now sits in the landing nav and editor toolbar.',
+          },
+          {
+            title: 'Version provenance',
+            body: 'Saved versions now record where they came from (their parent version and the operation that produced them), laying groundwork for clearer history.',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    range: 'May 30, 2026',
+    headline: 'Surface modifiers, Ideas library, and landing page performance',
+    groups: [
+      {
+        label: 'Modeling',
+        items: [
+          {
+            title: 'Surface modifiers',
+            body: 'Apply post-processing effects to any model: fuzzy skin adds randomized surface noise (mimicking FDM printed texture), smooth rounds out faceted geometry, and voxelize converts the surface to a cube grid. All three are available from the command palette, the viewport overlay, and the window.partwright API. Paint carries through the modifier via nearest-triangle transfer, and each apply creates an undoable new version with a live preview before committing.',
+          },
+        ],
+      },
+      {
+        label: 'AI assistant',
+        items: [
+          {
+            title: 'Ideas page and in-pane prompt library',
+            body: 'A new /ideas page showcases starter prompts and technique ideas. In the AI panel, clicking 💡 opens a searchable prompt library — pick a tile to populate the input without sending. Empty-state chips suggest quick starts when the chat is blank.',
+          },
+          {
+            title: 'Printability feedback',
+            body: 'The AI now sees printability data (overhangs, thin walls, floating parts, non-manifold status) in its tool responses. The viewport shows a live printability indicator after each successful render.',
+          },
+          {
+            title: 'Import confirmation',
+            body: 'The AI must now show a confirmation dialog before importing files into a session — you see exactly what it intends to import and can accept or cancel.',
+          },
+        ],
+      },
+      {
+        label: 'Relief Studio',
+        items: [
+          {
+            title: 'Remove background, double-sided, and mirror',
+            body: 'Three new import options: automatic background removal (reads the alpha channel when available, pre-quantization RGB otherwise), a double-sided toggle for wall-hung reliefs, and a mirror axis selector.',
+          },
+        ],
+      },
+      {
+        label: 'Settings',
+        items: [
+          {
+            title: 'Advanced Settings overhaul',
+            body: '30 new configurable fields across AI, renderer, import, and UI — each with a ? tooltip explaining what it controls. The start-fresh / uninstall action moved from the landing page into Advanced Settings.',
+          },
+        ],
+      },
+      {
+        label: 'Performance',
+        items: [
+          {
+            title: 'Landing page speed and stability',
+            body: 'The landing page now renders from static HTML before JavaScript loads, eliminating black-screen flash and layout shift on first visit. Skeleton ghost loaders fill catalog and session tiles while data arrives; fonts use fallback rendering to prevent reflow; WASM loads are deferred until the editor actually opens.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'May 29 – 30, 2026',
     headline: 'AI slash commands, custom endpoints, and auto-continue',
     groups: [
