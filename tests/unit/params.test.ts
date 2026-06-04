@@ -77,12 +77,21 @@ describe('resolveParamValues', () => {
     });
   });
 
-  it('applies valid overrides and clamps/rounds/truncates as needed', () => {
+  it('applies valid overrides, rounding ints and truncating text (numbers are not clamped)', () => {
     expect(resolveParamValues(schema, {
       width: 999, rows: 3.6, rounded: false, style: 'beveled', title: 'ABCDEFG', accent: '#ABCDEF',
     })).toEqual({
-      width: 120, rows: 4, rounded: false, style: 'beveled', title: 'ABCD', accent: '#abcdef',
+      // width keeps the typed value past its max — the field lets you exceed the
+      // slider's range; only ints round and text truncates.
+      width: 999, rows: 4, rounded: false, style: 'beveled', title: 'ABCD', accent: '#abcdef',
     });
+  });
+
+  it('honors a number/int override beyond the declared min or max', () => {
+    expect(resolveParamValues(schema, { width: 999 }).width).toBe(999);
+    expect(resolveParamValues(schema, { width: -50 }).width).toBe(-50);
+    // ints past max are still rounded but not clamped.
+    expect(resolveParamValues(schema, { rows: 12.6 }).rows).toBe(13);
   });
 
   it('falls back to the default for invalid overrides and ignores unknown keys', () => {
@@ -179,10 +188,10 @@ describe('createParamCapture', () => {
     expect(() => (p as Record<string, unknown>).widht).toThrow(/no parameter "widht"/);
   });
 
-  it('clamps an out-of-range override to the declared limits', () => {
+  it('honors an out-of-range override beyond the declared limits', () => {
     const capture = createParamCapture({ width: 999 });
     const p = capture.params({ width: { type: 'number', default: 20, min: 10, max: 100 } });
-    expect(p.width).toBe(100);
+    expect(p.width).toBe(999);
   });
 
   it('merges schemas across multiple api.params calls (last def wins, order kept)', () => {
