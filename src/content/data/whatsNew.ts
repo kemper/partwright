@@ -27,7 +27,7 @@ export const WHATS_NEW_INTRO =
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
     range: 'June 4, 2026',
-    headline: 'Fabric & knit surface textures, region-targeted modifiers, and a catalog refresh',
+    headline: 'Fabric textures, image paint, region-targeted modifiers, and a catalog refresh',
     groups: [
       {
         label: 'Surface textures',
@@ -43,6 +43,19 @@ export const WHATS_NEW_WEEKS: WeekEntry[] = [
         ],
       },
       {
+        label: 'Painting',
+        items: [
+          {
+            title: 'Image paint',
+            body: 'Project an image onto the model surface as color regions: click to stamp it where you point, with a hover preview, rotation, and a smooth (stamp-then-refine) mode that subdivides the footprint so the picture conforms to curvature. Alpha-channel flood fill drops the background, and SVG inputs stamp at full vector quality.',
+          },
+          {
+            title: 'Smarter color bucket',
+            body: 'The bucket now walks and persists the real connected region, with a live flood-fill preview that tracks the tolerance slider. Region selection uses an explicit Preview button instead of auto-previewing on every click.',
+          },
+        ],
+      },
+      {
         label: 'Catalog',
         items: [
           {
@@ -52,15 +65,19 @@ export const WHATS_NEW_WEEKS: WeekEntry[] = [
         ],
       },
       {
-        label: 'Viewport & painting',
+        label: 'Viewport & rendering',
         items: [
           {
             title: 'Reset view & zoom limit',
             body: 'A reset-view button returns the camera to its default framing, and a zoom-out limit keeps a model from shrinking away into the distance.',
           },
           {
-            title: 'Smarter color bucket',
-            body: 'The bucket now walks and persists the real connected region, with a live flood-fill preview that tracks the tolerance slider. Region selection uses an explicit Preview button instead of auto-previewing on every click.',
+            title: 'Cancel long renders instead of timing out',
+            body: 'Heavy renders no longer hit a hard execution timeout — they run until you cancel them with the Cancel button, so a slow-but-valid model finishes instead of being killed. Out-of-memory failures in the manifold-js engine now surface a clear hint instead of an opaque crash.',
+          },
+          {
+            title: 'Mesh-quality knobs',
+            body: 'The Quality panel’s simplify / enhance controls gained edge-length and size-threshold knobs for finer command over triangle reduction and refinement.',
           },
         ],
       },
