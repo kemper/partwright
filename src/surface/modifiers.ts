@@ -68,12 +68,15 @@ export function defaultFuzzyOptions(mesh: MeshData): Required<FuzzySkinOptions> 
 
 /** Compute the target max-edge-length for a quality-based subdivision pass.
  *  Mirrors the formula used by fuzzySkin and other whole-model paths so the
- *  patch path reaches the same vertex density for a given quality setting. */
+ *  patch path reaches the same vertex density for a given quality setting.
+ *  maxRounds is always 4 (same as the whole-model path in fuzzySkin/cableKnit/etc.)
+ *  so that a coarse mesh like a cube reaches the same subdivision depth as the
+ *  whole-model Apply would. */
 function patchSubdivTarget(diag: number, featureSize: number, quality: number): { maxEdge: number; maxRounds: number } {
   const q = Math.max(1, Math.min(5, Math.round(quality)));
   const qScale = 2 ** ((q - 3) / 2);
   const maxEdge = Math.max(featureSize / (2 * qScale), diag / (200 * qScale));
-  return { maxEdge, maxRounds: q };
+  return { maxEdge, maxRounds: 4 };
 }
 
 /** Size-relative starting parameters for knit texture (~3.5% amplitude, ~5% stitch width). */

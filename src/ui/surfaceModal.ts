@@ -236,6 +236,10 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     applyBtn.className = blocked
       ? 'px-3 py-1.5 rounded bg-sky-900/40 text-sky-300/40 text-xs font-medium cursor-not-allowed'
       : 'px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium';
+    previewBtn.disabled = blocked;
+    previewBtn.className = blocked
+      ? 'px-3 py-1.5 rounded bg-zinc-800/40 text-zinc-400/40 text-xs cursor-not-allowed'
+      : 'px-3 py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 text-xs';
   }
 
   function reapplySelectionOverlay() {
@@ -292,7 +296,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     regionSelection = combined.size > 0 ? combined : null;
     clearAllBtn.disabled = combined.size === 0;
     updateRegionStatus();
-    schedulePreview();
+    // No auto-preview here — each selection click would trigger a slow subdivision
+    // pass. The user clicks "Preview" explicitly when they're ready to see the result.
   }
 
   let reselectTimer: number | undefined;
@@ -309,7 +314,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     seedTriangles = [];
     clearAllBtn.disabled = true;
     updateRegionStatus();
-    schedulePreview();
+    clearPreviewIfDirty(); // clearing selection: remove any stale preview, don't fire a new one
   }
 
   function setRegionMode(mode: 'region' | 'whole') {
@@ -319,7 +324,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     regionControls.style.display = mode === 'region' ? '' : 'none';
     if (mode === 'whole') exitSelectionMode();
     updateApplyBtn();
-    schedulePreview();
+    if (mode === 'whole') schedulePreview(); // whole model: auto-preview on mode switch
+    else clearPreviewIfDirty();             // region mode: just clear stale preview
   }
 
   modeRegionBtn.addEventListener('click', () => setRegionMode('region'));
@@ -329,7 +335,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     if (inSelectionMode) {
       exitSelectionMode();
       updateRegionStatus();
-      schedulePreview(); // fire preview now that selection is finalised
+      // Preview is intentionally NOT fired here — use the Preview button when ready
       return;
     }
     clearPreviewIfDirty();
@@ -562,11 +568,12 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   if (painted) scrollBody.append(colorRow);
   scrollBody.append(status);
 
-  // Footer: Cancel | Apply.
+  // Footer: Cancel | Preview | Apply.
   const footer = el('div', 'flex justify-end gap-2 mt-2');
   const cancelBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs', 'Cancel');
+  const previewBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 text-xs', 'Preview');
   const applyBtn = el('button', 'px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium', 'Apply');
-  footer.append(cancelBtn, applyBtn);
+  footer.append(cancelBtn, previewBtn, applyBtn);
   scrollBody.append(footer);
 
   const close = () => {
@@ -581,6 +588,11 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   };
   closeBtn.addEventListener('click', close);
   cancelBtn.addEventListener('click', close);
+
+  previewBtn.addEventListener('click', () => {
+    if (regionBlocked()) return;
+    runPreview();
+  });
 
   applyBtn.addEventListener('click', async () => {
     // The preview swapped the displayed mesh; clear it so the apply re-runs from
