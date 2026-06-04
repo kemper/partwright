@@ -386,6 +386,11 @@ let currentLostLabels: string[] | null = null;
 let geometryDataEl: HTMLElement;
 // Viewport overlay pill — shows printability issues after each successful run.
 let printabilityIndicatorEl: HTMLElement | null = null;
+// The disconnected-components warning is surfaced as a transient toast (recorded
+// in the Diagnostic Log) rather than the persistent pill. Track the last one we
+// toasted so re-runs of an unchanged broken model don't re-spam the same toast;
+// reset to null whenever the warning clears so its next occurrence toasts again.
+let lastDisconnectedWarning: string | null = null;
 
 // === Shared-link preview mode ===
 //
@@ -568,13 +573,23 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
   const data = withSessionContext(computeGeometryStats(currentManifold, currentMeshData, executionTimeMs, sourceCode));
   geometryDataEl.textContent = JSON.stringify(data, null, 2);
   if (printabilityIndicatorEl) {
-    const { printable, issues } = computePrintability(data);
-    if (printable) {
+    const { issues } = computePrintability(data);
+    // The disconnected-components warning surfaces as a transient toast (which
+    // also records it in the Diagnostic Log) rather than the persistent pill;
+    // every other issue (e.g. non-manifold) stays on the pill as standing status.
+    const disconnected = issues.find((i) => i.includes('disconnected component')) ?? null;
+    const pillIssues = issues.filter((i) => i !== disconnected);
+    if (pillIssues.length === 0) {
       printabilityIndicatorEl.style.display = 'none';
     } else {
-      printabilityIndicatorEl.textContent = '⚠ ' + issues.join(' · ');
+      printabilityIndicatorEl.textContent = '⚠ ' + pillIssues.join(' · ');
       printabilityIndicatorEl.style.display = '';
     }
+    // Toast once per change so re-running an unchanged broken model isn't spammy.
+    if (disconnected && disconnected !== lastDisconnectedWarning) {
+      showToast('⚠ ' + disconnected, { variant: 'warn', source: 'engine' });
+    }
+    lastDisconnectedWarning = disconnected;
   }
 }
 
@@ -3875,8 +3890,10 @@ async function main() {
   });
 
   // Printability indicator pill — shown in the viewport overlay when the model
-  // has structural issues that would prevent 3D printing (non-manifold or
-  // disconnected components). Hidden when the model is printable.
+  // has standing structural issues that would prevent 3D printing (e.g.
+  // non-manifold mesh). The disconnected-components warning is split off into a
+  // transient toast (see updateGeometryData); the pill is hidden when no
+  // pill-level issue remains.
   printabilityIndicatorEl = document.createElement('span');
   printabilityIndicatorEl.className = 'absolute top-8 left-2 z-20 text-xs text-amber-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-amber-700/60 cursor-help';
   // A persistent status indicator, not a transient toast: it stays up while the
@@ -11619,6 +11636,7 @@ async function main() {
       const diagnostics = result.diagnostics ?? [];
       setStatus(statusBar, 'error', summarizeDiagnostics(result.error, diagnostics));
       if (printabilityIndicatorEl) printabilityIndicatorEl.style.display = 'none';
+      lastDisconnectedWarning = null;
       geometryDataEl.textContent = JSON.stringify({
         status: 'error',
         error: result.error,
