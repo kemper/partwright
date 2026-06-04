@@ -858,11 +858,20 @@ function onPointerUp(event: PointerEvent): void {
     const triColors = buildTriColors(currentMesh.numTri);
     region = findColorRegion(result.triangleIndex, adjacency, triColors, bucketColorTolerance);
     const existingCount = getRegions().length;
+    // The flood fill collects ids in the *current* (possibly refined) mesh's
+    // index space. Store them as base-mesh ids — resolveDescriptorTriangles
+    // re-resolves a `kind:'triangles'` descriptor by remapping base→child on
+    // every rebuild, so handing it refined-space ids would smear the fill once
+    // the mesh is subdivided. Mirrors the brush path above; identity on the
+    // pristine mesh.
+    const ids = triangleToBase
+      ? [...new Set([...region].map(t => triangleToBase!(t)))]
+      : [...region];
     addRegion(
       `Region ${existingCount + 1}`,
       [...currentColor] as [number, number, number],
       'face-pick',
-      { kind: 'triangles', ids: [...region] },
+      { kind: 'triangles', ids },
       region,
     );
   }

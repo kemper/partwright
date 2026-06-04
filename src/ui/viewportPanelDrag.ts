@@ -32,13 +32,18 @@ export function setInitialPanelPosition(panel: HTMLElement): void {
 export interface PanelDragHandle {
   /** Re-clamp the panel after an external size/position change. */
   clampIntoView(): void;
+  /** Remove the window resize listener. Singleton panels (built once, toggled
+   *  via a hidden class) can ignore this; panels that rebuild a fresh element
+   *  on every open (Surface, Resize) MUST call it from their close path or each
+   *  open/close cycle leaks one listener plus the detached panel it closes over. */
+  destroy(): void;
 }
 
 /** Wire up pointer-capture dragging on `handle` to move `panel`.
  *  Buttons inside the handle are excluded from drag initiation so they keep
- *  their click behaviour. Registers a window resize listener for the panel's
- *  lifetime (panels are long-lived singletons, so the listener is never
- *  removed). */
+ *  their click behaviour. Registers a window resize listener; long-lived
+ *  singleton panels can leave it for the page lifetime, but panels that rebuild
+ *  on each open should call the returned `destroy()` on close to release it. */
 export function attachViewportPanelDrag(
   handle: HTMLElement,
   panel: HTMLElement,
@@ -109,9 +114,13 @@ export function attachViewportPanelDrag(
   handle.addEventListener('pointerup', endDrag);
   handle.addEventListener('pointercancel', endDrag);
 
-  window.addEventListener('resize', () => {
+  const onResize = (): void => {
     if (!panel.classList.contains('hidden')) clampIntoView();
-  });
+  };
+  window.addEventListener('resize', onResize);
 
-  return { clampIntoView };
+  return {
+    clampIntoView,
+    destroy: () => window.removeEventListener('resize', onResize),
+  };
 }
