@@ -1464,12 +1464,16 @@ async function saveCurrentVersion(label?: string): Promise<
     // away and back doesn't trigger a recompile. The code/geometry didn't
     // change (only paint or annotations may have), so the current in-memory
     // mesh is still correct for the new version id.
-    if (currentMeshData) {
+    // Cache the coarse pre-refinement base mesh (paintBaseMesh) so that
+    // rehydrateColorRegions can re-apply paint correctly on switch-back
+    // rather than re-refining an already-refined mesh.
+    const meshToCache = paintBaseMesh ?? currentMeshData;
+    if (meshToCache) {
       const entry: PartMeshCacheEntry = {
-        meshData: currentMeshData,
+        meshData: meshToCache,
         labelMap: currentLabelMap,
         lostLabels: currentLostLabels,
-        modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: r.triangles })),
+        modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles) })),
         paramsSchema: currentParamSchema ?? undefined,
       };
       partMeshCache.delete(version.id);
@@ -4293,6 +4297,16 @@ async function main() {
       geometryDataEl.textContent = version.geometryData
         ? JSON.stringify(version.geometryData, null, 2)
         : JSON.stringify({ status: 'ready' });
+      if (printabilityIndicatorEl) {
+        const geoData = version.geometryData ?? {};
+        const { printable, issues } = computePrintability(geoData);
+        if (printable) {
+          printabilityIndicatorEl.style.display = 'none';
+        } else {
+          printabilityIndicatorEl.textContent = '⚠ ' + issues.join(' · ');
+          printabilityIndicatorEl.style.display = '';
+        }
+      }
       syncClipSliderBounds();
       simplifyBaselineMesh = null;
       simplifyBaselineColoredMesh = null;
@@ -4315,7 +4329,7 @@ async function main() {
           meshData: currentMeshData,
           labelMap: currentLabelMap,
           lostLabels: currentLostLabels,
-          modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: r.triangles })),
+          modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles) })),
           paramsSchema: currentParamSchema ?? undefined,
         };
         partMeshCache.delete(version.id);
@@ -5354,9 +5368,9 @@ async function main() {
     removeCompanionFileFromRegistry(path);
     if (_companionActiveTab === path) switchToMainTab();
     else renderCompanionFilesBar();
-    // Re-run main code without this companion, then persist the removal so
-    // it survives a page reload (registry-only removal is lost on refresh).
-    runCode(getValue(), { surfaceErrors: false });
+    // Re-run synchronously so the cache and saved geometry data reflect the
+    // post-removal mesh (fire-and-forget runCode races with saveCurrentVersion).
+    await runCodeSync(getValue());
     void saveCurrentVersion();
   }
 
