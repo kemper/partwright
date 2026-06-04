@@ -429,6 +429,7 @@ function buildPanel(): HTMLElement {
   logSection.appendChild(lSub);
 
   _listEl = document.createElement('div');
+  _listEl.id = 'diagnostics-log';
   _listEl.className = 'flex-1 overflow-y-auto';
   logSection.appendChild(_listEl);
 
