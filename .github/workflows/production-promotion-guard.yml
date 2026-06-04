@@ -1,0 +1,64 @@
+name: Production promotion guard
+
+# Enforces the release invariant: a PR into `production` must be a *pure
+# promotion* of already-gated content — every change it brings must already
+# exist on `main`. The flow is one-directional:
+#
+#     feature branch ──PR──▶ main ──gate(FF)──▶ staging ──release PR──▶ production
+#
+# `staging` is only ever fast-forwarded from `main` by the staging gate, so it
+# can never hold content `main` lacks. The one place drift can sneak in is the
+# manual release PR into `production`: if an agent commits changelog / release
+# notes / help edits onto the release branch (instead of landing them on `main`
+# first), production ends up ahead of main. That is exactly what this guard
+# catches.
+#
+# If this job fails: don't add the commits here. Open a normal PR into `main`
+# with those changes, let the gate advance `staging`, then re-cut the release
+# from `staging` as a pure promotion. See the Deployment section of CLAUDE.md.
+
+on:
+  pull_request:
+    branches: [production]
+
+permissions:
+  contents: read
+
+jobs:
+  no-content-beyond-main:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Assert the release introduces no content beyond main
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Replay the release head on top of main, index-only. If main already
+          # contains everything the head changes, the index stays clean. Any
+          # staged change is content the release would add that main lacks.
+          git checkout -q --detach origin/main
+          if ! git merge --no-commit --no-ff "$HEAD_SHA" >/dev/null 2>&1; then
+            git merge --abort 2>/dev/null || true
+            echo "::error::Release branch conflicts with main — it contains diverging content. Land the changes on main first (main → staging → production)."
+            exit 1
+          fi
+
+          if git diff --cached --quiet; then
+            echo "OK — this release promotes only content already on main."
+          else
+            echo "::error::This production PR introduces content that is not on main:"
+            git diff --cached --name-only | sed 's/^/  - /'
+            echo ""
+            echo "Release PRs must be pure promotions of gated staging. Put these"
+            echo "changes on main via a normal PR first, let the staging gate"
+            echo "advance staging, then re-cut the release. See CLAUDE.md › Deployment."
+            git merge --abort 2>/dev/null || true
+            exit 1
+          fi

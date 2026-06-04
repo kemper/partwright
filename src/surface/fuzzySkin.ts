@@ -26,6 +26,8 @@ export interface FuzzySkinOptions {
   seed?: number;
   /** Densify the mesh before displacing so the texture is visible. Default true. */
   subdivide?: boolean;
+  /** Subdivision quality 1 (draft) – 5 (ultra). Default 3. */
+  quality?: number;
 }
 
 // --- Deterministic value noise -------------------------------------------------
@@ -84,8 +86,10 @@ export function fuzzySkin(mesh: MeshData, opts: FuzzySkinOptions): MeshData {
   // the model's own scale so we never explode a large flat slab.
   let base: MeshData = mesh;
   if (opts.subdivide !== false && amplitude > 0) {
+    const quality = Math.max(1, Math.min(5, Math.round(opts.quality ?? 3)));
+    const qScale = 2 ** ((quality - 3) / 2);
     const diag = Math.hypot(...bboxOf(extractPositions(mesh)).size);
-    const targetEdge = Math.max(scale / 2, diag / 200);
+    const targetEdge = Math.max(scale / (2 * qScale), diag / (200 * qScale));
     base = subdivideToMaxEdge(mesh, { maxEdge: targetEdge, maxRounds: 4 });
   }
 

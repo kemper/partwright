@@ -21,7 +21,7 @@
 //
 // Protocol — Worker → Main:
 //   { type: 'ready' }
-//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, lostLabels, paramsSchema }
+//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, lostLabels, paramsSchema, workerMs }
 //   { type: 'validate_result',         callId, result }
 //   { type: 'detect_includes_result',  callId, result }
 //   { type: 'exportSTEP_result',       callId, blob, error }
@@ -58,6 +58,20 @@ const simplifyCancelFlags = new Map<string, boolean>();
 const enhanceCancelFlags = new Map<string, boolean>();
 
 let manifoldReady = false;
+
+/** Current size (bytes) of the manifold-3d WASM linear heap — its grown
+ *  high-water mark, since WASM memory never shrinks. Reported back to the main
+ *  thread so the diagnostics can show how close a run came to the 4 GB ceiling
+ *  (and, on an OOM, whether it truly hit it or failed far below). Only
+ *  meaningful for manifold-js runs; the other engines own separate WASM heaps. */
+function manifoldHeapBytes(): number | undefined {
+  try {
+    const heap = (getManifoldModule() as { HEAPU8?: { byteLength?: number } } | null)?.HEAPU8;
+    return typeof heap?.byteLength === 'number' ? heap.byteLength : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // Catch unhandled promise rejections inside the Worker (e.g. WASM panics that
 // escape an inner try-catch) and forward them as 'error' messages so the main
@@ -100,6 +114,10 @@ self.onmessage = async (event: MessageEvent) => {
       params?: Record<string, unknown> | null;
       companionFiles?: Record<string, string>;
     };
+    // Worker-side compute timer. Reported back on execute_result so the
+    // worker-health panel can separate real evaluation time from the
+    // queue + structured-clone transfer overhead the main thread also sees.
+    const execStart = performance.now();
     try {
       // Propagate the main-thread quality setting so the Worker uses the same
       // segment count. SCAD/replicad execute asynchronously, so two runs can
@@ -177,6 +195,8 @@ self.onmessage = async (event: MessageEvent) => {
         : null;
       const lostLabels = result.lostLabels ?? null;
       const paramsSchema = result.paramsSchema ?? null;
+      // Heap high-water for manifold-js runs (other engines own separate heaps).
+      const engineHeapBytes = effectiveLang === 'manifold-js' ? manifoldHeapBytes() : undefined;
 
       const mesh = result.mesh;
       if (mesh) {
@@ -195,7 +215,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes },
           transfer,
         );
       } else {
@@ -208,6 +228,8 @@ self.onmessage = async (event: MessageEvent) => {
           labelMapEntries: null,
           lostLabels: null,
           paramsSchema,
+          workerMs: Math.round(performance.now() - execStart),
+          engineHeapBytes,
         });
       }
 
