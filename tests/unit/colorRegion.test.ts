@@ -78,4 +78,41 @@ describe('findColorRegion', () => {
     // Seed is blue → exact-match tolerance keeps only the blue quad.
     expect([...region].sort((a, b) => a - b)).toEqual([2, 3]);
   });
+
+  it('bridges a T-junction (corner adjacency) the brush leaves behind', () => {
+    // Triangle A spans edge P0–P1. On the far side that edge is split at its
+    // midpoint M into B1 and B2 — a T-junction: A shares NO full edge with B1/B2
+    // (so pure edge-pair adjacency would strand A alone), but it still shares the
+    // corners P0 and P1. Corner adjacency must keep all three connected so the
+    // bucket walks across the subdivision boundary instead of grabbing one face.
+    const vertProperties = new Float32Array([
+      0, 0, 0, // 0 P0
+      2, 0, 0, // 1 P1
+      1, 1, 0, // 2 P2
+      1, 0, 0, // 3 M (midpoint of P0–P1)
+      1, -1, 0, // 4 X
+    ]);
+    const triVerts = new Uint32Array([
+      0, 1, 2, // A
+      0, 3, 4, // B1
+      3, 1, 4, // B2
+    ]);
+    const mesh: MeshData = { vertProperties, triVerts, numVert: 5, numTri: 3, numProp: 3 };
+    const adjacency = buildAdjacency(mesh);
+    // All one color → a tight tolerance still fills all three across the T-junction.
+    const sameColor = new Uint8Array([10, 20, 30, 10, 20, 30, 10, 20, 30]);
+    const region = findColorRegion(0, adjacency, sameColor, 0);
+    expect([...region].sort((a, b) => a - b)).toEqual([0, 1, 2]);
+  });
+
+  it('anchors on the seed-color override instead of the seed triangle color', () => {
+    const { adjacency } = buildStrip();
+    // Seed the red quad but tell the flood to match BLUE: the seed is always
+    // included, and the walk then collects only the blue-matching neighbours.
+    const region = findColorRegion(0, adjacency, RED_BLUE, 0, [0, 0, 255]);
+    expect(region.has(0)).toBe(true); // seed always kept
+    expect(region.has(2)).toBe(true); // blue
+    expect(region.has(3)).toBe(true); // blue
+    expect(region.has(1)).toBe(false); // red, not the matched color
+  });
 });

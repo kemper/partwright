@@ -12,41 +12,56 @@ export interface AdjacencyGraph {
   centroids: Float32Array;
 }
 
-/** Create a canonical edge key from two vertex indices (order-independent). */
-function edgeKey(a: number, b: number): string {
-  return a < b ? `${a},${b}` : `${b},${a}`;
-}
-
 /** Build a triangle adjacency graph from mesh data.
- *  O(numTri) with Map-based edge lookup. */
+ *  O(Σ valence²) with Map-based vertex lookup — effectively O(numTri) for the
+ *  bounded-valence meshes we deal with. */
 export function buildAdjacency(mesh: MeshData): AdjacencyGraph {
-  const { triVerts, numTri, vertProperties, numProp } = mesh;
+  const { triVerts, numTri, numVert, vertProperties, numProp } = mesh;
 
-  // Build edge → triangle list map
-  const edgeToTris = new Map<string, number[]>();
+  // Canonicalise vertices by exact position, then connect triangles that share a
+  // *vertex* (corner), not just a full edge. Two reasons:
+  //
+  //  1. **Coincident-but-split vertices.** A render mesh can carry per-triangle
+  //     vertex copies at the same position; matching by raw index would miss the
+  //     shared corner. Welding by position fixes that.
+  //  2. **T-junctions.** The brush's adaptive subdivision leaves hanging nodes —
+  //     one triangle's edge is split into two while the neighbour's stays whole,
+  //     so the full edge (vertex pair) no longer matches and edge-only adjacency
+  //     shatters the mesh into tiny islands (a bucket flood-fill grabs ~6
+  //     triangles instead of the whole region). The split edge's two *endpoints*
+  //     are still shared corners, so corner adjacency keeps both sides connected.
+  //
+  // The flood-fill callers (`findColorRegion`, `findCoplanarRegion`,
+  // `findConnectedFromSeed`) gate every step by color or normal, so the looser
+  // corner adjacency can't over-select beyond what those thresholds allow.
+  const posId = new Map<string, number>();
+  const vertCanon = new Int32Array(numVert);
+  for (let v = 0; v < numVert; v++) {
+    const key = `${vertProperties[v * numProp]},${vertProperties[v * numProp + 1]},${vertProperties[v * numProp + 2]}`;
+    let id = posId.get(key);
+    if (id === undefined) { id = posId.size; posId.set(key, id); }
+    vertCanon[v] = id;
+  }
 
+  // Vertex (canonical position) → triangles touching it.
+  const vertToTris = new Map<number, number[]>();
   for (let t = 0; t < numTri; t++) {
-    const v0 = triVerts[t * 3];
-    const v1 = triVerts[t * 3 + 1];
-    const v2 = triVerts[t * 3 + 2];
-
-    for (const key of [edgeKey(v0, v1), edgeKey(v1, v2), edgeKey(v2, v0)]) {
-      let list = edgeToTris.get(key);
-      if (!list) {
-        list = [];
-        edgeToTris.set(key, list);
-      }
+    for (let k = 0; k < 3; k++) {
+      const pid = vertCanon[triVerts[t * 3 + k]];
+      let list = vertToTris.get(pid);
+      if (!list) { list = []; vertToTris.set(pid, list); }
       list.push(t);
     }
   }
 
-  // Build neighbor lists
+  // Build neighbor lists: every pair of triangles sharing a vertex is adjacent.
   const neighbors: Set<number>[] = new Array(numTri);
   for (let i = 0; i < numTri; i++) neighbors[i] = new Set();
 
-  for (const tris of edgeToTris.values()) {
+  for (const tris of vertToTris.values()) {
     for (let i = 0; i < tris.length; i++) {
       for (let j = i + 1; j < tris.length; j++) {
+        if (tris[i] === tris[j]) continue;
         neighbors[tris[i]].add(tris[j]);
         neighbors[tris[j]].add(tris[i]);
       }
@@ -241,6 +256,10 @@ export function findColorRegion(
   adjacency: AdjacencyGraph,
   triColors: Uint8Array | null,
   colorTolerance = 0.05,
+  /** Optional anchor color (R,G,B 0–255) the flood matches against, instead of
+   *  the seed triangle's own color in `triColors`. Lets a re-resolve follow the
+   *  *original* matched color even after the seed triangle has been recolored. */
+  seedColorOverride?: readonly [number, number, number],
 ): Set<number> {
   const { neighbors } = adjacency;
   const result = new Set<number>();
@@ -260,9 +279,9 @@ export function findColorRegion(
     return result;
   }
 
-  const sr = triColors[seedTri * 3];
-  const sg = triColors[seedTri * 3 + 1];
-  const sb = triColors[seedTri * 3 + 2];
+  const sr = seedColorOverride ? seedColorOverride[0] : triColors[seedTri * 3];
+  const sg = seedColorOverride ? seedColorOverride[1] : triColors[seedTri * 3 + 1];
+  const sb = seedColorOverride ? seedColorOverride[2] : triColors[seedTri * 3 + 2];
 
   // Max squared distance in normalised [0,1]³ space is 3.
   const maxDistSq = colorTolerance * colorTolerance * 3;
