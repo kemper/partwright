@@ -5391,7 +5391,23 @@ async function main() {
       try { currentManifold.delete(); } catch { /* already deleted */ }
     }
     const mod = getModule();
-    currentManifold = mod && mesh ? mod.Manifold.ofMesh(mesh) : null;
+    // Mirror the post-run path (see runCodeSync's ofMesh reconstruction): a
+    // simplify / enhance / paint-refine result can come back not-quite-manifold
+    // (degenerate tris, non-2-manifold edges), and Manifold.ofMesh throws
+    // "Not manifold" on those. Without this guard the exception escapes the
+    // helper, the simplify/enhance handler surfaces a raw "Not manifold" error,
+    // AND the stats / printability refresh below is skipped — so the user gets
+    // no warning that the model went non-manifold (the exact bug reported for
+    // paint → enhance → paint → simplify). Fall back to render-only and warn.
+    try {
+      currentManifold = mod && mesh ? mod.Manifold.ofMesh(mesh) : null;
+    } catch {
+      currentManifold = null;
+      showToast(
+        "The resulting mesh isn’t a watertight solid (non-manifold) — it still renders, but won’t slice or boolean cleanly. Try a higher triangle target, or re-run the code to rebuild a clean solid.",
+        { variant: 'warn', source: 'engine', durationMs: 6000 },
+      );
+    }
     updateMesh(mesh);
     updatePaintMesh(mesh);
     updateGeometryData();
