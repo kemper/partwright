@@ -90,6 +90,10 @@ export interface AppConfig {
     gizmoSnapDurationSec: number;
     /** OrbitControls damping factor — lower is snappier, higher is smoother. */
     orbitDampingFactor: number;
+    /** Zoom-out limit as a multiple of the model's largest dimension. Caps how
+     *  far the camera can dolly back (OrbitControls maxDistance) so the model
+     *  can't shrink to a speck. Re-derived from the model size on each frame. */
+    maxZoomOutFactor: number;
     /** Ambient light intensity in the 3D viewport (0–2 range). */
     ambientLightIntensity: number;
     /** Primary directional light intensity (0–2 range). */
@@ -126,6 +130,10 @@ export interface AppConfig {
     tooltipDelayMs: number;
     /** Idle delay (ms) after the last keystroke before error annotations appear in the code editor. */
     codeEditorErrorIdleMs: number;
+    /** Debounce delay (ms) after the last companion-file keystroke before the
+     *  draft is autosaved, so companion edits survive a reload without writing
+     *  to IndexedDB on every keystroke. */
+    companionDraftDebounceMs: number;
     /** Debounce delay (ms) for the surface-modifier live preview. */
     surfacePreviewDebounceMs: number;
     /** Debounce delay (ms) for the relief import 2D preview. */
@@ -147,6 +155,12 @@ export interface AppConfig {
      *  target printer has (e.g. 4 for one Bambu AMS). Drives the paint panel's
      *  over-budget warning; never blocks painting or export. */
     defaultPaletteCapacity: number;
+    /** In-memory ring buffer size for the worker run-history log (recent
+     *  geometry runs shown in the worker health panel). */
+    workerRunHistorySize: number;
+    /** Live-refresh interval (ms) for the worker health panel — how often it
+     *  re-polls in-flight counts and liveness while open. */
+    workerPanelRefreshMs: number;
   };
 }
 
@@ -190,6 +204,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     gizmoHitRadius: 0.4,
     gizmoSnapDurationSec: 0.4,
     orbitDampingFactor: 0.1,
+    maxZoomOutFactor: 12,
     ambientLightIntensity: 0.6,
     primaryLightIntensity: 0.8,
     secondaryLightIntensity: 0.3,
@@ -210,6 +225,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     toastDurationMs: 2200,
     tooltipDelayMs: 150,
     codeEditorErrorIdleMs: 800,
+    companionDraftDebounceMs: 600,
     surfacePreviewDebounceMs: 250,
     reliefPreviewDebounceMs: 120,
     reliefPreview3dDebounceMs: 250,
@@ -219,6 +235,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     defaultQuality: 128,
     scadDefaultQuality: 32,
     defaultPaletteCapacity: 4,
+    workerRunHistorySize: 50,
+    workerPanelRefreshMs: 1000,
   },
 };
 

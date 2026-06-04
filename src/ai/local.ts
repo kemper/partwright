@@ -28,6 +28,7 @@ import { isWebGpuAvailable, LOCAL_MODELS } from './localModels';
 import { loadSettings, type CustomLocalModel } from './settings';
 import { buildFallbackLadder, getCachedCeiling, getModelCeiling } from './modelMetadata';
 import { getConfig } from '../config/appConfig';
+import { registerWorker, markWorkerStarted } from '../diagnostics/workerStats';
 
 // We can't statically type-import from @mlc-ai/web-llm without forcing it
 // into the main bundle, so we keep the engine handle untyped here and rely
@@ -164,6 +165,14 @@ let engineWorker: Worker | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let engineProxy: any = null;
 
+// Surface the in-browser WebLLM worker's liveness in the worker-health panel.
+// In-flight turns aren't tracked here (WebLLM owns its own request lifecycle);
+// liveness alone answers "is the local model loaded into a worker?".
+registerWorker('webllm', 'Local model (WebLLM)', () => ({
+  alive: engineWorker !== null,
+  inFlight: 0,
+}));
+
 /** Lazily create the model worker + its main-thread proxy, then refresh the
  *  per-load bits (app config for custom models, progress callback) so the
  *  current caller sees download progress. Reused across loads. */
@@ -175,6 +184,7 @@ function getEngineProxy(
 ): any {
   if (!engineWorker) {
     engineWorker = new Worker(new URL('./localEngineWorker.ts', import.meta.url), { type: 'module' });
+    markWorkerStarted('webllm');
   }
   if (!engineProxy) {
     engineProxy = new webllm.WebWorkerMLCEngine(engineWorker, { appConfig, initProgressCallback: onProgress });
