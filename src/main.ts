@@ -1459,7 +1459,28 @@ async function saveCurrentVersion(label?: string): Promise<
   }
   const thumbnail = await captureThumbnail();
   const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles() });
-  if (version) return { id: version.id, index: version.index, label: version.label };
+  if (version) {
+    // Keep the mesh cache valid for the newly-saved version so that switching
+    // away and back doesn't trigger a recompile. The code/geometry didn't
+    // change (only paint or annotations may have), so the current in-memory
+    // mesh is still correct for the new version id.
+    if (currentMeshData) {
+      const entry: PartMeshCacheEntry = {
+        meshData: currentMeshData,
+        labelMap: currentLabelMap,
+        lostLabels: currentLostLabels,
+        modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: r.triangles })),
+        paramsSchema: currentParamSchema ?? undefined,
+      };
+      partMeshCache.delete(version.id);
+      partMeshCache.set(version.id, entry);
+      if (partMeshCache.size > PART_MESH_CACHE_SIZE) {
+        const oldest = partMeshCache.keys().next().value;
+        if (oldest) partMeshCache.delete(oldest);
+      }
+    }
+    return { id: version.id, index: version.index, label: version.label };
+  }
   return {
     skipped: true as const,
     reason: 'No changes since the current version (code, annotations, and color regions all match). Add a new region, edit code, or pass a different label to force a save.',
@@ -2906,7 +2927,13 @@ async function main() {
     if (!s.session || !s.currentPart) return;
     const code = getValue();
     if (isStarterCode(code)) return;
-    if (s.currentVersion && !editorContentDiffersFrom(s.currentVersion.code)) return;
+    // Previously bailed here when code was unchanged, silently discarding
+    // unsaved paint, annotations, param overrides, and companion-file edits.
+    // saveVersion already deduplicates on all five axes (code + annotations +
+    // paint + params + companions), so letting it run is the holistic fix: no
+    // DB write when truly nothing changed, one write when any tracked state
+    // differs. The only extra cost is the captureThumbnail() call (~30–80 ms
+    // canvas readback, not a recompile).
     const thumbnail = await captureThumbnail();
     const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
     // Include companions so the dedup check in saveVersion works when a
