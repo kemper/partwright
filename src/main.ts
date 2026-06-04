@@ -6132,7 +6132,7 @@ async function main() {
     }) {
       try {
         const preserve = opts?.preserveColor ?? true;
-        const mesh = requireCurrentMeshForModifier();
+        const mesh = meshForModifier(preserve);
         const warns = textureWarnings('knit', opts ?? {}, mesh);
         const base = defaultKnitOptions(mesh);
         const knitOpts = {

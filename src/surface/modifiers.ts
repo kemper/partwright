@@ -21,7 +21,7 @@ import { furVelvet, type FurVelvetOptions } from './furVelvet';
 import { wovenFabric, type WovenFabricOptions } from './wovenFabric';
 import { smoothSurface, type SmoothOptions } from './smoothSurface';
 import { voxelizeMesh, type VoxelizeOptions } from './voxelizeMesh';
-import { extractPositions, bboxOf } from './meshSubdivide';
+import { extractPositions, bboxOf, subdivideWithMask } from './meshSubdivide';
 import { encodeGrid } from '../geometry/voxel/grid';
 import { scaleMesh } from './scaleMesh';
 import { meshGrid } from '../geometry/voxel/mesher';
@@ -64,6 +64,16 @@ export function modelDiagonal(mesh: MeshData): number {
 export function defaultFuzzyOptions(mesh: MeshData): Required<FuzzySkinOptions> {
   const d = modelDiagonal(mesh) || 10;
   return { amplitude: d * 0.01, scale: d * 0.04, octaves: 2, seed: 1, quality: 3, subdivide: true };
+}
+
+/** Compute the target max-edge-length for a quality-based subdivision pass.
+ *  Mirrors the formula used by fuzzySkin and other whole-model paths so the
+ *  patch path reaches the same vertex density for a given quality setting. */
+function patchSubdivTarget(diag: number, featureSize: number, quality: number): { maxEdge: number; maxRounds: number } {
+  const q = Math.max(1, Math.min(5, Math.round(quality)));
+  const qScale = 2 ** ((q - 3) / 2);
+  const maxEdge = Math.max(featureSize / (2 * qScale), diag / (200 * qScale));
+  return { maxEdge, maxRounds: q };
 }
 
 /** Size-relative starting parameters for knit texture (~3.5% amplitude, ~5% stitch width). */
@@ -221,26 +231,37 @@ const PATCH_FALLOFF_HOPS = 2;
 
 /** Apply any displacement modifier to a selected patch only.
  *  Runs the modifier without subdivision so vertex count stays 1:1.
- *  Displacement fades to zero over PATCH_FALLOFF_HOPS topology hops for seamless blending. */
+ *  Displacement fades to zero over PATCH_FALLOFF_HOPS topology hops for seamless blending.
+ *  When `preSubdivide` is provided the full mesh is densified first (same target
+ *  as the whole-model path) so coarse meshes show the same texture detail as the
+ *  whole-model path does. */
 function runOnPatch(
   mesh: MeshData,
   selectedTris: Set<number>,
   modFn: (sub: MeshData) => MeshData,
+  preSubdivide?: { maxEdge: number; maxRounds: number },
 ): MeshData {
-  const { patchMesh, localToGlobal, hopDist } = extractPatchMesh(mesh, selectedTris);
+  let baseMesh = mesh;
+  let baseTris = selectedTris;
+  if (preSubdivide) {
+    const result = subdivideWithMask(mesh, preSubdivide, selectedTris);
+    baseMesh = result.mesh;
+    baseTris = result.selectedTris;
+  }
+  const { patchMesh, localToGlobal, hopDist } = extractPatchMesh(baseMesh, baseTris);
   const numPatchVert = localToGlobal.length;
   const origPos = patchMesh.vertProperties as Float32Array;
 
   const modified = modFn(patchMesh);
-  if (modified.numVert !== numPatchVert) return mesh; // unexpected subdivision — bail cleanly
+  if (modified.numVert !== numPatchVert) return baseMesh; // unexpected subdivision — bail cleanly
 
   const modPos = modified.numProp === 3
     ? modified.vertProperties as Float32Array
     : extractPositions(modified);
 
-  const fullPos = mesh.numProp === 3
-    ? Float32Array.from(mesh.vertProperties)
-    : extractPositions(mesh);
+  const fullPos = baseMesh.numProp === 3
+    ? Float32Array.from(baseMesh.vertProperties)
+    : extractPositions(baseMesh);
 
   // When the selection is very small or the mesh is coarse, every patch vertex
   // may also appear in a non-selected triangle (all hopDist = 0). Normal falloff
@@ -261,36 +282,49 @@ function runOnPatch(
     fullPos[g * 3 + 2] = origPos[i * 3 + 2] + (modPos[i * 3 + 2] - origPos[i * 3 + 2]) * w;
   }
 
-  return { vertProperties: fullPos, triVerts: mesh.triVerts, numVert: mesh.numVert, numTri: mesh.numTri, numProp: 3, triColors: mesh.triColors };
+  return { vertProperties: fullPos, triVerts: baseMesh.triVerts, numVert: baseMesh.numVert, numTri: baseMesh.numTri, numProp: 3, triColors: baseMesh.triColors };
 }
 
 export function applyFuzzyPatch(mesh: MeshData, opts: FuzzySkinOptions, selectedTris: Set<number>): ModifierManifoldResult {
-  const patched = runOnPatch(mesh, selectedTris, (sub) => fuzzySkin(sub, { ...opts, subdivide: false }));
+  const diag = modelDiagonal(mesh) || 10;
+  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.scale), opts.quality ?? 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => fuzzySkin(sub, { ...opts, subdivide: false }), pre);
   return { kind: 'manifold', label: 'fuzzy skin (patch)', mesh: patched, code: manifoldWrapper([`Fuzzy skin patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
 }
 
 export function applyCablePatch(mesh: MeshData, opts: CableKnitOptions, selectedTris: Set<number>): ModifierManifoldResult {
-  const patched = runOnPatch(mesh, selectedTris, (sub) => cableKnit(sub, { ...opts, subdivide: false }));
+  const diag = modelDiagonal(mesh) || 10;
+  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.cableWidth), opts.quality ?? 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => cableKnit(sub, { ...opts, subdivide: false }), pre);
   return { kind: 'manifold', label: 'cable knit (patch)', mesh: patched, code: manifoldWrapper([`Cable knit patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
 }
 
 export function applyWafflePatch(mesh: MeshData, opts: WaffleStitchOptions, selectedTris: Set<number>): ModifierManifoldResult {
-  const patched = runOnPatch(mesh, selectedTris, (sub) => waffleStitch(sub, { ...opts, subdivide: false }));
+  const diag = modelDiagonal(mesh) || 10;
+  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.cellWidth), opts.quality ?? 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => waffleStitch(sub, { ...opts, subdivide: false }), pre);
   return { kind: 'manifold', label: 'waffle stitch (patch)', mesh: patched, code: manifoldWrapper([`Waffle stitch patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
 }
 
 export function applyFurPatch(mesh: MeshData, opts: FurVelvetOptions, selectedTris: Set<number>): ModifierManifoldResult {
-  const patched = runOnPatch(mesh, selectedTris, (sub) => furVelvet(sub, { ...opts, subdivide: false }));
+  const diag = modelDiagonal(mesh) || 10;
+  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.fiberSpacing), opts.quality ?? 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => furVelvet(sub, { ...opts, subdivide: false }), pre);
   return { kind: 'manifold', label: 'fur / velvet (patch)', mesh: patched, code: manifoldWrapper([`Fur/velvet patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
 }
 
 export function applyWovenPatch(mesh: MeshData, opts: WovenFabricOptions, selectedTris: Set<number>): ModifierManifoldResult {
-  const patched = runOnPatch(mesh, selectedTris, (sub) => wovenFabric(sub, { ...opts, subdivide: false }));
+  const diag = modelDiagonal(mesh) || 10;
+  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.threadSpacing), opts.quality ?? 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => wovenFabric(sub, { ...opts, subdivide: false }), pre);
   return { kind: 'manifold', label: 'woven fabric (patch)', mesh: patched, code: manifoldWrapper([`Woven fabric patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
 }
 
 export function applySmoothPatch(mesh: MeshData, opts: SmoothOptions, selectedTris: Set<number>): ModifierManifoldResult {
-  const patched = runOnPatch(mesh, selectedTris, (sub) => smoothSurface(sub, { ...opts, subdivide: false }));
+  const diag = modelDiagonal(mesh) || 10;
+  // Smooth has no feature size — use diagonal/20 as the target (coarse-mesh safety net only)
+  const pre = patchSubdivTarget(diag, diag / 20, 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => smoothSurface(sub, { ...opts, subdivide: false }), pre);
   return { kind: 'manifold', label: 'smoothed (patch)', mesh: patched, code: manifoldWrapper([`Smooth patch applied on ${today()}.`, `The rounded mesh is baked onto api.imports[0].`]) };
 }
 
