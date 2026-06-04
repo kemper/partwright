@@ -6352,7 +6352,8 @@ async function main() {
 
     /** Set one or more Customizer parameter overrides and re-run the model —
      *  the language-based equivalent of dragging the panel's sliders. Unknown
-     *  keys are ignored and out-of-range / wrong-type values are clamped or
+     *  keys are ignored; a numeric value beyond the declared min/max is honored
+     *  as typed (the bounds only size the slider), and only wrong-type values
      *  fall back to the declared default (never throws on a bad value). Returns
      *  the updated geometry data plus the resolved parameter values, or
      *  `{ error }` if the model declares no parameters. */

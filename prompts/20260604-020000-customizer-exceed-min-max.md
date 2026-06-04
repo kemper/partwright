@@ -4,6 +4,9 @@ branch: claude/dreamy-euler-HvCh2
 files_changed:
   - src/geometry/params.ts
   - src/ui/paramsPanel.ts
+  - src/ai/tools.ts
+  - src/main.ts
+  - src/storage/sessionManager.ts
   - tests/customizer.spec.ts
   - tests/unit/params.test.ts
   - tests/unit/scadParams.test.ts
@@ -45,3 +48,8 @@ to assert the value is now honored, added a `resolveParamValues` test for values
 beyond both min and max, and added a customizer e2e test that types 250 into a
 max:100 field and asserts the model re-runs to 250 with a grown slider. Verified
 in-browser with a throwaway spec: a cube re-rendered at 250 from a max:100 Width.
+
+Follow-up after a `work-reviewer` pass (no blocking issues): synced three stale
+"out-of-range values are clamped" docs to the new behavior — the `setParams` AI
+tool description (`src/ai/tools.ts`), the `setParams` JSDoc (`src/main.ts`), and
+the version-load comment in `src/storage/sessionManager.ts`.
