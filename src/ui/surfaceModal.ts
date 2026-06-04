@@ -142,7 +142,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   closeBtn.setAttribute('aria-label', 'Close surface panel');
   header.append(closeBtn);
   panel.append(header);
-  attachViewportPanelDrag(header, panel);
+  const dragHandle = attachViewportPanelDrag(header, panel);
 
   // Scrollable body.
   const scrollBody = el('div', 'overflow-y-auto flex-1 p-4 max-h-[min(80vh,30rem)]');
@@ -580,6 +580,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     exitSelectionMode();
     regionTeardown?.(); regionTeardown = null;
     clearPreviewIfDirty();
+    dragHandle.destroy();
     panel.remove();
     openModal = null;
     currentSurfaceClose = null;

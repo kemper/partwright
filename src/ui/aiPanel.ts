@@ -1676,7 +1676,11 @@ async function approvePlan(): Promise<void> {
   progressState.retryCount = 0;
   stalledByWatchdog = false;
   pinTranscriptToBottom();
-  await runTurnWithStallRetry(apiKey, settings.toggles, [
+  // Approval is the hand-off from planning to building: force planFirst off for
+  // this turn so the model actually receives the tool list. Leaving it on would
+  // make buildToolList return [] and emit the "do NOT call any tools" suffix, so
+  // the approved turn could only re-plan, never execute.
+  await runTurnWithStallRetry(apiKey, { ...settings.toggles, planFirst: false }, [
     { type: 'text', text: 'Plan approved. Please proceed.' },
   ]);
 }
@@ -2812,6 +2816,11 @@ async function sendMessage(): Promise<void> {
     // message as-is; the planning prefix is only for the very first turn.
     const planToggles: ChatToggles = {
       ...settings.toggles,
+      // The pending-approval state is the source of truth for "we're planning,"
+      // not the live Plan pill — force planFirst on so a refinement turn keeps
+      // its empty tool list and plan-mode suffix even if the user toggled the
+      // pill off while a plan was pending.
+      planFirst: true,
       scope: { runCode: false, saveVersions: false, paintFaces: false, sessionNotes: false },
       autoResume: false,
     };
