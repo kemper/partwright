@@ -8,11 +8,14 @@ export interface ColorRegion {
   id: number;
   name: string;
   color: [number, number, number]; // RGB 0..1
-  source: 'face-pick' | 'slab' | 'subtree' | 'paintbrush' | 'model';
+  source: 'face-pick' | 'slab' | 'subtree' | 'paintbrush' | 'model' | 'imagePaint';
   descriptor: RegionDescriptor;
   order: number;
   visible: boolean;
   triangles: Set<number>; // resolved triangle indices (transient, not persisted)
+  /** Per-triangle colors for image-paint regions; overrides `color` per
+   *  triangle in buildTriColors. Transient — rebuilt from the descriptor. */
+  perTriColors?: Map<number, [number, number, number]>;
 }
 
 export type RegionDescriptor =
@@ -40,6 +43,16 @@ export type RegionDescriptor =
       smooth?: boolean; maxEdge?: number }
   | { kind: 'triangles'; ids: number[] }
   | { kind: 'byLabel'; label: string }
+  // Color magic-wand (the bucket tool's Color mode). Stores a stable world-space
+  // seed plus the matched color and tolerance, so it re-floods by color on every
+  // re-resolve — surviving subdivision/re-runs the way `coplanar` does for the
+  // geometry bucket. A raw `triangles` snapshot can't: a fill over a brush-refined
+  // mesh lives at sub-base-triangle resolution that base-indexed ids can't carry.
+  // `seedColor` (0–1 RGB) is the color under the cursor at paint time, used as the
+  // flood anchor so the match survives even after this region recolors those
+  // triangles (the re-resolve excludes this region's own color from the lookup).
+  | { kind: 'colorFlood'; seedPoint: [number, number, number]; seedNormal: [number, number, number];
+      seedColor: [number, number, number]; colorTolerance: number }
   | { kind: 'connectedFromSeed'; seedPoint: [number, number, number]; seedNormal: [number, number, number]; maxDeviationDeg: number;
       // Optional AABB clamp — flood-fill won't walk into triangles whose
       // centroid falls outside this box. Used to constrain `paintConnected`
@@ -58,7 +71,23 @@ export type RegionDescriptor =
   // saved before this omit both and are read as `slab` with an auto depth.
   // `spray` turns the stroke into a geodesic airbrush: a soft speckle whose
   // coverage fades from the core out via a per-triangle dither (no hard edge).
-  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: 'geodesic' | 'slab'; depth?: number; spray?: { strength: number; softness: number; seed: number } };
+  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: 'geodesic' | 'slab'; depth?: number; spray?: { strength: number; softness: number; seed: number } }
+  // Image projection: per-triangle colors computed at apply-time by projecting
+  // an image onto the mesh from a chosen axis direction. The projected result is
+  // stored as a flat [triIdx, r, g, b, …] array (r/g/b in 0–255) so the region
+  // survives serialization and re-resolves correctly after mesh subdivision via
+  // the parentToChildren map. `avgColor` (0–1) is the mean of all painted
+  // triangles — used as the `color` field for the region list swatch.
+  // For smooth stamps: `imageDataUrl` (PNG, ≤256×256) + stamp params are stored
+  // so the stamp can be replayed verbatim on session reload (see rehydrateColorRegions).
+  | { kind: 'imagePaint'; entries: number[]; avgColor: [number, number, number]; axis?: string;
+      smooth?: boolean; maxEdge?: number;
+      hitPoint?: [number, number, number]; hitNormal?: [number, number, number];
+      stampSize?: number; rotationDeg?: number;
+      imageDataUrl?: string;
+      removeBackground?: boolean;
+      manualBgColor?: [number, number, number];
+      bgTolerance?: number };
 
 export interface SerializedColorRegion {
   id: number;
@@ -129,10 +158,6 @@ export function onChange(fn: ChangeListener): void {
   listeners.push(fn);
 }
 
-export function removeChangeListener(fn: ChangeListener): void {
-  const idx = listeners.indexOf(fn);
-  if (idx >= 0) listeners.splice(idx, 1);
-}
 
 export function onVisibilityChange(fn: ChangeListener): () => void {
   visibilityListeners.push(fn);
@@ -197,6 +222,7 @@ export function addRegion(
   descriptor: RegionDescriptor,
   triangles: Set<number>,
   visible: boolean = true,
+  perTriColors?: Map<number, [number, number, number]>,
 ): ColorRegion {
   const id = nextRegionId++;
   const region: ColorRegion = {
@@ -208,6 +234,7 @@ export function addRegion(
     order: nextOrder++,
     visible,
     triangles,
+    perTriColors,
   };
   regions.push(region);
   clearRedoStack();
@@ -219,9 +246,6 @@ export function addRegion(
   return region;
 }
 
-export function getRegion(id: number): ColorRegion | undefined {
-  return regions.find(r => r.id === id);
-}
 
 export function setRegionVisibility(id: number, visible: boolean): boolean {
   const region = regions.find(r => r.id === id);
@@ -232,10 +256,6 @@ export function setRegionVisibility(id: number, visible: boolean): boolean {
   return true;
 }
 
-export function isRegionVisible(id: number): boolean | undefined {
-  const region = regions.find(r => r.id === id);
-  return region?.visible;
-}
 
 export function removeRegion(id: number): boolean {
   const idx = regions.findIndex(r => r.id === id);
@@ -278,6 +298,43 @@ export function updateRegionColor(id: number, color: [number, number, number]): 
   }
 }
 
+/** Batch-replace the color of every user region whose color is within
+ *  `tolerance` (Euclidean distance in normalised [0,1]³ RGB) of `sourceColor`.
+ *  Returns the number of regions changed. */
+export function replaceRegionColors(
+  sourceColor: [number, number, number],
+  targetColor: [number, number, number],
+  tolerance = 0.01,
+): number {
+  let count = 0;
+  for (const r of regions) {
+    const dr = r.color[0] - sourceColor[0];
+    const dg = r.color[1] - sourceColor[1];
+    const db = r.color[2] - sourceColor[2];
+    if (Math.sqrt(dr * dr + dg * dg + db * db) <= tolerance) {
+      r.color = [...targetColor] as [number, number, number];
+      count++;
+    }
+  }
+  if (count > 0) notify();
+  return count;
+}
+
+/** Return distinct RGB colors from user paint regions, ordered by first
+ *  occurrence. Used by the Replace tool to build its source swatch row. */
+export function getDistinctRegionColors(): [number, number, number][] {
+  const seen = new Set<string>();
+  const result: [number, number, number][] = [];
+  for (const r of regions) {
+    const key = r.color.map(c => Math.round(c * 255)).join(',');
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push([...r.color] as [number, number, number]);
+    }
+  }
+  return result;
+}
+
 export function updateRegionName(id: number, name: string): void {
   const region = regions.find(r => r.id === id);
   if (region) {
@@ -297,13 +354,20 @@ export function reorderRegion(id: number, toIndex: number): void {
   notify();
 }
 
-/** Replace a region's resolved triangle set in place. Used when the working
- *  mesh changes (e.g. a smooth brush stroke subdivides it) and every region
- *  must be re-resolved against the new tessellation. Does not notify — the
- *  caller drives a single re-render after re-resolving all regions. */
-export function setRegionTriangles(id: number, triangles: Set<number>): void {
+/** Replace a region's resolved triangle set (and optional per-triangle colors)
+ *  in place. Used when the working mesh changes (e.g. subdivision) and every
+ *  region must be re-resolved. Does not notify — the caller drives a single
+ *  re-render after re-resolving all regions. */
+export function setRegionTriangles(
+  id: number,
+  triangles: Set<number>,
+  perTriColors?: Map<number, [number, number, number]>,
+): void {
   const region = regions.find(r => r.id === id);
-  if (region) region.triangles = triangles;
+  if (region) {
+    region.triangles = triangles;
+    region.perTriColors = perTriColors;
+  }
 }
 
 export function clearRegions(): void {
@@ -356,8 +420,13 @@ export function clearModelColorRegions(): void {
  *
  *  `respectPerRegionVisibility` (default false) skips regions with `visible:false`
  *  so the viewport reflects per-region eye-toggle state. Exports leave it false
- *  so a hidden-in-UI region still ships in the GLB/3MF. */
-export function buildTriColors(numTri: number, respectPerRegionVisibility = false): Uint8Array | null {
+ *  so a hidden-in-UI region still ships in the GLB/3MF.
+ *
+ *  `excludeRegionId` omits one user region from the composite. A `colorFlood`
+ *  region re-resolves by matching colors, so it must read the surface color
+ *  *underneath* itself — without this, its own freshly-stamped color would mask
+ *  the source color it's meant to follow and the flood would collapse to the seed. */
+export function buildTriColors(numTri: number, respectPerRegionVisibility = false, excludeRegionId?: number): Uint8Array | null {
   if (regions.length === 0 && modelRegions.length === 0) return null;
 
   const buf = new Uint8Array(numTri * 3); // default 0,0,0 — ignored for un-colored tris
@@ -370,15 +439,22 @@ export function buildTriColors(numTri: number, respectPerRegionVisibility = fals
   // layer. Layers are applied in call order, so a later layer overwrites an
   // earlier one wherever they overlap.
   const stampLayer = (layer: ColorRegion[]) => {
-    const eligible = respectPerRegionVisibility ? layer.filter(r => r.visible) : layer;
+    let eligible = respectPerRegionVisibility ? layer.filter(r => r.visible) : layer;
+    if (excludeRegionId !== undefined) eligible = eligible.filter(r => r.id !== excludeRegionId);
     const sorted = [...eligible].sort((a, b) => a.order - b.order);
     const layerOrder = new Int32Array(numTri).fill(-1); // -1 = untouched in this layer
     for (const region of sorted) {
-      const r = Math.round(region.color[0] * 255);
-      const g = Math.round(region.color[1] * 255);
-      const b = Math.round(region.color[2] * 255);
+      const fr = Math.round(region.color[0] * 255);
+      const fg = Math.round(region.color[1] * 255);
+      const fb = Math.round(region.color[2] * 255);
+      const ptc = region.perTriColors;
       for (const tri of region.triangles) {
         if (tri >= 0 && tri < numTri && region.order >= layerOrder[tri]) {
+          let r = fr, g = fg, b = fb;
+          if (ptc) {
+            const c = ptc.get(tri);
+            if (c) { r = Math.round(c[0] * 255); g = Math.round(c[1] * 255); b = Math.round(c[2] * 255); }
+          }
           buf[tri * 3] = r;
           buf[tri * 3 + 1] = g;
           buf[tri * 3 + 2] = b;

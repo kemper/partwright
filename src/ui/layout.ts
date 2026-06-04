@@ -1,5 +1,5 @@
 import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
-import { showQualitySettingsModal } from './qualitySettingsModal';
+import { showAdvancedSettingsModal } from './advancedSettingsModal';
 import { showAboutModal } from './aboutModal';
 import { loadSettings, saveSettings } from '../ai/settings';
 
@@ -9,6 +9,9 @@ export interface LayoutElements {
   editorPane: HTMLElement;
   partsRail: HTMLElement;
   editorContainer: HTMLElement;
+  /** Tab strip for companion SCAD files. Sits between the editor header and the
+   *  CodeMirror container. Managed by main.ts; initially hidden. */
+  companionFilesBar: HTMLElement;
   editorErrorPanel: HTMLElement;
   viewportPane: HTMLElement;
   galleryContainer: HTMLElement;
@@ -18,7 +21,9 @@ export interface LayoutElements {
   notesContainer: HTMLElement;
   dataContainer: HTMLElement;
   statusBar: HTMLElement;
+  cancelInlineBtn: HTMLButtonElement;
   clipControls: HTMLElement;
+  findReplaceBtn: HTMLButtonElement;
   formatBtn: HTMLButtonElement;
   autoFormatToggle: HTMLButtonElement;
   switchTab: (tab: TabName, options?: SwitchTabOptions) => void;
@@ -86,6 +91,13 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   editorHeaderSpacer.className = 'flex-1';
   editorHeader.appendChild(editorHeaderSpacer);
 
+  const findReplaceBtn = document.createElement('button');
+  findReplaceBtn.id = 'find-replace-btn';
+  findReplaceBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
+  findReplaceBtn.textContent = 'Find/Replace';
+  findReplaceBtn.title = 'Find/Replace (Ctrl+H)';
+  editorHeader.appendChild(findReplaceBtn);
+
   const formatBtn = document.createElement('button');
   formatBtn.id = 'format-btn';
   formatBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
@@ -99,14 +111,27 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   autoFormatToggle.title = 'Toggle automatic formatting when code is loaded';
   editorHeader.appendChild(autoFormatToggle);
 
+  // Status row: an absolutely-positioned flex strip that holds the status text
+  // and an inline cancel button. Lives on rightPane so it stays visible even
+  // when the code pane is collapsed. setStatus() targets the inner span so its
+  // textContent assignment doesn't clobber the sibling cancel button.
+  const statusRow = document.createElement('div');
+  statusRow.className = 'absolute top-2 left-2 z-20 flex items-center gap-1.5';
+
   const statusBar = document.createElement('span');
   statusBar.id = 'status-indicator';
-  // Lives on rightPane (appended below) as an always-visible overlay so engine
-  // status stays on screen even when the code pane is collapsed — otherwise
-  // tests and users lose the Ready/Loading signal whenever the AI drawer hides
-  // the editor header.
-  statusBar.className = 'absolute top-2 left-2 z-20 text-xs text-emerald-400 font-mono bg-zinc-900/70 px-2 py-0.5 rounded border border-zinc-700 pointer-events-none';
+  statusBar.className = 'text-xs text-emerald-400 font-mono bg-zinc-900/70 px-2 py-0.5 rounded border border-zinc-700 pointer-events-none';
   statusBar.textContent = 'Ready';
+
+  const cancelInlineBtn = document.createElement('button');
+  cancelInlineBtn.id = 'btn-cancel-inline';
+  cancelInlineBtn.type = 'button';
+  cancelInlineBtn.className = 'hidden px-2 py-0.5 rounded text-xs font-mono text-red-400 bg-zinc-900/70 border border-zinc-700 hover:bg-zinc-800 transition-colors';
+  cancelInlineBtn.textContent = '× Cancel';
+  cancelInlineBtn.title = 'Cancel the current render';
+
+  statusRow.appendChild(statusBar);
+  statusRow.appendChild(cancelInlineBtn);
 
   const collapseEditorBtn = document.createElement('button');
   collapseEditorBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
@@ -116,18 +141,34 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
 
   editorPane.appendChild(editorHeader);
 
-  // Overlay (absolutely positioned) so showing/hiding it never reflows the code
-  // or moves the caret. Anchored to the bottom of the editor pane; long errors
-  // scroll within it.
-  const editorErrorPanel = document.createElement('div');
-  editorErrorPanel.id = 'editor-error-panel';
-  editorErrorPanel.className = 'hidden absolute bottom-0 left-0 right-0 z-10 max-h-[45%] overflow-auto border-t border-red-500/40 bg-red-950/90 backdrop-blur-sm px-3 py-2 text-xs text-red-100 shadow-lg';
-  editorPane.appendChild(editorErrorPanel);
+  // Companion-files tab strip — shown when the active SCAD session has companion
+  // files. main.ts populates it; hidden until there are companions or when in
+  // SCAD mode (to show the + button for adding new companions).
+  const companionFilesBar = document.createElement('div');
+  companionFilesBar.id = 'companion-files-bar';
+  companionFilesBar.className = 'hidden';
+  editorPane.appendChild(companionFilesBar);
+
+  // Companion-file editor panel — shown when a companion tab is selected.
+  // Sits in the same stacking context as the main editor container; main.ts
+  // shows/hides whichever is active.
+  const companionEditorPanel = document.createElement('div');
+  companionEditorPanel.id = 'companion-editor-panel';
+  companionEditorPanel.className = 'hidden flex-1 min-h-0 flex flex-col bg-zinc-900';
+  editorPane.appendChild(companionEditorPanel);
+
 
   const editorContainer = document.createElement('div');
   editorContainer.id = 'editor-container';
   editorContainer.className = 'flex-1 min-h-0 overflow-hidden';
   editorPane.appendChild(editorContainer);
+
+  // Sits below the editor so it pushes the code up rather than overlaying it.
+  // Long errors scroll within the panel; max-h caps how much space it can take.
+  const editorErrorPanel = document.createElement('div');
+  editorErrorPanel.id = 'editor-error-panel';
+  editorErrorPanel.className = 'hidden shrink-0 max-h-[45%] overflow-auto border-t border-red-500/40 bg-red-950/90 px-3 py-2 text-xs text-red-100';
+  editorPane.appendChild(editorErrorPanel);
 
   // === Splitter ===
   // Outer is a wide transparent grab strip (touch-friendly); inner stripe is the
@@ -168,7 +209,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // === Right (or bottom on mobile): viewport + tab panes ===
   const rightPane = document.createElement('div');
   rightPane.className = 'flex-1 flex flex-col min-w-0 min-h-0 relative';
-  rightPane.appendChild(statusBar);
+  rightPane.appendChild(statusRow);
 
   const tabInteractive = createRailItem('Interactive', '3D View', '\ud83e\uddca', true);
   tabInteractive.title = 'Live 3D viewport \u2014 orbit, zoom, and inspect';
@@ -215,9 +256,9 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // Separator + push-to-bottom anchor for the whole utility cluster.
   catalogNavBtn.classList.add('md:mt-auto', 'md:border-t', 'md:border-zinc-800');
 
-  const qualityNavBtn = makeAction('btn-quality', '⚙', 'Settings', () => { showQualitySettingsModal(); });
-  qualityNavBtn.title = 'Modeling quality (default curve resolution)';
-  qualityNavBtn.setAttribute('aria-label', 'Modeling quality settings');
+  const qualityNavBtn = makeAction('btn-quality', '⚙', 'Settings', () => { showAdvancedSettingsModal(); });
+  qualityNavBtn.title = 'Settings';
+  qualityNavBtn.setAttribute('aria-label', 'Settings');
 
   const diagNavBtn = makeAction('btn-diagnostics', '⚠', 'Diagnostics', () => opts.onToggleDiagnostics?.());
   diagNavBtn.classList.add('relative');
@@ -642,7 +683,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, partsRail, editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, togglePartsRail, collapseEditor, expandEditor };
+  return { editorPane, partsRail, editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, togglePartsRail, collapseEditor, expandEditor };
 }
 
 // Rail item base — a bottom accent border on mobile (horizontal strip) becomes
@@ -707,6 +748,14 @@ function createClipControls(): HTMLElement {
   lockBtn.textContent = '\uD83D\uDD13 Lock';
   lockBtn.title = 'Lock camera rotation';
   container.appendChild(lockBtn);
+
+  // Reset view \u2014 re-frames the camera to the default 3/4 angle of the model.
+  const resetBtn = document.createElement('button');
+  resetBtn.id = 'reset-view';
+  resetBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  resetBtn.textContent = '\u21BB Reset View';
+  resetBtn.title = 'Reset camera to the default view';
+  container.appendChild(resetBtn);
 
   // Visual separator between the view toggles (above) and the tools that follow
   // (Measure, Cross Section, plus the injected Paint/Annotate/Simplify buttons).

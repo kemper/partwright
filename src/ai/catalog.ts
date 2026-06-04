@@ -1,7 +1,8 @@
 // Static model catalog backed by a build-time snapshot of models.dev data.
 //
-// The snapshot at src/ai/generated/modelsCatalog.json is refreshed at build
-// start by `scripts/refreshModelsSnapshot.mjs`, filtered to providers we wire
+// The snapshot at src/ai/generated/modelsCatalog.json is refreshed by
+// `scripts/refreshModelsSnapshot.mjs` (run weekly by the refresh-models-catalog
+// workflow, which opens a PR into main), filtered to providers we wire
 // up (anthropic / openai / google) and to models whose `release_date` is
 // within the last year. That keeps the bundle small and the picker focused on
 // current models without us hand-maintaining the list.

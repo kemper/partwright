@@ -54,7 +54,7 @@ await partwright.paintRegion({
   color:  [1, 0, 0],          // RGB 0..1
   name:   "Top",
 })
-// Save the uncolored baseline first -- painting locks the editor for code edits.
+// Save an uncolored baseline first -- re-running new geometry invalidates the painted triangle indices (call clearColors() before changing the model).
 // Check {error} on the return and confirm with listRegions().
 ```
 

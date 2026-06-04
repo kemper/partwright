@@ -113,6 +113,13 @@ export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp,.
 let _autoRun = true;
 let _onAutoRunChange: ((on: boolean) => void) | null = null;
 let _syncAutoRunUI: (() => void) | null = null;
+let _setRunState: ((running: boolean, elapsedMs: number) => void) | null = null;
+
+/** Show/hide the cancel button and elapsed timer in the toolbar run group.
+ *  Called by main.ts at the start/end of every runCodeSync execution. */
+export function setRunState(running: boolean, elapsedMs = 0): void {
+  _setRunState?.(running, elapsedMs);
+}
 
 /** Whether auto-run on edit is enabled */
 export function isAutoRun(): boolean { return _autoRun; }
@@ -126,8 +133,6 @@ export function setAutoRun(enabled: boolean): void {
 }
 
 /** Register a callback for when auto-run state changes */
-export function onAutoRunChange(cb: (on: boolean) => void): void { _onAutoRunChange = cb; }
-
 // Language toggle state — managed externally via setToolbarLanguage()
 let _langBtnJs: HTMLButtonElement | null = null;
 let _langBtnScad: HTMLButtonElement | null = null;
@@ -165,7 +170,7 @@ export function createToolbar(
   logo.className = 'flex items-center gap-2 mr-4 bg-transparent border-0 p-0 cursor-pointer hover:opacity-80 transition-opacity';
   logo.title = 'Back to home';
   logo.setAttribute('aria-label', 'Partwright home');
-  logo.innerHTML = `${partwrightMarkSvg(20)}<span class="text-zinc-100 font-semibold tracking-tight">Partwright</span>`;
+  logo.innerHTML = `${partwrightMarkSvg(20)}<span class="text-zinc-100 font-semibold tracking-tight">Partwright</span><span class="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/25">Beta</span>`;
   logo.addEventListener('click', callbacks.onGoHome);
   toolbar.appendChild(logo);
 
@@ -204,9 +209,25 @@ export function createToolbar(
     if (_autoRun) callbacks.onRun();
   });
 
+  // Elapsed time label — updated every 100 ms during a render
+  const runElapsedEl = document.createElement('span');
+  runElapsedEl.id = 'run-elapsed';
+  runElapsedEl.className = 'hidden text-xs text-zinc-500 font-mono';
+
+  _setRunState = (running, elapsedMs) => {
+    if (running) {
+      runElapsedEl.classList.remove('hidden');
+      runElapsedEl.textContent = `${(elapsedMs / 1000).toFixed(1)}s`;
+    } else {
+      runElapsedEl.classList.add('hidden');
+      runElapsedEl.textContent = '';
+    }
+  };
+
   syncAutoRunUI();
   runGroup.appendChild(autoRunBtn);
   runGroup.appendChild(btnRun);
+  runGroup.appendChild(runElapsedEl);
   toolbar.appendChild(runGroup);
 
   // Language toggle — segmented JS / SCAD control

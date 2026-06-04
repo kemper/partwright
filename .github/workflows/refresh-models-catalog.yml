@@ -1,0 +1,90 @@
+name: Refresh models catalog
+
+# Keeps src/ai/generated/modelsCatalog.json current with models.dev.
+#
+# `main` is a protected branch — changes must go through a pull request — so a
+# bot CANNOT push the refreshed snapshot to main directly (that's the GH006
+# "protected branch hook declined" failure the staging gate used to hit). This
+# workflow instead refreshes the snapshot, validates it (build + unit), and
+# opens/updates a PR into main. The normal main → staging gate then promotes it
+# to staging once it merges.
+#
+# The release_date filter in the refresh script uses a moving "last 365 days"
+# window keyed on the run date, so the snapshot can change even when models.dev
+# itself hasn't — running weekly keeps it current without churning a PR daily.
+
+on:
+  schedule:
+    # Mondays 07:00 UTC.
+    - cron: '0 7 * * 1'
+  workflow_dispatch: {}
+
+# One refresh PR at a time; a manual run shouldn't race the scheduled one.
+concurrency:
+  group: refresh-models-catalog
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      BRANCH: chore/refresh-models-catalog
+      SNAPSHOT: src/ai/generated/modelsCatalog.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Refresh snapshot
+        id: refresh
+        run: |
+          node scripts/refreshModelsSnapshot.mjs
+          if git diff --quiet "$SNAPSHOT"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "[catalog] snapshot already up to date — nothing to open a PR for"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Validate the refreshed snapshot before opening a PR. The PR's own
+      # pr-checks may not fire (PRs created with the default GITHUB_TOKEN don't
+      # trigger workflows), so prove build + unit here.
+      - name: Build (type-check + vite build)
+        if: steps.refresh.outputs.changed == 'true'
+        run: npm run build
+      - name: Unit tests
+        if: steps.refresh.outputs.changed == 'true'
+        run: npm run test:unit
+
+      - name: Open or update refresh PR
+        if: steps.refresh.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add "$SNAPSHOT"
+          git commit -m "chore: refresh models catalog snapshot"
+          # Force-push the single-commit branch; it's a bot-owned scratch branch
+          # whose only content is the latest snapshot.
+          git push -f origin "$BRANCH"
+          if [ -z "$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[].number')" ]; then
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "chore: refresh models catalog snapshot" \
+              --body "Automated refresh of \`$SNAPSHOT\` from models.dev. Build + unit validated in the refresh workflow. Merging triggers the main → staging gate to promote it." \
+              --label ignore-for-release
+          else
+            echo "Refresh PR already open for $BRANCH — force-push updated it."
+          fi

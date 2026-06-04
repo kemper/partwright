@@ -1,6 +1,6 @@
 // Smoke tests for the extended paint UI:
 //  - brush size controls (slider + number input) appear when the brush tool is selected
-//  - bucket tolerance has a typeable degree input
+//  - bucket color tolerance has a typeable percentage input
 //  - per-region eye + trash icons appear in the region list and drive the API
 //  - partwright API exposes setBrushSize / setBucketTolerance / hideRegion / showRegion
 //
@@ -39,24 +39,26 @@ test.describe('extended paint controls', () => {
     await expect(brushHelp).toBeHidden();
   });
 
-  test('typing a bucket tolerance angle updates the underlying value', async ({ page }) => {
+  test('typing a bucket color tolerance updates the underlying value', async ({ page }) => {
     await openEditor(page);
     await page.locator('#paint-toggle').dispatchEvent('click');
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
     // Bucket is no longer the default tool — switch to it to reveal its controls.
     await page.locator('#paint-picker-panel button:has-text("Bucket")').dispatchEvent('click');
 
-    const angleInput = page.locator('#paint-picker-panel input[type="number"][title*="Bend angle"]');
-    await expect(angleInput).toBeVisible();
+    // Bucket sensitivity is now color-distance based: the number input is a
+    // 0–100 % tolerance, where the underlying value is the fraction (pct / 100).
+    const tolInput = page.locator('#paint-picker-panel input[type="number"][title*="Color tolerance"]');
+    await expect(tolInput).toBeVisible();
 
-    await angleInput.fill('45');
-    await angleInput.press('Enter');
+    await tolInput.fill('45');
+    await tolInput.press('Enter');
 
     const tol = await page.evaluate(() => {
-      const pw = (window as unknown as { partwright: { getBucketTolerance(): { tolerance: number } } }).partwright;
-      return pw.getBucketTolerance().tolerance;
+      const pw = (window as unknown as { partwright: { getBucketColorTolerance(): { tolerance: number } } }).partwright;
+      return pw.getBucketColorTolerance().tolerance;
     });
-    expect(tol).toBeCloseTo(Math.cos(45 * Math.PI / 180), 3);
+    expect(tol).toBeCloseTo(0.45, 3);
   });
 
   test('setBrushSize partwright API rejects bad input and accepts good input', async ({ page }) => {
@@ -250,5 +252,120 @@ test.describe('extended paint controls', () => {
     });
     expect(result.hidden).toBe(false);
     expect(result.shown).toBe(true);
+  });
+
+  test('bucket flood-fill preview tracks the tolerance slider live (no mouse move)', async ({ page }) => {
+    await openEditor(page);
+    // Replace the cube with a higher-tri sphere and paint its top hemisphere so
+    // the bucket has a real two-color region to flood-fill.
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run(`const { Manifold } = api; return Manifold.sphere(8, 64);`);
+      pw.paintInBox({ box: { min: [-8, -8, 0], max: [8, 8, 8] }, color: [1, 0.2, 0.2] });
+    });
+
+    // Dismiss the onboarding tour so its backdrop doesn't eat the hover pointer.
+    const skip = page.locator('button:has-text("Skip")');
+    if (await skip.count()) await skip.first().click().catch(() => {});
+
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await page.locator('#paint-picker-panel button:has-text("Bucket")').dispatchEvent('click');
+
+    // Hover the painted (upper) hemisphere at a tight tolerance.
+    const tolInput = page.locator('#paint-picker-panel input[type="number"][title*="Color tolerance"]');
+    await tolInput.fill('5');
+    await tolInput.press('Enter');
+    const box = await page.locator('canvas').first().boundingBox();
+    if (!box) throw new Error('no canvas');
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height * 0.35;
+    await page.mouse.move(cx - 20, cy - 20);
+    await page.mouse.move(cx, cy);
+    await page.waitForTimeout(300);
+
+    const hoverTris = async () => page.evaluate(async () => {
+      const vp = await import('/src/renderer/viewport.ts');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let found: any = null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vp.getMeshGroup().traverse((o: any) => { if (o.name === 'paint-hover') found = o; });
+      const pos = found?.geometry?.attributes?.position;
+      return pos ? pos.count / 3 : 0;
+    });
+
+    const tight = await hoverTris();
+    expect(tight).toBeGreaterThan(0); // the red hemisphere region is previewed
+
+    // Crank tolerance to 100 % WITHOUT moving the mouse — the preview must grow
+    // to the whole connected sphere, proving it tracks the setting live.
+    await tolInput.fill('100');
+    await tolInput.press('Enter');
+    await page.waitForTimeout(300);
+    const loose = await hoverTris();
+    expect(loose).toBeGreaterThan(tight);
+  });
+
+  test('color bucket fill over a brush-painted blob commits and survives reconcile', async ({ page }) => {
+    await openEditor(page);
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 20], true);`);
+    });
+
+    const skip = page.locator('button:has-text("Skip")');
+    if (await skip.count()) await skip.first().click().catch(() => {});
+
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    // Brush is the default tool — paint a red blob (the brush adaptively
+    // subdivides the face, leaving the T-junctions the adjacency fix bridges).
+    await page.evaluate(async () => {
+      const pm = await import('/src/color/paintMode.ts');
+      pm.setColor([1, 0.15, 0.15]);
+    });
+    const box = await page.locator('canvas').first().boundingBox();
+    if (!box) throw new Error('no canvas');
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    await page.mouse.move(cx - 40, cy);
+    await page.mouse.down();
+    for (let i = -40; i <= 40; i += 8) await page.mouse.move(cx + i, cy + Math.sin(i / 10) * 8);
+    await page.mouse.up();
+    await page.waitForTimeout(700);
+
+    const afterBrush = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (window as any).partwright.listRegions().map((r: any) => r.triangles);
+    });
+    expect(afterBrush.length).toBe(1);
+    expect(afterBrush[0]).toBeGreaterThan(50); // the refined red blob
+
+    // Switch to bucket / Color, pick a new color, and fill inside the blob.
+    await page.locator('#paint-picker-panel button:has-text("Bucket")').dispatchEvent('click');
+    await page.locator('#paint-picker-panel button:has-text("Color")').dispatchEvent('click');
+    await page.evaluate(async () => {
+      const pm = await import('/src/color/paintMode.ts');
+      pm.setColor([1, 0.85, 0.1]); // yellow
+    });
+    const tolInput = page.locator('#paint-picker-panel input[type="number"][title*="Color tolerance"]');
+    await tolInput.fill('20'); await tolInput.press('Enter');
+    await page.mouse.move(cx - 100, cy - 100);
+    await page.mouse.move(cx - 4, cy); await page.mouse.move(cx, cy);
+    await page.waitForTimeout(250);
+    await page.mouse.down(); await page.waitForTimeout(40); await page.mouse.up();
+    await page.waitForTimeout(700); // let the async reconcile re-resolve regions
+
+    const afterBucket = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (window as any).partwright.listRegions().map((r: any) => ({ tris: r.triangles, color: r.color }));
+    });
+    // Two regions; the bucket region must NOT collapse to zero after reconcile,
+    // and it carries the new (yellow) color over the blob it matched.
+    expect(afterBucket.length).toBe(2);
+    expect(afterBucket[1].tris).toBeGreaterThan(50);
+    expect(afterBucket[1].color[2]).toBeLessThan(0.5); // yellow, not the red it replaced
   });
 });
