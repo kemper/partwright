@@ -33,7 +33,7 @@
       "name": "Pac-Man & Ghost",
       "file": "pacman_ghost.partwright.json",
       "language": "manifold-js",
-      "description": "Iconic arcade duo — yellow Pac-Man with a wedge mouth beside a red ghost with eyes."
+      "description": "The iconic arcade duo — a clean yellow wedge Pac-Man chasing a red ghost with a scalloped skirt and blue-pupiled eyes, with a trail of pellets between them."
     },
     {
       "id": "castle-tower",
@@ -68,14 +68,14 @@
       "name": "Royal Crown",
       "file": "royal_crown.partwright.json",
       "language": "manifold-js",
-      "description": "A king's gold crown with pointed peaks and red, blue, and green jewels set around the band."
+      "description": "A regal gold crown with finial-tipped points, a beaded band, bezel-set ruby/sapphire/emerald/amethyst jewels, and a deep-red velvet inner band."
     },
     {
       "id": "arcade-cabinet",
       "name": "Arcade Cabinet",
       "file": "arcade_cabinet.partwright.json",
       "language": "manifold-js",
-      "description": "Classic upright arcade cabinet with a marquee, screen, joystick, buttons, and coin slot."
+      "description": "A vibrant upright arcade cabinet — deep-blue body with a red side panel, a gold marquee, a pixel-art space invader glowing on the screen, a joystick, and colorful buttons."
     },
     {
       "id": "cassette-tape",
@@ -257,7 +257,7 @@
       "name": "SDF Twisted Vessel",
       "file": "sdf_twisted_vessel.partwright.json",
       "language": "manifold-js",
-      "description": "A spiralled body produced by the SDF `.twist()` domain warp on a non-radially-symmetric profile, joined to a base with smoothUnion."
+      "description": "A hollow twisted ceramic vase with a fluted, spiralled belly, a pinched neck, an open mouth, and a warm gold rim band over a deep-teal glaze."
     },
     {
       "id": "sdf-mixed-mechanical",
@@ -285,7 +285,7 @@
       "name": "Smiley Cactus",
       "file": "smiley_cactus.partwright.json",
       "language": "scad",
-      "description": "A cheerful potted saguaro with two upraised arms, a pink flower bud on its crown, and two little black bead eyes — sitting in a flared terracotta pot with rim and soil."
+      "description": "A cheerful potted saguaro with two upraised arms, a big grinning face, and a pink flower bud on its crown — sitting in a terracotta pot."
     },
     {
       "id": "studio-microphone",
@@ -348,7 +348,7 @@
       "name": "Robot Buddy",
       "file": "robot_buddy.partwright.json",
       "language": "replicad",
-      "description": "A friendly retro desktop robot with a domed head, antenna, chest panel, and two stubby arms — colorful BREP showcase with paint."
+      "description": "A friendly retro robot with a rounded head, two big cyan eyes, a bobble antenna, a chest panel, and stubby arms — a colorful filleted BREP showcase."
     },
     {
       "id": "bird-feeder",
@@ -404,14 +404,14 @@
       "name": "SDF Aetherjelly",
       "file": "sdf_radial_creature.partwright.json",
       "language": "manifold-js",
-      "description": "A radial jellyfish-drifter built from ellipsoids, fanned into shape by polarArray (8 tentacles, 6 ocelli), bilaterally completed by mirrorPair, and tapered along its body axis. Three painted regions; the showcase for the SDF combinators."
+      "description": "An ethereal bioluminescent jellyfish — a cyan-to-violet gradient bell with a ruffled rim, seven flowing tentacles tipped with glowing pods, and a ring of luminous ocelli. An SDF combinator showcase."
     },
     {
       "id": "sdf-helix-lamp",
       "name": "SDF Helix Lamp Standard",
       "file": "sdf_helix_lamp_standard.partwright.json",
       "language": "manifold-js",
-      "description": "An architectural light post whose square-cross-section shaft spirals around an OFFSET vertical axis, paired with a perforated screen wall built by repeat() clipped to a slab and topped by a roundedCylinder lamp cap. Four painted regions; showcases the new offset-twist, repeat, and roundedCylinder primitives."
+      "description": "A warm helix lamp — a four-turn amber coil spiralling up from a dark base to a glowing bulb finial, built from a chain of SDF capsules along a helical path."
     },
     {
       "id": "sdf-spur-wheel",
@@ -538,6 +538,41 @@
       "file": "voxel_castle.partwright.json",
       "language": "voxel",
       "description": "A grand royal castle built on a voxel grid — concentric curtain walls, corner turrets with blue conical roofs, a moat, gardens, and golden banners. Painted block-by-block, then baked to a watertight mesh."
+    },
+    {
+      "id": "voxel-robot",
+      "name": "Voxel Robot",
+      "file": "voxel_robot.partwright.json",
+      "language": "voxel",
+      "description": "A boxy retro voxel robot with glowing cyan eyes, a button-panel chest, blocky arms, and a bobble antenna."
+    },
+    {
+      "id": "voxel-dragon",
+      "name": "Voxel Dragon",
+      "file": "voxel_dragon.partwright.json",
+      "language": "voxel",
+      "description": "A cute seated voxel dragon with emerald scales, a cream belly, bone horns, a row of dorsal spikes, and a curling tail."
+    },
+    {
+      "id": "voxel-cat",
+      "name": "Voxel Cat",
+      "file": "voxel_cat.partwright.json",
+      "language": "voxel",
+      "description": "A charming voxel tabby sitting up — rounded head with pointy ears, green eyes, a pink nose, white paws, and a curling tail."
+    },
+    {
+      "id": "voxel-slime",
+      "name": "Voxel Slime",
+      "file": "voxel_slime.partwright.json",
+      "language": "voxel",
+      "description": "A classic RPG-style voxel slime — a glossy aqua blob with a sheen highlight and a big happy face."
+    },
+    {
+      "id": "voxel-knight",
+      "name": "Voxel Knight",
+      "file": "voxel_knight.partwright.json",
+      "language": "voxel",
+      "description": "A chibi voxel knight in steel plate with gold trim, a red plume, a cross-emblem shield, and a raised sword."
     },
     {
       "id": "medieval-watchtower",

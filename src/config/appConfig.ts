@@ -153,6 +153,12 @@ export interface AppConfig {
     defaultQuality: number;
     /** Default circular segment count for OpenSCAD ($fn) geometry renders. */
     scadDefaultQuality: number;
+    /** In-memory ring buffer size for the worker run-history log (recent
+     *  geometry runs shown in the worker health panel). */
+    workerRunHistorySize: number;
+    /** Live-refresh interval (ms) for the worker health panel — how often it
+     *  re-polls in-flight counts and liveness while open. */
+    workerPanelRefreshMs: number;
   };
 }
 
@@ -225,6 +231,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     sessionLockStaleMs: 8000,
     defaultQuality: 128,
     scadDefaultQuality: 32,
+    workerRunHistorySize: 50,
+    workerPanelRefreshMs: 1000,
   },
 };
 
