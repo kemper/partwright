@@ -10,6 +10,7 @@ import {
   loadImageDataFromUrl,
   defaultPreprocess,
   buildTangentFrame,
+  compactImageDataUrl,
   type StampImageOptions,
 } from './imagePaint';
 import type { ImagePaintResult } from './imagePaint';
@@ -44,7 +45,10 @@ const STAMP_MAX = 1024;
 // Max for the in-panel preview thumbnail (display only, can be lower).
 const THUMB_MAX = 512;
 
-const STORAGE_KEY = 'imagePaint_savedImage';
+// v2: bumped from v1 to invalidate stale JPEG-encoded entries (JPEG has no
+// alpha channel; persisting as JPEG then restoring caused the background-
+// removal logic to strip black foreground like smiley eyes).
+const STORAGE_KEY = 'imagePaint_savedImage_v2';
 
 let imagePaintBtn: HTMLButtonElement | null = null;
 let panel: HTMLElement | null = null;
@@ -352,6 +356,10 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
       ...(stampSmooth ? {
         smooth: true, maxEdge,
         hitPoint, hitNormal, stampSize, rotationDeg: stampRotation,
+        imageDataUrl: compactImageDataUrl(pickedImageData!),
+        removeBackground: opts.removeBackground,
+        ...(opts.manualBgColor ? { manualBgColor: opts.manualBgColor } : {}),
+        bgTolerance: 36 * 36 * 3,
       } : {}),
     },
     triangles,

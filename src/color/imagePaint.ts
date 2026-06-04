@@ -289,6 +289,23 @@ export function imageDataToDataUrl(imageData: ImageData): string {
   return canvas.toDataURL('image/png');
 }
 
+/** Encode an ImageData as a compact PNG data URL, downscaling to ≤maxDim so
+ *  stored descriptors stay small. Used to persist stamp images for replay on
+ *  session reload. Max 256×256 keeps quality adequate for centroid-sampling
+ *  while keeping the descriptor ≲30 KB. */
+export function compactImageDataUrl(imageData: ImageData, maxDim = 256): string {
+  const scale = Math.min(1, maxDim / Math.max(imageData.width, imageData.height));
+  const w = Math.max(1, Math.round(imageData.width * scale));
+  const h = Math.max(1, Math.round(imageData.height * scale));
+  const src = document.createElement('canvas');
+  src.width = imageData.width; src.height = imageData.height;
+  src.getContext('2d')!.putImageData(imageData, 0, 0);
+  const dst = document.createElement('canvas');
+  dst.width = w; dst.height = h;
+  dst.getContext('2d')!.drawImage(src, 0, 0, w, h);
+  return dst.toDataURL('image/png');
+}
+
 /** Return default no-op preprocess options. */
 export function defaultPreprocess(): PreprocessOptions {
   return { brightness: 0, contrast: 0, saturation: 0, levelsLow: 0, levelsHigh: 255 };

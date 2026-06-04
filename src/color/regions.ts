@@ -68,10 +68,16 @@ export type RegionDescriptor =
   // survives serialization and re-resolves correctly after mesh subdivision via
   // the parentToChildren map. `avgColor` (0–1) is the mean of all painted
   // triangles — used as the `color` field for the region list swatch.
+  // For smooth stamps: `imageDataUrl` (PNG, ≤256×256) + stamp params are stored
+  // so the stamp can be replayed verbatim on session reload (see rehydrateColorRegions).
   | { kind: 'imagePaint'; entries: number[]; avgColor: [number, number, number]; axis?: string;
       smooth?: boolean; maxEdge?: number;
       hitPoint?: [number, number, number]; hitNormal?: [number, number, number];
-      stampSize?: number; rotationDeg?: number };
+      stampSize?: number; rotationDeg?: number;
+      imageDataUrl?: string;
+      removeBackground?: boolean;
+      manualBgColor?: [number, number, number];
+      bgTolerance?: number };
 
 export interface SerializedColorRegion {
   id: number;
