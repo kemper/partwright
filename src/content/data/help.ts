@@ -40,7 +40,7 @@ export const HELP_STATIC_SECTIONS: ContentSection[] = [
     id: 'building',
     heading: 'Building geometry',
     body:
-      '<strong class="text-zinc-300">JavaScript:</strong> Start with primitives like <code class="text-emerald-400 bg-zinc-800 px-1 rounded">Manifold.cube()</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">Manifold.cylinder()</code>, or <code class="text-emerald-400 bg-zinc-800 px-1 rounded">Manifold.sphere()</code>. Combine them with boolean operations: <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.add()</code> (union), <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.subtract()</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.intersect()</code>.<br><br>' +
+      '<strong class="text-zinc-300">JavaScript:</strong> Start with primitives like <code class="text-emerald-400 bg-zinc-800 px-1 rounded">Manifold.cube()</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">Manifold.cylinder()</code>, or <code class="text-emerald-400 bg-zinc-800 px-1 rounded">Manifold.sphere()</code>. Combine them with boolean operations: <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.add()</code> (union), <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.subtract()</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.intersect()</code>. Add 3D lettering with <code class="text-emerald-400 bg-zinc-800 px-1 rounded">api.text()</code> (a solid) or <code class="text-emerald-400 bg-zinc-800 px-1 rounded">api.textSection()</code> (a 2D profile to extrude yourself).<br><br>' +
       '<strong class="text-zinc-300">OpenSCAD:</strong> Use standard primitives <code class="text-emerald-400 bg-zinc-800 px-1 rounded">cube()</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">cylinder()</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">sphere()</code> with boolean operations <code class="text-emerald-400 bg-zinc-800 px-1 rounded">difference()</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">union()</code>, <code class="text-emerald-400 bg-zinc-800 px-1 rounded">intersection()</code>. The <code class="text-emerald-400 bg-zinc-800 px-1 rounded">text()</code> primitive is supported (Liberation Sans font family).<br><br>' +
       '<strong class="text-zinc-300">Coordinate system:</strong> Right-handed, <strong class="text-zinc-300">Z-up</strong>. The XY plane is the ground, Z points up. Units are arbitrary — use a consistent scale (millimetres are common for 3D printing).',
   },
@@ -91,26 +91,26 @@ export const HELP_STATIC_SECTIONS: ContentSection[] = [
       '<li><strong class="text-zinc-300">Cross-section</strong> — Toggle a horizontal clipping plane. A Z slider appears; everything above the plane is hidden and the cut face renders in red.</li>' +
       '<li><strong class="text-zinc-300">Annotate</strong> — Draw freehand strokes or drop pinned text labels on the model. Annotations are saved per version and survive export to <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.partwright.json</code>.</li>' +
       '<li><strong class="text-zinc-300">Paint</strong> — Color regions of the model for multi-material printing (full details below).</li>' +
-      '<li><strong class="text-zinc-300">Simplify</strong> — Reduce the model\'s triangle count. Drag the slider or type a max-triangle target, then click "Apply" to run the reduction (a progress bar tracks heavy models); exports then use the reduced mesh. "Save as version" bakes the lighter mesh into a new saved version, while "Reset" restores full detail.</li>' +
-      '</ul>',
+      '<li><strong class="text-zinc-300">Quality</strong> — Tune curvature quality and simplify or enhance the model\'s triangle count in one panel. Drag a slider or type an exact target, then "Apply"; "Save as version" bakes the result into a new version and "Reset" restores full detail.</li>' +
+      '<li><strong class="text-zinc-300">Resize</strong> — Scale the model along X / Y / Z with independent or uniform sliders, a typeable exact size, and an optional "preserve colors" pass. A live preview updates as you drag; Apply saves a new version.</li>' +
+      '<li><strong class="text-zinc-300">Surface</strong> — Apply a surface modifier: <em>fuzzy skin</em> (randomized printed-texture noise), <em>smooth</em> (round out facets), or <em>voxelize</em> (convert the surface to a cube grid). Preview before committing; each apply creates an undoable new version.</li>' +
+      '</ul>' +
+      '<br>The Quality, Resize, Surface, and Relief panels share the same conventions — drag them by the header to reposition, and they stay on-screen on mobile.',
   },
   {
     id: 'paint',
     heading: 'Painting & color regions',
     body:
       'Click the <strong class="text-zinc-300">Paint</strong> button in the viewport overlay to open the color panel. Pick a tool, pick a color, and click the model. Painted regions are saved with the version and exported as native color in 3MF (for slicers like Bambu Studio), as vertex color in OBJ + MTL, and as vertex color in GLB.<br><br>' +
-      '<strong class="text-zinc-300">Three paint tools:</strong>' +
+      '<strong class="text-zinc-300">Paint tools:</strong>' +
       '<ul class="list-disc list-inside mt-2 space-y-1.5 text-zinc-400">' +
-      '<li><strong class="text-zinc-300">Bucket</strong> (flood-fill) — Click a face; paint propagates across all coplanar neighbours within an angle tolerance you control with a slider (0° = "coplanar only" up to 180° = "whole connected mesh"). Hover for a translucent preview before committing.</li>' +
+      '<li><strong class="text-zinc-300">Bucket</strong> (flood-fill) — Click a face; paint propagates across connected neighbours, either by <em>geometry</em> (within an angle tolerance you set with a slider, 0° = "coplanar only" up to 180° = "whole connected mesh") or by <em>color</em> (every region sharing the clicked color). Hover for a translucent preview before committing.</li>' +
       '<li><strong class="text-zinc-300">Brush</strong> — Click and drag to paint individual triangles. Release to commit the region.</li>' +
       '<li><strong class="text-zinc-300">Slab</strong> — Pick an X/Y/Z axis, then drag a range along the model surface; every triangle whose centroid falls inside the slab gets painted. A translucent cuboid previews the slab extent.</li>' +
+      '<li><strong class="text-zinc-300">Shape</strong> — Paint everything inside a positionable, rotatable, scalable 3D shape (box, sphere, cylinder, or cone).</li>' +
+      '<li><strong class="text-zinc-300">Replace</strong> — Click the mesh to pick a source color, then swap it for the active color across every matching region at once.</li>' +
       '</ul><br>' +
-      '<strong class="text-zinc-300">Region management:</strong> The panel lists every painted region with its color and triangle count. Use <strong class="text-zinc-300">Undo</strong> / <strong class="text-zinc-300">Redo</strong> to step through history, <strong class="text-zinc-300">Hide / Show</strong> to toggle visibility (exports still include the colors), and <strong class="text-zinc-300">Clear</strong> to remove all regions. The Paint button shows a badge with the live region count.<br><br>' +
-      '<strong class="text-zinc-300">Editor lock:</strong> Once a version has any painted regions, the code editor locks (read-only) so paint and code can\'t drift out of sync. A banner appears above the editor — click <strong class="text-zinc-300">Unlock to edit</strong> and choose:' +
-      '<ul class="list-disc list-inside mt-2 space-y-1 text-zinc-400">' +
-      '<li><strong class="text-zinc-300">Preserve</strong> (default, recommended) — Forks a new uncolored version for editing while keeping the painted version intact in the gallery.</li>' +
-      '<li><strong class="text-zinc-300">Destructive</strong> — Strips paint from the current version. Cannot be undone.</li>' +
-      '</ul><br>' +
+      '<strong class="text-zinc-300">Region management:</strong> The panel lists every painted region with its color and triangle count. Use <strong class="text-zinc-300">Undo</strong> / <strong class="text-zinc-300">Redo</strong> to step through history, <strong class="text-zinc-300">Hide / Show</strong> to toggle visibility (exports still include the colors), and <strong class="text-zinc-300">Clear</strong> to remove all regions. The Paint button shows a badge with the live region count. The code editor stays fully editable while you paint — saved versions are your rollback path if you want to step back.<br><br>' +
       '<strong class="text-zinc-300">Export formats and color:</strong> 3MF carries painted regions as native materials (recommended for printing). OBJ + MTL and GLB carry per-triangle vertex colors. STL is geometry-only — no color.',
   },
   {
@@ -154,6 +154,7 @@ export const HELP_STATIC_SECTIONS: ContentSection[] = [
     heading: 'Importing & exporting',
     body:
       '<strong class="text-zinc-300">Import</strong> — Open a <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.partwright.json</code> session from another machine (or paste a URL that resolves to one), load raw <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.js</code> / <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.scad</code> code, or bring in a mesh (<code class="text-emerald-400 bg-zinc-800 px-1 rounded">.stl</code>) or a BREP solid (<code class="text-emerald-400 bg-zinc-800 px-1 rounded">.step</code>). When a session is already open, an import-target dialog lets you add the import as a new part, compose it into the current part, or start a new session. The Import dropdown also remembers your recent imports (with their settings) for one-click re-loading.<br><br>' +
+      '<strong class="text-zinc-300">Multi-file OpenSCAD</strong> — If a <code class="text-emerald-400 bg-zinc-800 px-1 rounded">.scad</code> file pulls in its own <code class="text-emerald-400 bg-zinc-800 px-1 rounded">include &lt;…&gt;</code> / <code class="text-emerald-400 bg-zinc-800 px-1 rounded">use &lt;…&gt;</code> dependencies, Partwright detects the missing files and prompts you to supply them. Companion files get their own editable, syntax-highlighted tabs and are saved with the session.<br><br>' +
       '<strong class="text-zinc-300">Export — 3D model formats:</strong>' +
       '<ul class="list-disc list-inside mt-2 space-y-1 text-zinc-400">' +
       '<li><strong class="text-zinc-300">3MF</strong> (recommended for printing) — Geometry plus native color regions. Imports cleanly into Bambu Studio and other modern slicers.</li>' +
@@ -173,7 +174,8 @@ export const HELP_STATIC_SECTIONS: ContentSection[] = [
     id: 'quality-theme',
     heading: 'Quality settings & theme',
     body:
-      '<strong class="text-zinc-300">Quality</strong> — The ⚙ icon in the toolbar opens the modeling-quality modal. Pick a preset (Ultra / Very High / High / Medium / Low) that controls how many segments approximate a circle, or choose <em>Custom</em> to type an exact count. <em>Very High</em> (128 segments) is the default; <em>Ultra</em> (1024 segments) gives near-perfect curves for smooth final output, while lower presets render faster when you\'re iterating on heavy geometry. The preset only applies to curves that don\'t pass their own segment count, so it sticks across sessions and the AI assistant honors it too.<br><br>' +
+      '<strong class="text-zinc-300">Quality</strong> — Curvature quality lives in the viewport ○ <strong class="text-zinc-300">Quality</strong> panel. Pick a preset (Ultra / Very High / High / Medium / Low) that controls how many segments approximate a circle, or choose <em>Custom</em> to type an exact count. <em>Ultra</em> (1024 segments) gives near-perfect curves for smooth final output, while lower presets render faster when you\'re iterating on heavy geometry. The preset only applies to curves that don\'t pass their own segment count, and the AI assistant honors it too. The starting default is set under <strong class="text-zinc-300">Settings</strong> (the ⚙ icon).<br><br>' +
+      '<strong class="text-zinc-300">Settings</strong> — The ⚙ icon opens Settings: tunable defaults across AI, renderer, import, and UI, each with a ? tooltip explaining what it controls (including the start-fresh / uninstall action).<br><br>' +
       '<strong class="text-zinc-300">Theme</strong> — Toggle <strong class="text-zinc-300">Dark Mode</strong> in the toolbar to switch the entire UI, viewport background, and grid colors between dark and light. Your choice persists across sessions.',
   },
   {
