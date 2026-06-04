@@ -45,6 +45,7 @@ import {
   setSlabAxis,
   getSlabAxis,
   previewTriangles,
+  refreshBucketPreview,
   getCurrentMesh as getPaintMesh,
   type PaintTool,
   type BrushShape,
@@ -472,8 +473,8 @@ function createBucketControls(): HTMLElement {
     geomPanel.classList.toggle('hidden', m !== 'geometry');
   };
 
-  colorModeBtn.addEventListener('click', () => { setBucketMode('color'); syncModeBtns(); });
-  geomModeBtn.addEventListener('click', () => { setBucketMode('geometry'); syncModeBtns(); });
+  colorModeBtn.addEventListener('click', () => { setBucketMode('color'); syncModeBtns(); refreshBucketPreview(); });
+  geomModeBtn.addEventListener('click', () => { setBucketMode('geometry'); syncModeBtns(); refreshBucketPreview(); });
   modeRow.appendChild(colorModeBtn);
   modeRow.appendChild(geomModeBtn);
   headerRow.appendChild(modeRow);
@@ -511,6 +512,7 @@ function createBucketControls(): HTMLElement {
     const tol = parseInt(colorSlider.value, 10) / 100;
     setBucketColorTolerance(tol);
     colorInput.value = String(Math.round(tol * 100));
+    refreshBucketPreview();
   });
   const applyColorPct = (): void => {
     const raw = parseFloat(colorInput.value);
@@ -519,6 +521,7 @@ function createBucketControls(): HTMLElement {
     setBucketColorTolerance(pct / 100);
     colorSlider.value = String(pct);
     colorInput.value = String(pct);
+    refreshBucketPreview();
   };
   colorInput.addEventListener('change', applyColorPct);
   colorInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyColorPct(); colorInput.blur(); } });
@@ -566,6 +569,7 @@ function createBucketControls(): HTMLElement {
     const tol = sliderPctToTolerance(parseInt(geomSlider.value, 10));
     setBucketTolerance(tol);
     geomInput.value = toleranceToAngleDeg(tol).toFixed(1);
+    refreshBucketPreview();
   });
   const applyAngle = (): void => {
     const raw = parseFloat(geomInput.value);
@@ -575,6 +579,7 @@ function createBucketControls(): HTMLElement {
     setBucketTolerance(tol);
     geomSlider.value = String(toleranceToSliderPct(tol));
     geomInput.value = angle.toFixed(1);
+    refreshBucketPreview();
   };
   geomInput.addEventListener('change', applyAngle);
   geomInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyAngle(); geomInput.blur(); } });

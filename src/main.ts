@@ -181,7 +181,7 @@ import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
 import { encodeShare, decodeShare, validateSharePayloadShape, ShareUnsupportedError } from './share/shareLink';
 import { openShareModal, renderSharedBanner, renderSharedOverlay } from './share/shareUI';
-import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
+import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
 import { cylinderRefineRegion, findCylinderTriangles } from './color/cylinderPaint';
@@ -748,6 +748,9 @@ function resolveDescriptorTriangles(
   mesh: MeshData,
   adjacency: AdjacencyGraph | null,
   parentToChildren: Map<number, number[]> | null,
+  /** Id of the region being resolved, when known. Used by `colorFlood` to read
+   *  the surface color *beneath* itself (excluding its own stamp). */
+  selfRegionId?: number,
 ): Set<number> {
   switch (descriptor.kind) {
     case 'coplanar': {
@@ -755,6 +758,21 @@ function resolveDescriptorTriangles(
       const { seedPoint, seedNormal, normalTolerance } = descriptor;
       const seedTri = resolveSeed(seedPoint, seedNormal, mesh, adjacency, normalTolerance);
       return seedTri >= 0 ? findCoplanarRegion(seedTri, adjacency, normalTolerance) : new Set<number>();
+    }
+    case 'colorFlood': {
+      if (!adjacency) return new Set<number>();
+      const { seedPoint, seedColor, colorTolerance } = descriptor;
+      // Triangle indices are unstable across re-tessellation; the world-space
+      // seed point is not. Find the triangle under it, then magic-wand by color.
+      const nearest = findNearestTriangle(seedPoint, mesh, adjacency);
+      if (nearest.triIndex < 0) return new Set<number>();
+      // Read colors with this region excluded, and anchor on the stored matched
+      // color, so the flood follows the *source* color this fill sits on top of.
+      const triColors = buildTriColors(mesh.numTri, false, selfRegionId);
+      const anchor: [number, number, number] = [
+        Math.round(seedColor[0] * 255), Math.round(seedColor[1] * 255), Math.round(seedColor[2] * 255),
+      ];
+      return findColorRegion(nearest.triIndex, adjacency, triColors, colorTolerance, anchor);
     }
     case 'triangles':
       // Raw ids index the base tessellation; carry them across any subdivision.
@@ -916,7 +934,7 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { 
   // reconcile (we've already built the mesh here).
   suspendReconcile = true;
   for (const region of regions) {
-    const triangles = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren);
+    const triangles = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
     if (triangles.size > 0) {
       addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false);
       report.carried.push(region.name);
@@ -968,7 +986,7 @@ function rebuildPaintedGeometry(): void {
   updatePaintMesh(mesh);
   const adjacency = buildAdjacency(mesh);
   for (const region of getRegions()) {
-    setRegionTriangles(region.id, resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren));
+    setRegionTriangles(region.id, resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id));
   }
   paintedColorRefresh();
   syncLockState();
@@ -1010,8 +1028,8 @@ function appendStrokeRefine(descriptor: Extract<RegionDescriptor, { kind: 'brush
     if (d.kind === 'triangles' || d.kind === 'byLabel' || !overlapsSplit(region)) {
       setRegionTriangles(region.id, remapTriangleIds(region.triangles, parentToChildren));
     } else {
-      if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed')) adjacency = buildAdjacency(mesh);
-      setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren));
+      if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) adjacency = buildAdjacency(mesh);
+      setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren, region.id));
     }
   }
   paintedColorRefresh();
@@ -1252,8 +1270,8 @@ async function appendStrokeRefineAsync(
       } else if (d.kind === 'triangles' || d.kind === 'byLabel' || !overlapsSplit(region)) {
         setRegionTriangles(region.id, remapTriangleIds(region.triangles, parentToChildren));
       } else {
-        if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed')) adjacency = buildAdjacency(mesh);
-        setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren));
+        if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) adjacency = buildAdjacency(mesh);
+        setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren, region.id));
       }
     }
     paintedColorRefresh();
@@ -1313,7 +1331,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
       if (workerTris) {
         setRegionTriangles(region.id, new Set(workerTris));
       } else {
-        setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren));
+        setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren, region.id));
       }
     }
     paintedColorRefresh();
@@ -3995,6 +4013,10 @@ async function main() {
       showToast(result.error, { variant: 'warn' });
     } else if ('skipped' in result) {
       showToast('No changes to save', { variant: 'neutral' });
+    } else if (getGeometryDataObj()?.status === 'error') {
+      // Checkpointing a broken model is allowed, but warn that this version
+      // won't render correctly so the save isn't mistaken for a clean one.
+      showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}, but the model has errors and won't render correctly`, { variant: 'warn' });
     } else {
       showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}`, { variant: 'success' });
     }
@@ -5402,7 +5424,23 @@ async function main() {
       try { currentManifold.delete(); } catch { /* already deleted */ }
     }
     const mod = getModule();
-    currentManifold = mod && mesh ? mod.Manifold.ofMesh(mesh) : null;
+    // Mirror the post-run path (see runCodeSync's ofMesh reconstruction): a
+    // simplify / enhance / paint-refine result can come back not-quite-manifold
+    // (degenerate tris, non-2-manifold edges), and Manifold.ofMesh throws
+    // "Not manifold" on those. Without this guard the exception escapes the
+    // helper, the simplify/enhance handler surfaces a raw "Not manifold" error,
+    // AND the stats / printability refresh below is skipped — so the user gets
+    // no warning that the model went non-manifold (the exact bug reported for
+    // paint → enhance → paint → simplify). Fall back to render-only and warn.
+    try {
+      currentManifold = mod && mesh ? mod.Manifold.ofMesh(mesh) : null;
+    } catch {
+      currentManifold = null;
+      showToast(
+        "The resulting mesh isn’t a watertight solid (non-manifold) — it still renders, but won’t slice or boolean cleanly. Try a higher triangle target, or re-run the code to rebuild a clean solid.",
+        { variant: 'warn', source: 'engine', durationMs: 6000 },
+      );
+    }
     updateMesh(mesh);
     updatePaintMesh(mesh);
     updateGeometryData();
@@ -11697,10 +11735,10 @@ async function main() {
         let adjacency: AdjacencyGraph | null = null;
         for (const region of getRegions()) {
           const d = region.descriptor;
-          if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed')) {
+          if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) {
             adjacency = buildAdjacency(mesh);
           }
-          setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, null));
+          setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, null, region.id));
         }
         const displayMesh = applyTriColorsIfVisible(mesh);
         updateMesh(displayMesh);
