@@ -1027,6 +1027,15 @@ export async function listDrafts(sessionId: string): Promise<SessionDraft[]> {
   return reqToPromise(index.getAll(IDBKeyRange.only(sessionId))) as Promise<SessionDraft[]>;
 }
 
+/** Delete the working buffer for a single (session, part, language) triple.
+ *  Called after a version is saved so a now-superseded draft can't shadow the
+ *  freshly-saved code on the next reload. No-ops when no such draft exists. */
+export async function deleteDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<void> {
+  const store = await tx('drafts', 'readwrite');
+  store.delete(draftId(sessionId, language, partId));
+  await txComplete(store.transaction);
+}
+
 /** Delete all per-part drafts for a given part. Called when a part is removed
  *  so its stashed buffers don't accumulate. */
 export async function deletePartDrafts(sessionId: string, partId: string): Promise<void> {
