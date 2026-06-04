@@ -31,6 +31,7 @@ import {
   updateNote as dbUpdateNote,
   getDraft as dbGetDraft,
   setDraft as dbSetDraft,
+  deleteDraft as dbDeleteDraft,
   deletePartDrafts as dbDeletePartDrafts,
   legacyImagesObjectToArray,
   generateId,
@@ -924,6 +925,8 @@ export async function saveVersion(
   },
 ): Promise<Version | null> {
   if (!currentState.session || !currentState.currentPart) return null;
+  const sessionId = currentState.session.id;
+  const partId = currentState.currentPart.id;
 
   const annotationSnapshot = serializeAnnotations();
   const paramValues = options?.paramValues;
@@ -981,6 +984,16 @@ export async function saveVersion(
     currentVersion: version,
     versionCount: currentState.versionCount + 1,
   };
+  // The saved code is now the tip, so any autosaved draft for this
+  // (session, part, language) is superseded. Clear it — otherwise a stale
+  // draft (e.g. one left behind when a *different* code path, like the AI
+  // tools, commits a new version without touching the editor buffer) would
+  // shadow the freshly-saved version on the next reload via
+  // restoreDraftIfNewer. Best-effort: a draft-delete failure must not fail
+  // the save itself, since the version is already committed.
+  try {
+    await dbDeleteDraft(sessionId, version.language ?? getActiveLanguage(), partId);
+  } catch { /* the version saved; a lingering draft is recoverable, not fatal */ }
   setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
   setCompanionFiles(version.companionFiles ?? {});
   updateURL();
