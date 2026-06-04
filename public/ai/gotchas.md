@@ -87,9 +87,9 @@ const rotated = cube.rotate([90, 0, 0]);                   // rotate +90° about
 
 If your rotated geometry looks mirrored, negate the angle. This burned 10+ minutes of debugging in earlier sessions — the test snippet above runs in `runIsolated` and resolves it in seconds.
 
-## Painting locks the editor — `clearColors()` to iterate
+## Re-running invalidates painted colors — `clearColors()` to iterate
 
-Once any region exists, the editor's Run button is disabled in the UI (re-running would change the triangle indices the colors were painted against). The programmatic `runAndSave` is *not* blocked, but re-running new geometry with colors still in memory leaves them resolved against the old triangles. So to change the geometry mid-session, call `partwright.clearColors()` first, *then* run new code — or use `forkVersion(...)`, which re-resolves the parent's colors onto the new geometry by descriptor (pass `carryColors: false` for an uncolored child).
+Painted colors are resolved against the current mesh's triangle indices, so re-running new geometry with colors still in memory leaves them stuck to the old triangles. (The editor itself stays writable — there is no paint lock; version history is the rollback path.) So to change the geometry mid-session, call `partwright.clearColors()` first, *then* run new code — or use `forkVersion(...)`, which re-resolves the parent's colors onto the new geometry by descriptor (pass `carryColors: false` for an uncolored child).
 
 ## Verify before you commit
 

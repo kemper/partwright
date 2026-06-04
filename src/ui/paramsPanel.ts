@@ -8,6 +8,8 @@
 // touches the engine or storage directly.
 
 import type { ParamSpec, ParamValue, ParamValues } from '../geometry/params';
+import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
+import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 
 export interface ParamsPanelOptions {
   /** Fired when a single widget changes — main.ts updates the override, re-runs,
@@ -54,13 +56,16 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   // Bottom-left of the viewport — clear of the status pill (top-left), the
   // clip/tool bar (top-right) and the Z slider (right). pointer-events-auto so
   // widgets work; the panel itself is small so it doesn't block orbit much.
-  root.className = 'hidden absolute bottom-2 left-2 z-10 w-60 max-w-[calc(100%-1rem)] flex flex-col rounded-lg bg-zinc-900/85 backdrop-blur border border-zinc-700 shadow-lg text-zinc-200 pointer-events-auto';
+  root.className = 'hidden absolute z-10 w-60 max-w-[calc(100%-1rem)] flex flex-col rounded-lg bg-zinc-900/85 backdrop-blur border border-zinc-700 shadow-lg text-zinc-200 pointer-events-auto';
 
   // Header: a "Customize" title, a Reset button, and a close (×) button. Closing
   // hides the whole panel; the viewport "Customize" toggle pill reopens it (see
   // onVisibilityChange), so the close → reopen loop is always discoverable.
+  // The header also doubles as a drag handle (see below) — `cursor-move` hints
+  // that, and `touch-none` stops the browser claiming the gesture for scroll
+  // before pointer-capture kicks in.
   const header = document.createElement('div');
-  header.className = 'flex items-center gap-2 px-2.5 py-1.5 border-b border-zinc-700/70 select-none';
+  header.className = 'flex items-center gap-2 px-2.5 py-2 border-b border-zinc-700/70 select-none cursor-move touch-none';
 
   const title = document.createElement('span');
   title.className = 'text-xs font-medium text-zinc-300 flex-1 truncate';
@@ -102,8 +107,28 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     opts.onVisibilityChange?.({ hasParams: paramCount > 0, open: isOpen(), count: paramCount });
   }
 
+  // clampIntoView is wired up after attachViewportPanelDrag; applyVisibility
+  // calls it via a stable reference so the closure captures it correctly.
+  let clampIntoViewRef: (() => void) | null = null;
+  let escapeListenerActive = false;
+
   function applyVisibility(): void {
-    root.classList.toggle('hidden', !isOpen());
+    const wasOpen = !root.classList.contains('hidden');
+    const willOpen = isOpen();
+    root.classList.toggle('hidden', !willOpen);
+    if (willOpen && !wasOpen) {
+      setInitialPanelPosition(root);
+      openViewportPanel(registryEntry);
+      if (!escapeListenerActive) {
+        document.addEventListener('keydown', onParamsEscape);
+        escapeListenerActive = true;
+      }
+      requestAnimationFrame(() => { clampIntoViewRef?.(); });
+    } else if (!willOpen && wasOpen) {
+      closeViewportPanel(registryEntry);
+      document.removeEventListener('keydown', onParamsEscape);
+      escapeListenerActive = false;
+    }
     notify();
   }
 
@@ -150,12 +175,29 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     applyVisibility();
   }
 
+  const registryEntry = { close(): void { userClosed = true; applyVisibility(); } };
+
+  function onParamsEscape(e: KeyboardEvent): void {
+    if (e.key !== 'Escape') return;
+    if (document.querySelector('[role="dialog"]')) return;
+    userClosed = true;
+    applyVisibility();
+  }
+
   closeBtn.addEventListener('click', () => { userClosed = true; applyVisibility(); });
+
+  const { clampIntoView } = attachViewportPanelDrag(header, root);
+  clampIntoViewRef = clampIntoView;
 
   return {
     element: root,
     update,
-    open() { if (paramCount > 0) { userClosed = false; applyVisibility(); } },
+    open() {
+      if (paramCount > 0) {
+        userClosed = false;
+        applyVisibility();
+      }
+    },
     close() { userClosed = true; applyVisibility(); },
     toggle() { if (paramCount > 0) { userClosed = !userClosed; applyVisibility(); } },
     isOpen,

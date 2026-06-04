@@ -621,8 +621,6 @@ export function createMeshOpsNamespace(module: any) {
   };
 }
 
-export type MeshOpsNamespace = ReturnType<typeof createMeshOpsNamespace>;
-
 // ---------------------------------------------------------------------------
 // Pure-logic helpers exported for unit testing (no manifold-3d dependency).
 // ---------------------------------------------------------------------------

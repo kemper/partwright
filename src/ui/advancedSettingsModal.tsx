@@ -657,6 +657,15 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           onChange={v => set('ui', 'codeEditorErrorIdleMs', v)}
         />
         <Field
+          label="Companion draft autosave debounce"
+          unit="ms"
+          tooltip="After you stop typing in a SCAD companion file, the editor waits this long before autosaving the draft so the edit survives a reload. Coalesces keystrokes so IndexedDB isn't written on every key. Lower it to capture edits sooner; raise it to write less often."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.companionDraftDebounceMs}
+          value={c.ui.companionDraftDebounceMs}
+          min={0} max={5_000} integer
+          onChange={v => set('ui', 'companionDraftDebounceMs', v)}
+        />
+        <Field
           label="Surface preview debounce"
           unit="ms"
           tooltip="When adjusting parameters in the surface-modifier panel (texture, fuzzy, etc.), this debounce delays the preview render until you've stopped changing values for this long. Lower it for more responsive live preview; raise it if previewing is slow on your machine."
@@ -711,6 +720,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={1_000} max={60_000} integer
           onChange={v => set('ui', 'sessionLockStaleMs', v)}
         />
+        <Field
+          label="Default geometry quality"
+          unit="segments"
+          hint="Default circular segment count for manifold-js and BREP renders. 128 = Very High. Takes effect on next page load."
+          tooltip="Controls how many segments are used for circles and curved surfaces in manifold-js and BREP geometry. More segments = smoother curves, more triangles, slower renders. Named presets: Low=16, Medium=32, High=64, Very High=128, Ultra=1024. Enter any value from 3–4096; values not matching a preset use 'Custom' mode. Takes effect on next page load."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.defaultQuality}
+          value={c.ui.defaultQuality}
+          min={3} max={4096} integer
+          onChange={v => set('ui', 'defaultQuality', v)}
+        />
+        <Field
+          label="Default OpenSCAD quality ($fn)"
+          unit="segments"
+          hint="Default $fn for OpenSCAD renders. 32 = Medium. Takes effect on next page load."
+          tooltip="Controls the default $fn value used when rendering OpenSCAD code. Higher values produce smoother curves but much slower renders, since SCAD recompiles the full model on every run. Named presets: Low=16, Medium=32, High=64, Very High=128, Ultra=1024. Takes effect on next page load."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.scadDefaultQuality}
+          value={c.ui.scadDefaultQuality}
+          min={3} max={4096} integer
+          onChange={v => set('ui', 'scadDefaultQuality', v)}
+        />
       </Section>
 
       <Section title="Data">
@@ -755,7 +784,7 @@ export function showAdvancedSettingsModal(): void {
   }
 
   mountPreactModal(
-    { title: 'Advanced Settings', scrollable: true },
+    { title: 'Settings', scrollable: true },
     close => ({
       body: <AdvancedSettingsBody cfg={cfg} onReset={handleReset} />,
       footer: (

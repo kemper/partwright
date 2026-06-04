@@ -160,7 +160,7 @@ parametric count a distinct name (`'petal' + i`) for per-instance color.
 
 These model-declared colors are a derived **underlay**: manual paint
 (`paintByLabel` / the paint tools) composites on top as an optional
-override, and **only manual paint locks the editor**. They are not written
+override. They are not written
 into the saved paint sidecar — the code re-derives them on load. Read the
 active set with `partwright.getModelColors()` →
 `{ count, colors: [{ name, color, triangleCount }] }`; a zero
@@ -535,7 +535,7 @@ partwright.assertPaint({
 
 **Bucket tolerance.** `paintRegion`'s `tolerance` is a cosine threshold for the bend angle between adjacent faces (default `0.9995`, ≈ 1.8°). The flood-fill crosses an edge only when the bend at that edge is below the angle threshold — checked between the *parent* face and each *neighbor*, not against the seed. This means flood-fill follows curved surfaces: a 32-sided cylinder bends ~11° per face, so any tolerance ≥ cos(11°) ≈ `0.98` covers the whole cylinder. Set tolerance to `-1` (180°) to paint the entire connected mesh. The Paint UI exposes the same control as a slider labeled in degrees (0°–180°).
 
-**Editor lock.** When color regions exist, the editor is locked (the model can't be re-run, because new geometry would invalidate the saved triangle indices). To edit code, the user clicks "Unlock to edit" in the UI. Agents that need to iterate on the geometry should call `clearColors()` first, or fork with `forkVersion` — which by default carries the colors onto the new geometry (pass `carryColors: false` for an uncolored child).
+**Re-running with colors in memory.** The editor stays writable even when color regions exist (there is no paint lock), but re-running new geometry would invalidate the saved triangle indices the colors were painted against — leaving the paint resolved against stale triangles. Agents that need to iterate on the geometry should call `clearColors()` first, or fork with `forkVersion` — which by default carries the colors onto the new geometry (pass `carryColors: false` for an uncolored child).
 
 **Saving a colored version.** Calling `saveVersion(label)` after painting *will* persist the regions onto a new version — the dedupe check considers code, annotations, and color regions together. If nothing has changed, `saveVersion()` returns `{ skipped: true, reason: "..." }` instead of `null`, so a no-op is visible. If you want to be sure a save happened, check the return shape: `{ id, index, label }` on success, `{ skipped }` on no-op, `{ error }` if no session is open.
 

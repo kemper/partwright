@@ -110,6 +110,12 @@ export interface ChatToggles {
    *  one-stop-per-end_turn behavior and is remembered across reloads.
    *  Per-session, like the other toggles. */
   autoResume: boolean;
+  /** Plan-first mode. When ON, the first turn on each user message asks the
+   *  model to produce a written plan (no tool calls) before executing anything.
+   *  After the plan is streamed the user can approve it (a follow-up turn
+   *  proceeds with full tools) or reject it (planning messages are removed from
+   *  history and the original input is restored). OFF by default. */
+  planFirst: boolean;
   /** Which backend the chat is talking to right now. */
   provider: Provider;
   /** Anthropic model for cloud chats. Plain string so dated snapshots

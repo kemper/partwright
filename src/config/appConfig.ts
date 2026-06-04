@@ -126,6 +126,10 @@ export interface AppConfig {
     tooltipDelayMs: number;
     /** Idle delay (ms) after the last keystroke before error annotations appear in the code editor. */
     codeEditorErrorIdleMs: number;
+    /** Debounce delay (ms) after the last companion-file keystroke before the
+     *  draft is autosaved, so companion edits survive a reload without writing
+     *  to IndexedDB on every keystroke. */
+    companionDraftDebounceMs: number;
     /** Debounce delay (ms) for the surface-modifier live preview. */
     surfacePreviewDebounceMs: number;
     /** Debounce delay (ms) for the relief import 2D preview. */
@@ -138,6 +142,11 @@ export interface AppConfig {
     sessionLockHeartbeatMs: number;
     /** Time (ms) after which a session lock heartbeat is considered stale. */
     sessionLockStaleMs: number;
+    /** Default circular segment count for manifold-js / BREP geometry renders.
+     *  Picks the nearest named preset; non-preset values use "custom" mode. */
+    defaultQuality: number;
+    /** Default circular segment count for OpenSCAD ($fn) geometry renders. */
+    scadDefaultQuality: number;
   };
 }
 
@@ -201,12 +210,15 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     toastDurationMs: 2200,
     tooltipDelayMs: 150,
     codeEditorErrorIdleMs: 800,
+    companionDraftDebounceMs: 600,
     surfacePreviewDebounceMs: 250,
     reliefPreviewDebounceMs: 120,
     reliefPreview3dDebounceMs: 250,
     progressModalShowDelayMs: 250,
     sessionLockHeartbeatMs: 3000,
     sessionLockStaleMs: 8000,
+    defaultQuality: 128,
+    scadDefaultQuality: 32,
   },
 };
 
@@ -296,8 +308,3 @@ export function resetAppConfig(): void {
   for (const fn of listeners) fn(cachedConfig);
 }
 
-/** Subscribe to config saves/resets. Returns an unsubscribe function. */
-export function onAppConfigChange(fn: (cfg: AppConfig) => void): () => void {
-  listeners.add(fn);
-  return () => { listeners.delete(fn); };
-}

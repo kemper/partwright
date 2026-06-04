@@ -4,6 +4,7 @@ import { execSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { buildSitemapXml } from './src/seo/sitemap';
+import { prerenderContentPages } from './src/content/build/prerenderPlugin';
 
 // Set charset=utf-8 on .md and .txt files served from public/ during dev.
 // Prevents em-dashes and other UTF-8 chars from rendering as mojibake.
@@ -115,7 +116,7 @@ export default defineConfig({
   define: {
     __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
   },
-  plugins: [tailwindcss(), absoluteUrls(), markdownCharset(), dynamicSitemap()],
+  plugins: [tailwindcss(), prerenderContentPages(), absoluteUrls(), markdownCharset(), dynamicSitemap()],
   esbuild: {
     // .tsx files compile JSX via preact/jsx-runtime — keeps the bundle on
     // Preact without pulling in React. Vanilla .ts files in the rest of
@@ -157,16 +158,35 @@ export default defineConfig({
   build: {
     chunkSizeWarningLimit: 520,
     rollupOptions: {
+      // Multi-page: the editor SPA (index.html) plus the four pre-rendered,
+      // app-free content pages. Each content page ships only the shared
+      // Tailwind CSS — no app JS — so it paints instantly for users + crawlers.
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        catalog: resolve(__dirname, 'catalog.html'),
+        help: resolve(__dirname, 'help.html'),
+        legal: resolve(__dirname, 'legal.html'),
+        'whats-new': resolve(__dirname, 'whats-new.html'),
+      },
       output: {
-        manualChunks: {
-          'three': ['three'],
-          'codemirror': [
-            '@codemirror/state',
-            '@codemirror/view',
-            '@codemirror/lang-javascript',
-            '@codemirror/theme-one-dark',
-          ],
-          'manifold': ['manifold-3d'],
+        // Function form (not the object map) so we can isolate Vite's
+        // `__vite_preload` helper into its own tiny chunk. With the object
+        // form, Rollup folded that helper into the `manifold` chunk, which
+        // meant the entry (src/entry.ts) imported manifold (~44 KB) just to
+        // get the helper — pulling engine glue onto the landing route, which
+        // must stay app-free. Keeping it standalone lets the landing entry
+        // load only itself + storage/db.
+        manualChunks(id) {
+          if (id.includes('vite/preload-helper')) return 'vite-preload';
+          if (id.includes('node_modules/three/')) return 'three';
+          if (
+            id.includes('node_modules/@codemirror/state') ||
+            id.includes('node_modules/@codemirror/view') ||
+            id.includes('node_modules/@codemirror/lang-javascript') ||
+            id.includes('node_modules/@codemirror/theme-one-dark')
+          ) return 'codemirror';
+          if (id.includes('node_modules/manifold-3d')) return 'manifold';
+          return undefined;
         },
       },
     },

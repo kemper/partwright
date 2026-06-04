@@ -11,6 +11,13 @@ import {
   getTool,
   setBucketTolerance,
   getBucketTolerance,
+  setBucketColorTolerance,
+  getBucketColorTolerance,
+  setBucketMode,
+  getBucketMode,
+  setReplaceSourceColor,
+  getReplaceSourceColor,
+  onReplaceSourceColorChange,
   setBrushRadius,
   getBrushRadius,
   setBrushShape,
@@ -60,6 +67,8 @@ import {
   setRegionVisibility,
   updateRegionColor,
   addRegion,
+  replaceRegionColors,
+  getDistinctRegionColors,
 } from './regions';
 import { getPaintLabels, onPaintLabelsChange, type LabelInfo } from './labels';
 import { forceDeactivate as forceDeactivateAnnotate } from '../annotations/annotateUI';
@@ -67,6 +76,9 @@ import { forceDeactivate as forceDeactivateAnnotateText } from '../annotations/t
 import { forceDeactivate as forceDeactivateAnnotateSelect } from '../annotations/selectMode';
 import { setBoxMode, getBoxMode, setBox, commitBox, onBoxChange, setShapeType, getShapeType, getShapeVisible, setShapeVisible, onShapeVisibilityChange, type BoxMode, type ShapeType } from './boxDrag';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
+import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
+import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
+import { registerExclusiveMode } from '../ui/modeExclusion';
 
 const PRESET_COLORS: [number, number, number][] = [
   // Warm
@@ -104,6 +116,7 @@ let bucketControls: HTMLElement | null = null;
 let brushControls: HTMLElement | null = null;
 let slabControls: HTMLElement | null = null;
 let boxControls: HTMLElement | null = null;
+let replaceControls: HTMLElement | null = null;
 // Shape-smoothing controls appear in both the slab and box panels but share one
 // state; re-sync each instance's display on tool switch so neither goes stale.
 const shapeSmoothSyncs: (() => void)[] = [];
@@ -152,10 +165,20 @@ export function initPaintUI(controlsContainer: HTMLElement): void {
   updateUndoClearButton();
 }
 
+const paintRegistryEntry = { close(): void { if (isActive()) togglePaintMode(); } };
+
+function onPaintEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  if (document.querySelector('[role="dialog"]')) return;
+  togglePaintMode();
+}
+
 function togglePaintMode(): void {
   if (isActive()) {
     deactivate();
     updateButtonState(false);
+    closeViewportPanel(paintRegistryEntry);
+    document.removeEventListener('keydown', onPaintEscape);
     pickerPanel?.classList.add('hidden');
   } else {
     forceDeactivateAnnotate();
@@ -164,6 +187,9 @@ function togglePaintMode(): void {
     closeSimplifyMenu();
     activate();
     updateButtonState(true);
+    if (pickerPanel) setInitialPanelPosition(pickerPanel);
+    openViewportPanel(paintRegistryEntry);
+    document.addEventListener('keydown', onPaintEscape);
     pickerPanel?.classList.remove('hidden');
     syncToolPanels();
   }
@@ -198,13 +224,9 @@ function createPickerPanel(): HTMLElement {
   // panel pinned top-right. Either way it's a flex column with a sticky header
   // and footer around one scrollable middle, so the action row stays reachable
   // no matter how long the region list grows.
-  panel.className = [
-    'hidden z-20 flex flex-col overflow-hidden bg-zinc-800/95 backdrop-blur border border-zinc-600/60 shadow-xl',
-    'absolute inset-x-2 bottom-2 top-auto max-h-[55%] rounded-xl',
-    'md:inset-x-auto md:bottom-auto md:left-auto md:right-2 md:top-12 md:w-60 md:max-h-[calc(100%-3.5rem)] md:rounded-lg',
-  ].join(' ');
+  panel.className = 'hidden z-20 flex flex-col overflow-hidden bg-zinc-800/95 backdrop-blur border border-zinc-600/60 shadow-xl absolute rounded-lg w-60 max-h-[calc(100%-3.5rem)]';
 
-  // === Header (sticky): title + close affordance ===
+  // === Header: drag handle + title + \u00D7 close button ===
   const header = document.createElement('div');
   header.className = 'shrink-0 flex items-center justify-between gap-2 px-2.5 py-2 border-b border-zinc-700/70';
   const headerTitle = document.createElement('div');
@@ -215,10 +237,11 @@ function createPickerPanel(): HTMLElement {
   closeBtn.className = 'shrink-0 -mr-1 w-7 h-7 flex items-center justify-center rounded text-base leading-none text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60 transition-colors';
   closeBtn.title = 'Close paint menu';
   closeBtn.setAttribute('aria-label', 'Close paint menu');
-  closeBtn.textContent = '\u2715';
+  closeBtn.textContent = '\u00D7';
   closeBtn.addEventListener('click', () => { togglePaintMode(); });
   header.appendChild(closeBtn);
   panel.appendChild(header);
+  attachViewportPanelDrag(header, panel);
 
   // === Scrollable content ===
   const content = document.createElement('div');
@@ -233,10 +256,11 @@ function createPickerPanel(): HTMLElement {
 
   const toolRow = document.createElement('div');
   toolRow.className = 'grid grid-cols-2 gap-1 mb-2.5';
-  toolRow.appendChild(createToolButton('bucket', '\u{1FAA3} Bucket', 'Flood-fill across coplanar faces'));
+  toolRow.appendChild(createToolButton('bucket', '\u{1FAA3} Bucket', 'Flood-fill connected faces by color or geometry'));
   toolRow.appendChild(createToolButton('brush', '\u{1F58C}\uFE0F Brush', 'Paint individual triangles (drag to paint)'));
   toolRow.appendChild(createToolButton('slab', '\u{1F9F1} Slab', 'Paint all faces inside an axis-aligned range'));
   toolRow.appendChild(createToolButton('box', '\u25C6 Shape', 'Paint everything inside a positionable, rotatable, scalable 3D shape (box, sphere, cylinder, or cone)'));
+  toolRow.appendChild(createToolButton('replace', '\u{1F504} Replace', 'Replace one color with another across all matching regions (click mesh to pick source, then Replace all)'));
   content.appendChild(toolRow);
 
   // === Color picker ===
@@ -305,6 +329,10 @@ function createPickerPanel(): HTMLElement {
   // === Box tool controls ===
   boxControls = createBoxControls();
   content.appendChild(boxControls);
+
+  // === Replace tool controls ===
+  replaceControls = createReplaceControls();
+  content.appendChild(replaceControls);
 
   // === Labels list ===
   // Surfaces the named features `api.label(shape, name)` registered in the
@@ -406,6 +434,7 @@ function syncToolPanels(): void {
   if (brushControls) brushControls.classList.toggle('hidden', tool !== 'brush');
   if (slabControls) slabControls.classList.toggle('hidden', tool !== 'slab');
   if (boxControls) boxControls.classList.toggle('hidden', tool !== 'box');
+  if (replaceControls) replaceControls.classList.toggle('hidden', tool !== 'replace');
   for (const sync of shapeSmoothSyncs) sync();
 }
 
@@ -413,69 +442,274 @@ function createBucketControls(): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'mt-2 pt-2 border-t border-zinc-700';
 
+  const headerRow = document.createElement('div');
+  headerRow.className = 'flex items-center justify-between mb-1.5';
   const label = document.createElement('div');
-  label.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium';
+  label.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
   label.textContent = 'Bucket tolerance';
-  wrap.appendChild(label);
+  headerRow.appendChild(label);
 
-  // Slider 0..100 maps to angle 0\u00B0..180\u00B0 (where tolerance = cos(angle)).
-  // Number input is the same angle in degrees, two-way synced with the slider
-  // so users who already know the angle they want (e.g. 5\u00B0) can just type it.
-  const row = document.createElement('div');
-  row.className = 'flex items-center gap-2';
+  // Mode toggle: Color | Geometry
+  const modeRow = document.createElement('div');
+  modeRow.className = 'flex gap-0.5';
+  const modeBtnClass = (active: boolean) =>
+    active
+      ? 'px-1.5 py-0.5 rounded text-[10px] bg-blue-500/30 text-blue-200 border border-blue-500/50 transition-colors'
+      : 'px-1.5 py-0.5 rounded text-[10px] bg-zinc-700/40 text-zinc-400 hover:bg-zinc-600/60 border border-transparent transition-colors';
 
-  const slider = document.createElement('input');
-  slider.type = 'range';
-  slider.min = '0';
-  slider.max = '100';
-  slider.step = '1';
-  slider.value = String(toleranceToSliderPct(getBucketTolerance()));
-  slider.className = 'flex-1 accent-blue-500 min-w-0';
-  slider.title = 'Maximum bend angle (0\u00B0\u2013180\u00B0) between adjacent faces the flood-fill is allowed to cross';
+  const colorModeBtn = document.createElement('button');
+  colorModeBtn.textContent = 'Color';
+  colorModeBtn.title = 'Flood-fill by color similarity (magic-wand style)';
+  const geomModeBtn = document.createElement('button');
+  geomModeBtn.textContent = 'Geometry';
+  geomModeBtn.title = 'Flood-fill by face angle (original coplanar style)';
 
-  const input = document.createElement('input');
-  input.type = 'number';
-  input.min = '0';
-  input.max = '180';
-  input.step = '0.1';
-  input.value = toleranceToAngleDeg(getBucketTolerance()).toFixed(1);
-  input.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
-  input.title = 'Bend angle in degrees (0\u2013180)';
+  const syncModeBtns = (): void => {
+    const m = getBucketMode();
+    colorModeBtn.className = modeBtnClass(m === 'color');
+    geomModeBtn.className = modeBtnClass(m === 'geometry');
+    colorPanel.classList.toggle('hidden', m !== 'color');
+    geomPanel.classList.toggle('hidden', m !== 'geometry');
+  };
 
-  const unit = document.createElement('span');
-  unit.className = 'text-[10px] text-zinc-500';
-  unit.textContent = '\u00B0';
+  colorModeBtn.addEventListener('click', () => { setBucketMode('color'); syncModeBtns(); });
+  geomModeBtn.addEventListener('click', () => { setBucketMode('geometry'); syncModeBtns(); });
+  modeRow.appendChild(colorModeBtn);
+  modeRow.appendChild(geomModeBtn);
+  headerRow.appendChild(modeRow);
+  wrap.appendChild(headerRow);
 
-  slider.addEventListener('input', () => {
-    const tol = sliderPctToTolerance(parseInt(slider.value, 10));
-    setBucketTolerance(tol);
-    input.value = toleranceToAngleDeg(tol).toFixed(1);
+  // \u2500\u2500 Color-mode sub-panel \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  const colorPanel = document.createElement('div');
+
+  const colorRow = document.createElement('div');
+  colorRow.className = 'flex items-center gap-2';
+
+  const colorSlider = document.createElement('input');
+  colorSlider.type = 'range';
+  colorSlider.min = '0';
+  colorSlider.max = '100';
+  colorSlider.step = '1';
+  colorSlider.value = String(Math.round(getBucketColorTolerance() * 100));
+  colorSlider.className = 'flex-1 accent-blue-500 min-w-0';
+  colorSlider.title = 'Color distance tolerance (0 = exact match, 100 = fill entire connected mesh)';
+
+  const colorInput = document.createElement('input');
+  colorInput.type = 'number';
+  colorInput.min = '0';
+  colorInput.max = '100';
+  colorInput.step = '1';
+  colorInput.value = String(Math.round(getBucketColorTolerance() * 100));
+  colorInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  colorInput.title = 'Color tolerance (0\u2013100)';
+
+  const colorUnit = document.createElement('span');
+  colorUnit.className = 'text-[10px] text-zinc-500';
+  colorUnit.textContent = '%';
+
+  colorSlider.addEventListener('input', () => {
+    const tol = parseInt(colorSlider.value, 10) / 100;
+    setBucketColorTolerance(tol);
+    colorInput.value = String(Math.round(tol * 100));
   });
+  const applyColorPct = (): void => {
+    const raw = parseFloat(colorInput.value);
+    if (!Number.isFinite(raw)) { colorInput.value = String(Math.round(getBucketColorTolerance() * 100)); return; }
+    const pct = Math.max(0, Math.min(100, Math.round(raw)));
+    setBucketColorTolerance(pct / 100);
+    colorSlider.value = String(pct);
+    colorInput.value = String(pct);
+  };
+  colorInput.addEventListener('change', applyColorPct);
+  colorInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyColorPct(); colorInput.blur(); } });
 
+  colorRow.appendChild(colorSlider);
+  colorRow.appendChild(colorInput);
+  colorRow.appendChild(colorUnit);
+  colorPanel.appendChild(colorRow);
+
+  const colorHelp = document.createElement('div');
+  colorHelp.className = 'text-[10px] text-zinc-500 mt-1';
+  colorHelp.textContent = 'Exact match \u2190\u2014\u2014\u2192 Any color';
+  colorPanel.appendChild(colorHelp);
+  wrap.appendChild(colorPanel);
+
+  // \u2500\u2500 Geometry-mode sub-panel \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  const geomPanel = document.createElement('div');
+
+  const geomRow = document.createElement('div');
+  geomRow.className = 'flex items-center gap-2';
+
+  const geomSlider = document.createElement('input');
+  geomSlider.type = 'range';
+  geomSlider.min = '0';
+  geomSlider.max = '100';
+  geomSlider.step = '1';
+  geomSlider.value = String(toleranceToSliderPct(getBucketTolerance()));
+  geomSlider.className = 'flex-1 accent-blue-500 min-w-0';
+  geomSlider.title = 'Maximum bend angle (0\u00b0\u2013180\u00b0) between adjacent faces the flood-fill is allowed to cross';
+
+  const geomInput = document.createElement('input');
+  geomInput.type = 'number';
+  geomInput.min = '0';
+  geomInput.max = '180';
+  geomInput.step = '0.1';
+  geomInput.value = toleranceToAngleDeg(getBucketTolerance()).toFixed(1);
+  geomInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  geomInput.title = 'Bend angle in degrees (0\u2013180)';
+
+  const geomUnit = document.createElement('span');
+  geomUnit.className = 'text-[10px] text-zinc-500';
+  geomUnit.textContent = '\u00b0';
+
+  geomSlider.addEventListener('input', () => {
+    const tol = sliderPctToTolerance(parseInt(geomSlider.value, 10));
+    setBucketTolerance(tol);
+    geomInput.value = toleranceToAngleDeg(tol).toFixed(1);
+  });
   const applyAngle = (): void => {
-    const raw = parseFloat(input.value);
-    if (!Number.isFinite(raw)) {
-      input.value = toleranceToAngleDeg(getBucketTolerance()).toFixed(1);
-      return;
-    }
+    const raw = parseFloat(geomInput.value);
+    if (!Number.isFinite(raw)) { geomInput.value = toleranceToAngleDeg(getBucketTolerance()).toFixed(1); return; }
     const angle = Math.max(0, Math.min(180, raw));
     const tol = Math.cos(angle * Math.PI / 180);
     setBucketTolerance(tol);
-    slider.value = String(toleranceToSliderPct(tol));
-    input.value = angle.toFixed(1);
+    geomSlider.value = String(toleranceToSliderPct(tol));
+    geomInput.value = angle.toFixed(1);
   };
-  input.addEventListener('change', applyAngle);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyAngle(); input.blur(); } });
+  geomInput.addEventListener('change', applyAngle);
+  geomInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyAngle(); geomInput.blur(); } });
 
-  row.appendChild(slider);
-  row.appendChild(input);
-  row.appendChild(unit);
-  wrap.appendChild(row);
+  geomRow.appendChild(geomSlider);
+  geomRow.appendChild(geomInput);
+  geomRow.appendChild(geomUnit);
+  geomPanel.appendChild(geomRow);
 
-  const help = document.createElement('div');
-  help.className = 'text-[10px] text-zinc-500 mt-1';
-  help.textContent = 'Coplanar only \u2190\u2014\u2014\u2192 Whole connected mesh';
-  wrap.appendChild(help);
+  const geomHelp = document.createElement('div');
+  geomHelp.className = 'text-[10px] text-zinc-500 mt-1';
+  geomHelp.textContent = 'Coplanar only \u2190\u2014\u2014\u2192 Whole connected mesh';
+  geomPanel.appendChild(geomHelp);
+  wrap.appendChild(geomPanel);
+
+  syncModeBtns();
+  return wrap;
+}
+
+function toleranceToSliderPct(tol: number): number {
+  const angleDeg = Math.acos(Math.max(-1, Math.min(1, tol))) * 180 / Math.PI;
+  return Math.round(Math.max(0, Math.min(180, angleDeg)) / 180 * 100);
+}
+
+function sliderPctToTolerance(pct: number): number {
+  const angleDeg = Math.max(0, Math.min(100, pct)) / 100 * 180;
+  return Math.cos(angleDeg * Math.PI / 180);
+}
+
+function toleranceToAngleDeg(tol: number): number {
+  return Math.acos(Math.max(-1, Math.min(1, tol))) * 180 / Math.PI;
+}
+
+function createReplaceControls(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'mt-2 pt-2 border-t border-zinc-700 hidden';
+
+  const titleRow = document.createElement('div');
+  titleRow.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5 font-medium';
+  titleRow.textContent = 'Replace color';
+  wrap.appendChild(titleRow);
+
+  // Source color row: active swatch + hint
+  const sourceLabel = document.createElement('div');
+  sourceLabel.className = 'text-[10px] text-zinc-400 mb-1';
+  sourceLabel.textContent = 'Source (click mesh to pick)';
+  wrap.appendChild(sourceLabel);
+
+  const sourceRow = document.createElement('div');
+  sourceRow.className = 'flex items-center gap-2 mb-2';
+
+  const sourceSwatch = document.createElement('div');
+  sourceSwatch.className = 'w-6 h-6 rounded border-2 border-zinc-500 flex-shrink-0 bg-transparent';
+  sourceSwatch.title = 'Current source color';
+  sourceRow.appendChild(sourceSwatch);
+
+  const sourceHint = document.createElement('span');
+  sourceHint.className = 'text-[10px] text-zinc-500';
+  sourceHint.textContent = '← click mesh';
+  sourceRow.appendChild(sourceHint);
+
+  wrap.appendChild(sourceRow);
+
+  // Swatch grid: distinct colors from current regions
+  const meshColorsLabel = document.createElement('div');
+  meshColorsLabel.className = 'text-[10px] text-zinc-400 mb-1';
+  meshColorsLabel.textContent = 'Mesh colors';
+  wrap.appendChild(meshColorsLabel);
+
+  const swatchGrid = document.createElement('div');
+  swatchGrid.className = 'flex flex-wrap gap-1 mb-2';
+  wrap.appendChild(swatchGrid);
+
+  const noColorsHint = document.createElement('div');
+  noColorsHint.className = 'text-[10px] text-zinc-600 italic mb-2';
+  noColorsHint.textContent = 'No painted regions yet';
+  wrap.appendChild(noColorsHint);
+
+  // Replace all button
+  const actionRow = document.createElement('div');
+  actionRow.className = 'flex items-center gap-2';
+
+  const replaceBtn = document.createElement('button');
+  replaceBtn.className = 'flex-1 px-2 py-1 rounded text-[11px] bg-blue-600/60 text-blue-100 hover:bg-blue-500/60 border border-blue-500/40 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+  replaceBtn.textContent = 'Replace all';
+  replaceBtn.title = 'Replace all regions of the source color with the active paint color';
+  replaceBtn.disabled = true;
+  actionRow.appendChild(replaceBtn);
+  wrap.appendChild(actionRow);
+
+  function syncSourceDisplay(): void {
+    const src = getReplaceSourceColor();
+    if (src) {
+      sourceSwatch.style.backgroundColor = rgbToCSS(src);
+      sourceSwatch.classList.remove('border-zinc-500');
+      sourceSwatch.classList.add('border-white/60');
+      sourceHint.textContent = rgbToHex(src);
+      replaceBtn.disabled = false;
+    } else {
+      sourceSwatch.style.backgroundColor = 'transparent';
+      sourceSwatch.classList.remove('border-white/60');
+      sourceSwatch.classList.add('border-zinc-500');
+      sourceHint.textContent = '← click mesh';
+      replaceBtn.disabled = true;
+    }
+  }
+
+  function syncSwatches(): void {
+    swatchGrid.innerHTML = '';
+    const colors = getDistinctRegionColors();
+    noColorsHint.classList.toggle('hidden', colors.length > 0);
+    for (const color of colors) {
+      const sw = document.createElement('button');
+      sw.className = 'w-6 h-6 rounded border-2 border-transparent hover:border-white/50 transition-colors';
+      sw.style.backgroundColor = rgbToCSS(color);
+      sw.title = `Set ${rgbToHex(color)} as source`;
+      sw.addEventListener('click', () => {
+        setReplaceSourceColor([...color] as [number, number, number]);
+      });
+      swatchGrid.appendChild(sw);
+    }
+  }
+
+  replaceBtn.addEventListener('click', () => {
+    const src = getReplaceSourceColor();
+    if (!src) return;
+    const count = replaceRegionColors(src, getColor());
+    if (count > 0) setReplaceSourceColor(null);
+  });
+
+  onReplaceSourceColorChange(syncSourceDisplay);
+  onRegionsChange(() => { syncSwatches(); syncSourceDisplay(); });
+
+  syncSwatches();
+  syncSourceDisplay();
 
   return wrap;
 }
@@ -558,29 +792,23 @@ function createBrushControls(): HTMLElement {
   const surfaceButtons: Partial<Record<'geodesic' | 'slab', HTMLButtonElement>> = {};
   // Reassigned once their elements exist; called on every mode change.
   let syncDepthVisibility = (): void => {};
-  // Reflect the active surface on the buttons, and grey out Slab while spraying
-  // (a spray is geodesic-only \u2014 it can't punch through a wall).
+  // Reflect the active surface on the buttons. Both modes work for spray now
+  // (a slab spray is gated by depth, a geodesic one by surface connectivity).
   const refreshSurfaceButtons = (): void => {
-    const spraying = isBrushSpray();
     for (const [k, b] of Object.entries(surfaceButtons)) {
       if (!b) continue;
       b.className = axisButtonClass(k === getBrushSurface());
-      if (k === 'slab') {
-        b.disabled = spraying;
-        if (spraying) b.classList.add('opacity-40', 'cursor-not-allowed');
-      }
     }
   };
   for (const [mode, labelText, tip] of [
-    ['geodesic', 'Geodesic', 'Paint follows the connected surface and never bleeds through walls \u2014 no depth needed. Recommended.'],
-    ['slab', 'Slab', 'Paint a thin shell within Paint depth of the surface. Use the depth knob to control how far through a wall paint reaches.'],
+    ['slab', 'Slab', 'Paint a thin shell within Paint depth of the surface. Use the depth knob to control how far through a wall paint reaches. Default.'],
+    ['geodesic', 'Geodesic', 'Paint follows the connected surface and never bleeds through walls \u2014 no depth needed. Best for curved/organic shapes or geometry with nearby surfaces.'],
   ] as const) {
     const btn = document.createElement('button');
     btn.textContent = labelText;
     btn.title = tip;
     btn.className = axisButtonClass(mode === getBrushSurface());
     btn.addEventListener('click', () => {
-      if (mode === 'slab' && isBrushSpray()) return; // disabled while spraying
       setBrushSurface(mode);
       refreshSurfaceButtons();
       syncDepthVisibility();
@@ -707,7 +935,8 @@ function createBrushControls(): HTMLElement {
       ? 'w-full px-2 py-1 rounded text-[11px] bg-blue-500/30 text-blue-200 border border-blue-500/50 transition-colors'
       : 'w-full px-2 py-1 rounded text-[11px] bg-zinc-700/60 text-zinc-300 border border-zinc-600/50 hover:bg-zinc-700 transition-colors';
     sprayWrap.classList.toggle('hidden', !on);
-    if (on && getBrushSurface() !== 'geodesic') setBrushSurface('geodesic'); // spray is geodesic-only
+    // Spray keeps the active surface mode (slab or geodesic) — the depth slider
+    // stays visible whenever slab is selected, spraying or not.
     refreshSurfaceButtons();
     syncDepthVisibility();
   };
@@ -816,22 +1045,6 @@ function createBrushControls(): HTMLElement {
   return wrap;
 }
 
-function toleranceToSliderPct(tol: number): number {
-  // Slider 0..100 maps to angle 0°..180° (i.e. tol = cos(angle)).
-  // 0 = strict (only exactly-coplanar adjacent faces);
-  // 100 = no limit (paints the whole connected component).
-  const angleDeg = Math.acos(Math.max(-1, Math.min(1, tol))) * 180 / Math.PI;
-  return Math.round(Math.max(0, Math.min(180, angleDeg)) / 180 * 100);
-}
-
-function sliderPctToTolerance(pct: number): number {
-  const angleDeg = Math.max(0, Math.min(100, pct)) / 100 * 180;
-  return Math.cos(angleDeg * Math.PI / 180);
-}
-
-function toleranceToAngleDeg(tol: number): number {
-  return Math.acos(Math.max(-1, Math.min(1, tol))) * 180 / Math.PI;
-}
 
 function createSlabControls(): HTMLElement {
   const wrap = document.createElement('div');
@@ -1480,9 +1693,14 @@ export function forceDeactivate(): void {
   if (isActive()) {
     deactivate();
     updateButtonState(false);
+    closeViewportPanel(paintRegistryEntry);
+    document.removeEventListener('keydown', onPaintEscape);
     pickerPanel?.classList.add('hidden');
   }
 }
+
+// Let the annotate sub-modes deactivate paint without importing this module.
+registerExclusiveMode('paint', forceDeactivate);
 
 /** True if the paint menu is open (paint mode is active). */
 export function isPaintOpen(): boolean {
