@@ -4116,7 +4116,7 @@ async function main() {
     { id: 'export-step', title: 'Export STEP', hint: 'Export', keywords: 'download brep cad solidworks fusion freecad', run: () => { void actionExportSTEP(); }, enabled: () => getActiveLanguage() === 'replicad' },
     { id: 'share-link', title: 'Share design (copy link)', hint: 'Share', keywords: 'url public link copy fork readonly', run: () => { void actionShareLink(); }, enabled: canShare },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
-    { id: 'toggle-diagnostics', title: 'Toggle diagnostic log', hint: 'View', keywords: 'errors warnings console', run: () => toggleDiagnosticsPanel() },
+    { id: 'toggle-diagnostics', title: 'Toggle diagnostics', hint: 'View', keywords: 'errors warnings console workers webworkers threads memory wasm performance restarts crash timing health log', run: () => toggleDiagnosticsPanel() },
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
     { id: 'open-ideas', title: 'Open ideas', hint: 'Navigate', keywords: 'prompts examples inspiration showcase what can i do', run: () => { showIdeasPage(); } },
     { id: 'open-help', title: 'Open help', hint: 'Navigate', keywords: 'docs documentation guide', run: () => showHelp() },
