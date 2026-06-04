@@ -378,6 +378,15 @@ async function consumeGeminiStream(
     // 🩺 Diagnostics to see what came back.
     stopReason = 'end_turn';
   }
+  if (stopReason === 'malformed_function_call') {
+    // The model tried to call a function but emitted malformed JSON. Any
+    // text that leaked into the stream (e.g. "1}") is partial call payload,
+    // not a real answer. Strip it and the thought signature — replaying
+    // either on a retry feeds the model its own broken output and causes it
+    // to immediately attempt the same malformed call again (a hard loop).
+    collectedText = '';
+    answerSignature = undefined;
+  }
   return {
     text: collectedText,
     toolCalls,
@@ -431,7 +440,14 @@ function buildGeminiContents(history: ChatMessage[]): GeminiContent[] {
         if (tc.thoughtSignature) fcPart.thoughtSignature = tc.thoughtSignature;
         parts.push(fcPart);
       }
-      if (parts.length > 0) out.push({ role: 'model', parts });
+      if (parts.length === 0) {
+        // Preserve user/model alternation when the assistant message has no
+        // text or tool calls (e.g. after malformed_function_call stripping).
+        // Without a placeholder the model turn is skipped, leaving two
+        // consecutive user turns that Gemini rejects with a 400.
+        parts.push({ text: '.' });
+      }
+      out.push({ role: 'model', parts });
     } else {
       // Tool results first, on a user-role message with functionResponse
       // parts. `response` must be a plain object — Gemini's validator

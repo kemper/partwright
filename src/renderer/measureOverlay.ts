@@ -95,29 +95,6 @@ export function updateMeasurementTarget(p2: THREE.Vector3, distance: number): vo
 }
 
 /** Show a complete measurement (legacy — used for finalized state). */
-export function showMeasurement(
-  p1: THREE.Vector3,
-  p2: THREE.Vector3,
-  distance: number,
-  container: HTMLElement,
-): void {
-  startMeasurement(p1, container);
-  updateMeasurementTarget(p2, distance);
-}
-
-export function updateLabelPosition(p1?: THREE.Vector3, p2?: THREE.Vector3): void {
-  if (!labelEl || !camera || !renderer || !p1 || !p2) return;
-
-  const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
-  const projected = mid.clone().project(camera);
-
-  const canvas = renderer.domElement;
-  const x = (projected.x * 0.5 + 0.5) * canvas.clientWidth;
-  const y = (-projected.y * 0.5 + 0.5) * canvas.clientHeight;
-
-  labelEl.style.left = `${x}px`;
-  labelEl.style.top = `${y}px`;
-}
 
 export function clearMeasurement(): void {
   if (measureGroup) {

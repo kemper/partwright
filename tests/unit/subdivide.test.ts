@@ -2,7 +2,25 @@
 // in/out test and the boundary-conforming clip). Pure geometry — no browser.
 
 import { describe, test, expect } from 'vitest';
-import { strokeSignedDist, sprayCoverage, airbrushDither, type BrushStroke } from '../../src/color/subdivide';
+import { strokeSignedDist, sprayCoverage, airbrushDither, strokeFootprintTriangles, buildGeodesicField, deriveSampleNormals, type BrushStroke } from '../../src/color/subdivide';
+import { closestPointOnTriangle } from '../../src/color/adjacency';
+import type { MeshData } from '../../src/geometry/types';
+
+/** Build a MeshData (3 props/vertex, no shared verts) from a list of triangles. */
+function meshFromTris(tris: [number, number, number][][]): MeshData {
+  const vertProperties = new Float32Array(tris.length * 9);
+  const triVerts = new Uint32Array(tris.length * 3);
+  for (let t = 0; t < tris.length; t++) {
+    for (let v = 0; v < 3; v++) {
+      const p = tris[t][v];
+      vertProperties[t * 9 + v * 3] = p[0];
+      vertProperties[t * 9 + v * 3 + 1] = p[1];
+      vertProperties[t * 9 + v * 3 + 2] = p[2];
+      triVerts[t * 3 + v] = t * 3 + v;
+    }
+  }
+  return { vertProperties, triVerts, numVert: tris.length * 3, numTri: tris.length, numProp: 3 };
+}
 
 const at = (s: BrushStroke, p: [number, number, number]) => strokeSignedDist(p[0], p[1], p[2], s);
 
@@ -41,6 +59,299 @@ describe('strokeSignedDist', () => {
     const s: BrushStroke = { samples: [[0, 0, 0], [10, 0, 0]], radius: 2, shape: 'circle', maxEdge: 0.1 };
     expect(at(s, [10, 0, 0])).toBeCloseTo(-2);   // inside the second sample
     expect(at(s, [5, 0, 0])).toBeGreaterThan(0); // between, outside both
+  });
+});
+
+describe('strokeFootprintTriangles spatial grid', () => {
+  // The footprint contract is "triangles whose centroid falls within the stroke
+  // footprint". The grid is just an accelerator, so its result must equal a
+  // brute-force centroid test over every triangle — no misses, no extras.
+  const centroid = (tri: [number, number, number][]): [number, number, number] => [
+    (tri[0][0] + tri[1][0] + tri[2][0]) / 3,
+    (tri[0][1] + tri[1][1] + tri[2][1]) / 3,
+    (tri[0][2] + tri[1][2] + tri[2][2]) / 3,
+  ];
+
+  test('matches brute-force centroid test on a mesh of mixed triangle sizes', () => {
+    const tris: [number, number, number][][] = [];
+    // A dense field of small triangles across the XY plane.
+    for (let x = -6; x <= 6; x++) {
+      for (let y = -6; y <= 6; y++) {
+        tris.push([[x, y, 0], [x + 0.3, y, 0], [x, y + 0.3, 0]]);
+      }
+    }
+    // A couple of oversize triangles (extent ≫ cell) — exercise the always-return
+    // path. One centroid lands inside the footprint, one outside.
+    tris.push([[-0.2, -0.2, 0], [5, 0, 0], [0, 5, 0]]);   // centroid ≈ (1.6,1.6) — outside r=3
+    tris.push([[0, 0, 0], [-3, 0, 0], [0, -3, 0]]);       // centroid ≈ (-1,-1) — inside r=3
+    const mesh = meshFromTris(tris);
+
+    const stroke: BrushStroke = { samples: [[0, 0, 0]], radius: 3, shape: 'circle', maxEdge: 0.1 };
+    const got = strokeFootprintTriangles(mesh, stroke);
+
+    const expected = new Set<number>();
+    for (let t = 0; t < tris.length; t++) {
+      const c = centroid(tris[t]);
+      if (Math.hypot(c[0], c[1], c[2]) <= 3) expected.add(t);
+    }
+
+    expect([...got].sort((a, b) => a - b)).toEqual([...expected].sort((a, b) => a - b));
+    expect(got.size).toBeGreaterThan(0);
+  });
+
+  test('multi-sample stroke covers triangles near every sample', () => {
+    const tris: [number, number, number][][] = [];
+    for (let x = -2; x <= 12; x++) {
+      tris.push([[x, 0, 0], [x + 0.2, 0, 0], [x, 0.2, 0]]);
+    }
+    const mesh = meshFromTris(tris);
+    const stroke: BrushStroke = { samples: [[0, 0, 0], [10, 0, 0]], radius: 1.5, shape: 'circle', maxEdge: 0.1 };
+    const got = strokeFootprintTriangles(mesh, stroke);
+
+    const expected = new Set<number>();
+    for (let t = 0; t < tris.length; t++) {
+      const c = centroid(tris[t]);
+      const near = Math.min(Math.hypot(c[0], c[1], c[2]), Math.hypot(c[0] - 10, c[1], c[2]));
+      if (near <= 1.5) expected.add(t);
+    }
+    expect([...got].sort((a, b) => a - b)).toEqual([...expected].sort((a, b) => a - b));
+  });
+});
+
+describe('buildGeodesicField', () => {
+  // A shared-vertex triangulated plane grid in Z=z0: (n+1)² verts, 2·n² tris.
+  // Shared vertex indices give the flood fill real edge adjacency (unlike the
+  // independent-vert meshFromTris). `wrinkle` bumps interior verts in Z so the
+  // surface curves — exercising the closest-point math, not just a flat plane.
+  function planeGrid(n: number, z0: number, wrinkle = 0): MeshData {
+    const side = n + 1;
+    const verts: number[] = [];
+    for (let j = 0; j < side; j++) {
+      for (let i = 0; i < side; i++) {
+        const z = z0 + wrinkle * Math.sin(i * 0.7) * Math.cos(j * 0.7);
+        verts.push(i, j, z);
+      }
+    }
+    const tris: number[] = [];
+    const vi = (i: number, j: number) => j * side + i;
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        tris.push(vi(i, j), vi(i + 1, j), vi(i + 1, j + 1));
+        tris.push(vi(i, j), vi(i + 1, j + 1), vi(i, j + 1));
+      }
+    }
+    return {
+      vertProperties: new Float32Array(verts),
+      triVerts: new Uint32Array(tris),
+      numVert: side * side,
+      numTri: tris.length / 3,
+      numProp: 3,
+    };
+  }
+
+  /** Independent O(mesh) reference for `reachableAt`: linear nearest-triangle for
+   *  the seeds + a radius-gated flood over shared edges, then a linear nearest
+   *  for the query. This is exactly what the grid-accelerated field must equal —
+   *  so it pins the optimisation as behaviour-preserving. */
+  function referenceField(base: MeshData, samples: [number, number, number][], radius: number) {
+    const { triVerts, numTri, numVert } = base;
+    const tv = (vi: number): [number, number, number] => [
+      base.vertProperties[vi * 3], base.vertProperties[vi * 3 + 1], base.vertProperties[vi * 3 + 2],
+    ];
+    const tris = Array.from({ length: numTri }, (_, t) => [tv(triVerts[t * 3]), tv(triVerts[t * 3 + 1]), tv(triVerts[t * 3 + 2])] as const);
+    const d2 = (p: number[], t: number): number => {
+      const [a, b, c] = tris[t];
+      const cp = closestPointOnTriangle(p[0], p[1], p[2], a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+      return (cp[0] - p[0]) ** 2 + (cp[1] - p[1]) ** 2 + (cp[2] - p[2]) ** 2;
+    };
+    const nearest = (p: number[]): number => {
+      let best = Infinity, bi = -1;
+      for (let t = 0; t < numTri; t++) { const v = d2(p, t); if (v < best) { best = v; bi = t; } }
+      return bi;
+    };
+    const r2 = radius * radius;
+    const withinR = (t: number) => samples.some((s) => d2(s, t) <= r2);
+    const ekey = (u: number, v: number) => (u < v ? u * numVert + v : v * numVert + u);
+    const edges = new Map<number, number[]>();
+    for (let t = 0; t < numTri; t++) {
+      const [a, b, c] = [triVerts[t * 3], triVerts[t * 3 + 1], triVerts[t * 3 + 2]];
+      for (const [u, v] of [[a, b], [b, c], [c, a]] as const) {
+        const arr = edges.get(ekey(u, v)); if (arr) arr.push(t); else edges.set(ekey(u, v), [t]);
+      }
+    }
+    const nbrs = (t: number): number[] => {
+      const [a, b, c] = [triVerts[t * 3], triVerts[t * 3 + 1], triVerts[t * 3 + 2]];
+      const out: number[] = [];
+      for (const [u, v] of [[a, b], [b, c], [c, a]] as const) for (const o of edges.get(ekey(u, v)) ?? []) if (o !== t) out.push(o);
+      return out;
+    };
+    const reachable = new Set<number>();
+    const stack: number[] = [];
+    for (const s of samples) { const t = nearest(s); if (t >= 0 && !reachable.has(t)) { reachable.add(t); stack.push(t); } }
+    while (stack.length) { for (const nb of nbrs(stack.pop()!)) if (!reachable.has(nb) && withinR(nb)) { reachable.add(nb); stack.push(nb); } }
+    // Tied-nearest triangles (within fp epsilon): a query sitting exactly on a
+    // shared edge/vertex is equidistant to several base triangles, so its
+    // reachability is inherently boundary-ambiguous.
+    const nearestTies = (p: number[]): number[] => {
+      let best = Infinity;
+      for (let t = 0; t < numTri; t++) { const v = d2(p, t); if (v < best) best = v; }
+      const out: number[] = [];
+      for (let t = 0; t < numTri; t++) if (d2(p, t) <= best + 1e-9) out.push(t);
+      return out;
+    };
+    return {
+      reachableAt: (p: number[]) => { const t = nearest(p); return t >= 0 && reachable.has(t); },
+      reach: (t: number) => reachable.has(t),
+      nearestTies,
+    };
+  }
+
+  test('grid path matches the brute-force linear scan on a dense curved surface', () => {
+    // 12×12 grid → 288 triangles, well over the 64-triangle grid threshold, so
+    // reachableAt runs through the spatial grid rather than the linear scan.
+    const base = planeGrid(12, 0, 0.4);
+    expect(base.numTri).toBeGreaterThan(64);
+    const samples: [number, number, number][] = [[3, 3, 0], [8, 7, 0]];
+    const radius = 3;
+    const field = buildGeodesicField(base, samples, radius);
+    const ref = referenceField(base, samples, radius);
+
+    let unique = 0, tied = 0;
+    for (let x = -1; x <= 13; x += 0.7) {
+      for (let y = -1; y <= 13; y += 0.7) {
+        for (const z of [0, 0.3, -0.3, 1.5]) {
+          const got = field.reachableAt(x, y, z);
+          const ties = ref.nearestTies([x, y, z]);
+          if (ties.length <= 1) {
+            // Unique nearest → must be byte-identical to the linear scan.
+            expect(got).toBe(ref.reachableAt([x, y, z]));
+            unique++;
+          } else {
+            // Equidistant boundary point: any tied triangle is a valid pick, so
+            // the answer must equal *some* tied triangle's reachability — proving
+            // the grid never returns a wrong-distance triangle.
+            expect(ties.some((t) => ref.reach(t) === got)).toBe(true);
+            tied++;
+          }
+        }
+      }
+    }
+    expect(unique).toBeGreaterThan(500); // the vast majority resolve uniquely
+    expect(tied).toBeLessThan(unique / 10); // ties are the measure-zero exception
+  });
+
+  test('never reaches across a gap to a disconnected parallel sheet', () => {
+    // Two sheets a Euclidean hair apart but sharing no vertices: geodesic must
+    // gate by surface connectivity, so the far sheet stays unreachable even
+    // though it is well within `radius`. (Proves the grid lookup still selects
+    // the correct triangle — a wrong pick would leak paint across the gap.)
+    const near = planeGrid(10, 0);
+    const far = planeGrid(10, 0.5); // 0.5 units above — inside radius 4
+    // Merge into one mesh with disjoint vertex index ranges (no shared edges).
+    const merged: MeshData = {
+      vertProperties: new Float32Array([...near.vertProperties, ...far.vertProperties]),
+      triVerts: new Uint32Array([...near.triVerts, ...far.triVerts].map((v, i) => i < near.triVerts.length ? v : v + near.numVert)),
+      numVert: near.numVert + far.numVert,
+      numTri: near.numTri + far.numTri,
+      numProp: 3,
+    };
+    const field = buildGeodesicField(merged, [[5, 5, 0]], 4);
+    expect(field.reachableAt(5, 5, 0)).toBe(true);    // seed, near sheet
+    expect(field.reachableAt(6, 5, 0)).toBe(true);    // near sheet, within radius
+    expect(field.reachableAt(5, 5, 0.5)).toBe(false); // directly above, far sheet — gapped
+    expect(field.reachableAt(6, 5, 0.5)).toBe(false); // far sheet, within radius but disconnected
+  });
+});
+
+describe('deriveSampleNormals', () => {
+  // Shared-vertex wrinkled plane grid: (n+1)² verts, 2·n² tris, each with a
+  // distinct orientation (the wrinkle tilts every triangle), so a wrong nearest
+  // pick would surface as a wrong normal.
+  function wrinkledGrid(n: number, wrinkle: number): MeshData {
+    const side = n + 1;
+    const verts: number[] = [];
+    for (let j = 0; j < side; j++) {
+      for (let i = 0; i < side; i++) {
+        verts.push(i, j, wrinkle * Math.sin(i * 0.6) * Math.cos(j * 0.6));
+      }
+    }
+    const tris: number[] = [];
+    const vi = (i: number, j: number) => j * side + i;
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        tris.push(vi(i, j), vi(i + 1, j), vi(i + 1, j + 1));
+        tris.push(vi(i, j), vi(i + 1, j + 1), vi(i, j + 1));
+      }
+    }
+    return {
+      vertProperties: new Float32Array(verts),
+      triVerts: new Uint32Array(tris),
+      numVert: side * side, numTri: tris.length / 3, numProp: 3,
+    };
+  }
+
+  /** The old brute-force algorithm: nearest triangle over the whole mesh
+   *  (lowest index wins ties), then its geometric normal. */
+  function brute(samples: [number, number, number][], base: MeshData): [number, number, number][] {
+    const { triVerts, numTri } = base;
+    const tv = (vi: number): [number, number, number] => [
+      base.vertProperties[vi * 3], base.vertProperties[vi * 3 + 1], base.vertProperties[vi * 3 + 2],
+    ];
+    return samples.map((s) => {
+      let best = Infinity; let bn: [number, number, number] = [0, 0, 1];
+      for (let t = 0; t < numTri; t++) {
+        const a = tv(triVerts[t * 3]), b = tv(triVerts[t * 3 + 1]), c = tv(triVerts[t * 3 + 2]);
+        const cp = closestPointOnTriangle(s[0], s[1], s[2], a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+        const d2 = (cp[0] - s[0]) ** 2 + (cp[1] - s[1]) ** 2 + (cp[2] - s[2]) ** 2;
+        if (d2 < best) {
+          best = d2;
+          const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+          const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+          const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+          const len = Math.hypot(nx, ny, nz) || 1;
+          bn = [nx / len, ny / len, nz / len];
+        }
+      }
+      return bn;
+    });
+  }
+
+  test('grid result matches the brute-force scan for on-surface samples', () => {
+    const base = wrinkledGrid(12, 0.5); // 288 tris
+    const { triVerts } = base;
+    const tv = (vi: number): [number, number, number] => [
+      base.vertProperties[vi * 3], base.vertProperties[vi * 3 + 1], base.vertProperties[vi * 3 + 2],
+    ];
+    // Sample at every triangle centroid (unambiguously on that triangle).
+    const samples: [number, number, number][] = [];
+    for (let t = 0; t < base.numTri; t++) {
+      const a = tv(triVerts[t * 3]), b = tv(triVerts[t * 3 + 1]), c = tv(triVerts[t * 3 + 2]);
+      samples.push([(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3]);
+    }
+    const got = deriveSampleNormals(samples, base);
+    const ref = brute(samples, base);
+    expect(got.length).toBe(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      expect(got[i][0]).toBeCloseTo(ref[i][0], 6);
+      expect(got[i][1]).toBeCloseTo(ref[i][1], 6);
+      expect(got[i][2]).toBeCloseTo(ref[i][2], 6);
+    }
+  });
+
+  test('matches brute force for slightly off-surface samples and falls back when far', () => {
+    const base = wrinkledGrid(10, 0.4);
+    // A near-surface point (nudged off a centroid) and a far one (well outside
+    // the grid, exercising the full-scan fallback).
+    const samples: [number, number, number][] = [
+      [3.4, 4.7, 0.05], [7.1, 2.2, -0.1], [5.5, 5.5, 0.2], [100, 100, 100],
+    ];
+    const got = deriveSampleNormals(samples, base);
+    const ref = brute(samples, base);
+    for (let i = 0; i < samples.length; i++) {
+      expect(got[i][0]).toBeCloseTo(ref[i][0], 6);
+      expect(got[i][1]).toBeCloseTo(ref[i][1], 6);
+      expect(got[i][2]).toBeCloseTo(ref[i][2], 6);
+    }
   });
 });
 

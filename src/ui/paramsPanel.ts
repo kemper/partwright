@@ -8,6 +8,8 @@
 // touches the engine or storage directly.
 
 import type { ParamSpec, ParamValue, ParamValues } from '../geometry/params';
+import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
+import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 
 export interface ParamsPanelOptions {
   /** Fired when a single widget changes — main.ts updates the override, re-runs,
@@ -54,7 +56,7 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
   // Bottom-left of the viewport — clear of the status pill (top-left), the
   // clip/tool bar (top-right) and the Z slider (right). pointer-events-auto so
   // widgets work; the panel itself is small so it doesn't block orbit much.
-  root.className = 'hidden absolute bottom-2 left-2 z-10 w-60 max-w-[calc(100%-1rem)] flex flex-col rounded-lg bg-zinc-900/85 backdrop-blur border border-zinc-700 shadow-lg text-zinc-200 pointer-events-auto';
+  root.className = 'hidden absolute z-10 w-60 max-w-[calc(100%-1rem)] flex flex-col rounded-lg bg-zinc-900/85 backdrop-blur border border-zinc-700 shadow-lg text-zinc-200 pointer-events-auto';
 
   // Header: a "Customize" title, a Reset button, and a close (×) button. Closing
   // hides the whole panel; the viewport "Customize" toggle pill reopens it (see
@@ -105,13 +107,28 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     opts.onVisibilityChange?.({ hasParams: paramCount > 0, open: isOpen(), count: paramCount });
   }
 
+  // clampIntoView is wired up after attachViewportPanelDrag; applyVisibility
+  // calls it via a stable reference so the closure captures it correctly.
+  let clampIntoViewRef: (() => void) | null = null;
+  let escapeListenerActive = false;
+
   function applyVisibility(): void {
-    root.classList.toggle('hidden', !isOpen());
-    // Once visible, keep it fully inside the screen. Deferred a frame so the
-    // panel has laid out (it can't be measured while `hidden`). This is what
-    // rescues the mobile case where the default bottom-left anchor put the
-    // panel's bottom edge below the fold.
-    if (isOpen()) requestAnimationFrame(clampIntoView);
+    const wasOpen = !root.classList.contains('hidden');
+    const willOpen = isOpen();
+    root.classList.toggle('hidden', !willOpen);
+    if (willOpen && !wasOpen) {
+      setInitialPanelPosition(root);
+      openViewportPanel(registryEntry);
+      if (!escapeListenerActive) {
+        document.addEventListener('keydown', onParamsEscape);
+        escapeListenerActive = true;
+      }
+      requestAnimationFrame(() => { clampIntoViewRef?.(); });
+    } else if (!willOpen && wasOpen) {
+      closeViewportPanel(registryEntry);
+      document.removeEventListener('keydown', onParamsEscape);
+      escapeListenerActive = false;
+    }
     notify();
   }
 
@@ -158,101 +175,29 @@ export function createParamsPanel(opts: ParamsPanelOptions): ParamsPanelControll
     applyVisibility();
   }
 
+  const registryEntry = { close(): void { userClosed = true; applyVisibility(); } };
+
+  function onParamsEscape(e: KeyboardEvent): void {
+    if (e.key !== 'Escape') return;
+    if (document.querySelector('[role="dialog"]')) return;
+    userClosed = true;
+    applyVisibility();
+  }
+
   closeBtn.addEventListener('click', () => { userClosed = true; applyVisibility(); });
 
-  // --- Dragging --------------------------------------------------------------
-  // The header is a drag handle so the panel can be repositioned on both desktop
-  // and touch — pointer events cover mouse, touch, and stylus uniformly. Position
-  // is tracked as inline left/top (relative to the offset parent); until the user
-  // drags, the panel keeps its CSS-default bottom-left anchor.
-  let dragged = false;
-
-  function applyPos(left: number, top: number): void {
-    root.style.left = `${left}px`;
-    root.style.top = `${top}px`;
-    root.style.right = 'auto';
-    root.style.bottom = 'auto';
-  }
-
-  // Clamp the panel fully inside the visible intersection of its offset parent
-  // and the window, so it can never sit (even partly) off-screen. Only switches
-  // to explicit positioning when it actually needs to move (or the user already
-  // dragged it), so the default desktop placement keeps its CSS anchor.
-  function clampIntoView(): void {
-    const parent = root.offsetParent as HTMLElement | null;
-    if (!parent || root.classList.contains('hidden')) return;
-    const pad = 8;
-    const pr = parent.getBoundingClientRect();
-    const rr = root.getBoundingClientRect();
-    // Not laid out yet (parent still display:none mid tab-switch) — bail rather
-    // than clamp to a bogus zero-size rect.
-    if (rr.width === 0 || rr.height === 0) return;
-    const visTop = Math.max(pr.top, 0);
-    const visBottom = Math.min(pr.bottom, window.innerHeight);
-    const visLeft = Math.max(pr.left, 0);
-    const visRight = Math.min(pr.right, window.innerWidth);
-    const minLeft = (visLeft - pr.left) + pad;
-    const minTop = (visTop - pr.top) + pad;
-    const maxLeft = (visRight - pr.left) - rr.width - pad;
-    const maxTop = (visBottom - pr.top) - rr.height - pad;
-    const curLeft = rr.left - pr.left;
-    const curTop = rr.top - pr.top;
-    // Constrain the current position between min and max. The outer Math.max(min, …)
-    // wins when the panel is taller/wider than the visible area (maxLeft < minLeft):
-    // it pins to the top/left edge rather than pushing the panel off the other side.
-    const left = Math.max(minLeft, Math.min(curLeft, maxLeft));
-    const top = Math.max(minTop, Math.min(curTop, maxTop));
-    if (dragged || Math.abs(left - curLeft) > 0.5 || Math.abs(top - curTop) > 0.5) {
-      applyPos(left, top);
-    }
-  }
-
-  let dragPointerId: number | null = null;
-  let startX = 0, startY = 0, startLeft = 0, startTop = 0;
-
-  header.addEventListener('pointerdown', (e) => {
-    // Only the primary (left) mouse button starts a drag — right/middle click
-    // should still raise the context menu / be ignored. Touch & pen pass through.
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
-    // Don't start a drag from the Reset / close buttons — let them click.
-    if ((e.target as HTMLElement).closest('button')) return;
-    const parent = root.offsetParent as HTMLElement | null;
-    if (!parent) return;
-    const pr = parent.getBoundingClientRect();
-    const rr = root.getBoundingClientRect();
-    startLeft = rr.left - pr.left;
-    startTop = rr.top - pr.top;
-    startX = e.clientX;
-    startY = e.clientY;
-    dragPointerId = e.pointerId;
-    dragged = true;
-    header.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  });
-
-  header.addEventListener('pointermove', (e) => {
-    if (dragPointerId !== e.pointerId) return;
-    applyPos(startLeft + (e.clientX - startX), startTop + (e.clientY - startY));
-  });
-
-  function endDrag(e: PointerEvent): void {
-    if (dragPointerId !== e.pointerId) return;
-    dragPointerId = null;
-    if (header.hasPointerCapture(e.pointerId)) header.releasePointerCapture(e.pointerId);
-    clampIntoView();
-  }
-  header.addEventListener('pointerup', endDrag);
-  header.addEventListener('pointercancel', endDrag);
-
-  // Keep it on-screen across viewport changes (rotate, resize, mobile chrome
-  // show/hide). The panel is a singleton created once for the app's lifetime,
-  // so the window listener never needs removing.
-  window.addEventListener('resize', () => { if (isOpen()) clampIntoView(); });
+  const { clampIntoView } = attachViewportPanelDrag(header, root);
+  clampIntoViewRef = clampIntoView;
 
   return {
     element: root,
     update,
-    open() { if (paramCount > 0) { userClosed = false; applyVisibility(); } },
+    open() {
+      if (paramCount > 0) {
+        userClosed = false;
+        applyVisibility();
+      }
+    },
     close() { userClosed = true; applyVisibility(); },
     toggle() { if (paramCount > 0) { userClosed = !userClosed; applyVisibility(); } },
     isOpen,
@@ -294,11 +239,10 @@ function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue)
     numInput.type = 'number';
     // Narrow, mono, right-aligned — reads like the old readout but is editable.
     numInput.className = 'w-16 text-[11px] font-mono tabular-nums text-right text-zinc-200 bg-zinc-800 border border-zinc-600 rounded px-1 py-0.5 focus:border-blue-400 focus:outline-none';
-    // Only constrain the field by limits the author declared, so an undeclared
-    // bound doesn't silently clamp a typed value (the slider keeps its own
-    // synthesized range for the thumb).
-    if (spec.min !== undefined) numInput.min = String(spec.min);
-    if (spec.max !== undefined) numInput.max = String(spec.max);
+    // The field is intentionally *unconstrained* — no min/max attributes — so
+    // the user can type (and spinner-step) a value beyond the author's declared
+    // bounds. min/max only size the slider's convenient range; params.ts honors
+    // an out-of-range typed value rather than clamping it.
     numInput.step = String(step);
     labelRow.appendChild(numInput);
     row.appendChild(labelRow);
@@ -309,10 +253,22 @@ function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue)
     slider.min = String(min);
     slider.max = String(max);
     slider.step = String(step);
+
+    // Push a value into both controls. When it falls outside the declared
+    // [min, max] (a typed/persisted override that exceeds the slider's range),
+    // grow the slider's bounds to include it so the thumb tracks the true value
+    // instead of pinning at an edge; values inside the range restore it.
+    const reflect = (n: number) => {
+      slider.min = String(Math.min(min, n));
+      slider.max = String(Math.max(max, n));
+      slider.value = String(n);
+      numInput.value = String(n);
+    };
+
     slider.addEventListener('input', () => { numInput.value = slider.value; });
     slider.addEventListener('change', () => {
       const n = isInt ? Math.round(Number(slider.value)) : Number(slider.value);
-      numInput.value = String(n);
+      reflect(n);
       onChange(spec.key, n);
     });
     row.appendChild(slider);
@@ -325,11 +281,7 @@ function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue)
         return;
       }
       const n = isInt ? Math.round(raw) : raw;
-      // Reflect the typed value on the slider thumb (the browser clamps it into
-      // the slider's range; the field keeps the true value). The post-run
-      // sync via setValue will reconcile both to params.ts's coerced result.
-      slider.value = String(n);
-      if (isInt) numInput.value = String(n);
+      reflect(n);
       onChange(spec.key, n);
     };
     numInput.addEventListener('change', commitField);
@@ -338,8 +290,7 @@ function buildWidget(spec: ParamSpec, onChange: (key: string, value: ParamValue)
 
     setValue = (v) => {
       const n = typeof v === 'number' ? v : Number(v);
-      slider.value = String(n);
-      numInput.value = String(n);
+      reflect(n);
     };
   } else if (spec.type === 'boolean') {
     const wrap = document.createElement('div');

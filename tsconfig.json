@@ -24,8 +24,9 @@
     "noUncheckedSideEffectImports": true
   },
   "include": ["src"],
-  // The service worker uses WebWorker-lib globals (FetchEvent, the SW `self`)
-  // that conflict with this project's DOM lib. vite-plugin-pwa compiles it
-  // separately (injectManifest), so keep it out of the app type-check.
-  "exclude": ["src/sw.ts"]
+  // - src/sw.ts: the service worker uses WebWorker-lib globals (FetchEvent, the
+  //   SW `self`) that conflict with this project's DOM lib; vite-plugin-pwa
+  //   compiles it separately (injectManifest), so keep it out of the app check.
+  // - src/content/build: build-time tooling type-checked separately.
+  "exclude": ["src/sw.ts", "src/content/build"]
 }

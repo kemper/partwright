@@ -1,6 +1,17 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); [ \"$(printf '%s' \"$input\" | jq -r '.stop_hook_active // false')\" = \"true\" ] && exit 0; [ -z \"$(git status --porcelain 2>/dev/null)\" ] && exit 0; jq -nc '{decision:\"block\",reason:\"This session changed files. If you finished a meaningful task and have not already, consider running /retro to capture a short 4-Ls reflection in retros/inbox/ for the weekly facilitator. If nothing was notable or you already did, reply in one line and end your turn.\"}'",
+            "statusMessage": "Checking for retro-worthy work…"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "mcp__github__merge_pull_request|mcp__github__update_pull_request",
@@ -9,6 +20,16 @@
             "type": "command",
             "command": "jq -c 'if (.tool_name == \"mcp__github__merge_pull_request\") or (.tool_name == \"mcp__github__update_pull_request\" and .tool_input.state == \"closed\") then {hookSpecificOutput: {hookEventName: \"PreToolUse\", permissionDecision: \"ask\", permissionDecisionReason: \"Closing or merging a PR is irreversible and outward-facing. Confirm this was explicitly requested and is not a batched or speculative action.\"}} else empty end'",
             "statusMessage": "Checking PR safety guard…"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/promptlog-guard.sh\"",
+            "statusMessage": "Checking for prompt log…"
           }
         ]
       }
