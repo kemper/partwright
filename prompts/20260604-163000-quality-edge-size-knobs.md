@@ -92,3 +92,33 @@ sphere alone; Reset restored; an over-large edge length surfaced the warning
 toast + status. Added a permanent golden-path e2e describe in `simplify.spec.ts`
 covering edge-enhance, the warning, and size-simplify. Build + full unit tier
 (625) + the simplify e2e suite all green.
+
+## Human
+
+[Automated work-reviewer pass over the PR diff returned no blocking issues, two
+should-fix items, and a nit.]
+
+## Assistant
+
+### Key decisions
+
+Applied all three review items (small, confident, unambiguous — no behavior
+change to the happy path):
+
+- **`requestKey` no longer quantizes the value.** It used `toPrecision(6)`,
+  which could mask a sub-6-sig-fig change typed into the number input and leave
+  Apply stuck disabled. Switched to full precision (`String(value)`); requests
+  are computed deterministically from the same inputs, so equal requests still
+  produce equal keys.
+- **`amountRow` visibility class made consistent** with `lengthControls`:
+  construct with the `flex` layout classes, then `classList.add('hidden')`
+  separately, rather than cramming `hidden` and `flex` onto one className string
+  (both are display utilities; relying on `hidden` winning was fragile).
+- **Explicit `result` types in the worker** (`SimplifyResult | null` /
+  `EnhanceResult | null`) instead of inferred `let result`, matching the
+  typed-worker style and guarding against a future widening to `any`.
+
+A CI flake on the unrelated `editor-live-errors` "transient typing errors stay
+out of the diagnostic log" test (timing-sensitive; passes locally on this
+branch, touches none of this diff) was diagnosed as a flake — the review-fix
+push re-runs the shard.

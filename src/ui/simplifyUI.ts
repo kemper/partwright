@@ -420,7 +420,11 @@ function currentRequest(): MeshOpRequest {
 }
 
 function requestKey(r: MeshOpRequest): string {
-  return `${knobMode}:${r.kind}:${r.value > 0 ? r.value.toPrecision(6) : '0'}`;
+  // Full precision: the number input accepts arbitrary precision, so quantizing
+  // here could mask a genuine change and leave Apply stuck disabled. The value
+  // is computed deterministically from the same inputs, so equal requests
+  // produce equal floats.
+  return `${knobMode}:${r.kind}:${r.value > 0 ? String(r.value) : '0'}`;
 }
 
 function closePanel(): void {
@@ -829,7 +833,8 @@ function buildPanel(): HTMLElement {
 
   // Amount (size knob only): strength for simplify / detail levels for enhance.
   amountRow = document.createElement('div');
-  amountRow.className = 'hidden flex items-center gap-2 mb-2';
+  amountRow.className = 'flex items-center gap-2 mb-2';
+  amountRow.classList.add('hidden');
   const amountLabel = document.createElement('span');
   amountLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
   amountLabel.textContent = 'Amount';

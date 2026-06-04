@@ -47,7 +47,7 @@ import { sourceUsesManifoldText, preloadTextFonts } from './textGlyphs';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { setCircularSegmentsOverride } from './qualitySettings';
 import type { Language } from './engines/types';
-import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength } from './simplify';
+import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, type SimplifyResult, type EnhanceResult } from './simplify';
 import type { MeshData } from './types';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
@@ -280,7 +280,7 @@ self.onmessage = async (event: MessageEvent) => {
     try {
       baseManifold = mod.Manifold.ofMesh(mesh);
       const direct = typeof tolerance === 'number' && tolerance > 0;
-      let result;
+      let result: SimplifyResult | null;
       if (direct) {
         // Single synchronous pass — bracket with 0/1 progress so the modal
         // behaves the same as the searched path.
@@ -381,7 +381,7 @@ self.onmessage = async (event: MessageEvent) => {
     try {
       baseManifold = mod.Manifold.ofMesh(mesh);
       const direct = typeof edgeLength === 'number' && edgeLength > 0;
-      let result;
+      let result: EnhanceResult | null;
       if (direct) {
         self.postMessage({ type: 'enhance_progress', callId, fraction: 0 });
         result = refineToEdgeLength(
