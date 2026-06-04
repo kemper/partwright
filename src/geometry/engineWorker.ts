@@ -59,6 +59,20 @@ const enhanceCancelFlags = new Map<string, boolean>();
 
 let manifoldReady = false;
 
+/** Current size (bytes) of the manifold-3d WASM linear heap — its grown
+ *  high-water mark, since WASM memory never shrinks. Reported back to the main
+ *  thread so the diagnostics can show how close a run came to the 4 GB ceiling
+ *  (and, on an OOM, whether it truly hit it or failed far below). Only
+ *  meaningful for manifold-js runs; the other engines own separate WASM heaps. */
+function manifoldHeapBytes(): number | undefined {
+  try {
+    const heap = (getManifoldModule() as { HEAPU8?: { byteLength?: number } } | null)?.HEAPU8;
+    return typeof heap?.byteLength === 'number' ? heap.byteLength : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // Catch unhandled promise rejections inside the Worker (e.g. WASM panics that
 // escape an inner try-catch) and forward them as 'error' messages so the main
 // thread's pendingExecutions promises are rejected rather than hanging forever.
@@ -177,6 +191,8 @@ self.onmessage = async (event: MessageEvent) => {
         : null;
       const lostLabels = result.lostLabels ?? null;
       const paramsSchema = result.paramsSchema ?? null;
+      // Heap high-water for manifold-js runs (other engines own separate heaps).
+      const engineHeapBytes = effectiveLang === 'manifold-js' ? manifoldHeapBytes() : undefined;
 
       const mesh = result.mesh;
       if (mesh) {
@@ -195,7 +211,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, engineHeapBytes },
           transfer,
         );
       } else {
@@ -208,6 +224,7 @@ self.onmessage = async (event: MessageEvent) => {
           labelMapEntries: null,
           lostLabels: null,
           paramsSchema,
+          engineHeapBytes,
         });
       }
 
