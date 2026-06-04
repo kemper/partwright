@@ -792,7 +792,7 @@ function buildStampSettingsSection(): HTMLElement {
   maxEdgeRow.appendChild(smoothHelp);
   grid.appendChild(maxEdgeRow);
 
-  syncSmoothUI(false);
+  syncSmoothUI(stampSmooth);
 
   section.appendChild(grid);
   return section;
