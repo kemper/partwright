@@ -23,11 +23,12 @@ import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
 import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
+import { formatEngineMemory } from './geometry/engineMemory';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, resetView } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -180,7 +181,7 @@ import { setReadOnlyReason } from './editor/editorAccess';
 import { asLanguage } from './storage/languageFallback';
 import { encodeShare, decodeShare, validateSharePayloadShape, ShareUnsupportedError } from './share/shareLink';
 import { openShareModal, renderSharedBanner, renderSharedOverlay } from './share/shareUI';
-import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
+import { buildAdjacency, findCoplanarRegion, findConnectedFromSeed, findColorRegion, resolveSeed, findNearestTriangle, type AdjacencyGraph } from './color/adjacency';
 import { findSlabTriangles, slabRefineRegion, smoothEdgeForResolution } from './color/slabPaint';
 import { findBoxTriangles, findShapeTriangles, shapeRefineRegion } from './color/boxPaint';
 import { cylinderRefineRegion, findCylinderTriangles } from './color/cylinderPaint';
@@ -300,6 +301,11 @@ function syncParamsPanel(schema: ParamSpec[] | undefined): void {
 }
 
 let currentMeshData: MeshData | null = null;
+/** WASM heap high-water (bytes) reported by the geometry Worker for the most
+ *  recent manifold-js run. Surfaced in the geometry-data stats and engine-error
+ *  log so users can see how close a run came to the ~4 GB ceiling. Undefined
+ *  for non-manifold-js engines (separate heaps) or before the first run. */
+let lastEngineHeapBytes: number | undefined;
 /** The pristine mesh produced by the authored code, before any smooth brush
  *  subdivision. `currentMeshData` equals this until a `brushStroke` region
  *  exists, at which point it becomes the refined (subdivided) mesh rebuilt by
@@ -376,10 +382,28 @@ let currentLabelMap: Map<string, Set<number>> | null = null;
  *  `listLabels().lostLabels` so they don't have to diff by hand. */
 let currentLostLabels: string[] | null = null;
 
+// Per-version mesh cache: avoids recompiling SCAD (or any engine) when
+// switching between parts whose last-loaded version is unchanged. Keyed by
+// version id; LRU eviction keeps memory bounded.
+type PartMeshCacheEntry = {
+  meshData: MeshData;
+  labelMap: Map<string, Set<number>> | null;
+  lostLabels: string[] | null;
+  modelColorDecls: Array<{ name: string; color: [number, number, number]; triangles: Set<number> }>;
+  paramsSchema: ParamSpec[] | undefined;
+};
+const PART_MESH_CACHE_SIZE = 8;
+const partMeshCache = new Map<string, PartMeshCacheEntry>();
+
 // #geometry-data element — always-updated machine-readable state
 let geometryDataEl: HTMLElement;
 // Viewport overlay pill — shows printability issues after each successful run.
 let printabilityIndicatorEl: HTMLElement | null = null;
+// The disconnected-components warning is surfaced as a transient toast (recorded
+// in the Diagnostic Log) rather than the persistent pill. Track the last one we
+// toasted so re-runs of an unchanged broken model don't re-spam the same toast;
+// reset to null whenever the warning clears so its next occurrence toasts again.
+let lastDisconnectedWarning: string | null = null;
 
 // === Shared-link preview mode ===
 //
@@ -543,6 +567,11 @@ function withSessionContext(data: Record<string, unknown>): Record<string, unkno
     data.sessionUrl = getSessionUrl();
     data.galleryUrl = getGalleryUrl();
   }
+  // Engine WASM heap high-water for the last run, so the Data panel doubles as a
+  // memory readout — watch it climb as a model scales up toward the ceiling.
+  if (lastEngineHeapBytes !== undefined) {
+    data.engineMemory = formatEngineMemory(lastEngineHeapBytes);
+  }
   return data;
 }
 
@@ -557,13 +586,23 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
   const data = withSessionContext(computeGeometryStats(currentManifold, currentMeshData, executionTimeMs, sourceCode));
   geometryDataEl.textContent = JSON.stringify(data, null, 2);
   if (printabilityIndicatorEl) {
-    const { printable, issues } = computePrintability(data);
-    if (printable) {
+    const { issues } = computePrintability(data);
+    // The disconnected-components warning surfaces as a transient toast (which
+    // also records it in the Diagnostic Log) rather than the persistent pill;
+    // every other issue (e.g. non-manifold) stays on the pill as standing status.
+    const disconnected = issues.find((i) => i.includes('disconnected component')) ?? null;
+    const pillIssues = issues.filter((i) => i !== disconnected);
+    if (pillIssues.length === 0) {
       printabilityIndicatorEl.style.display = 'none';
     } else {
-      printabilityIndicatorEl.textContent = '⚠ ' + issues.join(' · ');
+      printabilityIndicatorEl.textContent = '⚠ ' + pillIssues.join(' · ');
       printabilityIndicatorEl.style.display = '';
     }
+    // Toast once per change so re-running an unchanged broken model isn't spammy.
+    if (disconnected && disconnected !== lastDisconnectedWarning) {
+      showToast('⚠ ' + disconnected, { variant: 'warn', source: 'engine' });
+    }
+    lastDisconnectedWarning = disconnected;
   }
 }
 
@@ -737,6 +776,9 @@ function resolveDescriptorTriangles(
   mesh: MeshData,
   adjacency: AdjacencyGraph | null,
   parentToChildren: Map<number, number[]> | null,
+  /** Id of the region being resolved, when known. Used by `colorFlood` to read
+   *  the surface color *beneath* itself (excluding its own stamp). */
+  selfRegionId?: number,
 ): Set<number> {
   switch (descriptor.kind) {
     case 'coplanar': {
@@ -744,6 +786,21 @@ function resolveDescriptorTriangles(
       const { seedPoint, seedNormal, normalTolerance } = descriptor;
       const seedTri = resolveSeed(seedPoint, seedNormal, mesh, adjacency, normalTolerance);
       return seedTri >= 0 ? findCoplanarRegion(seedTri, adjacency, normalTolerance) : new Set<number>();
+    }
+    case 'colorFlood': {
+      if (!adjacency) return new Set<number>();
+      const { seedPoint, seedColor, colorTolerance } = descriptor;
+      // Triangle indices are unstable across re-tessellation; the world-space
+      // seed point is not. Find the triangle under it, then magic-wand by color.
+      const nearest = findNearestTriangle(seedPoint, mesh, adjacency);
+      if (nearest.triIndex < 0) return new Set<number>();
+      // Read colors with this region excluded, and anchor on the stored matched
+      // color, so the flood follows the *source* color this fill sits on top of.
+      const triColors = buildTriColors(mesh.numTri, false, selfRegionId);
+      const anchor: [number, number, number] = [
+        Math.round(seedColor[0] * 255), Math.round(seedColor[1] * 255), Math.round(seedColor[2] * 255),
+      ];
+      return findColorRegion(nearest.triIndex, adjacency, triColors, colorTolerance, anchor);
     }
     case 'triangles':
       // Raw ids index the base tessellation; carry them across any subdivision.
@@ -905,7 +962,7 @@ function rehydrateColorRegions(geometryData: Record<string, unknown> | null): { 
   // reconcile (we've already built the mesh here).
   suspendReconcile = true;
   for (const region of regions) {
-    const triangles = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren);
+    const triangles = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
     if (triangles.size > 0) {
       addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false);
       report.carried.push(region.name);
@@ -957,7 +1014,7 @@ function rebuildPaintedGeometry(): void {
   updatePaintMesh(mesh);
   const adjacency = buildAdjacency(mesh);
   for (const region of getRegions()) {
-    setRegionTriangles(region.id, resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren));
+    setRegionTriangles(region.id, resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id));
   }
   paintedColorRefresh();
   syncLockState();
@@ -999,8 +1056,8 @@ function appendStrokeRefine(descriptor: Extract<RegionDescriptor, { kind: 'brush
     if (d.kind === 'triangles' || d.kind === 'byLabel' || !overlapsSplit(region)) {
       setRegionTriangles(region.id, remapTriangleIds(region.triangles, parentToChildren));
     } else {
-      if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed')) adjacency = buildAdjacency(mesh);
-      setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren));
+      if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) adjacency = buildAdjacency(mesh);
+      setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren, region.id));
     }
   }
   paintedColorRefresh();
@@ -1241,8 +1298,8 @@ async function appendStrokeRefineAsync(
       } else if (d.kind === 'triangles' || d.kind === 'byLabel' || !overlapsSplit(region)) {
         setRegionTriangles(region.id, remapTriangleIds(region.triangles, parentToChildren));
       } else {
-        if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed')) adjacency = buildAdjacency(mesh);
-        setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren));
+        if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) adjacency = buildAdjacency(mesh);
+        setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren, region.id));
       }
     }
     paintedColorRefresh();
@@ -1302,7 +1359,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
       if (workerTris) {
         setRegionTriangles(region.id, new Set(workerTris));
       } else {
-        setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren));
+        setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, parentToChildren, region.id));
       }
     }
     paintedColorRefresh();
@@ -1446,7 +1503,32 @@ async function saveCurrentVersion(label?: string): Promise<
   }
   const thumbnail = await captureThumbnail();
   const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles() });
-  if (version) return { id: version.id, index: version.index, label: version.label };
+  if (version) {
+    // Keep the mesh cache valid for the newly-saved version so that switching
+    // away and back doesn't trigger a recompile. The code/geometry didn't
+    // change (only paint or annotations may have), so the current in-memory
+    // mesh is still correct for the new version id.
+    // Cache the coarse pre-refinement base mesh (paintBaseMesh) so that
+    // rehydrateColorRegions can re-apply paint correctly on switch-back
+    // rather than re-refining an already-refined mesh.
+    const meshToCache = paintBaseMesh ?? currentMeshData;
+    if (meshToCache) {
+      const entry: PartMeshCacheEntry = {
+        meshData: meshToCache,
+        labelMap: currentLabelMap,
+        lostLabels: currentLostLabels,
+        modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles) })),
+        paramsSchema: currentParamSchema ?? undefined,
+      };
+      partMeshCache.delete(version.id);
+      partMeshCache.set(version.id, entry);
+      if (partMeshCache.size > PART_MESH_CACHE_SIZE) {
+        const oldest = partMeshCache.keys().next().value;
+        if (oldest) partMeshCache.delete(oldest);
+      }
+    }
+    return { id: version.id, index: version.index, label: version.label };
+  }
   return {
     skipped: true as const,
     reason: 'No changes since the current version (code, annotations, and color regions all match). Add a new region, edit code, or pass a different label to force a save.',
@@ -2893,7 +2975,13 @@ async function main() {
     if (!s.session || !s.currentPart) return;
     const code = getValue();
     if (isStarterCode(code)) return;
-    if (s.currentVersion && !editorContentDiffersFrom(s.currentVersion.code)) return;
+    // Previously bailed here when code was unchanged, silently discarding
+    // unsaved paint, annotations, param overrides, and companion-file edits.
+    // saveVersion already deduplicates on all five axes (code + annotations +
+    // paint + params + companions), so letting it run is the holistic fix: no
+    // DB write when truly nothing changed, one write when any tracked state
+    // differs. The only extra cost is the captureThumbnail() call (~30–80 ms
+    // canvas readback, not a recompile).
     const thumbnail = await captureThumbnail();
     const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
     // Include companions so the dedup check in saveVersion works when a
@@ -3805,9 +3893,12 @@ async function main() {
   // where `api.Manifold` is undefined). This is the mixed-language case a JSON
   // merge creates: a voxel Part 2 alongside an unsaved manifold-js Part 1.
   async function loadPartIntoEditor(version: Version | null, opts: { skipDraftSave?: boolean } = {}) {
-    clearMesh();
+    const cached = version ? partMeshCache.get(version.id) : undefined;
+    // Only clear the viewport when there is no cached mesh to restore — avoids
+    // a blank-viewport flash during the recompile that cache hits skip entirely.
+    if (!cached) clearMesh();
     if (version) {
-      await loadVersionIntoEditor(version, opts);
+      await loadVersionIntoEditor(version, opts, cached);
     } else {
       if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
       startNewPartInEditor();
@@ -3846,8 +3937,10 @@ async function main() {
   });
 
   // Printability indicator pill — shown in the viewport overlay when the model
-  // has structural issues that would prevent 3D printing (non-manifold or
-  // disconnected components). Hidden when the model is printable.
+  // has standing structural issues that would prevent 3D printing (e.g.
+  // non-manifold mesh). The disconnected-components warning is split off into a
+  // transient toast (see updateGeometryData); the pill is hidden when no
+  // pill-level issue remains.
   printabilityIndicatorEl = document.createElement('span');
   printabilityIndicatorEl.className = 'absolute top-8 left-2 z-20 text-xs text-amber-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-amber-700/60 cursor-help';
   // A persistent status indicator, not a transient toast: it stays up while the
@@ -3984,6 +4077,10 @@ async function main() {
       showToast(result.error, { variant: 'warn' });
     } else if ('skipped' in result) {
       showToast('No changes to save', { variant: 'neutral' });
+    } else if (getGeometryDataObj()?.status === 'error') {
+      // Checkpointing a broken model is allowed, but warn that this version
+      // won't render correctly so the save isn't mistaken for a clean one.
+      showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}, but the model has errors and won't render correctly`, { variant: 'warn' });
     } else {
       showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}`, { variant: 'success' });
     }
@@ -4187,7 +4284,7 @@ async function main() {
     void ensureEngineStarted();
   }
 
-  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean } = {}) {
+  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
     // Cancel any active voxel paint before loading a different version — its
     // live grid and provenance map are bound to the OUTGOING code, so a Bake
     // after navigation would write the wrong session's voxels into the new
@@ -4222,10 +4319,79 @@ async function main() {
     // saved thumbnail/stats. runCodeSync prunes these against the model's
     // declared schema, so stale keys from a previous model fall away.
     currentParamValues = { ...(version.paramValues ?? {}) };
-    const applied = await runCodeSync(version.code);
-    // If a newer version-switch arrived while we were compiling, our result
-    // was discarded — don't rehydrate colours or annotations for the wrong version.
-    if (!applied) return;
+
+    if (cachedEntry) {
+      // Cache hit: restore previously computed mesh without recompiling.
+      // Bump to MRU position in the LRU map.
+      partMeshCache.delete(version.id);
+      partMeshCache.set(version.id, cachedEntry);
+
+      currentMeshData = cachedEntry.meshData;
+      paintBaseMesh = cachedEntry.meshData;
+      if (currentManifold && typeof currentManifold.delete === 'function') {
+        try { currentManifold.delete(); } catch { /* already deleted */ }
+      }
+      const mod = getModule();
+      try {
+        currentManifold = (mod && cachedEntry.meshData) ? mod.Manifold.ofMesh(cachedEntry.meshData) : null;
+      } catch {
+        currentManifold = null;
+      }
+      currentLabelMap = cachedEntry.labelMap;
+      currentLostLabels = cachedEntry.lostLabels;
+      setPaintLabels(currentLabelMap);
+      setModelColorRegions(cachedEntry.modelColorDecls);
+      syncParamsPanel(cachedEntry.paramsSchema);
+      updateMesh(cachedEntry.meshData);
+      updatePaintMesh(cachedEntry.meshData);
+      geometryDataEl.textContent = version.geometryData
+        ? JSON.stringify(version.geometryData, null, 2)
+        : JSON.stringify({ status: 'ready' });
+      if (printabilityIndicatorEl) {
+        const geoData = version.geometryData ?? {};
+        const { printable, issues } = computePrintability(geoData);
+        if (printable) {
+          printabilityIndicatorEl.style.display = 'none';
+        } else {
+          printabilityIndicatorEl.textContent = '⚠ ' + issues.join(' · ');
+          printabilityIndicatorEl.style.display = '';
+        }
+      }
+      syncClipSliderBounds();
+      simplifyBaselineMesh = null;
+      simplifyBaselineColoredMesh = null;
+      simplifyBaselineRegions = null;
+      simplifyBaselineModelRegions = null;
+      refreshSimplifyIfOpen();
+      setStatus(statusBar, 'ready', 'Ready');
+    } else {
+      // Cache miss: compile the code and, on success, populate the cache.
+      const meshBeforeRun = currentMeshData;
+      const applied = await runCodeSync(version.code);
+      // If a newer version-switch arrived while we were compiling, our result
+      // was discarded — don't rehydrate colours or annotations for the wrong version.
+      if (!applied) return;
+      // Store the freshly compiled result so the next switch back is instant.
+      // Only cache on a successful mesh-producing run (compile errors leave
+      // currentMeshData as the previous part's mesh, i.e. unchanged).
+      if (currentMeshData !== null && currentMeshData !== meshBeforeRun) {
+        const entry: PartMeshCacheEntry = {
+          meshData: currentMeshData,
+          labelMap: currentLabelMap,
+          lostLabels: currentLostLabels,
+          modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles) })),
+          paramsSchema: currentParamSchema ?? undefined,
+        };
+        partMeshCache.delete(version.id);
+        partMeshCache.set(version.id, entry);
+        if (partMeshCache.size > PART_MESH_CACHE_SIZE) {
+          // Evict the least-recently-used entry (first key in insertion-order map).
+          const oldest = partMeshCache.keys().next().value;
+          if (oldest) partMeshCache.delete(oldest);
+        }
+      }
+    }
+
     rehydrateColorRegions(version.geometryData);
     applyVersionAnnotations(version);
     const sessionImages = await getImagesFromSession();
@@ -5252,9 +5418,9 @@ async function main() {
     removeCompanionFileFromRegistry(path);
     if (_companionActiveTab === path) switchToMainTab();
     else renderCompanionFilesBar();
-    // Re-run main code without this companion, then persist the removal so
-    // it survives a page reload (registry-only removal is lost on refresh).
-    runCode(getValue(), { surfaceErrors: false });
+    // Re-run synchronously so the cache and saved geometry data reflect the
+    // post-removal mesh (fire-and-forget runCode races with saveCurrentVersion).
+    await runCodeSync(getValue());
     void saveCurrentVersion();
   }
 
@@ -5391,7 +5557,23 @@ async function main() {
       try { currentManifold.delete(); } catch { /* already deleted */ }
     }
     const mod = getModule();
-    currentManifold = mod && mesh ? mod.Manifold.ofMesh(mesh) : null;
+    // Mirror the post-run path (see runCodeSync's ofMesh reconstruction): a
+    // simplify / enhance / paint-refine result can come back not-quite-manifold
+    // (degenerate tris, non-2-manifold edges), and Manifold.ofMesh throws
+    // "Not manifold" on those. Without this guard the exception escapes the
+    // helper, the simplify/enhance handler surfaces a raw "Not manifold" error,
+    // AND the stats / printability refresh below is skipped — so the user gets
+    // no warning that the model went non-manifold (the exact bug reported for
+    // paint → enhance → paint → simplify). Fall back to render-only and warn.
+    try {
+      currentManifold = mod && mesh ? mod.Manifold.ofMesh(mesh) : null;
+    } catch {
+      currentManifold = null;
+      showToast(
+        "The resulting mesh isn’t a watertight solid (non-manifold) — it still renders, but won’t slice or boolean cleanly. Try a higher triangle target, or re-run the code to rebuild a clean solid.",
+        { variant: 'warn', source: 'engine', durationMs: 6000 },
+      );
+    }
     updateMesh(mesh);
     updatePaintMesh(mesh);
     updateGeometryData();
@@ -5664,6 +5846,7 @@ async function main() {
   });
   initMeasureToggle(clipControls);
   initOrbitLockToggle(clipControls);
+  initResetViewButton(clipControls);
 
   // Relief / Edit colors toggle in the viewport overlay — paint/simplify are
   // alongside this button so the colour palette is discoverable from the
@@ -6033,6 +6216,12 @@ async function main() {
     const result = await executeCodeAsync(code, lang);
     const elapsed = Math.round(performance.now() - t0);
 
+    // Engine WASM heap high-water for this run (manifold-js only) so isolated
+    // runs report memory in their stats just like the editor's Data panel.
+    const engineMemory = result.engineHeapBytes !== undefined
+      ? formatEngineMemory(result.engineHeapBytes)
+      : undefined;
+
     if (result.error) {
       recordError(result.error);
       return {
@@ -6042,6 +6231,7 @@ async function main() {
           diagnostics: result.diagnostics ?? [],
           executionTimeMs: elapsed,
           codeHash: simpleHash(code),
+          ...(engineMemory !== undefined ? { engineMemory } : {}),
         },
         meshData: null as MeshData | null,
         manifold: null as unknown,
@@ -6052,6 +6242,7 @@ async function main() {
     const mod = getModule();
     const manifold = result.manifold ?? (mod && result.mesh ? mod.Manifold.ofMesh(result.mesh) : null);
     const stats = computeGeometryStats(manifold, result.mesh!, elapsed, code);
+    if (engineMemory !== undefined) stats.engineMemory = engineMemory;
     return {
       geometryData: stats,
       meshData: result.mesh,
@@ -6352,7 +6543,8 @@ async function main() {
 
     /** Set one or more Customizer parameter overrides and re-run the model —
      *  the language-based equivalent of dragging the panel's sliders. Unknown
-     *  keys are ignored and out-of-range / wrong-type values are clamped or
+     *  keys are ignored; a numeric value beyond the declared min/max is honored
+     *  as typed (the bounds only size the slider), and only wrong-type values
      *  fall back to the declared default (never throws on a bad value). Returns
      *  the updated geometry data plus the resolved parameter values, or
      *  `{ error }` if the model declares no parameters. */
@@ -6850,6 +7042,12 @@ async function main() {
     /** Whether camera orbit is currently locked */
     isOrbitLocked(): boolean {
       return isUserOrbitLocked();
+    },
+
+    /** Reset the camera to the default framing of the current model (same view
+     *  applied after a fresh run). */
+    resetView(): void {
+      resetView();
     },
 
     // === Theme API ===
@@ -10622,6 +10820,7 @@ async function main() {
         'areDimensionsVisible': { signature: 'areDimensionsVisible() -- Whether dimensions overlay is visible', docs: '/ai.md#viewport-controls' },
         'setOrbitLock':         { signature: 'setOrbitLock(on?) -- Lock/unlock camera rotation (omit to toggle) -> boolean', docs: '/ai.md#viewport-controls' },
         'isOrbitLocked':        { signature: 'isOrbitLocked() -- Whether camera orbit is locked', docs: '/ai.md#viewport-controls' },
+        'resetView':            { signature: 'resetView() -- Reset the camera to the default framing of the current model', docs: '/ai.md#viewport-controls' },
         'setTheme':             { signature: 'setTheme("dark"|"light") -- Set color theme', docs: '/ai.md#viewport-controls' },
         'getTheme':             { signature: 'getTheme() -- Current color theme', docs: '/ai.md#viewport-controls' },
         'setAutoRun':           { signature: 'setAutoRun(enabled) -- Enable/disable auto-render on edit', docs: '/ai.md#viewport-controls' },
@@ -11537,6 +11736,11 @@ async function main() {
     _running = false;
     stopRunTimer();
 
+    // Record the engine WASM heap high-water for this run (undefined for non
+    // manifold-js engines, which own separate heaps). Surfaced in the Data panel
+    // and engine-error log so users can see how close a run came to the ceiling.
+    lastEngineHeapBytes = result.engineHeapBytes;
+
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel
     // stays visible (and editable) even while the model is mid-error. Prune
@@ -11548,17 +11752,29 @@ async function main() {
       const diagnostics = result.diagnostics ?? [];
       setStatus(statusBar, 'error', summarizeDiagnostics(result.error, diagnostics));
       if (printabilityIndicatorEl) printabilityIndicatorEl.style.display = 'none';
+      lastDisconnectedWarning = null;
       geometryDataEl.textContent = JSON.stringify({
         status: 'error',
         error: result.error,
         diagnostics,
         executionTimeMs: elapsed,
         codeHash: simpleHash(src),
+        ...(lastEngineHeapBytes !== undefined ? { engineMemory: formatEngineMemory(lastEngineHeapBytes) } : {}),
       });
       if (surfaceErrors) {
         // Explicit run: record + show + log + jump to the first diagnostic now.
         recordError(result.error);
-        errorLog.capture({ level: 'error', source: 'engine', message: result.error });
+        // Engine errors carry no JS stack (the fault is inside the WASM kernel,
+        // off-thread), so attach the diagnostics + run metadata as the log detail
+        // — otherwise the diagnostics panel shows "No stack trace or origin
+        // captured" for what is often a memory/complexity fault worth context.
+        const engineDetail = [
+          `language: ${getActiveLanguage()}`,
+          `executionTimeMs: ${elapsed}`,
+          ...(lastEngineHeapBytes !== undefined ? [`WASM heap: ${formatEngineMemory(lastEngineHeapBytes)}`] : []),
+          ...diagnostics.map(d => `${d.severity ?? 'error'} (${d.source ?? 'engine'}): ${d.message}`),
+        ].join('\n');
+        errorLog.capture({ level: 'error', source: 'engine', message: result.error, detail: engineDetail });
         setEditorDiagnostics(diagnostics);
         renderEditorError(editorErrorPanel, result.error, diagnostics);
         revealFirstDiagnostic();
@@ -11662,10 +11878,10 @@ async function main() {
         let adjacency: AdjacencyGraph | null = null;
         for (const region of getRegions()) {
           const d = region.descriptor;
-          if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed')) {
+          if (!adjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed' || d.kind === 'colorFlood')) {
             adjacency = buildAdjacency(mesh);
           }
-          setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, null));
+          setRegionTriangles(region.id, resolveDescriptorTriangles(d, mesh, adjacency, null, region.id));
         }
         const displayMesh = applyTriColorsIfVisible(mesh);
         updateMesh(displayMesh);
@@ -11875,6 +12091,12 @@ async function main() {
     // (e.g. pen/text/select activate, programmatic API).
     onUserOrbitLockChange(reflect);
     reflect(isUserOrbitLocked());
+  }
+
+  function initResetViewButton(container: HTMLElement) {
+    const resetBtn = container.querySelector('#reset-view') as HTMLButtonElement;
+    if (!resetBtn) return;
+    resetBtn.addEventListener('click', () => { resetView(); });
   }
 }
 

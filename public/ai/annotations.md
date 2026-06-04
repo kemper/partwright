@@ -52,6 +52,7 @@ active settings only affects new annotations.
 
 Annotations are intentionally separate from `paintRegion` colorization:
 - **Annotations** are floating visual marks on top of the surface -- per-version, included in
-  session exports (`.partwright.json`), but do not modify the model geometry or lock the editor.
+  session exports (`.partwright.json`), but do not modify the model geometry.
 - **Color regions** (`paintRegion`) modify the model's vertex colors -- persist with the
-  version, export with the model (GLB/3MF), and lock the editor while present.
+  version and export with the model (GLB/3MF). The editor stays writable, but re-running new
+  geometry invalidates the painted triangle indices (call `clearColors()` first to iterate).

@@ -1,6 +1,6 @@
 // The /catalog page is pre-rendered as an app-free static page at build time
 // (from the manifest + payloads in public/catalog/), grouped into category
-// sections (Customizable, JavaScript, SDF, OpenSCAD, BREP) with parametric
+// sections (Customizable, JavaScript, SDF, Voxel, OpenSCAD, BREP) with parametric
 // tiles badged. Tiles are plain <a> links into the editor; thumbnails hydrate
 // client-side. Direct navigation serves the static page (dev/preview
 // middleware + Cloudflare _redirects); the editor soft-renders an in-app copy.
@@ -20,10 +20,10 @@ test.describe('Catalog page (static)', () => {
     expect(await page.evaluate(() => 'partwright' in window)).toBe(false);
 
     const sections = page.locator('main section[data-category]');
-    await expect(sections).toHaveCount(5);
+    await expect(sections).toHaveCount(6);
 
     const ids = await sections.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.category));
-    expect(ids).toEqual(['customizable', 'manifold', 'sdf', 'scad', 'brep']);
+    expect(ids).toEqual(['customizable', 'manifold', 'sdf', 'voxel', 'scad', 'brep']);
 
     const count = await sections.count();
     for (let i = 0; i < count; i++) {

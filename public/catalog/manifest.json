@@ -517,6 +517,41 @@
       "file": "country_manor_estate.partwright.json",
       "language": "manifold-js",
       "description": "A symmetric Palladian-style country manor with projecting end wings, a columned entrance portico, grand pediment and crest, hipped roofs ringed by balustrades, dormer windows, clustered chimneys with clay pots, and a central rooftop cupola — self-colored via labeled regions for multi-color prints."
+    },
+    {
+      "id": "parameterized-chain",
+      "name": "Parameterized Chain",
+      "file": "parameterized_chain.partwright.json",
+      "language": "manifold-js",
+      "description": "A print-in-place interlocking chain swept with Curves.sweep — a 5-link straight run and a 30-link Archimedean spiral laid flat on the bed. Set link count, scale, wire diameter, and clearance in the Parameters panel."
+    },
+    {
+      "id": "hot-dog",
+      "name": "Hot Dog",
+      "file": "hot_dog.partwright.json",
+      "language": "manifold-js",
+      "description": "A cartoon hot dog — a hull-formed sausage nestled in a hollowed bun with a wavy mustard squiggle draped on top. Fully parametric, with color knobs for bun, sausage, and mustard."
+    },
+    {
+      "id": "voxel-castle",
+      "name": "Voxel Castle",
+      "file": "voxel_castle.partwright.json",
+      "language": "voxel",
+      "description": "A grand royal castle built on a voxel grid — concentric curtain walls, corner turrets with blue conical roofs, a moat, gardens, and golden banners. Painted block-by-block, then baked to a watertight mesh."
+    },
+    {
+      "id": "medieval-watchtower",
+      "name": "Medieval Watchtower",
+      "file": "medieval_watchtower.partwright.json",
+      "language": "manifold-js",
+      "description": "A detailed stone watchtower with buttresses, corbels, open battlements, an arched wooden door, and a conical roof — self-colored via labeled regions for multi-color prints."
+    },
+    {
+      "id": "retro-tv",
+      "name": "Retro TV",
+      "file": "retro_tv.partwright.json",
+      "language": "manifold-js",
+      "description": "A retro CRT television with a lofted tapered housing, a curved-glass screen, a swept carry handle, round control knobs, and rabbit-ear antennas."
     }
   ]
 }
