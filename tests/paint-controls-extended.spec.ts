@@ -253,4 +253,57 @@ test.describe('extended paint controls', () => {
     expect(result.hidden).toBe(false);
     expect(result.shown).toBe(true);
   });
+
+  test('bucket flood-fill preview tracks the tolerance slider live (no mouse move)', async ({ page }) => {
+    await openEditor(page);
+    // Replace the cube with a higher-tri sphere and paint its top hemisphere so
+    // the bucket has a real two-color region to flood-fill.
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.run(`const { Manifold } = api; return Manifold.sphere(8, 64);`);
+      pw.paintInBox({ box: { min: [-8, -8, 0], max: [8, 8, 8] }, color: [1, 0.2, 0.2] });
+    });
+
+    // Dismiss the onboarding tour so its backdrop doesn't eat the hover pointer.
+    const skip = page.locator('button:has-text("Skip")');
+    if (await skip.count()) await skip.first().click().catch(() => {});
+
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await page.locator('#paint-picker-panel button:has-text("Bucket")').dispatchEvent('click');
+
+    // Hover the painted (upper) hemisphere at a tight tolerance.
+    const tolInput = page.locator('#paint-picker-panel input[type="number"][title*="Color tolerance"]');
+    await tolInput.fill('5');
+    await tolInput.press('Enter');
+    const box = await page.locator('canvas').first().boundingBox();
+    if (!box) throw new Error('no canvas');
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height * 0.35;
+    await page.mouse.move(cx - 20, cy - 20);
+    await page.mouse.move(cx, cy);
+    await page.waitForTimeout(300);
+
+    const hoverTris = async () => page.evaluate(async () => {
+      const vp = await import('/src/renderer/viewport.ts');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let found: any = null;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vp.getMeshGroup().traverse((o: any) => { if (o.name === 'paint-hover') found = o; });
+      const pos = found?.geometry?.attributes?.position;
+      return pos ? pos.count / 3 : 0;
+    });
+
+    const tight = await hoverTris();
+    expect(tight).toBeGreaterThan(0); // the red hemisphere region is previewed
+
+    // Crank tolerance to 100 % WITHOUT moving the mouse — the preview must grow
+    // to the whole connected sphere, proving it tracks the setting live.
+    await tolInput.fill('100');
+    await tolInput.press('Enter');
+    await page.waitForTimeout(300);
+    const loose = await hoverTris();
+    expect(loose).toBeGreaterThan(tight);
+  });
 });

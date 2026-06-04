@@ -93,6 +93,11 @@ export function setTriangleToBaseMapper(fn: ((id: number) => number) | null): vo
 // Hover highlight state
 let highlightMesh: THREE.Mesh | null = null;
 let hoveredTriangles: Set<number> | null = null;
+// Triangle the bucket cursor last hovered, so the flood-fill preview can be
+// recomputed at a new tolerance/mode without waiting for a mouse move (driven by
+// `refreshBucketPreview`). null whenever the cursor isn't over the model with the
+// bucket tool active.
+let lastBucketSeed: number | null = null;
 
 // Brush ring indicator — outline showing the brush footprint in world space
 let brushRingMesh: THREE.LineLoop | null = null;
@@ -313,6 +318,7 @@ setPaintAccessors({ getColor, getCurrentMesh, shapeSmoothDescriptorFields });
 export function updatePaintMesh(mesh: MeshData): void {
   currentMesh = mesh;
   adjacency = null; // invalidate — mesh changed
+  lastBucketSeed = null; // the remembered seed indexes the old tessellation
   invalidateProjection(); // the id-buffer geometry is rebuilt against the new mesh
   if (active) {
     adjacency = buildAdjacency(mesh);
@@ -425,6 +431,11 @@ function cancelPendingMove(): void {
 function processMouseMove(event: MouseEvent): void {
   if (!adjacency || !currentMesh) return;
 
+  // Default to "no bucket seed"; only the bucket branch below re-establishes it.
+  // Every other path (hover-off, other tools) leaves it null so a later tolerance
+  // tweak doesn't redraw a stale flood-fill region.
+  lastBucketSeed = null;
+
   // Slab and box tools own their own gizmo / drag interactions; the
   // bucket-vs-brush hover preview gets out of the way.
   if (currentTool === 'slab' || currentTool === 'box') {
@@ -503,6 +514,7 @@ function processMouseMove(event: MouseEvent): void {
   } else {
     // bucket
     clearBrushRing();
+    lastBucketSeed = result.triangleIndex;
     if (bucketMode === 'geometry') {
       region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
     } else {
@@ -894,6 +906,23 @@ function onPointerCancel(event: PointerEvent): void {
 export function previewTriangles(triangles: Set<number>, color?: [number, number, number]): () => void {
   showHighlight(triangles, color);
   return () => clearHighlight();
+}
+
+/** Recompute and redraw the bucket hover preview for the triangle the cursor is
+ *  currently over, using the *current* tolerance and mode. The paint UI calls
+ *  this from the bucket tolerance slider/input and the color/geometry mode toggle
+ *  so the previewed flood-fill region grows and shrinks live as the setting is
+ *  dialled in, instead of staying frozen until the next mouse move. No-op unless
+ *  the bucket tool is active and the cursor last hovered a triangle. */
+export function refreshBucketPreview(): void {
+  if (!active || currentTool !== 'bucket') return;
+  if (!adjacency || !currentMesh || lastBucketSeed === null) return;
+  if (lastBucketSeed >= currentMesh.numTri) { lastBucketSeed = null; return; }
+  const region = bucketMode === 'geometry'
+    ? findCoplanarRegion(lastBucketSeed, adjacency, bucketTolerance)
+    : findColorRegion(lastBucketSeed, adjacency, buildTriColors(currentMesh.numTri), bucketColorTolerance);
+  hoveredTriangles = region;
+  showHighlight(region);
 }
 
 function showHighlight(triangles: Set<number>, colorOverride?: [number, number, number]): void {
