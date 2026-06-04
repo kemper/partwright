@@ -351,7 +351,7 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
     'imagePaint',
     {
       kind: 'imagePaint',
-      entries: result.entries,
+      entries: stampSmooth ? [] : result.entries,
       avgColor: result.avgColor,
       ...(stampSmooth ? {
         smooth: true, maxEdge,
