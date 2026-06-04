@@ -21,7 +21,7 @@
 //
 // Protocol — Worker → Main:
 //   { type: 'ready' }
-//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, lostLabels, paramsSchema }
+//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, lostLabels, paramsSchema, workerMs }
 //   { type: 'validate_result',         callId, result }
 //   { type: 'detect_includes_result',  callId, result }
 //   { type: 'exportSTEP_result',       callId, blob, error }
@@ -100,6 +100,10 @@ self.onmessage = async (event: MessageEvent) => {
       params?: Record<string, unknown> | null;
       companionFiles?: Record<string, string>;
     };
+    // Worker-side compute timer. Reported back on execute_result so the
+    // worker-health panel can separate real evaluation time from the
+    // queue + structured-clone transfer overhead the main thread also sees.
+    const execStart = performance.now();
     try {
       // Propagate the main-thread quality setting so the Worker uses the same
       // segment count. SCAD/replicad execute asynchronously, so two runs can
@@ -195,7 +199,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart) },
           transfer,
         );
       } else {
@@ -208,6 +212,7 @@ self.onmessage = async (event: MessageEvent) => {
           labelMapEntries: null,
           lostLabels: null,
           paramsSchema,
+          workerMs: Math.round(performance.now() - execStart),
         });
       }
 

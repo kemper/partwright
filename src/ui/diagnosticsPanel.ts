@@ -6,6 +6,7 @@
 
 import { errorLog, type LogEntry, type ErrorLevel } from '../diagnostics/errorLog';
 import { setDiagnosticsToolbarBadge } from './toolbar';
+import { showWorkerDiagnosticsModal } from './workerDiagnosticsModal';
 
 let _panelEl: HTMLElement | null = null;
 let _listEl: HTMLElement | null = null;
@@ -190,9 +191,17 @@ function buildPanel(): HTMLElement {
   spacer.className = 'flex-1';
   header.appendChild(spacer);
 
+  const workersBtn = document.createElement('button');
+  workersBtn.className =
+    'text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors px-1.5 py-0.5 rounded border border-zinc-700 hover:border-zinc-500';
+  workersBtn.textContent = 'Workers';
+  workersBtn.title = 'Open the worker health panel (liveness, restarts, run timing)';
+  workersBtn.addEventListener('click', () => { showWorkerDiagnosticsModal(); });
+  header.appendChild(workersBtn);
+
   const copyBtn = document.createElement('button');
   copyBtn.className =
-    'text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors px-1.5 py-0.5 rounded border border-zinc-700 hover:border-zinc-500';
+    'text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors px-1.5 py-0.5 rounded border border-zinc-700 hover:border-zinc-500 ml-1';
   copyBtn.textContent = 'Copy';
   copyBtn.title = 'Copy log to clipboard';
   copyBtn.addEventListener('click', () => {

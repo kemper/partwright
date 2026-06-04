@@ -9,6 +9,14 @@ import { getActiveImports } from '../import/importedMesh';
 import { getCompanionFiles } from '../import/companionFiles';
 import { getDefaultCircularSegments } from './qualitySettings';
 import { getConfig } from '../config/appConfig';
+import { errorLog } from '../diagnostics/errorLog';
+import {
+  registerWorker,
+  markWorkerStarted,
+  markWorkerRestarted,
+  recordWorkerRun,
+  type RunStatus,
+} from '../diagnostics/workerStats';
 
 export type { Language };
 export { isLanguage, DEFAULT_LANGUAGE };
@@ -90,7 +98,7 @@ let workerReadyReject: ((e: Error) => void) | null = null;
 let workerReady: Promise<void> = new Promise((r, rej) => { workerReadyResolve = r; workerReadyReject = rej; });
 let callIdCounter = 0;
 
-const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void; onPreview?: (r: MeshResult) => void }>();
+const pendingExecutions  = new Map<string, { resolve: (r: MeshResult) => void; reject: (e: Error) => void; onPreview?: (r: MeshResult) => void; meta?: { startedAt: number; lang: Language } }>();
 const pendingValidations = new Map<string, { resolve: (r: ValidateResult) => void; reject: (e: Error) => void }>();
 const pendingDetections  = new Map<string, { resolve: (r: string[]) => void; reject: (e: Error) => void }>();
 const pendingStepExports = new Map<string, { resolve: (blob: Blob | null) => void; reject: (e: Error) => void }>();
@@ -109,6 +117,49 @@ const pendingEnhances = new Map<string, {
   onProgress: (fraction: number) => void;
 }>();
 
+/** Total operations the geometry Worker is currently working on, across every
+ *  request kind. Drives the in-flight readout in the worker-health panel. */
+function geometryInFlight(): number {
+  return (
+    pendingExecutions.size +
+    pendingValidations.size +
+    pendingDetections.size +
+    pendingStepExports.size +
+    pendingStepBrepImports.size +
+    pendingStepMeshImports.size +
+    pendingClearBrepImports.size +
+    pendingClearBrepShapes.size +
+    pendingSimplifies.size +
+    pendingEnhances.size
+  );
+}
+
+// Register with the worker-health registry so the diagnostics panel can show
+// liveness + in-flight load without this module having to push an update on
+// every map mutation (the live provider is polled by the panel instead).
+registerWorker('geometry', 'Geometry (manifold / SCAD / BREP)', () => ({
+  alive: engineWorker !== null,
+  inFlight: geometryInFlight(),
+}));
+
+/** Record one settled geometry execute into the worker run-history ring. */
+function recordGeometryRun(
+  meta: { startedAt: number; lang: Language } | undefined,
+  status: RunStatus,
+  workerMs?: number,
+  detail?: string,
+): void {
+  if (!meta) return;
+  recordWorkerRun({
+    worker: 'geometry',
+    kind: meta.lang,
+    durationMs: Math.round(performance.now() - meta.startedAt),
+    workerMs,
+    status,
+    detail,
+  });
+}
+
 // Per-language hard-timeout for a single execute/validate call. The Worker
 // posts no result back if its WASM hangs, so without this the promise (and
 // the UI's "Running…" state) would wait forever. Manifold-js executes pure
@@ -125,7 +176,17 @@ function getExecuteTimeoutMs(lang: Language): number {
 }
 
 function rejectAllPending(err: Error): void {
-  for (const p of pendingExecutions.values()) p.reject(err);
+  // Classify the teardown so each in-flight execute lands in the run history
+  // with the right status rather than a generic failure.
+  const teardownStatus: RunStatus = /timed out/i.test(err.message)
+    ? 'timeout'
+    : /cancel/i.test(err.message)
+      ? 'cancelled'
+      : 'error';
+  for (const p of pendingExecutions.values()) {
+    recordGeometryRun(p.meta, teardownStatus, undefined, err.message);
+    p.reject(err);
+  }
   for (const p of pendingValidations.values()) p.reject(err);
   for (const p of pendingDetections.values()) p.reject(err);
   for (const p of pendingStepExports.values()) p.reject(err);
@@ -159,8 +220,21 @@ function restartEngineWorker(reason: string): void {
   workerReadyReject = null;
   engineWorker?.terminate();
   engineWorker = null;
+  // Surface the teardown in the worker-health panel and the central
+  // Diagnostic Log. A user-initiated cancel is routine (info, kept off the
+  // unseen-error badge); a timeout/crash is a real problem (warn). This was
+  // previously a bare console.error, which the errorLog intercepted as a
+  // generic 'app' error — even for normal cancels. console.debug keeps the
+  // devtools breadcrumb without being re-captured.
+  const cancelled = /cancel/i.test(reason);
+  markWorkerRestarted('geometry', reason);
+  errorLog.capture({
+    level: cancelled ? 'info' : 'warn',
+    source: 'engine',
+    message: `Geometry worker restarted: ${reason}`,
+  });
   // eslint-disable-next-line no-console
-  console.error('[EngineWorker]', reason);
+  console.debug('[EngineWorker]', reason);
 }
 
 /** Cancel any in-flight executeCodeAsync by terminating the Worker.
@@ -176,13 +250,14 @@ function initEngineWorker(): void {
   // not the one that was already resolved by the previous instance.
   workerReady = new Promise((r, rej) => { workerReadyResolve = r; workerReadyReject = rej; });
   engineWorker = new Worker(new URL('./engineWorker.ts', import.meta.url), { type: 'module' });
+  markWorkerStarted('geometry');
   engineWorker.onmessage = handleEngineWorkerMessage;
   engineWorker.onerror = (ev) => {
     // Reject all pending calls if the Worker crashes.
     rejectAllPending(new Error(`Geometry Worker crashed: ${ev.message}`));
     engineWorker = null;
-    // eslint-disable-next-line no-console
-    console.error('[EngineWorker] crashed — next call will restart it', ev.message);
+    markWorkerRestarted('geometry', `crashed: ${ev.message}`);
+    errorLog.capture({ level: 'error', source: 'engine', message: `Geometry worker crashed — next call will restart it: ${ev.message}` });
   };
   engineWorker.onmessageerror = (ev) => {
     // A Worker→Main message that fails structured-clone on receipt is dropped
@@ -190,8 +265,10 @@ function initEngineWorker(): void {
     rejectAllPending(new Error('Geometry Worker sent an undeserializable message'));
     engineWorker?.terminate();
     engineWorker = null;
+    markWorkerRestarted('geometry', 'undeserializable message');
+    errorLog.capture({ level: 'error', source: 'engine', message: 'Geometry worker sent an undeserializable message — restarting' });
     // eslint-disable-next-line no-console
-    console.error('[EngineWorker] messageerror', ev);
+    console.debug('[EngineWorker] messageerror', ev);
   };
   engineWorker.postMessage({ type: 'init' });
 }
@@ -219,6 +296,14 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     const pending = pendingExecutions.get(callId);
     if (!pending) return;
     pendingExecutions.delete(callId);
+
+    const resultError = msg.error as string | null;
+    recordGeometryRun(
+      pending.meta,
+      resultError ? 'error' : 'ok',
+      typeof msg.workerMs === 'number' ? msg.workerMs : undefined,
+      resultError ?? undefined,
+    );
 
     const mesh = msg.mesh as MeshResult['mesh'];
     // A worker mesh carrying triColors came from the voxel engine, whose
@@ -390,7 +475,9 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     const callId = msg.callId as string | null;
     const err = new Error(msg.message as string);
     if (callId) {
-      pendingExecutions.get(callId)?.reject(err);
+      const failedExec = pendingExecutions.get(callId);
+      if (failedExec) recordGeometryRun(failedExec.meta, 'error', undefined, err.message);
+      failedExec?.reject(err);
       pendingExecutions.delete(callId ?? '');
       pendingValidations.get(callId)?.reject(err);
       pendingValidations.delete(callId ?? '');
@@ -457,6 +544,7 @@ export async function executeCodeAsync(
       resolve: (r) => { clearTimeout(timer); resolve(r); },
       reject:  (e) => { clearTimeout(timer); reject(e); },
       onPreview,
+      meta: { startedAt: performance.now(), lang: l },
     });
     const companionFiles = getCompanionFiles();
     engineWorker!.postMessage({ type: 'execute', callId, code: source, lang: l, imports, circularSegments: getDefaultCircularSegments(), params: paramOverrides ?? null, ...(Object.keys(companionFiles).length > 0 ? { companionFiles } : {}) });
