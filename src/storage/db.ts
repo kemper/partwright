@@ -300,10 +300,15 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 export function generateId(): string {
+  // Session/part/version ids end up in shareable URLs (?session=…), so use a
+  // CSPRNG rather than Math.random — unpredictable ids, and it clears CodeQL's
+  // insecure-randomness alert. Same 12-char alphabet, so id format is unchanged.
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
   let id = '';
   for (let i = 0; i < 12; i++) {
-    id += chars[Math.floor(Math.random() * chars.length)];
+    id += chars[bytes[i] % chars.length];
   }
   return id;
 }
