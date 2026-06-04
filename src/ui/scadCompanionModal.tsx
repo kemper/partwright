@@ -20,13 +20,21 @@ interface UploadedFile {
 }
 
 /** Does compile-probe result `u` refer to the same file as candidate `c`?
- *  The probe may quote a resolved attempt path while the candidate is the
- *  as-written include path, so we match on basename as well as exact text. */
+ *  The probe may quote a resolved attempt path (`/libs/foo.scad`) while the
+ *  candidate is the as-written include path (`foo.scad`), so we treat them as
+ *  the same when one path is a trailing-segment suffix of the other. We match
+ *  on full path segments — not bare basename — so two distinct includes that
+ *  merely share a filename (`a/foo.scad` vs `b/foo.scad`) stay separate. */
 function sameInclude(c: string, u: string): boolean {
   if (c === u) return true;
-  const cb = c.split('/').pop();
-  const ub = u.split('/').pop();
-  return !!cb && cb === ub;
+  const cs = c.split('/').filter(Boolean);
+  const us = u.split('/').filter(Boolean);
+  const n = Math.min(cs.length, us.length);
+  if (n === 0) return false;
+  for (let i = 1; i <= n; i++) {
+    if (cs[cs.length - i] !== us[us.length - i]) return false;
+  }
+  return true;
 }
 
 function IncludeRow({ includePath, uploaded, resolved, checking, onUpload }: {

@@ -265,9 +265,11 @@ async function runScadInner(
   // when the active quality setting meaningfully exceeds the preview threshold.
   if (onPreview && getDefaultCircularSegments() > SCAD_PREVIEW_FN) {
     try {
-      // Replace explicit $fn=N assignments so sources that hard-code a high
-      // value (e.g. $fn=90) actually compile at preview resolution.
-      const previewSrc = source.replace(/\$fn\s*=\s*[\d.]+/g, `$fn = ${SCAD_PREVIEW_FN}`);
+      // Cap explicit $fn=N assignments so sources that hard-code a high value
+      // (e.g. $fn=90) compile at preview resolution. Only ever *lower* the
+      // value — a deliberately low $fn (e.g. $fn=6 for a hex) is a shape choice,
+      // not a quality knob, so raising it would distort the geometry.
+      const previewSrc = source.replace(/\$fn\s*=\s*([\d.]+)/g, (_m, n) => `$fn = ${Math.min(parseFloat(n), SCAD_PREVIEW_FN)}`);
       const { instance: pi, stderr: ps } = await createInstance(preRunHook);
       try {
         if (sourceUsesBosl2(source)) await ensureBosl2InMemfs(pi);
@@ -297,13 +299,15 @@ async function runScadInner(
         return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
       }
     }
-    // Apply the quality preset to per-primitive $fn=N arguments. The command-
-    // line `-D $fn=N` only sets the global default; in-source `$fn=N` on
-    // individual primitives (e.g. `sphere(5, $fn=200)`) take precedence over
-    // it. Replacing them ensures the user's quality selection actually wins.
+    // Cap per-primitive $fn=N arguments to the quality preset. The command-line
+    // `-D $fn=N` only sets the global default; in-source `$fn=N` on individual
+    // primitives (e.g. `sphere(5, $fn=200)`) take precedence over it. We only
+    // *lower* values that exceed the preset so the user's quality selection
+    // caps expensive geometry — but we never *raise* a deliberately low $fn
+    // (e.g. $fn=6 for a hex bolt), which is a shape choice, not a quality knob.
     // Same pattern as the Phase 1 preview pass.
     const fn = getDefaultCircularSegments();
-    const qualifiedSrc = source.replace(/\$fn\s*=\s*[\d.]+/g, `$fn = ${fn}`);
+    const qualifiedSrc = source.replace(/\$fn\s*=\s*([\d.]+)/g, (_m, n) => `$fn = ${Math.min(parseFloat(n), fn)}`);
     instance.FS.writeFile('/in.scad', LABEL_MODULE_PREFIX + qualifiedSrc);
 
     // Write companion files (includes/uses that aren't BOSL2) into MEMFS so

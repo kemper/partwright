@@ -115,7 +115,7 @@ import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applySmooth, applyVoxelize, applyScale, defaultFuzzyOptions, defaultSmoothOptions, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, type ModifierResult } from './surface/modifiers';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
@@ -382,6 +382,19 @@ let currentLabelMap: Map<string, Set<number>> | null = null;
  *  mismatch. Surfaced to agent callers via `runAndSave().lostLabels` and
  *  `listLabels().lostLabels` so they don't have to diff by hand. */
 let currentLostLabels: string[] | null = null;
+
+// Per-version mesh cache: avoids recompiling SCAD (or any engine) when
+// switching between parts whose last-loaded version is unchanged. Keyed by
+// version id; LRU eviction keeps memory bounded.
+type PartMeshCacheEntry = {
+  meshData: MeshData;
+  labelMap: Map<string, Set<number>> | null;
+  lostLabels: string[] | null;
+  modelColorDecls: Array<{ name: string; color: [number, number, number]; triangles: Set<number> }>;
+  paramsSchema: ParamSpec[] | undefined;
+};
+const PART_MESH_CACHE_SIZE = 8;
+const partMeshCache = new Map<string, PartMeshCacheEntry>();
 
 // #geometry-data element — always-updated machine-readable state
 let geometryDataEl: HTMLElement;
@@ -1491,7 +1504,32 @@ async function saveCurrentVersion(label?: string): Promise<
   }
   const thumbnail = await captureThumbnail();
   const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles() });
-  if (version) return { id: version.id, index: version.index, label: version.label };
+  if (version) {
+    // Keep the mesh cache valid for the newly-saved version so that switching
+    // away and back doesn't trigger a recompile. The code/geometry didn't
+    // change (only paint or annotations may have), so the current in-memory
+    // mesh is still correct for the new version id.
+    // Cache the coarse pre-refinement base mesh (paintBaseMesh) so that
+    // rehydrateColorRegions can re-apply paint correctly on switch-back
+    // rather than re-refining an already-refined mesh.
+    const meshToCache = paintBaseMesh ?? currentMeshData;
+    if (meshToCache) {
+      const entry: PartMeshCacheEntry = {
+        meshData: meshToCache,
+        labelMap: currentLabelMap,
+        lostLabels: currentLostLabels,
+        modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles) })),
+        paramsSchema: currentParamSchema ?? undefined,
+      };
+      partMeshCache.delete(version.id);
+      partMeshCache.set(version.id, entry);
+      if (partMeshCache.size > PART_MESH_CACHE_SIZE) {
+        const oldest = partMeshCache.keys().next().value;
+        if (oldest) partMeshCache.delete(oldest);
+      }
+    }
+    return { id: version.id, index: version.index, label: version.label };
+  }
   return {
     skipped: true as const,
     reason: 'No changes since the current version (code, annotations, and color regions all match). Add a new region, edit code, or pass a different label to force a save.',
@@ -2938,7 +2976,13 @@ async function main() {
     if (!s.session || !s.currentPart) return;
     const code = getValue();
     if (isStarterCode(code)) return;
-    if (s.currentVersion && !editorContentDiffersFrom(s.currentVersion.code)) return;
+    // Previously bailed here when code was unchanged, silently discarding
+    // unsaved paint, annotations, param overrides, and companion-file edits.
+    // saveVersion already deduplicates on all five axes (code + annotations +
+    // paint + params + companions), so letting it run is the holistic fix: no
+    // DB write when truly nothing changed, one write when any tracked state
+    // differs. The only extra cost is the captureThumbnail() call (~30–80 ms
+    // canvas readback, not a recompile).
     const thumbnail = await captureThumbnail();
     const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
     // Include companions so the dedup check in saveVersion works when a
@@ -3850,9 +3894,12 @@ async function main() {
   // where `api.Manifold` is undefined). This is the mixed-language case a JSON
   // merge creates: a voxel Part 2 alongside an unsaved manifold-js Part 1.
   async function loadPartIntoEditor(version: Version | null, opts: { skipDraftSave?: boolean } = {}) {
-    clearMesh();
+    const cached = version ? partMeshCache.get(version.id) : undefined;
+    // Only clear the viewport when there is no cached mesh to restore — avoids
+    // a blank-viewport flash during the recompile that cache hits skip entirely.
+    if (!cached) clearMesh();
     if (version) {
-      await loadVersionIntoEditor(version, opts);
+      await loadVersionIntoEditor(version, opts, cached);
     } else {
       if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
       startNewPartInEditor();
@@ -4070,7 +4117,7 @@ async function main() {
     { id: 'export-step', title: 'Export STEP', hint: 'Export', keywords: 'download brep cad solidworks fusion freecad', run: () => { void actionExportSTEP(); }, enabled: () => getActiveLanguage() === 'replicad' },
     { id: 'share-link', title: 'Share design (copy link)', hint: 'Share', keywords: 'url public link copy fork readonly', run: () => { void actionShareLink(); }, enabled: canShare },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
-    { id: 'toggle-diagnostics', title: 'Toggle diagnostic log', hint: 'View', keywords: 'errors warnings console', run: () => toggleDiagnosticsPanel() },
+    { id: 'toggle-diagnostics', title: 'Toggle diagnostics', hint: 'View', keywords: 'errors warnings console workers webworkers threads memory wasm performance restarts crash timing health log', run: () => toggleDiagnosticsPanel() },
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
     { id: 'open-ideas', title: 'Open ideas', hint: 'Navigate', keywords: 'prompts examples inspiration showcase what can i do', run: () => { showIdeasPage(); } },
     { id: 'open-help', title: 'Open help', hint: 'Navigate', keywords: 'docs documentation guide', run: () => showHelp() },
@@ -4238,7 +4285,7 @@ async function main() {
     void ensureEngineStarted();
   }
 
-  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean } = {}) {
+  async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
     // Cancel any active voxel paint before loading a different version — its
     // live grid and provenance map are bound to the OUTGOING code, so a Bake
     // after navigation would write the wrong session's voxels into the new
@@ -4273,10 +4320,79 @@ async function main() {
     // saved thumbnail/stats. runCodeSync prunes these against the model's
     // declared schema, so stale keys from a previous model fall away.
     currentParamValues = { ...(version.paramValues ?? {}) };
-    const applied = await runCodeSync(version.code);
-    // If a newer version-switch arrived while we were compiling, our result
-    // was discarded — don't rehydrate colours or annotations for the wrong version.
-    if (!applied) return;
+
+    if (cachedEntry) {
+      // Cache hit: restore previously computed mesh without recompiling.
+      // Bump to MRU position in the LRU map.
+      partMeshCache.delete(version.id);
+      partMeshCache.set(version.id, cachedEntry);
+
+      currentMeshData = cachedEntry.meshData;
+      paintBaseMesh = cachedEntry.meshData;
+      if (currentManifold && typeof currentManifold.delete === 'function') {
+        try { currentManifold.delete(); } catch { /* already deleted */ }
+      }
+      const mod = getModule();
+      try {
+        currentManifold = (mod && cachedEntry.meshData) ? mod.Manifold.ofMesh(cachedEntry.meshData) : null;
+      } catch {
+        currentManifold = null;
+      }
+      currentLabelMap = cachedEntry.labelMap;
+      currentLostLabels = cachedEntry.lostLabels;
+      setPaintLabels(currentLabelMap);
+      setModelColorRegions(cachedEntry.modelColorDecls);
+      syncParamsPanel(cachedEntry.paramsSchema);
+      updateMesh(cachedEntry.meshData);
+      updatePaintMesh(cachedEntry.meshData);
+      geometryDataEl.textContent = version.geometryData
+        ? JSON.stringify(version.geometryData, null, 2)
+        : JSON.stringify({ status: 'ready' });
+      if (printabilityIndicatorEl) {
+        const geoData = version.geometryData ?? {};
+        const { printable, issues } = computePrintability(geoData);
+        if (printable) {
+          printabilityIndicatorEl.style.display = 'none';
+        } else {
+          printabilityIndicatorEl.textContent = '⚠ ' + issues.join(' · ');
+          printabilityIndicatorEl.style.display = '';
+        }
+      }
+      syncClipSliderBounds();
+      simplifyBaselineMesh = null;
+      simplifyBaselineColoredMesh = null;
+      simplifyBaselineRegions = null;
+      simplifyBaselineModelRegions = null;
+      refreshSimplifyIfOpen();
+      setStatus(statusBar, 'ready', 'Ready');
+    } else {
+      // Cache miss: compile the code and, on success, populate the cache.
+      const meshBeforeRun = currentMeshData;
+      const applied = await runCodeSync(version.code);
+      // If a newer version-switch arrived while we were compiling, our result
+      // was discarded — don't rehydrate colours or annotations for the wrong version.
+      if (!applied) return;
+      // Store the freshly compiled result so the next switch back is instant.
+      // Only cache on a successful mesh-producing run (compile errors leave
+      // currentMeshData as the previous part's mesh, i.e. unchanged).
+      if (currentMeshData !== null && currentMeshData !== meshBeforeRun) {
+        const entry: PartMeshCacheEntry = {
+          meshData: currentMeshData,
+          labelMap: currentLabelMap,
+          lostLabels: currentLostLabels,
+          modelColorDecls: getModelRegions().map(r => ({ name: r.name, color: r.color, triangles: new Set(r.triangles) })),
+          paramsSchema: currentParamSchema ?? undefined,
+        };
+        partMeshCache.delete(version.id);
+        partMeshCache.set(version.id, entry);
+        if (partMeshCache.size > PART_MESH_CACHE_SIZE) {
+          // Evict the least-recently-used entry (first key in insertion-order map).
+          const oldest = partMeshCache.keys().next().value;
+          if (oldest) partMeshCache.delete(oldest);
+        }
+      }
+    }
+
     rehydrateColorRegions(version.geometryData);
     applyVersionAnnotations(version);
     const sessionImages = await getImagesFromSession();
@@ -5303,9 +5419,9 @@ async function main() {
     removeCompanionFileFromRegistry(path);
     if (_companionActiveTab === path) switchToMainTab();
     else renderCompanionFilesBar();
-    // Re-run main code without this companion, then persist the removal so
-    // it survives a page reload (registry-only removal is lost on refresh).
-    runCode(getValue(), { surfaceErrors: false });
+    // Re-run synchronously so the cache and saved geometry data reflect the
+    // post-removal mesh (fire-and-forget runCode races with saveCurrentVersion).
+    await runCodeSync(getValue());
     void saveCurrentVersion();
   }
 
@@ -6209,6 +6325,118 @@ async function main() {
     return hasColorRegions() || hasModelColorRegions();
   }
 
+  /** Pre-run validation warnings for texture operations. Checks amplitude and
+   *  feature size relative to the model's bounding-box diagonal so the AI gets
+   *  actionable feedback before spending time on a degenerate run. */
+  function textureWarnings(
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven',
+    opts: Record<string, unknown>,
+    mesh: MeshData,
+  ): string[] {
+    const diag = modelDiagonal(mesh) || 10;
+    const amp = (opts.amplitude as number | undefined) ?? 0;
+    const warnings: string[] = [];
+    if (amp > diag * 0.15) {
+      warnings.push(
+        `amplitude (${amp.toFixed(3)}) exceeds 15% of the model diagonal (${diag.toFixed(2)}) — ` +
+        `large displacements may produce manifold artifacts; consider amplitude ≤ ${(diag * 0.05).toFixed(3)}`,
+      );
+    }
+    if (id === 'fuzzy') {
+      const scale = (opts.scale as number | undefined) ?? 0;
+      if (scale > diag * 0.5) {
+        warnings.push(
+          `scale (${scale.toFixed(3)}) is more than half the model size — ` +
+          `only 1–2 noise features will be visible; try scale ≈ ${(diag * 0.04).toFixed(3)}`,
+        );
+      }
+      if (scale > 0 && scale < diag / 300) {
+        warnings.push(
+          `scale (${scale.toFixed(4)}) is very small relative to the model — ` +
+          `texture will be invisible; try scale ≈ ${(diag * 0.04).toFixed(3)}`,
+        );
+      }
+    } else if (id === 'knit') {
+      const sw = (opts.stitchWidth as number | undefined) ?? 0;
+      const sh = (opts.stitchHeight as number | undefined) ?? sw * 1.4;
+      if (sw > diag * 0.35) {
+        warnings.push(
+          `stitchWidth (${sw.toFixed(3)}) is large relative to the model diagonal (${diag.toFixed(2)}) — ` +
+          `fewer than 3 stitches across; try stitchWidth ≈ ${(diag * 0.05).toFixed(3)}`,
+        );
+      }
+      if (sh > diag * 0.35) {
+        warnings.push(
+          `stitchHeight (${sh.toFixed(3)}) is large relative to the model — ` +
+          `fewer than 3 stitch rows visible; try stitchHeight ≈ ${(diag * 0.07).toFixed(3)}`,
+        );
+      }
+      if (sw > 0 && sw < diag / 300) {
+        warnings.push(
+          `stitchWidth (${sw.toFixed(4)}) is very small — stitches will be invisible; ` +
+          `try stitchWidth ≈ ${(diag * 0.05).toFixed(3)}`,
+        );
+      }
+    } else if (id === 'cable') {
+      const cw = (opts.cableWidth as number | undefined) ?? 0;
+      if (cw > diag * 0.4) {
+        warnings.push(
+          `cableWidth (${cw.toFixed(3)}) is large relative to the model diagonal (${diag.toFixed(2)}) — ` +
+          `fewer than 3 cables visible; try cableWidth ≈ ${(diag * 0.08).toFixed(3)}`,
+        );
+      }
+      if (cw > 0 && cw < diag / 300) {
+        warnings.push(
+          `cableWidth (${cw.toFixed(4)}) is very small — cables will be invisible; ` +
+          `try cableWidth ≈ ${(diag * 0.08).toFixed(3)}`,
+        );
+      }
+    } else if (id === 'waffle') {
+      const cw = (opts.cellWidth as number | undefined) ?? 0;
+      if (cw > diag * 0.4) {
+        warnings.push(
+          `cellWidth (${cw.toFixed(3)}) is large relative to the model diagonal (${diag.toFixed(2)}) — ` +
+          `fewer than 3 cells visible; try cellWidth ≈ ${(diag * 0.06).toFixed(3)}`,
+        );
+      }
+      if (cw > 0 && cw < diag / 300) {
+        warnings.push(
+          `cellWidth (${cw.toFixed(4)}) is very small — waffle grid will be invisible; ` +
+          `try cellWidth ≈ ${(diag * 0.06).toFixed(3)}`,
+        );
+      }
+    } else if (id === 'fur') {
+      const fs = (opts.fiberSpacing as number | undefined) ?? 0;
+      if (fs > diag * 0.3) {
+        warnings.push(
+          `fiberSpacing (${fs.toFixed(3)}) is large relative to the model diagonal (${diag.toFixed(2)}) — ` +
+          `very few fibers visible; try fiberSpacing ≈ ${(diag * 0.02).toFixed(3)}`,
+        );
+      }
+      if (fs > 0 && fs < diag / 600) {
+        warnings.push(
+          `fiberSpacing (${fs.toFixed(4)}) is very small — fur texture will be very fine; ` +
+          `try fiberSpacing ≈ ${(diag * 0.02).toFixed(3)}`,
+        );
+      }
+    } else if (id === 'woven') {
+      const ts = (opts.threadSpacing as number | undefined) ?? 0;
+      if (ts > diag * 0.35) {
+        warnings.push(
+          `threadSpacing (${ts.toFixed(3)}) is large relative to the model diagonal (${diag.toFixed(2)}) — ` +
+          `fewer than 3 thread rows; try threadSpacing ≈ ${(diag * 0.04).toFixed(3)}`,
+        );
+      }
+      if (ts > 0 && ts < diag / 400) {
+        warnings.push(
+          `threadSpacing (${ts.toFixed(4)}) is very small — weave will be invisible; ` +
+          `try threadSpacing ≈ ${(diag * 0.04).toFixed(3)}`,
+        );
+      }
+    }
+    return warnings;
+  }
+
   // Non-destructive preview: swap the viewport mesh to the modifier's result
   // WITHOUT running the engine or saving a version. Cleared by reverting to the
   // current model's mesh (clearSurfacePreview). Mirrors the relief preview path.
@@ -6312,7 +6540,23 @@ async function main() {
         force: true,
         importedMeshes: [comp],
       });
-      return { ok: true, label: result.label, geometry: getGeometryDataObj(), colorsCarried: carried };
+      const colorWarnings: string[] = [];
+      if (preserveColor && colorMesh && currentMeshData && carried > 0) {
+        const coverage = carried / currentMeshData.numTri;
+        if (coverage < 0.7) {
+          colorWarnings.push(
+            `Color transfer covered ${(coverage * 100).toFixed(0)}% of new triangles — ` +
+            `some areas may appear unpainted; use copyColorsFromVersion or repaint those regions`,
+          );
+        }
+      }
+      return {
+        ok: true,
+        label: result.label,
+        geometry: getGeometryDataObj(),
+        colorsCarried: carried,
+        ...(colorWarnings.length > 0 ? { warnings: colorWarnings } : {}),
+      };
     }
     // Voxel result: a self-contained `voxels.decode(...)` program, no imports.
     // Color (when preserved) is baked into the grid at voxelize time, so it
@@ -6332,27 +6576,110 @@ async function main() {
   // fuzzy/smooth carry triColors (with _painted) through subdivision so the
   // result already has correct per-triangle paint — no post-hoc transfer needed.
   function buildSurfaceModifier(
-    id: 'fuzzy' | 'smooth' | 'voxelize',
+    id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize',
     opts: Record<string, unknown> | undefined,
     preserveColor: boolean,
   ): ModifierResult {
+    const sel = opts?.selectedTriangles as Set<number> | undefined;
     if (id === 'fuzzy') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultFuzzyOptions(mesh);
-      return applyFuzzy(mesh, {
+      const fuzzyOpts = {
         amplitude: (opts?.amplitude as number) ?? base.amplitude,
         scale: (opts?.scale as number) ?? base.scale,
         octaves: (opts?.octaves as number) ?? base.octaves,
         seed: (opts?.seed as number) ?? base.seed,
-      });
+      };
+      if (sel && sel.size > 0) return applyFuzzyPatch(mesh, fuzzyOpts, sel);
+      return applyFuzzy(mesh, fuzzyOpts);
+    }
+    if (id === 'knit') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultKnitOptions(mesh);
+      const knitOpts = {
+        amplitude: (opts?.amplitude as number) ?? base.amplitude,
+        stitchWidth: (opts?.stitchWidth as number) ?? base.stitchWidth,
+        stitchHeight: (opts?.stitchHeight as number) ?? base.stitchHeight,
+        rowOffset: (opts?.rowOffset as number) ?? base.rowOffset,
+        roundness: (opts?.roundness as number) ?? base.roundness,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        variation: (opts?.variation as number) ?? base.variation,
+        seed: (opts?.seed as number) ?? base.seed,
+        // LSCM/harmonic require disk topology — only use them on a selected patch.
+        // On a closed mesh they produce partial coverage; fall back to BFS.
+        algorithm: (sel && sel.size > 0)
+          ? ((opts?.algorithm as typeof base.algorithm) ?? base.algorithm)
+          : 'bfs',
+      };
+      if (sel && sel.size > 0) return applyKnitPatch(mesh, knitOpts, sel);
+      return applyKnit(mesh, knitOpts);
+    }
+    if (id === 'cable') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultCableOptions(mesh);
+      const cableOpts = {
+        amplitude: (opts?.amplitude as number) ?? base.amplitude,
+        cableWidth: (opts?.cableWidth as number) ?? base.cableWidth,
+        cablePitch: (opts?.cablePitch as number) ?? base.cablePitch,
+        plyWidth: (opts?.plyWidth as number) ?? base.plyWidth,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        variation: (opts?.variation as number) ?? base.variation,
+        seed: (opts?.seed as number) ?? base.seed,
+      };
+      if (sel && sel.size > 0) return applyCablePatch(mesh, cableOpts, sel);
+      return applyCable(mesh, cableOpts);
+    }
+    if (id === 'waffle') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultWaffleOptions(mesh);
+      const waffleOpts = {
+        amplitude: (opts?.amplitude as number) ?? base.amplitude,
+        cellWidth: (opts?.cellWidth as number) ?? base.cellWidth,
+        cellHeight: (opts?.cellHeight as number) ?? base.cellHeight,
+        sharpness: (opts?.sharpness as number) ?? base.sharpness,
+        rowOffset: (opts?.rowOffset as number) ?? base.rowOffset,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+      };
+      if (sel && sel.size > 0) return applyWafflePatch(mesh, waffleOpts, sel);
+      return applyWaffle(mesh, waffleOpts);
+    }
+    if (id === 'fur') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultFurOptions(mesh);
+      const furOpts = {
+        amplitude: (opts?.amplitude as number) ?? base.amplitude,
+        fiberSpacing: (opts?.fiberSpacing as number) ?? base.fiberSpacing,
+        fiberLength: (opts?.fiberLength as number) ?? base.fiberLength,
+        octaves: (opts?.octaves as number) ?? base.octaves,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        seed: (opts?.seed as number) ?? base.seed,
+      };
+      if (sel && sel.size > 0) return applyFurPatch(mesh, furOpts, sel);
+      return applyFur(mesh, furOpts);
+    }
+    if (id === 'woven') {
+      const mesh = meshForModifier(preserveColor);
+      const base = defaultWovenOptions(mesh);
+      const wovenOpts = {
+        amplitude: (opts?.amplitude as number) ?? base.amplitude,
+        threadSpacing: (opts?.threadSpacing as number) ?? base.threadSpacing,
+        threadWidth: (opts?.threadWidth as number) ?? base.threadWidth,
+        underDepth: (opts?.underDepth as number) ?? base.underDepth,
+        grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+        seed: (opts?.seed as number) ?? base.seed,
+      };
+      if (sel && sel.size > 0) return applyWovenPatch(mesh, wovenOpts, sel);
+      return applyWoven(mesh, wovenOpts);
     }
     if (id === 'smooth') {
       const mesh = meshForModifier(preserveColor);
       const base = defaultSmoothOptions();
-      return applySmooth(mesh, {
+      const smoothOpts = {
         iterations: (opts?.iterations as number) ?? base.iterations,
         subdivide: (opts?.subdivide as boolean) ?? base.subdivide,
-      });
+      };
+      if (sel && sel.size > 0) return applySmoothPatch(mesh, smoothOpts, sel);
+      return applySmooth(mesh, smoothOpts);
     }
     // voxelize: feed the color-baked mesh when preserving so per-voxel color is sampled.
     return applyVoxelize(meshForModifier(preserveColor), {
@@ -6367,8 +6694,8 @@ async function main() {
      *  color-clearing modifier, or offer "preserve colors"). */
     modelHasColor(): boolean { return modelHasColor(); },
     /** Non-destructive viewport preview of a surface modifier (no version saved).
-     *  Call clearSurfacePreview() / re-run to restore. id: 'fuzzy'|'smooth'|'voxelize'. */
-    previewSurfaceModifier(id: 'fuzzy' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
+     *  Call clearSurfacePreview() / re-run to restore. id: 'fuzzy'|'knit'|'smooth'|'voxelize'. */
+    previewSurfaceModifier(id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize', opts?: Record<string, unknown>, preserveColor = true): { ok: true } | { error: string } {
       try {
         previewSurfaceModifier(buildSurfaceModifier(id, opts, preserveColor), preserveColor);
         return { ok: true };
@@ -6377,13 +6704,181 @@ async function main() {
     /** Discard a live surface preview and restore the current model's mesh. */
     clearSurfacePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
     /** Apply a fuzzy-skin surface texture to the current model; saves a new version.
-     *  `preserveColor` (default true) re-resolves paint regions onto the new mesh. */
-    async applyFuzzySkin(opts?: { amplitude?: number; scale?: number; octaves?: number; seed?: number; preserveColor?: boolean }) {
+     *  `preserveColor` (default true) re-resolves paint regions onto the new mesh.
+     *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
+    async applyFuzzySkin(opts?: { amplitude?: number; scale?: number; octaves?: number; seed?: number; quality?: number; preserveColor?: boolean }) {
       try {
         const preserve = opts?.preserveColor ?? true;
-        return await commitSurfaceModifier(buildSurfaceModifier('fuzzy', opts, preserve), preserve);
+        const mesh = requireCurrentMeshForModifier();
+        const warns = textureWarnings('fuzzy', opts ?? {}, mesh);
+        const result = await commitSurfaceModifier(buildSurfaceModifier('fuzzy', opts, preserve), preserve);
+        if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
+          const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
+          return { ...result, warnings: [...warns, ...(existing ?? [])] };
+        }
+        return result;
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
+
+    /** Apply a knit-stitch surface texture to the current model; saves a new version.
+     *  Produces a stockinette V-pattern of interlocking stitch bumps arranged in a
+     *  brick-offset grid. `preserveColor` (default true) carries paint across subdivision.
+     *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
+    async applyKnitTexture(opts?: {
+      amplitude?: number;
+      stitchWidth?: number;
+      stitchHeight?: number;
+      rowOffset?: number;
+      roundness?: number;
+      grainAngleDeg?: number;
+      variation?: number;
+      seed?: number;
+      quality?: number;
+      algorithm?: 'bfs' | 'lscm' | 'harmonic';
+      selectedTriangles?: Set<number>;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        const mesh = meshForModifier(preserve);
+        const warns = textureWarnings('knit', opts ?? {}, mesh);
+        const base = defaultKnitOptions(mesh);
+        const knitOpts = {
+          amplitude:     (opts?.amplitude     as number) ?? base.amplitude,
+          stitchWidth:   (opts?.stitchWidth   as number) ?? base.stitchWidth,
+          stitchHeight:  (opts?.stitchHeight  as number) ?? base.stitchHeight,
+          rowOffset:     (opts?.rowOffset     as number) ?? base.rowOffset,
+          roundness:     (opts?.roundness     as number) ?? base.roundness,
+          grainAngleDeg: (opts?.grainAngleDeg as number) ?? base.grainAngleDeg,
+          variation:     (opts?.variation     as number) ?? base.variation,
+          seed:          (opts?.seed          as number) ?? base.seed,
+          quality:       (opts?.quality       as number) ?? base.quality,
+          algorithm:     (opts?.algorithm     as typeof base.algorithm) ?? base.algorithm,
+          subdivide:     true,
+        };
+        const selectedTriangles = opts?.selectedTriangles;
+        const modifier = (selectedTriangles && selectedTriangles.size > 0)
+          ? await applyKnitPatchAsync(mesh, knitOpts, selectedTriangles)
+          : await applyKnitAsync(mesh, knitOpts);
+        const result = await commitSurfaceModifier(modifier, preserve);
+        if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
+          const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
+          return { ...result, warnings: [...warns, ...(existing ?? [])] };
+        }
+        return result;
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
+    /** Apply a cable-knit surface texture to the current model; saves a new version.
+     *  Produces intertwining rope-like cable columns with crossing ply ridges.
+     *  `preserveColor` (default true) carries paint across subdivision.
+     *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
+    async applyCableKnit(opts?: {
+      amplitude?: number;
+      cableWidth?: number;
+      cablePitch?: number;
+      plyWidth?: number;
+      grainAngleDeg?: number;
+      variation?: number;
+      seed?: number;
+      quality?: number;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        const mesh = requireCurrentMeshForModifier();
+        const warns = textureWarnings('cable', opts ?? {}, mesh);
+        const result = await commitSurfaceModifier(buildSurfaceModifier('cable', opts, preserve), preserve);
+        if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
+          const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
+          return { ...result, warnings: [...warns, ...(existing ?? [])] };
+        }
+        return result;
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
+    /** Apply a waffle-stitch surface texture to the current model; saves a new version.
+     *  Produces a regular grid of recessed cells with raised border ridges.
+     *  Set rowOffset=0.5 for a honeycomb variant. `preserveColor` (default true) carries paint.
+     *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
+    async applyWaffleStitch(opts?: {
+      amplitude?: number;
+      cellWidth?: number;
+      cellHeight?: number;
+      sharpness?: number;
+      rowOffset?: number;
+      grainAngleDeg?: number;
+      seed?: number;
+      quality?: number;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        const mesh = requireCurrentMeshForModifier();
+        const warns = textureWarnings('waffle', opts ?? {}, mesh);
+        const result = await commitSurfaceModifier(buildSurfaceModifier('waffle', opts, preserve), preserve);
+        if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
+          const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
+          return { ...result, warnings: [...warns, ...(existing ?? [])] };
+        }
+        return result;
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
+    /** Apply a fur/velvet surface texture to the current model; saves a new version.
+     *  Produces directional pile (velvet, short fur, chenille) using anisotropic FBM noise.
+     *  `preserveColor` (default true) carries paint across subdivision.
+     *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
+    async applyFurVelvet(opts?: {
+      amplitude?: number;
+      fiberSpacing?: number;
+      fiberLength?: number;
+      octaves?: number;
+      grainAngleDeg?: number;
+      seed?: number;
+      quality?: number;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        const mesh = requireCurrentMeshForModifier();
+        const warns = textureWarnings('fur', opts ?? {}, mesh);
+        const result = await commitSurfaceModifier(buildSurfaceModifier('fur', opts, preserve), preserve);
+        if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
+          const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
+          return { ...result, warnings: [...warns, ...(existing ?? [])] };
+        }
+        return result;
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
+    /** Apply a woven-fabric surface texture to the current model; saves a new version.
+     *  Simulates plain-weave interlacing: warp and weft threads alternate over/under.
+     *  `preserveColor` (default true) carries paint across subdivision.
+     *  Returns `{ ok, label, geometry, colorsCarried, warnings? }`. */
+    async applyWovenFabric(opts?: {
+      amplitude?: number;
+      threadSpacing?: number;
+      threadWidth?: number;
+      underDepth?: number;
+      grainAngleDeg?: number;
+      seed?: number;
+      quality?: number;
+      preserveColor?: boolean;
+    }) {
+      try {
+        const preserve = opts?.preserveColor ?? true;
+        const mesh = requireCurrentMeshForModifier();
+        const warns = textureWarnings('woven', opts ?? {}, mesh);
+        const result = await commitSurfaceModifier(buildSurfaceModifier('woven', opts, preserve), preserve);
+        if (warns.length > 0 && result && typeof result === 'object' && 'ok' in result) {
+          const existing = (result as Record<string, unknown>).warnings as string[] | undefined;
+          return { ...result, warnings: [...warns, ...(existing ?? [])] };
+        }
+        return result;
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+    },
+
     /** Smooth/round the current model (Taubin λ/μ); saves a new version. */
     async smoothModel(opts?: { iterations?: number; subdivide?: boolean; preserveColor?: boolean }) {
       try {

@@ -748,6 +748,26 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={3} max={4096} integer
           onChange={v => set('ui', 'scadDefaultQuality', v)}
         />
+        <Field
+          label="Worker run-history size"
+          unit="runs"
+          hint="Recent geometry runs kept in the worker health panel."
+          tooltip="The Workers half of the ⚠ Diagnostics panel keeps the last N geometry runs in memory with their wall-clock and worker-side timing. Older runs are evicted when the buffer is full. Increase to keep more history for spotting slow-render patterns; decrease to reduce memory use."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.workerRunHistorySize}
+          value={c.ui.workerRunHistorySize}
+          min={10} max={500} integer
+          onChange={v => set('ui', 'workerRunHistorySize', v)}
+        />
+        <Field
+          label="Worker panel refresh"
+          unit="ms"
+          hint="How often the Diagnostics panel re-polls worker in-flight counts while open."
+          tooltip="The Workers half of the Diagnostics panel polls live values (in-flight operation counts, worker liveness) on this interval, since those change without firing an update event. Lower = snappier live readout, slightly more work while the panel is open. Only affects the panel while it's visible."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.workerPanelRefreshMs}
+          value={c.ui.workerPanelRefreshMs}
+          min={200} max={10_000} integer
+          onChange={v => set('ui', 'workerPanelRefreshMs', v)}
+        />
       </Section>
 
       <Section title="Data">

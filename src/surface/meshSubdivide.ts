@@ -169,6 +169,87 @@ export function subdivideToMaxEdge(mesh: MeshData, opts: SubdivideOptions): Mesh
   };
 }
 
+/** Pre-densify a mesh for a selected patch while tracking which triangles belong
+ *  to the selection. Each `subdivideOnce` pass maps triangle t → children at
+ *  positions t×4, t×4+1, t×4+2, t×4+3, so after K rounds triangle t maps to
+ *  [t×4^K, (t+1)×4^K − 1]. Returns the subdivided mesh and the expanded set.
+ *  Stops when already fine enough (edges ≤ opts.maxEdge), after opts.maxRounds
+ *  passes, or when the next pass would exceed opts.maxTriangles (default 400K). */
+export function subdivideWithMask(
+  mesh: MeshData,
+  opts: SubdivideOptions,
+  selectedTris: Set<number>,
+): { mesh: MeshData; selectedTris: Set<number> } {
+  const maxRounds = opts.maxRounds ?? 4;
+  const maxTriangles = opts.maxTriangles ?? 400_000;
+  let positions = extractPositions(mesh);
+  let triVerts = Uint32Array.from(mesh.triVerts);
+  let triColors = mesh.triColors ? Uint8Array.from(mesh.triColors) : undefined;
+  let painted: Uint8Array | undefined = triColors
+    ? (mesh.triColors as PaintedMask)._painted?.slice()
+    : undefined;
+  let rounds = 0;
+
+  for (let round = 0; round < maxRounds; round++) {
+    if (maxEdgeLength(positions, triVerts) <= opts.maxEdge) break;
+    if ((triVerts.length / 3) * 4 > maxTriangles) break;
+    const next = subdivideOnce(positions, triVerts, triColors, painted);
+    positions = next.positions; triVerts = next.triVerts; triColors = next.triColors; painted = next.painted;
+    rounds++;
+  }
+
+  if (rounds === 0) return { mesh, selectedTris };
+
+  if (triColors && painted) (triColors as PaintedMask)._painted = painted;
+  const subdMesh: MeshData = {
+    vertProperties: positions,
+    triVerts,
+    numVert: positions.length / 3,
+    numTri: triVerts.length / 3,
+    numProp: 3,
+    triColors,
+  };
+  const factor = 4 ** rounds;
+  const subdSel = new Set<number>();
+  for (const t of selectedTris) {
+    const base = t * factor;
+    for (let j = 0; j < factor; j++) subdSel.add(base + j);
+  }
+  return { mesh: subdMesh, selectedTris: subdSel };
+}
+
+/**
+ * Triplanar projection helper.
+ *
+ * Returns the three axis-plane (s, t) coordinate pairs and L1-normalised
+ * blend weights (sum to 1) derived from the vertex normal.
+ *
+ *   X-dominant (pairs[0] = (py, pz)): used when the surface faces mostly ±X.
+ *   Y-dominant (pairs[1] = (px, pz)): used when the surface faces mostly ±Y.
+ *   Z-dominant (pairs[2] = (px, py)): used when the surface faces mostly ±Z.
+ *
+ * To compute a triplanar displacement, sample your texture function with each
+ * (s, t) pair and blend:
+ *   let d = 0;
+ *   for (let i = 0; i < 3; i++) {
+ *     const [s, t] = pairs[i];
+ *     const u = cosA * s + sinA * t;   // column axis (rotated by grainAngleDeg)
+ *     const v = -sinA * s + cosA * t;  // row    axis (perpendicular)
+ *     d += weights[i] * displace(u, v);
+ *   }
+ */
+export function triplanarCoords(
+  px: number, py: number, pz: number,
+  nx: number, ny: number, nz: number,
+): { pairs: [[number, number], [number, number], [number, number]]; weights: [number, number, number] } {
+  const ax = Math.abs(nx), ay = Math.abs(ny), az = Math.abs(nz);
+  const sum = ax + ay + az || 1;
+  return {
+    pairs:   [[py, pz], [px, pz], [px, py]],
+    weights: [ax / sum, ay / sum, az / sum],
+  };
+}
+
 /** Area-weighted per-vertex normals for a position-only mesh. Returns a
  *  Float32Array of `numVert * 3` unit normals (degenerate verts get [0,0,1]). */
 export function computeVertexNormals(positions: Float32Array, triVerts: Uint32Array): Float32Array {
