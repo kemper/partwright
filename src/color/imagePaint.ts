@@ -144,38 +144,24 @@ export function stampImageOntoMesh(
     // normal happens to match hitNormal (face-normal check alone isn't sufficient).
     if ((cx - hpX) * nx + (cy - hpY) * ny + (cz - hpZ) * nz < -halfSize) continue;
 
-    // Project centroid into stamp UV (normalised [-1,1]).
-    // If the centroid is outside the stamp square, fall back to the vertex
-    // whose UV is closest to the stamp centre (smallest max(|u|,|v|)) that
-    // still lies inside the square. This fixes visible "clipping" on
-    // low-polygon models where boundary triangles — those that straddle the
-    // stamp edge and stopped refining because one child fell outside the
-    // stamp — have their centroid just outside the square but a vertex inside.
-    // Sampling at the in-square vertex avoids the old "clamped border pixel"
-    // artifact because we never clamp: if no vertex is inside, we skip.
+    // Project the centroid onto the rotated tangent frame, normalised to
+    // [-1, 1]. A triangle is painted only when its centroid lands inside the
+    // stamp square. We intentionally do NOT use a vertex-based fallback for
+    // triangles whose centroid is just outside: on curved surfaces (cylinders,
+    // spheres) the tangent-plane UV of a vertex can differ substantially from
+    // the centroid UV, producing alternating-colour stripe artifacts when
+    // adjacent boundary triangles pick different vertices.  After smooth-mode
+    // subdivision the footprint triangles are fine enough that the centroid
+    // staircase at the boundary is sub-pixel and not visible.
     const uC = ((cx - hpX) * trX + (cy - hpY) * trY + (cz - hpZ) * trZ) / halfSize;
     const vC = ((cx - hpX) * brX + (cy - hpY) * brY + (cz - hpZ) * brZ) / halfSize;
 
-    let su = uC, sv = vC;
-    if (su < -1 || su > 1 || sv < -1 || sv > 1) {
-      let best = Infinity;
-      for (let vi = 0; vi < 3; vi++) {
-        const vIdx = triVerts[t * 3 + vi];
-        const vx = vertProperties[vIdx * numProp];
-        const vy = vertProperties[vIdx * numProp + 1];
-        const vz = vertProperties[vIdx * numProp + 2];
-        const u = ((vx - hpX) * trX + (vy - hpY) * trY + (vz - hpZ) * trZ) / halfSize;
-        const v = ((vx - hpX) * brX + (vy - hpY) * brY + (vz - hpZ) * brZ) / halfSize;
-        if (u < -1 || u > 1 || v < -1 || v > 1) continue;
-        const d = Math.max(Math.abs(u), Math.abs(v));
-        if (d < best) { best = d; su = u; sv = v; }
-      }
-      if (best === Infinity) continue;
-    }
+    if (uC < -1 || uC > 1 || vC < -1 || vC > 1) continue;
 
-    // Map stamp UV → image coordinates (image is top-down, v flipped).
-    const imgU = (su + 1) / 2;
-    const imgV = (1 - sv) / 2;
+    // Map the in-square centroid UV straight to image coordinates (no clamp
+    // needed — it is already inside the stamp; image is top-down, v flipped).
+    const imgU = (uC + 1) / 2;
+    const imgV = (1 - vC) / 2;
 
     // Nearest-neighbor sample
     const px = Math.max(0, Math.min(imgW - 1, Math.floor(imgU * imgW)));
