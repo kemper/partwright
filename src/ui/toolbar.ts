@@ -43,8 +43,6 @@ export interface ToolbarCallbacks {
   /** Open the image → voxel import modal (modal-first; the user picks the image
    *  inside). */
   onCreateVoxel: () => void;
-  /** Open the Self-Modeling Studio (photo → multi-view silhouette → voxel). */
-  onOpenSelfModelingStudio: () => void;
   onLanguageSwitch: (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => void;
   /** "?" link next to the language toggle — opens a modal explaining
    *  what each engine is best for. */
@@ -394,16 +392,6 @@ export function createToolbar(
     callbacks.onCreateVoxel();
   });
   importDropdown.appendChild(imageVoxelOpt);
-
-  const studioOpt = createDescribedItem(
-    'Photo → 3D (Self-Modeling Studio)…',
-    'Turn a photo into a 3D model: generate alternate angles with Gemini (or upload your own), then carve a voxel model from the silhouettes. Experimental.',
-  );
-  studioOpt.addEventListener('click', () => {
-    importDropdown.classList.add('hidden');
-    callbacks.onOpenSelfModelingStudio();
-  });
-  importDropdown.appendChild(studioOpt);
 
   // Recent Imports section — populated from the import inbox.
   const importRecentDivider = createDivider();

@@ -70,27 +70,6 @@ export interface AppConfig {
     localAttentionSinkMargin: number;
     /** Hard cap on attention-sink tokens for local models. */
     localAttentionSinkMax: number;
-    /** Fallback Gemini image-generation model id for the Self-Modeling Studio,
-     *  used when the user's key offers no discoverable `*-image` model. The
-     *  studio normally picks the newest image-capable model from the key. */
-    geminiImageModel: string;
-  };
-  /** Multi-view silhouette reconstruction (visual hull) defaults. */
-  recon: {
-    /** Default voxel grid resolution (cells per axis) for a silhouette carve. */
-    defaultResolution: number;
-    /** Default voxel smoothing iterations applied to a carved hull (0 = blocky). */
-    defaultSmooth: number;
-    /** Default frame-fill for supplied-silhouette carves — the fraction of each
-     *  frame the subject is assumed to span (1 = touches the edges). */
-    defaultFrameFill: number;
-    /** Frame-fill for the self-test carve (`reconstructFromCurrentModel`),
-     *  matched to `renderSingleView`'s `0.7 × maxDim` orthographic framing. */
-    selfTestFrameFill: number;
-    /** Offscreen render size (px) for the self-test silhouettes. */
-    selfTestRenderSize: number;
-    /** Elevation (deg) of the top/bottom polar caps in the self-test turntable. */
-    selfTestPoleElevation: number;
   };
   renderer: {
     /** Three.js camera field-of-view in degrees. Takes effect on page reload. */
@@ -210,15 +189,6 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     localToolsBudgetPromptEngineered: 500,
     localAttentionSinkMargin: 200,
     localAttentionSinkMax: 2048,
-    geminiImageModel: 'gemini-2.5-flash-image',
-  },
-  recon: {
-    defaultResolution: 96,
-    defaultSmooth: 2,
-    defaultFrameFill: 1,
-    selfTestFrameFill: 0.71,
-    selfTestRenderSize: 256,
-    selfTestPoleElevation: 80,
   },
   renderer: {
     fov: 50,

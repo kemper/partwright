@@ -35,7 +35,7 @@ partwright.getImages()  // -> [{id, src, label?}, ...]
 
 Attached images appear in the Images tab and the Gallery; render the model with `renderViews` to compare it against them at matching angles.
 
-**Seeing the references as the AI:** in the in-app AI chat, call the **`getReferenceImages`** tool — it returns every attached reference as one labeled grid image (plus a text list of the labels), so the model can actually look at what the user attached on any turn rather than guess. (The Self-Modeling Studio handoff also attaches the views directly to the first chat message.)
+**Seeing the references as the AI:** in the in-app AI chat, call the **`getReferenceImages`** tool — it returns every attached reference as one labeled grid image (plus a text list of the labels), so the model can actually look at what the user attached on any turn rather than guess.
 
 ## Photo-to-model workflow
 

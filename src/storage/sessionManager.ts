@@ -155,7 +155,7 @@ export interface ExportedSession {
   mainifold?: string;
   /** Images may be the array form or the legacy object map ({front, right, ...}).
    * Both also exist under `referenceImages` for pre-rename exports. */
-  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; studioImport?: Record<string, unknown> | null };
+  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel' };
   /**
    * The session's parts, ordered by `order`. Present from schema 1.7. Pre-1.7
    * files omit this; on import they collapse into a single default part.
@@ -1188,23 +1188,6 @@ export async function saveImages(images: AttachedImage[] | null): Promise<void> 
   publishTabSync({ kind: 'session-meta', sessionId: id });
 }
 
-/** Persist the Self-Modeling Studio import history on a session (by id, since
- *  the studio writes to a freshly-created session). Pass null to clear it. */
-export async function saveStudioImport(sessionId: string, record: Record<string, unknown> | null): Promise<void> {
-  await dbUpdateSession(sessionId, { studioImport: record, updated: Date.now() });
-  if (currentState.session?.id === sessionId) {
-    currentState = { ...currentState, session: { ...currentState.session, studioImport: record } };
-    notify();
-    publishTabSync({ kind: 'session-meta', sessionId });
-  }
-}
-
-/** Read back a session's Studio import history, or null if it has none. */
-export async function getStudioImport(sessionId: string): Promise<Record<string, unknown> | null> {
-  const session = await getSession(sessionId);
-  return (session?.studioImport as Record<string, unknown> | undefined) ?? null;
-}
-
 export async function getImagesFromSession(): Promise<AttachedImage[] | null> {
   if (!currentState.session) return null;
   // Refresh from DB in case it was updated externally
@@ -1615,7 +1598,7 @@ export async function exportSession(
 
   return {
     partwright: SCHEMA_VERSION,
-    session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}), ...(session.studioImport ? { studioImport: session.studioImport } : {}) },
+    session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}) },
     parts: parts.map(p => ({ name: p.name, order: p.order })),
     versions: flat.map(({ v, partOrder }, i) => {
       const colorRegions = opts.includeColorRegions ? extractColorRegions(v.geometryData) : undefined;
@@ -1687,13 +1670,6 @@ export async function importSession(
       ? rawImages
       : legacyImagesObjectToArray(rawImages);
     await dbUpdateSession(session.id, { images: imagesArr });
-  }
-
-  // Restore the Self-Modeling Studio import history (source + per-angle images +
-  // carve settings) so a re-imported session can reopen the studio without
-  // re-calling Gemini, matching the IndexedDB-side persistence.
-  if (data.session.studioImport) {
-    await dbUpdateSession(session.id, { studioImport: data.session.studioImport });
   }
 
   // Determine the index of the latest exported version. Schema 1.2 stored

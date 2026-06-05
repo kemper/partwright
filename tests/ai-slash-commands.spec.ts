@@ -137,6 +137,20 @@ test.describe('AI slash commands', () => {
     await expect(input).toHaveValue('');
   });
 
+  test('/portrait prefills the photo→bust modeling prompt', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEditorReady(page);
+    await openAiPanel(page);
+    const input = page.locator('#ai-panel').locator('textarea');
+
+    await input.fill('/portrait');
+    await input.press('Enter');
+
+    // The command drops a ready-to-send modeling prompt into the input (not sent).
+    await expect(input).toHaveValue(/stylized 3D character bust/i);
+    await expect(input).toHaveValue(/renderView/);
+  });
+
   test('an unknown slash command warns and is not sent', async ({ page }) => {
     await page.goto('/editor');
     await waitForEditorReady(page);

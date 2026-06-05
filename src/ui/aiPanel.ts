@@ -8,6 +8,7 @@ import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerC
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
+import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
 import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
@@ -2362,16 +2363,6 @@ function attachImageSource(img: ImageSource): void {
   void putAttachment(img).catch(err => console.warn('Recent attachments: write failed', err));
 }
 
-/** Attach images to the *next* AI message programmatically — the same pending
- *  path the 📷 Show AI button uses, so they ride into the model's vision when
- *  the message is sent (regardless of the auto-render toggle). Opens the panel.
- *  Used by the Self-Modeling Studio to hand its reference views to the model. */
-export function attachImagesToChat(images: ImageSource[]): void {
-  if (images.length === 0) return;
-  if (!state.open) showDrawer(false);
-  for (const img of images) attachImageSource(img);
-}
-
 function renderPendingImages(): void {
   if (!pendingImagesEl) return;
   pendingImagesEl.replaceChildren();
@@ -2632,6 +2623,7 @@ const SLASH_HANDLERS: Record<SlashCommandName, () => void> = {
   export: () => { exportCurrentChat(); },
   models: () => { void showAiSettingsModal({ onChange: afterAiSettingsChange }); },
   help: () => { openSlashHelp(); },
+  portrait: () => { prefillAiInput(PHOTO_BUST_PROMPT); },
 };
 
 /** Interpret the current input as a slash command. Returns true when it was a
