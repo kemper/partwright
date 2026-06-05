@@ -112,8 +112,7 @@ import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import { carveVisualHull, imageToMask, type SilhouetteView, type Vec3 as ReconVec3 } from './recon/visualHull';
 import { deserializeStudio, type StudioImportRecord } from './recon/studioModel';
-import { dataUrlToInline } from './ai/geminiImage';
-import type { ImageSource } from './ai/types';
+import { compositeReferenceGrid } from './ai/images';
 import { openSelfModelingStudio } from './ui/selfModelingStudio';
 import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
@@ -2796,26 +2795,18 @@ async function main() {
           if (!getState().session) await createSession('photo-model');
           // Surface the views in the gallery for the user…
           partwrightAPI.setImages(images);
-          // …AND push them into the model's vision for the next turn. The
-          // gallery alone never reaches the model — that was the bug. Mirrors
-          // the 📷 Show AI path; sent regardless of the auto-render toggle.
-          const sources: ImageSource[] = [];
-          for (const im of images) {
-            try {
-              const inline = dataUrlToInline(im.src);
-              const mt = inline.mediaType.toLowerCase();
-              const mediaType: ImageSource['mediaType'] =
-                mt === 'image/jpeg' || mt === 'image/jpg' ? 'image/jpeg'
-                  : mt === 'image/gif' ? 'image/gif'
-                    : mt === 'image/webp' ? 'image/webp' : 'image/png';
-              sources.push({ data: inline.data, mediaType, label: im.label });
-            } catch { /* skip non-data URLs */ }
-          }
-          attachImagesToChat(sources);
+          // …AND put ONE labeled grid of them into the model's vision for the
+          // next turn (gallery alone never reaches the model). A single grid —
+          // the same artifact getReferenceImages returns — guarantees turn-1
+          // sight without bloating history with N full images every turn, and
+          // the model can re-fetch it later via getReferenceImages. Mirrors the
+          // 📷 Show AI path; sent regardless of the auto-render toggle.
+          const grid = await compositeReferenceGrid(images);
+          if (grid) attachImagesToChat([grid]);
           prefillAiInput(brief); // opens the AI panel and fills the input (no send)
           const activeId = getState().session?.id;
           if (activeId) await saveStudioImport(activeId, record as unknown as Record<string, unknown>);
-          return { ok: true, attached: sources.length };
+          return { ok: true, attached: grid ? images.length : 0 };
         } catch (e) {
           return { error: (e as Error).message };
         }

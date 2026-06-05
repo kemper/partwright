@@ -257,10 +257,10 @@ export function buildModelingBrief(state: StudioState): string {
   };
 
   return [
-    `I've attached ${views.length} reference views of one person from the front hemisphere — attached directly to THIS message (and in the Images tab):`,
+    `A labeled grid of ${views.length} reference views of one person (front hemisphere) is attached to THIS message — and the same views are in the Images tab:`,
     lines,
     '',
-    'IMPORTANT: actually look at the attached images (call getReferenceImages anytime to see them again as a labeled grid). If you cannot see them, STOP and tell me — do not invent a subject. Replace any placeholder/starter model in the editor.',
+    'IMPORTANT: actually look at the attached reference grid (call getReferenceImages anytime to see it again). If you cannot see it, STOP and tell me — do not invent a subject. Replace any placeholder/starter model in the editor.',
     '',
     goal[state.style],
     '',
