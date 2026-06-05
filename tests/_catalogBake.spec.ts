@@ -21,6 +21,8 @@ interface Meta {
   name: string;
   description: string;
   paints: { label: string; color: string; name?: string }[];
+  /** Optional curated catalog group (e.g. 'fidget-toys'). */
+  group?: string;
 }
 
 function hexToRgb01(hex: string): [number, number, number] {
@@ -80,7 +82,8 @@ test.describe('catalog baker', () => {
       writeFileSync(resolve(CATALOG, file), JSON.stringify(out.data, null, 2) + '\n');
       const manifestPath = resolve(CATALOG, 'manifest.json');
       const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { entries: Array<Record<string, unknown>> };
-      const row = { id: meta.id, name: meta.name, file, language: 'manifold-js', description: meta.description };
+      const row: Record<string, unknown> = { id: meta.id, name: meta.name, file, language: 'manifold-js', description: meta.description };
+      if (meta.group) row.group = meta.group;
       const idx = manifest.entries.findIndex(e => e.id === meta.id);
       if (idx >= 0) manifest.entries[idx] = row; else manifest.entries.push(row);
       writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');

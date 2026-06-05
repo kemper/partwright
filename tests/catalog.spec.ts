@@ -20,10 +20,11 @@ test.describe('Catalog page (static)', () => {
     expect(await page.evaluate(() => 'partwright' in window)).toBe(false);
 
     const sections = page.locator('main section[data-category]');
-    await expect(sections).toHaveCount(6);
+    await expect(sections).toHaveCount(7);
 
+    // The curated 'fidget-toys' group leads; engine-derived categories follow.
     const ids = await sections.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.category));
-    expect(ids).toEqual(['customizable', 'manifold', 'sdf', 'voxel', 'scad', 'brep']);
+    expect(ids).toEqual(['fidget-toys', 'customizable', 'manifold', 'sdf', 'voxel', 'scad', 'brep']);
 
     const count = await sections.count();
     for (let i = 0; i < count; i++) {
@@ -44,10 +45,28 @@ test.describe('Catalog page (static)', () => {
     expect(tileCount).toBeGreaterThan(0);
 
     await expect(customizable.locator('span:has-text("Parametric")')).toHaveCount(tileCount);
+    // Every customizable tile is parametric. Parametric badges may also appear in
+    // a curated group (e.g. the parametric fidget toys), but nowhere else — so the
+    // page-wide badge total equals the customizable + curated-group badge counts.
+    const fidget = page.locator('main section[data-category="fidget-toys"]');
+    const fidgetBadges = await fidget.locator('span:has-text("Parametric")').count();
     const totalBadges = await page.locator('main span:has-text("Parametric")').count();
-    expect(totalBadges).toBe(tileCount);
+    expect(totalBadges).toBe(tileCount + fidgetBadges);
 
     await expect(customizable).toContainText('Layer Cake');
+  });
+
+  test('the curated Fidget Toys group leads the catalog and holds the fidgets', async ({ page }) => {
+    await gotoCatalog(page);
+
+    const sections = page.locator('main section[data-category]');
+    await expect(sections.first()).toHaveAttribute('data-category', 'fidget-toys');
+
+    const fidget = page.locator('main section[data-category="fidget-toys"]');
+    await expect(fidget.locator('h2')).toHaveText('Fidget Toys');
+    expect(await fidget.locator('div.grid > a').count()).toBe(10);
+    await expect(fidget).toContainText('Twisty Fidget Ball');
+    await expect(fidget).toContainText('Ball-in-Cage');
   });
 
   test('search narrows tiles, updates section counts, and hides empty sections', async ({ page }) => {
