@@ -124,7 +124,7 @@ import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
 import { setReliefSettings, getReliefSettings, updateReliefSettings, isReliefSession, getPreviewModeFor } from './relief/reliefSettings';
 import { saveReliefSource, getReliefSource } from './relief/reliefSource';
-import { listFilaments, hexToRgb } from './relief/filaments';
+import { listFilaments, hexToRgb, getPaletteCapacity } from './relief/filaments';
 import { meshBounds } from './color/slabPaint';
 import { openReliefImportModal } from './ui/reliefImportModal';
 import { mountReliefStudio, type ReliefStudioHandle } from './ui/reliefStudio';
@@ -145,7 +145,7 @@ import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
-import { initImagePaintUI, setSmoothStampCallback } from './color/imagePaintUI';
+import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook } from './color/imagePaintUI';
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
@@ -174,10 +174,10 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
-import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
-import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
+import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
+import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
 import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
@@ -278,6 +278,113 @@ export interface ExampleEntry {
   code: string;
   language: Language;
 }
+
+// Starter snippets seeded into the editor when a language is first opened
+// (toolbar/AI language toggle, new session, new part). Each is a small,
+// instantly-rendering model chosen to show off what its engine is good at.
+// The manifold-js starter lives in examples/basic_shapes.js (it doubles as
+// the landing-page default — see `defaultCode`); the other three live here.
+
+// OpenSCAD: a capability sampler laid out in a row — boolean difference,
+// minkowski-rounded box, a parametric module + linear_extrude twist, and a
+// rotate_extrude vase. Pure OpenSCAD (no BOSL2), so there's no library
+// download and it renders instantly.
+const STARTER_SCAD = `// OpenSCAD capability sampler — a CSG boolean and a parametric twist extrude
+// on one tray (so it stays a single solid). Pure OpenSCAD (no libraries) and
+// kept deliberately small so it renders fast. Edit a block and re-run.
+$fn = 24;
+
+// Tray base — ties the two demos into one connected solid (top at z = 0).
+translate([0, 0, -2]) cube([40, 22, 4], center = true);
+
+// 1) Boolean difference: a cube with a bore (CSG is OpenSCAD's core trick).
+translate([-10, 0, 5.5]) difference() {
+  cube(12, center = true);
+  cylinder(h = 16, r = 3, center = true);
+}
+
+// 2) Twisted star column: a parametric module fed into linear_extrude.
+module star(outer = 7, inner = 3, points = 6) {
+  polygon([for (i = [0 : 2 * points - 1])
+    let (r = (i % 2 == 0) ? outer : inner, a = i * 180 / points)
+    [r * cos(a), r * sin(a)]]);
+}
+translate([10, 0, -0.5]) linear_extrude(height = 15, twist = 140, slices = 24)
+  star();`;
+
+// BREP / replicad — a capability sampler laid out in a row: a fully-rounded
+// box, a knob with a filleted top rim + chamfered base, a cone fused onto a
+// cylinder, and a bracket with rounded corners + bored holes. Shows the BREP
+// headline (true selective fillets/chamfers + exact booleans + STEP). Small
+// enough that the OCCT solver runs in well under a second even cold.
+const STARTER_REPLICAD = `// BREP / replicad capability sampler — exact surfaces with true fillets,
+// chamfers, and booleans (and STEP export), fused onto one tray so it stays a
+// single solid. Edit a block and re-run.
+const { BREP } = api;
+
+// 1) A rounded box — fillet with no filter rounds every edge at once.
+const rounded = BREP.box([18, 18, 10]).fillet(2.5);
+
+// 2) A knob: cylinder with a filleted top rim and a chamfered base.
+const knob = BREP.cylinder(8, 14)
+  .fillet(2, { maxZ: 13.999, parallelToPlane: 'XY' })
+  .chamfer(0.8, { minZ: 0.001, parallelToPlane: 'XY' });
+
+// 3) A finial: a cone fused onto a cylinder (boolean union of two solids).
+const finial = BREP.cone(7, 4, 7)
+  .fuse(BREP.cylinder(4, 8).translate([0, 0, 7]));
+
+// 4) A bracket: a box with rounded vertical corners and two bored holes.
+const bracket = BREP.box([20, 14, 8])
+  .fillet(3, { inDirection: [0, 0, 1] })
+  .cut(BREP.cylinder(2, 12).translate([-6, 0, -2]))
+  .cut(BREP.cylinder(2, 12).translate([ 6, 0, -2]));
+
+// A tray base fuses the four demos into one connected solid.
+const tray = BREP.box([86, 24, 3]).translate([4, 0, -2]);
+return tray
+  .fuse(rounded.translate([-30, 0, 0]))
+  .fuse(knob.translate([-6, 0, 0]))
+  .fuse(finial.translate([16, 0, 0]))
+  .fuse(bracket.translate([38, 0, 0]));`;
+
+// Voxel — a layered pine tree: a loop builds tapering canopy tiers in
+// alternating greens, with snowy caps, ornaments, and a gold star, so the
+// first paint shows the fillBox / set workflow on a fuller model.
+const STARTER_VOXEL = `// Voxel pine tree — colored cubes on an integer grid (1 voxel = 1 unit).
+// A loop builds tapering canopy tiers; ornaments and a star finish it.
+const { voxels } = api;
+const v = voxels();
+
+// Trunk
+v.fillBox([-1, -1, 0], [0, 0, 3], '#7a4a22');
+
+// Canopy: stacked square tiers, each smaller than the one below, in
+// alternating green shades for depth.
+const greens = ['#2e7d32', '#388e3c', '#43a047', '#4caf50', '#66bb6a'];
+let z = 4;
+for (let i = 0; i < 6; i++) {
+  const half = 6 - i;
+  v.fillBox([-half, -half, z], [half - 1, half - 1, z + 1], greens[i % greens.length]);
+  z += 2;
+}
+
+// Snowy caps (a few light voxels on tier edges).
+v.set(-5, 2, 5, '#eaf6ff');
+v.set(3, -4, 7, '#eaf6ff');
+v.set(-2, 3, 9, '#eaf6ff');
+
+// Ornaments dotted around the tree.
+v.set(5, 0, 4, '#e53935');
+v.set(-4, -4, 6, '#fdd835');
+v.set(3, 3, 8, '#1e88e5');
+v.set(-2, 1, 10, '#e53935');
+
+// Gold star on top.
+v.set(0, 0, z, '#ffd23b');
+
+// Tip: return v.smooth() for rounded edges (see /ai/voxel.md).
+return v;`;
 
 // Customizer state. `currentParamSchema` is the parameter schema the active
 // model declared via `api.params({...})` on its last run (null when it declared
@@ -916,13 +1023,21 @@ function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }
     depth: d.depth !== undefined && d.depth > 0 ? d.depth : d.radius * 0.5,
     spray: d.spray,
   };
+  // Wrap tolerance: a finite gate (< 180°) needs the geodesic reachability field
+  // even in slab mode (built alongside the prism's normals). Absent ⇒ 180° (no
+  // gate) for strokes saved before the slider — kept byte-identical.
+  const wrapAngleDeg = d.wrapAngleDeg ?? 180;
+  const maxBendCos = wrapAngleGate(wrapAngleDeg);
   const base = paintBaseMesh ?? currentMeshData;
   if (base) {
     if (surface === 'geodesic') {
-      stroke.geoField = buildGeodesicField(base, d.samples, d.radius);
+      stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
     } else {
       stroke.sampleNormals = deriveSampleNormals(d.samples, base);
       stroke.sampleTangents = stroke.sampleNormals.map(tangentBasis);
+      if (wrapAngleDeg < 180) {
+        stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
+      }
     }
     strokeCache.set(d, { base, stroke });
   }
@@ -993,7 +1108,7 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   for (const region of standardRegions) {
     const { triangles, perTriColors } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
     if (triangles.size > 0) {
-      addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false, perTriColors);
+      addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false, region.slotId, perTriColors);
       report.carried.push(region.name);
     } else {
       report.dropped.push(region.name);
@@ -1027,7 +1142,7 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
         const refined = smoothReplayCb(imageData, stampOpts, d.maxEdge);
         if (refined && refined.result.entries.length > 0) {
           const triangles = new Set(refined.result.perTriColors.keys());
-          addRegion(region.name, region.color, region.source, d, triangles, region.visible !== false, refined.result.perTriColors);
+          addRegion(region.name, region.color, region.source, d, triangles, region.visible !== false, region.slotId, refined.result.perTriColors);
           report.carried.push(region.name);
         } else {
           report.dropped.push(region.name);
@@ -2311,6 +2426,9 @@ async function main() {
         // interactive: true → the wizard is the only entry point that may show
         // the import-target modal (console/AI imports stay modal-free).
         await createReliefFromImageData(image, opts, name || 'relief', sourceFile, true);
+        // Colour reliefs bring their own palette of cluster colours — nudge the
+        // user to reconcile them. Tonal (luminance) reliefs have no colours.
+        if (opts.mode === 'quantized') nudgePaletteAfterColorImport();
       },
       onCreateSvg: async (svgText, opts, name, sourceFile) => {
         await createReliefFromSvgText(svgText, opts, name || 'relief', sourceFile, true);
@@ -2733,7 +2851,15 @@ async function main() {
       // the ImageDataLike→ImageData narrowing is safe here.
       await registerImportSnapshot(sourceFile, chosenName, 'IMAGE', meta, createThumbnailFromImageData(chosenImage as ImageData));
     }
+    nudgePaletteAfterColorImport();
     return true;
+  }
+
+  /** After an import that brings in its own colours (voxel art, colour relief),
+   *  nudge the user toward the palette tool to match those colours to their
+   *  filaments — rather than constraining the importers to the palette. */
+  function nudgePaletteAfterColorImport(): void {
+    showToast('Imported with colours — open 🧵 Palette to match them to your filaments.', { variant: 'neutral', source: 'import' });
   }
 
   /** Import an image as a colored voxel billboard in a new voxel session.
@@ -3027,9 +3153,12 @@ async function main() {
   // wrapper (`Manifold.ofMesh` / `Manifold.compose`) main already uses for STL
   // imports and simplify-bakes, so the result is an ordinary, editable version.
 
-  /** True when the editor still holds a fresh starter snippet (blank, the
-   *  default example, or a "New session"/"New part" cube) — i.e. nothing worth
-   *  preserving before an import overwrites it. */
+  /** True when the editor still holds a fresh starter snippet (blank or the
+   *  current manifold-js default) — i.e. nothing worth preserving before an
+   *  import overwrites it. The trailing regex is kept only for back-compat with
+   *  legacy saved drafts that hold the old `Manifold.cube([10,10,10])` starter
+   *  (optionally prefixed with a `// New session`/`// New part` comment that
+   *  `resetEditorToStarter` no longer emits). */
   function isStarterCode(code: string): boolean {
     const t = code.trim();
     if (!t) return true;
@@ -3641,12 +3770,25 @@ async function main() {
     const dimensions = Array.isArray(rawDims) && rawDims.length === 3 && rawDims.every(n => typeof n === 'number')
       ? (rawDims as [number, number, number])
       : null;
+    // Colour-aware warnings. Colour-carrying formats (3MF/GLB/OBJ) warn when the
+    // model needs more filament colours than the palette's slot capacity; STL
+    // can't carry colour at all, so a painted model warns that colours drop.
+    const colorCarrying = format === '3MF' || format === 'GLB' || format === 'OBJ';
+    let colorOverBudget: { used: number; capacity: number } | undefined;
+    if (colorCarrying && hasColorRegions()) {
+      const used = getDistinctRegionColors().length;
+      const capacity = getPaletteCapacity();
+      if (used > capacity) colorOverBudget = { used, capacity };
+    }
+    const colorDropped = format === 'STL' && (hasColorRegions() || hasModelColorRegions());
     return {
       unitless: _getUnits() === 'unitless',
       dimensions,
       isManifold: gd?.isManifold !== false, // treat unknown as manifold (no false alarm)
       componentCount: typeof gd?.componentCount === 'number' ? gd.componentCount : 1,
       format,
+      colorOverBudget,
+      colorDropped,
     };
   }
 
@@ -3933,33 +4075,26 @@ async function main() {
   // Reset the editor to a blank starting point for a freshly created session.
   // Shared by the session bar’s "+ New Session" button and the session modal’s,
   // so both clear the previous session’s code instead of leaving it behind.
-  function resetEditorToStarter(comment: string) {
+  function resetEditorToStarter() {
     dropPaintState();
     const lang = getActiveLanguage();
-    let body: string;
-    if (lang === 'scad') {
-      body = 'cube([10, 10, 10], center=true);';
-    } else if (lang === 'replicad') {
-      body = 'const { BREP } = api;\nconst body = BREP.box([30, 30, 10]).fillet(3, { inDirection: [0, 0, 1] });\nconst bore = BREP.cylinder(4, 12).translate([0, 0, -1]);\nreturn body.cut(bore);';
-    } else if (lang === 'voxel') {
-      body = "const { voxels } = api;\nconst v = voxels();\nv.fillBox([-5, -5, 0], [4, 4, 0], '#6b8cff');\nv.fillBox([-1, -1, 1], [1, 1, 6], '#ff8c42');\nv.set(0, 0, 7, '#ff3b30');\nreturn v;";
-    } else {
-      body = 'const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
-    }
-    const freshCode = `// ${comment}\n${body}`;
+    const freshCode = lang === 'scad' ? STARTER_SCAD
+      : lang === 'replicad' ? STARTER_REPLICAD
+      : lang === 'voxel' ? STARTER_VOXEL
+      : defaultCode;
     setValue(freshCode);
     runCode(freshCode);
   }
 
   function startNewSessionInEditor() {
-    resetEditorToStarter('New session');
+    resetEditorToStarter();
     _clearImages();
   }
 
   // Reset the editor for a freshly created part. Unlike a new session, parts
   // share the session’s reference images, so those are left intact.
   function startNewPartInEditor() {
-    resetEditorToStarter('New part');
+    resetEditorToStarter();
   }
 
   // Load a part’s active version into the editor, or reset to a blank part when
@@ -6111,6 +6246,22 @@ async function main() {
     const finalResult = stampImageOntoMesh(mesh, imageData, stampOpts);
     return { result: finalResult, parentToChildren };
   });
+  // Commit a freshly-placed stamp region with the paint reconciler suspended.
+  // The stamp flow already built the final mesh and resolved every region's
+  // triangles/colours, so a reconcile here would only ever do harm: with brush
+  // strokes (or smooth slabs/etc.) present it rebuilds the mesh from base and
+  // re-resolves regions, wiping the stamp (whose colours live in runtime
+  // perTriColors, not its descriptor) and any pre-existing paint. Suspend it,
+  // run the addRegion, then re-composite colours directly.
+  setStampCommitHook((commit) => {
+    suspendReconcile = true;
+    try {
+      commit();
+    } finally {
+      suspendReconcile = false;
+    }
+    paintedColorRefresh();
+  });
   initVoxelPaintUI(clipControls, {
     activate: async () => {
       const code = getValue();
@@ -6531,46 +6682,6 @@ async function main() {
     setStatus(statusBar, 'ready', 'Ready');
   }
 
-  const DRAFT_STUB_JS = '// JavaScript\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
-  const DRAFT_STUB_SCAD = '// OpenSCAD\ncube([10, 10, 10], center=true);';
-  // Voxel — a small colored model so the first paint after switching shows
-  // the workflow (fillBox / set with hex or [r,g,b] colors) immediately.
-  const DRAFT_STUB_VOXEL =
-    '// Voxel — build with colored cubes on an integer grid (1 voxel = 1 unit).\n' +
-    'const { voxels } = api;\n' +
-    'const v = voxels();\n' +
-    "v.fillBox([-5, -5, 0], [4, 4, 0], '#6b8cff');   // a 10x10 base slab\n" +
-    "v.fillBox([-1, -1, 1], [1, 1, 6], '#ff8c42');   // a tower\n" +
-    "v.set(0, 0, 7, '#ff3b30');                       // a red cap\n" +
-    '// Tip: return v.smooth() for rounded edges (see /ai/voxel.md).\n' +
-    'return v;\n';
-  // BREP / replicad — quick showcase of the headline features:
-  //   - selective fillet (the inDirection-based workaround for box edges,
-  //     called out in the gotchas cheat sheet at the top of replicad.md)
-  //   - true chamfer on the top rim
-  //   - boolean subtract (cut) of a cylinder bore
-  // The result is a rounded-corner mounting bracket with a bevelled bore.
-  // It’s small enough that the OCCT solver runs in well under a second on
-  // a cold WASM load, so the first paint into the editor after switching
-  // languages still feels instant.
-  const DRAFT_STUB_REPLICAD =
-    '// BREP / replicad — exact-surface modeling\n' +
-    "const { BREP } = api;\n" +
-    '\n' +
-    '// Body: 30x30x10 box with rounded vertical corners and a chamfered top rim.\n' +
-    'const body = BREP.box([30, 30, 10])\n' +
-    '  // Round the four vertical corners. `inDirection: [0,0,1]` requires the\n' +
-    "  // edge be Z-parallel — needed because inBox alone is unreliable on a\n" +
-    "  // BREP.box’s planar coincident edges (see replicad.md \"Gotchas\").\n" +
-    '  .fillet(3, { inDirection: [0, 0, 1] })\n' +
-    '  // Bevel the top rim — the four edges of the top face. Same gotcha:\n' +
-    "  // pair the maxZ bound with parallelToPlane: 'XY'.\n" +
-    "  .chamfer(0.6, { maxZ: 9.999, parallelToPlane: 'XY' });\n" +
-    '\n' +
-    '// Boolean cut: a 4 mm bore through the centre.\n' +
-    'const bore = BREP.cylinder(4, 12).translate([0, 0, -1]);\n' +
-    'return body.cut(bore);\n';
-
   /** Toolbar / AI language toggle: stash the current editor buffer as a draft
    *  on the active session, swap engines, then restore the target language’s
    *  draft (seeded with a stub if none has been stashed yet). Versions are not
@@ -6606,10 +6717,10 @@ async function main() {
       if (draft) { nextCode = draft.code; nextCompanions = draft.companionFiles; }
     }
     if (nextCode === null) {
-      nextCode = lang === 'scad' ? DRAFT_STUB_SCAD
-        : lang === 'replicad' ? DRAFT_STUB_REPLICAD
-        : lang === 'voxel' ? DRAFT_STUB_VOXEL
-        : DRAFT_STUB_JS;
+      nextCode = lang === 'scad' ? STARTER_SCAD
+        : lang === 'replicad' ? STARTER_REPLICAD
+        : lang === 'voxel' ? STARTER_VOXEL
+        : defaultCode;
     }
     // Restore the target language’s companion set: the SCAD draft’s saved
     // companions, or empty for any non-SCAD buffer (which never has them).
@@ -10630,6 +10741,21 @@ async function main() {
       return { depth: getPaintBrushDepth() };
     },
 
+    /** Wrap tolerance for the UI brush tool: the maximum edge bend (degrees,
+     *  0–180) paint may flow across. Applies to both surface modes — paint
+     *  follows gentle curves / bumps but stops at sharper folds. 90° (default)
+     *  stops at right-angle corners; 180° wraps across any edge. */
+    getBrushWrapAngle() {
+      return { wrapAngleDeg: getPaintBrushWrapAngle() };
+    },
+    setBrushWrapAngle(deg: number) {
+      if (typeof deg !== 'number' || !Number.isFinite(deg)) {
+        return { error: `setBrushWrapAngle(deg): deg must be a finite number in ${WRAP_ANGLE_MIN}..${WRAP_ANGLE_MAX}` };
+      }
+      setPaintBrushWrapAngle(deg);
+      return { wrapAngleDeg: getPaintBrushWrapAngle() };
+    },
+
     /** Smooth-brush settings for the UI brush tool. When smooth is on (and the
      *  brush has a radius), a stroke subdivides the triangles its edge crosses
      *  until they are below a target edge length, so the painted outline is
@@ -10677,11 +10803,12 @@ async function main() {
       maxEdge?: number;
       surface?: string;
       depth?: number;
+      wrapAngleDeg?: number;
       name?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first, then paint.' };
       if (!opts || typeof opts !== 'object') return { error: 'paintStroke(opts): opts object required' };
-      const { points, radius, color, shape, resolution, maxEdge, surface, depth, name } = opts;
+      const { points, radius, color, shape, resolution, maxEdge, surface, depth, wrapAngleDeg, name } = opts;
       if (!Array.isArray(points) || points.length === 0) {
         return { error: 'paintStroke: points must be a non-empty array of [x,y,z] surface points (use probePixel to get them)' };
       }
@@ -10710,6 +10837,9 @@ async function main() {
       if (depth !== undefined && (typeof depth !== 'number' || !Number.isFinite(depth) || depth < 0)) {
         return { error: 'paintStroke: depth must be a non-negative finite number (mesh units) when provided' };
       }
+      if (wrapAngleDeg !== undefined && (typeof wrapAngleDeg !== 'number' || !Number.isFinite(wrapAngleDeg) || wrapAngleDeg < WRAP_ANGLE_MIN || wrapAngleDeg > WRAP_ANGLE_MAX)) {
+        return { error: `paintStroke: wrapAngleDeg must be a number in ${WRAP_ANGLE_MIN}..${WRAP_ANGLE_MAX} (max edge bend paint flows across) when provided` };
+      }
       const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
       // maxEdge (absolute) overrides; otherwise radius / resolution, default 64
       // (the exact-outline clip keeps edges crisp, so curves need fewer segments).
@@ -10722,6 +10852,9 @@ async function main() {
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
         kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target,
         surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0,
+        // Default to no gate (180°) for the console API so a paintStroke without
+        // wrapAngleDeg behaves exactly as before; the UI brush passes 90°.
+        wrapAngleDeg: wrapAngleDeg ?? 180,
       };
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,

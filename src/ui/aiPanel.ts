@@ -8,6 +8,7 @@ import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerC
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
+import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
 import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
@@ -751,8 +752,12 @@ function buildDrawer(): void {
 
   // Bottom section — rewind, toggles, cost, input
   const bottomSection = document.createElement('div');
-  bottomSection.className = 'flex flex-col shrink-0 overflow-hidden';
-  bottomSection.style.height = '220px';
+  // min-height (not a fixed height) so the section can grow to keep the input
+  // readable: when sibling rows below appear (progress, pending images, queued
+  // badge, a wrapped toggle strip) they no longer compress the textarea — the
+  // whole section expands instead, preserving the textarea's 3-row floor.
+  bottomSection.className = 'flex flex-col shrink-0';
+  bottomSection.style.minHeight = '220px';
   initInputResizer(inputResizeHandle, bottomSection);
 
 
@@ -794,8 +799,14 @@ function buildDrawer(): void {
 
   const ta = document.createElement('textarea');
   ta.placeholder = 'Ask the AI to model something…  (type / for commands)';
-  ta.rows = 2;
-  ta.className = 'w-full flex-1 min-h-0 px-2 py-1.5 rounded bg-zinc-800 border border-zinc-600 text-zinc-100 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 resize-none';
+  ta.rows = 3;
+  // Hard 3-row floor: `flex-1` still lets the textarea grow to fill the pane,
+  // but min-height keeps it readable/typeable no matter what siblings claim
+  // space below. 3 rows of text-sm (20px line-height) + py-1.5 padding +
+  // border ≈ 74px. Replaces the old `min-h-0`, which let flexbox squish it
+  // all the way to 0.
+  ta.className = 'w-full flex-1 px-2 py-1.5 rounded bg-zinc-800 border border-zinc-600 text-zinc-100 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 resize-none';
+  ta.style.minHeight = '74px';
   ta.addEventListener('keydown', e => {
     // When the slash-command menu is open it owns the arrow/Tab/Enter/Escape
     // keys so the user can navigate and run a command without it being sent
@@ -1022,7 +1033,7 @@ function initInputResizer(handle: HTMLElement, bottomSection: HTMLElement): void
     const delta = startY - e.clientY;
     const minH = 100;
     const maxH = 520;
-    bottomSection.style.height = `${Math.max(minH, Math.min(maxH, startHeight + delta))}px`;
+    bottomSection.style.minHeight = `${Math.max(minH, Math.min(maxH, startHeight + delta))}px`;
   });
 
   const onInputResizeEnd = (e: PointerEvent) => {
@@ -2622,6 +2633,7 @@ const SLASH_HANDLERS: Record<SlashCommandName, () => void> = {
   export: () => { exportCurrentChat(); },
   models: () => { void showAiSettingsModal({ onChange: afterAiSettingsChange }); },
   help: () => { openSlashHelp(); },
+  portrait: () => { prefillAiInput(PHOTO_BUST_PROMPT); },
 };
 
 /** Interpret the current input as a slash command. Returns true when it was a

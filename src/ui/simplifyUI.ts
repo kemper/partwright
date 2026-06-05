@@ -19,7 +19,7 @@ import { showToast } from './toast';
 import { isWireframeVisible, setWireframeVisible } from '../renderer/viewport';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
-import { QUALITY_OPTIONS, QUALITY_SEGMENTS, loadQualitySettings } from '../geometry/qualitySettings';
+import { QUALITY_OPTIONS, QUALITY_SEGMENTS, loadQualitySettings, type QualitySettings } from '../geometry/qualitySettings';
 import { saveQualityForLang, initQualityLogic, notifyLanguageChange as notifyQualityLangChange } from './curvatureQualityPanel';
 import type { Language } from '../geometry/engine';
 
@@ -115,6 +115,13 @@ const MODE_INACTIVE = 'flex-1 px-2 py-1 rounded text-xs text-zinc-400 bg-zinc-70
 const MODE_ACTIVE = 'flex-1 px-2 py-1 rounded text-xs text-blue-300 bg-blue-500/20 transition-colors border border-blue-500/40';
 
 let qualityRadios: HTMLInputElement[] = [];
+let qualityApplyBtn: HTMLButtonElement | null = null;
+// The committed (applied) curvature quality to revert to when the panel closes
+// without an explicit Apply. Captured on open and updated each time the user
+// clicks Apply quality. Picking a radio only *previews* (re-renders live); it's
+// not persisted until Apply, and closing the panel reverts an un-applied
+// preview so a heavy quality the user was just trying out doesn't stick.
+let committedQuality: QualitySettings | null = null;
 let stopRenderBtn: HTMLButtonElement | null = null;
 let isScadLang = false;
 let onCancelRender: (() => void) | null = null;
@@ -220,6 +227,10 @@ export function notifyQualityLangChanged(lang: Language): void {
   notifyQualityLangChange(lang);
   isScadLang = lang === 'scad';
   syncQualityRadios();
+  // The language switch silently swaps in that language's quality default, so
+  // re-baseline the commit/preview against it.
+  committedQuality = { ...loadQualitySettings() };
+  updateQualityApplyEnabled();
   if (stopRenderBtn && !isScadLang) stopRenderBtn.classList.add('hidden');
 }
 
@@ -239,6 +250,34 @@ function syncQualityRadios(): void {
   for (const radio of qualityRadios) {
     radio.checked = radio.value === current.quality;
   }
+}
+
+function qualityMatches(a: QualitySettings, b: QualitySettings): boolean {
+  return a.quality === b.quality && a.customSegments === b.customSegments;
+}
+
+/** Enable "Apply quality" only while a previewed quality differs from the
+ *  committed one (mirrors the simplify Apply's "no-op stays disabled" rule). */
+function updateQualityApplyEnabled(): void {
+  if (!qualityApplyBtn) return;
+  qualityApplyBtn.disabled = !committedQuality || qualityMatches(loadQualitySettings(), committedQuality);
+}
+
+/** Commit the currently-previewed quality so it survives the panel closing. */
+function applyQualityPreview(): void {
+  committedQuality = { ...loadQualitySettings() };
+  updateQualityApplyEnabled();
+}
+
+/** Revert an un-applied quality preview back to the committed setting. Called
+ *  when the panel closes so a live preview the user didn't Apply doesn't stick. */
+function revertQualityPreview(): void {
+  if (committedQuality && !qualityMatches(loadQualitySettings(), committedQuality)) {
+    onCancelRender?.();
+    saveQualityForLang({ ...committedQuality });
+  }
+  syncQualityRadios();
+  updateQualityApplyEnabled();
 }
 
 function toggle(): void {
@@ -268,6 +307,11 @@ function openPanel(): void {
     prevWireframeVisible = isWireframeVisible();
     if (!prevWireframeVisible) setWireframeVisible(true);
   }
+  // Snapshot the live quality so radio changes preview against it and an
+  // un-applied preview reverts here on close.
+  committedQuality = { ...loadQualitySettings() };
+  syncQualityRadios();
+  updateQualityApplyEnabled();
   refresh(true);
 }
 
@@ -428,6 +472,7 @@ function requestKey(r: MeshOpRequest): string {
 }
 
 function closePanel(): void {
+  revertQualityPreview();
   panel?.classList.add('hidden');
   document.removeEventListener('keydown', onSimplifyEscape);
   closeViewportPanel(registryEntry);
@@ -637,9 +682,12 @@ function buildPanel(): HTMLElement {
     radio.className = 'accent-blue-400 cursor-pointer flex-shrink-0';
     radio.addEventListener('change', () => {
       if (!radio.checked) return;
+      // Live preview only — re-render at the new quality but don't commit it.
+      // Apply quality persists it; closing the panel reverts it.
       onCancelRender?.();
       const { customSegments } = loadQualitySettings();
       saveQualityForLang({ quality: opt.id, customSegments });
+      updateQualityApplyEnabled();
     });
     qualityRadios.push(radio);
 
@@ -656,6 +704,15 @@ function buildPanel(): HTMLElement {
   }
   qualitySection.appendChild(radiosWrap);
   syncQualityRadios();
+
+  qualityApplyBtn = document.createElement('button');
+  qualityApplyBtn.id = 'quality-apply';
+  qualityApplyBtn.className = 'w-full mt-2 px-2 py-1.5 rounded text-xs font-medium bg-blue-500/30 text-blue-200 [@media(hover:hover)]:hover:bg-blue-500/40 transition-colors border border-blue-500/50 disabled:opacity-40 disabled:cursor-not-allowed';
+  qualityApplyBtn.textContent = 'Apply quality';
+  qualityApplyBtn.title = 'Commit the previewed curvature quality. Closing the panel without applying reverts it.';
+  qualityApplyBtn.disabled = true;
+  qualityApplyBtn.addEventListener('click', applyQualityPreview);
+  qualitySection.appendChild(qualityApplyBtn);
 
   stopRenderBtn = document.createElement('button');
   stopRenderBtn.className = 'hidden w-full mt-2 px-2 py-1 rounded text-xs bg-red-500/20 text-red-300 [@media(hover:hover)]:hover:bg-red-500/30 transition-colors border border-red-500/40';

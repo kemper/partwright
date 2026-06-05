@@ -166,6 +166,47 @@ export function findCoplanarRegion(
   return result;
 }
 
+/** Restrict a candidate triangle set to the part connected to `seedTri`
+ *  without crossing an edge sharper than the wrap tolerance — the
+ *  adjacent-pair (accumulating) dihedral gate of `findCoplanarRegion`, but
+ *  confined to `candidates`. Used to apply the brush's wrap tolerance to the
+ *  legacy screen-projection footprint (which is a spatial set with no surface
+ *  gate of its own), so "don't wrap past sharp edges" works with smooth edges
+ *  off exactly as it does on (where `buildGeodesicField` gates the flood fill).
+ *
+ *  `normalTolerance` is the cosine of the max bend angle (as in
+ *  `findCoplanarRegion`): -1 (cos 180°) = no gate, returns `candidates`
+ *  unchanged. The walk only steps into triangles already in `candidates`, so
+ *  the result is always a subset. When the seed isn't in `candidates` the set
+ *  is returned untouched (nothing to anchor the walk). */
+export function gateRegionByBend(
+  candidates: Set<number>,
+  seedTri: number,
+  adjacency: AdjacencyGraph,
+  normalTolerance: number,
+): Set<number> {
+  if (normalTolerance <= -1 || !candidates.has(seedTri)) return candidates;
+  const { neighbors, normals } = adjacency;
+  const result = new Set<number>([seedTri]);
+  const stack = [seedTri];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    const cnx = normals[current * 3];
+    const cny = normals[current * 3 + 1];
+    const cnz = normals[current * 3 + 2];
+    const adj = neighbors[current];
+    for (let i = 0; i < adj.length; i++) {
+      const neighbor = adj[i];
+      if (result.has(neighbor) || !candidates.has(neighbor)) continue;
+      const dot = cnx * normals[neighbor * 3] + cny * normals[neighbor * 3 + 1] + cnz * normals[neighbor * 3 + 2];
+      if (dot < normalTolerance) continue;
+      result.add(neighbor);
+      stack.push(neighbor);
+    }
+  }
+  return result;
+}
+
 /** BFS from a seed triangle, accepting each neighbor whose normal is
  *  within `maxSeedDeviationDeg` of the SEED's normal — not the parent's.
  *
