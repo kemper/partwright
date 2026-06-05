@@ -174,8 +174,8 @@ import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontS
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
 import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
-import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
-import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
+import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
+import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
 import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
@@ -914,13 +914,21 @@ function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }
     depth: d.depth !== undefined && d.depth > 0 ? d.depth : d.radius * 0.5,
     spray: d.spray,
   };
+  // Wrap tolerance: a finite gate (< 180°) needs the geodesic reachability field
+  // even in slab mode (built alongside the prism's normals). Absent ⇒ 180° (no
+  // gate) for strokes saved before the slider — kept byte-identical.
+  const wrapAngleDeg = d.wrapAngleDeg ?? 180;
+  const maxBendCos = wrapAngleGate(wrapAngleDeg);
   const base = paintBaseMesh ?? currentMeshData;
   if (base) {
     if (surface === 'geodesic') {
-      stroke.geoField = buildGeodesicField(base, d.samples, d.radius);
+      stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
     } else {
       stroke.sampleNormals = deriveSampleNormals(d.samples, base);
       stroke.sampleTangents = stroke.sampleNormals.map(tangentBasis);
+      if (wrapAngleDeg < 180) {
+        stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
+      }
     }
     strokeCache.set(d, { base, stroke });
   }
@@ -10540,6 +10548,21 @@ async function main() {
       return { depth: getPaintBrushDepth() };
     },
 
+    /** Wrap tolerance for the UI brush tool: the maximum edge bend (degrees,
+     *  0–180) paint may flow across. Applies to both surface modes — paint
+     *  follows gentle curves / bumps but stops at sharper folds. 90° (default)
+     *  stops at right-angle corners; 180° wraps across any edge. */
+    getBrushWrapAngle() {
+      return { wrapAngleDeg: getPaintBrushWrapAngle() };
+    },
+    setBrushWrapAngle(deg: number) {
+      if (typeof deg !== 'number' || !Number.isFinite(deg)) {
+        return { error: `setBrushWrapAngle(deg): deg must be a finite number in ${WRAP_ANGLE_MIN}..${WRAP_ANGLE_MAX}` };
+      }
+      setPaintBrushWrapAngle(deg);
+      return { wrapAngleDeg: getPaintBrushWrapAngle() };
+    },
+
     /** Smooth-brush settings for the UI brush tool. When smooth is on (and the
      *  brush has a radius), a stroke subdivides the triangles its edge crosses
      *  until they are below a target edge length, so the painted outline is
@@ -10587,11 +10610,12 @@ async function main() {
       maxEdge?: number;
       surface?: string;
       depth?: number;
+      wrapAngleDeg?: number;
       name?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first, then paint.' };
       if (!opts || typeof opts !== 'object') return { error: 'paintStroke(opts): opts object required' };
-      const { points, radius, color, shape, resolution, maxEdge, surface, depth, name } = opts;
+      const { points, radius, color, shape, resolution, maxEdge, surface, depth, wrapAngleDeg, name } = opts;
       if (!Array.isArray(points) || points.length === 0) {
         return { error: 'paintStroke: points must be a non-empty array of [x,y,z] surface points (use probePixel to get them)' };
       }
@@ -10620,6 +10644,9 @@ async function main() {
       if (depth !== undefined && (typeof depth !== 'number' || !Number.isFinite(depth) || depth < 0)) {
         return { error: 'paintStroke: depth must be a non-negative finite number (mesh units) when provided' };
       }
+      if (wrapAngleDeg !== undefined && (typeof wrapAngleDeg !== 'number' || !Number.isFinite(wrapAngleDeg) || wrapAngleDeg < WRAP_ANGLE_MIN || wrapAngleDeg > WRAP_ANGLE_MAX)) {
+        return { error: `paintStroke: wrapAngleDeg must be a number in ${WRAP_ANGLE_MIN}..${WRAP_ANGLE_MAX} (max edge bend paint flows across) when provided` };
+      }
       const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
       // maxEdge (absolute) overrides; otherwise radius / resolution, default 64
       // (the exact-outline clip keeps edges crisp, so curves need fewer segments).
@@ -10632,6 +10659,9 @@ async function main() {
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
         kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target,
         surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0,
+        // Default to no gate (180°) for the console API so a paintStroke without
+        // wrapAngleDeg behaves exactly as before; the UI brush passes 90°.
+        wrapAngleDeg: wrapAngleDeg ?? 180,
       };
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,

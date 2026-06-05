@@ -67,6 +67,16 @@ let brushSurface: 'geodesic' | 'slab' = 'slab';
  *  reach. 0 = auto (half the brush radius), resolved at commit time. */
 let brushPaintDepth = 0;
 
+/** Wrap tolerance in degrees (0–180): paint flows across an edge only when the
+ *  two faces bend by ≤ this angle, so a stroke follows gentle curves / bumpy
+ *  near-coplanar facets but stops at a sharp corner. 90° (default) stops at
+ *  right-angle folds — the outside of a box, or the inner walls of a hollow one;
+ *  180° lets paint wrap across any edge (the pre-slider behaviour). Applies to
+ *  both surface modes. */
+let brushWrapAngle = 90;
+export const WRAP_ANGLE_MIN = 0;
+export const WRAP_ANGLE_MAX = 180;
+
 /** Airbrush spray: when on, the brush sprays a soft speckle instead of a solid
  *  fill. It honours the active surface mode (slab by default, geodesic if
  *  picked), so a slab spray can't bleed through a wall thicker than `depth`.
@@ -285,6 +295,15 @@ export function setBrushPaintDepth(d: number): void {
 
 export function getBrushPaintDepth(): number {
   return brushPaintDepth;
+}
+
+/** Set the wrap tolerance (degrees, 0–180): max edge bend paint may flow across. */
+export function setBrushWrapAngle(deg: number): void {
+  brushWrapAngle = Math.max(WRAP_ANGLE_MIN, Math.min(WRAP_ANGLE_MAX, Math.round(deg)));
+}
+
+export function getBrushWrapAngle(): number {
+  return brushWrapAngle;
 }
 
 /** True when the active brush settings will subdivide the mesh on commit. */
@@ -652,6 +671,7 @@ function commitBrushStroke(): void {
         maxEdge: brushTargetEdge(),
         surface: brushSurface,
         depth: brushPaintDepth,
+        wrapAngleDeg: brushWrapAngle,
         spray: brushSpray ? { strength: brushSprayStrength, softness: brushSpraySoftness, seed: spraySeed++ } : undefined,
       },
       new Set<number>(),

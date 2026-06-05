@@ -30,6 +30,10 @@ import {
   getBrushSmoothDivisor,
   setBrushPaintDepth,
   getBrushPaintDepth,
+  setBrushWrapAngle,
+  getBrushWrapAngle,
+  WRAP_ANGLE_MIN,
+  WRAP_ANGLE_MAX,
   setBrushSurface,
   getBrushSurface,
   setBrushSpray,
@@ -948,6 +952,63 @@ function createBrushControls(): HTMLElement {
     depthWrap.classList.toggle('hidden', getBrushSurface() !== 'slab');
   };
   syncDepthVisibility();
+
+  // Wrap tolerance — how sharp an edge paint may flow across. Applies to both
+  // surface modes: lower stops the stroke at corners (stays on one face), higher
+  // lets it wrap around edges. 180° = wrap freely (the pre-slider behaviour).
+  const wrapLabel = document.createElement('div');
+  wrapLabel.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-1 mt-2 font-medium';
+  wrapLabel.textContent = 'Wrap tolerance';
+  wrap.appendChild(wrapLabel);
+
+  const wrapRow = document.createElement('div');
+  wrapRow.className = 'flex items-center gap-2';
+
+  const wrapSlider = document.createElement('input');
+  wrapSlider.type = 'range';
+  wrapSlider.min = String(WRAP_ANGLE_MIN);
+  wrapSlider.max = String(WRAP_ANGLE_MAX);
+  wrapSlider.step = '1';
+  wrapSlider.value = String(getBrushWrapAngle());
+  wrapSlider.className = 'flex-1 accent-blue-500 min-w-0';
+  wrapSlider.title = 'How sharp an edge paint flows across. Lower keeps the stroke on one face (stops at corners); higher wraps around edges. 90° stops at right-angle folds; 180° wraps freely.';
+
+  const wrapInput = document.createElement('input');
+  wrapInput.type = 'number';
+  wrapInput.min = String(WRAP_ANGLE_MIN);
+  wrapInput.max = String(WRAP_ANGLE_MAX);
+  wrapInput.step = '1';
+  wrapInput.value = String(getBrushWrapAngle());
+  wrapInput.className = 'w-14 px-1 py-0.5 text-[11px] bg-zinc-900/70 border border-zinc-600/60 rounded text-zinc-200 text-right tabular-nums';
+  wrapInput.title = 'Wrap tolerance in degrees (0–180). Edges that bend more than this block the stroke.';
+
+  const wrapUnit = document.createElement('span');
+  wrapUnit.className = 'text-[10px] text-zinc-500';
+  wrapUnit.textContent = '°';
+
+  wrapSlider.addEventListener('input', () => {
+    setBrushWrapAngle(parseInt(wrapSlider.value, 10));
+    wrapInput.value = String(getBrushWrapAngle());
+  });
+  const applyWrap = (): void => {
+    const raw = parseInt(wrapInput.value, 10);
+    if (!Number.isFinite(raw)) { wrapInput.value = String(getBrushWrapAngle()); return; }
+    setBrushWrapAngle(raw);
+    wrapSlider.value = String(getBrushWrapAngle());
+    wrapInput.value = String(getBrushWrapAngle());
+  };
+  wrapInput.addEventListener('change', applyWrap);
+  wrapInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { applyWrap(); wrapInput.blur(); } });
+
+  wrapRow.appendChild(wrapSlider);
+  wrapRow.appendChild(wrapInput);
+  wrapRow.appendChild(wrapUnit);
+  wrap.appendChild(wrapRow);
+
+  const wrapHelp = document.createElement('div');
+  wrapHelp.className = 'text-[10px] text-zinc-500 mt-1';
+  wrapHelp.textContent = 'Stops at corners ←——→ Wraps around edges';
+  wrap.appendChild(wrapHelp);
 
   // Spray (airbrush) — soft geodesic speckle instead of a solid fill. Forces
   // geodesic (a spray can't punch through a wall) and reveals strength/softness.
