@@ -56,6 +56,55 @@ test.describe('Relief Studio', () => {
     expect(Array.isArray(result.guide.bands)).toBe(true);
   });
 
+  // Regression: a colour (quantized) relief is imported render-only to keep its
+  // per-colour seed-region triangle ids, so it carries no Manifold and
+  // isManifold is false. The printability verdict used to translate that into
+  // "non-manifold mesh (not watertight)" — a false alarm pinned to the viewport
+  // — even though the relief mesh is verified watertight at build time. The
+  // render-only case must read as unverified, not failed: no bogus issue, no
+  // alarming geometry warning.
+  test('colour relief import does not raise a false "not watertight" verdict', async ({ page }) => {
+    await page.goto('/editor');
+    await waitForEngine(page);
+
+    const result = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: Record<string, (...a: unknown[]) => unknown> }).partwright;
+      const c = document.createElement('canvas');
+      c.width = 48; c.height = 48;
+      const ctx = c.getContext('2d')!;
+      // Two distinct colour blocks → a quantized relief with per-colour seed
+      // regions → render-only import (the path that triggered the false alarm).
+      ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, 24, 48);
+      ctx.fillStyle = '#e6e6e6'; ctx.fillRect(24, 0, 24, 48);
+      const src = c.toDataURL('image/png');
+
+      const created = await pw.importImageAsRelief({
+        src,
+        mode: 'quantized',
+        options: { resolution: 32, quantized: { output: 'relief', clusters: 2 } },
+      }) as { sessionId?: string; error?: string };
+      const geo = pw.getGeometryData() as {
+        isManifold?: boolean;
+        manifoldStatus?: string;
+        printability?: { printable?: boolean; issues?: string[] };
+        warnings?: string[];
+      };
+      return { created, geo };
+    });
+
+    expect(result.created.error).toBeFalsy();
+    // It really is a render-only import (no Manifold to measure)…
+    expect(result.geo.manifoldStatus).toBe('render-only (not manifold)');
+    expect(result.geo.isManifold).toBe(false);
+    // …so printability is "unverified", not a failed "not watertight" claim.
+    const issues = result.geo.printability?.issues ?? [];
+    expect(issues).not.toContain('non-manifold mesh (not watertight)');
+    expect(result.geo.printability?.printable).toBe(true);
+    // The AI-facing warning must not claim the mesh will fail to print either.
+    const warnings = result.geo.warnings ?? [];
+    expect(warnings.some((w) => /will fail to slice/.test(w))).toBe(false);
+  });
+
   // Regression: the import dropdown was 18rem wide anchored right-edge to the
   // button, so on a 375px viewport it slid off the left edge of the screen.
   // Mobile uses a viewport-edge fixed-position layout instead.
@@ -81,13 +130,34 @@ test.describe('Relief Studio', () => {
     await page.goto('/editor');
     await waitForEngine(page);
 
-    // The Relief panel toggle lives in the viewport overlay alongside Paint /
-    // Measure / Simplify — was previously a top-toolbar button, which got
-    // clipped behind Show Code on narrower viewports.
-    await expect(page.locator('#relief-viewport-toggle')).toBeVisible();
+    // The Relief toolbar button is hidden until the active session is image-derived —
+    // the import menu is the entry point for creating a new relief from scratch.
+    await expect(page.locator('#relief-viewport-toggle')).toBeHidden();
 
     await page.locator('#btn-import').click();
     await expect(page.getByText('Image → keychain / tile / relief…')).toBeVisible();
+    await page.keyboard.press('Escape');
+
+    // Once a relief session is created the toolbar button appears so the user
+    // can re-open the Edit Colors panel.
+    await page.evaluate(async () => {
+      const c = document.createElement('canvas');
+      c.width = 32; c.height = 32;
+      const ctx = c.getContext('2d')!;
+      const img = ctx.createImageData(32, 32);
+      for (let y = 0; y < 32; y++) {
+        for (let x = 0; x < 32; x++) {
+          const v = Math.floor((x / 31) * 255);
+          const o = (y * 32 + x) * 4;
+          img.data[o] = v; img.data[o + 1] = v; img.data[o + 2] = v; img.data[o + 3] = 255;
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+      await (window as unknown as {
+        partwright: { importImageAsRelief: (o: unknown) => Promise<unknown> }
+      }).partwright.importImageAsRelief({ src: c.toDataURL(), mode: 'luminance', options: { resolution: 32 } });
+    });
+    await expect(page.locator('#relief-viewport-toggle')).toBeVisible({ timeout: 10_000 });
   });
 
   // Regression: the wizard once threw mid-build (a const used in its temporal
@@ -114,7 +184,7 @@ test.describe('Relief Studio', () => {
     await page.getByText('Image → keychain / tile / relief…').click();
     await expect(page.getByText('Make a part from an image', { exact: true })).toBeVisible();
 
-    const input = page.locator('input[type="file"][accept*="image"]');
+    const input = page.getByRole('dialog', { name: 'Make a part from an image' }).locator('input[type="file"]');
     await input.setInputFiles({ name: 'grad.png', mimeType: 'image/png', buffer });
 
     // The wizard must react to the chosen image: live preview stat + an enabled
@@ -640,7 +710,7 @@ test.describe('Relief Studio', () => {
     await page.locator('#btn-import').click();
     await page.getByText('Image → keychain / tile / relief…').click();
     await expect(page.getByText('Make a part from an image', { exact: true })).toBeVisible();
-    await page.locator('input[type="file"][accept*="image"]').setInputFiles({ name: 'tiny.png', mimeType: 'image/png', buffer: tinyPng });
+    await page.getByRole('dialog', { name: 'Make a part from an image' }).locator('input[type="file"]').setInputFiles({ name: 'tiny.png', mimeType: 'image/png', buffer: tinyPng });
 
     // Wait for the wizard to react to the file (its inline preview stat).
     await expect(page.locator('text=/Preview · \\d+×\\d+ · \\d+ clusters/').first()).toBeVisible({ timeout: 5000 });
@@ -673,7 +743,7 @@ test.describe('Relief Studio', () => {
     await page.locator('#btn-import').click();
     await page.getByText('Image → keychain / tile / relief…').click();
     await expect(page.getByText('Make a part from an image', { exact: true })).toBeVisible();
-    await page.locator('input[type="file"][accept*="image"]').setInputFiles({ name: 'remembered.png', mimeType: 'image/png', buffer });
+    await page.getByRole('dialog', { name: 'Make a part from an image' }).locator('input[type="file"]').setInputFiles({ name: 'remembered.png', mimeType: 'image/png', buffer });
     await expect(page.locator('text=/Preview · \\d+×\\d+ · \\d+ clusters/').first()).toBeVisible({ timeout: 5000 });
     await page.getByRole('button', { name: 'Create tile' }).click();
     // The studio opens only AFTER the source is persisted (commitGeneratedRelief

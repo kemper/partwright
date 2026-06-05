@@ -3,12 +3,10 @@ import * as THREE from 'three';
 import { formatDimension } from '../geometry/units';
 
 let dimensionGroup: THREE.Group | null = null;
-let parentScene: THREE.Scene | null = null;
 let visible = true;
 let currentMaxDim = 1;
 
 export function initDimensionLines(scene: THREE.Scene): void {
-  parentScene = scene;
   dimensionGroup = new THREE.Group();
   dimensionGroup.name = 'dimension-lines';
   scene.add(dimensionGroup);
@@ -169,11 +167,3 @@ function clearGroup(): void {
   }
 }
 
-export function disposeDimensionLines(): void {
-  clearGroup();
-  if (dimensionGroup && parentScene) {
-    parentScene.remove(dimensionGroup);
-  }
-  dimensionGroup = null;
-  parentScene = null;
-}

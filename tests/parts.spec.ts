@@ -213,7 +213,7 @@ test.describe('Multi-part sessions', () => {
       .toEqual(['Beta', 'Gamma', 'Part 1']);
   });
 
-  test('adding a part after painting clears stale regions and unlocks the editor', async ({ page }) => {
+  test('adding a part after painting clears stale regions', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
 
@@ -224,18 +224,14 @@ test.describe('Multi-part sessions', () => {
       pw.paintFaces({ triangleIds: [0, 1, 2], color: [1, 0, 0], name: 'A' });
     }, { code: cube(10, 'BASE') });
 
-    // Painting locks the editor (banner shown) and registers one region.
-    await expect(page.locator('#editor-lock-overlay')).toBeVisible();
-
-    // Adding a part must NOT carry the previous part's regions, and must leave
-    // the new part's editor unlocked (regression: stale module-state colors).
+    // Adding a part must NOT carry the previous part's regions
+    // (regression: stale module-state colors).
     const regionCount = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: PartsAPI }).partwright;
       await pw.createPart('Fresh');
       return pw.listRegions().length;
     });
     expect(regionCount).toBe(0);
-    await expect(page.locator('#editor-lock-overlay')).toHaveCount(0);
   });
 
   test('multi-select bulk-deletes parts from the rail', async ({ page }) => {
@@ -269,9 +265,10 @@ test.describe('Multi-part sessions', () => {
     await expect(delBtn).toBeEnabled();
 
     // Confirm and delete; the current part (Gamma) was selected, so the active
-    // part must fall back to a survivor and the editor title follows.
-    page.once('dialog', d => d.accept());
+    // part must fall back to a survivor and the editor title follows. The
+    // confirm is now the in-app dialog (was a native confirm).
     await delBtn.click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Delete' }).click();
 
     await expect
       .poll(() => page.evaluate(() =>

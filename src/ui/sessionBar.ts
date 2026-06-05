@@ -182,7 +182,7 @@ function render(state: SessionState) {
       const data = await callbacks.onSaveVersion();
       const label = `v${state.versionCount + 1}`;
       const force = colorRegionsDiffer(state.currentVersion?.geometryData, data.geometryData);
-      await saveVersion(
+      const version = await saveVersion(
         data.code,
         data.geometryData,
         data.thumbnail,
@@ -190,6 +190,18 @@ function render(state: SessionState) {
         undefined,
         force ? { force: true } : undefined,
       );
+      // Feedback so the click is never a silent no-op. saveVersion returns null
+      // when nothing changed (code + annotations + colors identical to the tip),
+      // which previously looked like a dead button.
+      if (!version) {
+        showToast('No changes to save since the last version.', { variant: 'neutral' });
+      } else if ((data.geometryData as { status?: unknown } | null)?.status === 'error') {
+        // Saving a broken model is allowed — the user may want to checkpoint
+        // work-in-progress — but warn that this version won't render correctly.
+        showToast(`Saved ${version.label || label} — but the model has errors and won't render correctly.`, { variant: 'warn' });
+      } else {
+        showToast(`Saved ${version.label || label}.`, { variant: 'success' });
+      }
     } catch (err) {
       // A failed save must not be silent \u2014 surface it so the user knows their
       // painted/edited state wasn't captured (rather than assume it saved).

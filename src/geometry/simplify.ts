@@ -12,6 +12,7 @@ import type { MeshData } from './types';
 export interface SimplifiableManifold {
   numTri(): number;
   simplify(tolerance?: number): SimplifiableManifold;
+  refineToLength?(length: number): SimplifiableManifold;
   getMesh(): {
     vertProperties: Float32Array;
     triVerts: Uint32Array;
@@ -157,6 +158,153 @@ export async function simplifyToTriangleBudget(
     mesh: toMeshData(final),
     triangleCount: final.numTri(),
     tolerance,
+  };
+  release(final);
+  if (onProgress) await onProgress(1);
+  return result;
+}
+
+/** Single-pass simplify to an explicit geometric tolerance — collapses edges /
+ *  vertices whose removal stays within `tolerance` of the surface. Unlike
+ *  simplifyToTriangleBudget this does NOT binary-search for a triangle target;
+ *  the caller supplies the tolerance directly (the "by edge length / feature
+ *  size" knob). Returns null when the tolerance is non-positive, when the
+ *  result didn't actually drop the triangle count (nothing fell below the
+ *  tolerance — the UI surfaces this as a "nothing to simplify" warning), or
+ *  when the mesh collapsed below MIN_VALID_TRIANGLES. The input manifold is
+ *  borrowed; the single intermediate is released here. */
+export function simplifyToTolerance(
+  manifold: SimplifiableManifold,
+  tolerance: number,
+): SimplifyResult | null {
+  if (!(tolerance > 0)) return null;
+  const baseTri = manifold.numTri();
+  let candidate: SimplifiableManifold | null = null;
+  try {
+    candidate = manifold.simplify(tolerance);
+  } catch {
+    // A tolerance aggressive enough to collapse the mesh throws — treat as
+    // "nothing usable to simplify" rather than a hard error.
+    return null;
+  }
+  const n = candidate.numTri();
+  if (n < MIN_VALID_TRIANGLES || n >= baseTri) {
+    release(candidate);
+    return null;
+  }
+  const result: SimplifyResult = { mesh: toMeshData(candidate), triangleCount: n, tolerance };
+  release(candidate);
+  return result;
+}
+
+export type EnhanceResult = SimplifyResult;
+
+/** Single-pass refine so no edge exceeds `length` — subdivides every edge
+ *  longer than `length`, which inherently densifies the LARGER triangles first
+ *  and leaves already-fine ones untouched (the "by edge length / triangle size"
+ *  knob). Unlike enhanceToTriangleBudget this does NOT binary-search for a
+ *  triangle target. Returns null when refineToLength is unavailable, the length
+ *  is non-positive, or no edge was long enough to split (result == base —
+ *  surfaced as a "no edges large enough to enhance" warning). The input
+ *  manifold is borrowed; the single intermediate is released here. */
+export function refineToEdgeLength(
+  manifold: SimplifiableManifold,
+  length: number,
+): EnhanceResult | null {
+  if (typeof manifold.refineToLength !== 'function') return null;
+  if (!(length > 0)) return null;
+  const baseTri = manifold.numTri();
+  let candidate: SimplifiableManifold | null = null;
+  try {
+    candidate = manifold.refineToLength(length);
+  } catch {
+    return null;
+  }
+  const n = candidate.numTri();
+  if (n <= baseTri) {
+    release(candidate);
+    return null;
+  }
+  const result: EnhanceResult = { mesh: toMeshData(candidate), triangleCount: n, tolerance: length };
+  release(candidate);
+  return result;
+}
+
+/** Find the coarsest refineToLength pass that brings a manifold's triangle
+ *  count up to at least `targetTriangles`, by binary-searching the edge-length
+ *  threshold. Returns null when the manifold already meets the target, when
+ *  refineToLength is not available, or when the caller requests cancellation.
+ *
+ *  `maxEdgeLength` bounds the coarse end of the search — pass roughly the
+ *  bounding-box diagonal; beyond that refineToLength is a no-op. */
+export async function enhanceToTriangleBudget(
+  manifold: SimplifiableManifold,
+  targetTriangles: number,
+  maxEdgeLength: number,
+  onProgress?: SimplifyProgress,
+  shouldCancel?: () => boolean,
+): Promise<EnhanceResult | null> {
+  if (typeof manifold.refineToLength !== 'function') return null;
+  const baseTri = manifold.numTri();
+  const target = Math.floor(targetTriangles);
+  if (!Number.isFinite(target) || target <= baseTri) return null;
+  if (!(maxEdgeLength > 0)) return null;
+
+  // Binary-search: find the LARGEST edge-length (coarsest refinement) that
+  // produces at most `target` triangles. Smaller lengths → more triangles.
+  let lo = 0;
+  let hi = maxEdgeLength;
+
+  // Best length found so far (largest l giving ≤ target and > baseTri).
+  let bestLen = -1;
+  // Fallback: smallest l (finest) giving ≤ target (even if ≤ baseTri, unlikely).
+  let finestValidLen = -1;
+  let finestValidCount = Infinity;
+
+  const totalSteps = SEARCH_ITERATIONS + 1;
+
+  for (let i = 0; i < SEARCH_ITERATIONS; i++) {
+    const mid = (lo + hi) / 2;
+    let n: number | null = null;
+    try {
+      const candidate = manifold.refineToLength!(mid);
+      n = candidate.numTri();
+      release(candidate);
+    } catch {
+      hi = mid;
+    }
+
+    if (n !== null) {
+      if (n <= target && n < finestValidCount) {
+        finestValidCount = n;
+        finestValidLen = mid;
+      }
+
+      if (n > target) {
+        lo = mid; // too fine — coarsen by increasing l
+      } else if (n > baseTri) {
+        bestLen = mid; // enhancement within budget — try coarser (larger l)
+        lo = mid;
+      } else {
+        hi = mid; // not enough refinement — need smaller l
+      }
+    }
+
+    if (onProgress) await onProgress((i + 1) / totalSteps);
+    if (shouldCancel && shouldCancel()) return null;
+  }
+
+  const length = bestLen >= 0 ? bestLen : finestValidLen;
+  if (length < 0) {
+    if (onProgress) await onProgress(1);
+    return null;
+  }
+
+  const final = manifold.refineToLength!(length);
+  const result: EnhanceResult = {
+    mesh: toMeshData(final),
+    triangleCount: final.numTri(),
+    tolerance: length,
   };
   release(final);
   if (onProgress) await onProgress(1);

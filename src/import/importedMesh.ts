@@ -34,6 +34,3 @@ export function getActiveImports(): ImportedMesh[] {
   return active;
 }
 
-export function clearActiveImports(): void {
-  active = [];
-}

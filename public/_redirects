@@ -1,4 +1,16 @@
 /ai /ai.md 301
 /agent /ai.md 301
 /api /ai.md 301
+
+# Pre-rendered, app-free content pages (catalog.html / help.html / legal.html /
+# whats-new.html) are served by Cloudflare Pages at their CLEAN URLs
+# (/catalog, /help, …) automatically — Pages maps an `.html` asset to its
+# extensionless path and canonicalizes /foo.html → /foo with a 308. So NO
+# explicit rule is needed here; an explicit `/catalog /catalog.html 200` rewrite
+# actually fights that canonicalization and produces a /catalog → /catalog
+# redirect loop. The dev/preview server reproduces the clean-URL serving via
+# the prerenderContentPages middleware (src/content/build) instead.
+#
+# Specific assets (incl. the four content pages) resolve before this SPA
+# fallback, which only catches app routes like /editor.
 /* /index.html 200

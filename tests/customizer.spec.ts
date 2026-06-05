@@ -125,6 +125,33 @@ test.describe('Customizer parameters', () => {
     expect(Number(sliderVal)).toBeCloseTo(47, 0);
   });
 
+  test('typing past the declared max keeps the exact value and grows the slider', async ({ page }) => {
+    await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code), PARAM_MODEL);
+    await expect(page.locator('#params-panel')).toBeVisible();
+
+    // Width is declared max:100 — type 250 and commit. The model must re-run to
+    // the exact typed dimension rather than clamping back to 100.
+    await page.evaluate(() => {
+      const panel = document.getElementById('params-panel')!;
+      const field = panel.querySelector('input[type="number"]') as HTMLInputElement; // first = width
+      field.value = '250';
+      field.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await expect.poll(() => currentXDim(page)).toBeCloseTo(250, 0);
+
+    // Both controls reflect the out-of-range value: the field shows 250 and the
+    // slider grew its range so the thumb tracks it instead of pinning at 100.
+    const state = await page.evaluate(() => {
+      const panel = document.getElementById('params-panel')!;
+      const field = panel.querySelector('input[type="number"]') as HTMLInputElement;
+      const slider = panel.querySelector('input[type="range"]') as HTMLInputElement;
+      return { field: field.value, sliderVal: slider.value, sliderMax: slider.max };
+    });
+    expect(Number(state.field)).toBeCloseTo(250, 0);
+    expect(Number(state.sliderVal)).toBeCloseTo(250, 0);
+    expect(Number(state.sliderMax)).toBeGreaterThanOrEqual(250);
+  });
+
   test('parameters work in a voxel session (engine-agnostic)', async ({ page }) => {
     const VOXEL_PARAM_MODEL = `
 const p = api.params({ size: { type: 'int', default: 4, min: 1, max: 20, label: 'Size' } });
@@ -277,5 +304,35 @@ return v;`;
     // v1 came back at the model defaults.
     expect(out.v1.params).toMatchObject({ width: 20, hollow: false });
     expect(xDim(out.v1.geo)).toBeCloseTo(20, 0);
+  });
+
+  test('the panel header is a drag handle that repositions it (and keeps it on-screen)', async ({ page }) => {
+    await page.evaluate((code) => (window as unknown as { partwright: PW }).partwright.run(code), PARAM_MODEL);
+    const panel = page.locator('#params-panel');
+    await expect(panel).toBeVisible();
+
+    const before = await panel.boundingBox();
+    if (!before) throw new Error('no panel box');
+
+    // Grab the header (the "Customize" title area) and drag it down-and-left —
+    // the panel starts top-right, so there's room that way without clamping.
+    // Pointer/mouse events route to the header's drag handler.
+    const title = panel.locator('text=Customize').first();
+    const titleBox = await title.boundingBox();
+    if (!titleBox) throw new Error('no title box');
+    const grabX = titleBox.x + titleBox.width / 2;
+    const grabY = titleBox.y + titleBox.height / 2;
+    await page.mouse.move(grabX, grabY);
+    await page.mouse.down();
+    await page.mouse.move(grabX - 80, grabY + 80, { steps: 8 });
+    await page.mouse.up();
+
+    const after = await panel.boundingBox();
+    if (!after) throw new Error('no panel box after drag');
+    // It followed the pointer (moved down and left) and stayed fully on screen.
+    expect(after.y).toBeGreaterThan(before.y + 20);
+    expect(after.x).toBeLessThan(before.x - 10);
+    expect(after.y).toBeGreaterThanOrEqual(0);
+    expect(after.x).toBeGreaterThanOrEqual(0);
   });
 });

@@ -7,7 +7,7 @@ import { useEffect, useRef } from 'preact/hooks';
 import { mountPreactModal } from './preact/mount';
 import { BUTTON_CANCEL } from './styleConstants';
 
-export type ImportTarget = 'new-part' | 'current-part' | 'new-session';
+export type ImportTarget = 'new-part' | 'current-part' | 'new-session' | 'companion-file';
 
 export interface ImportTargetOptions {
   filename: string;
@@ -16,6 +16,18 @@ export interface ImportTargetOptions {
   addDisabledReason?: string;
   recommend?: ImportTarget;
   addReplacesStarter?: boolean;
+  /** Override title text for the 'current-part' choice (e.g. for code imports). */
+  currentPartTitle?: string;
+  /** Override description text for the 'current-part' choice. */
+  currentPartDesc?: string;
+  /** When set, offers a fourth choice: attach the imported SCAD file as a
+   *  companion of the current part rather than treating it as part code. Only
+   *  meaningful for a .scad import while the current part is a SCAD session. */
+  canAddAsCompanion?: boolean;
+  /** Override title text for the 'companion-file' choice. */
+  companionTitle?: string;
+  /** Override description text for the 'companion-file' choice. */
+  companionDesc?: string;
   /** Modal heading. Defaults to "Import mesh"; image/voxel/BREP imports pass a
    *  noun-appropriate title (e.g. "Import voxels", "Import STEP"). */
   title?: string;
@@ -42,10 +54,10 @@ function buildChoices(opts: ImportTargetOptions): Choice[] {
     },
     {
       target: 'current-part',
-      title: opts.addReplacesStarter ? `Use for current part — ${partLabel}` : `Add to current part — ${partLabel}`,
-      desc: opts.addReplacesStarter
+      title: opts.currentPartTitle ?? (opts.addReplacesStarter ? `Use for current part — ${partLabel}` : `Add to current part — ${partLabel}`),
+      desc: opts.currentPartDesc ?? (opts.addReplacesStarter
         ? 'Make this mesh the contents of the current (empty) part.'
-        : 'Combine it with the geometry already in this part (composed as separate components).',
+        : 'Combine it with the geometry already in this part (composed as separate components).'),
       disabled: !opts.canAddToCurrent,
       disabledReason: opts.addDisabledReason,
     },
@@ -56,6 +68,14 @@ function buildChoices(opts: ImportTargetOptions): Choice[] {
       disabled: false,
     },
   ];
+  if (opts.canAddAsCompanion) {
+    raw.push({
+      target: 'companion-file',
+      title: opts.companionTitle ?? `Companion file of current part — ${partLabel}`,
+      desc: opts.companionDesc ?? `Attach it as a dependency the current part's code can include <…> — it won't replace your code.`,
+      disabled: false,
+    });
+  }
   return raw.map(c => ({ ...c, recommended: c.target === recommend && !c.disabled }));
 }
 
