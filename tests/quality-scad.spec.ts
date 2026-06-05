@@ -51,7 +51,7 @@ test('SCAD engine applies the chosen $fn from quality preset', async ({ page }) 
   // (picking a preset only previews; closing without Apply would revert).
   await page.locator('#simplify-toggle').click();
   await page.locator('#simplify-panel input[type=radio][value=low]').check();
-  await page.locator('#quality-apply').click();
+  await page.locator('#simplify-apply').click();
   await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
 
   // Re-run — fewer triangles.

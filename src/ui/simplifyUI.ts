@@ -1,9 +1,20 @@
-// Simplify/Enhance mode UI — a viewport-overlay button that opens a popup panel
-// for either reducing (simplify) or increasing (enhance) the model's triangle
-// count. A mode toggle switches between the two operations; a "Preserve colors
-// (best-effort)" checkbox carries paint through the topology change via
-// nearest-triangle centroid transfer. The shared progress modal (with a Cancel
-// button) tracks the worker search on heavy models.
+// Quality panel — a viewport-overlay button that opens a popup panel combining
+// two related model-quality controls:
+//   • Curvature quality — the circular-segment count used when the code runs.
+//     Picking a preset previews live (re-renders); it isn't committed until the
+//     single bottom Apply, and closing the panel reverts an un-applied preview.
+//   • Simplify / Enhance — reduce or increase the model's triangle count. A mode
+//     toggle switches between the two; knob pills pick how the target is
+//     expressed (count / edge length / size); a "Preserve colors (best-effort)"
+//     checkbox carries paint through the topology change.
+//
+// There is one shared Apply button at the bottom of the menu. Clicking it
+// commits any combination of pending changes: it persists the previewed
+// curvature quality and, when a simplify/enhance target is set, runs that mesh
+// op and bakes the result into a new saved session version in a single step.
+// (There is intentionally no separate "Save as version" button — Apply is the
+// commit.) The shared progress modal (with a Cancel button) tracks the worker
+// search on heavy models.
 //
 // Opening the panel auto-enables the viewport's mesh-edges (wireframe) overlay
 // so the user can see what they're changing, and restores the previous setting
@@ -21,6 +32,8 @@ import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 import { QUALITY_OPTIONS, QUALITY_SEGMENTS, loadQualitySettings, type QualitySettings } from '../geometry/qualitySettings';
 import { saveQualityForLang, initQualityLogic, notifyLanguageChange as notifyQualityLangChange } from './curvatureQualityPanel';
+import { showHeavyEnhanceConfirm } from './heavyMeshConfirmModal';
+import { getConfig } from '../config/appConfig';
 import type { Language } from '../geometry/engine';
 
 export interface SimplifyOpenInfo {
@@ -58,6 +71,17 @@ export type SimplifyMode = 'simplify' | 'enhance';
  *              collapses features smaller than it. */
 export type KnobMode = 'count' | 'edge' | 'size';
 
+/** Outcome of a simplify/enhance op:
+ *  - `{ triangleCount }` — applied; this is the new live triangle count.
+ *  - `{ exceeded, triangleCount }` — refused because the (enhance) result would
+ *    exceed the hard cap; nothing was committed. `triangleCount` is what it
+ *    would have produced.
+ *  - `null` — nothing changed at that setting (or cancelled). */
+export type MeshOpOutcome =
+  | { triangleCount: number }
+  | { exceeded: true; triangleCount: number }
+  | null;
+
 export interface SimplifyHandlers {
   /** Snapshot the current model as the baseline. Returns its triangle count
    *  (and the count currently on screen), or a reason when the model can't be
@@ -73,7 +97,7 @@ export interface SimplifyHandlers {
     preserveColor: boolean,
     onProgress: SimplifyProgress,
     signal?: AbortSignal,
-  ): Promise<{ triangleCount: number } | null>;
+  ): Promise<MeshOpOutcome>;
   /** Enhance the baseline up toward `targetTriangles` and show it live.
    *  `preserveColor` carries paint through the topology change. */
   enhance(
@@ -81,7 +105,7 @@ export interface SimplifyHandlers {
     preserveColor: boolean,
     onProgress: SimplifyProgress,
     signal?: AbortSignal,
-  ): Promise<{ triangleCount: number } | null>;
+  ): Promise<MeshOpOutcome>;
   /** Simplify the baseline with a single direct `simplify(tolerance)` pass
    *  (the "by edge length / feature size" knob) and show it live. Returns the
    *  achieved triangle count, or null when nothing fell below the tolerance
@@ -91,7 +115,7 @@ export interface SimplifyHandlers {
     preserveColor: boolean,
     onProgress: SimplifyProgress,
     signal?: AbortSignal,
-  ): Promise<{ triangleCount: number } | null>;
+  ): Promise<MeshOpOutcome>;
   /** Enhance the baseline with a single direct `refineToLength(edgeLength)`
    *  pass (the "by edge length / triangle size" knob) and show it live. Splits
    *  only edges longer than `edgeLength`, so the larger triangles densify
@@ -102,7 +126,12 @@ export interface SimplifyHandlers {
     preserveColor: boolean,
     onProgress: SimplifyProgress,
     signal?: AbortSignal,
-  ): Promise<{ triangleCount: number } | null>;
+  ): Promise<MeshOpOutcome>;
+  /** Estimate the triangle count a direct `refineToLength(edgeLength)` pass
+   *  would produce on the current baseline — used to warn/guard before running
+   *  a potentially runaway enhance. Approximate; the Worker enforces the real
+   *  hard cap as a backstop. */
+  estimateRefine(edgeLength: number): number;
   /** Restore the baseline mesh to the viewport (with original colors). */
   reset(): void;
   /** Bake the mesh currently on screen into a new saved version. */
@@ -115,11 +144,10 @@ const MODE_INACTIVE = 'flex-1 px-2 py-1 rounded text-xs text-zinc-400 bg-zinc-70
 const MODE_ACTIVE = 'flex-1 px-2 py-1 rounded text-xs text-blue-300 bg-blue-500/20 transition-colors border border-blue-500/40';
 
 let qualityRadios: HTMLInputElement[] = [];
-let qualityApplyBtn: HTMLButtonElement | null = null;
 // The committed (applied) curvature quality to revert to when the panel closes
 // without an explicit Apply. Captured on open and updated each time the user
-// clicks Apply quality. Picking a radio only *previews* (re-renders live); it's
-// not persisted until Apply, and closing the panel reverts an un-applied
+// clicks the shared Apply. Picking a radio only *previews* (re-renders live);
+// it's not persisted until Apply, and closing the panel reverts an un-applied
 // preview so a heavy quality the user was just trying out doesn't stick.
 let committedQuality: QualitySettings | null = null;
 let stopRenderBtn: HTMLButtonElement | null = null;
@@ -137,7 +165,6 @@ let statusEl: HTMLElement | null = null;
 let controlsEl: HTMLElement | null = null;
 let applyBtn: HTMLButtonElement | null = null;
 let resetBtn: HTMLButtonElement | null = null;
-let saveBtn: HTMLButtonElement | null = null;
 let colorCheckbox: HTMLInputElement | null = null;
 let colorRow: HTMLElement | null = null;
 let simplifyModeBtn: HTMLButtonElement | null = null;
@@ -162,9 +189,6 @@ let knobMode: KnobMode = 'count';
 // no-op until the user changes mode / knob / value. Set after each apply,
 // refresh, and reset.
 let appliedKey = '';
-// The triangle count currently on screen (drives the Save button's enabled
-// state) — set every time the applied result changes.
-let appliedCount = 0;
 let applying = false;
 /** AbortController for the in-flight apply/enhance. Lives across panel
  *  close/reopen so the modal's Cancel button reaches the right worker job. */
@@ -230,7 +254,7 @@ export function notifyQualityLangChanged(lang: Language): void {
   // The language switch silently swaps in that language's quality default, so
   // re-baseline the commit/preview against it.
   committedQuality = { ...loadQualitySettings() };
-  updateQualityApplyEnabled();
+  updateApplyEnabled();
   if (stopRenderBtn && !isScadLang) stopRenderBtn.classList.add('hidden');
 }
 
@@ -256,28 +280,21 @@ function qualityMatches(a: QualitySettings, b: QualitySettings): boolean {
   return a.quality === b.quality && a.customSegments === b.customSegments;
 }
 
-/** Enable "Apply quality" only while a previewed quality differs from the
- *  committed one (mirrors the simplify Apply's "no-op stays disabled" rule). */
-function updateQualityApplyEnabled(): void {
-  if (!qualityApplyBtn) return;
-  qualityApplyBtn.disabled = !committedQuality || qualityMatches(loadQualitySettings(), committedQuality);
-}
-
-/** Commit the currently-previewed quality so it survives the panel closing. */
-function applyQualityPreview(): void {
-  committedQuality = { ...loadQualitySettings() };
-  updateQualityApplyEnabled();
+/** Whether the previewed curvature quality differs from the committed one. */
+function qualityPending(): boolean {
+  return !!committedQuality && !qualityMatches(loadQualitySettings(), committedQuality);
 }
 
 /** Revert an un-applied quality preview back to the committed setting. Called
- *  when the panel closes so a live preview the user didn't Apply doesn't stick. */
+ *  when the panel closes (or Reset) so a live preview the user didn't Apply
+ *  doesn't stick. */
 function revertQualityPreview(): void {
   if (committedQuality && !qualityMatches(loadQualitySettings(), committedQuality)) {
     onCancelRender?.();
     saveQualityForLang({ ...committedQuality });
   }
   syncQualityRadios();
-  updateQualityApplyEnabled();
+  updateApplyEnabled();
 }
 
 function toggle(): void {
@@ -311,7 +328,6 @@ function openPanel(): void {
   // un-applied preview reverts here on close.
   committedQuality = { ...loadQualitySettings() };
   syncQualityRadios();
-  updateQualityApplyEnabled();
   refresh(true);
 }
 
@@ -471,6 +487,13 @@ function requestKey(r: MeshOpRequest): string {
   return `${knobMode}:${r.kind}:${r.value > 0 ? String(r.value) : '0'}`;
 }
 
+/** Whether a simplify/enhance op is pending (target differs from what's live). */
+function meshPending(): boolean {
+  if (!info) return false;
+  const r = currentRequest();
+  return r.kind !== 'noop' && requestKey(r) !== appliedKey;
+}
+
 function closePanel(): void {
   revertQualityPreview();
   panel?.classList.add('hidden');
@@ -489,6 +512,7 @@ function showUnavailable(reason: string): void {
     statusEl.classList.remove('hidden');
     statusEl.textContent = reason;
   }
+  updateApplyEnabled();
 }
 
 function showControls(): void {
@@ -498,7 +522,6 @@ function showControls(): void {
 
 function showResult(count: number): void {
   if (!info || !resultEl) return;
-  appliedCount = count;
   const base = info.baseTriangles;
   if (count < base) {
     const pct = base > 0 ? Math.round((1 - count / base) * 100) : 0;
@@ -509,7 +532,6 @@ function showResult(count: number): void {
   } else {
     resultEl.textContent = `Result: ${count.toLocaleString()} triangles`;
   }
-  updateSaveEnabled();
 }
 
 function clampTarget(raw: number): number {
@@ -526,15 +548,14 @@ function currentTarget(): number {
   return clampTarget(Number(numberInput?.value ?? slider?.value ?? info?.currentTriangles ?? 0));
 }
 
+/** Enable the shared Apply (and Reset) whenever there's something pending to
+ *  commit — a curvature-quality preview, a simplify/enhance op, or both. Reset
+ *  only undoes *pending* (un-applied) changes, so it mirrors Apply: idle until
+ *  the user changes something, and disabled again the moment Apply commits. */
 function updateApplyEnabled(): void {
-  if (!applyBtn) return;
-  const r = currentRequest();
-  applyBtn.disabled = applying || !info || r.kind === 'noop' || requestKey(r) === appliedKey;
-}
-
-function updateSaveEnabled(): void {
-  if (!saveBtn) return;
-  saveBtn.disabled = applying || !info || appliedCount === info.baseTriangles;
+  const idle = applying || (!qualityPending() && !meshPending());
+  if (applyBtn) applyBtn.disabled = idle;
+  if (resetBtn) resetBtn.disabled = idle;
 }
 
 function setControlsDisabled(disabled: boolean): void {
@@ -550,23 +571,77 @@ function setControlsDisabled(disabled: boolean): void {
   if (knobEdgeBtn) knobEdgeBtn.disabled = disabled;
   if (knobSizeBtn) knobSizeBtn.disabled = disabled;
   if (colorCheckbox) colorCheckbox.disabled = disabled;
+  for (const radio of qualityRadios) radio.disabled = disabled;
   if (disabled) {
     if (applyBtn) applyBtn.disabled = true;
-    if (saveBtn) saveBtn.disabled = true;
   } else {
     updateApplyEnabled();
-    updateSaveEnabled();
   }
 }
 
+/** The shared bottom Apply. Commits any combination of pending changes: it
+ *  persists the previewed curvature quality and, when a simplify/enhance target
+ *  is set, runs that mesh op and bakes the result into a new saved version. */
 async function runApply(): Promise<void> {
-  if (!handlers || !info || applying) return;
+  if (!handlers || applying) return;
+  const wantQuality = qualityPending();
+  const wantMesh = meshPending();
+  if (!wantQuality && !wantMesh) return;
+
+  // 1. Commit the curvature-quality preview. Selecting a preset already
+  //    re-rendered the model live, so committing just means it survives close.
+  if (wantQuality) committedQuality = { ...loadQualitySettings() };
+
+  if (!wantMesh) {
+    // Quality-only apply — nothing to bake. (Quality is a session setting, not
+    // captured in a saved version, so a version here would be a misleading
+    // snapshot of unchanged code.)
+    if (statusEl) statusEl.textContent = 'Quality applied.';
+    updateApplyEnabled();
+    return;
+  }
+
+  // 2. A simplify/enhance op is pending. If quality also changed, its live
+  //    re-render dropped the cached baseline (a fresh run invalidates it), so
+  //    re-snapshot from the freshly-rendered mesh before operating.
+  if (wantQuality) {
+    const res = handlers.open(false);
+    if (!res.ok) { showUnavailable(res.reason); return; }
+    info = res.info;
+    if (originalEl) originalEl.textContent = `Original: ${info.baseTriangles.toLocaleString()} triangles`;
+  }
+  if (!info) return;
+
   const req = currentRequest();
-  if (req.kind === 'noop' || requestKey(req) === appliedKey) return;
   const baseline = info;
   const currentMode = mode;
   const isDirect = req.kind !== 'count';
-  const doPreserveColor = preserveColor && info.hasColor;
+  const doPreserveColor = preserveColor && baseline.hasColor;
+
+  // Guard a runaway enhance before it ever runs: estimate the projected
+  // triangle count (exact for the count knob, approximate for edge length) and
+  // refuse / confirm over the configured thresholds. Committing a multi-million
+  // triangle mesh freezes the main thread, so this is the front-line defense
+  // (the Worker hard cap backs it up if the estimate undershoots). Only an
+  // enhance can explode the count — simplify only ever reduces it.
+  if (currentMode === 'enhance') {
+    const { enhanceWarnTriangles: warn, enhanceMaxTriangles: max } = getConfig().renderer;
+    const approx = req.kind !== 'count';
+    const projected = req.kind === 'count' ? req.value : handlers.estimateRefine(req.value);
+    if (projected >= max) {
+      const msg = `That setting would produce ${approx ? '~' : ''}${Math.round(projected).toLocaleString()} triangles, over the ${max.toLocaleString()} limit. Not applied — try a larger edge length or a lower target.`;
+      if (statusEl) statusEl.textContent = msg;
+      showToast(msg, { variant: 'warn', source: 'engine' });
+      return;
+    }
+    if (projected >= warn) {
+      const proceed = await showHeavyEnhanceConfirm({ projected: Math.round(projected), warnLimit: warn, approx });
+      if (!proceed) {
+        if (statusEl) statusEl.textContent = 'Cancelled.';
+        return;
+      }
+    }
+  }
 
   applying = true;
   applyAbort = new AbortController();
@@ -591,8 +666,11 @@ async function runApply(): Promise<void> {
     updateProgress(progressId, fraction, `${currentMode === 'simplify' ? 'Simplifying' : 'Enhancing'}… ${pct}%`);
   };
 
+  // The final status line, applied after the closing refresh (which would
+  // otherwise clear it).
+  let finalStatus = '';
   try {
-    let r: { triangleCount: number } | null;
+    let r: MeshOpOutcome;
     if (req.kind === 'count') {
       const handler = currentMode === 'simplify' ? handlers.apply : handlers.enhance;
       r = await handler.call(handlers, req.value, doPreserveColor, onProgress, abort.signal);
@@ -602,31 +680,49 @@ async function runApply(): Promise<void> {
       r = await handlers.enhanceByEdgeLength(req.value, doPreserveColor, onProgress, abort.signal);
     }
     appliedKey = requestKey(req);
-    showResult(r ? r.triangleCount : baseline.baseTriangles);
-    if (!r && isDirect) {
-      // A direct pass that changed nothing means the threshold matched no
-      // edges / triangles — warn so the user knows to adjust the knob.
-      const warn = currentMode === 'simplify'
-        ? 'Nothing to simplify at that setting — no detail was below the tolerance. Try a larger value.'
-        : 'Nothing to enhance at that setting — no edge was longer than that. Try a smaller value.';
-      if (statusEl) statusEl.textContent = warn;
-      showToast(warn, { variant: 'warn', source: 'engine' });
-    } else if (statusEl) {
-      statusEl.textContent = '';
+    if (r && 'exceeded' in r) {
+      // The Worker refused: the refine would exceed the hard cap, so nothing
+      // was committed (the giant mesh never reached the main thread). This is
+      // the backstop for an estimate that undershot the real count.
+      const max = getConfig().renderer.enhanceMaxTriangles;
+      showResult(baseline.baseTriangles);
+      finalStatus = `That produced ~${r.triangleCount.toLocaleString()} triangles, over the ${max.toLocaleString()} limit — not applied. Try a larger edge length.`;
+      showToast(finalStatus, { variant: 'warn', source: 'engine' });
+    } else {
+      const changed = !!r && r.triangleCount !== baseline.baseTriangles;
+      showResult(r ? r.triangleCount : baseline.baseTriangles);
+      if (!r && isDirect) {
+        // A direct pass that changed nothing means the threshold matched no
+        // edges / triangles — warn so the user knows to adjust the knob.
+        finalStatus = currentMode === 'simplify'
+          ? 'Nothing to simplify at that setting — no detail was below the tolerance. Try a larger value.'
+          : 'Nothing to enhance at that setting — no edge was longer than that. Try a smaller value.';
+        showToast(finalStatus, { variant: 'warn', source: 'engine' });
+      } else if (!changed) {
+        finalStatus = 'No change at that setting.';
+      } else {
+        // 3. Bake the applied result into a new saved version (Apply is the
+        //    commit — there's no separate Save button).
+        if (statusEl) statusEl.textContent = 'Saving…';
+        const saveRes = await handlers.save();
+        finalStatus = saveRes.message;
+      }
     }
   } catch (e) {
     const err = e as Error;
-    if (err?.name === 'AbortError') {
-      if (statusEl) statusEl.textContent = 'Cancelled.';
-    } else {
-      if (statusEl) statusEl.textContent = `${currentMode === 'simplify' ? 'Simplify' : 'Enhance'} failed: ${err.message}`;
-    }
+    finalStatus = err?.name === 'AbortError'
+      ? 'Cancelled.'
+      : `${currentMode === 'simplify' ? 'Simplify' : 'Enhance'} failed: ${err.message}`;
   } finally {
     applying = false;
     applyAbort = null;
     endProgress(progressId);
     setControlsDisabled(false);
   }
+  // Re-read the (possibly baked) geometry so the controls reset to the new
+  // baseline, then restore the status line the refresh cleared.
+  if (handlers) refresh(false);
+  if (statusEl) statusEl.textContent = finalStatus;
 }
 
 function buildPanel(): HTMLElement {
@@ -683,11 +779,11 @@ function buildPanel(): HTMLElement {
     radio.addEventListener('change', () => {
       if (!radio.checked) return;
       // Live preview only — re-render at the new quality but don't commit it.
-      // Apply quality persists it; closing the panel reverts it.
+      // The shared Apply persists it; closing the panel reverts it.
       onCancelRender?.();
       const { customSegments } = loadQualitySettings();
       saveQualityForLang({ quality: opt.id, customSegments });
-      updateQualityApplyEnabled();
+      updateApplyEnabled();
     });
     qualityRadios.push(radio);
 
@@ -704,15 +800,6 @@ function buildPanel(): HTMLElement {
   }
   qualitySection.appendChild(radiosWrap);
   syncQualityRadios();
-
-  qualityApplyBtn = document.createElement('button');
-  qualityApplyBtn.id = 'quality-apply';
-  qualityApplyBtn.className = 'w-full mt-2 px-2 py-1.5 rounded text-xs font-medium bg-blue-500/30 text-blue-200 [@media(hover:hover)]:hover:bg-blue-500/40 transition-colors border border-blue-500/50 disabled:opacity-40 disabled:cursor-not-allowed';
-  qualityApplyBtn.textContent = 'Apply quality';
-  qualityApplyBtn.title = 'Commit the previewed curvature quality. Closing the panel without applying reverts it.';
-  qualityApplyBtn.disabled = true;
-  qualityApplyBtn.addEventListener('click', applyQualityPreview);
-  qualitySection.appendChild(qualityApplyBtn);
 
   stopRenderBtn = document.createElement('button');
   stopRenderBtn.className = 'hidden w-full mt-2 px-2 py-1 rounded text-xs bg-red-500/20 text-red-300 [@media(hover:hover)]:hover:bg-red-500/30 transition-colors border border-red-500/40';
@@ -934,31 +1021,27 @@ function buildPanel(): HTMLElement {
   colorRow.append(colorCheckbox, colorLabel);
   controlsEl.appendChild(colorRow);
 
-  applyBtn = document.createElement('button');
-  applyBtn.id = 'simplify-apply';
-  applyBtn.className = 'w-full px-2 py-1.5 rounded text-xs font-medium bg-blue-500/30 text-blue-200 [@media(hover:hover)]:hover:bg-blue-500/40 transition-colors border border-blue-500/50 disabled:opacity-40 disabled:cursor-not-allowed mb-2';
-  applyBtn.textContent = 'Apply';
-  applyBtn.title = 'Apply the target triangle count';
-  applyBtn.disabled = true;
-  applyBtn.addEventListener('click', () => { void runApply(); });
-  controlsEl.appendChild(applyBtn);
-
   resultEl = document.createElement('div');
   resultEl.id = 'simplify-result';
-  resultEl.className = 'text-xs text-blue-300 mb-2.5';
+  resultEl.className = 'text-xs text-blue-300 mb-2';
   resultEl.textContent = 'Result: —';
   controlsEl.appendChild(resultEl);
 
+  c.appendChild(controlsEl);
+
+  // --- Shared bottom action row: Reset + one Apply for everything ---
   const actions = document.createElement('div');
-  actions.className = 'flex items-center gap-2';
+  actions.className = 'flex items-center gap-2 mt-1';
 
   resetBtn = document.createElement('button');
   resetBtn.id = 'simplify-reset';
-  resetBtn.className = 'px-2 py-1 rounded text-xs bg-zinc-700/70 text-zinc-300 [@media(hover:hover)]:hover:bg-zinc-600/70 transition-colors border border-zinc-600/50';
+  resetBtn.className = 'px-2 py-1.5 rounded text-xs bg-zinc-700/70 text-zinc-300 [@media(hover:hover)]:hover:bg-zinc-600/70 transition-colors border border-zinc-600/50 disabled:opacity-40 disabled:cursor-not-allowed';
   resetBtn.textContent = 'Reset';
-  resetBtn.title = 'Restore the original mesh';
+  resetBtn.title = 'Discard pending changes: revert the quality preview and restore the original mesh';
+  resetBtn.disabled = true; // nothing to reset until the user changes something
   resetBtn.addEventListener('click', () => {
-    if (!info || applying) return;
+    if (applying) return;
+    revertQualityPreview();
     handlers?.reset();
     // Re-read the (now restored) baseline so every control returns to its
     // default and Apply goes idle until the user changes something.
@@ -967,24 +1050,15 @@ function buildPanel(): HTMLElement {
   });
   actions.appendChild(resetBtn);
 
-  saveBtn = document.createElement('button');
-  saveBtn.id = 'simplify-save';
-  saveBtn.className = 'px-2 py-1 rounded text-xs bg-blue-500/30 text-blue-200 [@media(hover:hover)]:hover:bg-blue-500/40 transition-colors border border-blue-500/50 disabled:opacity-40 disabled:cursor-not-allowed';
-  saveBtn.textContent = 'Save as version';
-  saveBtn.title = 'Bake the current mesh into a new saved version';
-  saveBtn.disabled = true;
-  saveBtn.addEventListener('click', async () => {
-    if (!handlers || !saveBtn || applying) return;
-    saveBtn.disabled = true;
-    if (statusEl) statusEl.textContent = 'Saving…';
-    const res = await handlers.save();
-    if (res.ok) refresh(false);
-    if (statusEl) statusEl.textContent = res.message;
-  });
-  actions.appendChild(saveBtn);
-  controlsEl.appendChild(actions);
-
-  c.appendChild(controlsEl);
+  applyBtn = document.createElement('button');
+  applyBtn.id = 'simplify-apply';
+  applyBtn.className = 'flex-1 px-2 py-1.5 rounded text-xs font-medium bg-blue-500/30 text-blue-200 [@media(hover:hover)]:hover:bg-blue-500/40 transition-colors border border-blue-500/50 disabled:opacity-40 disabled:cursor-not-allowed';
+  applyBtn.textContent = 'Apply';
+  applyBtn.title = 'Apply pending quality and simplify/enhance changes. A simplify/enhance applies and saves a new version.';
+  applyBtn.disabled = true;
+  applyBtn.addEventListener('click', () => { void runApply(); });
+  actions.appendChild(applyBtn);
+  c.appendChild(actions);
 
   statusEl = document.createElement('div');
   statusEl.id = 'simplify-status';
