@@ -51,3 +51,9 @@ Decisions / why:
 
 Verified all four render via a throwaway Playwright probe (screenshots posted in
 the session); build + unit tier green.
+
+Follow-up (CI): `session-modal.spec.ts` asserted the new-session editor contained
+`// New session` — the comment header `resetEditorToStarter` no longer prepends.
+Updated it to assert the fresh manifold-js default loaded (`toContain('CrossSection')`),
+which is the real intent (old code cleared, default seeded). The scad-companion
+shard-3 failure in the same run was flaky (passed on retry).
