@@ -50,6 +50,54 @@ test.describe('Catalog page (static)', () => {
     await expect(customizable).toContainText('Layer Cake');
   });
 
+  test('search narrows tiles, updates section counts, and hides empty sections', async ({ page }) => {
+    await gotoCatalog(page);
+
+    const search = page.locator('[data-catalog-search]');
+    await expect(search).toBeVisible();
+    await search.fill('cube');
+
+    // Every visible tile matches the query; non-matching are hidden.
+    const visibleTiles = page.locator('main a[data-catalog-tile]:not(.hidden)');
+    expect(await visibleTiles.count()).toBeGreaterThan(0);
+    for (const hay of await visibleTiles.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.search ?? ''))) {
+      expect(hay).toContain('cube');
+    }
+
+    // Each visible section's count badge equals its visible-tile count; sections
+    // with no matches are hidden.
+    for (const sec of await page.locator('main section[data-category]').all()) {
+      const visible = await sec.locator('a[data-catalog-tile]:not(.hidden)').count();
+      if (visible === 0) {
+        await expect(sec).toBeHidden();
+      } else {
+        await expect(sec.locator('[data-catalog-count]')).toHaveText(String(visible));
+      }
+    }
+
+    // Clearing the search restores everything.
+    await search.fill('');
+    expect(await page.locator('main a[data-catalog-tile]:not(.hidden)').count()).toBeGreaterThan(10);
+  });
+
+  test('a language pill hides that language and keeps the others', async ({ page }) => {
+    await gotoCatalog(page);
+
+    const scadPill = page.locator('[data-catalog-pill="scad"]');
+    await expect(scadPill).toHaveAttribute('aria-pressed', 'true');
+    await scadPill.click();
+    await expect(scadPill).toHaveAttribute('aria-pressed', 'false');
+
+    // All SCAD tiles hidden; JS tiles still shown.
+    await expect(page.locator('main a[data-language="scad"]:not(.hidden)')).toHaveCount(0);
+    expect(await page.locator('main a[data-language="manifold-js"]:not(.hidden)').count()).toBeGreaterThan(0);
+
+    // Toggling back restores SCAD tiles.
+    await scadPill.click();
+    await expect(scadPill).toHaveAttribute('aria-pressed', 'true');
+    expect(await page.locator('main a[data-language="scad"]:not(.hidden)').count()).toBeGreaterThan(0);
+  });
+
   test('a tile is a link to /editor?catalog= and imports the session on click', async ({ page }) => {
     await gotoCatalog(page);
     const firstTile = page.locator('main section[data-category] div.grid > a').first();
@@ -67,5 +115,12 @@ test.describe('Catalog page (static)', () => {
     await expect(page.locator('#catalog-page')).toBeVisible({ timeout: 20_000 });
     // Soft render — the app is still loaded (no full navigation reset it).
     expect(await page.evaluate(() => 'partwright' in window)).toBe(true);
+
+    // The in-app overlay carries the same search + filter surface, wired live.
+    const search = page.locator('#catalog-page [data-catalog-search]');
+    await expect(search).toBeVisible();
+    await search.fill('zzzznomatchzzzz');
+    await expect(page.locator('#catalog-page [data-catalog-empty]')).toBeVisible();
+    await expect(page.locator('#catalog-page a[data-catalog-tile]:not(.hidden)')).toHaveCount(0);
   });
 });

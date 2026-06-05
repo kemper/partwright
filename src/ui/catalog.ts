@@ -6,13 +6,16 @@ import type { ExportedSession } from '../storage/sessionManager';
 import { partwrightMarkSvg } from './brand';
 import { languageBadge } from './languageBadge';
 import { getTheme, onThemeChange, toggleTheme } from './theme';
+import { wireCatalogFilter } from '../content/catalogFilter';
 import {
   CATEGORIES,
   categorizeOf,
   deriveCharacteristics as deriveTraits,
+  CATALOG_LANGUAGE_ORDER,
   type CategoryId,
   type CategoryDef,
   type CatalogManifestEntry,
+  type CatalogLanguage,
 } from '../content/data/catalogCategories';
 
 export type { CatalogManifestEntry };
@@ -45,7 +48,12 @@ interface LoadedEntry {
 /** Assign one category per entry (delegates to the shared, pure categorizer). */
 function categorize(entry: LoadedEntry): CategoryId {
   const language = entry.payload?.session.language ?? entry.manifest.language ?? 'manifold-js';
-  return categorizeOf({ hasParams: entry.hasParams, isSDF: entry.isSDF, language });
+  return categorizeOf({ hasParams: entry.hasParams, isSDF: entry.isSDF, language, group: entry.manifest.group });
+}
+
+/** The resolved language used for a tile's badge + the language filter. */
+function entryLanguage(entry: LoadedEntry): CatalogLanguage {
+  return entry.payload?.session.language ?? entry.manifest.language ?? 'manifold-js';
 }
 
 /** Inspect a payload's code for the characteristics that drive categorization
@@ -182,7 +190,65 @@ export async function createCatalogPage(
     body.appendChild(renderCategorySection(def, entries, callbacks));
   }
 
+  // "No results" element the shared filter toggles when nothing matches.
+  const noResults = document.createElement('div');
+  noResults.dataset.catalogEmpty = '';
+  noResults.className = 'hidden text-center py-12 text-zinc-500 text-sm';
+  noResults.textContent = 'No models match your search and filters.';
+  body.appendChild(noResults);
+
+  // Search box + language pills, inserted above the body so they control every
+  // section at once. Behavior is the shared, data-attribute-driven filter used
+  // by the static /catalog page too.
+  page.insertBefore(buildControls(loaded), body);
+  wireCatalogFilter(page);
+
   return page;
+}
+
+/** Build the search input + language filter pills, tagged with the shared
+ *  `data-catalog-*` hooks. Behavior is wired separately by wireCatalogFilter. */
+function buildControls(loaded: LoadedEntry[]): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'w-full max-w-5xl px-6 mb-8 flex flex-col gap-3';
+
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.dataset.catalogSearch = '';
+  search.placeholder = 'Search the catalog…';
+  search.setAttribute('aria-label', 'Search the catalog');
+  search.className = 'w-full max-w-md bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-zinc-500 transition-colors';
+  wrap.appendChild(search);
+
+  // One pill per language actually present, in canonical order, with counts.
+  const langCounts = new Map<CatalogLanguage, number>();
+  for (const entry of loaded) {
+    const lang = entryLanguage(entry);
+    langCounts.set(lang, (langCounts.get(lang) ?? 0) + 1);
+  }
+  const present = CATALOG_LANGUAGE_ORDER.filter((l) => langCounts.has(l));
+  if (present.length > 1) {
+    const pillRow = document.createElement('div');
+    pillRow.className = 'flex items-center gap-2 flex-wrap';
+    const label = document.createElement('span');
+    label.className = 'text-xs text-zinc-500 mr-1';
+    label.textContent = 'Language:';
+    pillRow.appendChild(label);
+
+    for (const lang of present) {
+      const badge = languageBadge(lang);
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.dataset.catalogPill = lang;
+      pill.setAttribute('aria-pressed', 'true');
+      pill.className = `px-2 py-1 rounded text-xs font-semibold border bg-zinc-800 ${badge.classes}`;
+      pill.textContent = `${badge.label} ${langCounts.get(lang) ?? 0}`;
+      pillRow.appendChild(pill);
+    }
+    wrap.appendChild(pillRow);
+  }
+
+  return wrap;
 }
 
 /** Render one titled, blurbed category section with its own tile grid. */
@@ -198,6 +264,7 @@ function renderCategorySection(def: CategoryDef, entries: LoadedEntry[], callbac
   h2.textContent = def.title;
   const count = document.createElement('span');
   count.className = 'text-xs text-zinc-500 tabular-nums';
+  count.dataset.catalogCount = '';
   count.textContent = String(entries.length);
   titleRow.appendChild(h2);
   titleRow.appendChild(count);
@@ -220,6 +287,17 @@ function renderCategorySection(def: CategoryDef, entries: LoadedEntry[], callbac
 function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLElement {
   const tile = document.createElement('button');
   tile.className = 'flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden text-left cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed';
+
+  // Filter hooks consumed by wireCatalogFilter.
+  const language = entryLanguage(loaded);
+  tile.dataset.catalogTile = '';
+  tile.dataset.language = language;
+  tile.dataset.search = [
+    loaded.manifest.name,
+    loaded.manifest.description ?? '',
+    loaded.manifest.id,
+    languageBadge(language).label,
+  ].join(' ').toLowerCase();
 
   // Thumbnail
   const thumbContainer = document.createElement('div');

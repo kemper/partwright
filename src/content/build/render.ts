@@ -13,6 +13,7 @@ import {
   CATEGORIES,
   categorizeOf,
   deriveCharacteristics,
+  CATALOG_LANGUAGE_ORDER,
   type CategoryId,
   type CatalogLanguage,
   type CatalogManifestEntry,
@@ -30,6 +31,11 @@ function siteOrigin(): string {
 /** Minimal HTML-escape for text interpolated into element bodies. */
 function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** Escape for a double-quoted attribute value (adds the quote on top of esc). */
+function escAttr(s: string): string {
+  return esc(s).replace(/"/g, '&quot;');
 }
 
 export type ContentPage = 'catalog' | 'help' | 'legal' | 'whats-new';
@@ -169,7 +175,7 @@ function loadCatalogTiles(): BuiltTile[] {
       // Keep the entry with manifest-only info; it still links + categorizes.
     }
     const { hasParams, isSDF } = deriveCharacteristics(entry.id, code);
-    tiles.push({ entry, language, versionCount, hasParams, category: categorizeOf({ hasParams, isSDF, language }) });
+    tiles.push({ entry, language, versionCount, hasParams, category: categorizeOf({ hasParams, isSDF, language, group: entry.group }) });
   }
   return tiles;
 }
@@ -185,7 +191,8 @@ function catalogTileHtml(tile: BuiltTile): string {
   const versions = tile.versionCount > 0
     ? `<span>${tile.versionCount} version${tile.versionCount !== 1 ? 's' : ''}</span>`
     : '';
-  return `<a href="/editor?catalog=${encodeURIComponent(tile.entry.file)}" data-pw-thumb="${esc(tile.entry.file)}" class="flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden no-underline">
+  const haystack = [tile.entry.name, tile.entry.description ?? '', tile.entry.id, badge.label].join(' ').toLowerCase();
+  return `<a href="/editor?catalog=${encodeURIComponent(tile.entry.file)}" data-pw-thumb="${esc(tile.entry.file)}" data-catalog-tile data-language="${escAttr(tile.language)}" data-search="${escAttr(haystack)}" class="flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden no-underline">
   <div class="relative w-full aspect-square bg-zinc-900 flex items-center justify-center overflow-hidden">
     <span class="text-3xl text-zinc-700">&#11041;</span>
     <img alt="${esc(tile.entry.name)}" loading="lazy" class="absolute inset-0 w-full h-full object-contain" style="opacity:0;transition:opacity .2s" />
@@ -217,13 +224,35 @@ function catalogBody(): string {
     return `<section class="mb-10" data-category="${def.id}">
   <div class="flex items-baseline gap-2">
     <h2 class="text-lg font-semibold text-zinc-100">${esc(def.title)}</h2>
-    <span class="text-xs text-zinc-500 tabular-nums">${inCat.length}</span>
+    <span class="text-xs text-zinc-500 tabular-nums" data-catalog-count>${inCat.length}</span>
   </div>
   <p class="text-xs text-zinc-400 mt-0.5 mb-3 leading-relaxed">${esc(def.blurb)}</p>
   <div class="grid gap-4" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">${inCat.map(catalogTileHtml).join('')}</div>
 </section>`;
   }).join('');
-  return `<div>${intro}${sections}</div>`;
+  const empty = '<div data-catalog-empty class="hidden text-center py-12 text-zinc-500 text-sm">No models match your search and filters.</div>';
+  return `<div>${intro}${catalogControlsHtml(tiles)}${sections}${empty}</div>`;
+}
+
+/** Search box + language filter pills for the static page, tagged with the
+ *  shared `data-catalog-*` hooks. catalogEntry.ts wires the behavior. */
+function catalogControlsHtml(tiles: BuiltTile[]): string {
+  const langCounts = new Map<CatalogLanguage, number>();
+  for (const t of tiles) langCounts.set(t.language, (langCounts.get(t.language) ?? 0) + 1);
+  const present = CATALOG_LANGUAGE_ORDER.filter((l) => langCounts.has(l));
+  const pills = present.length > 1
+    ? `<div class="flex items-center gap-2 flex-wrap">
+    <span class="text-xs text-zinc-500 mr-1">Language:</span>
+    ${present.map((l) => {
+      const b = languageBadge(l);
+      return `<button type="button" data-catalog-pill="${escAttr(l)}" aria-pressed="true" class="px-2 py-1 rounded text-xs font-semibold border bg-zinc-800 ${b.classes}" title="Hide ${esc(b.label)} models">${esc(b.label)} ${langCounts.get(l) ?? 0}</button>`;
+    }).join('')}
+  </div>`
+    : '';
+  return `<div class="mb-8 flex flex-col gap-3">
+  <input type="search" data-catalog-search placeholder="Search the catalog…" aria-label="Search the catalog" class="w-full max-w-md bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:border-zinc-500 transition-colors" />
+  ${pills}
+</div>`;
 }
 
 /** Return the fully-wrapped inner HTML (nav + content + footer) for a page. */
