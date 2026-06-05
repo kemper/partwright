@@ -7,7 +7,17 @@
 
 import { createModalShell } from '../ui/modalShell';
 import { BUTTON_PRIMARY } from '../ui/styleConstants';
+import { showToast } from '../ui/toast';
+import { promptDialog, confirmDialog } from '../ui/dialogs';
 import {
+  listPalettes,
+  setActivePalette,
+  createPalette,
+  renamePalette,
+  deletePalette,
+  getActivePaletteId,
+  getActivePaletteName,
+  DEFAULT_FILAMENTS,
   listFilaments,
   addFilament,
   updateFilament,
@@ -22,9 +32,15 @@ import {
   recordColor,
   removeColorHistory,
   hexToRgb,
+  rgbToHex,
   type Filament,
 } from './palette';
-import { recolorRegionsForSlot } from './regions';
+import {
+  recolorRegionsForSlot,
+  getDistinctRegionColors,
+  reassignRegionColor,
+  applyPaletteAutoMatch,
+} from './regions';
 import { getSlotId, setSlot } from './paintMode';
 import { openPhotoColorPicker } from './photoColorPicker';
 
@@ -46,6 +62,77 @@ export function openPaletteManager(): void {
   intro.className = 'text-xs text-zinc-400 leading-snug';
   intro.textContent = 'Each slot maps to a filament on your printer. Painting with a slot lets a multi-colour model load straight into your slicer. Edits here update the paint swatches and the relief tools.';
   shell.body.appendChild(intro);
+
+  // Collections: switch the active palette, or save the current one under a new
+  // name. The active palette is the one used everywhere (paint, relief, export).
+  const palRow = document.createElement('div');
+  palRow.className = 'flex items-center gap-1.5 mt-2 flex-wrap';
+  const palSelect = document.createElement('select');
+  palSelect.className = 'flex-1 min-w-0 px-2 py-1 rounded text-xs bg-zinc-900/60 text-zinc-200 border border-zinc-700';
+  palSelect.title = 'Active palette';
+  palSelect.addEventListener('change', () => { setActivePalette(palSelect.value); refreshAll(); });
+  const saveAsBtn = document.createElement('button');
+  saveAsBtn.className = 'shrink-0 px-2 py-1 rounded text-[10px] bg-zinc-700/60 text-zinc-200 hover:bg-zinc-600/60 transition-colors';
+  saveAsBtn.textContent = 'Save as…';
+  saveAsBtn.title = 'Save the current slots as a new named palette';
+  saveAsBtn.addEventListener('click', async () => {
+    const name = await promptDialog('Name this palette', { initialValue: `${getActivePaletteName()} copy`, confirmLabel: 'Save' });
+    if (name) { createPalette(name); refreshAll(); }
+  });
+  const newBtn = document.createElement('button');
+  newBtn.className = saveAsBtn.className;
+  newBtn.textContent = 'New';
+  newBtn.title = 'Create a new palette from the built-in defaults';
+  newBtn.addEventListener('click', async () => {
+    const name = await promptDialog('Name the new palette', { initialValue: 'Palette', confirmLabel: 'Create' });
+    if (name) { createPalette(name, DEFAULT_FILAMENTS.map(f => ({ ...f }))); refreshAll(); }
+  });
+  const renameBtn = document.createElement('button');
+  renameBtn.className = saveAsBtn.className;
+  renameBtn.textContent = 'Rename';
+  renameBtn.addEventListener('click', async () => {
+    const name = await promptDialog('Rename palette', { initialValue: getActivePaletteName(), confirmLabel: 'Rename' });
+    if (name) { renamePalette(getActivePaletteId(), name); refreshAll(); }
+  });
+  const delPalBtn = document.createElement('button');
+  delPalBtn.className = 'shrink-0 px-2 py-1 rounded text-[10px] text-zinc-400 hover:text-red-300 hover:bg-zinc-700/60 transition-colors disabled:opacity-30 disabled:cursor-default';
+  delPalBtn.textContent = 'Delete';
+  delPalBtn.addEventListener('click', async () => {
+    // Deleting the active palette hands control to the top palette in the list.
+    const activeId = getActivePaletteId();
+    const nextActive = listPalettes().find(p => p.id !== activeId);
+    const detail = nextActive
+      ? ` "${nextActive.name}" (the top palette) will become the active palette. Painted models keep their colours — any that no longer match a slot show as off-palette and can be reconciled.`
+      : '';
+    if (await confirmDialog(`Delete the palette "${getActivePaletteName()}"?${detail}`, { confirmLabel: 'Delete', danger: true })) {
+      deletePalette(activeId);
+      refreshAll();
+    }
+  });
+  palRow.append(palSelect, saveAsBtn, newBtn, renameBtn, delPalBtn);
+  shell.body.appendChild(palRow);
+
+  function renderCollections(): void {
+    const pals = listPalettes();
+    palSelect.replaceChildren();
+    for (const p of pals) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name;
+      opt.selected = p.active;
+      palSelect.appendChild(opt);
+    }
+    delPalBtn.disabled = pals.length <= 1;
+  }
+
+  // "Colours in this model" — reconciliation. Shows the distinct colours the
+  // current model actually paints with, tagged in/off-palette, with per-colour
+  // Replace (swap to a palette/recent colour) and Merge (collapse into another
+  // model colour), plus a one-click Apply-palette auto-match. Only shown when
+  // the model has painted regions.
+  const modelWrap = document.createElement('div');
+  modelWrap.className = 'hidden flex-col gap-1.5 mt-2 p-2 rounded border border-zinc-700/70 bg-zinc-900/30';
+  shell.body.appendChild(modelWrap);
 
   const rows = document.createElement('div');
   rows.className = 'flex flex-col gap-1.5 mt-1';
@@ -221,6 +308,158 @@ export function openPaletteManager(): void {
   constrainRow.append(constrainBox, constrainText);
   shell.body.appendChild(constrainRow);
 
+  // ── Model-colour reconciliation ────────────────────────────────────────────
+
+  /** The palette slot whose colour exactly matches `rgb`, if any. */
+  function slotForColor(rgb: [number, number, number]): Filament | undefined {
+    const hex = rgbToHex(rgb).toLowerCase();
+    return listFilaments().find(s => s.hex.toLowerCase() === hex);
+  }
+
+  /** A small swatch button used in the Replace/Merge target picker. */
+  function targetSwatch(rgb: [number, number, number], title: string, onPick: () => void): HTMLElement {
+    const b = document.createElement('button');
+    b.className = 'w-6 h-6 rounded border border-zinc-600/60 hover:border-white/70 transition-colors';
+    b.style.backgroundColor = rgbToHex(rgb);
+    b.title = title;
+    b.addEventListener('click', onPick);
+    return b;
+  }
+
+  function buildModelColorRow(rgb: [number, number, number], allUsed: [number, number, number][]): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'flex flex-col gap-1';
+
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-2';
+    const sw = document.createElement('span');
+    sw.className = 'w-6 h-6 rounded border border-zinc-600/60 shrink-0';
+    sw.style.backgroundColor = rgbToHex(rgb);
+    const label = document.createElement('span');
+    label.className = 'text-[11px] flex-1 min-w-0 truncate';
+    const slot = slotForColor(rgb);
+    if (slot) {
+      label.innerHTML = `<span class="font-mono text-zinc-400">${rgbToHex(rgb)}</span> <span class="text-emerald-400">✓ ${slot.name}</span>`;
+    } else {
+      label.innerHTML = `<span class="font-mono text-zinc-300">${rgbToHex(rgb)}</span> <span class="text-amber-400">off-palette</span>`;
+    }
+
+    const replaceBtn = document.createElement('button');
+    replaceBtn.className = 'shrink-0 px-2 py-0.5 rounded text-[10px] bg-zinc-700/60 text-zinc-200 hover:bg-zinc-600/60 transition-colors';
+    replaceBtn.textContent = 'Replace…';
+    replaceBtn.title = 'Swap this colour for a palette/recent colour, or merge it into another model colour';
+
+    const addBtn = document.createElement('button');
+    addBtn.className = 'shrink-0 px-2 py-0.5 rounded text-[10px] bg-zinc-700/60 text-zinc-200 hover:bg-zinc-600/60 transition-colors';
+    addBtn.textContent = '+ Slot';
+    addBtn.title = 'Add this colour to the palette and attribute these regions to it';
+    addBtn.addEventListener('click', () => {
+      const hex = rgbToHex(rgb);
+      const f = addFilament({ name: hex, hex, td: 1 });
+      recordColor(hex);
+      reassignRegionColor(rgb, rgb, f.id); // attribute the regions to the new slot
+      refreshAll();
+    });
+
+    row.append(sw, label);
+    if (!slot) row.append(addBtn);
+    row.append(replaceBtn);
+    wrap.append(row);
+
+    // Inline target picker, toggled by Replace.
+    const picker = document.createElement('div');
+    picker.className = 'hidden flex-wrap items-center gap-1 pl-8';
+    replaceBtn.addEventListener('click', () => {
+      picker.classList.toggle('hidden');
+      picker.classList.toggle('flex');
+      if (!picker.classList.contains('hidden')) buildPicker();
+    });
+
+    function buildPicker(): void {
+      picker.replaceChildren();
+      const tag = (t: string) => {
+        const s = document.createElement('span');
+        s.className = 'text-[9px] text-zinc-500 uppercase tracking-wider w-full';
+        s.textContent = t;
+        return s;
+      };
+      // Palette slots.
+      const slots = listFilaments();
+      if (slots.length) {
+        picker.append(tag('Palette'));
+        for (const s of slots) {
+          picker.append(targetSwatch(hexToRgb(s.hex), `→ ${s.name}`, () => {
+            reassignRegionColor(rgb, hexToRgb(s.hex), s.id);
+            refreshAll();
+          }));
+        }
+      }
+      // Recent colours.
+      const hist = getColorHistory();
+      if (hist.length) {
+        picker.append(tag('Recent'));
+        for (const h of hist) {
+          const hr = hexToRgb(h);
+          picker.append(targetSwatch(hr, `→ ${h}`, () => {
+            reassignRegionColor(rgb, hr, slotForColor(hr)?.id);
+            refreshAll();
+          }));
+        }
+      }
+      // Other model colours → merge.
+      const others = allUsed.filter(c => rgbToHex(c) !== rgbToHex(rgb));
+      if (others.length) {
+        picker.append(tag('Merge into'));
+        for (const c of others) {
+          picker.append(targetSwatch(c, `Merge into ${rgbToHex(c)}`, () => {
+            reassignRegionColor(rgb, c, slotForColor(c)?.id);
+            refreshAll();
+          }));
+        }
+      }
+    }
+
+    wrap.append(picker);
+    return wrap;
+  }
+
+  function renderModelColors(): void {
+    modelWrap.replaceChildren();
+    const used = getDistinctRegionColors();
+    modelWrap.classList.toggle('hidden', used.length === 0);
+    modelWrap.classList.toggle('flex', used.length > 0);
+    if (used.length === 0) return;
+
+    const head = document.createElement('div');
+    head.className = 'flex items-center justify-between gap-2';
+    const title = document.createElement('div');
+    title.className = 'text-[10px] text-zinc-400 uppercase tracking-wider font-medium';
+    const off = used.filter(c => !slotForColor(c)).length;
+    title.textContent = off > 0 ? `Colours in this model · ${off} off-palette` : 'Colours in this model';
+    const apply = document.createElement('button');
+    apply.className = 'shrink-0 px-2 py-0.5 rounded text-[10px] bg-blue-600/80 text-white hover:bg-blue-500 transition-colors';
+    apply.textContent = 'Apply palette';
+    apply.title = 'Snap every colour to the nearest palette slot';
+    apply.addEventListener('click', () => {
+      const n = applyPaletteAutoMatch(listFilaments().map(s => ({ id: s.id, color: hexToRgb(s.hex) })));
+      showToast(n > 0 ? `Matched ${n} region${n === 1 ? '' : 's'} to the palette` : 'Already matched the palette', { variant: n > 0 ? 'success' : 'neutral' });
+      refreshAll();
+    });
+    head.append(title, apply);
+    modelWrap.append(head);
+
+    for (const rgb of used) modelWrap.append(buildModelColorRow(rgb, used));
+  }
+
+  /** Re-render every section after a reconciliation edit (slot list may gain a
+   *  slot, swatches/history may change, model colours re-tag). */
+  function refreshAll(): void {
+    renderCollections();
+    render();
+    renderHistory();
+    renderModelColors();
+  }
+
   // Footer: a single Done button.
   const done = document.createElement('button');
   done.className = BUTTON_PRIMARY;
@@ -228,6 +467,8 @@ export function openPaletteManager(): void {
   done.addEventListener('click', () => shell.close());
   shell.footer.appendChild(done);
 
+  renderCollections();
   render();
   renderHistory();
+  renderModelColors();
 }

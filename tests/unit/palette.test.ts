@@ -14,6 +14,13 @@ import {
   isPaletteConstrained,
   setPaletteConstrained,
   getActivePalette,
+  listPalettes,
+  setActivePalette,
+  createPalette,
+  renamePalette,
+  deletePalette,
+  getActivePaletteId,
+  getActivePaletteName,
   getColorHistory,
   recordColor,
   removeColorHistory,
@@ -124,6 +131,52 @@ describe('palette: active-palette indirection', () => {
     expect(p.id).toBe('default');
     expect(p.capacity).toBe(3);
     expect(p.slots.length).toBe(DEFAULT_FILAMENTS.length);
+  });
+});
+
+describe('palette: named collections', () => {
+  it('starts with a single active Default palette', () => {
+    const pals = listPalettes();
+    expect(pals).toHaveLength(1);
+    expect(pals[0]).toMatchObject({ name: 'Default', active: true });
+    expect(getActivePaletteName()).toBe('Default');
+  });
+
+  it('creates a palette (active) with fresh slot ids and isolated edits', () => {
+    const defaultIds = listFilaments().map(s => s.id);
+    const id = createPalette('Minis', DEFAULT_FILAMENTS.map(f => ({ ...f })));
+    expect(getActivePaletteId()).toBe(id);
+    expect(listPalettes()).toHaveLength(2);
+    // Fresh slot ids — not shared with the Default palette.
+    const newIds = listFilaments().map(s => s.id);
+    expect(newIds.some(x => defaultIds.includes(x))).toBe(false);
+    // Editing the active palette doesn't touch the other.
+    addFilament({ name: 'Extra', hex: '#010203', td: 1 });
+    expect(listFilaments()).toHaveLength(DEFAULT_FILAMENTS.length + 1);
+  });
+
+  it('switches the active palette', () => {
+    const first = getActivePaletteId();
+    const id = createPalette('Other');
+    setActivePalette(first);
+    expect(getActivePaletteId()).toBe(first);
+    setActivePalette(id);
+    expect(getActivePaletteId()).toBe(id);
+  });
+
+  it('renames a palette', () => {
+    renamePalette(getActivePaletteId(), 'Renamed');
+    expect(getActivePaletteName()).toBe('Renamed');
+  });
+
+  it('deletes a palette but refuses the last one', () => {
+    const id = createPalette('Throwaway');
+    deletePalette(id);
+    expect(listPalettes().some(p => p.id === id)).toBe(false);
+    // Now down to one — deleting it is a no-op.
+    const lone = getActivePaletteId();
+    deletePalette(lone);
+    expect(listPalettes()).toHaveLength(1);
   });
 });
 
