@@ -294,13 +294,13 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 export function generateId(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   // 12-char base62 IDs for local IndexedDB record keys (sessions, parts,
   // versions, images, chat messages). Sourced from crypto.getRandomValues
   // rather than Math.random — these aren't security tokens, but a secure
   // source keeps the entropy unimpeachable and clears static-analysis flags.
   // Rejection sampling (drop bytes ≥ 248 = 4×62) keeps the distribution
   // uniform, avoiding the modulo bias of a raw `byte % 62`.
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let id = '';
   while (id.length < 12) {
     const bytes = crypto.getRandomValues(new Uint8Array(12 - id.length));
