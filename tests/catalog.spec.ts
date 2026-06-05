@@ -56,7 +56,7 @@ test.describe('Catalog page (static)', () => {
     await expect(customizable).toContainText('Layer Cake');
   });
 
-  test('the curated Fidget Toys group leads the catalog and holds the fidgets', async ({ page }) => {
+  test('the curated Fidget Toys group leads the catalog and holds the mechanical fidget(s)', async ({ page }) => {
     await gotoCatalog(page);
 
     const sections = page.locator('main section[data-category]');
@@ -64,9 +64,10 @@ test.describe('Catalog page (static)', () => {
 
     const fidget = page.locator('main section[data-category="fidget-toys"]');
     await expect(fidget.locator('h2')).toHaveText('Fidget Toys');
-    expect(await fidget.locator('div.grid > a').count()).toBe(10);
-    await expect(fidget).toContainText('Twisty Fidget Ball');
-    await expect(fidget).toContainText('Ball-in-Cage');
+    // Currently one verified print-in-place mechanism (the spiral cone); the
+    // remaining fidgets are being rebuilt as mechanisms in follow-up work.
+    expect(await fidget.locator('div.grid > a').count()).toBe(1);
+    await expect(fidget).toContainText('Spiral Fidget Cone');
   });
 
   test('search narrows tiles, updates section counts, and hides empty sections', async ({ page }) => {
