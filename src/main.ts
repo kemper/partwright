@@ -277,6 +277,73 @@ export interface ExampleEntry {
   language: Language;
 }
 
+// Starter snippets seeded into the editor when a language is first opened
+// (toolbar/AI language toggle, new session, new part). Each is a small,
+// instantly-rendering model chosen to show off what its engine is good at.
+// The manifold-js starter lives in examples/basic_shapes.js (it doubles as
+// the landing-page default — see `defaultCode`); the other three live here.
+
+// OpenSCAD: a parametric module fed into linear_extrude with twist + taper —
+// pure OpenSCAD, no BOSL2, so there's no library download and it renders
+// instantly. Showcases the programmatic/CSG style OpenSCAD is built for.
+const STARTER_SCAD = `// Twisted star column — pure OpenSCAD, no libraries, renders instantly.
+// A parametric module fed into linear_extrude with twist + taper: the kind
+// of programmatic modeling OpenSCAD is built for.
+$fn = 48;
+
+module star(outer = 14, inner = 6, points = 6) {
+  polygon([for (i = [0 : 2 * points - 1])
+    let (r = (i % 2 == 0) ? outer : inner, a = i * 180 / points)
+    [r * cos(a), r * sin(a)]]);
+}
+
+linear_extrude(height = 40, twist = 160, slices = 60, scale = 0.55, convexity = 8)
+  star();`;
+
+// BREP / replicad — quick showcase of the headline features:
+//   - selective fillet (the inDirection-based workaround for box edges,
+//     called out in the gotchas cheat sheet at the top of replicad.md)
+//   - true chamfer on the top rim
+//   - boolean subtract (cut) of two fastener bores
+// The result is a rounded mounting plate. It's small enough that the OCCT
+// solver runs in well under a second even on a cold WASM load, so the first
+// paint into the editor after switching languages still feels instant.
+const STARTER_REPLICAD = `// BREP / replicad — exact surfaces with true fillets, chamfers & STEP export.
+const { BREP } = api;
+
+// A rounded mounting plate: 44 x 30 x 10 box with the four vertical corners
+// rounded and the top rim chamfered.
+const body = BREP.box([44, 30, 10])
+  // Round the four vertical corners. \`inDirection: [0,0,1]\` selects the
+  // Z-parallel edges — needed because inBox alone is unreliable on a
+  // BREP.box's coincident planar edges (see replicad.md "Gotchas").
+  .fillet(4, { inDirection: [0, 0, 1] })
+  // Bevel the top rim (the four edges of the top face). Same gotcha:
+  // pair the maxZ bound with parallelToPlane: 'XY'.
+  .chamfer(1, { maxZ: 9.999, parallelToPlane: 'XY' });
+
+// Two fastener holes, cut straight through with a boolean.
+const hole = BREP.cylinder(3, 14).translate([0, 0, -2]);
+return body.cut(hole.translate([-13, 0, 0])).cut(hole.translate([13, 0, 0]));`;
+
+// Voxel — a small colored model (a little tree) so the first paint after
+// switching shows the workflow (fillBox / set with hex colors) immediately.
+const STARTER_VOXEL = `// Voxel — build with colored cubes on an integer grid (1 voxel = 1 unit).
+const { voxels } = api;
+const v = voxels();
+
+// Trunk
+v.fillBox([-1, -1, 0], [0, 0, 2], '#8a5a2b');
+// Tapered canopy — three stacked layers
+v.fillBox([-4, -4, 3], [3, 3, 4], '#2e9e4f');
+v.fillBox([-3, -3, 5], [2, 2, 6], '#37b85c');
+v.fillBox([-2, -2, 7], [1, 1, 8], '#4fd673');
+// A star on top
+v.set(0, 0, 9, '#ffd23b');
+
+// Tip: return v.smooth() for rounded edges (see /ai/voxel.md).
+return v;`;
+
 // Customizer state. `currentParamSchema` is the parameter schema the active
 // model declared via `api.params({...})` on its last run (null when it declared
 // none); `currentParamValues` holds the user's overrides (only keys differing
@@ -3931,33 +3998,26 @@ async function main() {
   // Reset the editor to a blank starting point for a freshly created session.
   // Shared by the session bar's "+ New Session" button and the session modal's,
   // so both clear the previous session's code instead of leaving it behind.
-  function resetEditorToStarter(comment: string) {
+  function resetEditorToStarter() {
     dropPaintState();
     const lang = getActiveLanguage();
-    let body: string;
-    if (lang === 'scad') {
-      body = 'cube([10, 10, 10], center=true);';
-    } else if (lang === 'replicad') {
-      body = 'const { BREP } = api;\nconst body = BREP.box([30, 30, 10]).fillet(3, { inDirection: [0, 0, 1] });\nconst bore = BREP.cylinder(4, 12).translate([0, 0, -1]);\nreturn body.cut(bore);';
-    } else if (lang === 'voxel') {
-      body = "const { voxels } = api;\nconst v = voxels();\nv.fillBox([-5, -5, 0], [4, 4, 0], '#6b8cff');\nv.fillBox([-1, -1, 1], [1, 1, 6], '#ff8c42');\nv.set(0, 0, 7, '#ff3b30');\nreturn v;";
-    } else {
-      body = 'const { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
-    }
-    const freshCode = `// ${comment}\n${body}`;
+    const freshCode = lang === 'scad' ? STARTER_SCAD
+      : lang === 'replicad' ? STARTER_REPLICAD
+      : lang === 'voxel' ? STARTER_VOXEL
+      : defaultCode;
     setValue(freshCode);
     runCode(freshCode);
   }
 
   function startNewSessionInEditor() {
-    resetEditorToStarter('New session');
+    resetEditorToStarter();
     _clearImages();
   }
 
   // Reset the editor for a freshly created part. Unlike a new session, parts
   // share the session's reference images, so those are left intact.
   function startNewPartInEditor() {
-    resetEditorToStarter('New part');
+    resetEditorToStarter();
   }
 
   // Load a part's active version into the editor, or reset to a blank part when
@@ -6401,46 +6461,6 @@ async function main() {
     setStatus(statusBar, 'ready', 'Ready');
   }
 
-  const DRAFT_STUB_JS = '// JavaScript\nconst { Manifold } = api;\nreturn Manifold.cube([10, 10, 10], true);';
-  const DRAFT_STUB_SCAD = '// OpenSCAD\ncube([10, 10, 10], center=true);';
-  // Voxel — a small colored model so the first paint after switching shows
-  // the workflow (fillBox / set with hex or [r,g,b] colors) immediately.
-  const DRAFT_STUB_VOXEL =
-    '// Voxel — build with colored cubes on an integer grid (1 voxel = 1 unit).\n' +
-    'const { voxels } = api;\n' +
-    'const v = voxels();\n' +
-    "v.fillBox([-5, -5, 0], [4, 4, 0], '#6b8cff');   // a 10x10 base slab\n" +
-    "v.fillBox([-1, -1, 1], [1, 1, 6], '#ff8c42');   // a tower\n" +
-    "v.set(0, 0, 7, '#ff3b30');                       // a red cap\n" +
-    '// Tip: return v.smooth() for rounded edges (see /ai/voxel.md).\n' +
-    'return v;\n';
-  // BREP / replicad — quick showcase of the headline features:
-  //   - selective fillet (the inDirection-based workaround for box edges,
-  //     called out in the gotchas cheat sheet at the top of replicad.md)
-  //   - true chamfer on the top rim
-  //   - boolean subtract (cut) of a cylinder bore
-  // The result is a rounded-corner mounting bracket with a bevelled bore.
-  // It's small enough that the OCCT solver runs in well under a second on
-  // a cold WASM load, so the first paint into the editor after switching
-  // languages still feels instant.
-  const DRAFT_STUB_REPLICAD =
-    '// BREP / replicad — exact-surface modeling\n' +
-    "const { BREP } = api;\n" +
-    '\n' +
-    '// Body: 30x30x10 box with rounded vertical corners and a chamfered top rim.\n' +
-    'const body = BREP.box([30, 30, 10])\n' +
-    '  // Round the four vertical corners. `inDirection: [0,0,1]` requires the\n' +
-    "  // edge be Z-parallel — needed because inBox alone is unreliable on a\n" +
-    "  // BREP.box's planar coincident edges (see replicad.md \"Gotchas\").\n" +
-    '  .fillet(3, { inDirection: [0, 0, 1] })\n' +
-    '  // Bevel the top rim — the four edges of the top face. Same gotcha:\n' +
-    "  // pair the maxZ bound with parallelToPlane: 'XY'.\n" +
-    "  .chamfer(0.6, { maxZ: 9.999, parallelToPlane: 'XY' });\n" +
-    '\n' +
-    '// Boolean cut: a 4 mm bore through the centre.\n' +
-    'const bore = BREP.cylinder(4, 12).translate([0, 0, -1]);\n' +
-    'return body.cut(bore);\n';
-
   /** Toolbar / AI language toggle: stash the current editor buffer as a draft
    *  on the active session, swap engines, then restore the target language's
    *  draft (seeded with a stub if none has been stashed yet). Versions are not
@@ -6476,10 +6496,10 @@ async function main() {
       if (draft) { nextCode = draft.code; nextCompanions = draft.companionFiles; }
     }
     if (nextCode === null) {
-      nextCode = lang === 'scad' ? DRAFT_STUB_SCAD
-        : lang === 'replicad' ? DRAFT_STUB_REPLICAD
-        : lang === 'voxel' ? DRAFT_STUB_VOXEL
-        : DRAFT_STUB_JS;
+      nextCode = lang === 'scad' ? STARTER_SCAD
+        : lang === 'replicad' ? STARTER_REPLICAD
+        : lang === 'voxel' ? STARTER_VOXEL
+        : defaultCode;
     }
     // Restore the target language's companion set: the SCAD draft's saved
     // companions, or empty for any non-SCAD buffer (which never has them).
