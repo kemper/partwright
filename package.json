@@ -4,6 +4,9 @@
   "version": "0.0.0",
   "license": "LicenseRef-PolyForm-Noncommercial-1.0.0",
   "type": "module",
+  "bin": {
+    "partwright": "bin/partwright.mjs"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
@@ -16,7 +19,9 @@
     "refresh-models": "node scripts/refreshModelsSnapshot.mjs",
     "lint:consistency": "ast-grep scan",
     "lint:deadcode": "knip",
-    "lint:deps": "madge --circular --extensions ts,tsx src"
+    "lint:deps": "madge --circular --extensions ts,tsx src",
+    "model:preview": "node scripts/model-preview.mjs",
+    "cli": "node bin/partwright.mjs"
   },
   "devDependencies": {
     "@ast-grep/cli": "^0.43.0",
@@ -24,6 +29,7 @@
     "knip": "^6.15.0",
     "madge": "^8.0.0",
     "playwright": "^1.58.2",
+    "sharp": "^0.34.5",
     "typescript": "~5.8.3",
     "vite": "^6.3.5",
     "vitest": "^4.1.8"

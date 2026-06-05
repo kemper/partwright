@@ -124,7 +124,7 @@ import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
 import { setReliefSettings, getReliefSettings, updateReliefSettings, isReliefSession, getPreviewModeFor } from './relief/reliefSettings';
 import { saveReliefSource, getReliefSource } from './relief/reliefSource';
-import { listFilaments, hexToRgb } from './relief/filaments';
+import { listFilaments, hexToRgb, getPaletteCapacity } from './relief/filaments';
 import { meshBounds } from './color/slabPaint';
 import { openReliefImportModal } from './ui/reliefImportModal';
 import { mountReliefStudio, type ReliefStudioHandle } from './ui/reliefStudio';
@@ -145,7 +145,7 @@ import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
-import { initImagePaintUI, setSmoothStampCallback } from './color/imagePaintUI';
+import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook } from './color/imagePaintUI';
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
@@ -172,10 +172,10 @@ import {
 import { setColor as setAnnotateColor, setWidth as setAnnotateWidth, getWidth as getAnnotateWidth } from './annotations/annotateMode';
 import { addTextAnnotationAtAnchor, setFontSize as setAnnotateFontSize, getFontSize as getAnnotateFontSize } from './annotations/textMode';
 import { restoreView as restoreAnnotationViewById } from './annotations/selectMode';
-import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
+import { applyTriColors, applyTriColorsIfVisible, hasRegions as hasColorRegions, onChange as onColorRegionsChange, onVisibilityChange as onPaintVisibilityChange, clearRegions, serialize as serializeRegions, addRegion, getRegions, removeRegion, removeLastRegion, redoLastRegion, setRegionVisibility, setRegionTriangles, buildTriColors, createEmptyTriColors, overlayPainted, setModelColorRegions, hasModelColorRegions, clearModelColorRegions, getModelRegions, getDistinctRegionColors, type SerializedColorRegion, type RegionDescriptor } from './color/regions';
 import { setPaintLabels } from './color/labels';
-import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX } from './color/paintMode';
-import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
+import { setBucketTolerance as setPaintBucketTolerance, getBucketTolerance as getPaintBucketTolerance, setBucketColorTolerance as setPaintBucketColorTolerance, getBucketColorTolerance as getPaintBucketColorTolerance, setBucketMode as setPaintBucketMode, getBucketMode as getPaintBucketMode, setBrushRadius as setPaintBrushRadius, getBrushRadius as getPaintBrushRadius, setBrushSmooth as setPaintBrushSmooth, isBrushSmooth as isPaintBrushSmooth, setBrushSmoothDivisor as setPaintBrushSmoothDivisor, getBrushSmoothDivisor as getPaintBrushSmoothDivisor, setBrushSurface as setPaintBrushSurface, getBrushSurface as getPaintBrushSurface, setBrushPaintDepth as setPaintBrushDepth, getBrushPaintDepth as getPaintBrushDepth, setBrushWrapAngle as setPaintBrushWrapAngle, getBrushWrapAngle as getPaintBrushWrapAngle, SMOOTH_DIVISOR_MIN, SMOOTH_DIVISOR_MAX, WRAP_ANGLE_MIN, WRAP_ANGLE_MAX } from './color/paintMode';
+import { buildStrokeMesh, buildRefinedMesh, buildRefinedMeshFromSet, brushRefineRegion, strokeFootprintTriangles, deriveSampleNormals, buildGeodesicField, tangentBasis, wrapAngleGate, childrenByParent, type BrushStroke, type BrushShape, type RefineRegion } from './color/subdivide';
 import { refineInWorker, SubdivisionAbortError, terminateSubdivisionWorker } from './color/subdivisionClient';
 import { startProgress, endProgress, __setProgressModalDelayForTests } from './ui/progressModal';
 import { syncLockState, disableRun, enableRun } from './color/editorLock';
@@ -914,13 +914,21 @@ function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }
     depth: d.depth !== undefined && d.depth > 0 ? d.depth : d.radius * 0.5,
     spray: d.spray,
   };
+  // Wrap tolerance: a finite gate (< 180°) needs the geodesic reachability field
+  // even in slab mode (built alongside the prism's normals). Absent ⇒ 180° (no
+  // gate) for strokes saved before the slider — kept byte-identical.
+  const wrapAngleDeg = d.wrapAngleDeg ?? 180;
+  const maxBendCos = wrapAngleGate(wrapAngleDeg);
   const base = paintBaseMesh ?? currentMeshData;
   if (base) {
     if (surface === 'geodesic') {
-      stroke.geoField = buildGeodesicField(base, d.samples, d.radius);
+      stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
     } else {
       stroke.sampleNormals = deriveSampleNormals(d.samples, base);
       stroke.sampleTangents = stroke.sampleNormals.map(tangentBasis);
+      if (wrapAngleDeg < 180) {
+        stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
+      }
     }
     strokeCache.set(d, { base, stroke });
   }
@@ -991,7 +999,7 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   for (const region of standardRegions) {
     const { triangles, perTriColors } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
     if (triangles.size > 0) {
-      addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false, perTriColors);
+      addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false, region.slotId, perTriColors);
       report.carried.push(region.name);
     } else {
       report.dropped.push(region.name);
@@ -1025,7 +1033,7 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
         const refined = smoothReplayCb(imageData, stampOpts, d.maxEdge);
         if (refined && refined.result.entries.length > 0) {
           const triangles = new Set(refined.result.perTriColors.keys());
-          addRegion(region.name, region.color, region.source, d, triangles, region.visible !== false, refined.result.perTriColors);
+          addRegion(region.name, region.color, region.source, d, triangles, region.visible !== false, region.slotId, refined.result.perTriColors);
           report.carried.push(region.name);
         } else {
           report.dropped.push(region.name);
@@ -2309,6 +2317,9 @@ async function main() {
         // interactive: true → the wizard is the only entry point that may show
         // the import-target modal (console/AI imports stay modal-free).
         await createReliefFromImageData(image, opts, name || 'relief', sourceFile, true);
+        // Colour reliefs bring their own palette of cluster colours — nudge the
+        // user to reconcile them. Tonal (luminance) reliefs have no colours.
+        if (opts.mode === 'quantized') nudgePaletteAfterColorImport();
       },
       onCreateSvg: async (svgText, opts, name, sourceFile) => {
         await createReliefFromSvgText(svgText, opts, name || 'relief', sourceFile, true);
@@ -2731,7 +2742,15 @@ async function main() {
       // the ImageDataLike→ImageData narrowing is safe here.
       await registerImportSnapshot(sourceFile, chosenName, 'IMAGE', meta, createThumbnailFromImageData(chosenImage as ImageData));
     }
+    nudgePaletteAfterColorImport();
     return true;
+  }
+
+  /** After an import that brings in its own colours (voxel art, colour relief),
+   *  nudge the user toward the palette tool to match those colours to their
+   *  filaments — rather than constraining the importers to the palette. */
+  function nudgePaletteAfterColorImport(): void {
+    showToast('Imported with colours — open 🧵 Palette to match them to your filaments.', { variant: 'neutral', source: 'import' });
   }
 
   /** Import an image as a colored voxel billboard in a new voxel session.
@@ -3639,12 +3658,25 @@ async function main() {
     const dimensions = Array.isArray(rawDims) && rawDims.length === 3 && rawDims.every(n => typeof n === 'number')
       ? (rawDims as [number, number, number])
       : null;
+    // Colour-aware warnings. Colour-carrying formats (3MF/GLB/OBJ) warn when the
+    // model needs more filament colours than the palette's slot capacity; STL
+    // can't carry colour at all, so a painted model warns that colours drop.
+    const colorCarrying = format === '3MF' || format === 'GLB' || format === 'OBJ';
+    let colorOverBudget: { used: number; capacity: number } | undefined;
+    if (colorCarrying && hasColorRegions()) {
+      const used = getDistinctRegionColors().length;
+      const capacity = getPaletteCapacity();
+      if (used > capacity) colorOverBudget = { used, capacity };
+    }
+    const colorDropped = format === 'STL' && (hasColorRegions() || hasModelColorRegions());
     return {
       unitless: _getUnits() === 'unitless',
       dimensions,
       isManifold: gd?.isManifold !== false, // treat unknown as manifold (no false alarm)
       componentCount: typeof gd?.componentCount === 'number' ? gd.componentCount : 1,
       format,
+      colorOverBudget,
+      colorDropped,
     };
   }
 
@@ -6100,6 +6132,22 @@ async function main() {
     // Step 5: Stamp on the now-fine mesh for crisp image edges.
     const finalResult = stampImageOntoMesh(mesh, imageData, stampOpts);
     return { result: finalResult, parentToChildren };
+  });
+  // Commit a freshly-placed stamp region with the paint reconciler suspended.
+  // The stamp flow already built the final mesh and resolved every region's
+  // triangles/colours, so a reconcile here would only ever do harm: with brush
+  // strokes (or smooth slabs/etc.) present it rebuilds the mesh from base and
+  // re-resolves regions, wiping the stamp (whose colours live in runtime
+  // perTriColors, not its descriptor) and any pre-existing paint. Suspend it,
+  // run the addRegion, then re-composite colours directly.
+  setStampCommitHook((commit) => {
+    suspendReconcile = true;
+    try {
+      commit();
+    } finally {
+      suspendReconcile = false;
+    }
+    paintedColorRefresh();
   });
   initVoxelPaintUI(clipControls, {
     activate: async () => {
@@ -10500,6 +10548,21 @@ async function main() {
       return { depth: getPaintBrushDepth() };
     },
 
+    /** Wrap tolerance for the UI brush tool: the maximum edge bend (degrees,
+     *  0–180) paint may flow across. Applies to both surface modes — paint
+     *  follows gentle curves / bumps but stops at sharper folds. 90° (default)
+     *  stops at right-angle corners; 180° wraps across any edge. */
+    getBrushWrapAngle() {
+      return { wrapAngleDeg: getPaintBrushWrapAngle() };
+    },
+    setBrushWrapAngle(deg: number) {
+      if (typeof deg !== 'number' || !Number.isFinite(deg)) {
+        return { error: `setBrushWrapAngle(deg): deg must be a finite number in ${WRAP_ANGLE_MIN}..${WRAP_ANGLE_MAX}` };
+      }
+      setPaintBrushWrapAngle(deg);
+      return { wrapAngleDeg: getPaintBrushWrapAngle() };
+    },
+
     /** Smooth-brush settings for the UI brush tool. When smooth is on (and the
      *  brush has a radius), a stroke subdivides the triangles its edge crosses
      *  until they are below a target edge length, so the painted outline is
@@ -10547,11 +10610,12 @@ async function main() {
       maxEdge?: number;
       surface?: string;
       depth?: number;
+      wrapAngleDeg?: number;
       name?: string;
     }) {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first, then paint.' };
       if (!opts || typeof opts !== 'object') return { error: 'paintStroke(opts): opts object required' };
-      const { points, radius, color, shape, resolution, maxEdge, surface, depth, name } = opts;
+      const { points, radius, color, shape, resolution, maxEdge, surface, depth, wrapAngleDeg, name } = opts;
       if (!Array.isArray(points) || points.length === 0) {
         return { error: 'paintStroke: points must be a non-empty array of [x,y,z] surface points (use probePixel to get them)' };
       }
@@ -10580,6 +10644,9 @@ async function main() {
       if (depth !== undefined && (typeof depth !== 'number' || !Number.isFinite(depth) || depth < 0)) {
         return { error: 'paintStroke: depth must be a non-negative finite number (mesh units) when provided' };
       }
+      if (wrapAngleDeg !== undefined && (typeof wrapAngleDeg !== 'number' || !Number.isFinite(wrapAngleDeg) || wrapAngleDeg < WRAP_ANGLE_MIN || wrapAngleDeg > WRAP_ANGLE_MAX)) {
+        return { error: `paintStroke: wrapAngleDeg must be a number in ${WRAP_ANGLE_MIN}..${WRAP_ANGLE_MAX} (max edge bend paint flows across) when provided` };
+      }
       const shp: BrushShape = (shape === 'square' || shape === 'diamond') ? shape : 'circle';
       // maxEdge (absolute) overrides; otherwise radius / resolution, default 64
       // (the exact-outline clip keeps edges crisp, so curves need fewer segments).
@@ -10592,6 +10659,9 @@ async function main() {
       const descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }> = {
         kind: 'brushStroke', samples, radius, shape: shp, maxEdge: target,
         surface: (surface as 'geodesic' | 'slab') ?? 'slab', depth: depth ?? 0,
+        // Default to no gate (180°) for the console API so a paintStroke without
+        // wrapAngleDeg behaves exactly as before; the UI brush passes 90°.
+        wrapAngleDeg: wrapAngleDeg ?? 180,
       };
       const region = paintBrushStrokeSync(
         typeof name === 'string' && name ? name : `Region ${getRegions().length + 1}`,

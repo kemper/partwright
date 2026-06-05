@@ -25,11 +25,18 @@ export interface ExportWarningInfo {
   componentCount: number;
   /** Format label shown in the confirm button, e.g. 'STL'. */
   format: string;
+  /** Set when the painted model needs more filament colours than the palette's
+   *  printer-slot capacity (advisory — never blocks). */
+  colorOverBudget?: { used: number; capacity: number };
+  /** True when the chosen format can't carry colour (STL) but the model is
+   *  painted, so the colours will be dropped. */
+  colorDropped?: boolean;
 }
 
 /** Whether any warning is worth interrupting the export for. */
 export function hasExportWarning(info: ExportWarningInfo): boolean {
-  return info.unitless || !info.isManifold || info.componentCount > 1;
+  return info.unitless || !info.isManifold || info.componentCount > 1
+    || info.colorOverBudget != null || info.colorDropped === true;
 }
 
 /**
@@ -76,6 +83,25 @@ export function showExportConfirm(info: ExportWarningInfo): Promise<boolean> {
       block.innerHTML =
         '<strong>Printability warning:</strong> ' + lines.join(' and ') +
         '. Many slicers may fail or produce a bad print. Consider fixing the model before exporting.';
+      shell.body.appendChild(block);
+    }
+
+    if (info.colorOverBudget) {
+      const block = document.createElement('div');
+      block.className = 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug';
+      const { used, capacity } = info.colorOverBudget;
+      block.innerHTML =
+        `<strong>More colours than slots.</strong> This model uses <strong>${used}</strong> filament colours but your palette capacity is <strong>${capacity}</strong>. ` +
+        'Your printer may not have enough filament slots. Adjust capacity in the palette manager (🧵 Palette).';
+      shell.body.appendChild(block);
+    }
+
+    if (info.colorDropped) {
+      const block = document.createElement('div');
+      block.className = 'rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-xs text-amber-200 leading-snug';
+      block.innerHTML =
+        `<strong>${info.format} can't carry colour.</strong> Your painted colours will be dropped — the exported model is geometry only. ` +
+        'Export <strong>3MF</strong> (or GLB) to keep colours.';
       shell.body.appendChild(block);
     }
 
