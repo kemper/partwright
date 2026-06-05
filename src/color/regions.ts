@@ -13,6 +13,11 @@ export interface ColorRegion {
   order: number;
   visible: boolean;
   triangles: Set<number>; // resolved triangle indices (transient, not persisted)
+  // Optional palette-slot attribution (filament/AMS slot). `color` stays the
+  // render source of truth; when `slotId` is set it mirrors that slot's colour,
+  // so recolouring a slot recolours every region on it, and export can group
+  // by slot order. Unset = ad-hoc colour (unslotted) — back-compat default.
+  slotId?: string;
   /** Per-triangle colors for image-paint regions; overrides `color` per
    *  triangle in buildTriColors. Transient — rebuilt from the descriptor. */
   perTriColors?: Map<number, [number, number, number]>;
@@ -97,6 +102,7 @@ export interface SerializedColorRegion {
   descriptor: RegionDescriptor;
   order: number;
   visible?: boolean; // optional for backward compat — defaults to true on load
+  slotId?: string;   // palette-slot attribution (schema 1.11+); omitted = unslotted
 }
 
 type ChangeListener = () => void;
@@ -222,6 +228,7 @@ export function addRegion(
   descriptor: RegionDescriptor,
   triangles: Set<number>,
   visible: boolean = true,
+  slotId?: string,
   perTriColors?: Map<number, [number, number, number]>,
 ): ColorRegion {
   const id = nextRegionId++;
@@ -234,6 +241,7 @@ export function addRegion(
     order: nextOrder++,
     visible,
     triangles,
+    slotId,
     perTriColors,
   };
   regions.push(region);
@@ -296,6 +304,30 @@ export function updateRegionColor(id: number, color: [number, number, number]): 
     region.color = color;
     notify();
   }
+}
+
+/** Recolour every region attributed to a palette slot — used when the user
+ *  edits that slot's colour in the palette editor, so all regions painted with
+ *  it update at once. Returns the number of regions changed and fires a single
+ *  notify (which drives the live re-render). */
+export function recolorRegionsForSlot(slotId: string, color: [number, number, number]): number {
+  let changed = 0;
+  for (const region of regions) {
+    if (region.slotId === slotId) {
+      region.color = color;
+      changed++;
+    }
+  }
+  if (changed > 0) notify();
+  return changed;
+}
+
+/** Distinct palette slots in use across the current user regions. Drives the
+ *  paint panel's over-budget badge (count vs. palette capacity). */
+export function usedSlotIds(): Set<string> {
+  const ids = new Set<string>();
+  for (const region of regions) if (region.slotId) ids.add(region.slotId);
+  return ids;
 }
 
 /** Batch-replace the color of every user region whose color is within
@@ -521,6 +553,7 @@ export function serialize(): SerializedColorRegion[] {
     descriptor: r.descriptor,
     order: r.order,
     visible: r.visible,
+    ...(r.slotId ? { slotId: r.slotId } : {}),
   }));
 }
 

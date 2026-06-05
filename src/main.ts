@@ -991,7 +991,7 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   for (const region of standardRegions) {
     const { triangles, perTriColors } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
     if (triangles.size > 0) {
-      addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false, perTriColors);
+      addRegion(region.name, region.color, region.source, region.descriptor, triangles, region.visible !== false, region.slotId, perTriColors);
       report.carried.push(region.name);
     } else {
       report.dropped.push(region.name);
@@ -1025,7 +1025,7 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
         const refined = smoothReplayCb(imageData, stampOpts, d.maxEdge);
         if (refined && refined.result.entries.length > 0) {
           const triangles = new Set(refined.result.perTriColors.keys());
-          addRegion(region.name, region.color, region.source, d, triangles, region.visible !== false, refined.result.perTriColors);
+          addRegion(region.name, region.color, region.source, d, triangles, region.visible !== false, region.slotId, refined.result.perTriColors);
           report.carried.push(region.name);
         } else {
           report.dropped.push(region.name);

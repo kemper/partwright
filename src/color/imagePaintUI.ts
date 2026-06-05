@@ -364,6 +364,7 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
     },
     triangles,
     true,
+    undefined, // unslotted — image-paint carries per-triangle colours, not a palette slot
     result.perTriColors,
   );
 }

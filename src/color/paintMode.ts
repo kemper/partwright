@@ -13,6 +13,7 @@ import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshC
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 import { smoothEdgeForResolution } from './slabPaint';
 import { setPaintAccessors } from './paintAccessors';
+import { getSlotById, hexToRgb } from './palette';
 import { tangentBasis, type BrushShape } from './subdivide';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
@@ -21,6 +22,11 @@ export type { BrushShape };
 
 let active = false;
 let currentColor: [number, number, number] = [1, 0.2, 0.2]; // default red
+// Active palette slot, or null for an ad-hoc (unslotted) colour. Painted
+// regions are stamped with this so they map onto a filament/AMS slot and follow
+// slot recolours. `setSlot` keeps `currentColor` in sync with the slot's hex;
+// `setColor` (the custom picker) clears it back to unslotted.
+let currentSlotId: string | null = null;
 let currentTool: PaintTool = 'brush';
 /** Color-distance tolerance for the bucket tool in color mode. Range [0, 1]
  *  where 0 = exact color match only, 1 = fill entire connected component.
@@ -140,10 +146,26 @@ export function isActive(): boolean { return active; }
 
 export function setColor(color: [number, number, number]): void {
   currentColor = color;
+  currentSlotId = null; // ad-hoc colour — no longer tied to a palette slot
 }
 
 export function getColor(): [number, number, number] {
   return currentColor;
+}
+
+/** Select a palette slot as the active paint colour. Looks up the slot's hex so
+ *  the brush/bucket/slab/box tools paint with it, and stamps painted regions
+ *  with `slotId` for filament/AMS mapping and slot-recolour. Unknown ids are
+ *  ignored. */
+export function setSlot(slotId: string): void {
+  const slot = getSlotById(slotId);
+  if (!slot) return;
+  currentColor = hexToRgb(slot.hex);
+  currentSlotId = slot.id;
+}
+
+export function getSlotId(): string | null {
+  return currentSlotId;
 }
 
 export function setTool(tool: PaintTool): void {
@@ -311,7 +333,7 @@ export function getCurrentMesh(): MeshData | null {
 
 // Publish the state accessors the drag tools (boxDrag/slabDrag) need, so they
 // don't import this module back (which would be a circular dependency).
-setPaintAccessors({ getColor, getCurrentMesh, shapeSmoothDescriptorFields });
+setPaintAccessors({ getColor, getSlotId, getCurrentMesh, shapeSmoothDescriptorFields });
 
 
 /** Rebuild adjacency graph for a new mesh. Call this whenever updateMesh fires. */
@@ -633,6 +655,8 @@ function commitBrushStroke(): void {
         spray: brushSpray ? { strength: brushSprayStrength, softness: brushSpraySoftness, seed: spraySeed++ } : undefined,
       },
       new Set<number>(),
+      true,
+      currentSlotId ?? undefined,
     );
   } else if (brushSession && brushSession.size > 0) {
     // Projection paint collects ids in the *current* (possibly refined) mesh's
@@ -642,7 +666,7 @@ function commitBrushStroke(): void {
     const ids = triangleToBase
       ? [...new Set([...brushSession].map(t => triangleToBase!(t)))]
       : [...brushSession];
-    addRegion(name, color, 'paintbrush', { kind: 'triangles', ids }, brushSession);
+    addRegion(name, color, 'paintbrush', { kind: 'triangles', ids }, brushSession, true, currentSlotId ?? undefined);
     if (onRegionPainted) onRegionPainted();
   }
 }
@@ -865,6 +889,8 @@ function onPointerUp(event: PointerEvent): void {
       'face-pick',
       { kind: 'coplanar', seedPoint: result.point, seedNormal: normal, normalTolerance: bucketTolerance },
       region,
+      true,
+      currentSlotId ?? undefined,
     );
   } else {
     const seedTri = result.triangleIndex;
@@ -885,6 +911,8 @@ function onPointerUp(event: PointerEvent): void {
       'face-pick',
       { kind: 'colorFlood', seedPoint: result.point, seedNormal: normal, seedColor, colorTolerance: bucketColorTolerance },
       region,
+      true,
+      currentSlotId ?? undefined,
     );
   }
 
