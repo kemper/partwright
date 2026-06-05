@@ -98,8 +98,14 @@ export function openPaletteManager(): void {
   delPalBtn.className = 'shrink-0 px-2 py-1 rounded text-[10px] text-zinc-400 hover:text-red-300 hover:bg-zinc-700/60 transition-colors disabled:opacity-30 disabled:cursor-default';
   delPalBtn.textContent = 'Delete';
   delPalBtn.addEventListener('click', async () => {
-    if (await confirmDialog(`Delete the palette "${getActivePaletteName()}"?`, { confirmLabel: 'Delete', danger: true })) {
-      deletePalette(getActivePaletteId());
+    // Deleting the active palette hands control to the top palette in the list.
+    const activeId = getActivePaletteId();
+    const nextActive = listPalettes().find(p => p.id !== activeId);
+    const detail = nextActive
+      ? ` "${nextActive.name}" (the top palette) will become the active palette. Painted models keep their colours — any that no longer match a slot show as off-palette and can be reconciled.`
+      : '';
+    if (await confirmDialog(`Delete the palette "${getActivePaletteName()}"?${detail}`, { confirmLabel: 'Delete', danger: true })) {
+      deletePalette(activeId);
       refreshAll();
     }
   });
