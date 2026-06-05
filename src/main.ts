@@ -266,7 +266,7 @@ import {
   type GeometryAssertions,
 } from './geometry/statsComputation';
 import { getConfig } from './config/appConfig';
-import { extractPositions, maxEdgeLength, minEdgeLength } from './surface/meshSubdivide';
+import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
 
 // Load examples as raw text — JS and SCAD
 const jsExampleModules = import.meta.glob('../examples/*.js', { query: '?raw', import: 'default' });
@@ -5939,7 +5939,9 @@ async function main() {
         (fraction) => { void onProgress(fraction); },
         signal,
       );
-      return commitMeshOpResult(result, baseline, coloredBaseline);
+      if (result?.exceeded) return { exceeded: true, triangleCount: result.triangleCount };
+      const meshResult = result && result.mesh ? { mesh: result.mesh, triangleCount: result.triangleCount } : null;
+      return commitMeshOpResult(meshResult, baseline, coloredBaseline);
     },
 
     async simplifyByTolerance(tolerance, preserveColor, onProgress, signal) {
@@ -5973,7 +5975,16 @@ async function main() {
         signal,
         edgeLength,
       );
-      return commitMeshOpResult(result, baseline, coloredBaseline);
+      if (result?.exceeded) return { exceeded: true, triangleCount: result.triangleCount };
+      const meshResult = result && result.mesh ? { mesh: result.mesh, triangleCount: result.triangleCount } : null;
+      return commitMeshOpResult(meshResult, baseline, coloredBaseline);
+    },
+
+    estimateRefine(edgeLength) {
+      const baseline = simplifyBaselineMesh;
+      if (!baseline || !(edgeLength > 0)) return baseline?.numTri ?? 0;
+      const positions = extractPositions(baseline);
+      return estimateRefineTriangles(positions, baseline.triVerts, edgeLength);
     },
 
     reset() {

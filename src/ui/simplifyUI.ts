@@ -32,6 +32,8 @@ import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 import { QUALITY_OPTIONS, QUALITY_SEGMENTS, loadQualitySettings, type QualitySettings } from '../geometry/qualitySettings';
 import { saveQualityForLang, initQualityLogic, notifyLanguageChange as notifyQualityLangChange } from './curvatureQualityPanel';
+import { showHeavyEnhanceConfirm } from './heavyMeshConfirmModal';
+import { getConfig } from '../config/appConfig';
 import type { Language } from '../geometry/engine';
 
 export interface SimplifyOpenInfo {
@@ -69,6 +71,17 @@ export type SimplifyMode = 'simplify' | 'enhance';
  *              collapses features smaller than it. */
 export type KnobMode = 'count' | 'edge' | 'size';
 
+/** Outcome of a simplify/enhance op:
+ *  - `{ triangleCount }` — applied; this is the new live triangle count.
+ *  - `{ exceeded, triangleCount }` — refused because the (enhance) result would
+ *    exceed the hard cap; nothing was committed. `triangleCount` is what it
+ *    would have produced.
+ *  - `null` — nothing changed at that setting (or cancelled). */
+export type MeshOpOutcome =
+  | { triangleCount: number }
+  | { exceeded: true; triangleCount: number }
+  | null;
+
 export interface SimplifyHandlers {
   /** Snapshot the current model as the baseline. Returns its triangle count
    *  (and the count currently on screen), or a reason when the model can't be
@@ -84,7 +97,7 @@ export interface SimplifyHandlers {
     preserveColor: boolean,
     onProgress: SimplifyProgress,
     signal?: AbortSignal,
-  ): Promise<{ triangleCount: number } | null>;
+  ): Promise<MeshOpOutcome>;
   /** Enhance the baseline up toward `targetTriangles` and show it live.
    *  `preserveColor` carries paint through the topology change. */
   enhance(
@@ -92,7 +105,7 @@ export interface SimplifyHandlers {
     preserveColor: boolean,
     onProgress: SimplifyProgress,
     signal?: AbortSignal,
-  ): Promise<{ triangleCount: number } | null>;
+  ): Promise<MeshOpOutcome>;
   /** Simplify the baseline with a single direct `simplify(tolerance)` pass
    *  (the "by edge length / feature size" knob) and show it live. Returns the
    *  achieved triangle count, or null when nothing fell below the tolerance
@@ -102,7 +115,7 @@ export interface SimplifyHandlers {
     preserveColor: boolean,
     onProgress: SimplifyProgress,
     signal?: AbortSignal,
-  ): Promise<{ triangleCount: number } | null>;
+  ): Promise<MeshOpOutcome>;
   /** Enhance the baseline with a single direct `refineToLength(edgeLength)`
    *  pass (the "by edge length / triangle size" knob) and show it live. Splits
    *  only edges longer than `edgeLength`, so the larger triangles densify
@@ -113,7 +126,12 @@ export interface SimplifyHandlers {
     preserveColor: boolean,
     onProgress: SimplifyProgress,
     signal?: AbortSignal,
-  ): Promise<{ triangleCount: number } | null>;
+  ): Promise<MeshOpOutcome>;
+  /** Estimate the triangle count a direct `refineToLength(edgeLength)` pass
+   *  would produce on the current baseline — used to warn/guard before running
+   *  a potentially runaway enhance. Approximate; the Worker enforces the real
+   *  hard cap as a backstop. */
+  estimateRefine(edgeLength: number): number;
   /** Restore the baseline mesh to the viewport (with original colors). */
   reset(): void;
   /** Bake the mesh currently on screen into a new saved version. */
@@ -530,11 +548,14 @@ function currentTarget(): number {
   return clampTarget(Number(numberInput?.value ?? slider?.value ?? info?.currentTriangles ?? 0));
 }
 
-/** Enable the shared Apply whenever there's something pending to commit — a
- *  curvature-quality preview, a simplify/enhance op, or both. */
+/** Enable the shared Apply (and Reset) whenever there's something pending to
+ *  commit — a curvature-quality preview, a simplify/enhance op, or both. Reset
+ *  only undoes *pending* (un-applied) changes, so it mirrors Apply: idle until
+ *  the user changes something, and disabled again the moment Apply commits. */
 function updateApplyEnabled(): void {
-  if (!applyBtn) return;
-  applyBtn.disabled = applying || (!qualityPending() && !meshPending());
+  const idle = applying || (!qualityPending() && !meshPending());
+  if (applyBtn) applyBtn.disabled = idle;
+  if (resetBtn) resetBtn.disabled = idle;
 }
 
 function setControlsDisabled(disabled: boolean): void {
@@ -597,6 +618,31 @@ async function runApply(): Promise<void> {
   const isDirect = req.kind !== 'count';
   const doPreserveColor = preserveColor && baseline.hasColor;
 
+  // Guard a runaway enhance before it ever runs: estimate the projected
+  // triangle count (exact for the count knob, approximate for edge length) and
+  // refuse / confirm over the configured thresholds. Committing a multi-million
+  // triangle mesh freezes the main thread, so this is the front-line defense
+  // (the Worker hard cap backs it up if the estimate undershoots). Only an
+  // enhance can explode the count — simplify only ever reduces it.
+  if (currentMode === 'enhance') {
+    const { enhanceWarnTriangles: warn, enhanceMaxTriangles: max } = getConfig().renderer;
+    const approx = req.kind !== 'count';
+    const projected = req.kind === 'count' ? req.value : handlers.estimateRefine(req.value);
+    if (projected >= max) {
+      const msg = `That setting would produce ${approx ? '~' : ''}${Math.round(projected).toLocaleString()} triangles, over the ${max.toLocaleString()} limit. Not applied — try a larger edge length or a lower target.`;
+      if (statusEl) statusEl.textContent = msg;
+      showToast(msg, { variant: 'warn', source: 'engine' });
+      return;
+    }
+    if (projected >= warn) {
+      const proceed = await showHeavyEnhanceConfirm({ projected: Math.round(projected), warnLimit: warn, approx });
+      if (!proceed) {
+        if (statusEl) statusEl.textContent = 'Cancelled.';
+        return;
+      }
+    }
+  }
+
   applying = true;
   applyAbort = new AbortController();
   const abort = applyAbort;
@@ -624,7 +670,7 @@ async function runApply(): Promise<void> {
   // otherwise clear it).
   let finalStatus = '';
   try {
-    let r: { triangleCount: number } | null;
+    let r: MeshOpOutcome;
     if (req.kind === 'count') {
       const handler = currentMode === 'simplify' ? handlers.apply : handlers.enhance;
       r = await handler.call(handlers, req.value, doPreserveColor, onProgress, abort.signal);
@@ -634,23 +680,33 @@ async function runApply(): Promise<void> {
       r = await handlers.enhanceByEdgeLength(req.value, doPreserveColor, onProgress, abort.signal);
     }
     appliedKey = requestKey(req);
-    const changed = !!r && r.triangleCount !== baseline.baseTriangles;
-    showResult(r ? r.triangleCount : baseline.baseTriangles);
-    if (!r && isDirect) {
-      // A direct pass that changed nothing means the threshold matched no
-      // edges / triangles — warn so the user knows to adjust the knob.
-      finalStatus = currentMode === 'simplify'
-        ? 'Nothing to simplify at that setting — no detail was below the tolerance. Try a larger value.'
-        : 'Nothing to enhance at that setting — no edge was longer than that. Try a smaller value.';
+    if (r && 'exceeded' in r) {
+      // The Worker refused: the refine would exceed the hard cap, so nothing
+      // was committed (the giant mesh never reached the main thread). This is
+      // the backstop for an estimate that undershot the real count.
+      const max = getConfig().renderer.enhanceMaxTriangles;
+      showResult(baseline.baseTriangles);
+      finalStatus = `That produced ~${r.triangleCount.toLocaleString()} triangles, over the ${max.toLocaleString()} limit — not applied. Try a larger edge length.`;
       showToast(finalStatus, { variant: 'warn', source: 'engine' });
-    } else if (!changed) {
-      finalStatus = 'No change at that setting.';
     } else {
-      // 3. Bake the applied result into a new saved version (Apply is the
-      //    commit — there's no separate Save button).
-      if (statusEl) statusEl.textContent = 'Saving…';
-      const saveRes = await handlers.save();
-      finalStatus = saveRes.message;
+      const changed = !!r && r.triangleCount !== baseline.baseTriangles;
+      showResult(r ? r.triangleCount : baseline.baseTriangles);
+      if (!r && isDirect) {
+        // A direct pass that changed nothing means the threshold matched no
+        // edges / triangles — warn so the user knows to adjust the knob.
+        finalStatus = currentMode === 'simplify'
+          ? 'Nothing to simplify at that setting — no detail was below the tolerance. Try a larger value.'
+          : 'Nothing to enhance at that setting — no edge was longer than that. Try a smaller value.';
+        showToast(finalStatus, { variant: 'warn', source: 'engine' });
+      } else if (!changed) {
+        finalStatus = 'No change at that setting.';
+      } else {
+        // 3. Bake the applied result into a new saved version (Apply is the
+        //    commit — there's no separate Save button).
+        if (statusEl) statusEl.textContent = 'Saving…';
+        const saveRes = await handlers.save();
+        finalStatus = saveRes.message;
+      }
     }
   } catch (e) {
     const err = e as Error;
@@ -982,6 +1038,7 @@ function buildPanel(): HTMLElement {
   resetBtn.className = 'px-2 py-1.5 rounded text-xs bg-zinc-700/70 text-zinc-300 [@media(hover:hover)]:hover:bg-zinc-600/70 transition-colors border border-zinc-600/50 disabled:opacity-40 disabled:cursor-not-allowed';
   resetBtn.textContent = 'Reset';
   resetBtn.title = 'Discard pending changes: revert the quality preview and restore the original mesh';
+  resetBtn.disabled = true; // nothing to reset until the user changes something
   resetBtn.addEventListener('click', () => {
     if (applying) return;
     revertQualityPreview();
