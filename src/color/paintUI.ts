@@ -55,16 +55,11 @@ import {
 import {
   getActivePalette,
   getPaletteCapacity,
-  setPaletteCapacity,
   isPaletteConstrained,
-  addFilament,
-  updateFilament,
-  removeFilament,
   onPaletteChange,
-  hexToRgb,
-  type Filament,
 } from './palette';
-import { recolorRegionsForSlot, usedSlotIds } from './regions';
+import { usedSlotIds } from './regions';
+import { openPaletteManager } from './paletteManager';
 import {
   getRegions,
   onChange as onRegionsChange,
@@ -134,6 +129,16 @@ export function initPaintUI(controlsContainer: HTMLElement): void {
   } else {
     controlsContainer.appendChild(paintBtn);
   }
+
+  // Standalone palette manager entry point — edit filament slots without
+  // entering paint mode. Edits propagate to the paint swatches and relief.
+  const paletteBtn = document.createElement('button');
+  paletteBtn.id = 'palette-manager-toggle';
+  paletteBtn.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
+  paletteBtn.textContent = '🧵 Palette';
+  paletteBtn.title = 'Manage the filament palette (slots, colours, capacity)';
+  paletteBtn.addEventListener('click', () => openPaletteManager());
+  controlsContainer.insertBefore(paletteBtn, paintBtn);
 
   pickerPanel = createPickerPanel();
   // Anchor the panel to the positioned viewport pane (the toolbar's parent)
@@ -218,11 +223,12 @@ function createPaletteSection(): HTMLElement {
   const budget = document.createElement('span');
   budget.className = 'hidden px-1.5 py-0.5 rounded text-[9px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40';
   headRight.appendChild(budget);
-  const editBtn = document.createElement('button');
-  editBtn.className = 'text-[10px] text-zinc-400 hover:text-zinc-200 transition-colors';
-  editBtn.textContent = 'Edit';
-  editBtn.title = 'Edit palette slots and capacity';
-  headRight.appendChild(editBtn);
+  const manageBtn = document.createElement('button');
+  manageBtn.className = 'text-[10px] text-zinc-400 hover:text-zinc-200 transition-colors';
+  manageBtn.textContent = 'Manage…';
+  manageBtn.title = 'Open the filament palette manager (add, recolour, reorder slots + capacity)';
+  manageBtn.addEventListener('click', () => openPaletteManager());
+  headRight.appendChild(manageBtn);
   head.appendChild(headRight);
   wrap.appendChild(head);
 
@@ -253,18 +259,6 @@ function createPaletteSection(): HTMLElement {
   customRow.appendChild(colorInput);
   customRow.appendChild(customLabel);
   wrap.appendChild(customRow);
-
-  // Collapsible editor (built on demand).
-  const editor = document.createElement('div');
-  editor.className = 'hidden mt-2 border-t border-zinc-700 pt-2';
-  wrap.appendChild(editor);
-  let editorOpen = false;
-  editBtn.addEventListener('click', () => {
-    editorOpen = !editorOpen;
-    editor.classList.toggle('hidden', !editorOpen);
-    editBtn.textContent = editorOpen ? 'Done' : 'Edit';
-    if (editorOpen) renderEditor();
-  });
 
   function renderSwatches(): void {
     grid.replaceChildren();
@@ -298,73 +292,6 @@ function createPaletteSection(): HTMLElement {
 
   function renderConstrain(): void {
     customRow.classList.toggle('hidden', isPaletteConstrained());
-  }
-
-  function renderEditor(): void {
-    editor.replaceChildren();
-    for (const slot of getActivePalette().slots) {
-      editor.appendChild(buildSlotRow(slot));
-    }
-    const addBtn = document.createElement('button');
-    addBtn.className = 'mt-1 w-full px-2 py-1 rounded text-[10px] bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600/60 transition-colors';
-    addBtn.textContent = '+ Add color';
-    addBtn.addEventListener('click', () => {
-      addFilament({ name: 'New', hex: '#cccccc', td: 1 });
-      renderEditor();
-    });
-    editor.appendChild(addBtn);
-
-    const capRow = document.createElement('div');
-    capRow.className = 'flex items-center justify-between gap-2 mt-2';
-    const capLabel = document.createElement('span');
-    capLabel.className = 'text-[10px] text-zinc-500';
-    capLabel.textContent = 'Printer slots';
-    const capInput = document.createElement('input');
-    capInput.type = 'number';
-    capInput.min = '1';
-    capInput.max = '64';
-    capInput.value = String(getPaletteCapacity());
-    capInput.className = 'w-14 px-1 py-0.5 rounded text-[10px] bg-zinc-900/60 text-zinc-200 border border-zinc-700';
-    capInput.title = 'How many filament slots your printer has (e.g. 4 for one AMS)';
-    capInput.addEventListener('change', () => {
-      const n = parseInt(capInput.value, 10);
-      if (Number.isFinite(n) && n > 0) setPaletteCapacity(n);
-    });
-    capRow.appendChild(capLabel);
-    capRow.appendChild(capInput);
-    editor.appendChild(capRow);
-  }
-
-  function buildSlotRow(slot: Filament): HTMLElement {
-    const row = document.createElement('div');
-    row.className = 'flex items-center gap-1.5 mb-1';
-    const colorEl = document.createElement('input');
-    colorEl.type = 'color';
-    colorEl.value = slot.hex;
-    colorEl.className = 'w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent shrink-0';
-    colorEl.addEventListener('input', () => {
-      updateFilament(slot.id, { hex: colorEl.value });
-      recolorRegionsForSlot(slot.id, hexToRgb(colorEl.value));
-      // Keep the active paint colour in sync if this is the selected slot.
-      if (getSlotId() === slot.id) setSlot(slot.id);
-    });
-    const nameEl = document.createElement('input');
-    nameEl.type = 'text';
-    nameEl.value = slot.name;
-    nameEl.className = 'flex-1 min-w-0 px-1 py-0.5 rounded text-[10px] bg-zinc-900/60 text-zinc-200 border border-zinc-700';
-    nameEl.addEventListener('change', () => updateFilament(slot.id, { name: nameEl.value }));
-    const delEl = document.createElement('button');
-    delEl.className = 'shrink-0 w-5 h-5 flex items-center justify-center rounded text-zinc-500 hover:text-red-300 hover:bg-zinc-700/60 transition-colors';
-    delEl.textContent = '×';
-    delEl.title = 'Remove this slot';
-    delEl.addEventListener('click', () => {
-      removeFilament(slot.id);
-      renderEditor();
-    });
-    row.appendChild(colorEl);
-    row.appendChild(nameEl);
-    row.appendChild(delEl);
-    return row;
   }
 
   // Don't pre-select a slot: that would override the default paint colour with

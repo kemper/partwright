@@ -65,14 +65,42 @@ test.describe('filament palette + slot painting', () => {
     expect(regions[1].color[2]).toBeGreaterThan(0.6);
     expect(regions[1].color[0]).toBeLessThan(0.3);
 
-    // Drop the printer capacity to 1 via the palette editor → 2 slots used now
-    // exceeds it, so the over-budget badge appears.
-    await page.locator('#paint-picker-panel button[title="Edit palette slots and capacity"]').dispatchEvent('click');
-    const capInput = page.locator('#paint-picker-panel input[title*="filament slots"]');
+    // Drop the printer capacity to 1 via the palette manager → 2 slots used now
+    // exceeds it, so the over-budget badge appears in the paint panel.
+    await page.locator('#palette-manager-toggle').dispatchEvent('click');
+    const dialog = page.locator('[role="dialog"]');
+    const capInput = dialog.locator('input[type="number"]');
     await capInput.fill('1');
     await capInput.dispatchEvent('change');
+    await dialog.locator('button:has-text("Done")').dispatchEvent('click');
 
     const badge = page.locator('#paint-picker-panel').getByText(/\/1 slots/);
     await expect(badge).toBeVisible();
+  });
+
+  test('the palette manager opens from the viewport and its edits reach the swatches', async ({ page }) => {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 20000 });
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (window as any).partwright.run(`const { Manifold } = api; return Manifold.cube([20, 20, 6], true);`);
+    });
+
+    // Open the standalone manager from the viewport (not the paint menu).
+    await page.locator('#palette-manager-toggle').dispatchEvent('click');
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog).toContainText('Filament palette');
+    // Six default slots, each with a name input.
+    await expect(dialog.locator('input[type="text"]')).toHaveCount(6);
+
+    // Add a slot, then close.
+    await dialog.locator('button:has-text("+ Add slot")').dispatchEvent('click');
+    await expect(dialog.locator('input[type="text"]')).toHaveCount(7);
+    await dialog.locator('button:has-text("Done")').dispatchEvent('click');
+
+    // The paint panel's swatch grid reflects the added slot (live, via onPaletteChange).
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+    await expect(page.locator('#paint-picker-panel button[title^="Slot "]')).toHaveCount(7);
   });
 });
