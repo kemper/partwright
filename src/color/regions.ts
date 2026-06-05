@@ -76,7 +76,11 @@ export type RegionDescriptor =
   // saved before this omit both and are read as `slab` with an auto depth.
   // `spray` turns the stroke into a geodesic airbrush: a soft speckle whose
   // coverage fades from the core out via a per-triangle dither (no hard edge).
-  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: 'geodesic' | 'slab'; depth?: number; spray?: { strength: number; softness: number; seed: number } }
+  // `wrapAngleDeg` is the wrap tolerance (0–180°): paint only flows across an
+  // edge when the faces bend by ≤ this angle, so a stroke stops at sharp corners
+  // (≥90°) but flows over gentle curves. Omitted ⇒ 180° (no gate) for back-compat
+  // with strokes saved before the slider existed.
+  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: 'geodesic' | 'slab'; depth?: number; wrapAngleDeg?: number; spray?: { strength: number; softness: number; seed: number } }
   // Image projection: per-triangle colors computed at apply-time by projecting
   // an image onto the mesh from a chosen axis direction. The projected result is
   // stored as a flat [triIdx, r, g, b, …] array (r/g/b in 0–255) so the region

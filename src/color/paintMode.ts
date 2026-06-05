@@ -6,7 +6,7 @@ import type { MeshData } from '../geometry/types';
 import { pickFace, type FacePickResult } from './facePicker';
 import { projectBrushFootprint, invalidateProjection, disposeProjection } from './projectionPaint';
 import { disposeBaseRemap } from './baseRemap';
-import { buildAdjacency, findColorRegion, findCoplanarRegion, getTriangleNormal, type AdjacencyGraph } from './adjacency';
+import { buildAdjacency, findColorRegion, findCoplanarRegion, gateRegionByBend, getTriangleNormal, type AdjacencyGraph } from './adjacency';
 import { addRegion, getRegions, buildTriColors } from './regions';
 import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
@@ -14,7 +14,7 @@ import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshCha
 import { smoothEdgeForResolution } from './slabPaint';
 import { setPaintAccessors } from './paintAccessors';
 import { getSlotById, hexToRgb } from './palette';
-import { tangentBasis, type BrushShape } from './subdivide';
+import { tangentBasis, wrapAngleGate, type BrushShape } from './subdivide';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
 export type PaintTool = 'bucket' | 'brush' | 'slab' | 'box' | 'replace';
@@ -66,6 +66,16 @@ let brushSurface: 'geodesic' | 'slab' = 'slab';
 /** Paint depth in mesh units: how far through the surface a slab-mode stroke may
  *  reach. 0 = auto (half the brush radius), resolved at commit time. */
 let brushPaintDepth = 0;
+
+/** Wrap tolerance in degrees (0–180): paint flows across an edge only when the
+ *  two faces bend by ≤ this angle, so a stroke follows gentle curves / bumpy
+ *  near-coplanar facets but stops at a sharp corner. 90° (default) stops at
+ *  right-angle folds — the outside of a box, or the inner walls of a hollow one;
+ *  180° lets paint wrap across any edge (the pre-slider behaviour). Applies to
+ *  both surface modes. */
+let brushWrapAngle = 90;
+export const WRAP_ANGLE_MIN = 0;
+export const WRAP_ANGLE_MAX = 180;
 
 /** Airbrush spray: when on, the brush sprays a soft speckle instead of a solid
  *  fill. It honours the active surface mode (slab by default, geodesic if
@@ -285,6 +295,15 @@ export function setBrushPaintDepth(d: number): void {
 
 export function getBrushPaintDepth(): number {
   return brushPaintDepth;
+}
+
+/** Set the wrap tolerance (degrees, 0–180): max edge bend paint may flow across. */
+export function setBrushWrapAngle(deg: number): void {
+  brushWrapAngle = Math.max(WRAP_ANGLE_MIN, Math.min(WRAP_ANGLE_MAX, Math.round(deg)));
+}
+
+export function getBrushWrapAngle(): number {
+  return brushWrapAngle;
 }
 
 /** True when the active brush settings will subdivide the mesh on commit. */
@@ -652,6 +671,7 @@ function commitBrushStroke(): void {
         maxEdge: brushTargetEdge(),
         surface: brushSurface,
         depth: brushPaintDepth,
+        wrapAngleDeg: brushWrapAngle,
         spray: brushSpray ? { strength: brushSprayStrength, softness: brushSpraySoftness, seed: spraySeed++ } : undefined,
       },
       new Set<number>(),
@@ -677,7 +697,8 @@ function commitBrushStroke(): void {
  *  back faces are excluded by the projection's depth test, so paint never bleeds
  *  through to the far side of a thin wall. */
 function collectBrushFootprint(event: MouseEvent, result: FacePickResult, target: Set<number>): void {
-  target.add(result.triangleIndex);
+  const seed = result.triangleIndex;
+  target.add(seed);
   if (brushRadius <= 0 || !currentMesh) return;
   const proj = projectBrushFootprint({
     event,
@@ -686,7 +707,21 @@ function collectBrushFootprint(event: MouseEvent, result: FacePickResult, target
     shape: brushShape,
     hitPoint: result.point,
   });
-  if (proj) for (const t of proj) target.add(t);
+  if (!proj) return;
+  // Apply the wrap tolerance: the screen-projection footprint is a flat spatial
+  // set with no surface gate, so on its own it wraps over any edge inside the
+  // brush disk. Restrict it to the part connected to the picked triangle without
+  // crossing an edge sharper than the tolerance — the same dihedral gate the
+  // smooth/geodesic brush applies in `buildGeodesicField`, so non-wrapping
+  // behaves identically with smooth edges on or off. 180° (cos -1) is a no-op.
+  const maxBendCos = wrapAngleGate(brushWrapAngle);
+  if (maxBendCos <= -1 || !adjacency) {
+    for (const t of proj) target.add(t);
+    return;
+  }
+  const footprint = new Set<number>(proj);
+  footprint.add(seed);
+  for (const t of gateRegionByBend(footprint, seed, adjacency, maxBendCos)) target.add(t);
 }
 
 // ---------------------------------------------------------------------------
