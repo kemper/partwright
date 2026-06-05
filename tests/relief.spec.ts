@@ -184,7 +184,7 @@ test.describe('Relief Studio', () => {
     await page.getByText('Image → keychain / tile / relief…').click();
     await expect(page.getByText('Make a part from an image', { exact: true })).toBeVisible();
 
-    const input = page.locator('input[type="file"][accept*="image"]');
+    const input = page.getByRole('dialog', { name: 'Make a part from an image' }).locator('input[type="file"]');
     await input.setInputFiles({ name: 'grad.png', mimeType: 'image/png', buffer });
 
     // The wizard must react to the chosen image: live preview stat + an enabled
@@ -710,7 +710,7 @@ test.describe('Relief Studio', () => {
     await page.locator('#btn-import').click();
     await page.getByText('Image → keychain / tile / relief…').click();
     await expect(page.getByText('Make a part from an image', { exact: true })).toBeVisible();
-    await page.locator('input[type="file"][accept*="image"]').setInputFiles({ name: 'tiny.png', mimeType: 'image/png', buffer: tinyPng });
+    await page.getByRole('dialog', { name: 'Make a part from an image' }).locator('input[type="file"]').setInputFiles({ name: 'tiny.png', mimeType: 'image/png', buffer: tinyPng });
 
     // Wait for the wizard to react to the file (its inline preview stat).
     await expect(page.locator('text=/Preview · \\d+×\\d+ · \\d+ clusters/').first()).toBeVisible({ timeout: 5000 });
@@ -743,7 +743,7 @@ test.describe('Relief Studio', () => {
     await page.locator('#btn-import').click();
     await page.getByText('Image → keychain / tile / relief…').click();
     await expect(page.getByText('Make a part from an image', { exact: true })).toBeVisible();
-    await page.locator('input[type="file"][accept*="image"]').setInputFiles({ name: 'remembered.png', mimeType: 'image/png', buffer });
+    await page.getByRole('dialog', { name: 'Make a part from an image' }).locator('input[type="file"]').setInputFiles({ name: 'remembered.png', mimeType: 'image/png', buffer });
     await expect(page.locator('text=/Preview · \\d+×\\d+ · \\d+ clusters/').first()).toBeVisible({ timeout: 5000 });
     await page.getByRole('button', { name: 'Create tile' }).click();
     // The studio opens only AFTER the source is persisted (commitGeneratedRelief

@@ -292,3 +292,100 @@ test.describe('Simplify tool', () => {
     await expect(page.locator('#simplify-result')).toContainText(`${reduced.toLocaleString()} triangles`);
   });
 });
+
+test.describe('Quality panel — edge-length & size knobs', () => {
+  // A coarse box fused with a fine sphere: lots of big flat triangles plus an
+  // already-dense region. Edge-length enhance should split the big faces.
+  const MIXED = 'const { Manifold } = api; return Manifold.cube([24,24,24], true).add(Manifold.sphere(7, 48).translate([12,12,12]));';
+
+  async function openEditorWithMixed(page: Page): Promise<number> {
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 20000 });
+    return page.evaluate(async (code) => {
+      const pw = (window as unknown as { partwright: { createSession(name?: string): Promise<unknown>; run(code: string): Promise<unknown>; getGeometryData(): { triangleCount?: number } } }).partwright;
+      await pw.createSession('quality-knobs');
+      await pw.run(code);
+      return pw.getGeometryData().triangleCount ?? 0;
+    }, MIXED);
+  }
+
+  test('Enhance + Edge knob refines the large triangles; Reset restores', async ({ page }) => {
+    const base = await openEditorWithMixed(page);
+    expect(base).toBeGreaterThan(100);
+
+    await page.locator('#simplify-toggle').dispatchEvent('click');
+    await page.waitForSelector('#simplify-panel:not(.hidden)');
+
+    // Switch to Enhance, then the Edge-length knob — the count slider hides and
+    // the length controls appear.
+    await page.getByRole('button', { name: 'Enhance', exact: true }).dispatchEvent('click');
+    await page.locator('#simplify-knob-edge').dispatchEvent('click');
+    await expect(page.locator('#simplify-length-input')).toBeVisible();
+    await expect(page.locator('#simplify-slider')).toBeHidden();
+
+    // A small target edge length splits the big box faces → more triangles.
+    await page.locator('#simplify-length-input').fill('3');
+    await page.locator('#simplify-length-input').dispatchEvent('change');
+    await page.locator('#simplify-apply').dispatchEvent('click');
+    await page.waitForFunction(
+      (b) => {
+        const pw = (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } } }).partwright;
+        return (pw.getGeometryData().triangleCount ?? 0) > b;
+      },
+      base,
+      { timeout: 15000 },
+    );
+    expect(await triangleCount(page)).toBeGreaterThan(base);
+
+    await page.locator('#simplify-reset').dispatchEvent('click');
+    await page.waitForFunction(
+      (b) => {
+        const pw = (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } } }).partwright;
+        return (pw.getGeometryData().triangleCount ?? 0) === b;
+      },
+      base,
+      { timeout: 10000 },
+    );
+  });
+
+  test('an edge length longer than every edge warns and leaves the mesh unchanged', async ({ page }) => {
+    const base = await openEditorWithMixed(page);
+
+    await page.locator('#simplify-toggle').dispatchEvent('click');
+    await page.waitForSelector('#simplify-panel:not(.hidden)');
+    await page.getByRole('button', { name: 'Enhance', exact: true }).dispatchEvent('click');
+    await page.locator('#simplify-knob-edge').dispatchEvent('click');
+
+    await page.locator('#simplify-length-input').fill('100000');
+    await page.locator('#simplify-length-input').dispatchEvent('change');
+    await page.locator('#simplify-apply').dispatchEvent('click');
+
+    await expect(page.locator('#simplify-status')).toContainText('Nothing to enhance', { timeout: 10000 });
+    expect(await triangleCount(page)).toBe(base);
+  });
+
+  test('Simplify + Size knob reduces the triangle count', async ({ page }) => {
+    const base = await openEditorWithMixed(page);
+
+    await page.locator('#simplify-toggle').dispatchEvent('click');
+    await page.waitForSelector('#simplify-panel:not(.hidden)');
+    // Simplify is the default mode; pick the Size knob (threshold + amount).
+    await page.locator('#simplify-knob-size').dispatchEvent('click');
+    await expect(page.locator('#simplify-length-input')).toBeVisible();
+    await expect(page.locator('#simplify-amount-slider')).toBeVisible();
+
+    // A generous min-feature size collapses the fine sphere detail away.
+    await page.locator('#simplify-length-input').fill('2');
+    await page.locator('#simplify-length-input').dispatchEvent('change');
+    await page.locator('#simplify-apply').dispatchEvent('click');
+    await page.waitForFunction(
+      (b) => {
+        const pw = (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } } }).partwright;
+        return (pw.getGeometryData().triangleCount ?? b) < b;
+      },
+      base,
+      { timeout: 15000 },
+    );
+    expect(await triangleCount(page)).toBeLessThan(base);
+  });
+});
