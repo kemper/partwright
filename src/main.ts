@@ -2309,6 +2309,9 @@ async function main() {
         // interactive: true → the wizard is the only entry point that may show
         // the import-target modal (console/AI imports stay modal-free).
         await createReliefFromImageData(image, opts, name || 'relief', sourceFile, true);
+        // Colour reliefs bring their own palette of cluster colours — nudge the
+        // user to reconcile them. Tonal (luminance) reliefs have no colours.
+        if (opts.mode === 'quantized') nudgePaletteAfterColorImport();
       },
       onCreateSvg: async (svgText, opts, name, sourceFile) => {
         await createReliefFromSvgText(svgText, opts, name || 'relief', sourceFile, true);
@@ -2731,7 +2734,15 @@ async function main() {
       // the ImageDataLike→ImageData narrowing is safe here.
       await registerImportSnapshot(sourceFile, chosenName, 'IMAGE', meta, createThumbnailFromImageData(chosenImage as ImageData));
     }
+    nudgePaletteAfterColorImport();
     return true;
+  }
+
+  /** After an import that brings in its own colours (voxel art, colour relief),
+   *  nudge the user toward the palette tool to match those colours to their
+   *  filaments — rather than constraining the importers to the palette. */
+  function nudgePaletteAfterColorImport(): void {
+    showToast('Imported with colours — open 🧵 Palette to match them to your filaments.', { variant: 'neutral', source: 'import' });
   }
 
   /** Import an image as a colored voxel billboard in a new voxel session.

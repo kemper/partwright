@@ -330,6 +330,60 @@ export function usedSlotIds(): Set<string> {
   return ids;
 }
 
+const colorDist = (a: readonly number[], b: readonly number[]) =>
+  Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
+
+/** Reconcile a model colour: recolour every region within `tolerance` of
+ *  `fromColor` to `toColor`, and set their palette attribution to `toSlotId`
+ *  (pass `undefined` to clear it — the colour is now ad-hoc). This is the
+ *  primitive behind the palette tool's Replace (swap to a palette/history
+ *  colour) and Merge (collapse one model colour into another). Returns the
+ *  number of regions changed. */
+export function reassignRegionColor(
+  fromColor: [number, number, number],
+  toColor: [number, number, number],
+  toSlotId: string | undefined,
+  tolerance = 0.02,
+): number {
+  let count = 0;
+  for (const r of regions) {
+    if (colorDist(r.color, fromColor) <= tolerance) {
+      r.color = [...toColor] as [number, number, number];
+      r.slotId = toSlotId;
+      count++;
+    }
+  }
+  if (count > 0) notify();
+  return count;
+}
+
+/** Auto-match every user region to the nearest palette slot (Euclidean RGB),
+ *  recolouring it to that slot's colour and stamping its `slotId`. Used by the
+ *  palette tool's "Apply palette" to reconcile an off-palette or freshly
+ *  imported model in one step. `slots` is the ordered palette. Returns the
+ *  number of regions changed. */
+export function applyPaletteAutoMatch(
+  slots: ReadonlyArray<{ id: string; color: [number, number, number] }>,
+): number {
+  if (slots.length === 0) return 0;
+  let count = 0;
+  for (const r of regions) {
+    let best = slots[0];
+    let bestD = Infinity;
+    for (const s of slots) {
+      const d = colorDist(r.color, s.color);
+      if (d < bestD) { bestD = d; best = s; }
+    }
+    // Skip a no-op (already exactly this slot's colour and attribution).
+    if (r.slotId === best.id && colorDist(r.color, best.color) === 0) continue;
+    r.color = [...best.color] as [number, number, number];
+    r.slotId = best.id;
+    count++;
+  }
+  if (count > 0) notify();
+  return count;
+}
+
 /** Batch-replace the color of every user region whose color is within
  *  `tolerance` (Euclidean distance in normalised [0,1]³ RGB) of `sourceColor`.
  *  Returns the number of regions changed. */
