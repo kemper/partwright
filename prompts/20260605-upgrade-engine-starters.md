@@ -90,3 +90,13 @@ Follow-up (review nit): refreshed the `isStarterCode` doc comment, which still
 described the dropped `// New session`/`// New part` prefix as a currently-emitted
 form. Behavior unchanged — the regex is retained only for back-compat with legacy
 saved cube drafts.
+
+Follow-up (feedback): the SCAD sampler was poorly aligned and slow (~13 s).
+Profiled per-block render time in the browser: OpenSCAD's CGAL booleans on
+*curved* primitives dominate (a cross-bore `difference` ~2.5 s, a curved
+`union` ~1.9 s, `minkowski` worst of all), while extrudes/revolve/tray are
+~0.3 s each; `$fn` and the tray-union barely move the needle. Simplified the
+SCAD starter to two fast, iconic demos — a single-bore CSG `difference` and a
+parametric `linear_extrude` twist star — sitting flat on the tray, evenly
+spaced. Renders in ~2.9 s (single component, watertight), down from ~13 s, and
+is visually aligned.

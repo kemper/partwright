@@ -287,39 +287,28 @@ export interface ExampleEntry {
 // minkowski-rounded box, a parametric module + linear_extrude twist, and a
 // rotate_extrude vase. Pure OpenSCAD (no BOSL2), so there's no library
 // download and it renders instantly.
-const STARTER_SCAD = `// OpenSCAD capability sampler — primitives, booleans, transforms, extrudes,
-// and a module + loop, all mounted on one tray so it stays a single solid.
-// Pure OpenSCAD (no libraries) so it renders instantly. Edit and re-run.
-$fn = 48;
+const STARTER_SCAD = `// OpenSCAD capability sampler — a CSG boolean and a parametric twist extrude
+// on one tray (so it stays a single solid). Pure OpenSCAD (no libraries) and
+// kept deliberately small so it renders fast. Edit a block and re-run.
+$fn = 24;
 
-// Tray base ties the four demos into one connected solid.
-translate([1, 0, -1]) cube([88, 24, 3], center = true);
+// Tray base — ties the two demos into one connected solid (top at z = 0).
+translate([0, 0, -2]) cube([40, 22, 4], center = true);
 
-// 1) Boolean difference: a cube with a sphere and a bore removed.
-translate([-32, 0, 1]) difference() {
-  cube([14, 14, 14], center = true);
-  sphere(9);
-  cylinder(h = 20, r = 3.5, center = true);
+// 1) Boolean difference: a cube with a bore (CSG is OpenSCAD's core trick).
+translate([-10, 0, 5.5]) difference() {
+  cube(12, center = true);
+  cylinder(h = 16, r = 3, center = true);
 }
 
-// 2) Rounded box via minkowski (cube + sphere).
-translate([-9, 0, 1]) minkowski() {
-  cube([9, 9, 5], center = true);
-  sphere(2.5, $fn = 16);
-}
-
-// 3) Twisted star column via a parametric module + linear_extrude.
-module star(outer = 8, inner = 3.5, points = 6) {
+// 2) Twisted star column: a parametric module fed into linear_extrude.
+module star(outer = 7, inner = 3, points = 6) {
   polygon([for (i = [0 : 2 * points - 1])
     let (r = (i % 2 == 0) ? outer : inner, a = i * 180 / points)
     [r * cos(a), r * sin(a)]]);
 }
-translate([14, 0, -2]) linear_extrude(height = 22, twist = 160, scale = 0.5, slices = 48)
-  star();
-
-// 4) Surface of revolution: a little vase.
-translate([34, 0, -1]) rotate_extrude($fn = 64)
-  polygon([[2, 0], [7, 4], [4, 10], [6, 14], [2, 16]]);`;
+translate([10, 0, -0.5]) linear_extrude(height = 15, twist = 140, slices = 24)
+  star();`;
 
 // BREP / replicad — a capability sampler laid out in a row: a fully-rounded
 // box, a knob with a filleted top rim + chamfered base, a cone fused onto a
