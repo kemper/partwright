@@ -137,6 +137,11 @@ let regionRedoStack: ColorRegion[] = [];
 // Clear snapshot — saved when clearRegions() is called. Nulled when a new
 // region is added so undo-clear is only valid until the next paint operation.
 let clearSnapshot: ColorRegion[] | null = null;
+// True when the snapshot came from a *scoped* clear (clearRegionsBySource) that
+// removed only some regions and left the rest in place. undoClear then merges
+// the snapshot back into the surviving regions instead of replacing the whole
+// array, so a scoped clear doesn't resurrect regions the user never cleared.
+let clearSnapshotPartial = false;
 
 function notify(): void {
   for (const fn of listeners) fn();
@@ -195,9 +200,14 @@ export function canUndoClear(): boolean {
 
 export function undoClear(): void {
   if (!clearSnapshot) return;
-  regions = [...clearSnapshot];
-  nextOrder = regions.reduce((max, r) => Math.max(max, r.order + 1), 1);
+  // A scoped clear (clearRegionsBySource) left other regions in place, so merge
+  // the removed ones back in. A full clear replaces the (now-empty) array. Render
+  // priority keys on each region's `order` field, not array position, so a plain
+  // append restores the original layering. `nextOrder` only ever grows.
+  regions = clearSnapshotPartial ? [...regions, ...clearSnapshot] : [...clearSnapshot];
+  nextOrder = regions.reduce((max, r) => Math.max(max, r.order + 1), clearSnapshotPartial ? nextOrder : 1);
   clearSnapshot = null;
+  clearSnapshotPartial = false;
   clearRedoStack();
   notify();
   notifyClearSnapshot();
@@ -459,8 +469,24 @@ export function setRegionTriangles(
 export function clearRegions(): void {
   if (regions.length === 0) return;
   clearSnapshot = [...regions];
+  clearSnapshotPartial = false;
   regions = [];
   nextOrder = 1;
+  clearRedoStack();
+  notify();
+  notifyClearSnapshot();
+}
+
+/** Clear only the regions with the given `source` (e.g. `'imagePaint'` stamps),
+ *  leaving every other region (brush strokes, face picks, …) untouched. Saves a
+ *  partial snapshot so "Undo clear" restores exactly the removed regions back
+ *  into the surviving list. No-op when nothing matches. */
+export function clearRegionsBySource(source: ColorRegion['source']): void {
+  const removed = regions.filter(r => r.source === source);
+  if (removed.length === 0) return;
+  clearSnapshot = removed;
+  clearSnapshotPartial = true;
+  regions = regions.filter(r => r.source !== source);
   clearRedoStack();
   notify();
   notifyClearSnapshot();
