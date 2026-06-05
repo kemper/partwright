@@ -207,6 +207,57 @@ export function setPaletteConstrained(on: boolean): void {
   notify();
 }
 
+// ── Recent-colour history ────────────────────────────────────────────────────
+//
+// Every colour committed to a slot (and every colour imported from a photo) is
+// remembered here as a hex string, most-recent-first, deduped and capped. The
+// palette manager surfaces it so an old colour can be re-added to a slot without
+// re-picking it, and individual entries can be deleted.
+
+const HISTORY_KEY = 'partwright.palette.history';
+
+function readHistory(): string[] {
+  const raw = readJSON<unknown[]>(HISTORY_KEY);
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((s): s is string => typeof s === 'string' && /^#[0-9a-fA-F]{6}$/.test(s));
+}
+
+function writeHistory(list: string[]): void {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list)); } catch { /* ignore */ }
+}
+
+/** Recent colours, most-recent-first. */
+export function getColorHistory(): string[] {
+  return readHistory();
+}
+
+/** Record a colour into history (deduped, most-recent-first, capped). Accepts
+ *  any hex form; normalised to lower-case `#rrggbb`. No-op for malformed input. */
+export function recordColor(hex: string): void {
+  const m = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return;
+  let h = m[1].toLowerCase();
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  const norm = `#${h}`;
+  const cap = getConfig().ui.paletteHistoryMax;
+  const next = [norm, ...readHistory().filter(c => c !== norm)].slice(0, cap);
+  writeHistory(next);
+  notify();
+}
+
+/** Remove a single colour from history. */
+export function removeColorHistory(hex: string): void {
+  const norm = hex.toLowerCase();
+  writeHistory(readHistory().filter(c => c !== norm));
+  notify();
+}
+
+/** Clear the entire colour history. */
+export function clearColorHistory(): void {
+  writeHistory([]);
+  notify();
+}
+
 // ── Active-palette indirection (forward-compat for collections, Phase 3) ─────
 
 export interface Palette {

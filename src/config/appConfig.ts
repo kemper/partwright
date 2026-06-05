@@ -157,6 +157,8 @@ export interface AppConfig {
      *  target printer has (e.g. 4 for one Bambu AMS). Drives the paint panel's
      *  over-budget warning; never blocks painting or export. */
     defaultPaletteCapacity: number;
+    /** Max colours kept in the palette's recent-colour history ring. */
+    paletteHistoryMax: number;
     /** In-memory ring buffer size for the worker run-history log (recent
      *  geometry runs shown in the worker health panel). */
     workerRunHistorySize: number;
@@ -236,6 +238,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     defaultQuality: 128,
     scadDefaultQuality: 32,
     defaultPaletteCapacity: 4,
+    paletteHistoryMax: 48,
     workerRunHistorySize: 50,
     workerPanelRefreshMs: 1000,
   },

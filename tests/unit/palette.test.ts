@@ -14,6 +14,10 @@ import {
   isPaletteConstrained,
   setPaletteConstrained,
   getActivePalette,
+  getColorHistory,
+  recordColor,
+  removeColorHistory,
+  clearColorHistory,
   hexToRgb,
   rgbToHex,
   __resetPaletteCacheForTests,
@@ -120,6 +124,39 @@ describe('palette: active-palette indirection', () => {
     expect(p.id).toBe('default');
     expect(p.capacity).toBe(3);
     expect(p.slots.length).toBe(DEFAULT_FILAMENTS.length);
+  });
+});
+
+describe('palette: colour history', () => {
+  beforeEach(() => clearColorHistory());
+
+  it('records colours most-recent-first, normalised and deduped', () => {
+    recordColor('#FF0000');
+    recordColor('#00ff00');
+    recordColor('#abc'); // shorthand expands
+    expect(getColorHistory()).toEqual(['#aabbcc', '#00ff00', '#ff0000']);
+    // Re-recording moves it to the front without duplicating.
+    recordColor('#ff0000');
+    expect(getColorHistory()).toEqual(['#ff0000', '#aabbcc', '#00ff00']);
+  });
+
+  it('ignores malformed colours', () => {
+    recordColor('not-a-color');
+    expect(getColorHistory()).toEqual([]);
+  });
+
+  it('removes a single entry and clears all', () => {
+    recordColor('#111111');
+    recordColor('#222222');
+    removeColorHistory('#111111');
+    expect(getColorHistory()).toEqual(['#222222']);
+    clearColorHistory();
+    expect(getColorHistory()).toEqual([]);
+  });
+
+  it('caps history at the configured maximum', () => {
+    for (let i = 0; i < 60; i++) recordColor(`#0000${(i % 100).toString().padStart(2, '0')}`);
+    expect(getColorHistory().length).toBeLessThanOrEqual(48);
   });
 });
 

@@ -8,6 +8,7 @@
 // brush spec's centre-ray drag).
 
 import { test, expect } from 'playwright/test';
+import path from 'path';
 
 async function openEditorWithSlab(page: import('playwright/test').Page) {
   await page.goto('/editor');
@@ -102,5 +103,38 @@ test.describe('filament palette + slot painting', () => {
     await page.locator('#paint-toggle').dispatchEvent('click');
     await page.waitForSelector('#paint-picker-panel:not(.hidden)');
     await expect(page.locator('#paint-picker-panel button[title^="Slot "]')).toHaveCount(7);
+  });
+
+  test('import colours from a photo adds slots and records history', async ({ page }) => {
+    // The eyedropper/swatch clicks are real clicks, so suppress the first-run
+    // tour backdrop that would otherwise intercept them.
+    await page.addInitScript(() => {
+      try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ }
+    });
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 20000 });
+    await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (window as any).partwright.run(`const { Manifold } = api; return Manifold.cube([20, 20, 6], true);`);
+    });
+
+    await page.locator('#palette-manager-toggle').dispatchEvent('click');
+    await page.locator('[role="dialog"] button:has-text("Import from photo")').dispatchEvent('click');
+
+    // Upload a colourful image and wait for the detected swatches.
+    await page.locator('[role="dialog"] input[type="file"]').setInputFiles(path.resolve('public/og-image.png'));
+    await page.waitForSelector('[role="dialog"] button[data-hex]');
+
+    // Toggle two detected colours + eyedrop a pixel, then add.
+    await page.locator('[role="dialog"] button[data-hex]').nth(0).click();
+    await page.locator('[role="dialog"] button[data-hex]').nth(2).click();
+    await page.locator('[role="dialog"] canvas').click({ position: { x: 30, y: 25 } });
+    await page.locator('[role="dialog"] button:has-text("Add")').click();
+
+    // Returns to the manager with new slots + a populated history.
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog).toContainText('Filament palette');
+    expect(await dialog.locator('input[type="text"]').count()).toBeGreaterThan(6); // 6 defaults + imports
+    await expect(dialog).toContainText('Recent colours');
   });
 });

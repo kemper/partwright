@@ -18,11 +18,15 @@ import {
   setPaletteCapacity,
   isPaletteConstrained,
   setPaletteConstrained,
+  getColorHistory,
+  recordColor,
+  removeColorHistory,
   hexToRgb,
   type Filament,
 } from './palette';
 import { recolorRegionsForSlot } from './regions';
 import { getSlotId, setSlot } from './paintMode';
+import { openPhotoColorPicker } from './photoColorPicker';
 
 let open = false;
 
@@ -62,6 +66,8 @@ export function openPaletteManager(): void {
       // Keep the active paint colour in sync if this slot is selected.
       if (getSlotId() === slot.id) setSlot(slot.id);
     });
+    // Commit (blur / picker-close) records the colour into history.
+    color.addEventListener('change', () => { recordColor(color.value); renderHistory(); });
 
     const slotNo = document.createElement('span');
     slotNo.className = 'text-[10px] text-zinc-500 tabular-nums w-4 text-right shrink-0';
@@ -113,21 +119,71 @@ export function openPaletteManager(): void {
     capCount.textContent = `${slots.length} slot${slots.length === 1 ? '' : 's'} defined`;
   }
 
-  // Add / reset row.
+  // Add / import / reset row.
   const actions = document.createElement('div');
-  actions.className = 'flex items-center gap-2 mt-2';
+  actions.className = 'flex items-center gap-2 mt-2 flex-wrap';
   const addBtn = document.createElement('button');
   addBtn.className = 'px-2.5 py-1 rounded text-xs bg-zinc-700/60 text-zinc-200 hover:bg-zinc-600/60 transition-colors';
   addBtn.textContent = '+ Add slot';
   addBtn.addEventListener('click', () => { addFilament({ name: 'New', hex: '#cccccc', td: 1 }); render(); });
+  const importBtn = document.createElement('button');
+  importBtn.className = 'px-2.5 py-1 rounded text-xs bg-zinc-700/60 text-zinc-200 hover:bg-zinc-600/60 transition-colors';
+  importBtn.textContent = '🖼️ Import from photo…';
+  importBtn.addEventListener('click', () => {
+    // Opening the picker auto-closes this manager (modalShell allows one shell);
+    // its onClose reopens the manager so the imported slots + history show.
+    openPhotoColorPicker(
+      (hexes) => {
+        for (const hex of hexes) {
+          addFilament({ name: hex, hex, td: 1 });
+          recordColor(hex);
+        }
+      },
+      () => openPaletteManager(),
+    );
+  });
   const resetBtn = document.createElement('button');
   resetBtn.className = 'px-2.5 py-1 rounded text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60 transition-colors';
   resetBtn.textContent = 'Reset to defaults';
   resetBtn.addEventListener('click', () => { resetPalette(); render(); });
   const capCount = document.createElement('span');
   capCount.className = 'ml-auto text-[10px] text-zinc-500';
-  actions.append(addBtn, resetBtn, capCount);
+  actions.append(addBtn, importBtn, resetBtn, capCount);
   shell.body.appendChild(actions);
+
+  // Recent-colour history — re-add an old colour as a slot, or delete entries.
+  const historyWrap = document.createElement('div');
+  historyWrap.className = 'hidden flex-col gap-1.5 mt-3 pt-3 border-t border-zinc-700/70';
+  const historyHead = document.createElement('div');
+  historyHead.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
+  historyHead.textContent = 'Recent colours';
+  const historyGrid = document.createElement('div');
+  historyGrid.className = 'grid grid-cols-8 gap-1.5';
+  historyWrap.append(historyHead, historyGrid);
+  shell.body.appendChild(historyWrap);
+
+  function renderHistory(): void {
+    const hist = getColorHistory();
+    historyWrap.classList.toggle('hidden', hist.length === 0);
+    historyWrap.classList.toggle('flex', hist.length > 0);
+    historyGrid.replaceChildren();
+    for (const hex of hist) {
+      const cell = document.createElement('div');
+      cell.className = 'relative w-8 h-8';
+      const sw = document.createElement('button');
+      sw.className = 'w-full h-full rounded border border-zinc-600/60 hover:border-white/70 transition-colors';
+      sw.style.backgroundColor = hex;
+      sw.title = `Add ${hex} as a slot`;
+      sw.addEventListener('click', () => { addFilament({ name: hex, hex, td: 1 }); recordColor(hex); render(); });
+      const del = document.createElement('button');
+      del.className = 'absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-zinc-900/90 border border-zinc-600 text-zinc-300 text-[9px] leading-none flex items-center justify-center hover:text-red-300';
+      del.textContent = '×';
+      del.title = `Remove ${hex} from history`;
+      del.addEventListener('click', (e) => { e.stopPropagation(); removeColorHistory(hex); renderHistory(); });
+      cell.append(sw, del);
+      historyGrid.appendChild(cell);
+    }
+  }
 
   // Capacity.
   const capRow = document.createElement('div');
@@ -173,4 +229,5 @@ export function openPaletteManager(): void {
   shell.footer.appendChild(done);
 
   render();
+  renderHistory();
 }
