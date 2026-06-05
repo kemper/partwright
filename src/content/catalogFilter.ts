@@ -61,6 +61,10 @@ export function wireCatalogFilter(root: ParentNode): void {
     if (empty) empty.classList.toggle('hidden', anyVisible);
   };
 
+  // The pill count (e.g. "JS 12") is the total number of that language in the
+  // catalog and is intentionally static — it answers "how many of this language
+  // exist," not "how many currently match the search." Live match counts live on
+  // each section's [data-catalog-count].
   const syncPill = (pill: HTMLElement, on: boolean): void => {
     pill.setAttribute('aria-pressed', String(on));
     for (const cls of PILL_OFF_CLASSES) pill.classList.toggle(cls, !on);

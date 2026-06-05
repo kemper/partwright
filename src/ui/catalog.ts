@@ -335,8 +335,7 @@ function renderTile(loaded: LoadedEntry, callbacks: CatalogCallbacks): HTMLEleme
 
   const meta = document.createElement('div');
   meta.className = 'text-[10px] text-zinc-500 mt-1.5 flex items-center gap-2';
-  const lang = loaded.payload?.session.language ?? loaded.manifest.language ?? 'manifold-js';
-  const badge = languageBadge(lang);
+  const badge = languageBadge(language);
   const langBadge = document.createElement('span');
   langBadge.className = `font-semibold border rounded px-1 ${badge.classes}`;
   langBadge.textContent = badge.label;
