@@ -145,30 +145,69 @@ async function cmdBake(argv) {
   console.log(`BAKED ${baked.length}/${metas.length}`);
 }
 
+// High-level one-shot agent feedback: run a model in the daemon and return the
+// stat block (with warnings + printability) AND a real WebGL render in a single
+// call — the inner loop for "I wrote this, is it good? show me." Use `preview`
+// for the faster stateless/software-rendered variant.
+async function cmdIterate(argv) {
+  const a = parse(argv);
+  const file = a._[0];
+  if (!file) { console.error('usage: partwright iterate <file.js> [--out png] [--views all] [--lang manifold-js] [-p k=v]'); process.exit(2); }
+  const code = readFileSync(resolve(file), 'utf8');
+  await rpc('setActiveLanguage', [a.lang || 'manifold-js']);
+  const runRes = await rpc('run', [code]);
+  if (!runRes.ok) { console.log(json(runRes)); process.exit(1); }
+  if (runRes.result?.status === 'error') { console.log(json({ ok: false, error: runRes.result.error, stats: runRes.result })); process.exit(1); }
+  if (Object.keys(a.params).length) await rpc('setParams', [a.params]); // re-runs with overrides
+  const stats = (await rpc('getGeometryData', [])).result;
+  const img = await rpc('renderViews', [{ views: a.views || 'all', size: Number(a.size) || 420 }]);
+  let png = null;
+  if (img.ok && typeof img.result === 'string') { png = resolve(a.out || basename(file).replace(/\.[^.]+$/, '') + '.iterate.png'); writeDataUrl(img.result, png); }
+  console.log(json({ ok: true, png, stats }));
+}
+
+// Discovery — list the window.partwright methods reachable via `call`.
+async function cmdMethods(argv) {
+  const a = parse(argv);
+  const filter = (a._[0] || '').toLowerCase();
+  const r = await evalInPage('const pw = window.partwright; return Object.keys(pw).filter((k) => typeof pw[k] === "function").sort();', {});
+  if (!r.ok) { console.log(json(r)); process.exit(1); }
+  const names = (r.result || []).filter((n) => !filter || n.toLowerCase().includes(filter));
+  console.log(json({ ok: true, count: names.length, methods: names }));
+}
+
+const USAGE = `partwright — headless Partwright CLI for driving model creation + feedback
+
+Phase 1 (stateless, no browser — fast inner loop):
+  partwright preview <file.js> [--png out] [--json] [--size N] [-p k=v]
+  partwright run     <file.js> [-p k=v]                  stats JSON only
+
+Phase 2 (headless-browser daemon — full fidelity + state):
+  partwright iterate <file.js> [--out png] [--views all] [-p k=v]
+                                                         run → stats+warnings+real render
+  partwright render  [--code file.js] [--out png] [--views all] [--size N]
+  partwright call    <method> [argsJSON] [--out png]     any window.partwright method
+  partwright methods [filter]                            list callable methods
+  partwright bake    <fixtureDir> [--catalog public/catalog]
+  partwright daemon  start|stop|status
+
+See docs/headless-cli.md.`;
+
 export async function main(argv) {
   const [cmd, ...rest] = argv;
   switch (cmd) {
     case 'preview': return cmdPreview(rest, { pngDefault: true });
     case 'run': return cmdPreview(rest, { pngDefault: false });
+    case 'iterate': return cmdIterate(rest);
     case 'daemon': return cmdDaemon(rest);
     case 'call': return cmdCall(rest);
     case 'render': return cmdRender(rest);
+    case 'methods': return cmdMethods(rest);
     case 'bake': return cmdBake(rest);
     case '__daemon-run': { const a = parse(rest); return runDaemon({ appPort: Number(a['app-port']), controlPort: Number(a['control-port']) }); }
+    case 'help': case '--help': case '-h': console.log(USAGE); return;
     default:
-      console.error(`partwright — headless Partwright CLI
-
-Phase 1 (stateless, no browser):
-  partwright preview <file.js> [--png out] [--json] [--size N] [-p k=v]
-  partwright run     <file.js> [-p k=v]
-
-Phase 2 (headless-browser daemon):
-  partwright daemon start|stop|status
-  partwright call <method> [argsJSON] [--out file.png]
-  partwright render [--code file.js] [--out file.png] [--views all] [--size N]
-  partwright bake <fixtureDir> [--catalog public/catalog]
-
-See docs/headless-cli.md.`);
+      console.error(USAGE);
       process.exit(cmd ? 1 : 0);
   }
 }

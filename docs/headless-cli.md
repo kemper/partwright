@@ -46,14 +46,37 @@ partwright daemon start [--app-port N] [--control-port N]
 partwright daemon stop
 partwright daemon status
 
+partwright iterate <file.js> [--out png] [--views all] [--lang L] [-p k=v]  # run → stats+warnings+real render
 partwright call <method> [argsJSON] [--out file.png] # any window.partwright method
+partwright methods [filter]                          # list callable methods
 partwright render [--code file.js] [--out file.png] [--views auto|tri|all|box] [-p k=v]
 partwright bake <fixtureDir> [--catalog public/catalog]
+
+partwright help                                      # usage (also --help / -h)
 ```
 
 - `preview` / `run` are **Phase 1** — stateless, no daemon, no browser.
-- `call` / `render` / `bake` are **Phase 2** — they auto-start the daemon if it
-  isn't already up, then reuse the warm page.
+- `iterate` / `call` / `methods` / `render` / `bake` are **Phase 2** — they
+  auto-start the daemon if it isn't already up, then reuse the warm page.
+
+### Agent quickstart
+
+The fastest agent loop is **draft a snippet → `iterate` → read stats+image →
+fix → repeat**:
+
+```
+partwright iterate part.js            # writes part.iterate.png, prints {stats, png}
+```
+
+`stats` carries `isManifold`, `componentCount`, `volume`, `bbox`, `printability`,
+and a `warnings[]` array of actionable hints (fused parts, sub-extrusion detail,
+extreme aspect ratio, …) — everything needed to self-correct — and the PNG is a
+real multi-view WebGL render. For a sub-second check with no browser, use
+`preview` (software render) instead. Discover the rest of the surface with
+`partwright methods paint` (or any filter) and reach for `call <method>` for
+anything `iterate`/`render` don't wrap. Every command prints a single JSON object
+to stdout (`{ ok: true, … }` or `{ ok: false, error }`); a non-zero exit means
+the CLI itself failed, while `ok:false` is a tractable in-model error.
 
 ### Phase 1 commands
 
@@ -86,8 +109,15 @@ and writes it to a file. The same persistent IndexedDB user-data-dir backs every
 call, so sessions/versions/notes persist across invocations exactly as they would
 in a real browser tab.
 
-`render` is a convenience wrapper: optionally `setActiveLanguage` + run a code
-file, then `renderViews` → PNG. `bake` drives the full catalog-entry flow
+`iterate` is the high-level feedback command: it `setActiveLanguage` + `run`s the
+file in the warm page, then returns `getGeometryData` (stats + warnings +
+printability) **and** a real `renderViews` PNG in one call — the inner loop for
+"is this good? show me," at full WebGL fidelity. `methods [filter]` enumerates
+the callable `window.partwright` methods for discovery.
+
+`render` is a thinner convenience wrapper: optionally `setActiveLanguage` + run a
+code file, then `renderViews` → PNG (image only). `bake` drives the full
+catalog-entry flow
 (createSession → runAndSave → optional paint-by-label → save → exportSessionData
 → write `<id>.partwright.json` + manifest row), replacing the `BAKE_CATALOG=1`
 Playwright spec for CLI users — same fixture format (`<id>.js` + `<id>.meta.json`).
@@ -164,18 +194,31 @@ healthy daemon is found.
 The daemon gets full parity for free because the tools **already exist and run**
 in the page it drives.
 
-## Phase 3 — packaging (not yet built)
+## Phase 3 — Homebrew-ready (tap-ready skeleton; distribution deferred)
 
-- **Homebrew tap.** The CLI is plain Node ESM; a formula can install it and a
-  thin `partwright` shim. The weight is Chromium — the formula should make the
-  `npx playwright install chromium` step (or system-Chrome reuse) explicit, not
-  silent.
-- **Dependency move.** Phase 1/2 currently lean on `vite`, `playwright`, and
-  `sharp` from `devDependencies` (fine while the repo is `private`). A published
-  CLI must promote the runtime-needed ones to `dependencies` or bundle them.
-- **Bundle hosting.** The daemon needs the built app. Ship a versioned `dist/`
-  inside the package (simplest, version-locked) rather than pointing at a
-  deployed URL (drift + network dependency).
+The repo is now structured so a tap is a one-step flip whenever distribution is
+wanted — **nothing is published today**:
+
+- **Local install (works now).** `npm ci && npm link` exposes `partwright` on
+  PATH (or run `node bin/partwright.mjs` / `npm run cli` directly). The `bin`
+  field in `package.json` maps `partwright` → `bin/partwright.mjs`.
+- **Formula skeleton.** `Formula/partwright.rb` is a complete node-CLI formula
+  with placeholder `url`/`sha256` and a Chromium caveat. To distribute: tag a
+  release, fill the tarball URL + checksum, and move the file into a tap repo
+  (`homebrew-partwright/Formula/`).
+- **Dependency move (done).** `vite`, `playwright`, and `sharp` were promoted
+  from `devDependencies` to `dependencies` so a production install (what
+  `brew install` runs, `--omit=dev`) has the CLI's runtime needs. The app build
+  is unaffected (`npm ci` installs both sections regardless).
+
+Still open for a real release (when you choose to distribute):
+
+- **Chromium provisioning.** The formula's caveat tells the user to run
+  `npx playwright install chromium`; a polished release could auto-provision it
+  in a post-install step or detect a system Chrome.
+- **Bundle hosting.** The daemon serves the app from the repo's source via Vite.
+  A distributed CLI should ship a versioned built `dist/` (or vendor the source)
+  rather than assume the repo is present.
 - **Optional: expose the AI chat loop.** The `executeToolFn` seam in
   `src/ai/chatLoop.ts` means the daemon could also run the in-app provider chat
   loop, letting a CLI agent delegate to it. Near-free to add; probably not what a
