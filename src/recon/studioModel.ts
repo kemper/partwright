@@ -276,6 +276,36 @@ export function buildModelingBrief(state: StudioState): string {
   ].join('\n');
 }
 
+/**
+ * Spec-driven modeling prompt (no reference image attached): wraps a build spec
+ * produced by a vision model with the engine/technique + staged verify loop, so
+ * the modeling AI follows an explicit recipe rather than raw pixels.
+ */
+export function buildSpecModelingPrompt(spec: string, style: BustStyle): string {
+  const aim: Record<BustStyle, string> = {
+    stylized: 'a clean STYLIZED character bust',
+    lowpoly: 'a clean LOW-POLY bust',
+    realistic: 'a realistic-attempt bust',
+  };
+  return [
+    `Build ${aim[style]} (head, neck, and shoulders) of a person from the BUILD SPEC below, using the partwright tools. There is NO reference image — follow the spec precisely; if something isn't specified, choose sensible, symmetric defaults.`,
+    '',
+    '=== BUILD SPEC ===',
+    spec.trim(),
+    '=== END SPEC ===',
+    '',
+    'Engine + technique: use the manifold-js (mesh) engine. Build the head from an ellipsoid; MIRROR across the X plane for symmetry; blend features into the head with smooth unions (SDF / levelSet / warp / smoothOut), not hard primitive intersections; keep it one connected, watertight mesh.',
+    '',
+    'Work in stages and VERIFY each with renderView before moving on:',
+    '1. Block in the head + neck + shoulders mass to the spec\'s proportions; renderView front (az0) and right (az90); fix proportions before adding anything.',
+    '2. Add hair and beard, then any hat — the hat sits ABOVE the brow line and must never cover the eyes or forehead. renderView; fix placement.',
+    '3. Add features (brow, nose, eye sockets + eyes, lips) as small SYMMETRIC additions; renderView front and confirm the eyes and mouth are visible and correctly placed.',
+    '4. Colour LAST, as broad regions per the spec — each colour stays within its region (the hat colour belongs ONLY on the hat).',
+    '',
+    'After each stage compare your render to the spec and fix before adding more. Save progress with runAndSave; note decisions with addSessionNote.',
+  ].join('\n');
+}
+
 // ── Persistence ─────────────────────────────────────────────────────────────
 // Serialized form stored on the session (Session.studioImport). Images ride
 // along inline as data URLs so reopening the import needs no Gemini calls. Kept

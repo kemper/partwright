@@ -19,6 +19,7 @@ import {
   readiness,
   serializeStudio,
   setPreset,
+  buildSpecModelingPrompt,
   ANGLE_PRESETS,
   BUST_STYLES,
   type BustStyle,
@@ -28,6 +29,8 @@ import {
 } from '../recon/studioModel';
 import { getKey } from '../ai/db';
 import { listGeminiImageModels, generateAngleImage, pickImageModel, dataUrlToInline } from '../ai/geminiImage';
+import { analyzeImageToSpec } from '../ai/geminiVision';
+import { loadSettings } from '../ai/settings';
 import { getConfig } from '../config/appConfig';
 import { showAiKeyModal } from './aiKeyModal';
 import { showToast } from './toast';
@@ -42,6 +45,8 @@ export interface SelfModelingStudioOptions {
   onHandoff: (args: {
     images: Array<{ src: string; label: string }>;
     brief: string;
+    /** Attach the reference grid to the chat (image handoff) or not (spec-only). */
+    attachGrid: boolean;
     record: StudioImportRecord;
   }) => Promise<{ ok?: boolean; error?: string; attached?: number }>;
 }
@@ -397,17 +402,43 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
   async function doHandoff(): Promise<void> {
     if (!readiness(state).canBuild) return;
     const images = referenceImages(state);
-    setStatus('Attaching reference views and briefing the AI…');
     (buildBtn as HTMLButtonElement).disabled = true;
+
+    // Preferred path: analyze the photo into a text BUILD SPEC and hand the
+    // modeller that recipe (no image — it builds to the spec, not raw pixels).
+    // Falls back to the image brief if Gemini is unavailable or analysis fails.
+    let brief = buildModelingBrief(state);
+    let attachGrid = true;
+    const front = frontView(state);
+    if (apiKey && front?.src) {
+      setStatus('Analyzing the photo into a build spec…');
+      abort = new AbortController();
+      try {
+        const specImages = images.slice(0, 3).map(im => dataUrlToInline(im.src));
+        const textModel = loadSettings().toggles.geminiModel || 'gemini-flash-latest';
+        const spec = await analyzeImageToSpec({ apiKey, model: textModel, images: specImages, style: state.style, signal: abort.signal });
+        brief = buildSpecModelingPrompt(spec, state.style);
+        attachGrid = false;
+      } catch (e) {
+        setStatus(`Spec analysis failed (${(e as Error).message}) — handing over the reference images instead.`, 'error');
+        brief = buildModelingBrief(state);
+        attachGrid = true;
+      } finally {
+        abort = null;
+      }
+    }
+
     try {
-      const res = await options.onHandoff({ images, brief: buildModelingBrief(state), record: serializeStudio(state) });
+      const res = await options.onHandoff({ images, brief, attachGrid, record: serializeStudio(state) });
       if (res.error) {
         setStatus(`Couldn’t hand off to the AI: ${res.error}`, 'error');
         showToast(`Self-Modeling Studio: ${res.error}`, { variant: 'warn', source: 'app' });
         renderFooter();
         return;
       }
-      setStatus(`Attached ${res.attached ?? images.length} reference views to the chat and prefilled the brief — review it and send.`);
+      setStatus(attachGrid
+        ? `Attached ${res.attached ?? images.length} reference views to the chat and prefilled the brief — review it and send.`
+        : 'Generated a build spec from your photo and prefilled it in the chat — review it and send.');
       close();
     } catch (e) {
       const msg = (e as Error).message;

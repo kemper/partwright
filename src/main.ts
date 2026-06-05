@@ -2789,24 +2789,25 @@ async function main() {
     }
     openSelfModelingStudio({
       initialState,
-      onHandoff: async ({ images, brief, record }) => {
+      onHandoff: async ({ images, brief, attachGrid, record }) => {
         try {
           // Need a session to attach references + AI chat to.
           if (!getState().session) await createSession('photo-model');
-          // Surface the views in the gallery for the user…
+          // Always surface the views in the gallery for the user's reference…
           partwrightAPI.setImages(images);
-          // …AND put ONE labeled grid of them into the model's vision for the
-          // next turn (gallery alone never reaches the model). A single grid —
-          // the same artifact getReferenceImages returns — guarantees turn-1
-          // sight without bloating history with N full images every turn, and
-          // the model can re-fetch it later via getReferenceImages. Mirrors the
-          // 📷 Show AI path; sent regardless of the auto-render toggle.
-          const grid = await compositeReferenceGrid(images);
-          if (grid) attachImagesToChat([grid]);
+          // …and, for the IMAGE handoff, put ONE labeled grid into the model's
+          // vision (the spec-only handoff attaches nothing — the AI builds to
+          // the text recipe). The grid is the same artifact getReferenceImages
+          // returns, so it's one image not N. Mirrors the 📷 Show AI path.
+          let attached = 0;
+          if (attachGrid) {
+            const grid = await compositeReferenceGrid(images);
+            if (grid) { attachImagesToChat([grid]); attached = images.length; }
+          }
           prefillAiInput(brief); // opens the AI panel and fills the input (no send)
           const activeId = getState().session?.id;
           if (activeId) await saveStudioImport(activeId, record as unknown as Record<string, unknown>);
-          return { ok: true, attached: grid ? images.length : 0 };
+          return { ok: true, attached };
         } catch (e) {
           return { error: (e as Error).message };
         }

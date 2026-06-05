@@ -47,11 +47,16 @@ which then builds a model with the partwright tools:
    at each turntable angle; tiles fill in as they return. No key? Connect it from
    the banner, or **upload your own** image per angle.
 3. **Curate** — toggle views in/out, regenerate or replace any tile.
-4. **Send to AI modeler** — attaches the chosen views as **reference images**
-   (one per angle, captioned) and opens the AI panel with a **modeling brief
-   prefilled** (not sent): it asks the AI to study the references, pick whichever
-   engine fits the form, block in the major masses, and iterate against the
-   references with `renderViews`. You review the brief and hit send.
+4. **Send to AI modeler** — with a Gemini key, the studio first **analyzes the
+   photo into a structured text "build spec"** (proportions, each feature as a
+   primitive with size/placement, colours per region) and prefills *that* into
+   the AI panel as the modeling prompt — **no image attached**, so the modeller
+   builds to an explicit recipe rather than raw pixels (splitting the hard
+   "perceive + build" task in two). Without a key it falls back to handing over
+   the reference grid + a generic brief. Either way the prompt is **prefilled,
+   not sent** — you review and send. The brief enforces a staged
+   build→`renderView`→fix loop (head mass first, hat above the brow, eyes/mouth
+   verified visible, colour applied last as bounded regions).
 
 The whole import (source + per-angle images) is saved on the session, so
 reopening the studio repopulates everything with no further Gemini calls. Start
