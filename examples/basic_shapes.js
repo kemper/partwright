@@ -1,6 +1,7 @@
 // manifold-3d capability sampler — primitives, booleans, hull, twist-extrude,
-// and a surface of revolution. Mesh booleans are fast even on odd shapes.
-// Edit any block and re-run to experiment.
+// and a surface of revolution, mounted on one tray so it stays a single
+// printable solid. Mesh booleans are fast even on odd shapes. Edit any block
+// and re-run to experiment.
 const { Manifold, CrossSection } = api;
 
 // 1) Booleans: a cube with a sphere and a cross-bore subtracted.
@@ -31,10 +32,12 @@ const vase = Manifold.revolve(CrossSection.hull([
   CrossSection.circle(1).translate([3, 16]),
 ]), 64);
 
-// Lay them out in a row so each is visible.
+// A tray base ties the four demos into one connected, printable solid.
+const tray = Manifold.cube([86, 24, 3], true).translate([2, 0, 1]);
 return Manifold.union([
-  boolean.translate([-30, 0, 8]),
-  rounded.translate([-8, 0, 4]),
-  twisted.translate([14, 0, 0]),
-  vase.translate([34, 0, 0]),
+  tray,
+  boolean.translate([-30, 0, 9]),
+  rounded.translate([-8, 0, 5]),
+  twisted.translate([14, 0, 1]),
+  vase.translate([34, 0, 1]),
 ]);

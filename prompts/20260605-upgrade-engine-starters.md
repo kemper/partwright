@@ -72,3 +72,16 @@ All four verified rendering via a throwaway probe (screenshots in session). The
 session-modal assertion still holds — the manifold sampler still uses CrossSection.
 Note: chamfering a box whose edges were all just filleted fails in OCCT, so the
 replicad block-1 box is fillet-only (chamfer is shown on the knob's base instead).
+
+Follow-up (CI): the first sampler cut was a union of four *disjoint* shapes, so
+the manifold-js default (which auto-runs on /editor) became multi-component and
+emitted a "⚠ N disconnected components" warning. That broke two tests that
+exercise the default model — `feedback-a11y` (clean export toast) and
+`printability-toast` (its own 2-component toast collided with the default's
+4-component one) — and, more importantly, was a real UX regression: a brand-new
+user's first model shouldn't throw a disconnected-components warning. Fixed by
+mounting each code sampler (js / scad / replicad) on a thin **tray base** that
+ties the demos into one connected, printable solid (verified componentCount === 1,
+isManifold === true for all three via a probe). The tray reads as an intentional
+sampler board. No test edits needed — the tests correctly assert app behavior on
+the default model.

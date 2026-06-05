@@ -288,19 +288,22 @@ export interface ExampleEntry {
 // rotate_extrude vase. Pure OpenSCAD (no BOSL2), so there's no library
 // download and it renders instantly.
 const STARTER_SCAD = `// OpenSCAD capability sampler — primitives, booleans, transforms, extrudes,
-// and a module + loop. Pure OpenSCAD (no libraries) so it renders instantly.
-// Edit any block and re-run to experiment.
+// and a module + loop, all mounted on one tray so it stays a single solid.
+// Pure OpenSCAD (no libraries) so it renders instantly. Edit and re-run.
 $fn = 48;
 
+// Tray base ties the four demos into one connected solid.
+translate([1, 0, -1]) cube([88, 24, 3], center = true);
+
 // 1) Boolean difference: a cube with a sphere and a bore removed.
-translate([-32, 0, 0]) difference() {
+translate([-32, 0, 1]) difference() {
   cube([14, 14, 14], center = true);
   sphere(9);
   cylinder(h = 20, r = 3.5, center = true);
 }
 
 // 2) Rounded box via minkowski (cube + sphere).
-translate([-9, 0, 0]) minkowski() {
+translate([-9, 0, 1]) minkowski() {
   cube([9, 9, 5], center = true);
   sphere(2.5, $fn = 16);
 }
@@ -311,11 +314,11 @@ module star(outer = 8, inner = 3.5, points = 6) {
     let (r = (i % 2 == 0) ? outer : inner, a = i * 180 / points)
     [r * cos(a), r * sin(a)]]);
 }
-translate([14, 0, -11]) linear_extrude(height = 22, twist = 160, scale = 0.5, slices = 48)
+translate([14, 0, -2]) linear_extrude(height = 22, twist = 160, scale = 0.5, slices = 48)
   star();
 
 // 4) Surface of revolution: a little vase.
-translate([34, 0, -8]) rotate_extrude($fn = 64)
+translate([34, 0, -1]) rotate_extrude($fn = 64)
   polygon([[2, 0], [7, 4], [4, 10], [6, 14], [2, 16]]);`;
 
 // BREP / replicad — a capability sampler laid out in a row: a fully-rounded
@@ -324,7 +327,8 @@ translate([34, 0, -8]) rotate_extrude($fn = 64)
 // headline (true selective fillets/chamfers + exact booleans + STEP). Small
 // enough that the OCCT solver runs in well under a second even cold.
 const STARTER_REPLICAD = `// BREP / replicad capability sampler — exact surfaces with true fillets,
-// chamfers, and booleans (and STEP export). Edit a block and re-run.
+// chamfers, and booleans (and STEP export), fused onto one tray so it stays a
+// single solid. Edit a block and re-run.
 const { BREP } = api;
 
 // 1) A rounded box — fillet with no filter rounds every edge at once.
@@ -345,8 +349,10 @@ const bracket = BREP.box([20, 14, 8])
   .cut(BREP.cylinder(2, 12).translate([-6, 0, -2]))
   .cut(BREP.cylinder(2, 12).translate([ 6, 0, -2]));
 
-// Lay them out in a row so each is visible.
-return rounded.translate([-30, 0, 0])
+// A tray base fuses the four demos into one connected solid.
+const tray = BREP.box([86, 24, 3]).translate([4, 0, -2]);
+return tray
+  .fuse(rounded.translate([-30, 0, 0]))
   .fuse(knob.translate([-6, 0, 0]))
   .fuse(finial.translate([16, 0, 0]))
   .fuse(bracket.translate([38, 0, 0]));`;
