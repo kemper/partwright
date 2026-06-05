@@ -192,10 +192,10 @@ function catalogTileHtml(tile: BuiltTile): string {
     ? `<span>${tile.versionCount} version${tile.versionCount !== 1 ? 's' : ''}</span>`
     : '';
   const haystack = [tile.entry.name, tile.entry.description ?? '', tile.entry.id, badge.label].join(' ').toLowerCase();
-  return `<a href="/editor?catalog=${encodeURIComponent(tile.entry.file)}" data-pw-thumb="${esc(tile.entry.file)}" data-catalog-tile data-language="${escAttr(tile.language)}" data-search="${escAttr(haystack)}" class="flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden no-underline">
+  return `<a href="/editor?catalog=${encodeURIComponent(tile.entry.file)}" data-pw-thumb="${escAttr(tile.entry.file)}" data-catalog-tile data-language="${escAttr(tile.language)}" data-search="${escAttr(haystack)}" class="flex flex-col bg-zinc-800 rounded-lg border border-zinc-700 hover:border-zinc-500 transition-colors overflow-hidden no-underline">
   <div class="relative w-full aspect-square bg-zinc-900 flex items-center justify-center overflow-hidden">
     <span class="text-3xl text-zinc-700">&#11041;</span>
-    <img alt="${esc(tile.entry.name)}" loading="lazy" class="absolute inset-0 w-full h-full object-contain" style="opacity:0;transition:opacity .2s" />
+    <img alt="${escAttr(tile.entry.name)}" loading="lazy" class="absolute inset-0 w-full h-full object-contain" style="opacity:0;transition:opacity .2s" />
   </div>
   <div class="px-3 py-2.5">
     <div class="text-sm font-medium text-zinc-100 truncate">${esc(tile.entry.name)}</div>
@@ -245,7 +245,7 @@ function catalogControlsHtml(tiles: BuiltTile[]): string {
     <span class="text-xs text-zinc-500 mr-1">Language:</span>
     ${present.map((l) => {
       const b = languageBadge(l);
-      return `<button type="button" data-catalog-pill="${escAttr(l)}" aria-pressed="true" class="px-2 py-1 rounded text-xs font-semibold border bg-zinc-800 ${b.classes}" title="Hide ${esc(b.label)} models">${esc(b.label)} ${langCounts.get(l) ?? 0}</button>`;
+      return `<button type="button" data-catalog-pill="${escAttr(l)}" aria-pressed="true" class="px-2 py-1 rounded text-xs font-semibold border bg-zinc-800 ${b.classes}" title="Hide ${escAttr(b.label)} models">${esc(b.label)} ${langCounts.get(l) ?? 0}</button>`;
     }).join('')}
   </div>`
     : '';

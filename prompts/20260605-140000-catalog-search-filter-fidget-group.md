@@ -48,6 +48,13 @@ nothing matches. Pills only render when >1 language is present.
 **Single source for pill order.** `CATALOG_LANGUAGE_ORDER` lives in
 `catalogCategories.ts` and is consumed by both renderers so pill order can't drift.
 
+**Follow-up (CodeQL).** The scanner flagged incomplete attribute sanitization on
+the changed tile/pill lines: `esc()` (escapes `& < >`) was feeding double-quoted
+attributes (`title`, `data-pw-thumb`, `alt`), and it doesn't escape `"`. Switched
+those attribute values to the existing `escAttr()` (esc + `&quot;`). Values are
+maintainer-authored catalog strings, so not exploitable in practice, but the
+sanitizer should match its context regardless.
+
 **Verification.** `npm run build` + `npm run test:unit` green; extended
 `tests/catalog.spec.ts` with three cases (search narrows + count/empty-section
 behavior; a language pill hides its language and restores on re-toggle; the in-app
