@@ -45,8 +45,8 @@ test.describe('Self-Modeling Studio', () => {
     // No Gemini key in a fresh profile → the connect CTA shows.
     await expect(page.getByRole('button', { name: 'Connect Gemini' })).toBeVisible();
 
-    // Default angle set is Cardinal (6 views).
-    await expect(page.getByText(/0 of 6 views ready/)).toBeVisible();
+    // Default angle set is Portrait (5 front-hemisphere views).
+    await expect(page.getByText(/0 of 5 views ready/)).toBeVisible();
 
     // Upload the source photo (fills the Front view) + two more angle tiles.
     await page.getByRole('button', { name: /Upload photo/ }).click();

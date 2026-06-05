@@ -50,6 +50,8 @@ export interface StudioState {
   model: string | null;
   /** Which angle-set preset the views were built from. */
   preset: AnglePreset;
+  /** How literal/polished a result to aim for (drives the brief). */
+  style: BustStyle;
 }
 
 export const DEFAULT_CARVE: CarveSettings = {
@@ -83,10 +85,11 @@ function makeAngle(azimuth: number, elevation: number): StudioAngle {
 }
 
 /** Which set of angles the studio gathers. */
-export type AnglePreset = 'cardinal' | 'isometric' | 'full';
+export type AnglePreset = 'portrait' | 'cardinal' | 'isometric' | 'full';
 
-/** Dropdown options (order = display order). */
+/** Dropdown options (order = display order; first is the default). */
 export const ANGLE_PRESETS: { id: AnglePreset; label: string }[] = [
+  { id: 'portrait', label: 'Portrait — 5 views (front · profiles · 3/4)' },
   { id: 'cardinal', label: 'Cardinal — 6 views (front · sides · back · top · bottom)' },
   { id: 'isometric', label: 'Isometric — 6 angled 3/4 views' },
   { id: 'full', label: 'Full turntable — 13 views' },
@@ -96,6 +99,14 @@ export const ANGLE_PRESETS: { id: AnglePreset; label: string }[] = [
  *  slot the source photo fills. Poles stay at ±80° (90° is gimbal-degenerate). */
 export function presetAngles(preset: AnglePreset): StudioAngle[] {
   switch (preset) {
+    case 'portrait':
+      // Faces/people: only the front hemisphere, which an image model can
+      // synthesize reliably from one photo. The back/top/bottom of a head are
+      // pure invention and tend to mislead, so they're deliberately excluded.
+      return [
+        makeAngle(0, 0), makeAngle(90, 0), makeAngle(270, 0),
+        makeAngle(45, 15), makeAngle(315, 15),
+      ];
     case 'cardinal':
       return [
         makeAngle(0, 0), makeAngle(90, 0), makeAngle(180, 0), makeAngle(270, 0),
@@ -116,6 +127,16 @@ export function presetAngles(preset: AnglePreset): StudioAngle[] {
     }
   }
 }
+
+/** How polished/literal a result to aim for — the user's "cartoon vs realistic"
+ *  lever. Drives the modeling brief. */
+export type BustStyle = 'stylized' | 'lowpoly' | 'realistic';
+
+export const BUST_STYLES: { id: BustStyle; label: string }[] = [
+  { id: 'stylized', label: 'Stylized bust (recommended)' },
+  { id: 'lowpoly', label: 'Low-poly' },
+  { id: 'realistic', label: 'Realistic attempt' },
+];
 
 let _idCounter = 0;
 function nextId(): string { return `v${(_idCounter++).toString(36)}_${Math.random().toString(36).slice(2, 7)}`; }
@@ -141,8 +162,8 @@ function viewsForPreset(preset: AnglePreset, prev?: StudioView[]): StudioView[] 
 
 /** Fresh studio for a preset. The first view (Front, az0/el0) is the slot the
  *  source photo fills; all others start empty. */
-export function newStudioState(preset: AnglePreset = 'cardinal'): StudioState {
-  return { sourceMediaType: null, views: viewsForPreset(preset), carve: { ...DEFAULT_CARVE }, model: null, preset };
+export function newStudioState(preset: AnglePreset = 'portrait'): StudioState {
+  return { sourceMediaType: null, views: viewsForPreset(preset), carve: { ...DEFAULT_CARVE }, model: null, preset, style: 'stylized' };
 }
 
 /** Switch the angle-set preset in place, preserving images for angles that
@@ -225,17 +246,33 @@ export function buildModelingBrief(state: StudioState): string {
   const lines = views
     .map(v => `- ${v.angle.label} — azimuth ${v.angle.azimuth}°, elevation ${v.angle.elevation}°`)
     .join('\n');
+
+  // What to aim for, by style. Stylization is deliberate: an LLM authoring
+  // geometry can't hit photoreal anatomy, so a clean stylized bust reads as
+  // intentional rather than uncanny.
+  const goal: Record<BustStyle, string> = {
+    stylized: 'Build a STYLIZED 3D character bust (head, neck, and shoulders) that is recognizably this person — like a polished game / animation character. Capture the IDENTIFYING features: overall head and face proportions, hairstyle, beard shape, any hat/glasses, and the main skin / hair / clothing colors. Do NOT attempt photoreal skin or tiny details; a clean, appealing, slightly simplified likeness is the goal.',
+    lowpoly: 'Build a clean LOW-POLY bust (head, neck, and shoulders): bold simplified forms, faceted planes, flat-shaded colour regions. Capture the person\'s silhouette, proportions, hair/beard masses, any hat, and main colours — not fine detail.',
+    realistic: 'Attempt a realistic likeness bust (head, neck, and shoulders). This is hard for code-authored geometry, so expect an approximation: prioritise correct proportions and smooth organic surfaces over fine detail.',
+  };
+
   return [
-    `I've attached ${views.length} reference views of one subject from different angles — they're attached directly to THIS message (and also in the Images tab):`,
+    `I've attached ${views.length} reference views of one person from the front hemisphere — attached directly to THIS message (and in the Images tab):`,
     lines,
     '',
-    'IMPORTANT: actually look at the attached images (you can also call getReferenceImages anytime to see them again as a labeled grid). If you cannot see them, STOP and tell me they are missing — do not guess or invent a subject. Ignore any placeholder/starter model currently in the editor; replace it with your build.',
+    'IMPORTANT: actually look at the attached images (call getReferenceImages anytime to see them again as a labeled grid). If you cannot see them, STOP and tell me — do not invent a subject. Replace any placeholder/starter model in the editor.',
     '',
-    'Please build a 3D model that matches this subject as closely as you can, using the partwright tools.',
-    'Pick whichever engine best fits the form: manifold-js (mesh) for organic/curved shapes like faces and bodies (warp, levelSet, smoothOut help here); BREP/replicad for hard-surface CAD parts with exact fillets; OpenSCAD for parametric mechanical parts; voxel only if a blocky look is wanted.',
-    'Work coarse-to-fine: block in the major masses and get the overall proportions and silhouette right first, then add detail.',
-    'After each significant change, call renderViews (or renderView at the matching azimuth/elevation) and compare your render to the reference at that same angle — iterate until the silhouettes and proportions line up.',
-    'Save progress with runAndSave, and record key decisions with addSessionNote.',
+    goal[state.style],
+    '',
+    'Engine + technique: use the manifold-js (mesh) engine — best for organic heads. Start from an ellipsoid/sphere head; build the left/right halves by MIRRORING across the X plane so the face is symmetric; blend features into the head with smooth unions (SDF / levelSet / warp / smoothOut) rather than leaving hard primitive intersections sticking out. Keep it a single connected, watertight mesh.',
+    '',
+    'Work in stages and VERIFY each with renderView BEFORE moving on — most failures come from skipping this:',
+    '1. Block in just the head + neck + shoulders mass. renderView front (az0) and right (az90); match the silhouette and proportions to the references. Do not add anything until the basic head shape is right.',
+    '2. Add the hair and beard as their own masses sized to the references, then the hat (if any) — the hat sits ON TOP of the skull ABOVE the brow line and must never cover the eyes or forehead. renderView and fix placement.',
+    '3. Add facial features — brow, nose, eye sockets + eyes, lips — as small SYMMETRIC additions/indentations. Keep them subtle. renderView front and confirm the eyes and mouth are actually visible and correctly placed.',
+    '4. Colour LAST, as broad regions matching the references: skin, hair, beard, hat, clothing each get their own region with correct boundaries — e.g. the hat colour belongs ONLY on the hat, never bleeding onto the forehead or eyes.',
+    '',
+    'After each stage compare your render to the matching reference angle and fix proportions before adding more. Save progress with runAndSave; note decisions with addSessionNote.',
   ].join('\n');
 }
 
@@ -249,6 +286,7 @@ export interface StudioImportRecord {
   sourceMediaType: string | null;
   model: string | null;
   preset?: AnglePreset;
+  style?: BustStyle;
   carve: CarveSettings;
   views: Array<{
     azimuth: number; elevation: number; label: string;
@@ -262,6 +300,7 @@ export function serializeStudio(state: StudioState): StudioImportRecord {
     sourceMediaType: state.sourceMediaType,
     model: state.model,
     preset: state.preset,
+    style: state.style,
     carve: { ...state.carve },
     views: state.views.map(v => ({
       azimuth: v.angle.azimuth, elevation: v.angle.elevation, label: v.angle.label,
@@ -276,7 +315,8 @@ export function deserializeStudio(rec: StudioImportRecord): StudioState {
   return {
     sourceMediaType: rec.sourceMediaType ?? null,
     model: rec.model ?? null,
-    preset: rec.preset ?? 'cardinal',
+    preset: rec.preset ?? 'portrait',
+    style: rec.style ?? 'stylized',
     carve: { ...DEFAULT_CARVE, ...rec.carve },
     views: rec.views.map(v => ({
       id: nextId(),

@@ -40,7 +40,8 @@ that gathers multiple angles of a subject and hands them to the **in-app AI**,
 which then builds a model with the partwright tools:
 
 1. **Upload a source photo** (the Front view).
-2. **Pick an angle set** — **Cardinal** (6: front · sides · back · top · bottom; the default, and the angles map 1:1 to `renderView` so the AI's compare loop lines up), **Isometric** (6 angled 3/4 views), or **Full turntable** (13). Switching presets keeps the source photo and any overlapping angles you've already generated.
+2. **Pick a style** — **Stylized bust** (default; a clean, appealing stylized likeness — the sweet spot for code-authored geometry, which can't hit photoreal anatomy), **Low-poly**, or **Realistic attempt**. The style drives the modeling brief.
+3. **Pick an angle set** — **Portrait** (5 front-hemisphere views: front · profiles · 3/4 — the default for faces/people, since a model can only reliably synthesize the front hemisphere from one photo; the back/top/bottom of a head are pure invention and mislead), **Cardinal** (6), **Isometric** (6), or **Full turntable** (13). Switching presets keeps the source photo and any overlapping angles you've already generated.
 3. **Generate angles** — with a connected Google Gemini key, the studio uses the
    newest image-capable model on your key ("nano banana") to re-render the photo
    at each turntable angle; tiles fill in as they return. No key? Connect it from

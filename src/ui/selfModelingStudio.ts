@@ -20,6 +20,8 @@ import {
   serializeStudio,
   setPreset,
   ANGLE_PRESETS,
+  BUST_STYLES,
+  type BustStyle,
   type StudioState,
   type StudioView,
   type StudioImportRecord,
@@ -50,7 +52,7 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
   if (isOpen) return;
   isOpen = true;
 
-  const state: StudioState = options.initialState ?? newStudioState('cardinal');
+  const state: StudioState = options.initialState ?? newStudioState();
   let apiKey: string | null = null;
   let availableModels: string[] = [];
   let generating = false;
@@ -293,27 +295,47 @@ export function openSelfModelingStudio(options: SelfModelingStudioOptions): void
     buildBtn.classList.toggle('cursor-not-allowed', (buildBtn as HTMLButtonElement).disabled);
   }
 
-  // ── Angle-set preset ──────────────────────────────────────────────────────
+  // ── Angle-set preset + bust style ─────────────────────────────────────────
   function renderPreset(): void {
     presetRow.innerHTML = '';
-    presetRow.className = 'flex items-center justify-between gap-2';
-    const label = sectionLabel('Angles');
-    const wrap = document.createElement('label');
-    wrap.className = 'flex items-center gap-1.5 text-[11px] text-zinc-400';
-    const sel = document.createElement('select');
-    sel.className = 'bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200';
-    sel.disabled = generating;
+    presetRow.className = 'flex flex-wrap items-center justify-between gap-2';
+    presetRow.appendChild(sectionLabel('Angles'));
+
+    const controls = document.createElement('div');
+    controls.className = 'flex flex-wrap items-center gap-3';
+
+    // Style: the user's "cartoon vs realistic" lever (drives the brief).
+    const styleSel = document.createElement('select');
+    styleSel.className = 'bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200';
+    for (const s of BUST_STYLES) {
+      const o = document.createElement('option');
+      o.value = s.id; o.textContent = s.label; o.selected = s.id === state.style;
+      styleSel.appendChild(o);
+    }
+    styleSel.addEventListener('change', () => { state.style = styleSel.value as BustStyle; });
+    const styleWrap = document.createElement('label');
+    styleWrap.className = 'flex items-center gap-1.5 text-[11px] text-zinc-400';
+    styleWrap.append(document.createTextNode('Style'), styleSel);
+
+    // Angle set.
+    const angleSel = document.createElement('select');
+    angleSel.className = 'bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200';
+    angleSel.disabled = generating;
     for (const p of ANGLE_PRESETS) {
       const o = document.createElement('option');
       o.value = p.id; o.textContent = p.label; o.selected = p.id === state.preset;
-      sel.appendChild(o);
+      angleSel.appendChild(o);
     }
-    sel.addEventListener('change', () => {
-      setPreset(state, sel.value as typeof ANGLE_PRESETS[number]['id']);
+    angleSel.addEventListener('change', () => {
+      setPreset(state, angleSel.value as typeof ANGLE_PRESETS[number]['id']);
       renderAll();
     });
-    wrap.append(document.createTextNode('Angle set'), sel);
-    presetRow.append(label, wrap);
+    const angleWrap = document.createElement('label');
+    angleWrap.className = 'flex items-center gap-1.5 text-[11px] text-zinc-400';
+    angleWrap.append(document.createTextNode('Angle set'), angleSel);
+
+    controls.append(styleWrap, angleWrap);
+    presetRow.appendChild(controls);
   }
 
   function renderAll(): void {

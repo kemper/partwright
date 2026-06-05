@@ -16,6 +16,15 @@ import {
 } from '../../src/recon/studioModel';
 
 describe('presetAngles', () => {
+  it('portrait = 5 front-hemisphere views (front · profiles · 3/4), no back/top/bottom', () => {
+    const a = presetAngles('portrait');
+    expect(a.length).toBe(5);
+    expect(a[0]).toMatchObject({ azimuth: 0, elevation: 0, label: 'Front' });
+    // All within the front hemisphere (no back/top/bottom invention).
+    expect(a.every(x => x.azimuth <= 90 || x.azimuth >= 270)).toBe(true);
+    expect(a.some(x => Math.abs(x.elevation) >= 45)).toBe(false);
+  });
+
   it('cardinal = 6 ortho views (front/sides/back + top + bottom), Front first', () => {
     const a = presetAngles('cardinal');
     expect(a.length).toBe(6);
@@ -42,9 +51,10 @@ describe('presetAngles', () => {
 });
 
 describe('newStudioState / setPreset', () => {
-  it('defaults to cardinal with the Front slot as source, rest gemini', () => {
+  it('defaults to a portrait stylized bust with the Front slot as source, rest gemini', () => {
     const s = newStudioState();
-    expect(s.preset).toBe('cardinal');
+    expect(s.preset).toBe('portrait');
+    expect(s.style).toBe('stylized');
     const front = frontView(s)!;
     expect(front.origin).toBe('source');
     expect(front.angle).toMatchObject({ azimuth: 0, elevation: 0 });
@@ -131,14 +141,21 @@ describe('AI handoff', () => {
     expect(refs.every(r => r.src.startsWith('data:image/png'))).toBe(true);
   });
 
-  it('buildModelingBrief lists the angles and asks the AI to pick an engine + iterate', () => {
-    const brief = buildModelingBrief(withReadyAngles());
+  it('buildModelingBrief lists the angles, prescribes engine + a verify loop, varies by style', () => {
+    const s = withReadyAngles(); // default style: stylized
+    const brief = buildModelingBrief(s);
     expect(brief).toMatch(/3 reference views/);
     expect(brief).toMatch(/Front/);
     expect(brief).toMatch(/Right/);
     expect(brief).toMatch(/azimuth 90/);
     expect(brief).toMatch(/engine/i);
     expect(brief).toMatch(/renderViews?/);
+    expect(brief).toMatch(/styliz/i);
+
+    s.style = 'lowpoly';
+    expect(buildModelingBrief(s)).toMatch(/low-poly/i);
+    s.style = 'realistic';
+    expect(buildModelingBrief(s)).toMatch(/realistic/i);
   });
 });
 
@@ -147,6 +164,7 @@ describe('serialize/deserialize', () => {
     const s = newStudioState('full');
     s.model = 'gemini-3-flash-image';
     s.sourceMediaType = 'image/jpeg';
+    s.style = 'lowpoly';
     s.carve.smooth = 4;
     const front = frontView(s)!;
     front.src = 'data:image/jpeg;base64,SOURCE';
@@ -161,6 +179,7 @@ describe('serialize/deserialize', () => {
     const restored = deserializeStudio(rec);
     expect(restored.model).toBe('gemini-3-flash-image');
     expect(restored.sourceMediaType).toBe('image/jpeg');
+    expect(restored.style).toBe('lowpoly');
     expect(restored.carve.smooth).toBe(4);
     expect(frontView(restored)!.src).toBe('data:image/jpeg;base64,SOURCE');
     expect(restored.views.find(v => v.angle.azimuth === 180)!.src).toBe('data:image/png;base64,BACK');
