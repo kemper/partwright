@@ -40,8 +40,8 @@ test.describe('Modeling quality settings', () => {
     // Radio should be checked immediately (live preview).
     await expect(page.locator('#simplify-panel input[type=radio][value=low]')).toBeChecked();
 
-    // Apply quality becomes enabled once the preview differs; click to commit.
-    const applyBtn = page.locator('#quality-apply');
+    // The shared Apply becomes enabled once the preview differs; click to commit.
+    const applyBtn = page.locator('#simplify-apply');
     await expect(applyBtn).toBeEnabled();
     await applyBtn.click();
     await expect(applyBtn).toBeDisabled(); // committed → no-op again
@@ -67,7 +67,7 @@ test.describe('Modeling quality settings', () => {
     await page.locator('#simplify-toggle').click();
     await expect(page.locator('#simplify-panel input[type=radio][value=highest]')).toBeChecked();
     // Apply is disabled again because nothing is pending after the revert.
-    await expect(page.locator('#quality-apply')).toBeDisabled();
+    await expect(page.locator('#simplify-apply')).toBeDisabled();
   });
 
   test('manifold-js engine applies the chosen segment count', async ({ page }) => {
@@ -92,7 +92,7 @@ test.describe('Modeling quality settings', () => {
     // Drop to Low via the panel and Apply to commit it.
     await page.locator('#simplify-toggle').click();
     await page.locator('#simplify-panel input[type=radio][value=low]').check();
-    await page.locator('#quality-apply').click();
+    await page.locator('#simplify-apply').click();
     await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
 
     // Re-run the same code — should produce far fewer triangles.
@@ -126,7 +126,7 @@ test.describe('Modeling quality settings', () => {
     await page.locator('#simplify-toggle').click();
     await page.locator('#simplify-panel input[type=radio][value=ultra]').check();
     await expect(page.locator('#simplify-panel input[type=radio][value=ultra]')).toBeChecked();
-    await page.locator('#quality-apply').click();
+    await page.locator('#simplify-apply').click();
     await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
 
     const ultra = await page.evaluate(async (code) => {
