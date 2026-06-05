@@ -85,3 +85,8 @@ ties the demos into one connected, printable solid (verified componentCount === 
 isManifold === true for all three via a probe). The tray reads as an intentional
 sampler board. No test edits needed — the tests correctly assert app behavior on
 the default model.
+
+Follow-up (review nit): refreshed the `isStarterCode` doc comment, which still
+described the dropped `// New session`/`// New part` prefix as a currently-emitted
+form. Behavior unchanged — the regex is retained only for back-compat with legacy
+saved cube drafts.

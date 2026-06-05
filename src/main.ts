@@ -3143,9 +3143,12 @@ async function main() {
   // wrapper (`Manifold.ofMesh` / `Manifold.compose`) main already uses for STL
   // imports and simplify-bakes, so the result is an ordinary, editable version.
 
-  /** True when the editor still holds a fresh starter snippet (blank, the
-   *  default example, or a "New session"/"New part" cube) — i.e. nothing worth
-   *  preserving before an import overwrites it. */
+  /** True when the editor still holds a fresh starter snippet (blank or the
+   *  current manifold-js default) — i.e. nothing worth preserving before an
+   *  import overwrites it. The trailing regex is kept only for back-compat with
+   *  legacy saved drafts that hold the old `Manifold.cube([10,10,10])` starter
+   *  (optionally prefixed with a `// New session`/`// New part` comment that
+   *  `resetEditorToStarter` no longer emits). */
   function isStarterCode(code: string): boolean {
     const t = code.trim();
     if (!t) return true;
