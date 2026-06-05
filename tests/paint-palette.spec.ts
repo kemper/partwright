@@ -171,4 +171,56 @@ test.describe('filament palette + slot painting', () => {
     await expect(confirm).toContainText('More colours than slots');
     await expect(confirm).toContainText('uses 2 filament colours');
   });
+
+  test('palette manager reconciles off-palette model colours (auto-match)', async ({ page }) => {
+    await page.addInitScript(() => {
+      try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ }
+    });
+    await openEditorWithSlab(page);
+
+    // Paint an in-palette slot colour, then an off-palette custom colour.
+    await page.locator('#paint-picker-panel button[title^="Slot 3:"]').dispatchEvent('click');
+    await bucketPaintCentre(page);
+    await page.locator('#paint-picker-panel input[title*="Custom color"]').evaluate((el) => {
+      (el as HTMLInputElement).value = '#aa33cc';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await bucketPaintCentre(page);
+
+    // The manager's reconciliation section flags the off-palette colour.
+    await page.locator('#palette-manager-toggle').dispatchEvent('click');
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog).toContainText('Colours in this model');
+    await expect(dialog).toContainText('off-palette');
+
+    // Apply palette → every colour snaps to the nearest slot, none off-palette.
+    await dialog.getByRole('button', { name: 'Apply palette' }).click();
+    await expect(dialog).not.toContainText('off-palette');
+  });
+
+  test('named palette collections: create and switch', async ({ page }) => {
+    await page.addInitScript(() => {
+      try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ }
+    });
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 20000 });
+
+    await page.locator('#palette-manager-toggle').dispatchEvent('click');
+    const select = page.locator('[role="dialog"] select[title="Active palette"]');
+    await expect(select.locator('option')).toHaveCount(1); // Default
+
+    // Create a new named palette.
+    await page.locator('[role="dialog"] button:has-text("New")').click();
+    const prompt = page.locator('[role="dialog"]:has-text("Name the new palette")');
+    await prompt.locator('input[type="text"]').fill('Minis');
+    await prompt.locator('button:has-text("Create")').click();
+
+    await expect(select.locator('option')).toHaveCount(2);
+    await expect(select).toHaveValue(/.+/); // active = the new palette
+    await expect(select.locator('option:checked')).toHaveText('Minis');
+
+    // Switch back to Default.
+    await select.selectOption({ label: 'Default' });
+    await expect(select.locator('option:checked')).toHaveText('Default');
+  });
 });

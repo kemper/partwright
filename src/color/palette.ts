@@ -38,9 +38,15 @@ export const DEFAULT_FILAMENTS: Filament[] = [
   { id: 'def-gray', name: 'Gray', hex: '#808080', td: 0.8 },
 ];
 
+// Named palette collections. A user can keep several named palettes (e.g. one
+// per spool set) and switch the active one; the active palette's slots are what
+// every other API returns. Stored as one blob so switching is atomic.
+const COLLECTIONS_KEY = 'partwright.palette.collections';
+interface NamedPalette { id: string; name: string; slots: Filament[] }
+interface Collections { palettes: NamedPalette[]; activeId: string }
 // In-memory mirror — the live copy when localStorage is unavailable (SSR /
 // private mode / tests), and a cache otherwise so reads don't re-parse JSON.
-let slotsMem: Filament[] | null = null;
+let collectionsMem: Collections | null = null;
 
 type Listener = () => void;
 const listeners: Listener[] = [];
@@ -87,29 +93,60 @@ function legacyEffective(): Filament[] {
   ];
 }
 
-/** Load the ordered slot list, migrating legacy relief data on first access. */
-function load(): Filament[] {
-  if (slotsMem) return slotsMem;
+/** The slot list for a brand-new "Default" palette — the single-palette source
+ *  (PALETTE_KEY from before collections), else migrated legacy relief data,
+ *  else the built-in defaults. */
+function seedSlots(): Filament[] {
   const stored = readJSON<unknown[]>(PALETTE_KEY);
   if (stored && Array.isArray(stored)) {
-    slotsMem = stored.filter(isValidFilament);
-    return slotsMem;
+    const s = stored.filter(isValidFilament);
+    if (s.length) return s;
   }
-  // First run (or unavailable storage): seed from legacy relief data, else
-  // the built-in defaults, and persist so order is stable from here on.
-  const seed = legacyEffective();
-  slotsMem = seed.length > 0 ? seed : DEFAULT_FILAMENTS.map(f => ({ ...f }));
-  save(slotsMem);
-  return slotsMem;
+  const legacy = legacyEffective();
+  return legacy.length > 0 ? legacy : DEFAULT_FILAMENTS.map(f => ({ ...f }));
 }
 
-function save(list: Filament[]): void {
-  slotsMem = list;
+/** Load the palette collections, migrating the pre-collections single palette
+ *  into one "Default" palette on first access. */
+function loadCollections(): Collections {
+  if (collectionsMem) return collectionsMem;
+  const stored = readJSON<Collections>(COLLECTIONS_KEY);
+  if (stored && Array.isArray(stored.palettes) && stored.palettes.length > 0 && typeof stored.activeId === 'string') {
+    const palettes = stored.palettes
+      .filter(p => p && typeof p.id === 'string' && typeof p.name === 'string' && Array.isArray(p.slots))
+      .map(p => ({ id: p.id, name: p.name, slots: p.slots.filter(isValidFilament) }));
+    if (palettes.length > 0) {
+      const activeId = palettes.some(p => p.id === stored.activeId) ? stored.activeId : palettes[0].id;
+      collectionsMem = { palettes, activeId };
+      return collectionsMem;
+    }
+  }
+  collectionsMem = { palettes: [{ id: 'default', name: 'Default', slots: seedSlots() }], activeId: 'default' };
+  saveCollections();
+  return collectionsMem;
+}
+
+function saveCollections(): void {
   try {
-    localStorage.setItem(PALETTE_KEY, JSON.stringify(list));
+    localStorage.setItem(COLLECTIONS_KEY, JSON.stringify(collectionsMem));
   } catch {
     /* keep the in-memory copy as the live source */
   }
+}
+
+function activePalette(): NamedPalette {
+  const c = loadCollections();
+  return c.palettes.find(p => p.id === c.activeId) ?? c.palettes[0];
+}
+
+/** The active palette's ordered slot list. All other slot APIs read this. */
+function load(): Filament[] {
+  return activePalette().slots;
+}
+
+function save(list: Filament[]): void {
+  activePalette().slots = list;
+  saveCollections();
 }
 
 /** The ordered palette slots. Slot index == intended filament/AMS slot. */
@@ -267,10 +304,74 @@ export interface Palette {
   slots: Filament[];
 }
 
-/** The active palette. PR 1 ships exactly one ("Default"); the indirection lets
- *  Phase 3 add named collections without touching callers or region data. */
+/** The active palette (slots + capacity), via the collections layer. */
 export function getActivePalette(): Palette {
-  return { id: 'default', name: 'Default', capacity: getPaletteCapacity(), slots: listFilaments() };
+  const p = activePalette();
+  return { id: p.id, name: p.name, capacity: getPaletteCapacity(), slots: listFilaments() };
+}
+
+// ── Named collections ────────────────────────────────────────────────────────
+
+export interface PaletteSummary { id: string; name: string; active: boolean }
+
+/** Give each slot a fresh id — used when creating/duplicating a palette so a
+ *  region's `slotId` stays bound to the one palette it was painted under
+ *  (switching palettes then surfaces the model's colours as off-palette, which
+ *  the reconciliation tools resolve). */
+function withFreshSlotIds(slots: Filament[]): Filament[] {
+  return slots.map(s => ({ ...s, id: genId() }));
+}
+
+/** All palettes, with which one is active. */
+export function listPalettes(): PaletteSummary[] {
+  const c = loadCollections();
+  return c.palettes.map(p => ({ id: p.id, name: p.name, active: p.id === c.activeId }));
+}
+
+export function getActivePaletteId(): string { return loadCollections().activeId; }
+export function getActivePaletteName(): string { return activePalette().name; }
+
+/** Switch the active palette. Fires a change so the paint swatches rebuild. */
+export function setActivePalette(id: string): void {
+  const c = loadCollections();
+  if (c.activeId === id || !c.palettes.some(p => p.id === id)) return;
+  c.activeId = id;
+  saveCollections();
+  notify();
+}
+
+/** Create a new palette and make it active. `slots` defaults to a copy of the
+ *  current active palette's slots (a "Save as…"); pass `[]`-free defaults via
+ *  the built-ins by passing `DEFAULT_FILAMENTS`. Slot ids are regenerated.
+ *  Returns the new palette id. */
+export function createPalette(name: string, slots?: Filament[]): string {
+  const c = loadCollections();
+  const id = `pal-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  const src = slots ?? activePalette().slots;
+  c.palettes.push({ id, name: name.trim() || 'Palette', slots: withFreshSlotIds(src) });
+  c.activeId = id;
+  saveCollections();
+  notify();
+  return id;
+}
+
+export function renamePalette(id: string, name: string): void {
+  const p = loadCollections().palettes.find(q => q.id === id);
+  if (!p) return;
+  p.name = name.trim() || p.name;
+  saveCollections();
+  notify();
+}
+
+/** Delete a palette. Refuses to delete the last one; if the active palette is
+ *  deleted, the first remaining one becomes active. */
+export function deletePalette(id: string): void {
+  const c = loadCollections();
+  if (c.palettes.length <= 1) return;
+  c.palettes = c.palettes.filter(p => p.id !== id);
+  if (!c.palettes.some(p => p.id === c.activeId)) c.activeId = c.palettes[0].id;
+  saveCollections();
+  notify();
 }
 
 // ── Colour helpers ──────────────────────────────────────────────────────────
@@ -291,5 +392,5 @@ export function rgbToHex([r, g, b]: [number, number, number]): string {
 
 /** @internal Reset the in-memory cache so tests can re-read storage. */
 export function __resetPaletteCacheForTests(): void {
-  slotsMem = null;
+  collectionsMem = null;
 }

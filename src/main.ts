@@ -145,7 +145,7 @@ import { initTooltips } from './ui/tooltip';
 import { initTheme, getTheme, setTheme } from './ui/theme';
 import type { Theme } from './ui/theme';
 import { initPaintUI, isPaintOpen, forceDeactivate as closePaintMenu } from './color/paintUI';
-import { initImagePaintUI, setSmoothStampCallback } from './color/imagePaintUI';
+import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook } from './color/imagePaintUI';
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
@@ -2309,6 +2309,9 @@ async function main() {
         // interactive: true → the wizard is the only entry point that may show
         // the import-target modal (console/AI imports stay modal-free).
         await createReliefFromImageData(image, opts, name || 'relief', sourceFile, true);
+        // Colour reliefs bring their own palette of cluster colours — nudge the
+        // user to reconcile them. Tonal (luminance) reliefs have no colours.
+        if (opts.mode === 'quantized') nudgePaletteAfterColorImport();
       },
       onCreateSvg: async (svgText, opts, name, sourceFile) => {
         await createReliefFromSvgText(svgText, opts, name || 'relief', sourceFile, true);
@@ -2731,7 +2734,15 @@ async function main() {
       // the ImageDataLike→ImageData narrowing is safe here.
       await registerImportSnapshot(sourceFile, chosenName, 'IMAGE', meta, createThumbnailFromImageData(chosenImage as ImageData));
     }
+    nudgePaletteAfterColorImport();
     return true;
+  }
+
+  /** After an import that brings in its own colours (voxel art, colour relief),
+   *  nudge the user toward the palette tool to match those colours to their
+   *  filaments — rather than constraining the importers to the palette. */
+  function nudgePaletteAfterColorImport(): void {
+    showToast('Imported with colours — open 🧵 Palette to match them to your filaments.', { variant: 'neutral', source: 'import' });
   }
 
   /** Import an image as a colored voxel billboard in a new voxel session.
@@ -6113,6 +6124,22 @@ async function main() {
     // Step 5: Stamp on the now-fine mesh for crisp image edges.
     const finalResult = stampImageOntoMesh(mesh, imageData, stampOpts);
     return { result: finalResult, parentToChildren };
+  });
+  // Commit a freshly-placed stamp region with the paint reconciler suspended.
+  // The stamp flow already built the final mesh and resolved every region's
+  // triangles/colours, so a reconcile here would only ever do harm: with brush
+  // strokes (or smooth slabs/etc.) present it rebuilds the mesh from base and
+  // re-resolves regions, wiping the stamp (whose colours live in runtime
+  // perTriColors, not its descriptor) and any pre-existing paint. Suspend it,
+  // run the addRegion, then re-composite colours directly.
+  setStampCommitHook((commit) => {
+    suspendReconcile = true;
+    try {
+      commit();
+    } finally {
+      suspendReconcile = false;
+    }
+    paintedColorRefresh();
   });
   initVoxelPaintUI(clipControls, {
     activate: async () => {

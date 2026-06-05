@@ -137,6 +137,11 @@ let regionRedoStack: ColorRegion[] = [];
 // Clear snapshot — saved when clearRegions() is called. Nulled when a new
 // region is added so undo-clear is only valid until the next paint operation.
 let clearSnapshot: ColorRegion[] | null = null;
+// True when the snapshot came from a *scoped* clear (clearRegionsBySource) that
+// removed only some regions and left the rest in place. undoClear then merges
+// the snapshot back into the surviving regions instead of replacing the whole
+// array, so a scoped clear doesn't resurrect regions the user never cleared.
+let clearSnapshotPartial = false;
 
 function notify(): void {
   for (const fn of listeners) fn();
@@ -195,9 +200,14 @@ export function canUndoClear(): boolean {
 
 export function undoClear(): void {
   if (!clearSnapshot) return;
-  regions = [...clearSnapshot];
-  nextOrder = regions.reduce((max, r) => Math.max(max, r.order + 1), 1);
+  // A scoped clear (clearRegionsBySource) left other regions in place, so merge
+  // the removed ones back in. A full clear replaces the (now-empty) array. Render
+  // priority keys on each region's `order` field, not array position, so a plain
+  // append restores the original layering. `nextOrder` only ever grows.
+  regions = clearSnapshotPartial ? [...regions, ...clearSnapshot] : [...clearSnapshot];
+  nextOrder = regions.reduce((max, r) => Math.max(max, r.order + 1), clearSnapshotPartial ? nextOrder : 1);
   clearSnapshot = null;
+  clearSnapshotPartial = false;
   clearRedoStack();
   notify();
   notifyClearSnapshot();
@@ -330,6 +340,60 @@ export function usedSlotIds(): Set<string> {
   return ids;
 }
 
+const colorDist = (a: readonly number[], b: readonly number[]) =>
+  Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
+
+/** Reconcile a model colour: recolour every region within `tolerance` of
+ *  `fromColor` to `toColor`, and set their palette attribution to `toSlotId`
+ *  (pass `undefined` to clear it — the colour is now ad-hoc). This is the
+ *  primitive behind the palette tool's Replace (swap to a palette/history
+ *  colour) and Merge (collapse one model colour into another). Returns the
+ *  number of regions changed. */
+export function reassignRegionColor(
+  fromColor: [number, number, number],
+  toColor: [number, number, number],
+  toSlotId: string | undefined,
+  tolerance = 0.02,
+): number {
+  let count = 0;
+  for (const r of regions) {
+    if (colorDist(r.color, fromColor) <= tolerance) {
+      r.color = [...toColor] as [number, number, number];
+      r.slotId = toSlotId;
+      count++;
+    }
+  }
+  if (count > 0) notify();
+  return count;
+}
+
+/** Auto-match every user region to the nearest palette slot (Euclidean RGB),
+ *  recolouring it to that slot's colour and stamping its `slotId`. Used by the
+ *  palette tool's "Apply palette" to reconcile an off-palette or freshly
+ *  imported model in one step. `slots` is the ordered palette. Returns the
+ *  number of regions changed. */
+export function applyPaletteAutoMatch(
+  slots: ReadonlyArray<{ id: string; color: [number, number, number] }>,
+): number {
+  if (slots.length === 0) return 0;
+  let count = 0;
+  for (const r of regions) {
+    let best = slots[0];
+    let bestD = Infinity;
+    for (const s of slots) {
+      const d = colorDist(r.color, s.color);
+      if (d < bestD) { bestD = d; best = s; }
+    }
+    // Skip a no-op (already exactly this slot's colour and attribution).
+    if (r.slotId === best.id && colorDist(r.color, best.color) === 0) continue;
+    r.color = [...best.color] as [number, number, number];
+    r.slotId = best.id;
+    count++;
+  }
+  if (count > 0) notify();
+  return count;
+}
+
 /** Batch-replace the color of every user region whose color is within
  *  `tolerance` (Euclidean distance in normalised [0,1]³ RGB) of `sourceColor`.
  *  Returns the number of regions changed. */
@@ -405,8 +469,24 @@ export function setRegionTriangles(
 export function clearRegions(): void {
   if (regions.length === 0) return;
   clearSnapshot = [...regions];
+  clearSnapshotPartial = false;
   regions = [];
   nextOrder = 1;
+  clearRedoStack();
+  notify();
+  notifyClearSnapshot();
+}
+
+/** Clear only the regions with the given `source` (e.g. `'imagePaint'` stamps),
+ *  leaving every other region (brush strokes, face picks, …) untouched. Saves a
+ *  partial snapshot so "Undo clear" restores exactly the removed regions back
+ *  into the surviving list. No-op when nothing matches. */
+export function clearRegionsBySource(source: ColorRegion['source']): void {
+  const removed = regions.filter(r => r.source === source);
+  if (removed.length === 0) return;
+  clearSnapshot = removed;
+  clearSnapshotPartial = true;
+  regions = regions.filter(r => r.source !== source);
   clearRedoStack();
   notify();
   notifyClearSnapshot();
