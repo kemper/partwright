@@ -546,6 +546,27 @@
       "language": "manifold-js",
       "description": "Print-in-place spiral cone — twist the two interleaved helical ribbons and they screw apart. A captive two-part fidget printed in one piece.",
       "group": "fidget-toys"
+    },
+    {
+      "id": "dna-helix",
+      "name": "DNA Double Helix",
+      "file": "dna_helix.partwright.json",
+      "language": "manifold-js",
+      "description": "A double-helix model of DNA — two antiparallel sugar-phosphate backbones (orange and teal beads) spiralling around a shared axis, joined by colored base-pair rungs in the four nucleotide colors. Self-colored via labeled regions; parametric turns, radius, pitch, and bead density."
+    },
+    {
+      "id": "fountain-pen",
+      "name": "Fountain Pen",
+      "file": "fountain_pen.partwright.json",
+      "language": "manifold-js",
+      "description": "A capped-and-posted fountain pen — gold nib, black grip, burgundy barrel with gold trim bands, a posted cap with finial, and a sprung pocket clip. A turned object composed from stacked tapered cylinders along one axis, self-colored via labeled regions. Color and length are parametric."
+    },
+    {
+      "id": "ringed-planet",
+      "name": "Ringed Planet",
+      "file": "ringed_planet.partwright.json",
+      "language": "manifold-js",
+      "description": "A banded gas giant encircled by a tilted, multi-band ring system. Latitude color bands are cut from the sphere with overlapping slabs; the concentric ring disk welds into the planet's equator so it prints as one self-colored piece. Parametric planet radius, ring span, band count, and axial tilt."
     }
   ]
 }
