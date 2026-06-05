@@ -2,9 +2,14 @@
 // The catalog tiles' text (name, description, language, category) are baked
 // into the static HTML at build time for crawlers; this hydrates each tile's
 // thumbnail lazily so the initial HTML stays small. Tiles are plain <a> links
-// to /editor?catalog=<file>, so the page is fully functional without it.
+// to /editor?catalog=<file>, so the page is fully functional without it. It
+// also wires the search box + language filter pills (progressive enhancement —
+// the full catalog renders server-side; this just hides/shows on top).
 //
-// Keep the import graph empty: this must not pull in any app/engine code.
+// Keep the import graph empty: this must not pull in any app/engine code. The
+// one import below (wireCatalogFilter) is itself dependency-free, pure DOM.
+
+import { wireCatalogFilter } from './catalogFilter';
 
 interface CatalogThumbs {
   /** Map of catalog file name → latest-version thumbnail data URL. */
@@ -46,8 +51,13 @@ async function hydrateThumbnails(): Promise<void> {
   }));
 }
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => { void hydrateThumbnails(); });
-} else {
+function init(): void {
+  wireCatalogFilter(document);
   void hydrateThumbnails();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
 }

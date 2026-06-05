@@ -5,7 +5,7 @@
 // is within `colorTolerance` (normalised Euclidean distance) of the seed.
 
 import { describe, it, expect } from 'vitest';
-import { buildAdjacency, findColorRegion } from '../../src/color/adjacency';
+import { buildAdjacency, findColorRegion, gateRegionByBend } from '../../src/color/adjacency';
 import type { MeshData } from '../../src/geometry/types';
 
 // A flat 2-quad strip in the z=0 plane → 4 triangles, all one connected
@@ -114,5 +114,60 @@ describe('findColorRegion', () => {
     expect(region.has(2)).toBe(true); // blue
     expect(region.has(3)).toBe(true); // blue
     expect(region.has(1)).toBe(false); // red, not the matched color
+  });
+});
+
+describe('gateRegionByBend', () => {
+  // A floor quad in z=0 folded 90° into a wall in the x=1 plane, sharing the
+  // crease verts (2,3). Floor (T0,T1) normal +z; wall (T2,T3) normal -x.
+  function buildFold(): ReturnType<typeof buildAdjacency> {
+    const vertProperties = new Float32Array([
+      0, 0, 0, // 0
+      0, 1, 0, // 1
+      1, 0, 0, // 2 crease
+      1, 1, 0, // 3 crease
+      1, 0, 1, // 4 wall top
+      1, 1, 1, // 5 wall top
+    ]);
+    const triVerts = new Uint32Array([
+      0, 2, 3, // T0 floor
+      0, 3, 1, // T1 floor
+      2, 4, 5, // T2 wall
+      2, 5, 3, // T3 wall
+    ]);
+    return buildAdjacency({ vertProperties, triVerts, numVert: 6, numTri: 4, numProp: 3 });
+  }
+
+  it('drops candidates across a 90° fold but keeps the coplanar floor', () => {
+    const adjacency = buildFold();
+    const all = new Set([0, 1, 2, 3]);
+    // cos(45°) ≈ 0.707: the floor↔wall 90° fold (dot 0) is too sharp to cross,
+    // so only the two coplanar floor triangles remain.
+    const gated = gateRegionByBend(all, 0, adjacency, Math.cos(Math.PI / 4));
+    expect([...gated].sort((a, b) => a - b)).toEqual([0, 1]);
+  });
+
+  it('keeps the whole set when the tolerance admits the fold', () => {
+    const adjacency = buildFold();
+    const all = new Set([0, 1, 2, 3]);
+    // cos(120°) = -0.5: a 90° fold (dot 0) is now gentle enough to cross.
+    const gated = gateRegionByBend(all, 0, adjacency, -0.5);
+    expect(gated.size).toBe(4);
+  });
+
+  it('is a no-op at cos(180°) = -1 (wrap freely) and never grows the set', () => {
+    const adjacency = buildFold();
+    const all = new Set([0, 1, 2, 3]);
+    expect(gateRegionByBend(all, 0, adjacency, -1)).toBe(all); // same reference, untouched
+    // The walk only steps into candidates, so a partial set stays a subset.
+    const partial = new Set([0, 1]);
+    const gated = gateRegionByBend(partial, 0, adjacency, Math.cos(Math.PI / 4));
+    expect([...gated].sort((a, b) => a - b)).toEqual([0, 1]);
+  });
+
+  it('returns the candidates untouched when the seed is not among them', () => {
+    const adjacency = buildFold();
+    const candidates = new Set([2, 3]);
+    expect(gateRegionByBend(candidates, 0, adjacency, Math.cos(Math.PI / 4))).toBe(candidates);
   });
 });

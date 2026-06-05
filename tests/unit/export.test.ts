@@ -15,6 +15,20 @@ function tri(): MeshData {
   } as unknown as MeshData;
 }
 
+// Two separate triangles painted with palette-slot colours, in NON-slot order:
+// triangle 0 is red (default slot 3), triangle 1 is black (default slot 2). A
+// slot-ordered exporter must emit black before red regardless of triangle order.
+function paintedTwoTri(): MeshData {
+  return {
+    numProp: 3,
+    numVert: 6,
+    numTri: 2,
+    vertProperties: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 0, 0, 3, 0, 0, 2, 1, 0]),
+    triVerts: new Uint32Array([0, 1, 2, 3, 4, 5]),
+    triColors: new Uint8Array([0xc0, 0x25, 0x25, 0x18, 0x18, 0x18]), // red, black
+  } as unknown as MeshData;
+}
+
 async function blobBytes(blob: Blob): Promise<Uint8Array> {
   return new Uint8Array(await blob.arrayBuffer());
 }
@@ -66,5 +80,23 @@ describe('export attribution + STL header safety', () => {
     const text = asLatin1(await blobBytes(buildOBJ(tri()).blob));
     expect(text).toContain('# Partwright');
     expect(text).toContain('https://www.partwrightstudio.com');
+  });
+});
+
+describe('3MF slot-ordered colour materials', () => {
+  it('emits m:colorgroup materials in filament-palette slot order, not encounter order', async () => {
+    const text = asLatin1(await blobBytes(build3MF(paintedTwoTri()).blob));
+    // Default palette: White(0) Black(1) Red(2) … — so black precedes red.
+    const black = text.indexOf('181818FF');
+    const red = text.indexOf('C02525FF');
+    expect(black).toBeGreaterThan(-1);
+    expect(red).toBeGreaterThan(-1);
+    // Triangle 0 is red, but black is the earlier slot → black material first.
+    expect(black).toBeLessThan(red);
+    // Exactly two materials (no phantom default filament for a fully-painted mesh).
+    expect(text.match(/<m:color /g)?.length).toBe(2);
+    // Material indices line up: black = 0 (p1="0"), red = 1 (p1="1").
+    expect(text).toContain('pid="2" p1="0"');
+    expect(text).toContain('pid="2" p1="1"');
   });
 });
