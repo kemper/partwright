@@ -121,8 +121,10 @@ return voxels()
 - **`iterations`** (1–8, default 2) — more passes = rounder. It's a Taubin
   λ/μ smoothing of the mesh, so the model rounds without collapsing/shrinking.
 - **`detail`** (1–4, default 1) — supersamples the grid ×`detail` before
-  smoothing, giving finer, more controlled rounding on coarse/small models (at
-  more triangles). The result is scaled back to the original world size.
+  smoothing, giving finer rounding on large, coarse shapes (at more triangles).
+  The result is scaled back to the original world size. **Caution:** `detail > 1`
+  on small, dense features (face pixels, fine voxel detail) tends to *add*
+  stair-stepping rather than remove it — use plain `iterations` tuning there.
 
 ```js
 return voxels().fillBox([-4,-4,0],[4,4,8], '#6cf').smooth({ iterations: 4, detail: 2 });
@@ -316,6 +318,10 @@ the settings you used.
 - **No booleans / fillets / history.** Voxel modeling is direct: place and
   remove cubes. For CSG, fillets, or parametric edits, use manifold-js or BREP.
 - **Coordinate range is −1024…1023 per axis.** Out-of-range coordinates throw.
+- **Catalog thumbnail faces iso azimuth ≈135° (the +X,−Y corner).** The catalog
+  3/4 tile camera looks from the +X/−Y corner — camera-facing surfaces are the
+  −Y and +X faces. Build characters and faced models with their front on the
+  −Y/+X corner; a face authored on flat +Y shows the *back* of the head in the tile.
 
 ## A complete example
 

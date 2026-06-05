@@ -49,3 +49,11 @@ changes.
 - A missing/broken entry renders a disabled placeholder tile rather than
   blocking the whole page.
 - Entries without an embedded thumbnail show the hexagon placeholder.
+- **Thumbnail orientation: iso azimuth ≈135° (the +X,−Y corner).** The catalog
+  3/4 tile camera looks from the +X/−Y corner — put the model's front face there.
+  A face authored on flat +Y shows the *back* of the head in the tile. For voxel
+  characters, see also `/ai/voxel.md` Gotchas.
+- **File size: prefer `byLabel` paint for catalog entries.** Coordinate paint
+  (`paintInBox` / `paintNear`) bakes per-triangle ID lists that can push a file
+  to 10–20 MB; `paintByLabels` stores only the label name and stays under ~300 KB.
+  Check the exported `.partwright.json` size before committing.

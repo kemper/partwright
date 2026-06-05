@@ -76,6 +76,21 @@ Inspect `paintPreview`'s `largestTriangleArea` to choose a sensible
 topology and don't need either workaround — the centroid default is
 fine there.
 
+**Catalog entries: prefer `byLabel` over coordinate paint.** `paintInBox` /
+`paintNear` / `paintFaces` bake a `triangles` list of per-triangle IDs into the
+saved file — on complex models this can run to 10–20 MB. `paintByLabels` stores
+only the label name and re-resolves on load, keeping catalog files under ~300 KB.
+For any model destined for the catalog, design the paint scheme with `label()` +
+`paintByLabels` from the start; reach for coordinate selectors only for geometry
+you didn't author (imported STL, `fuseAll` BREP), and check the file size after
+export.
+
+**Catalog thumbnail lighting.** The catalog 3/4 tile uses flat/ambient shading —
+near-white, cream, or low-saturation colors collapse to gray under it. Push the
+hue warmer and saturation noticeably higher than you'd pick on a white-background
+swatch. Sanity-check a near-white region with a vivid test color first; if it
+shows correctly, the region is wired right and the color just needs to be bolder.
+
 **Verify from multiple angles.** Use `renderViews()` for verification
 rather than a single `renderView` call. The default `views: 'auto'`
 picks angles by the model's bounding box: flat disks get [Top, Iso]
