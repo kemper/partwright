@@ -1,16 +1,40 @@
-// Twisted column — a rounded-square profile swept upward with manifold-3d's
-// built-in twist and taper. Mesh kernels make this kind of continuously
-// deformed solid cheap to build, and it renders in a blink.
-const { CrossSection } = api;
+// manifold-3d capability sampler — primitives, booleans, hull, twist-extrude,
+// and a surface of revolution. Mesh booleans are fast even on odd shapes.
+// Edit any block and re-run to experiment.
+const { Manifold, CrossSection } = api;
 
-// Rounded-square cross-section: the convex hull of four corner circles.
-const r = 4, d = 9;
-const profile = CrossSection.hull([
-  CrossSection.circle(r).translate([ d,  d]),
-  CrossSection.circle(r).translate([-d,  d]),
-  CrossSection.circle(r).translate([-d, -d]),
-  CrossSection.circle(r).translate([ d, -d]),
+// 1) Booleans: a cube with a sphere and a cross-bore subtracted.
+const boolean = Manifold.cube([15, 15, 15], true)
+  .subtract(Manifold.sphere(9.5, 48))
+  .subtract(Manifold.cylinder(20, 3.5, 3.5, 48, true));
+
+// 2) Rounded box: convex hull of eight corner spheres.
+const r = 2.5, hx = 6, hy = 6, hz = 4;
+const s = Manifold.sphere(r, 24);
+const rounded = Manifold.hull([
+  s.translate([ hx,  hy,  hz]), s.translate([-hx,  hy,  hz]),
+  s.translate([ hx, -hy,  hz]), s.translate([-hx, -hy,  hz]),
+  s.translate([ hx,  hy, -hz]), s.translate([-hx,  hy, -hz]),
+  s.translate([ hx, -hy, -hz]), s.translate([-hx, -hy, -hz]),
 ]);
 
-// Extrude 60 tall: 48 slices, 160° of twist, tapering to 55% at the top.
-return profile.extrude(60, 48, 160, 0.55);
+// 3) Twisted column: a rounded-square profile extruded with built-in twist.
+const profile = CrossSection.hull([
+  CrossSection.circle(2).translate([5, 5]),  CrossSection.circle(2).translate([-5, 5]),
+  CrossSection.circle(2).translate([-5, -5]), CrossSection.circle(2).translate([5, -5]),
+]);
+const twisted = profile.extrude(24, 48, 180, 0.5);
+
+// 4) Surface of revolution: a vase profile (X = radius, Y = height) spun on Z.
+const vase = Manifold.revolve(CrossSection.hull([
+  CrossSection.circle(1).translate([3, 0]), CrossSection.circle(1).translate([7, 7]),
+  CrossSection.circle(1).translate([3, 16]),
+]), 64);
+
+// Lay them out in a row so each is visible.
+return Manifold.union([
+  boolean.translate([-30, 0, 8]),
+  rounded.translate([-8, 0, 4]),
+  twisted.translate([14, 0, 0]),
+  vase.translate([34, 0, 0]),
+]);

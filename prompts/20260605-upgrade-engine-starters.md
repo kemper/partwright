@@ -57,3 +57,18 @@ Follow-up (CI): `session-modal.spec.ts` asserted the new-session editor containe
 Updated it to assert the fresh manifold-js default loaded (`toContain('CrossSection')`),
 which is the real intent (old code cleared, default seeded). The scad-companion
 shard-3 failure in the same run was flaky (passed on retry).
+
+Follow-up (feedback): the single-shape starters were "too lame." Reworked the
+manifold-js / scad / replicad starters into **capability samplers** — several
+shapes/operations laid out in a row in one tweakable model so people can
+experiment:
+- manifold-js: boolean cutout, hull-rounded box, twist-extrude column, revolve vase.
+- scad: difference, minkowski-rounded box, module+linear_extrude twist, rotate_extrude vase.
+- replicad: fully-rounded box, knob (filleted rim + chamfered base), cone fused
+  onto a cylinder, bracket with rounded corners + bored holes.
+- voxel: a fuller layered pine tree (loop-built tapering tiers in alternating
+  greens, snowy caps, ornaments, gold star).
+All four verified rendering via a throwaway probe (screenshots in session). The
+session-modal assertion still holds — the manifold sampler still uses CrossSection.
+Note: chamfering a box whose edges were all just filleted fails in OCCT, so the
+replicad block-1 box is fillet-only (chamfer is shown on the knob's base instead).

@@ -283,63 +283,108 @@ export interface ExampleEntry {
 // The manifold-js starter lives in examples/basic_shapes.js (it doubles as
 // the landing-page default — see `defaultCode`); the other three live here.
 
-// OpenSCAD: a parametric module fed into linear_extrude with twist + taper —
-// pure OpenSCAD, no BOSL2, so there's no library download and it renders
-// instantly. Showcases the programmatic/CSG style OpenSCAD is built for.
-const STARTER_SCAD = `// Twisted star column — pure OpenSCAD, no libraries, renders instantly.
-// A parametric module fed into linear_extrude with twist + taper: the kind
-// of programmatic modeling OpenSCAD is built for.
+// OpenSCAD: a capability sampler laid out in a row — boolean difference,
+// minkowski-rounded box, a parametric module + linear_extrude twist, and a
+// rotate_extrude vase. Pure OpenSCAD (no BOSL2), so there's no library
+// download and it renders instantly.
+const STARTER_SCAD = `// OpenSCAD capability sampler — primitives, booleans, transforms, extrudes,
+// and a module + loop. Pure OpenSCAD (no libraries) so it renders instantly.
+// Edit any block and re-run to experiment.
 $fn = 48;
 
-module star(outer = 14, inner = 6, points = 6) {
+// 1) Boolean difference: a cube with a sphere and a bore removed.
+translate([-32, 0, 0]) difference() {
+  cube([14, 14, 14], center = true);
+  sphere(9);
+  cylinder(h = 20, r = 3.5, center = true);
+}
+
+// 2) Rounded box via minkowski (cube + sphere).
+translate([-9, 0, 0]) minkowski() {
+  cube([9, 9, 5], center = true);
+  sphere(2.5, $fn = 16);
+}
+
+// 3) Twisted star column via a parametric module + linear_extrude.
+module star(outer = 8, inner = 3.5, points = 6) {
   polygon([for (i = [0 : 2 * points - 1])
     let (r = (i % 2 == 0) ? outer : inner, a = i * 180 / points)
     [r * cos(a), r * sin(a)]]);
 }
+translate([14, 0, -11]) linear_extrude(height = 22, twist = 160, scale = 0.5, slices = 48)
+  star();
 
-linear_extrude(height = 40, twist = 160, slices = 60, scale = 0.55, convexity = 8)
-  star();`;
+// 4) Surface of revolution: a little vase.
+translate([34, 0, -8]) rotate_extrude($fn = 64)
+  polygon([[2, 0], [7, 4], [4, 10], [6, 14], [2, 16]]);`;
 
-// BREP / replicad — quick showcase of the headline features:
-//   - selective fillet (the inDirection-based workaround for box edges,
-//     called out in the gotchas cheat sheet at the top of replicad.md)
-//   - true chamfer on the top rim
-//   - boolean subtract (cut) of two fastener bores
-// The result is a rounded mounting plate. It's small enough that the OCCT
-// solver runs in well under a second even on a cold WASM load, so the first
-// paint into the editor after switching languages still feels instant.
-const STARTER_REPLICAD = `// BREP / replicad — exact surfaces with true fillets, chamfers & STEP export.
+// BREP / replicad — a capability sampler laid out in a row: a fully-rounded
+// box, a knob with a filleted top rim + chamfered base, a cone fused onto a
+// cylinder, and a bracket with rounded corners + bored holes. Shows the BREP
+// headline (true selective fillets/chamfers + exact booleans + STEP). Small
+// enough that the OCCT solver runs in well under a second even cold.
+const STARTER_REPLICAD = `// BREP / replicad capability sampler — exact surfaces with true fillets,
+// chamfers, and booleans (and STEP export). Edit a block and re-run.
 const { BREP } = api;
 
-// A rounded mounting plate: 44 x 30 x 10 box with the four vertical corners
-// rounded and the top rim chamfered.
-const body = BREP.box([44, 30, 10])
-  // Round the four vertical corners. \`inDirection: [0,0,1]\` selects the
-  // Z-parallel edges — needed because inBox alone is unreliable on a
-  // BREP.box's coincident planar edges (see replicad.md "Gotchas").
-  .fillet(4, { inDirection: [0, 0, 1] })
-  // Bevel the top rim (the four edges of the top face). Same gotcha:
-  // pair the maxZ bound with parallelToPlane: 'XY'.
-  .chamfer(1, { maxZ: 9.999, parallelToPlane: 'XY' });
+// 1) A rounded box — fillet with no filter rounds every edge at once.
+const rounded = BREP.box([18, 18, 10]).fillet(2.5);
 
-// Two fastener holes, cut straight through with a boolean.
-const hole = BREP.cylinder(3, 14).translate([0, 0, -2]);
-return body.cut(hole.translate([-13, 0, 0])).cut(hole.translate([13, 0, 0]));`;
+// 2) A knob: cylinder with a filleted top rim and a chamfered base.
+const knob = BREP.cylinder(8, 14)
+  .fillet(2, { maxZ: 13.999, parallelToPlane: 'XY' })
+  .chamfer(0.8, { minZ: 0.001, parallelToPlane: 'XY' });
 
-// Voxel — a small colored model (a little tree) so the first paint after
-// switching shows the workflow (fillBox / set with hex colors) immediately.
-const STARTER_VOXEL = `// Voxel — build with colored cubes on an integer grid (1 voxel = 1 unit).
+// 3) A finial: a cone fused onto a cylinder (boolean union of two solids).
+const finial = BREP.cone(7, 4, 7)
+  .fuse(BREP.cylinder(4, 8).translate([0, 0, 7]));
+
+// 4) A bracket: a box with rounded vertical corners and two bored holes.
+const bracket = BREP.box([20, 14, 8])
+  .fillet(3, { inDirection: [0, 0, 1] })
+  .cut(BREP.cylinder(2, 12).translate([-6, 0, -2]))
+  .cut(BREP.cylinder(2, 12).translate([ 6, 0, -2]));
+
+// Lay them out in a row so each is visible.
+return rounded.translate([-30, 0, 0])
+  .fuse(knob.translate([-6, 0, 0]))
+  .fuse(finial.translate([16, 0, 0]))
+  .fuse(bracket.translate([38, 0, 0]));`;
+
+// Voxel — a layered pine tree: a loop builds tapering canopy tiers in
+// alternating greens, with snowy caps, ornaments, and a gold star, so the
+// first paint shows the fillBox / set workflow on a fuller model.
+const STARTER_VOXEL = `// Voxel pine tree — colored cubes on an integer grid (1 voxel = 1 unit).
+// A loop builds tapering canopy tiers; ornaments and a star finish it.
 const { voxels } = api;
 const v = voxels();
 
 // Trunk
-v.fillBox([-1, -1, 0], [0, 0, 2], '#8a5a2b');
-// Tapered canopy — three stacked layers
-v.fillBox([-4, -4, 3], [3, 3, 4], '#2e9e4f');
-v.fillBox([-3, -3, 5], [2, 2, 6], '#37b85c');
-v.fillBox([-2, -2, 7], [1, 1, 8], '#4fd673');
-// A star on top
-v.set(0, 0, 9, '#ffd23b');
+v.fillBox([-1, -1, 0], [0, 0, 3], '#7a4a22');
+
+// Canopy: stacked square tiers, each smaller than the one below, in
+// alternating green shades for depth.
+const greens = ['#2e7d32', '#388e3c', '#43a047', '#4caf50', '#66bb6a'];
+let z = 4;
+for (let i = 0; i < 6; i++) {
+  const half = 6 - i;
+  v.fillBox([-half, -half, z], [half - 1, half - 1, z + 1], greens[i % greens.length]);
+  z += 2;
+}
+
+// Snowy caps (a few light voxels on tier edges).
+v.set(-5, 2, 5, '#eaf6ff');
+v.set(3, -4, 7, '#eaf6ff');
+v.set(-2, 3, 9, '#eaf6ff');
+
+// Ornaments dotted around the tree.
+v.set(5, 0, 4, '#e53935');
+v.set(-4, -4, 6, '#fdd835');
+v.set(3, 3, 8, '#1e88e5');
+v.set(-2, 1, 10, '#e53935');
+
+// Gold star on top.
+v.set(0, 0, z, '#ffd23b');
 
 // Tip: return v.smooth() for rounded edges (see /ai/voxel.md).
 return v;`;
