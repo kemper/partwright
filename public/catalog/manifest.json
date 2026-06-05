@@ -540,83 +540,11 @@
       "description": "A retro CRT television with a lofted tapered housing, a curved-glass screen, a swept carry handle, round control knobs, and rabbit-ear antennas."
     },
     {
-      "id": "ball-in-cage",
-      "name": "Ball-in-Cage",
-      "file": "ball_in_cage.partwright.json",
-      "language": "manifold-js",
-      "description": "Ball-in-cage — a captive sphere rattling inside an open frame; the classic 'how'd they print that' fidget.",
-      "group": "fidget-toys"
-    },
-    {
-      "id": "fidget-cube",
-      "name": "Fidget Cube",
-      "file": "fidget_cube.partwright.json",
-      "language": "manifold-js",
-      "description": "Six-feature fidget cube — buttons, dial, switch, joystick, gear, and a worry dish; one for every restless mood.",
-      "group": "fidget-toys"
-    },
-    {
-      "id": "gyroid-squish-cube",
-      "name": "Gyroid Squish Cube",
-      "file": "gyroid_squish_cube.partwright.json",
-      "language": "manifold-js",
-      "description": "Gyroid squish cube — an open lattice cube that compresses with a satisfying springiness.",
-      "group": "fidget-toys"
-    },
-    {
-      "id": "lattice-squish-ball",
-      "name": "Lattice Squish Ball",
-      "file": "lattice_squish_ball.partwright.json",
-      "language": "manifold-js",
-      "description": "Lattice squish ball — a springy gyroid-mesh sphere that squashes and bounces back in your hand.",
-      "group": "fidget-toys"
-    },
-    {
       "id": "spiral-fidget-cone",
       "name": "Spiral Fidget Cone",
       "file": "spiral_fidget_cone.partwright.json",
       "language": "manifold-js",
-      "description": "Spiral fidget cone — deep helical ridges wind from base to tip; spin it, roll it, fidget.",
-      "group": "fidget-toys"
-    },
-    {
-      "id": "spiral-star-spinner",
-      "name": "Spiral Star Spinner",
-      "file": "spiral_star_spinner.partwright.json",
-      "language": "manifold-js",
-      "description": "Spiral star spinner — fanned star layers bloom around a center post; flick it and watch it spin.",
-      "group": "fidget-toys"
-    },
-    {
-      "id": "tri-fidget-spinner",
-      "name": "Tri-Bar Fidget Spinner",
-      "file": "tri_fidget_spinner.partwright.json",
-      "language": "manifold-js",
-      "description": "Tri-bar fidget spinner — a weighted three-arm spinner with a center cap; give it a flick.",
-      "group": "fidget-toys"
-    },
-    {
-      "id": "twisted-spinning-top",
-      "name": "Twisted Spinning Top",
-      "file": "twisted_spinning_top.partwright.json",
-      "language": "manifold-js",
-      "description": "Twisted spinning top — helical flutes wrap a tapered body; pinch the stem, flick, and watch it whirl.",
-      "group": "fidget-toys"
-    },
-    {
-      "id": "twisty-fidget-ball",
-      "name": "Twisty Fidget Ball",
-      "file": "twisty_fidget_ball.partwright.json",
-      "language": "manifold-js",
-      "description": "Twisty spiral fidget ball — a sphere carved into spiraling petal-slices you can't stop turning over.",
-      "group": "fidget-toys"
-    },
-    {
-      "id": "twisty-fidget-egg",
-      "name": "Twisty Fidget Egg",
-      "file": "twisty_fidget_egg.partwright.json",
-      "language": "manifold-js",
-      "description": "Twisty fidget egg — spiraling petal-slices wrap an egg you'll keep turning in your palm.",
+      "description": "Print-in-place spiral cone — twist the two interleaved helical ribbons and they screw apart. A captive two-part fidget printed in one piece.",
       "group": "fidget-toys"
     }
   ]
