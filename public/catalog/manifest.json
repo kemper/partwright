@@ -587,6 +587,20 @@
       "file": "retro_tv.partwright.json",
       "language": "manifold-js",
       "description": "A retro CRT television with a lofted tapered housing, a curved-glass screen, a swept carry handle, round control knobs, and rabbit-ear antennas."
+    },
+    {
+      "id": "steampunk-rocket",
+      "name": "Steampunk Rocket",
+      "file": "steampunk_rocket.partwright.json",
+      "language": "manifold-js",
+      "description": "Tall multi-stage rocket with an ogive nose cone and revolved fuselage."
+    },
+    {
+      "id": "snowman",
+      "name": "Snowman",
+      "file": "snowman.partwright.json",
+      "language": "manifold-js",
+      "description": "Three-sphere snowman with carrot nose, top hat, scarf, and branchy arms across five painted iterations."
     }
   ]
 }
