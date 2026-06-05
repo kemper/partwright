@@ -4,6 +4,9 @@
   "version": "0.0.0",
   "license": "LicenseRef-PolyForm-Noncommercial-1.0.0",
   "type": "module",
+  "bin": {
+    "partwright": "bin/partwright.mjs"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
@@ -17,7 +20,8 @@
     "lint:consistency": "ast-grep scan",
     "lint:deadcode": "knip",
     "lint:deps": "madge --circular --extensions ts,tsx src",
-    "model:preview": "node scripts/model-preview.mjs"
+    "model:preview": "node scripts/model-preview.mjs",
+    "cli": "node bin/partwright.mjs"
   },
   "devDependencies": {
     "@ast-grep/cli": "^0.43.0",
