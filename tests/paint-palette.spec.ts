@@ -137,4 +137,38 @@ test.describe('filament palette + slot painting', () => {
     expect(await dialog.locator('input[type="text"]').count()).toBeGreaterThan(6); // 6 defaults + imports
     await expect(dialog).toContainText('Recent colours');
   });
+
+  test('over-budget export shows a colour warning in the confirm modal', async ({ page }) => {
+    // Real .click() on the toolbar needs the first-run tour backdrop gone.
+    await page.addInitScript(() => {
+      try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ }
+    });
+    await openEditorWithSlab(page);
+
+    // Paint two distinct palette slots.
+    await page.locator('#paint-picker-panel button[title^="Slot 3:"]').dispatchEvent('click');
+    await bucketPaintCentre(page);
+    await page.locator('#paint-picker-panel button[title^="Slot 5:"]').dispatchEvent('click');
+    await bucketPaintCentre(page);
+
+    // Capacity → 1 via the manager (2 colours used now exceeds it).
+    await page.locator('#palette-manager-toggle').dispatchEvent('click');
+    const cap = page.locator('[role="dialog"] input[type="number"]');
+    await cap.fill('1');
+    await cap.dispatchEvent('change');
+    await page.locator('[role="dialog"] button:has-text("Done")').dispatchEvent('click');
+    await page.waitForSelector('[role="dialog"]', { state: 'detached' });
+    // Close the paint panel so it can't intercept the toolbar click.
+    await page.locator('#paint-toggle').dispatchEvent('click');
+
+    // Trigger 3MF export from the toolbar Export menu (the 3MF item is unique by
+    // its Bambu description).
+    await page.locator('#btn-export').click();
+    await page.getByText('Native format for Bambu Studio multi-color prints.').click();
+
+    const confirm = page.locator('[role="dialog"]:has-text("Export 3MF?")');
+    await expect(confirm).toBeVisible();
+    await expect(confirm).toContainText('More colours than slots');
+    await expect(confirm).toContainText('uses 2 filament colours');
+  });
 });
