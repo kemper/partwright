@@ -27,14 +27,21 @@ function readBody(req) {
   });
 }
 
-// Run window.partwright[method](...args) inside the page and return JSON.
+// Run window.partwright[method](...args) inside the page. Domain errors (a bad
+// model, a failed boolean) are caught IN the page and returned as structured
+// data — they're the useful payload a CLI agent needs, and returning them as a
+// value (not a thrown Node Error) keeps stack-trace data off the response.
 async function callMethod(page, method, args) {
   return page.evaluate(async ({ method, args }) => {
-    const pw = window.partwright;
-    if (!pw) throw new Error('window.partwright not ready');
-    const fn = pw[method];
-    if (typeof fn !== 'function') throw new Error(`window.partwright.${method} is not a function`);
-    return await fn.apply(pw, args || []);
+    try {
+      const pw = window.partwright;
+      if (!pw) throw new Error('window.partwright not ready');
+      const fn = pw[method];
+      if (typeof fn !== 'function') throw new Error(`window.partwright.${method} is not a function`);
+      return { ok: true, result: await fn.apply(pw, args || []) };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
   }, { method, args });
 }
 
@@ -43,8 +50,12 @@ async function callMethod(page, method, args) {
 // trip. Gated behind 127.0.0.1; never a remote surface.
 async function evalBody(page, body, arg) {
   return page.evaluate(async ({ body, arg }) => {
-    const fn = new Function('arg', 'pw', `return (async () => { ${body} })();`);
-    return await fn(arg, window.partwright);
+    try {
+      const fn = new Function('arg', 'pw', `return (async () => { ${body} })();`);
+      return { ok: true, result: await fn(arg, window.partwright) };
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) };
+    }
   }, { body, arg });
 }
 
@@ -89,17 +100,19 @@ export async function runDaemon({ appPort, controlPort }) {
       }
       if (req.method === 'POST' && req.url === '/rpc') {
         const { method, args } = await readBody(req);
-        const result = await callMethod(page, method, args);
-        return send(200, { ok: true, result });
+        return send(200, await callMethod(page, method, args)); // {ok, result|error}
       }
       if (req.method === 'POST' && req.url === '/eval') {
         const { body, arg } = await readBody(req);
-        const result = await evalBody(page, body, arg);
-        return send(200, { ok: true, result });
+        return send(200, await evalBody(page, body, arg)); // {ok, result|error}
       }
       send(404, { ok: false, error: 'not found' });
     } catch (e) {
-      send(200, { ok: false, error: e?.message || String(e) });
+      // Infrastructure failure (bad request body, page navigated mid-call, …).
+      // Log the detail to the daemon log; keep stack-trace data out of the
+      // HTTP response (CodeQL js/stack-trace-exposure).
+      console.error('[daemon] request error', e);
+      send(200, { ok: false, error: 'internal daemon error (see .partwright/daemon.log)' });
     }
   });
 
