@@ -1,16 +1,21 @@
-// Print tools overlay — a viewport-overlay button (🖨 Print) that opens an
-// informational panel: set the build volume + nozzle, then run a printability
-// check. Scaling and splitting are handled by their own dedicated tools.
-// Mirrors the simplifyUI structure: a single top-right popup that closes the
-// other overlay tools when it opens.
+// Print tools overlay — a viewport-overlay button (🖨 Print) mounted in the
+// Inspect popover. Opens an informational panel: set the build volume + nozzle,
+// then run a printability check on demand. The same check also runs
+// automatically on STL / OBJ / 3MF / GLB export and warns via a toast.
+// Scaling and splitting live in their own dedicated tools.
 //
-// All real work is delegated to handlers injected from main.ts (which own the
-// live geometry + version state); this module is pure DOM + presentation.
+// Follows the shared viewport-panel conventions: dragable header with a ×
+// close button (`attachViewportPanelDrag`), `setInitialPanelPosition` on
+// open, registered with `viewportPanelRegistry` so opening another panel
+// auto-closes this one, and Escape closes it (skipping when a `[role="dialog"]`
+// modal is on top).
 
 import type { PrinterSettings } from '../geometry/printerSettings';
 import { PRINTER_PRESETS } from '../geometry/printerSettings';
 import type { PrintabilityReport } from '../geometry/printability';
 import { viewportInspectMount } from './popoverMenu';
+import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
+import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
 
 export interface PrintToolsHandlers {
   /** Snapshot state + close sibling overlays when the user opens the panel. */
@@ -39,6 +44,15 @@ let nozzleInput: HTMLInputElement | null = null;
 let reportEl: HTMLElement | null = null;
 let statusEl: HTMLElement | null = null;
 
+const registryEntry = { close(): void { if (isPrintToolsOpen()) closePanel(); } };
+
+function onPrintEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  // Don't steal Escape from a modal layered on top.
+  if (document.querySelector('[role="dialog"]')) return;
+  closePanel();
+}
+
 export function initPrintToolsUI(controlsContainer: HTMLElement, h: PrintToolsHandlers): void {
   handlers = h;
 
@@ -49,12 +63,16 @@ export function initPrintToolsUI(controlsContainer: HTMLElement, h: PrintToolsHa
   printBtn.title = 'Build volume + printability check';
   printBtn.addEventListener('click', toggle);
 
-  // Mount into the Inspect popover alongside Measure / Cross-section — Print
-  // is read-only analysis, not a mutate tool (Resize / Split handle changes).
+  // Print is read-only analysis — lives in the Inspect popover alongside
+  // Measure and Cross-section.
   viewportInspectMount(controlsContainer).appendChild(printBtn);
 
   panel = buildPanel();
-  controlsContainer.appendChild(panel);
+  // Append to the overlay host (the layout container that positions the
+  // floating panels) so position math in setInitialPanelPosition lands in
+  // the same coordinate space the other panels use.
+  const overlayHost = controlsContainer.parentElement ?? controlsContainer;
+  overlayHost.appendChild(panel);
 }
 
 export function isPrintToolsOpen(): boolean {
@@ -73,8 +91,11 @@ function toggle(): void {
 
 function openPanel(): void {
   if (!handlers || !panel) return;
+  setInitialPanelPosition(panel);
+  openViewportPanel(registryEntry);
   handlers.open(true);
   panel.classList.remove('hidden');
+  document.addEventListener('keydown', onPrintEscape);
   if (printBtn) printBtn.className = BTN_ACTIVE;
   loadSettingsIntoForm();
   setStatus('');
@@ -83,6 +104,8 @@ function openPanel(): void {
 
 function closePanel(): void {
   panel?.classList.add('hidden');
+  document.removeEventListener('keydown', onPrintEscape);
+  closeViewportPanel(registryEntry);
   if (printBtn) printBtn.className = BTN_INACTIVE;
 }
 
@@ -161,21 +184,37 @@ function renderReport(report: PrintabilityReport | { error: string }): void {
 function buildPanel(): HTMLElement {
   const p = document.createElement('div');
   p.id = 'print-tools-panel';
-  p.className = 'hidden absolute top-10 right-2 z-20 bg-zinc-800/95 backdrop-blur border border-zinc-600/60 rounded-lg p-2.5 shadow-xl overflow-y-auto';
+  p.className = 'hidden absolute z-20 bg-zinc-800/95 backdrop-blur border border-zinc-600/60 rounded-lg shadow-xl';
   p.style.minWidth = '250px';
   p.style.maxWidth = '290px';
-  p.style.maxHeight = '80vh';
 
-  const title = document.createElement('div');
-  title.className = 'text-[10px] text-zinc-500 uppercase tracking-wider mb-2 font-medium';
-  title.textContent = 'Print tools';
-  p.appendChild(title);
+  // ── Header (drag handle) ───────────────────────────────────────────────
+  const header = document.createElement('div');
+  header.className = 'flex items-center justify-between px-2.5 py-2 border-b border-zinc-700/70 select-none cursor-grab';
+  const titleEl = document.createElement('div');
+  titleEl.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
+  titleEl.textContent = 'Print tools';
+  const closeBtn = document.createElement('button');
+  closeBtn.id = 'print-tools-close';
+  closeBtn.className = 'text-zinc-400 hover:text-zinc-200 transition-colors leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-zinc-700/60';
+  closeBtn.textContent = '×';
+  closeBtn.title = 'Close';
+  closeBtn.setAttribute('aria-label', 'Close print panel');
+  closeBtn.addEventListener('click', closePanel);
+  header.append(titleEl, closeBtn);
+  p.appendChild(header);
 
-  // ── Build volume ──────────────────────────────────────────────────────────
+  // ── Scrollable content area ────────────────────────────────────────────
+  const c = document.createElement('div');
+  c.className = 'p-2.5 overflow-y-auto';
+  c.style.maxHeight = '70vh';
+  p.appendChild(c);
+
+  // ── Build volume ──────────────────────────────────────────────────────
   const bvLabel = document.createElement('label');
   bvLabel.className = SECTION_LABEL;
   bvLabel.textContent = 'Build volume (mm)';
-  p.appendChild(bvLabel);
+  c.appendChild(bvLabel);
 
   presetSel = document.createElement('select');
   presetSel.className = `${NUM_INPUT} text-left mb-2`;
@@ -194,7 +233,7 @@ function buildPanel(): HTMLElement {
       commitSettings();
     }
   });
-  p.appendChild(presetSel);
+  c.appendChild(presetSel);
 
   const bedRow = document.createElement('div');
   bedRow.className = 'grid grid-cols-3 gap-1.5 mb-2';
@@ -206,7 +245,7 @@ function buildPanel(): HTMLElement {
     return i;
   };
   bedX = mkBed('X'); bedY = mkBed('Y'); bedZ = mkBed('Z');
-  p.appendChild(bedRow);
+  c.appendChild(bedRow);
 
   const nozRow = document.createElement('div');
   nozRow.className = 'flex items-center gap-2 mb-3';
@@ -218,9 +257,9 @@ function buildPanel(): HTMLElement {
   nozzleInput.className = `${NUM_INPUT} w-20`;
   nozzleInput.addEventListener('change', commitSettings);
   nozRow.appendChild(nozLabel); nozRow.appendChild(nozzleInput);
-  p.appendChild(nozRow);
+  c.appendChild(nozRow);
 
-  // ── Printability ──────────────────────────────────────────────────────────
+  // ── Printability ─────────────────────────────────────────────────────
   const checkBtn = document.createElement('button');
   checkBtn.id = 'print-check-btn';
   checkBtn.className = ACTION_BTN;
@@ -230,21 +269,26 @@ function buildPanel(): HTMLElement {
     const r = handlers.check();
     renderReport(r);
   });
-  p.appendChild(checkBtn);
+  c.appendChild(checkBtn);
 
   reportEl = document.createElement('div');
   reportEl.id = 'print-report';
   reportEl.className = 'mt-2 mb-1';
-  p.appendChild(reportEl);
+  c.appendChild(reportEl);
 
   const hint = document.createElement('div');
   hint.className = 'text-[10px] text-zinc-500 mt-2 leading-snug';
   hint.textContent = 'This check also runs automatically when you export STL / OBJ / 3MF / GLB.';
-  p.appendChild(hint);
+  c.appendChild(hint);
 
   statusEl = document.createElement('div');
   statusEl.className = 'text-[10px] text-zinc-400 mt-2 min-h-[14px]';
-  p.appendChild(statusEl);
+  c.appendChild(statusEl);
+
+  // Wire dragging via the header — singleton panel, so the resize listener
+  // attachViewportPanelDrag registers lives for the page lifetime (no
+  // `destroy()` needed).
+  attachViewportPanelDrag(header, p);
 
   return p;
 }

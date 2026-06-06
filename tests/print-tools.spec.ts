@@ -64,4 +64,25 @@ test.describe('Print tools', () => {
     // The report lists individual checks — the watertight one always renders.
     await expect(page.locator('#print-report')).toContainText(/Watertight|print-ready|Printable|blocker/i, { timeout: 10_000 });
   });
+
+  test('the Print panel follows the shared chrome — × close button and Escape close', async ({ page }) => {
+    await openEditor(page);
+    await page.locator('#print-tools-toggle').dispatchEvent('click');
+    await page.waitForSelector('#print-tools-panel:not(.hidden)');
+
+    // Header has a × close button with the standard aria-label.
+    const closeBtn = page.locator('#print-tools-close');
+    await expect(closeBtn).toBeVisible();
+    await expect(closeBtn).toHaveAttribute('aria-label', /close/i);
+
+    // Clicking × closes the panel.
+    await closeBtn.dispatchEvent('click');
+    await expect(page.locator('#print-tools-panel')).toHaveClass(/hidden/);
+
+    // Re-open and press Escape — also closes.
+    await page.locator('#print-tools-toggle').dispatchEvent('click');
+    await page.waitForSelector('#print-tools-panel:not(.hidden)');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#print-tools-panel')).toHaveClass(/hidden/);
+  });
 });
