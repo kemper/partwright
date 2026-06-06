@@ -109,7 +109,10 @@ export function buildPlacementCode(originalCode: string, delta: Vec3, label: str
 export function placementLabel(ops: PlacementOps): string {
   const parts: string[] = [];
   if (ops.dropToFloor) parts.push('drop to floor');
-  const axes = [ops.centerX ? 'X' : '', ops.centerY ? 'Y' : '', ops.centerZ ? 'Z' : ''].join('');
+  // dropToFloor owns the Z axis, so a co-requested centerZ is a no-op there —
+  // don't let the label claim a Z-center that computePlacementDelta ignored.
+  const centerZ = ops.centerZ && !ops.dropToFloor;
+  const axes = [ops.centerX ? 'X' : '', ops.centerY ? 'Y' : '', centerZ ? 'Z' : ''].join('');
   if (axes) parts.push(`center ${axes}`);
   return parts.join(' + ') || 'placed';
 }

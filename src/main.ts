@@ -6982,10 +6982,10 @@ async function main() {
     const gd = getGeometryDataObj() as { boundingBox?: { x?: number[]; y?: number[]; z?: number[] } | null } | null;
     const bb = gd?.boundingBox;
     if (!bb?.x || !bb?.y || !bb?.z || bb.x.length < 2 || bb.y.length < 2 || bb.z.length < 2) return null;
-    return {
-      min: [bb.x[0], bb.y[0], bb.z[0]],
-      max: [bb.x[1], bb.y[1], bb.z[1]],
-    };
+    const min: [number, number, number] = [bb.x[0], bb.y[0], bb.z[0]];
+    const max: [number, number, number] = [bb.x[1], bb.y[1], bb.z[1]];
+    if (![...min, ...max].every(Number.isFinite)) return null;
+    return { min, max };
   }
 
   /** Parametric placement (wrap the source in an IIFE + `.translate`) is only

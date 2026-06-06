@@ -74,6 +74,10 @@ export function openPlaceModal(api: PlaceApi): void {
   const hasColor = api.modelHasColor();
   let mode: 'parametric' | 'bake' = canParametric ? 'parametric' : 'bake';
   let preserveColor = true;
+  // Preserve-colors only applies to the bake path (parametric re-runs the code,
+  // which re-resolves colors). Hidden while the parametric radio is selected.
+  let colorRow: HTMLElement | null = null;
+  const syncColorRow = () => { if (colorRow) colorRow.style.display = mode === 'bake' ? '' : 'none'; };
 
   const container = getViewportContainer();
   const panel = el('div', 'absolute z-[60] bg-zinc-900 text-zinc-100 rounded-lg border border-zinc-700 shadow-xl w-[min(94vw,320px)] select-none flex flex-col');
@@ -114,7 +118,7 @@ export function openPlaceModal(api: PlaceApi): void {
       radio.name = 'place-writeback';
       radio.value = value;
       radio.checked = mode === value;
-      radio.addEventListener('change', () => { if (radio.checked) mode = value; });
+      radio.addEventListener('change', () => { if (radio.checked) { mode = value; syncColorRow(); } });
       const txt = el('span', '');
       txt.append(el('span', 'text-zinc-200', label));
       txt.append(el('span', 'block text-[10px] text-zinc-500', hint));
@@ -135,13 +139,14 @@ export function openPlaceModal(api: PlaceApi): void {
 
   // ---- Preserve colors (bake path only) ----
   if (hasColor) {
-    const colorRow = el('label', 'flex items-center gap-2 text-xs text-zinc-300 cursor-pointer');
+    colorRow = el('label', 'flex items-center gap-2 text-xs text-zinc-300 cursor-pointer');
     const colorCheck = el('input', 'accent-sky-500');
     colorCheck.type = 'checkbox';
     colorCheck.checked = preserveColor;
     colorCheck.addEventListener('change', () => { preserveColor = colorCheck.checked; });
     colorRow.append(colorCheck, el('span', '', 'Preserve colors (best-effort)'));
     body.append(colorRow);
+    syncColorRow();
   }
 
   // ---- Status / current placement ----

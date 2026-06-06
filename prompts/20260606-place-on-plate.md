@@ -67,3 +67,11 @@ Verified: `npm run build` (tsc clean), `npm run test:unit` (702 pass),
 `place-model` e2e (4 pass), lint:deps/deadcode clean. Manually exercised in the
 browser (screenshots posted): a floating cone → Drop & center → grounded on Z=0,
 centered, new parametric version saved.
+
+**Review follow-up (work-reviewer, no blockers — 3 nits folded in):** hide the
+"Preserve colors" checkbox while the parametric radio is selected (it only
+affects the bake path); drop a co-requested `centerZ` from `placementLabel` when
+`dropToFloor` already owns the Z axis (matches `computePlacementDelta`); add a
+non-finite guard to `placementBox()`. Left the `z-[60]` token as-is — it's
+inherited verbatim from the cloned resize panel, so changing only this file would
+diverge from its sibling.

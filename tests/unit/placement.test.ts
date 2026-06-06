@@ -118,6 +118,9 @@ describe('placementLabel', () => {
   it('describes combined ops', () => {
     expect(placementLabel({ dropToFloor: true, centerX: true, centerY: true })).toBe('drop to floor + center XY');
     expect(placementLabel({ centerZ: true })).toBe('center Z');
+    // dropToFloor owns Z, so a co-requested centerZ is dropped from the label
+    // (matching computePlacementDelta, which ignores it).
+    expect(placementLabel({ dropToFloor: true, centerZ: true })).toBe('drop to floor');
     expect(placementLabel({})).toBe('placed');
   });
 });
