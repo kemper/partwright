@@ -597,10 +597,10 @@
     },
     {
       "id": "spiral-fidget-cone",
-      "name": "Spiral Fidget Cone",
+      "name": "Spiral Twist Cone",
       "file": "spiral_fidget_cone.partwright.json",
       "language": "manifold-js",
-      "description": "Print-in-place spiral cone — twist the two interleaved helical ribbons and they screw apart. A captive two-part fidget printed in one piece.",
+      "description": "Print-in-place two-start spiral cone — twist the interleaved helical blades and they screw apart. A steep helix, hollow core, and pointed blade tips keep it from fusing on the print. Fully parametric: arms, height, turns, clearance, and central bore.",
       "group": "fidget-toys"
     },
     {
@@ -623,6 +623,30 @@
       "file": "ringed_planet.partwright.json",
       "language": "manifold-js",
       "description": "A banded gas giant encircled by a tilted, multi-band ring system. Latitude color bands are cut from the sphere with overlapping slabs; the concentric ring disk welds into the planet's equator so it prints as one self-colored piece. Parametric planet radius, ring span, band count, and axial tilt."
+    },
+    {
+      "id": "spiral-tornado-trio",
+      "name": "Triple Helix Tornado",
+      "file": "spiral_tornado_trio.partwright.json",
+      "language": "manifold-js",
+      "description": "Print-in-place three-start spiral cone — three interleaved helical blades twist apart. A steep helix and hollow core keep the blades from bonding on the print; each tapers to its own point. Parametric arms, height, turns, clearance, and bore.",
+      "group": "fidget-toys"
+    },
+    {
+      "id": "spiral-quad-spire",
+      "name": "Quad Spiral Spire",
+      "file": "spiral_quad_spire.partwright.json",
+      "language": "manifold-js",
+      "description": "Tall four-start print-in-place spiral cone — four interleaved blades screw apart, each sweeping to a sharp point. A steep helix and central bore keep the blades from fusing for a clean FDM print. Parametric arms, height, turns, clearance, and bore.",
+      "group": "fidget-toys"
+    },
+    {
+      "id": "spiral-pocket-top",
+      "name": "Pocket Twist Top",
+      "file": "spiral_pocket_top.partwright.json",
+      "language": "manifold-js",
+      "description": "Squat, chunky two-start spiral cone sized for a pocket and an easy first print — a very steep helix and a generous central bore make it the most fuse-proof of the set. Twist to screw the two halves apart. Fully parametric.",
+      "group": "fidget-toys"
     }
   ]
 }
