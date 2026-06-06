@@ -128,8 +128,9 @@ export function initCutUI(controlsContainer: HTMLElement, h: CutHandlers): void 
   cutBtn.addEventListener('click', toggle);
 
   // Insert before simplify button if present, otherwise at end.
+  // Use parentNode because simplifyBtn may be nested inside a toolbar group (not a direct child).
   const simplifyBtn = controlsContainer.querySelector('#simplify-toggle');
-  if (simplifyBtn) controlsContainer.insertBefore(cutBtn, simplifyBtn);
+  if (simplifyBtn?.parentNode) simplifyBtn.parentNode.insertBefore(cutBtn, simplifyBtn);
   else controlsContainer.appendChild(cutBtn);
 
   panel = buildPanel();
