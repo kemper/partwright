@@ -5415,7 +5415,7 @@ async function main() {
   // then surfaced top-level (just before the View group) as a strong "this model
   // is tweakable" signal — not buried inside the Tools popover.
   const customizeAnchor = clipControls.querySelector('#viewport-view-group');
-  if (customizeAnchor) clipControls.insertBefore(customizeBtn, customizeAnchor);
+  if (customizeAnchor?.parentNode) customizeAnchor.parentNode.insertBefore(customizeBtn, customizeAnchor);
   else clipControls.appendChild(customizeBtn);
 
   // Init measure tool
