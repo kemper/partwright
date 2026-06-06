@@ -108,12 +108,24 @@ function runCta(cta: HintCta): void {
 
 // ─── rotation ──────────────────────────────────────────────────────────────────
 
-/** Build the rotation order: unseen hints first (in dataset order), then seen. */
+/** Fisher–Yates shuffle (in place), returning the same array. */
+function shuffle<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/** Build the rotation order: unseen hints first, then seen — but each group is
+ *  shuffled, so the *first* hint shown is random (a fresh one you haven't seen
+ *  yet while any remain, then any once you've seen them all) rather than always
+ *  the same dataset-order hint. Rebuilt on every mount / session change. */
 function buildOrder(): Hint[] {
   const seen = readSeen();
-  const unseen = HINTS.filter(h => !seen.has(h.id));
-  const rest = HINTS.filter(h => seen.has(h.id));
-  return unseen.length ? [...unseen, ...rest] : [...HINTS];
+  const unseen = shuffle(HINTS.filter(h => !seen.has(h.id)));
+  const rest = shuffle(HINTS.filter(h => seen.has(h.id)));
+  return [...unseen, ...rest];
 }
 
 function showCurrent(): void {
