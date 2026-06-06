@@ -258,8 +258,8 @@ await partwright.modifyAndTest(patchFn, assertions?) // Modify current code + te
 partwright.query({sliceAt?, decompose?, boundingBox?}) // Multi-query current geometry in one call
 partwright.renderView({elevation?, azimuth?, ortho?, size?, edges?})  // Render ONE angle -> data URL. edges: 'none'|'crease'|'wireframe' (default 'crease' uncolored / 'none' painted)
 await partwright.renderViews({views?: 'auto'|'tri'|'all'|'box', angles?, size?, edges?})  // multi-angle labeled composite -> data URL; 'auto' (default) picks angles by aspect ratio; 'box' = all 6 faces (the all-faces final check); pass `angles` for a custom set; `edges` sets the overlay on every tile; prefer for verification
-await partwright.setThumbnailCamera({azimuth, elevation} | null)  // Pin the session's thumbnail/catalog-tile camera angle (degrees) instead of the default iso 3/4 view; persists on the session; pass null to clear. -> {thumbCamera} or {error}
-partwright.getThumbnailCamera()         // -> {azimuth, elevation} or null (unpinned)
+await partwright.setThumbnailCamera({azimuth, elevation} | 'current' | null)  // Pin the session's thumbnail/catalog-tile camera angle (degrees) instead of the default iso 3/4 view (default az 135°, el 35°). 'current' pins the angle you're looking at in the viewport (orbit, then pin — no guessing numbers); null clears. Persists on the session. -> {thumbCamera} or {error}
+partwright.getThumbnailCamera()         // -> {azimuth, elevation} or null (unpinned ⇒ default iso)
 partwright.sliceAtZVisual(z)            // Cross-section SVG at height z -> {svg, area, contours}
 partwright.renderSection({axis?, offset?, size?})  // Slice on any axis -> {dataUrl, svg, axis, offset, area, contours}. axis: 'x'|'y'|'z' (default 'z'). offset defaults to bbox midpoint along axis. Engine-agnostic (works for SCAD too).
 partwright.componentBounds()             // -> [{index, volume, triangleCount, bbox: {min,max,size,center}}], largest first. Use to find leaked / satellite pieces after a boolean.
