@@ -1,7 +1,8 @@
 import { getMobilePane, onMobilePaneChange, setMobilePane } from './mobilePane';
-import { showQualitySettingsModal } from './qualitySettingsModal';
+import { showAdvancedSettingsModal } from './advancedSettingsModal';
 import { showAboutModal } from './aboutModal';
 import { loadSettings, saveSettings } from '../ai/settings';
+import { createPopoverGroup } from './popoverMenu';
 
 export type TabName = 'interactive' | 'gallery' | 'versions' | 'images' | 'diff' | 'notes' | 'data';
 
@@ -9,6 +10,9 @@ export interface LayoutElements {
   editorPane: HTMLElement;
   partsRail: HTMLElement;
   editorContainer: HTMLElement;
+  /** Tab strip for companion SCAD files. Sits between the editor header and the
+   *  CodeMirror container. Managed by main.ts; initially hidden. */
+  companionFilesBar: HTMLElement;
   editorErrorPanel: HTMLElement;
   viewportPane: HTMLElement;
   galleryContainer: HTMLElement;
@@ -18,7 +22,9 @@ export interface LayoutElements {
   notesContainer: HTMLElement;
   dataContainer: HTMLElement;
   statusBar: HTMLElement;
+  cancelInlineBtn: HTMLButtonElement;
   clipControls: HTMLElement;
+  findReplaceBtn: HTMLButtonElement;
   formatBtn: HTMLButtonElement;
   autoFormatToggle: HTMLButtonElement;
   switchTab: (tab: TabName, options?: SwitchTabOptions) => void;
@@ -43,6 +49,8 @@ export interface CreateLayoutOptions {
   onToggleDiagnostics?: () => void;
   /** Open the session switcher list (rail header action). */
   onOpenSessionList?: () => void;
+  /** Launch the first-visit guided tour (rail utility item). */
+  onStartTour?: () => void;
 }
 
 export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOptions = {}): LayoutElements {
@@ -84,6 +92,13 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   editorHeaderSpacer.className = 'flex-1';
   editorHeader.appendChild(editorHeaderSpacer);
 
+  const findReplaceBtn = document.createElement('button');
+  findReplaceBtn.id = 'find-replace-btn';
+  findReplaceBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
+  findReplaceBtn.textContent = 'Find/Replace';
+  findReplaceBtn.title = 'Find/Replace (Ctrl+H)';
+  editorHeader.appendChild(findReplaceBtn);
+
   const formatBtn = document.createElement('button');
   formatBtn.id = 'format-btn';
   formatBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
@@ -97,14 +112,27 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   autoFormatToggle.title = 'Toggle automatic formatting when code is loaded';
   editorHeader.appendChild(autoFormatToggle);
 
+  // Status row: an absolutely-positioned flex strip that holds the status text
+  // and an inline cancel button. Lives on rightPane so it stays visible even
+  // when the code pane is collapsed. setStatus() targets the inner span so its
+  // textContent assignment doesn't clobber the sibling cancel button.
+  const statusRow = document.createElement('div');
+  statusRow.className = 'absolute top-2 left-2 z-20 flex items-center gap-1.5';
+
   const statusBar = document.createElement('span');
   statusBar.id = 'status-indicator';
-  // Lives on rightPane (appended below) as an always-visible overlay so engine
-  // status stays on screen even when the code pane is collapsed — otherwise
-  // tests and users lose the Ready/Loading signal whenever the AI drawer hides
-  // the editor header.
-  statusBar.className = 'absolute top-2 left-2 z-20 text-xs text-emerald-400 font-mono bg-zinc-900/70 px-2 py-0.5 rounded border border-zinc-700 pointer-events-none';
+  statusBar.className = 'text-xs text-emerald-400 font-mono bg-zinc-900/70 px-2 py-0.5 rounded border border-zinc-700 pointer-events-none';
   statusBar.textContent = 'Ready';
+
+  const cancelInlineBtn = document.createElement('button');
+  cancelInlineBtn.id = 'btn-cancel-inline';
+  cancelInlineBtn.type = 'button';
+  cancelInlineBtn.className = 'hidden px-2 py-0.5 rounded text-xs font-mono text-red-400 bg-zinc-900/70 border border-zinc-700 hover:bg-zinc-800 transition-colors';
+  cancelInlineBtn.textContent = '× Cancel';
+  cancelInlineBtn.title = 'Cancel the current render';
+
+  statusRow.appendChild(statusBar);
+  statusRow.appendChild(cancelInlineBtn);
 
   const collapseEditorBtn = document.createElement('button');
   collapseEditorBtn.className = 'shrink-0 px-2 py-0.5 rounded text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700 text-xs leading-none border border-transparent hover:border-zinc-600';
@@ -114,18 +142,34 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
 
   editorPane.appendChild(editorHeader);
 
-  // Overlay (absolutely positioned) so showing/hiding it never reflows the code
-  // or moves the caret. Anchored to the bottom of the editor pane; long errors
-  // scroll within it.
-  const editorErrorPanel = document.createElement('div');
-  editorErrorPanel.id = 'editor-error-panel';
-  editorErrorPanel.className = 'hidden absolute bottom-0 left-0 right-0 z-10 max-h-[45%] overflow-auto border-t border-red-500/40 bg-red-950/90 backdrop-blur-sm px-3 py-2 text-xs text-red-100 shadow-lg';
-  editorPane.appendChild(editorErrorPanel);
+  // Companion-files tab strip — shown when the active SCAD session has companion
+  // files. main.ts populates it; hidden until there are companions or when in
+  // SCAD mode (to show the + button for adding new companions).
+  const companionFilesBar = document.createElement('div');
+  companionFilesBar.id = 'companion-files-bar';
+  companionFilesBar.className = 'hidden';
+  editorPane.appendChild(companionFilesBar);
+
+  // Companion-file editor panel — shown when a companion tab is selected.
+  // Sits in the same stacking context as the main editor container; main.ts
+  // shows/hides whichever is active.
+  const companionEditorPanel = document.createElement('div');
+  companionEditorPanel.id = 'companion-editor-panel';
+  companionEditorPanel.className = 'hidden flex-1 min-h-0 flex flex-col bg-zinc-900';
+  editorPane.appendChild(companionEditorPanel);
+
 
   const editorContainer = document.createElement('div');
   editorContainer.id = 'editor-container';
   editorContainer.className = 'flex-1 min-h-0 overflow-hidden';
   editorPane.appendChild(editorContainer);
+
+  // Sits below the editor so it pushes the code up rather than overlaying it.
+  // Long errors scroll within the panel; max-h caps how much space it can take.
+  const editorErrorPanel = document.createElement('div');
+  editorErrorPanel.id = 'editor-error-panel';
+  editorErrorPanel.className = 'hidden shrink-0 max-h-[45%] overflow-auto border-t border-red-500/40 bg-red-950/90 px-3 py-2 text-xs text-red-100';
+  editorPane.appendChild(editorErrorPanel);
 
   // === Splitter ===
   // Outer is a wide transparent grab strip (touch-friendly); inner stripe is the
@@ -166,7 +210,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // === Right (or bottom on mobile): viewport + tab panes ===
   const rightPane = document.createElement('div');
   rightPane.className = 'flex-1 flex flex-col min-w-0 min-h-0 relative';
-  rightPane.appendChild(statusBar);
+  rightPane.appendChild(statusRow);
 
   const tabInteractive = createRailItem('Interactive', '3D View', '\ud83e\uddca', true);
   tabInteractive.title = 'Live 3D viewport \u2014 orbit, zoom, and inspect';
@@ -193,11 +237,11 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   rail.appendChild(tabData);
 
   // === Bottom utility group ===
-  // Catalog, Settings (quality), Diagnostics, and Help move out of the top
-  // toolbar so it can slim down. `md:mt-auto` on the first item pushes the whole
-  // cluster to the bottom of the desktop rail. Element ids are preserved
-  // (btn-catalog, btn-quality, btn-diagnostics, btn-help, btn-ai) so the tour
-  // and existing tests keep finding them.
+  // Catalog, Settings (quality), Diagnostics, Help, Guided tour, and About move
+  // out of the top toolbar so it can slim down. `md:mt-auto` on the first item
+  // pushes the whole cluster to the bottom of the desktop rail. Element ids are
+  // preserved (btn-catalog, btn-quality, btn-diagnostics, btn-help, btn-tour,
+  // btn-about, btn-ai) so the tour and existing tests keep finding them.
   const railActionClass = 'flex items-center gap-2 shrink-0 whitespace-nowrap px-3 py-2.5 md:py-2 text-sm md:text-[13px] font-medium text-zinc-400 border-b-2 md:border-b-0 border-transparent [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-800/60 transition-colors';
   const makeAction = (id: string, icon: string, label: string, onClick: () => void): HTMLButtonElement => {
     const b = document.createElement('button');
@@ -213,9 +257,9 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   // Separator + push-to-bottom anchor for the whole utility cluster.
   catalogNavBtn.classList.add('md:mt-auto', 'md:border-t', 'md:border-zinc-800');
 
-  const qualityNavBtn = makeAction('btn-quality', '⚙', 'Settings', () => { showQualitySettingsModal(); });
-  qualityNavBtn.title = 'Modeling quality (default curve resolution)';
-  qualityNavBtn.setAttribute('aria-label', 'Modeling quality settings');
+  const qualityNavBtn = makeAction('btn-quality', '⚙', 'Settings', () => { showAdvancedSettingsModal(); });
+  qualityNavBtn.title = 'Settings';
+  qualityNavBtn.setAttribute('aria-label', 'Settings');
 
   const diagNavBtn = makeAction('btn-diagnostics', '⚠', 'Diagnostics', () => opts.onToggleDiagnostics?.());
   diagNavBtn.classList.add('relative');
@@ -232,6 +276,14 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     if (showHelp) showHelp();
   });
   helpNavBtn.title = 'Help';
+
+  // Guided tour — explicit entry point to (re)play the spotlight walkthrough.
+  // Sits between Help and About so it reads as part of the "learn the app"
+  // cluster. The first-visit tour fires automatically; this lets users start
+  // it again on demand.
+  const tourNavBtn = makeAction('btn-tour', '🧭', 'Guided tour', () => opts.onStartTour?.());
+  tourNavBtn.title = 'Take the guided tour of the editor';
+  tourNavBtn.setAttribute('aria-label', 'Take the guided tour');
 
   // About — build/version info (commit, branch, links) for verifying which
   // Cloudflare branch/PR deploy you're testing.
@@ -260,6 +312,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   rail.appendChild(qualityNavBtn);
   rail.appendChild(diagNavBtn);
   rail.appendChild(helpNavBtn);
+  rail.appendChild(tourNavBtn);
   rail.appendChild(aboutNavBtn);
   rail.appendChild(aiNavBtn);
 
@@ -350,8 +403,10 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
   mobilePaneToggle.appendChild(mobileEditorBtn);
   mobilePaneToggle.appendChild(mobileViewportBtn);
 
-  const MOBILE_TOGGLE_ACTIVE = 'flex-1 px-4 py-2 text-sm font-medium text-zinc-100 border-b-2 border-blue-500 bg-zinc-900';
-  const MOBILE_TOGGLE_INACTIVE = 'flex-1 px-4 py-2 text-sm font-medium text-zinc-500 border-b-2 border-transparent';
+  // py-3 (not py-2) keeps these mobile-only toggles ≥44px tall — the minimum
+  // fingertip target. The toggle strip is `md:hidden`, so desktop never sees it.
+  const MOBILE_TOGGLE_ACTIVE = 'flex-1 px-4 py-3 text-sm font-medium text-zinc-100 border-b-2 border-blue-500 bg-zinc-900';
+  const MOBILE_TOGGLE_INACTIVE = 'flex-1 px-4 py-3 text-sm font-medium text-zinc-500 border-b-2 border-transparent';
   function syncMobileToggleUI(pane: 'editor' | 'viewport') {
     mobileEditorBtn.className = pane === 'editor' ? MOBILE_TOGGLE_ACTIVE : MOBILE_TOGGLE_INACTIVE;
     mobileViewportBtn.className = pane === 'viewport' ? MOBILE_TOGGLE_ACTIVE : MOBILE_TOGGLE_INACTIVE;
@@ -629,7 +684,7 @@ export function createLayout(appContainer: HTMLElement, opts: CreateLayoutOption
     window.dispatchEvent(new Event('resize'));
   });
 
-  return { editorPane, partsRail, editorContainer, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, clipControls, formatBtn, autoFormatToggle, switchTab, togglePartsRail, collapseEditor, expandEditor };
+  return { editorPane, partsRail, editorContainer, companionFilesBar, editorErrorPanel, viewportPane, galleryContainer, versionsContainer, imagesContainer, diffContainer, notesContainer, dataContainer, statusBar, cancelInlineBtn, clipControls, findReplaceBtn, formatBtn, autoFormatToggle, switchTab, togglePartsRail, collapseEditor, expandEditor };
 }
 
 // Rail item base — a bottom accent border on mobile (horizontal strip) becomes
@@ -649,13 +704,33 @@ function createRailItem(canonical: string, display: string, icon: string, active
   return btn;
 }
 
+// Shared pill styling for the toggle buttons that now live inside the View /
+// Inspect popovers. Kept identical to the old inline strings so the toggle-init
+// code (which only ever swaps these classes by id) is unaffected by the move.
+const VIEWPORT_PILL = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50 text-left';
+
+function makeViewportPill(id: string, text: string, title: string, className = VIEWPORT_PILL): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.id = id;
+  btn.className = className;
+  btn.textContent = text;
+  btn.title = title;
+  return btn;
+}
+
+// The viewport overlay bar. Historically a flat row of ~16 buttons that grew with
+// every feature; now collapsed into a couple of always-visible primaries plus
+// three labelled popover groups so the strip stays short while everything is one
+// click (and one ⌘K search) away. Button ids are unchanged — the toggle-wiring
+// in main.ts finds them by id regardless of which popover they now live in, and
+// the injected tool buttons mount into the Tools popover via `viewportToolsMount`.
 function createClipControls(): HTMLElement {
   const container = document.createElement('div');
   container.id = 'clip-controls';
   container.className = 'absolute top-2 right-2 z-10 flex flex-wrap justify-end items-center gap-2 max-w-[calc(100%-1rem)]';
 
-  // Live triangle count of the displayed model — sits at the left of the bar.
-  // Non-interactive readout, updated on every mesh change (run/paint/simplify).
+  // Live triangle count of the displayed model — always-visible readout, updated
+  // on every mesh change (run/paint/simplify).
   const triCount = document.createElement('div');
   triCount.id = 'triangle-count';
   triCount.className = 'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 border border-zinc-600/50 tabular-nums select-none';
@@ -663,59 +738,35 @@ function createClipControls(): HTMLElement {
   triCount.textContent = '— tris';
   container.appendChild(triCount);
 
-  // Mesh edge (wireframe) toggle (off by default) — sits left of the grid toggle
-  const wireBtn = document.createElement('button');
-  wireBtn.id = 'wireframe-toggle';
-  wireBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  wireBtn.textContent = '△ Edges';
-  wireBtn.title = 'Show mesh edges';
-  container.appendChild(wireBtn);
+  // Reset view — kept as an always-visible primary (frequent, one-shot action).
+  const resetBtn = makeViewportPill('reset-view', '↻ Reset View', 'Reset camera to the default view');
+  container.appendChild(resetBtn);
 
-  // Grid toggle (off by default)
-  const gridBtn = document.createElement('button');
-  gridBtn.id = 'grid-toggle';
-  gridBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  gridBtn.textContent = '\u25A6 Grid';
-  gridBtn.title = 'Show grid plane';
-  container.appendChild(gridBtn);
+  // View popover — display preferences set once and forgotten. closeOnSelect is
+  // left off so users can flip several toggles without the menu dismissing.
+  const viewGroup = createPopoverGroup({ id: 'viewport-view', label: 'View', title: 'Display options: edges, grid, dimensions, camera lock' });
+  viewGroup.menu.appendChild(makeViewportPill('wireframe-toggle', '△ Edges', 'Show mesh edges'));
+  viewGroup.menu.appendChild(makeViewportPill('grid-toggle', '▦ Grid', 'Show grid plane'));
+  // Dimensions defaults on — give it the active blue styling to match its state.
+  viewGroup.menu.appendChild(makeViewportPill(
+    'dimensions-toggle', '⬚ Dims', 'Toggle bounding box dimensions',
+    'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-blue-500/20 backdrop-blur text-blue-400 [@media(hover:hover)]:hover:bg-blue-500/30 transition-colors border border-blue-500/30 text-left',
+  ));
+  viewGroup.menu.appendChild(makeViewportPill('orbit-lock-toggle', '\uD83D\uDD13 Lock', 'Lock camera rotation'));
+  container.appendChild(viewGroup.wrapper);
 
-  // Dimensions toggle (on by default)
-  const dimBtn = document.createElement('button');
-  dimBtn.id = 'dimensions-toggle';
-  dimBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-blue-500/20 backdrop-blur text-blue-400 [@media(hover:hover)]:hover:bg-blue-500/30 transition-colors border border-blue-500/30';
-  dimBtn.textContent = '\u2B1A Dims';
-  dimBtn.title = 'Toggle bounding box dimensions';
-  container.appendChild(dimBtn);
+  // Inspect popover — read-only analysis tools that never mutate the model.
+  const inspectGroup = createPopoverGroup({ id: 'viewport-inspect', label: 'Inspect', title: 'Measure distances and cross-section the model', closeOnSelect: true });
+  inspectGroup.menu.appendChild(makeViewportPill('measure-toggle', '\uD83D\uDCCF Measure', 'Measure distance between two points on your model'));
+  inspectGroup.menu.appendChild(makeViewportPill('clip-toggle', '✂ Cross Section', 'Toggle cross-section clipping plane'));
+  container.appendChild(inspectGroup.wrapper);
 
-  // Orbit lock toggle
-  const lockBtn = document.createElement('button');
-  lockBtn.id = 'orbit-lock-toggle';
-  lockBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  lockBtn.textContent = '\uD83D\uDD13 Lock';
-  lockBtn.title = 'Lock camera rotation';
-  container.appendChild(lockBtn);
-
-  // Visual separator between the view toggles (above) and the tools that follow
-  // (Measure, Cross Section, plus the injected Paint/Annotate/Simplify buttons).
-  const divider = document.createElement('div');
-  divider.className = 'hidden md:block w-px self-stretch bg-zinc-600/50 mx-0.5';
-  container.appendChild(divider);
-
-  // Measure toggle button
-  const measureBtn = document.createElement('button');
-  measureBtn.id = 'measure-toggle';
-  measureBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  measureBtn.textContent = '\uD83D\uDCCF Measure';
-  measureBtn.title = 'Measure distance between two points on your model';
-  container.appendChild(measureBtn);
-
-  // Clip toggle button
-  const toggleBtn = document.createElement('button');
-  toggleBtn.id = 'clip-toggle';
-  toggleBtn.className = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-  toggleBtn.textContent = '\u2702 Cross Section';
-  toggleBtn.title = 'Toggle cross-section clipping plane';
-  container.appendChild(toggleBtn);
+  // Tools popover — the mutate/decorate tools (Paint, Annotate, Surface, Resize,
+  // Quality, ...). Starts empty; each tool module appends its button here at init
+  // via `viewportToolsMount`. closeOnSelect on so picking a tool reveals its
+  // floating panel. Stable id `viewport-tools-menu` is the injection contract.
+  const toolsGroup = createPopoverGroup({ id: 'viewport-tools', label: 'Tools', title: 'Editing tools: paint, annotate, surface modifiers, resize, quality', closeOnSelect: true });
+  container.appendChild(toolsGroup.wrapper);
 
   return container;
 }

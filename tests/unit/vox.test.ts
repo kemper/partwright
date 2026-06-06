@@ -134,4 +134,28 @@ describe('parseVox', () => {
     // Lop off the last 4 bytes (mid-XYZI content). The walker must notice.
     expect(() => parseVox(bytes.subarray(0, bytes.length - 4))).toThrow(/past EOF|Truncated/);
   });
+
+  it('default palette is the full, correct 256-entry MagicaVoxel table', () => {
+    // Regression: the literal was previously truncated/misaligned, so only the
+    // low indices were right and high indices collapsed to black. Probe known
+    // canonical values across the whole range — not just index 1, which is
+    // white either way and so masked the bug.
+    const pal = _defaultPaletteForTests;
+    expect(pal).toHaveLength(256);
+    // A too-short literal yields NaN (parseInt of '') → coerced to 0; assert
+    // every entry is a valid 0xRRGGBB integer.
+    expect(pal.every((v) => Number.isInteger(v) && v >= 0 && v <= 0xffffff)).toBe(true);
+    // Spot-check canonical entries (0xRRGGBB) from the format spec across the
+    // early gradient, the deep range, and the grayscale tail.
+    expect(pal[0]).toBe(0x000000); // reserved
+    expect(pal[1]).toBe(0xffffff);
+    expect(pal[2]).toBe(0xccffff);
+    expect(pal[3]).toBe(0x99ffff); // first index the old corrupt table got wrong
+    expect(pal[36]).toBe(0x0000ff);
+    expect(pal[200]).toBe(0xcc6600); // deep in the range the old table dropped
+    expect(pal[246]).toBe(0xeeeeee); // grayscale ramp
+    expect(pal[255]).toBe(0x111111); // last entry
+    // The tail must not be all-black — the old truncation made ~70 entries 0.
+    expect(pal.slice(186).some((v) => v !== 0x000000)).toBe(true);
+  });
 });

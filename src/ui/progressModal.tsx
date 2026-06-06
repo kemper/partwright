@@ -14,15 +14,20 @@
 
 import { render } from 'preact';
 import { signal, type Signal } from '@preact/signals';
+import { getConfig } from '../config/appConfig';
 
-const DEFAULT_SHOW_DELAY_MS = 250;
-let showDelayMs = DEFAULT_SHOW_DELAY_MS;
+// null = use getConfig(); set to non-null by __setProgressModalDelayForTests
+let showDelayMsOverride: number | null = null;
+
+function getShowDelay(): number {
+  return showDelayMsOverride ?? getConfig().ui.progressModalShowDelayMs;
+}
 
 /** Tests override the show delay to 0 so the Cancel button is hittable
  *  without racing the worker. Returns the previous value. */
 export function __setProgressModalDelayForTests(ms: number): number {
-  const prev = showDelayMs;
-  showDelayMs = Math.max(0, ms | 0);
+  const prev = getShowDelay();
+  showDelayMsOverride = Math.max(0, ms | 0);
   return prev;
 }
 
@@ -158,13 +163,13 @@ export function startProgress(opts: {
     showTimer = null;
   }
 
-  if (showDelayMs <= 0) {
+  if (getShowDelay() <= 0) {
     showModalNow();
   } else {
     showTimer = window.setTimeout(() => {
       showTimer = null;
       if (currentJob && currentJob.id === id) showModalNow();
-    }, showDelayMs);
+    }, getShowDelay());
   }
 
   return id;
@@ -189,14 +194,4 @@ export function endProgress(id: number): void {
 
 /** True when a progress job is in flight (badge may not be visible yet —
  *  it waits out the show delay). */
-export function isProgressActive(): boolean {
-  return currentJob !== null;
-}
 
-/** Read the active job's title + current fraction. Used by panels (simplify)
- *  that want to mirror the modal's state into their own status line on
- *  reopen — purely a query, no side-effects. */
-export function getCurrentProgress(): { title: string; fraction: number; message: string } | null {
-  if (!currentJob) return null;
-  return { title: currentJob.title, fraction: currentJob.fraction, message: currentJob.message };
-}

@@ -32,13 +32,16 @@ import {
   setUserOrbitLock,
   isUserOrbitLocked,
 } from '../renderer/viewport';
-import { forceDeactivate as forceDeactivatePaint } from '../color/paintUI';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
-import { forceDeactivate as forceDeactivatePen } from './annotateMode';
-import { forceDeactivate as forceDeactivateText } from './textMode';
+import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
+import { getSelectedId, setSelectedId, onSelectionChange } from './selectionState';
+
+// Selection state lives in a leaf module so the overlay renderer can observe it
+// without importing this module. Re-exported here so existing consumers
+// (main.ts, annotateUI) keep their import path.
+export { getSelectedId, onSelectionChange };
 
 let active = false;
-let selectedId: string | null = null;
 let priorOrbitLock = false;
 
 // Drag state
@@ -54,14 +57,9 @@ const raycaster = new THREE.Raycaster();
 raycaster.params.Line = { threshold: 0.2 };
 
 const listeners: Array<(active: boolean) => void> = [];
-const selectionListeners: Array<(id: string | null) => void> = [];
 
 export function isActive(): boolean {
   return active;
-}
-
-export function getSelectedId(): string | null {
-  return selectedId;
 }
 
 export function onActiveChange(fn: (active: boolean) => void): () => void {
@@ -72,28 +70,16 @@ export function onActiveChange(fn: (active: boolean) => void): () => void {
   };
 }
 
-export function onSelectionChange(fn: (id: string | null) => void): () => void {
-  selectionListeners.push(fn);
-  return () => {
-    const i = selectionListeners.indexOf(fn);
-    if (i >= 0) selectionListeners.splice(i, 1);
-  };
-}
-
 function notifyActiveChange(): void {
   for (const fn of listeners) fn(active);
 }
 
-function notifySelectionChange(): void {
-  for (const fn of selectionListeners) fn(selectedId);
-}
-
 export function activate(): void {
   if (active) return;
-  forceDeactivatePaint();
+  deactivateMode('paint');
   closeSimplifyMenu();
-  forceDeactivatePen({ keepSession: false });
-  forceDeactivateText({ keepSession: false });
+  deactivateMode('pen', { keepSession: false });
+  deactivateMode('text', { keepSession: false });
   // Select doesn't have a session plane — each annotation has its own.
   hidePlaneOutline();
   endSession();
@@ -120,8 +106,7 @@ export function deactivate(): void {
   active = false;
   dragging = false;
   dragLiveObject = null;
-  selectedId = null;
-  notifySelectionChange();
+  setSelectedId(null);
   if (!priorOrbitLock) setUserOrbitLock(false);
 
   const canvas = getRenderer().domElement;
@@ -139,6 +124,9 @@ export function forceDeactivate(): void {
   if (active) deactivate();
 }
 
+// Let sibling tools deactivate select mode without importing this module.
+registerExclusiveMode('select', forceDeactivate);
+
 /** Restore the viewport camera to the angle from which the given annotation
  *  was originally drawn. Returns true if the annotation exists. */
 export function restoreView(id: string): boolean {
@@ -149,9 +137,7 @@ export function restoreView(id: string): boolean {
 }
 
 function setSelection(id: string | null): void {
-  if (selectedId === id) return;
-  selectedId = id;
-  notifySelectionChange();
+  setSelectedId(id);
 }
 
 function pickAnnotationAt(event: PointerEvent): Annotation | null {
@@ -222,6 +208,7 @@ function onPointerDown(event: PointerEvent): void {
 }
 
 function onPointerMove(event: PointerEvent): void {
+  const selectedId = getSelectedId();
   if (!dragging || !selectedId || !dragInitialIntersection) return;
   const ann = getAnnotationById(selectedId);
   if (!ann) return;
@@ -254,6 +241,7 @@ function onPointerUp(event: PointerEvent): void {
   dragging = false;
   // Commit final position to the store. This triggers a rebuild — same
   // visual result as the live mutation, but now persisted.
+  const selectedId = getSelectedId();
   if (selectedId && dragInitialIntersection) {
     const ann = getAnnotationById(selectedId);
     if (ann) {
@@ -277,6 +265,7 @@ function onPointerUp(event: PointerEvent): void {
 }
 
 function onKeyDown(e: KeyboardEvent): void {
+  const selectedId = getSelectedId();
   if (!active || !selectedId) return;
   // Ignore if user is typing in an input field elsewhere
   const target = e.target as HTMLElement | null;

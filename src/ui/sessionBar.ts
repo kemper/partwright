@@ -15,6 +15,7 @@ import {
 import { onChange as onColorRegionsChange } from '../color/regions';
 import { onChange as onAnnotationStrokesChange } from '../annotations/annotations';
 import { showToast } from './toast';
+import { isQuotaError } from '../storage/quota';
 import { languageBadge } from './languageBadge';
 
 export interface SessionBarCallbacks {
@@ -181,7 +182,7 @@ function render(state: SessionState) {
       const data = await callbacks.onSaveVersion();
       const label = `v${state.versionCount + 1}`;
       const force = colorRegionsDiffer(state.currentVersion?.geometryData, data.geometryData);
-      await saveVersion(
+      const version = await saveVersion(
         data.code,
         data.geometryData,
         data.thumbnail,
@@ -189,10 +190,26 @@ function render(state: SessionState) {
         undefined,
         force ? { force: true } : undefined,
       );
+      // Feedback so the click is never a silent no-op. saveVersion returns null
+      // when nothing changed (code + annotations + colors identical to the tip),
+      // which previously looked like a dead button.
+      if (!version) {
+        showToast('No changes to save since the last version.', { variant: 'neutral' });
+      } else if ((data.geometryData as { status?: unknown } | null)?.status === 'error') {
+        // Saving a broken model is allowed — the user may want to checkpoint
+        // work-in-progress — but warn that this version won't render correctly.
+        showToast(`Saved ${version.label || label} — but the model has errors and won't render correctly.`, { variant: 'warn' });
+      } else {
+        showToast(`Saved ${version.label || label}.`, { variant: 'success' });
+      }
     } catch (err) {
       // A failed save must not be silent \u2014 surface it so the user knows their
       // painted/edited state wasn't captured (rather than assume it saved).
-      showToast(`Couldn't save version: ${err instanceof Error ? err.message : String(err)}`, { variant: 'warn' });
+      if (isQuotaError(err)) {
+        showToast('Storage full \u2014 could not save this version. Free up space or export your work.', { variant: 'warn' });
+      } else {
+        showToast(`Couldn't save version: ${err instanceof Error ? err.message : String(err)}`, { variant: 'warn' });
+      }
     } finally {
       saving = false;
       saveBtn.disabled = false;
@@ -206,15 +223,12 @@ function render(state: SessionState) {
   barEl.appendChild(el('div', 'flex-1', ''));
 
   // (Session switcher moved to the activity rail header — see createLayout.)
-
-  // "Close" starts a fresh blank session rather than dropping to a
-  // session-less editor — a session always exists while the editor is open.
-  const closeBtn = btn('✕', async () => {
-    await createSession();
-    callbacks.onNewSession();
-  });
-  closeBtn.title = 'Close & start a new session';
-  barEl.appendChild(closeBtn);
+  //
+  // No "close" button here: a session always exists while the editor is open,
+  // so there's nothing to close. Starting a fresh session is an explicit action
+  // via the Sessions modal ("+ New Session") or the command palette ("New
+  // session") — the old "✕" mislabeled "make a new session" as "close" and
+  // silently swapped the session id when touched.
 }
 
 function el(tag: string, className: string, text: string): HTMLElement {

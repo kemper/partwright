@@ -5,15 +5,12 @@
 // uploaded twice doesn't create two rows.
 
 import { openPartwrightDB } from '../storage/db';
+import { getConfig } from '../config/appConfig';
 import type { ImageSource } from './types';
 
 const STORE = 'aiAttachments';
 
-/** Hard ceiling on rows kept in the store. Pruned oldest-first when
- *  putAttachment crosses the limit. Twenty thumbnails comfortably fit in
- *  a single modal scroll and bound IndexedDB usage at ~100 MB worst case
- *  (5 MB Anthropic per-image cap × 20). */
-const MAX_ATTACHMENTS = 20;
+function getMaxAttachments(): number { return getConfig().ai.maxAttachments; }
 
 export interface RecentAttachment {
   /** SHA-256 hex of the image bytes — also serves as the keyPath. */
@@ -69,7 +66,7 @@ export async function listRecentAttachments(): Promise<RecentAttachment[]> {
 }
 
 /** Write or refresh an attachment. Returns the stored row's id so callers
- *  can re-fetch later. Prunes oldest rows past MAX_ATTACHMENTS. */
+ *  can re-fetch later. Prunes oldest rows past getMaxAttachments(). */
 export async function putAttachment(img: ImageSource): Promise<string> {
   const id = await sha256Hex(img.data);
   const now = Date.now();
@@ -77,14 +74,23 @@ export async function putAttachment(img: ImageSource): Promise<string> {
   const db = await openPartwrightDB();
   const txn = db.transaction(STORE, 'readwrite');
   const store = txn.objectStore(STORE);
-  const existing = await reqToPromise(store.get(id)) as RecentAttachment | undefined;
-  if (existing) {
-    existing.lastUsedAt = now;
-    // Refresh the label too — a user re-uploading the same bytes under a
-    // different filename probably wants the latest name shown.
-    if (img.label) existing.label = img.label;
-    store.put(existing);
-  } else {
+  // Do the whole read→write→prune inside request callbacks so they all stay in
+  // ONE transaction. Awaiting between the get and the put lets IndexedDB
+  // auto-commit the txn before the put is queued (TransactionInactiveError),
+  // and across two tabs attaching the same image concurrently it drops one
+  // tab's write — the same hazard recordUsage/updateSession avoid by never
+  // awaiting mid-transaction.
+  const getReq = store.get(id);
+  getReq.onsuccess = () => {
+    const existing = getReq.result as RecentAttachment | undefined;
+    if (existing) {
+      existing.lastUsedAt = now;
+      // Refresh the label too — a user re-uploading the same bytes under a
+      // different filename probably wants the latest name shown.
+      if (img.label) existing.label = img.label;
+      store.put(existing);
+      return;
+    }
     const row: RecentAttachment = {
       id,
       data: img.data,
@@ -97,15 +103,19 @@ export async function putAttachment(img: ImageSource): Promise<string> {
     store.put(row);
     // Prune. Pull the full list inside the same txn so the count is
     // consistent — getAll on a live store with a pending put returns the
-    // post-put state. Drop the oldest beyond the cap.
-    const all = await reqToPromise(store.getAll()) as RecentAttachment[];
-    if (all.length > MAX_ATTACHMENTS) {
-      const oldest = all
-        .sort((a, b) => a.lastUsedAt - b.lastUsedAt)
-        .slice(0, all.length - MAX_ATTACHMENTS);
-      for (const drop of oldest) store.delete(drop.id);
-    }
-  }
+    // post-put state. Drop the oldest beyond the cap, still from inside a
+    // request callback so no await splits the transaction.
+    const allReq = store.getAll();
+    allReq.onsuccess = () => {
+      const all = allReq.result as RecentAttachment[];
+      if (all.length > getMaxAttachments()) {
+        const oldest = all
+          .sort((a, b) => a.lastUsedAt - b.lastUsedAt)
+          .slice(0, all.length - getMaxAttachments());
+        for (const drop of oldest) store.delete(drop.id);
+      }
+    };
+  };
   await txComplete(txn);
   return id;
 }

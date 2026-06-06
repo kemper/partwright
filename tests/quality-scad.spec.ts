@@ -13,7 +13,7 @@ test.beforeEach(async ({ page }) => {
 
 test('SCAD engine applies the chosen $fn from quality preset', async ({ page }) => {
   await page.goto('/editor');
-  await page.waitForSelector('#btn-quality');
+  await page.waitForSelector('#simplify-toggle', { state: 'attached' });
 
   type RunResult = { triangleCount?: number; error?: string };
   type PartwrightApi = {
@@ -39,18 +39,22 @@ test('SCAD engine applies the chosen $fn from quality preset', async ({ page }) 
 
   const scadCode = 'sphere(5);';
 
-  // Run under Highest (default) — many triangles.
+  // Run under Medium (SCAD default = 32 segments) — produces a visible mesh.
   const high = await page.evaluate(async (code) => {
     const api = (window as unknown as { partwright: PartwrightApi }).partwright;
     return api.run(code);
   }, scadCode);
   expect(high.error).toBeFalsy();
-  expect(high.triangleCount ?? 0).toBeGreaterThan(2000);
+  expect(high.triangleCount ?? 0).toBeGreaterThan(100);
 
-  // Drop to Low.
-  await page.locator('#btn-quality').click();
-  await page.locator('input[type=radio][value=low]').check();
-  await page.getByRole('button', { name: 'Done' }).click();
+  // Drop to Low via the curvature quality panel, then Apply to commit it
+  // (picking a preset only previews; closing without Apply would revert). The
+  // Quality button now lives in the viewport Tools popover, so open it first.
+  await page.locator('#viewport-tools-group-btn').click();
+  await page.locator('#simplify-toggle').click();
+  await page.locator('#simplify-panel input[type=radio][value=low]').check();
+  await page.locator('#simplify-apply').click();
+  await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
 
   // Re-run — fewer triangles.
   const low = await page.evaluate(async (code) => {

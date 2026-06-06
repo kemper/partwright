@@ -3,7 +3,8 @@ import { get3MFUnitString } from '../geometry/units';
 import { downloadBlob, getExportFilename, getExportTitle } from './download';
 import type { BuiltExport } from './gltf';
 import { buildZip } from './zip';
-import { assertFiniteMesh, cleanMeshForExport, DEFAULT_COLOR_HEX, triColorHex, hasAnyPainted } from './meshClean';
+import { assertFiniteMesh, cleanMeshForExport, triColorHex, hasAnyPainted } from './meshClean';
+import { listFilaments } from '../color/palette';
 
 /** Build a 3MF export blob without triggering a download. */
 export function build3MF(meshData: MeshData, customName?: string): BuiltExport {
@@ -22,22 +23,37 @@ export function build3MF(meshData: MeshData, customName?: string): BuiltExport {
     vertices.push(`          <vertex x="${x}" y="${y}" z="${z}" />`);
   }
 
-  // Collect distinct colors for m:colorgroup
+  // Collect distinct colors for m:colorgroup. Order matters: a slicer (Bambu
+  // Studio / Orca) maps each m:color to a filament in declaration order, so we
+  // emit the colours of the *filament-palette slots that are actually used*
+  // first, in slot order — making the 3MF material index follow the user's
+  // AMS slot order. Any remaining painted colours (custom/ad-hoc, plus the
+  // default colour of unpainted faces) follow in first-encounter order. Only
+  // colours that actually appear in the mesh are emitted (no phantom filaments).
   const hasColors = triColors != null && hasAnyPainted(triColors, validTris);
   const colorMap = new Map<string, number>(); // hex -> material index
   const materialColors: string[] = [];
 
   if (hasColors && triColors) {
-    colorMap.set(DEFAULT_COLOR_HEX, 0);
-    materialColors.push(DEFAULT_COLOR_HEX);
-
-    for (const t of validTris) {
-      const hex = triColorHex(triColors, t);
-      if (hex !== DEFAULT_COLOR_HEX && !colorMap.has(hex)) {
+    const pushMaterial = (hex: string) => {
+      if (!colorMap.has(hex)) {
         colorMap.set(hex, materialColors.length);
         materialColors.push(hex);
       }
+    };
+
+    // Which painted colours actually appear in the mesh.
+    const usedHexes = new Set<string>();
+    for (const t of validTris) usedHexes.add(triColorHex(triColors, t));
+
+    // 1) Used palette slots, in slot order → material index follows AMS order.
+    for (const slot of listFilaments()) {
+      const hex = slot.hex.toLowerCase();
+      if (usedHexes.has(hex)) pushMaterial(hex);
     }
+    // 2) Everything else (custom colours + the unpainted default), in
+    //    first-encounter order.
+    for (const t of validTris) pushMaterial(triColorHex(triColors, t));
   }
 
   // Build triangles XML (remapped vertex indices, filtered for degenerates)
@@ -76,7 +92,9 @@ ${colors}
   const modelXml = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="${get3MFUnitString()}" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"${nsAttr}>
   <metadata name="Title">${title}</metadata>
-  <metadata name="Application">Partwright</metadata>
+  <metadata name="Application">Partwright (https://www.partwrightstudio.com)</metadata>
+  <metadata name="Designer">Partwright</metadata>
+  <metadata name="LicenseTerms">Created with Partwright — https://www.partwrightstudio.com</metadata>
   <resources>${colorgroupXml}
     <object id="1" type="model"${hasColors ? ' pid="2" pindex="0"' : ''}>
       <mesh>

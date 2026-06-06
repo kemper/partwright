@@ -19,16 +19,19 @@ export type TileOutputKind =
   /** Flat tile cut to the image's subject silhouette (background removed). */
   | 'silhouette';
 
-/** How a stepped-relief output assigns colour to the mesh. Only relevant for
- *  `output: 'relief'`; flat/silhouette tiles paint the top surface 1:1 from
- *  the cluster map. */
+/** Whether a stepped-relief output is validated for single-nozzle printing.
+ *  Both modes produce the SAME per-cluster relief geometry (a continuous
+ *  quantized-height relief, each cluster owning its top + side walls); this knob
+ *  no longer changes the mesh. It only gates the downstream swap-guide layer-fit
+ *  validation. Only relevant for `output: 'relief'`; flat/silhouette tiles paint
+ *  the top surface 1:1 from the cluster map. */
 export type PaintingMode =
-  /** Per-cluster regions — each cluster owns its top + side walls. AMS-friendly
-   *  (a multi-material printer can switch filament across XY). */
+  /** AMS-friendly — no single-nozzle layer-fit check (a multi-material printer
+   *  can switch filament across XY, so any colour layout is printable). */
   | 'multi-color'
-  /** Z-banded regions — every triangle is grouped by the Z-layer containing its
-   *  centroid, so a single horizontal slice of the print is one colour.
-   *  Matches what a single-nozzle filament-swap print actually deposits. */
+  /** Single-nozzle — enables the swap-guide layer-fit validation that checks
+   *  each colour can be reproduced by horizontal filament swaps. Geometry is
+   *  identical to 'multi-color'. */
   | 'single-nozzle';
 
 /** Optional crop applied to the source image before sampling. Coordinates are
@@ -74,6 +77,10 @@ export interface ReliefCommonOptions {
   resolution: number;
   /** Gaussian-ish blur radius in pixels applied before sampling (0 = none). */
   smoothing: number;
+  /** Auto-detect and remove the background by sampling border pixel colours.
+   *  For flat tiles, cuts background cells from the tile shape; for stepped
+   *  relief and luminance, sets background cells to height 0 (base only). */
+  removeBackground: boolean;
 }
 
 /** Luminance-relief specific knobs. */
@@ -114,8 +121,9 @@ export interface QuantizedOptions {
    *  the outermost ring of top-surface vertices to topZ - chamferMm, giving the
    *  perimeter a soft beveled lip rather than a sharp corner. */
   chamferMm: number;
-  /** How `output: 'relief'` paints the mesh — per-cluster regions (multi-color,
-   *  AMS-friendly) or per-Z-layer regions (single-nozzle, slicer-faithful).
+  /** Whether `output: 'relief'` runs the single-nozzle layer-fit validation.
+   *  Both values produce the same per-cluster relief geometry; 'single-nozzle'
+   *  additionally gates the swap-guide check, 'multi-color' skips it.
    *  Ignored for `output: 'flat'` and `output: 'silhouette'`. */
   paintingMode: PaintingMode;
   /** When true, flips the cluster→height assignment so DARKER colours land
@@ -135,6 +143,12 @@ export interface QuantizedOptions {
    *  background instead of auto-detecting from the image's border colours.
    *  The user picks it by clicking the source thumbnail. */
   manualBackground?: [number, number, number];
+  /** Build the tile with the image on both the top and bottom faces.
+   *  Only applies to output='flat'. */
+  doubleSided: boolean;
+  /** When doubleSided is true, mirror the image horizontally on the back face
+   *  so the tile looks correct when flipped over. Default: true. */
+  backMirror: boolean;
 }
 
 export interface ReliefOptions {
@@ -161,6 +175,7 @@ export const DEFAULT_RELIEF_OPTIONS: ReliefOptions = {
     maxHeight: 3,
     resolution: 200,
     smoothing: 0,
+    removeBackground: false,
   },
   luminance: { invert: false, gamma: 1, levels: 16 },
   quantized: {
@@ -174,6 +189,8 @@ export const DEFAULT_RELIEF_OPTIONS: ReliefOptions = {
     holes: [],
     paintingMode: 'single-nozzle',
     invertHeights: false,
+    doubleSided: false,
+    backMirror: true,
   },
   preprocess: { brightness: 0, contrast: 0, saturation: 0, levelsLow: 0, levelsHigh: 255 },
 };
@@ -186,6 +203,9 @@ export interface HeightGrid {
   height: number;
   heights: Float32Array;
   colors?: Uint8Array;
+  /** Per-cell mask (1=keep, 0=background) detected from pre-quantization RGB.
+   *  Only set when removeBackground is enabled on a quantized-mode grid. */
+  bgMask?: Uint8Array;
 }
 
 /** A generated relief: a watertight (when possible) mesh plus the grid it came
@@ -273,5 +293,7 @@ export interface ReliefSettings {
   baseThickness: number;
   previewMode: PreviewMode;
   options?: ReliefOptions;
-  sourceImage?: string;
+  // The source image is NOT kept here — photos can exceed the localStorage
+  // quota, so it lives in IndexedDB (the `reliefSources` store, see
+  // src/relief/reliefSource.ts), keyed by session id like these settings.
 }

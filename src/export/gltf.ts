@@ -1,7 +1,8 @@
 import * as THREE from 'three';
-import { getScene } from '../renderer/viewport';
+import { getScene, withExportColors } from '../renderer/viewport';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { downloadBlob, getExportFilename } from './download';
+import type { MeshData } from '../geometry/types';
 
 export interface BuiltExport {
   blob: Blob;
@@ -53,8 +54,17 @@ function assertFiniteExportableScene(scene: THREE.Object3D): void {
   });
 }
 
-/** Build the GLB blob for the current scene without triggering a download. */
-export async function buildGLB(customName?: string): Promise<BuiltExport> {
+// NOTE on attribution: the other export formats (3MF metadata, STL header,
+// OBJ/MTL comment) carry a "Partwright" attribution string. GLB intentionally
+// does not. The glTF spec puts producer info in `asset.generator`, but
+// three.js's GLTFExporter hard-codes that field and offers no public option to
+// set it; the only alternative (stuffing it into `scene.userData` → `extras`)
+// serializes inconsistently across three versions and risks emitting a
+// malformed GLB. Since a broken export is far worse than a missing credit, we
+// leave GLB attribution out rather than fight the exporter.
+
+/** Serialize the live scene to a GLB blob, hiding non-exportable helpers first. */
+async function serializeSceneToGLB(customName?: string): Promise<BuiltExport> {
   const scene = getScene();
   const exporter = new GLTFExporter();
 
@@ -77,8 +87,25 @@ export async function buildGLB(customName?: string): Promise<BuiltExport> {
   }
 }
 
-export async function exportGLB(customName?: string): Promise<string> {
-  const built = await buildGLB(customName);
+/** Build the GLB blob for the current model without triggering a download.
+ *
+ *  Pass `coloredMesh` (the result of `applyTriColors(currentMeshData)`) so the
+ *  GLB bakes ALL color regions regardless of the viewport's paint-visibility
+ *  flags — matching OBJ/3MF export semantics. The live scene's coloring is
+ *  visibility-aware (`applyTriColorsIfVisible`), so without this the GLB would
+ *  silently drop painted colors whenever the paint toggle (or a per-region eye)
+ *  is off. When the mesh has no regions, `applyTriColors` returns it unchanged
+ *  and the swapped geometry matches the display, so the no-paint case is
+ *  unaffected. Omit `coloredMesh` to serialize the scene exactly as displayed. */
+export async function buildGLB(customName?: string, coloredMesh?: MeshData | null): Promise<BuiltExport> {
+  if (coloredMesh) {
+    return withExportColors(coloredMesh, () => serializeSceneToGLB(customName));
+  }
+  return serializeSceneToGLB(customName);
+}
+
+export async function exportGLB(customName?: string, coloredMesh?: MeshData | null): Promise<string> {
+  const built = await buildGLB(customName, coloredMesh);
   downloadBlob(built.blob, built.filename, 'GLB');
   return built.filename;
 }

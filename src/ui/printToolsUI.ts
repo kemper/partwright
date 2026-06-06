@@ -11,6 +11,7 @@ import type { PrinterSettings } from '../geometry/printerSettings';
 import { PRINTER_PRESETS } from '../geometry/printerSettings';
 import type { PrintabilityReport } from '../geometry/printability';
 import type { ConnectorType } from '../geometry/splitConnectors';
+import { viewportToolsMount } from './popoverMenu';
 
 type ActionResult = Record<string, unknown> & { error?: string };
 
@@ -87,13 +88,12 @@ export function initPrintToolsUI(controlsContainer: HTMLElement, h: PrintToolsHa
   printBtn.id = 'print-tools-toggle';
   printBtn.className = BTN_INACTIVE;
   printBtn.textContent = '🖨 Print';
-  printBtn.title = 'Build volume, printability check, scale & split for printing';
+  printBtn.title = 'Build volume, printability check, and split for printing';
   printBtn.addEventListener('click', toggle);
 
-  // Sit before Simplify so the strip reads Paint · Print · Simplify · Measure.
-  const simplify = controlsContainer.querySelector('#simplify-toggle');
-  if (simplify) controlsContainer.insertBefore(printBtn, simplify);
-  else controlsContainer.appendChild(printBtn);
+  // Mount into the Tools popover alongside paint / palette / image / annotate /
+  // surface / resize / quality (falls back to the bar itself if Tools isn't built).
+  viewportToolsMount(controlsContainer).appendChild(printBtn);
 
   panel = buildPanel();
   controlsContainer.appendChild(panel);

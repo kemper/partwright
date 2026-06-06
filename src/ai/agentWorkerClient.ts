@@ -9,20 +9,30 @@
 //  • Forward abort: listen on input.signal and send { type: 'abort' }.
 //  • Expose pushQueuedBlocks() so aiPanel can relay mid-turn queued input.
 
-import { executeTool } from './tools';
+import { executeTool, CONFIRM_REQUIRED_TOOLS } from './tools';
 import { ingestEvent, type DiagnosticEvent } from './diagnostics';
 import type { RunTurnInput, RunTurnCallbacks } from './chatLoop';
 import type { ChatBlock, ChatMessage, PersistedToolResult } from './types';
 import type { AgentWorkerInput } from './agentWorker';
+import { getConfig } from '../config/appConfig';
+import { registerWorker, markWorkerStarted, markWorkerRestarted } from '../diagnostics/workerStats';
 
 let worker: Worker | null = null;
 let currentCallbacks: RunTurnCallbacks | null = null;
 let resolveCurrentTurn: ((h: ChatMessage[]) => void) | null = null;
 let rejectCurrentTurn: ((e: Error) => void) | null = null;
 
+// Surface the agent Worker's liveness + whether a turn is in flight in the
+// worker-health panel.
+registerWorker('agent', 'AI agent (chat loop)', () => ({
+  alive: worker !== null,
+  inFlight: resolveCurrentTurn ? 1 : 0,
+}));
+
 function getWorker(): Worker {
   if (worker) return worker;
   worker = new Worker(new URL('./agentWorker.ts', import.meta.url), { type: 'module' });
+  markWorkerStarted('agent');
   worker.onmessage = handleMessage;
   worker.onmessageerror = (ev) => {
     // A Worker→Main message that fails structured-clone on receipt is dropped
@@ -31,6 +41,7 @@ function getWorker(): Worker {
     cleanup();
     worker?.terminate();
     worker = null;
+    markWorkerRestarted('agent', 'undeserializable message');
     // eslint-disable-next-line no-console
     console.error('[AgentWorker] messageerror', ev);
   };
@@ -44,6 +55,7 @@ function getWorker(): Worker {
     // one on the next turn, rather than reusing a crashed instance.
     worker?.terminate();
     worker = null;
+    markWorkerRestarted('agent', `crashed: ${ev.message}`);
   };
   return worker;
 }
@@ -58,6 +70,20 @@ async function handleMessage(event: MessageEvent): Promise<void> {
       name: string;
       input: Record<string, unknown>;
     };
+    if (CONFIRM_REQUIRED_TOOLS.has(name) && currentCallbacks?.confirmTool) {
+      const allowed = await currentCallbacks.confirmTool(name, input);
+      if (!allowed) {
+        getWorker().postMessage({
+          type: 'tool_result',
+          callId,
+          result: {
+            content: '[Declined by user — only call import tools when the user has explicitly requested an import]',
+            isError: true,
+          },
+        });
+        return;
+      }
+    }
     const result = await executeTool(name, input);
     getWorker().postMessage({ type: 'tool_result', callId, result });
     return;
@@ -131,12 +157,6 @@ export function pushQueuedBlocks(blocks: ChatBlock[]): void {
 }
 
 /** Terminate and discard the Worker (e.g. on hard reset). */
-export function terminateAgentWorker(): void {
-  worker?.terminate();
-  worker = null;
-  cleanup();
-}
-
 /** Drop-in replacement for chatLoop.runTurn — same signature, Worker-backed. */
 export async function runTurn(
   input: RunTurnInput,
@@ -151,12 +171,15 @@ export async function runTurn(
   }
 
   // Strip non-serialisable fields before sending across the thread boundary.
+  // toolCallTimeoutMs is read here (main thread has localStorage) and passed to
+  // the Worker which has no localStorage access.
   const workerInput: AgentWorkerInput = {
-    apiKey:      input.apiKey,
-    toggles:     input.toggles,
-    sessionId:   input.sessionId,
-    history:     input.history,
-    userBlocks:  input.userBlocks,
+    apiKey:             input.apiKey,
+    toggles:            input.toggles,
+    sessionId:          input.sessionId,
+    history:            input.history,
+    userBlocks:         input.userBlocks,
+    toolCallTimeoutMs:  getConfig().ai.toolCallTimeoutMs,
   };
 
   return new Promise<ChatMessage[]>((resolve, reject) => {

@@ -113,15 +113,18 @@ test.describe('Import target modal', () => {
   test('"Add to current part" composes a second imported mesh into an import-based part', async ({ page }) => {
     await page.goto('/editor');
     await waitForEngine(page);
+    // Real saved work first, so the session is no longer a fresh/expendable
+    // starter — that's what makes the import-target modal appear at all. (A fresh
+    // editor's expendable starter skips the modal and imports as a new session.)
+    await setupHostSession(page, 'const { Manifold } = api; return Manifold.cube([10, 10, 10], true);');
     const fileInput = page.locator('#import-wrapper input[type="file"]');
 
-    // First import: the fresh starter part is expendable, so seed it with the
-    // mesh (the modal recommends "Use for current part"). Now the current part
-    // is import-based, which is the prerequisite for combining a second mesh.
+    // First import: choose "New part" to add an import-based part (it becomes the
+    // current part), which is the prerequisite for combining a second mesh into it.
     await fileInput.setInputFiles({ name: 'a.stl', mimeType: 'application/octet-stream', buffer: buildCubeSTL(0) });
-    await page.getByRole('dialog').locator('[data-target="current-part"]').click();
-    // Wait for the seed's version to be persisted (not just the editor text set),
-    // so the part is recognized as import-based when the second mesh arrives.
+    await page.getByRole('dialog').locator('[data-target="new-part"]').click();
+    // Wait for the new part's import version to be persisted (not just the editor
+    // text set), so it's recognized as import-based when the second mesh arrives.
     await expect
       .poll(() => pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.getSessionState().versionCount))
       .toBe(1);
@@ -138,9 +141,10 @@ test.describe('Import target modal', () => {
     const geo = await pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.getGeometryData());
     expect(geo.componentCount).toBe(2);
 
-    // Still a single part — the mesh was combined in, not added as a new part.
+    // The second mesh was combined into the existing import part — not added as
+    // a new part — so the part count is unchanged from before (host + import part).
     const partCount = await pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.listParts().length);
-    expect(partCount).toBe(1);
+    expect(partCount).toBe(2);
 
     const code = await pw(page)(() => (window as unknown as { partwright: ImportAPI }).partwright.getCode());
     expect(code).toContain('Manifold.compose');

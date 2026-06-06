@@ -45,6 +45,18 @@ v.set(0, 0, 7, '#ff3b30');                       // a single red cap voxel
 return v;
 ```
 
+`api.params({...})` works here too, exactly as in manifold-js — declare tweakable
+knobs (grid size, colors, counts) at the top and the live Parameters panel drives
+them. See the Customizer section in `/ai.md`. Example:
+
+```js
+const { voxels } = api;
+const p = api.params({ size: { type: 'int', default: 6, min: 2, max: 20 }, tint: { type: 'color', default: '#6b8cff' } });
+const v = voxels();
+v.fillBox([0, 0, 0], [p.size - 1, p.size - 1, p.size - 1], p.tint);
+return v;
+```
+
 ### Grid builder methods
 
 All methods mutate the grid in place and return it (so they chain). Coordinates
@@ -142,6 +154,35 @@ to MagicaVoxel's default 256-color palette.
 (Multi-model `.vox` files: only the first model is imported. Open the others
 in separate sessions or open them separately for now.)
 
+## MagicaVoxel `.vox` export
+
+In a voxel session, **Export → VOX** writes the grid back out as a MagicaVoxel
+`.vox` file (the option appears only when the active language is `voxel`). It's
+the inverse of the importer, so a `.vox` round-trips: cells and per-voxel colors
+are preserved, and the file opens in MagicaVoxel, Goxel, and other tools that
+read the format. The other 3D formats (GLB / 3MF / OBJ / STL) still work too —
+they export the *meshed* voxels with vertex colors — but `.vox` is the only one
+that keeps the editable voxel grid intact.
+
+Programmatic / AI equivalent:
+
+```js
+partwright.exportVOX();              // browser download -> { ok, filename } | { error }
+await partwright.exportVOXData();     // bytes over the API (see /ai/file-io.md)
+// -> { filename, mimeType: "application/octet-stream", base64, sizeBytes }
+```
+
+Both read the current grid (re-derived from the editor code, or the live grid
+when voxel paint is active). Format limits, surfaced as a clear `{ error }`:
+
+- **256 voxels per axis.** `.vox` coordinates are single bytes, so one model
+  spans at most 256³. Larger grids are rejected — keep the model within 256 per
+  axis, or export GLB / 3MF for an arbitrarily large mesh.
+- **255 colors.** The palette holds 255 entries. A grid with more distinct
+  colors is reduced to the 255 most-frequent, with the rest snapped to the
+  nearest kept color — no voxel is ever dropped. `.smooth()` surfacing doesn't
+  affect the export; `.vox` always stores the underlying blocky cells.
+
 ## Voxel paint
 
 Click on the **🎨 Voxel paint** button (appears in voxel sessions only,
@@ -181,25 +222,87 @@ await partwright.bakeVoxelsToCode({ label: 'sad-cube' });   // commits + saves
 
 ## Image import
 
-Drag an image (`.png`, `.jpg`, `.gif`, `.webp`) onto the editor, or use
-Import → choose an image file. Opaque pixels become colored voxels in a new
-voxel session; transparent pixels drop out (so logos and sprites voxelize
-cleanly). The image stands upright as a billboard: image width → X, image
-height → Z, extruded along Y. Large images are downsampled so the longest side
-fits 64 voxels by default.
+Use Import → **Image → voxel…** (its own row in the import menu, below
+Image → keychain / tile / relief), or drag an image (`.png`, `.jpg`, `.gif`,
+`.webp`) onto the editor. The parameter modal opens **first** (mirroring the
+relief wizard); its button reads **Choose image…** until you pick one, then
+**Choose a different image…** to swap. A live preview lets you dial in
+resolution, mode, depth/relief, transparency cutoff, and color before committing
+to a new voxel session. The image stands upright: image width → X, image
+height → Z, extruded along Y. Transparent pixels drop out (so logos and sprites
+voxelize cleanly).
+
+Two modes:
+
+- **Billboard** (default) — every surviving pixel becomes a flat column
+  `depth` voxels thick: a standing colored picture.
+- **Heightmap** — each pixel's brightness drives a per-column height, turning
+  the image into a 3D relief (lithophane-style). An optional `baseThickness`
+  adds a solid backing so dark areas stay connected/printable, and `invert`
+  raises dark areas instead of bright ones.
 
 Programmatic / AI equivalent:
 
 ```js
 // imageUrl is a data: URL or a same-origin URL.
+// Billboard:
 await partwright.importImageAsVoxels(imageUrl, { maxSize: 64, depth: 1, alphaThreshold: 128 });
+// Heightmap relief:
+await partwright.importImageAsVoxels(imageUrl, { mode: 'heightmap', maxSize: 96, maxHeight: 24, baseThickness: 2 });
+// Fixed palette + editable builder code instead of a decode blob:
+await partwright.importImageAsVoxels(imageUrl, {
+  palette: [[20, 20, 30], [200, 60, 60], [240, 220, 180]],   // pixels snap to nearest
+  codeStyle: 'calls',                                          // v.fillBox(...) you can edit
+});
 // -> { sessionId, voxelCount }  (or { error })
 ```
 
 - `maxSize` — longest side after downsampling (default 64).
-- `depth` — how many voxels deep to extrude (default 1).
+- `mode` — `'billboard'` (default) or `'heightmap'`.
+- `depth` — billboard extrusion thickness in voxels (default 1).
+- `maxHeight` — heightmap: tallest relief column in voxels (default 16).
+- `baseThickness` — heightmap: solid backing slab in voxels (default 1).
+- `invert` — heightmap: raise dark areas instead of bright (default false).
 - `alphaThreshold` — minimum alpha 0–255 for a pixel to become a voxel
   (default 128). Opaque photos (no alpha) become a full slab.
+- `colorMode` — `'original'` (default), `'grayscale'`, or `'flat'`.
+- `flatColor` — `[r, g, b]` used when `colorMode` is `'flat'`.
+- `gamma` — heightmap: midtone curve on normalized brightness (default 1 =
+  linear; >1 sinks midtones, <1 lifts them).
+- `brightness` / `contrast` / `saturation` — image adjustments applied before
+  sampling, each −1..+1 (0 = unchanged). Reuses the Relief Studio's preprocessor.
+- `posterizeColors` — quantize `original` colors to this many clusters via
+  k-means for a clean limited voxel-art palette (0 = off; the in-app modal
+  exposes 2–12). Ignored when `palette` is set.
+- `palette` — a fixed list of `[r, g, b]` colors; each surviving `original`-mode
+  pixel snaps to its nearest entry (perceptual / LAB distance). This both
+  **limits the color count** and lets you **choose the exact colors** (overrides
+  `posterizeColors`). Empty / omitted / `null` = keep per-pixel color (or
+  posterize). Use `partwright`'s extraction (the modal's "Palette" tab seeds
+  from the image) to start from the image's own colors, then tweak.
+- `codeStyle` — `'decode'` (default) writes the compact `voxels.decode("…")`
+  blob; `'calls'` writes human-readable `v.fillBox(…)` / `v.set(…)` builder
+  calls you can hand-edit. Same-color blocks are merged into boxes via greedy
+  run-length grouping, and evenly-spaced repeats of an identical box (dots,
+  stripes, grids) collapse further into a single `for` loop — so a repeated
+  pattern costs one line instead of many. Very large or very colorful grids
+  automatically fall back to `'decode'` so the editor stays responsive — limit
+  the palette or lower the resolution to keep the output editable.
+- `removeBackground` — drop a solid-color backdrop the alpha cutoff can't (an
+  opaque photo's background). `backgroundColor: [r, g, b]` removes that exact
+  color; omit it to auto-detect the dominant border color.
+
+The in-app modal exposes all of these (image adjustments live under an
+"Image adjustments" disclosure) with a live preview. Under **Color → Palette**
+the modal seeds an editable swatch list from the image (k-means), and you can
+recolor, add, or remove swatches or re-extract a different count; every pixel
+then snaps to the nearest swatch. The **Editor code** toggle picks between the
+compact data blob and editable builder calls, and shows live whether the current
+model fits in editable calls or will fall back to compact data (so the fallback
+is never a surprise). The Recent Imports list shows a
+thumbnail beside each image import and remembers whether it was a voxel or a
+relief import — re-clicking a voxel import reopens this modal pre-loaded with
+the settings you used.
 
 ## Gotchas
 

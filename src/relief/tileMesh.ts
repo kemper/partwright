@@ -18,10 +18,13 @@ export interface TileOptions {
 
 export interface TileMeshResult {
   mesh: ReliefMesh;
+  /** Top-face triangle ids per cell (2 per cell, -1 for excluded). */
   cellTriIds: Int32Array;
+  /** Bottom-face triangle ids per cell (2 per cell, -1 for excluded). */
+  cellTriIdsBottom: Int32Array;
 }
 
-function buildCellMask(W: number, H: number, opts: TileOptions, shape: TileShape): Uint8Array {
+export function buildCellMask(W: number, H: number, opts: TileOptions, shape: TileShape): Uint8Array {
   const count = W * H;
   const mask = new Uint8Array(count);
   if (W < 2 || H < 2) return mask;
@@ -109,6 +112,8 @@ function isEdgeManifold(triVerts: Uint32Array, numTri: number): boolean {
 function emptyMesh(W: number, H: number): TileMeshResult {
   const cellTriIds = new Int32Array(2 * W * H);
   cellTriIds.fill(-1);
+  const cellTriIdsBottom = new Int32Array(2 * W * H);
+  cellTriIdsBottom.fill(-1);
   return {
     mesh: {
       vertProperties: new Float32Array(0),
@@ -119,6 +124,7 @@ function emptyMesh(W: number, H: number): TileMeshResult {
       watertight: true,
     },
     cellTriIds,
+    cellTriIdsBottom,
   };
 }
 
@@ -212,6 +218,8 @@ export function buildTileMesh(
   const triVerts = new Uint32Array(numTri * 3);
   const cellTriIds = new Int32Array(2 * W * H);
   cellTriIds.fill(-1);
+  const cellTriIdsBottom = new Int32Array(2 * W * H);
+  cellTriIdsBottom.fill(-1);
 
   let ti = 0;
   const tri = (a: number, b: number, c: number): number => {
@@ -248,8 +256,11 @@ export function buildTileMesh(
       const b = botIdx(x + 1, y);
       const c = botIdx(x + 1, y + 1);
       const d = botIdx(x, y + 1);
-      tri(a, c, b);
-      tri(a, d, c);
+      const id0 = tri(a, c, b);
+      const id1 = tri(a, d, c);
+      const base = 2 * (y * W + x);
+      cellTriIdsBottom[base] = id0;
+      cellTriIdsBottom[base + 1] = id1;
     }
   }
 
@@ -310,5 +321,6 @@ export function buildTileMesh(
       watertight,
     },
     cellTriIds,
+    cellTriIdsBottom,
   };
 }

@@ -27,6 +27,8 @@ import type { LocalModelId, LocalModelInfo } from './localModels';
 import { isWebGpuAvailable, LOCAL_MODELS } from './localModels';
 import { loadSettings, type CustomLocalModel } from './settings';
 import { buildFallbackLadder, getCachedCeiling, getModelCeiling } from './modelMetadata';
+import { getConfig } from '../config/appConfig';
+import { registerWorker, markWorkerStarted } from '../diagnostics/workerStats';
 
 // We can't statically type-import from @mlc-ai/web-llm without forcing it
 // into the main bundle, so we keep the engine handle untyped here and rely
@@ -77,13 +79,13 @@ function resolveCustomContextWindow(modelId: string): number | null {
  *  the actual prompt text; bump the constants in `buildLocalSystemPrompt` /
  *  `appendPromptToolDocs` if you change those. */
 function computeAttentionSink(info: LocalModelInfo): number {
-  const promptBudget = info.promptTier === 'medium' ? 1300 : 600;
+  const cfg = getConfig();
+  const promptBudget = info.promptTier === 'medium' ? cfg.ai.localPromptBudgetMedium : cfg.ai.localPromptBudgetSlim;
   // Native callers use the `tools` API field, not a system-prompt block,
   // so need minimal sink budget. Other models append a ~400-token compact
   // tool-docs block.
-  const toolsBudget = info.officialToolCalling ? 100 : 500;
-  const safetyMargin = 200;
-  return Math.min(2048, promptBudget + toolsBudget + safetyMargin);
+  const toolsBudget = info.officialToolCalling ? cfg.ai.localToolsBudgetNative : cfg.ai.localToolsBudgetPromptEngineered;
+  return Math.min(cfg.ai.localAttentionSinkMax, promptBudget + toolsBudget + cfg.ai.localAttentionSinkMargin);
 }
 
 function buildCustomModelEntries(webllm: typeof import('@mlc-ai/web-llm')): import('@mlc-ai/web-llm').ModelRecord[] {
@@ -163,6 +165,14 @@ let engineWorker: Worker | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let engineProxy: any = null;
 
+// Surface the in-browser WebLLM worker's liveness in the worker-health panel.
+// In-flight turns aren't tracked here (WebLLM owns its own request lifecycle);
+// liveness alone answers "is the local model loaded into a worker?".
+registerWorker('webllm', 'Local model (WebLLM)', () => ({
+  alive: engineWorker !== null,
+  inFlight: 0,
+}));
+
 /** Lazily create the model worker + its main-thread proxy, then refresh the
  *  per-load bits (app config for custom models, progress callback) so the
  *  current caller sees download progress. Reused across loads. */
@@ -174,6 +184,7 @@ function getEngineProxy(
 ): any {
   if (!engineWorker) {
     engineWorker = new Worker(new URL('./localEngineWorker.ts', import.meta.url), { type: 'module' });
+    markWorkerStarted('webllm');
   }
   if (!engineProxy) {
     engineProxy = new webllm.WebWorkerMLCEngine(engineWorker, { appConfig, initProgressCallback: onProgress });
@@ -329,10 +340,6 @@ export function isModelLoaded(modelId: string): boolean {
 }
 
 /** Get the currently loaded model id, or null. */
-export function loadedModelId(): string | null {
-  return loaded?.modelId ?? null;
-}
-
 /** Load (download if needed + activate) a model. Idempotent — calling again
  *  with the same id is a no-op; calling with a different id swaps. Single-
  *  flighted so two concurrent UI clicks don't race. Accepts both curated
@@ -468,6 +475,12 @@ export async function ensureModelLoaded(modelId: string, opts: LoadOptions = {})
 
 export interface StreamCallbacks {
   onText?: (delta: string) => void;
+  /** Reasoning deltas from a local `<think>` block. Routed to the panel's
+   *  collapsible thinking box (mirroring Gemini/Anthropic) instead of the
+   *  answer bubble. Fired once post-stream with the full captured reasoning
+   *  — the live scanner suppresses `<think>` from `onText`, so this is the
+   *  channel that surfaces it. */
+  onThinking?: (delta: string) => void;
   onToolStart?: (toolUseId: string, toolName: string) => void;
 }
 
@@ -480,9 +493,11 @@ export interface StreamResult {
    *  emitted an unclosed `<tool_call>` block (a crash, likely). chatLoop
    *  surfaces a "response was cut off" message and skips re-prompting. */
   truncated?: boolean;
-  /** Reasoning text if surfaced. Local `<think>` blocks are stripped and
-   *  hidden today, so this stays undefined; present so chatLoop reads
-   *  `result.thinking` uniformly across providers. */
+  /** Reasoning text if surfaced. Reasoning-style local models emit a
+   *  `<think>...</think>` block; we strip it from the answer (so the bubble
+   *  stays clean) and surface it here + via `onThinking` so chatLoop renders
+   *  the same collapsible thinking box Gemini/Anthropic get. Undefined when
+   *  the model emitted no reasoning. */
   thinking?: string;
   /** Anthropic-only thinking-block replay payload — always undefined here.
    *  Declared for a uniform `StreamResult` across the provider union. */
@@ -694,6 +709,11 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
   // (which would also rebroadcast them to the model on the next turn).
   // Unclosed `<think>` tails (truncation) just get dropped.
   const withoutThink = stripThinkBlocks(rawText);
+  // Surface the reasoning the scanner suppressed from the live bubble so the
+  // panel can render the same collapsible thinking box hosted providers get.
+  // (The answer text — `cleanedText` below — stays free of the `<think>` body.)
+  const thinkText = extractThinkBlocks(rawText);
+  if (thinkText.length > 0) callbacks.onThinking?.(thinkText);
 
   let toolCalls: PersistedToolCall[] = [];
   let cleanedText: string;
@@ -722,6 +742,7 @@ export async function streamLocalTurn(spec: LocalRequestSpec, callbacks: StreamC
     stopReason: normStop,
     usage,
     truncated: truncatedMidToolCall || (truncatedMaxTokens && toolCalls.length === 0),
+    thinking: thinkText.length > 0 ? thinkText : undefined,
   };
 }
 
@@ -801,6 +822,22 @@ function stripThinkBlocks(text: string): string {
   // Then strip any trailing unclosed block (truncation).
   const unclosed = completed.indexOf(THINK_OPEN);
   return unclosed >= 0 ? completed.slice(0, unclosed).trimEnd() : completed.trimEnd();
+}
+
+/** Inverse of stripThinkBlocks: pull the reasoning OUT of completed
+ *  `<think>...</think>` blocks so it can drive the panel's thinking box.
+ *  Truncated (unclosed) blocks are skipped — a partial chain-of-thought the
+ *  user never saw isn't worth surfacing. Multiple blocks are joined with a
+ *  blank line. Returns '' when there's no reasoning. */
+function extractThinkBlocks(text: string): string {
+  const out: string[] = [];
+  const re = /<think>([\s\S]*?)<\/think>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const body = m[1].trim();
+    if (body.length > 0) out.push(body);
+  }
+  return out.join('\n\n');
 }
 
 /** Build a compact tool-use instruction block to append to the system

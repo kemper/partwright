@@ -71,20 +71,20 @@ jobs:
         run: npx playwright test --shard=${{ matrix.shard }}/3
 
   promote:
-    needs: e2e
+    needs: [build-unit, e2e]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       # Reached only when build + unit + every e2e shard pass. Promotes the
-      # green commit to staging, which Cloudflare deploys to the known-good
-      # staging preview.
+      # green commit (the one this run was triggered on) to staging, which
+      # Cloudflare deploys to the known-good staging preview.
       - name: Promote to staging
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin staging
+          git fetch origin staging main
           git checkout -B staging origin/staging
           git merge --ff-only "$GITHUB_SHA" || git merge --no-edit "$GITHUB_SHA"
           git push origin staging

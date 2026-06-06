@@ -190,17 +190,21 @@ function clamp(v: number, min?: number, max?: number): number {
 
 /** Coerce one override value against its spec, or return undefined if the value
  *  can't be made valid (caller falls back to the default). Lenient by design:
- *  overrides come from persisted UI state / tool calls, not author code, so a
- *  stale or out-of-range value should degrade to the default, never throw. */
+ *  overrides come from persisted UI state / tool calls, not author code, so an
+ *  unparseable value degrades to the default rather than throwing. Numeric
+ *  overrides are honored as-is even outside spec.min/max — the slider bounds are
+ *  a convenience, and the number field intentionally allows exceeding them. */
 export function coerceParamValue(spec: ParamSpec, value: unknown): ParamValue | undefined {
   switch (spec.type) {
     case 'number':
     case 'int': {
       const n = typeof value === 'number' ? value : (typeof value === 'string' ? Number(value) : NaN);
       if (!Number.isFinite(n)) return undefined;
-      let c = clamp(n, spec.min, spec.max);
-      if (spec.type === 'int') c = Math.round(c);
-      return c;
+      // Deliberately *not* clamped to spec.min/max: those bounds size the
+      // Customizer slider's convenient range, but the paired number field lets
+      // the user type an exact value beyond them (e.g. a thickness past the
+      // slider max). We only reject non-finite input and round ints here.
+      return spec.type === 'int' ? Math.round(n) : n;
     }
     case 'boolean':
       return typeof value === 'boolean' ? value : undefined;
@@ -275,4 +279,37 @@ export function pruneParamValues(schema: ParamSpec[], overrides?: Record<string,
     if (coerced !== undefined && coerced !== spec.default) out[spec.key] = coerced;
   }
   return out;
+}
+
+/** A per-run Customizer capture shared by the JS-sandbox engines (manifold-js,
+ *  voxel, replicad). Each engine builds one with the user's overrides, hands
+ *  {@link ParamCapture.params} to the sandbox as `api.params`, then reads
+ *  {@link ParamCapture.collectSchema} afterward to report the declared schema
+ *  back to the Customizer panel. Lives here — the dependency-free param layer —
+ *  so all three engines share exactly one implementation rather than each
+ *  re-deriving the capture/merge/guard logic. */
+export interface ParamCapture {
+  /** The `api.params(schema)` function exposed to model code: validates +
+   *  normalizes the schema (throwing a clear `api.params: …` error on an author
+   *  bug), records it for {@link collectSchema}, and returns the resolved values
+   *  (override-or-default) guarded so a typo'd read throws instead of `NaN`. */
+  params: (schema: unknown) => ParamValues;
+  /** Merge of every schema captured this run (last definition wins, first-seen
+   *  order preserved), or `undefined` if the model declared none. */
+  collectSchema: () => ParamSpec[] | undefined;
+}
+
+export function createParamCapture(overrides?: Record<string, unknown>): ParamCapture {
+  const ov = overrides ?? {};
+  const captured: ParamSpec[][] = [];
+  return {
+    params(schema: unknown): ParamValues {
+      const normalized = normalizeParamSchema(schema);
+      captured.push(normalized);
+      return protectParamValues(resolveParamValues(normalized, ov));
+    },
+    collectSchema(): ParamSpec[] | undefined {
+      return captured.length > 0 ? mergeParamSchemas(captured) : undefined;
+    },
+  };
 }

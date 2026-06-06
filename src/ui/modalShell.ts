@@ -12,6 +12,12 @@ export interface ModalShellOptions {
   /** Tailwind max-width fragment without the `max-w-` prefix.
    *  Defaults to `'md'`. Compact-confirm uses `'2xl'`. */
   maxWidth?: 'sm' | 'md' | 'lg' | 'xl' | '2xl';
+  /** Full Tailwind width class(es) — e.g. `'max-w-lg sm:max-w-3xl'` — that
+   *  override {@link maxWidth}. Use this when the panel needs a *responsive*
+   *  width (the `maxWidth` enum only expresses a single breakpoint-less size).
+   *  Pass the complete `max-w-*` literals so Tailwind's content scanner emits
+   *  them. */
+  widthClass?: string;
   /** When true, applies `max-h-[80vh]` + `overflow-auto` so long bodies
    *  (e.g. compaction proposal with many notes) scroll. */
   scrollable?: boolean;
@@ -37,6 +43,20 @@ let modalSeq = 0;
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+// Full, literal Tailwind class names per width. The scanner only emits classes
+// it sees as complete literal strings in source, so building this with
+// `max-w-${opts.maxWidth}` interpolation left the class invisible to it — and
+// `max-w-2xl` (never written literally anywhere else) got purged from the CSS
+// entirely, so every `'2xl'` modal silently rendered uncapped at full width.
+// Mapping to literals here keeps all sizes — `'2xl'` included — in the build.
+const MAX_WIDTH_CLASS: Record<NonNullable<ModalShellOptions['maxWidth']>, string> = {
+  sm: 'max-w-sm',
+  md: 'max-w-md',
+  lg: 'max-w-lg',
+  xl: 'max-w-xl',
+  '2xl': 'max-w-2xl',
+};
+
 function focusableIn(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
     .filter(el => el.offsetParent !== null || el === document.activeElement);
@@ -53,7 +73,7 @@ export function createModalShell(opts: ModalShellOptions): ModalShell {
   // Remember what was focused so we can restore it when the modal closes.
   const previouslyFocused = document.activeElement as HTMLElement | null;
 
-  const maxW = `max-w-${opts.maxWidth ?? 'md'}`;
+  const maxW = opts.widthClass ?? MAX_WIDTH_CLASS[opts.maxWidth ?? 'md'];
   const maxH = opts.scrollable ? 'max-h-[calc(100vh-2rem)]' : '';
   const overlayPad = opts.scrollable ? 'p-4' : '';
 

@@ -5,6 +5,7 @@
 
 import { getState, onStateChange, type SessionState, type Part, type Version } from '../storage/sessionManager';
 import { getLatestVersion } from '../storage/db';
+import { confirmDialog } from './dialogs';
 
 export interface PartListCallbacks {
   /** Switch the active part (loads its latest version into the editor). */
@@ -169,7 +170,10 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
   // Drag handle (pointer-based reorder — works for mouse, touch, and pen).
   // Always visible (not hover-gated) so it's discoverable on touch.
   const grip = document.createElement('span');
-  grip.className = 'shrink-0 text-zinc-500 [@media(hover:hover)]:group-hover:text-zinc-300 text-sm leading-none cursor-grab touch-none px-1 py-1';
+  // ≥44×44px hit area on mobile (fingertip-friendly) that collapses to the
+  // subtle padded glyph on pointer-capable desktop (md+). The visible ⠿ stays
+  // small; the transparent box around it is what grows the touch target.
+  grip.className = 'shrink-0 inline-flex items-center justify-center text-zinc-500 [@media(hover:hover)]:group-hover:text-zinc-300 text-sm leading-none cursor-grab touch-none min-w-[44px] min-h-[44px] md:min-w-0 md:min-h-0 md:px-1 md:py-1';
   grip.textContent = '⠿'; // ⠿ drag grip
   grip.title = 'Drag to reorder';
   grip.setAttribute('aria-label', 'Drag to reorder');
@@ -202,9 +206,9 @@ function buildRow(part: Part, isCurrent: boolean, partCount: number, list: HTMLE
     // Visible by default so it's reachable on touch (no hover); only fade-until-
     // hover on hover-capable devices.
     del.className += ' [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100 focus:opacity-100';
-    del.addEventListener('click', (e) => {
+    del.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (confirm(`Delete part "${part.name}" and all of its versions? This cannot be undone.`)) {
+      if (await confirmDialog(`Delete part "${part.name}" and all of its versions? This cannot be undone.`, { title: 'Delete part', confirmLabel: 'Delete', danger: true })) {
         void cb.onDeletePart(part.id);
       }
     });
@@ -357,14 +361,14 @@ function buildActionBar(state: SessionState): HTMLElement {
   } else {
     delBtn.title = 'Delete the selected parts and all their versions';
   }
-  delBtn.addEventListener('click', () => {
+  delBtn.addEventListener('click', async () => {
     if (delBtn.disabled) return;
     const ids = [...selected];
     if (ids.length === 0) return;
     const msg = ids.length === 1
       ? 'Delete this part and all of its versions? This cannot be undone.'
       : `Delete ${ids.length} parts and all of their versions? This cannot be undone.`;
-    if (!confirm(msg)) return;
+    if (!(await confirmDialog(msg, { title: 'Delete parts', confirmLabel: 'Delete', danger: true }))) return;
     clearSelection();
     render(getState()); // hide the bar immediately; the delete re-renders on commit
     void cb.onDeleteParts(ids);

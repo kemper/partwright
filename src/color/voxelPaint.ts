@@ -14,7 +14,7 @@
 // local — no Worker round-trip, no rebuild from scratch.
 
 import type { MeshData } from '../geometry/types';
-import { normalizeColor } from '../geometry/voxel/grid';
+import { normalizeColor, type VoxelGrid } from '../geometry/voxel/grid';
 import { gridToMeshWithProvenance } from '../geometry/voxel/mesher';
 import { runVoxelForPaint, type VoxelPaintRun } from '../geometry/engines/voxel';
 import { generateVoxelImportCode } from '../import/imageToVoxel';
@@ -47,12 +47,16 @@ export function setEraser(on: boolean): void { eraser = !!on; }
 /** Voxel count in the live grid, or 0 when paint isn't active. */
 export function voxelCount(): number { return run?.grid.size ?? 0; }
 
+/** The live painted grid, or null when paint isn't active. Lets callers (e.g.
+ *  `.vox` export) capture unbaked paint edits without re-running the code. */
+export function getGrid(): VoxelGrid | null { return run?.grid ?? null; }
+
 /** Activate voxel paint on the given code. Runs the code locally to obtain the
  *  grid + provenance, attaches a click handler, and pushes the meshed grid
  *  through `onMeshUpdate`. Returns null on success or an error string. */
-export function activate(code: string, callbacks: VoxelPaintCallbacks): string | null {
+export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOverrides?: Record<string, unknown>): string | null {
   if (active) deactivate();
-  const r = runVoxelForPaint(code);
+  const r = runVoxelForPaint(code, paramOverrides);
   if (!r.ok) return r.error;
   // Smooth surfacing moves vertices off the voxel grid, so a clicked
   // triangle's coords no longer map cleanly to a single source voxel. Refuse
@@ -125,7 +129,7 @@ function remeshAndPush(): void {
   cbMeshUpdate?.(mesh);
 }
 
-function onPointerDown(event: MouseEvent): void {
+function onPointerDown(event: PointerEvent): void {
   if (!active || event.button !== 0) return;
   const hit = pickFace(event);
   if (!hit) return;
@@ -134,7 +138,11 @@ function onPointerDown(event: MouseEvent): void {
 
 function attachPointerHandler(): void {
   const canvas = getRenderer().domElement;
-  canvas.addEventListener('mousedown', onPointerDown);
+  // pointerdown on the container in CAPTURE phase so it runs before the
+  // viewport's capture-phase OrbitControls suppressor (which stops propagation
+  // on the canvas) — see the matching note in paintMode.ts.
+  const container = canvas.parentElement ?? canvas;
+  container.addEventListener('pointerdown', onPointerDown, { capture: true });
   canvas.style.cursor = 'crosshair';
   // Veto OrbitControls on left-button hits over the model so paint doesn't
   // orbit. Off-model clicks fall through so the camera still rotates.
@@ -146,7 +154,8 @@ function attachPointerHandler(): void {
 
 function detachPointerHandler(): void {
   const canvas = getRenderer().domElement;
-  canvas.removeEventListener('mousedown', onPointerDown);
+  const container = canvas.parentElement ?? canvas;
+  container.removeEventListener('pointerdown', onPointerDown, { capture: true } as EventListenerOptions);
   canvas.style.cursor = '';
   if (removeSuppressor) { removeSuppressor(); removeSuppressor = null; }
 }

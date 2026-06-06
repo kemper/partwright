@@ -160,7 +160,7 @@ parametric count a distinct name (`'petal' + i`) for per-instance color.
 
 These model-declared colors are a derived **underlay**: manual paint
 (`paintByLabel` / the paint tools) composites on top as an optional
-override, and **only manual paint locks the editor**. They are not written
+override. They are not written
 into the saved paint sidecar — the code re-derives them on load. Read the
 active set with `partwright.getModelColors()` →
 `{ count, colors: [{ name, color, triangleCount }] }`; a zero
@@ -365,6 +365,7 @@ partwright.paintStroke({
   shape: 'circle',               // circle | square | diamond
   // surface: 'geodesic',        // 'geodesic' (default) | 'slab' — see below
   // depth: 0,                   // slab only: how far through the wall paint reaches (0 = auto = ½ radius)
+  // wrapAngleDeg: 90,           // wrap tolerance 0–180: max edge bend paint flows across (90 stops at right-angle corners; API default 180 = wrap freely) — see below
   color: [0.9, 0.2, 0.2],
 });
 // -> { id, name, triangles, resolution, maxEdge, meshTriangleCount } or { error }
@@ -373,6 +374,8 @@ partwright.paintStroke({
 The painted edge is **clipped to the exact outline** (the mesh is cut along the brush's analytic boundary), so a square gets dead-straight edges and a circle a clean curve — even on a coarse mesh, and watertight. Because the edge is exact, `resolution` only controls how many segments a *curve* is approximated with (straight square/diamond edges are crisp at any setting and stay nearly free — a slab square paints in ~10 triangles). Default `resolution` is **64** (plenty smooth with the clip); raise it for very large curves, or use the absolute `maxEdge` override for explicit sizing.
 
 **The brush is a *surface* tool, not a 3D ball.** `surface: 'geodesic'` (the default) flood-fills the footprint along the *connected* surface from the stroke, so paint follows curves and wraps over edges but never bleeds through to the opposite wall of a thin or hollow part — no tuning needed. `surface: 'slab'` instead keeps a thin shell within `depth` (mesh units) of the picked surface along its normal; raise `depth` to deliberately reach through a wall, lower it to hug the surface (`0` = auto = half the radius). Sessions saved before this feature load as `slab`. The interactive brush exposes the same controls — `getBrushSurface()` / `setBrushSurface('geodesic'|'slab')` and `setBrushDepth(u)`.
+
+**Wrap tolerance — stop a stroke at sharp edges (`wrapAngleDeg`).** Applies to *both* surface modes. It's the maximum edge bend (degrees, 0–180) paint may flow across as the stroke follows the surface: the spread crosses an edge only when the two faces bend by ≤ this angle, so it flows smoothly over gentle curves and bumpy near-coplanar facets but **stops at a sharp fold**. `90` stops at right-angle corners — paint on one exterior face of a box won't reach the adjacent faces, and a stroke inside one wall of a hollow part won't bleed onto the next wall — while `180` (the `paintStroke` API default) wraps across any edge. The interactive brush adds a **Wrap tolerance** slider (default 90°) and `getBrushWrapAngle()` / `setBrushWrapAngle(deg)`. A finite gate (< 180°) builds the surface-connectivity field even in slab mode, so it's a touch more work than an ungated slab stroke.
 
 **Airbrush — soft speckle (`paintAirbrush`).** Sprays a geodesic soft-edged region whose boundary fades out via a stochastic per-triangle **dither**, not colour blending — every triangle stays one printable colour. Coverage = `strength` (0..1, core density; default 0.4 for a light spackle) fading to 0 across the outer `softness` (0..1) band; `seed` makes the speckle reproducible. It's always surface-following (never bleeds through a wall) and works with any `shape` (circle/square/diamond spackle). It's a mode of the interactive brush too — the brush panel's **Spray** toggle (Slab is disabled while spraying, since a spray is geodesic-only).
 
@@ -535,7 +538,7 @@ partwright.assertPaint({
 
 **Bucket tolerance.** `paintRegion`'s `tolerance` is a cosine threshold for the bend angle between adjacent faces (default `0.9995`, ≈ 1.8°). The flood-fill crosses an edge only when the bend at that edge is below the angle threshold — checked between the *parent* face and each *neighbor*, not against the seed. This means flood-fill follows curved surfaces: a 32-sided cylinder bends ~11° per face, so any tolerance ≥ cos(11°) ≈ `0.98` covers the whole cylinder. Set tolerance to `-1` (180°) to paint the entire connected mesh. The Paint UI exposes the same control as a slider labeled in degrees (0°–180°).
 
-**Editor lock.** When color regions exist, the editor is locked (the model can't be re-run, because new geometry would invalidate the saved triangle indices). To edit code, the user clicks "Unlock to edit" in the UI. Agents that need to iterate on the geometry should call `clearColors()` first, or fork with `forkVersion` — which by default carries the colors onto the new geometry (pass `carryColors: false` for an uncolored child).
+**Re-running with colors in memory.** The editor stays writable even when color regions exist (there is no paint lock), but re-running new geometry would invalidate the saved triangle indices the colors were painted against — leaving the paint resolved against stale triangles. Agents that need to iterate on the geometry should call `clearColors()` first, or fork with `forkVersion` — which by default carries the colors onto the new geometry (pass `carryColors: false` for an uncolored child).
 
 **Saving a colored version.** Calling `saveVersion(label)` after painting *will* persist the regions onto a new version — the dedupe check considers code, annotations, and color regions together. If nothing has changed, `saveVersion()` returns `{ skipped: true, reason: "..." }` instead of `null`, so a no-op is visible. If you want to be sure a save happened, check the return shape: `{ id, index, label }` on success, `{ skipped }` on no-op, `{ error }` if no session is open.
 

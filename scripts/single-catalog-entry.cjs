@@ -148,6 +148,24 @@ async function main() {
     process.exit(1);
   }
 
+  // Printability gate: the catalog ships parts meant to 3D-print, so a
+  // multi-component or non-manifold result is a defect (a failed union that
+  // leaves floating pieces), not a valid entry. Refuse to write it unless the
+  // author explicitly opts in for a genuine multi-part assembly via
+  // ALLOW_MULTI_COMPONENT=1. This is what stopped the original BREP wave from
+  // catching the floaters at bake time.
+  const cc = result.stats?.componentCount;
+  const manifold = result.stats?.isManifold;
+  if (!process.env.ALLOW_MULTI_COMPONENT && (cc > 1 || manifold === false)) {
+    console.error(`✘ not printable: componentCount=${cc}, isManifold=${manifold}`);
+    console.error('  The model is not a single watertight solid — it has floating/');
+    console.error('  disconnected pieces. Make fused shapes overlap by >= 0.5 units');
+    console.error('  (run window.partwright.runAndExplain(code) to locate floaters),');
+    console.error('  or set ALLOW_MULTI_COMPONENT=1 for a deliberate multi-part entry.');
+    console.error('  Refusing to write the catalog entry.');
+    process.exit(1);
+  }
+
   fs.writeFileSync(outPath, JSON.stringify(result.data, null, 2) + '\n');
   const sizeKb = (fs.statSync(outPath).size / 1024).toFixed(0);
   console.log(`✔  wrote ${outPath} (${sizeKb} KB)`);

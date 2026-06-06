@@ -22,8 +22,13 @@ test.beforeEach(async ({ page }) => {
 test.describe('Landing + editor', () => {
   test('landing page renders hero', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'Partwright', level: 1 })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Open Editor/i })).toBeVisible();
+    // The landing page is the static #landing-inline document (the app bundle
+    // is not loaded on "/"). The hero h1 is the headline; the "Partwright"
+    // wordmark lives in the nav, and the nav CTA is an "Open editor" link.
+    const landing = page.locator('#landing-inline');
+    await expect(landing.getByText('Partwright', { exact: true })).toBeVisible();
+    await expect(landing.getByRole('heading', { level: 1 })).toBeVisible();
+    await expect(landing.getByRole('link', { name: /Open editor/i })).toBeVisible();
   });
 
   test('editor loads with AI button', async ({ page }) => {
@@ -240,25 +245,25 @@ test.describe('AI chat panel', () => {
     }
   });
 
-  test('drawer + send from landing page navigates to editor', async ({ page }) => {
-    // Ensure the drawer is open on /editor first so it persists open, then go
-    // back to the landing page. The drawer docks into the app-level row
-    // (outside the per-page subtrees), so it stays mounted and visible there.
+  test('the AI drawer (and app bundle) does not load on the landing route', async ({ page }) => {
+    // Open the drawer in the editor so the remembered drawerOpen=true setting
+    // is persisted, then do a FULL load of the landing page. The landing route
+    // is a separate static document that never loads the app bundle, so the AI
+    // panel isn't present there at all — the remembered open state only applies
+    // once the user is back in the editor.
     await page.goto('/editor');
     await openAiPanel(page);
     await page.goto('/');
-    await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await expect(page.locator('#ai-panel')).toBeVisible();
+    await expect(page.locator('#landing-inline')).toBeVisible();
+    await expect(page.locator('#ai-panel')).toHaveCount(0);
+    // The app's console API is the tell that main.ts booted — it must be absent.
+    expect(await page.evaluate(() => 'partwright' in window)).toBe(false);
 
-    // Sending a message from the landing page should navigate to /editor.
-    // No key is set so the key modal appears first — that path is fine,
-    // we just want to confirm we don't silently model on /.
-    await page.locator('#ai-panel textarea').fill('build a cube');
-    await page.locator('#ai-panel button:has-text("Send")').dispatchEvent('click');
-    const onEditor = page.waitForURL(/\/editor/, { timeout: 5000 }).then(() => 'editor');
-    const onModal = page.waitForSelector('input[type="password"]', { timeout: 5000 }).then(() => 'modal');
-    const which = await Promise.race([onEditor, onModal]);
-    expect(['editor', 'modal']).toContain(which);
+    // And the remembered preference is untouched: opening the editor again
+    // auto-opens the drawer as before.
+    await page.goto('/editor');
+    await page.waitForFunction(() => !!(window as unknown as { partwright?: { help?: unknown } }).partwright?.help);
+    await expect(page.locator('#ai-panel')).toBeVisible();
   });
 
   test('Send stays as Send when a turn is in flight; Stop is the separate red button', async ({ page }) => {

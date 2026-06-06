@@ -8,37 +8,46 @@
 //   { type: 'init' }
 //   { type: 'execute',           callId, code, lang?, imports?, circularSegments?, params? }
 //   { type: 'validate',          callId, code, lang? }
+//   { type: 'detect_includes',   callId, code }
 //   { type: 'exportSTEP',        callId }
 //   { type: 'importSTEPToBrep',  callId, bytes, filename }
 //   { type: 'importSTEPToMesh',  callId, bytes }
 //   { type: 'clearBrepImports',  callId }
+//   { type: 'clearBrepShape',    callId }
 //   { type: 'simplify',          callId, mesh, targetTriangles, maxTolerance }
 //   { type: 'simplify_cancel',   callId }
+//   { type: 'enhance',           callId, mesh, targetTriangles, maxEdgeLength }
+//   { type: 'enhance_cancel',    callId }
 //
 // Protocol — Worker → Main:
 //   { type: 'ready' }
-//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, lostLabels, paramsSchema }
+//   { type: 'execute_result',          callId, mesh, error, diagnostics, labelMapEntries, lostLabels, paramsSchema, workerMs }
 //   { type: 'validate_result',         callId, result }
+//   { type: 'detect_includes_result',  callId, result }
 //   { type: 'exportSTEP_result',       callId, blob, error }
 //   { type: 'importSTEPToBrep_result', callId, filename, error }
 //   { type: 'importSTEPToMesh_result', callId, mesh, error }
 //   { type: 'clearBrepImports_result', callId, error }
+//   { type: 'clearBrepShape_result',   callId, error }
 //   { type: 'simplify_progress',       callId, fraction }
 //   { type: 'simplify_result',         callId, mesh, triangleCount, tolerance, cancelled, error }
+//   { type: 'enhance_progress',        callId, fraction }
+//   { type: 'enhance_result',          callId, mesh, triangleCount, cancelled, error }
 //   { type: 'error',                   callId, message }
 //
 // Mesh typed arrays are transferred (zero-copy) to the main thread.
 // labelMap (Map<string, Set<number>>) is serialised as [string, number[]][].
 
 import { manifoldJsEngine, getManifoldModule } from './engines/manifoldJs';
-import { runScadAsync, openscadEngine } from './engines/openscad';
-import { runReplicadAsync, replicadEngine, getLastBrepShape } from './engines/replicad';
+import { runScadAsync, openscadEngine, detectUnresolvedIncludes } from './engines/openscad';
+import { runReplicadAsync, replicadEngine, getLastBrepShape, clearLastBrepShape } from './engines/replicad';
 import { voxelEngine } from './engines/voxel';
 import { ensureBrepLoaded, sourceUsesBrep, parseStepBlob, pushPendingBrepImport, clearPendingBrepImports } from './brepRuntime';
+import { sourceUsesManifoldText, preloadTextFonts } from './textGlyphs';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { setCircularSegmentsOverride } from './qualitySettings';
 import type { Language } from './engines/types';
-import { simplifyToTriangleBudget } from './simplify';
+import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, isEnhanceExceeded, type SimplifyResult, type EnhanceResult, type EnhanceExceeded } from './simplify';
 import type { MeshData } from './types';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
@@ -46,8 +55,23 @@ import type { MeshData } from './types';
  *  message has a chance to land and flip this flag — the loop checks it on
  *  each iteration boundary and bails out cleanly. */
 const simplifyCancelFlags = new Map<string, boolean>();
+const enhanceCancelFlags = new Map<string, boolean>();
 
 let manifoldReady = false;
+
+/** Current size (bytes) of the manifold-3d WASM linear heap — its grown
+ *  high-water mark, since WASM memory never shrinks. Reported back to the main
+ *  thread so the diagnostics can show how close a run came to the 4 GB ceiling
+ *  (and, on an OOM, whether it truly hit it or failed far below). Only
+ *  meaningful for manifold-js runs; the other engines own separate WASM heaps. */
+function manifoldHeapBytes(): number | undefined {
+  try {
+    const heap = (getManifoldModule() as { HEAPU8?: { byteLength?: number } } | null)?.HEAPU8;
+    return typeof heap?.byteLength === 'number' ? heap.byteLength : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // Catch unhandled promise rejections inside the Worker (e.g. WASM panics that
 // escape an inner try-catch) and forward them as 'error' messages so the main
@@ -81,14 +105,19 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── execute ────────────────────────────────────────────────────────────
   if (msg.type === 'execute') {
-    const { callId, code, lang, imports, circularSegments, params } = msg as unknown as {
+    const { callId, code, lang, imports, circularSegments, params, companionFiles } = msg as unknown as {
       callId: string;
       code: string;
       lang?: Language;
       imports?: ImportedMesh[];
       circularSegments?: number;
       params?: Record<string, unknown> | null;
+      companionFiles?: Record<string, string>;
     };
+    // Worker-side compute timer. Reported back on execute_result so the
+    // worker-health panel can separate real evaluation time from the
+    // queue + structured-clone transfer overhead the main thread also sees.
+    const execStart = performance.now();
     try {
       // Propagate the main-thread quality setting so the Worker uses the same
       // segment count. SCAD/replicad execute asynchronously, so two runs can
@@ -109,16 +138,29 @@ self.onmessage = async (event: MessageEvent) => {
       let result;
       if (effectiveLang === 'voxel') {
         // Pure-JS voxel meshing — no WASM, no lazy init, synchronous.
-        result = voxelEngine.run(code as string);
+        result = voxelEngine.run(code as string, params ?? undefined);
       } else if (effectiveLang === 'scad') {
         // Ensure the OpenSCAD engine is loaded (lazy init).
         if (!openscadEngine.isReady()) await openscadEngine.init();
-        result = await runScadAsync(code as string);
+        // Preview callback: post the rough mesh to the main thread so it can
+        // update the viewport immediately while Phase 2 (full quality) runs.
+        const onScadPreview = (previewResult: { mesh: import('./types').MeshData | null }) => {
+          const mesh = previewResult.mesh;
+          if (!mesh) return;
+          const transfer: Transferable[] = [mesh.vertProperties.buffer, mesh.triVerts.buffer];
+          if (mesh.mergeFromVert) transfer.push(mesh.mergeFromVert.buffer);
+          if (mesh.mergeToVert)   transfer.push(mesh.mergeToVert.buffer);
+          if (mesh.runIndex)      transfer.push(mesh.runIndex.buffer);
+          if (mesh.runOriginalID) transfer.push(mesh.runOriginalID.buffer);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (self as any).postMessage({ type: 'execute_preview', callId, mesh }, transfer);
+        };
+        result = await runScadAsync(code as string, params ?? undefined, onScadPreview, companionFiles);
       } else if (effectiveLang === 'replicad') {
         // Full replicad-language session — lazy-init OCCT then evaluate as
         // BREP. Tessellation happens inside the engine before returning.
         if (!replicadEngine.isReady()) await replicadEngine.init();
-        result = await runReplicadAsync(code as string);
+        result = await runReplicadAsync(code as string, params ?? undefined);
       } else {
         if (!manifoldReady) {
           self.postMessage({
@@ -135,6 +177,11 @@ self.onmessage = async (event: MessageEvent) => {
         if (sourceUsesBrep(code as string)) {
           await ensureBrepLoaded();
         }
+        // Pre-load Liberation Sans fonts if the code calls api.text / api.textSection.
+        // Same lazy-load pattern as BREP — fonts are cached after the first run.
+        if (sourceUsesManifoldText(code as string)) {
+          await preloadTextFonts();
+        }
         result = manifoldJsEngine.run(code as string, params ?? undefined);
       }
 
@@ -148,6 +195,8 @@ self.onmessage = async (event: MessageEvent) => {
         : null;
       const lostLabels = result.lostLabels ?? null;
       const paramsSchema = result.paramsSchema ?? null;
+      // Heap high-water for manifold-js runs (other engines own separate heaps).
+      const engineHeapBytes = effectiveLang === 'manifold-js' ? manifoldHeapBytes() : undefined;
 
       const mesh = result.mesh;
       if (mesh) {
@@ -166,7 +215,7 @@ self.onmessage = async (event: MessageEvent) => {
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (self as any).postMessage(
-          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly },
+          { type: 'execute_result', callId, mesh, error: null, diagnostics: [], labelMapEntries, labelColorEntries, lostLabels, paramsSchema, renderOnly: !!result.renderOnly, workerMs: Math.round(performance.now() - execStart), engineHeapBytes },
           transfer,
         );
       } else {
@@ -179,6 +228,8 @@ self.onmessage = async (event: MessageEvent) => {
           labelMapEntries: null,
           lostLabels: null,
           paramsSchema,
+          workerMs: Math.round(performance.now() - execStart),
+          engineHeapBytes,
         });
       }
 
@@ -212,11 +263,14 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── simplify ───────────────────────────────────────────────────────────
   if (msg.type === 'simplify') {
-    const { callId, mesh, targetTriangles, maxTolerance } = msg as unknown as {
+    const { callId, mesh, targetTriangles, maxTolerance, tolerance } = msg as unknown as {
       callId: string;
       mesh: MeshData;
       targetTriangles: number;
       maxTolerance: number;
+      // When set (> 0), run a single direct simplify(tolerance) pass instead of
+      // the triangle-budget binary search — the "by edge length / size" knob.
+      tolerance?: number;
     };
     if (!manifoldReady) {
       self.postMessage({
@@ -230,19 +284,32 @@ self.onmessage = async (event: MessageEvent) => {
     let baseManifold: { delete?: () => void } | null = null;
     try {
       baseManifold = mod.Manifold.ofMesh(mesh);
-      const result = await simplifyToTriangleBudget(
-        baseManifold as unknown as Parameters<typeof simplifyToTriangleBudget>[0],
-        targetTriangles,
-        maxTolerance,
-        (fraction) => {
-          self.postMessage({ type: 'simplify_progress', callId, fraction });
-          // Loop yields to the event loop between iterations so a queued
-          // 'simplify_cancel' message can flip the flag — checked here so the
-          // search bails before doing more work.
-          return new Promise<void>(r => setTimeout(r, 0));
-        },
-        () => simplifyCancelFlags.get(callId) === true,
-      );
+      const direct = typeof tolerance === 'number' && tolerance > 0;
+      let result: SimplifyResult | null;
+      if (direct) {
+        // Single synchronous pass — bracket with 0/1 progress so the modal
+        // behaves the same as the searched path.
+        self.postMessage({ type: 'simplify_progress', callId, fraction: 0 });
+        result = simplifyToTolerance(
+          baseManifold as unknown as Parameters<typeof simplifyToTolerance>[0],
+          tolerance,
+        );
+        self.postMessage({ type: 'simplify_progress', callId, fraction: 1 });
+      } else {
+        result = await simplifyToTriangleBudget(
+          baseManifold as unknown as Parameters<typeof simplifyToTriangleBudget>[0],
+          targetTriangles,
+          maxTolerance,
+          (fraction) => {
+            self.postMessage({ type: 'simplify_progress', callId, fraction });
+            // Loop yields to the event loop between iterations so a queued
+            // 'simplify_cancel' message can flip the flag — checked here so the
+            // search bails before doing more work.
+            return new Promise<void>(r => setTimeout(r, 0));
+          },
+          () => simplifyCancelFlags.get(callId) === true,
+        );
+      }
       const cancelled = simplifyCancelFlags.get(callId) === true;
       simplifyCancelFlags.delete(callId);
       if (cancelled) {
@@ -290,6 +357,133 @@ self.onmessage = async (event: MessageEvent) => {
   if (msg.type === 'simplify_cancel') {
     const { callId } = msg as unknown as { callId: string };
     if (simplifyCancelFlags.has(callId)) simplifyCancelFlags.set(callId, true);
+    return;
+  }
+
+  // ── enhance ────────────────────────────────────────────────────────────
+  if (msg.type === 'enhance') {
+    const { callId, mesh, targetTriangles, maxEdgeLength, edgeLength, maxTriangles } = msg as unknown as {
+      callId: string;
+      mesh: MeshData;
+      targetTriangles: number;
+      maxEdgeLength: number;
+      // When set (> 0), run a single direct refineToLength(edgeLength) pass
+      // instead of the triangle-budget binary search — the "by edge length /
+      // size" knob. Splits only edges longer than this, so the larger triangles
+      // densify first.
+      edgeLength?: number;
+      // Hard ceiling on the refined triangle count — the Worker refuses to
+      // return a mesh larger than this so a runaway refine can't freeze the
+      // main thread when the result is committed.
+      maxTriangles?: number;
+    };
+    if (!manifoldReady) {
+      self.postMessage({
+        type: 'enhance_result', callId, mesh: null, triangleCount: 0,
+        cancelled: false, error: 'Geometry engine not initialised — try again after loading completes.',
+      });
+      return;
+    }
+    enhanceCancelFlags.set(callId, false);
+    const mod = getManifoldModule();
+    let baseManifold: { delete?: () => void } | null = null;
+    try {
+      baseManifold = mod.Manifold.ofMesh(mesh);
+      const direct = typeof edgeLength === 'number' && edgeLength > 0;
+      let result: EnhanceResult | EnhanceExceeded | null;
+      if (direct) {
+        self.postMessage({ type: 'enhance_progress', callId, fraction: 0 });
+        result = refineToEdgeLength(
+          baseManifold as unknown as Parameters<typeof refineToEdgeLength>[0],
+          edgeLength,
+          maxTriangles,
+        );
+        self.postMessage({ type: 'enhance_progress', callId, fraction: 1 });
+      } else {
+        result = await enhanceToTriangleBudget(
+          baseManifold as unknown as Parameters<typeof enhanceToTriangleBudget>[0],
+          targetTriangles,
+          maxEdgeLength,
+          (fraction) => {
+            self.postMessage({ type: 'enhance_progress', callId, fraction });
+            return new Promise<void>(r => setTimeout(r, 0));
+          },
+          () => enhanceCancelFlags.get(callId) === true,
+          maxTriangles,
+        );
+      }
+      const cancelled = enhanceCancelFlags.get(callId) === true;
+      enhanceCancelFlags.delete(callId);
+      if (cancelled) {
+        self.postMessage({
+          type: 'enhance_result', callId, mesh: null, triangleCount: 0,
+          cancelled: true, error: null,
+        });
+      } else if (result && isEnhanceExceeded(result)) {
+        // Refused: the refine would exceed the hard cap. Report the count with
+        // no mesh so the main thread can warn without ever committing it.
+        self.postMessage({
+          type: 'enhance_result', callId, mesh: null, triangleCount: result.triangleCount,
+          cancelled: false, exceeded: true, error: null,
+        });
+      } else if (result) {
+        const transfer: Transferable[] = [
+          result.mesh.vertProperties.buffer,
+          result.mesh.triVerts.buffer,
+        ];
+        if (result.mesh.mergeFromVert) transfer.push(result.mesh.mergeFromVert.buffer);
+        if (result.mesh.mergeToVert)   transfer.push(result.mesh.mergeToVert.buffer);
+        if (result.mesh.runIndex)      transfer.push(result.mesh.runIndex.buffer);
+        if (result.mesh.runOriginalID) transfer.push(result.mesh.runOriginalID.buffer);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (self as any).postMessage({
+          type: 'enhance_result', callId,
+          mesh: result.mesh, triangleCount: result.triangleCount,
+          cancelled: false, error: null,
+        }, transfer);
+      } else {
+        self.postMessage({
+          type: 'enhance_result', callId,
+          mesh: null, triangleCount: 0, cancelled: false, error: null,
+        });
+      }
+    } catch (err) {
+      enhanceCancelFlags.delete(callId);
+      self.postMessage({
+        type: 'enhance_result', callId, mesh: null, triangleCount: 0,
+        cancelled: false, error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      if (baseManifold && typeof baseManifold.delete === 'function') {
+        try { baseManifold.delete(); } catch { /* already freed */ }
+      }
+    }
+    return;
+  }
+
+  // ── enhance_cancel ──────────────────────────────────────────────────────
+  if (msg.type === 'enhance_cancel') {
+    const { callId } = msg as unknown as { callId: string };
+    if (enhanceCancelFlags.has(callId)) enhanceCancelFlags.set(callId, true);
+    return;
+  }
+
+  // ── detect_includes ──────────────────────────────────────────────────────
+  // Fast import-time dependency probe: compile the SCAD source far enough to
+  // resolve include/use targets and report the ones OpenSCAD can't open.
+  if (msg.type === 'detect_includes') {
+    const { callId, code } = msg as unknown as { callId: string; code: string };
+    try {
+      if (!openscadEngine.isReady()) await openscadEngine.init();
+      const result = await detectUnresolvedIncludes(code);
+      self.postMessage({ type: 'detect_includes_result', callId, result });
+    } catch (err) {
+      self.postMessage({
+        type: 'error',
+        callId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
     return;
   }
 
@@ -432,6 +626,26 @@ self.onmessage = async (event: MessageEvent) => {
     } catch (err) {
       self.postMessage({
         type: 'clearBrepImports_result',
+        callId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
+  // ── clearBrepShape ───────────────────────────────────────────────────────
+  // Drop (and free) the retained STEP-export shape from the most recent
+  // replicad run. Called when leaving a replicad session (switch/close) or
+  // switching the active language away from replicad, so exportSTEP can't
+  // return a stale shape that belongs to a different session.
+  if (msg.type === 'clearBrepShape') {
+    const { callId } = msg as unknown as { callId: string };
+    try {
+      clearLastBrepShape();
+      self.postMessage({ type: 'clearBrepShape_result', callId, error: null });
+    } catch (err) {
+      self.postMessage({
+        type: 'clearBrepShape_result',
         callId,
         error: err instanceof Error ? err.message : String(err),
       });

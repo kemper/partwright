@@ -55,11 +55,11 @@ test.describe('paint cancellation + waitForPaint', () => {
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
-        canvas.dispatchEvent(new MouseEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0 }));
-      fire('mousemove', cx, cy);
-      fire('mousedown', cx, cy);
-      for (let dx = 6; dx <= 30; dx += 6) fire('mousemove', cx + dx, cy);
-      fire('mouseup', cx + 30, cy);
+        canvas.dispatchEvent(new PointerEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      fire('pointermove', cx, cy);
+      fire('pointerdown', cx, cy);
+      for (let dx = 6; dx <= 30; dx += 6) fire('pointermove', cx + dx, cy);
+      fire('pointerup', cx + 30, cy);
     });
 
     // With delay=0, the badge is visible as soon as the worker job is dispatched.
@@ -109,11 +109,11 @@ test.describe('paint cancellation + waitForPaint', () => {
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
-        canvas.dispatchEvent(new MouseEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0 }));
-      fire('mousemove', cx, cy);
-      fire('mousedown', cx, cy);
-      for (let dx = 4; dx <= 40; dx += 4) fire('mousemove', cx + dx, cy);
-      fire('mouseup', cx + 40, cy);
+        canvas.dispatchEvent(new PointerEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      fire('pointermove', cx, cy);
+      fire('pointerdown', cx, cy);
+      for (let dx = 4; dx <= 40; dx += 4) fire('pointermove', cx + dx, cy);
+      fire('pointerup', cx + 40, cy);
       // Worker is now subdividing the UI stroke. Fire an agent stroke at a
       // different spot — must return a populated region synchronously and
       // must not get clobbered when the (cancelled) UI stroke's worker
@@ -167,11 +167,11 @@ test.describe('paint cancellation + waitForPaint', () => {
       const r = canvas.getBoundingClientRect();
       const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       const fire = (t: string, x: number, y: number) =>
-        canvas.dispatchEvent(new MouseEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0 }));
-      fire('mousemove', cx, cy);
-      fire('mousedown', cx, cy);
-      for (let dx = 4; dx <= 40; dx += 4) fire('mousemove', cx + dx, cy);
-      fire('mouseup', cx + 40, cy);
+        canvas.dispatchEvent(new PointerEvent(t, { bubbles: true, clientX: x, clientY: y, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      fire('pointermove', cx, cy);
+      fire('pointerdown', cx, cy);
+      for (let dx = 4; dx <= 40; dx += 4) fire('pointermove', cx + dx, cy);
+      fire('pointerup', cx + 40, cy);
     });
 
     // Cancel before the worker finishes. With a 60x60x60 cube at divisor 512

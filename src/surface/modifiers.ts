@@ -1,0 +1,508 @@
+// Surface modifiers: high-level, UI-agnostic operations that take the current
+// model's mesh and produce a *commit descriptor* — the editor code plus any
+// baked geometry — for the host (main.ts) to run and save as a new version.
+//
+// Two commit shapes mirror how existing features land geometry:
+//   - 'manifold' — the result is baked to a mesh carried on `api.imports[0]`
+//     and rebuilt with `Manifold.ofMesh(...)`, exactly like an STL import. Used
+//     by fuzzy skin and smooth, which need per-vertex work the code can't do.
+//   - 'voxel'    — the result is a sparse grid inlined as `voxels.decode("…")`,
+//     exactly like the image→voxel import. Used by voxelize.
+//
+// The geometry math lives in sibling pure modules; this file only orchestrates
+// and emits code, so it stays dependency-light and unit-testable.
+
+import type { MeshData } from '../geometry/types';
+import { fuzzySkin, type FuzzySkinOptions } from './fuzzySkin';
+import { knitTextureUV, knitTextureUVAsync, knitTextureUVPatch, knitTextureUVPatchAsync, type KnitTextureOptions } from './knitTexture';
+import { cableKnit, type CableKnitOptions } from './cableKnit';
+import { waffleStitch, type WaffleStitchOptions } from './waffleStitch';
+import { furVelvet, type FurVelvetOptions } from './furVelvet';
+import { wovenFabric, type WovenFabricOptions } from './wovenFabric';
+import { smoothSurface, type SmoothOptions } from './smoothSurface';
+import { voxelizeMesh, type VoxelizeOptions } from './voxelizeMesh';
+import { extractPositions, bboxOf, subdivideWithMask } from './meshSubdivide';
+import { encodeGrid } from '../geometry/voxel/grid';
+import { scaleMesh } from './scaleMesh';
+import { meshGrid } from '../geometry/voxel/mesher';
+
+export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize';
+
+export interface ModifierManifoldResult {
+  kind: 'manifold';
+  /** Short version label, e.g. "fuzzy skin". */
+  label: string;
+  /** Editor code that rebuilds the baked mesh from `api.imports[0]`. */
+  code: string;
+  /** Baked mesh to attach to the new version as an imported mesh. */
+  mesh: MeshData;
+}
+
+export interface ModifierVoxelResult {
+  kind: 'voxel';
+  label: string;
+  /** Editor code that rebuilds the grid via `voxels.decode(...)`. */
+  code: string;
+  /** The meshed grid (with per-voxel colors), for non-destructive preview —
+   *  what the voxel engine would render once the code runs. */
+  previewMesh: MeshData;
+}
+
+export type ModifierResult = ModifierManifoldResult | ModifierVoxelResult;
+
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** Bounding-box diagonal of a mesh — the basis for size-relative defaults. */
+export function modelDiagonal(mesh: MeshData): number {
+  const { size } = bboxOf(extractPositions(mesh));
+  return Math.hypot(size[0], size[1], size[2]);
+}
+
+/** Size-relative starting parameters for fuzzy skin (subtle ~1% displacement). */
+export function defaultFuzzyOptions(mesh: MeshData): Required<FuzzySkinOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  return { amplitude: d * 0.01, scale: d * 0.04, octaves: 2, seed: 1, quality: 3, subdivide: true };
+}
+
+/** Compute the target max-edge-length for a quality-based subdivision pass.
+ *  Mirrors the formula used by fuzzySkin and other whole-model paths so the
+ *  patch path reaches the same vertex density for a given quality setting.
+ *  maxRounds is always 4 (same as the whole-model path in fuzzySkin/cableKnit/etc.)
+ *  so that a coarse mesh like a cube reaches the same subdivision depth as the
+ *  whole-model Apply would. */
+function patchSubdivTarget(diag: number, featureSize: number, quality: number): { maxEdge: number; maxRounds: number } {
+  const q = Math.max(1, Math.min(5, Math.round(quality)));
+  const qScale = 2 ** ((q - 3) / 2);
+  const maxEdge = Math.max(featureSize / (2 * qScale), diag / (200 * qScale));
+  return { maxEdge, maxRounds: 4 };
+}
+
+/** Size-relative starting parameters for knit texture (~3.5% amplitude, ~5% stitch width). */
+export function defaultKnitOptions(mesh: MeshData): Required<KnitTextureOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  const sw = d * 0.05;
+  return {
+    amplitude: d * 0.035,
+    stitchWidth: sw,
+    stitchHeight: sw * 1.4,
+    rowOffset: 0.5,
+    roundness: 0.5,
+    grainAngleDeg: 0,
+    variation: 0.1,
+    seed: 1,
+    quality: 3,
+    subdivide: true,
+    algorithm: 'bfs',
+  };
+}
+
+/** Starting parameters for the smooth/round modifier. */
+export function defaultSmoothOptions(): Required<Omit<SmoothOptions, 'maxEdge'>> {
+  return { iterations: 4, subdivide: true };
+}
+
+/** Wrapper code for a baked manifold result. Mirrors the STL-import codegen:
+ *  a human-readable header and one self-contained `return`. */
+function manifoldWrapper(headerLines: string[]): string {
+  return `${headerLines.map(l => `// ${l}`).join('\n')}
+const { Manifold } = api;
+return Manifold.ofMesh(api.imports[0]);
+`;
+}
+
+export { type KnitTextureOptions };
+export { type CableKnitOptions };
+export { type WaffleStitchOptions };
+export { type FurVelvetOptions };
+export { type WovenFabricOptions };
+
+export function applyFuzzy(mesh: MeshData, opts: FuzzySkinOptions): ModifierManifoldResult {
+  const baked = fuzzySkin(mesh, opts);
+  return {
+    kind: 'manifold',
+    label: 'fuzzy skin',
+    mesh: baked,
+    code: manifoldWrapper([
+      `Fuzzy skin applied on ${today()} — amplitude ${opts.amplitude}, feature ~${opts.scale}.`,
+      `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
+  };
+}
+
+export function applyKnit(mesh: MeshData, opts: KnitTextureOptions): ModifierManifoldResult {
+  const baked = knitTextureUV(mesh, opts);
+  return knitManifoldResult(opts, baked);
+}
+
+/** Async variant used by the applyKnitTexture API — runs displacement on the GPU when available. */
+export async function applyKnitAsync(mesh: MeshData, opts: KnitTextureOptions): Promise<ModifierManifoldResult> {
+  const baked = await knitTextureUVAsync(mesh, opts);
+  return knitManifoldResult(opts, baked);
+}
+
+function knitManifoldResult(opts: KnitTextureOptions, mesh: MeshData, label = 'knit texture'): ModifierManifoldResult {
+  return {
+    kind: 'manifold',
+    label,
+    mesh,
+    code: manifoldWrapper([
+      `Knit texture applied on ${today()} — stitch ${opts.stitchWidth.toFixed(2)} × ${(opts.stitchHeight ?? opts.stitchWidth * 1.4).toFixed(2)}, amplitude ${opts.amplitude}.`,
+      `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
+  };
+}
+
+export function applyKnitPatch(mesh: MeshData, opts: KnitTextureOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const baked = knitTextureUVPatch(mesh, opts, selectedTris);
+  return knitManifoldResult(opts, baked, 'knit texture (patch)');
+}
+
+export async function applyKnitPatchAsync(mesh: MeshData, opts: KnitTextureOptions, selectedTris: Set<number>): Promise<ModifierManifoldResult> {
+  const baked = await knitTextureUVPatchAsync(mesh, opts, selectedTris);
+  return knitManifoldResult(opts, baked, 'knit texture (patch)');
+}
+
+// --- General patch helper (all non-knit modifiers) ---
+
+function extractPatchMesh(mesh: MeshData, selectedTris: Set<number>): {
+  patchMesh: MeshData;
+  localToGlobal: number[];
+  hopDist: Float32Array;
+} {
+  const patchVertSet = new Set<number>();
+  for (const t of selectedTris) {
+    patchVertSet.add(mesh.triVerts[t * 3]);
+    patchVertSet.add(mesh.triVerts[t * 3 + 1]);
+    patchVertSet.add(mesh.triVerts[t * 3 + 2]);
+  }
+  const localToGlobal = Array.from(patchVertSet);
+  const globalToLocal = new Map<number, number>();
+  for (let i = 0; i < localToGlobal.length; i++) globalToLocal.set(localToGlobal[i], i);
+  const numPatchVert = localToGlobal.length;
+
+  const fullPos = mesh.numProp === 3 ? mesh.vertProperties : extractPositions(mesh);
+  const patchPos = new Float32Array(numPatchVert * 3);
+  for (let i = 0; i < numPatchVert; i++) {
+    const g = localToGlobal[i];
+    patchPos[i * 3]     = fullPos[g * 3];
+    patchPos[i * 3 + 1] = fullPos[g * 3 + 1];
+    patchPos[i * 3 + 2] = fullPos[g * 3 + 2];
+  }
+
+  const patchTriVerts = new Uint32Array(selectedTris.size * 3);
+  let tIdx = 0;
+  for (const t of selectedTris) {
+    patchTriVerts[tIdx++] = globalToLocal.get(mesh.triVerts[t * 3])!;
+    patchTriVerts[tIdx++] = globalToLocal.get(mesh.triVerts[t * 3 + 1])!;
+    patchTriVerts[tIdx++] = globalToLocal.get(mesh.triVerts[t * 3 + 2])!;
+  }
+
+  // BFS hop distance from boundary vertices for displacement falloff
+  const patchNeighbors: Set<number>[] = Array.from({ length: numPatchVert }, () => new Set());
+  for (let i = 0; i < selectedTris.size; i++) {
+    const v0 = patchTriVerts[i * 3], v1 = patchTriVerts[i * 3 + 1], v2 = patchTriVerts[i * 3 + 2];
+    patchNeighbors[v0].add(v1); patchNeighbors[v0].add(v2);
+    patchNeighbors[v1].add(v0); patchNeighbors[v1].add(v2);
+    patchNeighbors[v2].add(v0); patchNeighbors[v2].add(v1);
+  }
+  const hopDist = new Float32Array(numPatchVert).fill(Infinity);
+  const bfsQueue: number[] = [];
+  for (let t = 0; t < mesh.numTri; t++) {
+    if (selectedTris.has(t)) continue;
+    for (let k = 0; k < 3; k++) {
+      const l = globalToLocal.get(mesh.triVerts[t * 3 + k]);
+      if (l !== undefined && hopDist[l] === Infinity) { hopDist[l] = 0; bfsQueue.push(l); }
+    }
+  }
+  for (let qi = 0; qi < bfsQueue.length; qi++) {
+    const v = bfsQueue[qi];
+    for (const nb of patchNeighbors[v]) {
+      if (hopDist[nb] === Infinity) { hopDist[nb] = hopDist[v] + 1; bfsQueue.push(nb); }
+    }
+  }
+
+  return {
+    patchMesh: { vertProperties: patchPos, triVerts: patchTriVerts, numVert: numPatchVert, numTri: selectedTris.size, numProp: 3 },
+    localToGlobal,
+    hopDist,
+  };
+}
+
+const PATCH_FALLOFF_HOPS = 2;
+
+/** Apply any displacement modifier to a selected patch only.
+ *  Runs the modifier without subdivision so vertex count stays 1:1.
+ *  Displacement fades to zero over PATCH_FALLOFF_HOPS topology hops for seamless blending.
+ *  When `preSubdivide` is provided the full mesh is densified first (same target
+ *  as the whole-model path) so coarse meshes show the same texture detail as the
+ *  whole-model path does. */
+function runOnPatch(
+  mesh: MeshData,
+  selectedTris: Set<number>,
+  modFn: (sub: MeshData) => MeshData,
+  preSubdivide?: { maxEdge: number; maxRounds: number },
+): MeshData {
+  let baseMesh = mesh;
+  let baseTris = selectedTris;
+  if (preSubdivide) {
+    const result = subdivideWithMask(mesh, preSubdivide, selectedTris);
+    baseMesh = result.mesh;
+    baseTris = result.selectedTris;
+  }
+  const { patchMesh, localToGlobal, hopDist } = extractPatchMesh(baseMesh, baseTris);
+  const numPatchVert = localToGlobal.length;
+  const origPos = patchMesh.vertProperties as Float32Array;
+
+  const modified = modFn(patchMesh);
+  if (modified.numVert !== numPatchVert) return baseMesh; // unexpected subdivision — bail cleanly
+
+  const modPos = modified.numProp === 3
+    ? modified.vertProperties as Float32Array
+    : extractPositions(modified);
+
+  const fullPos = baseMesh.numProp === 3
+    ? Float32Array.from(baseMesh.vertProperties)
+    : extractPositions(baseMesh);
+
+  // When the selection is very small or the mesh is coarse, every patch vertex
+  // may also appear in a non-selected triangle (all hopDist = 0). Normal falloff
+  // would give weight 0 everywhere → invisible result. Detect this and apply
+  // full displacement instead; the slight boundary ripple is far less bad than
+  // seeing nothing.
+  let maxFiniteHop = 0;
+  for (let i = 0; i < numPatchVert; i++) {
+    if (hopDist[i] !== Infinity && hopDist[i] > maxFiniteHop) maxFiniteHop = hopDist[i];
+  }
+  const allBoundary = maxFiniteHop === 0;
+
+  for (let i = 0; i < numPatchVert; i++) {
+    const w = allBoundary ? 1 : Math.min(1, hopDist[i] / PATCH_FALLOFF_HOPS);
+    const g = localToGlobal[i];
+    fullPos[g * 3]     = origPos[i * 3]     + (modPos[i * 3]     - origPos[i * 3])     * w;
+    fullPos[g * 3 + 1] = origPos[i * 3 + 1] + (modPos[i * 3 + 1] - origPos[i * 3 + 1]) * w;
+    fullPos[g * 3 + 2] = origPos[i * 3 + 2] + (modPos[i * 3 + 2] - origPos[i * 3 + 2]) * w;
+  }
+
+  return { vertProperties: fullPos, triVerts: baseMesh.triVerts, numVert: baseMesh.numVert, numTri: baseMesh.numTri, numProp: 3, triColors: baseMesh.triColors };
+}
+
+export function applyFuzzyPatch(mesh: MeshData, opts: FuzzySkinOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const diag = modelDiagonal(mesh) || 10;
+  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.scale), opts.quality ?? 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => fuzzySkin(sub, { ...opts, subdivide: false }), pre);
+  return { kind: 'manifold', label: 'fuzzy skin (patch)', mesh: patched, code: manifoldWrapper([`Fuzzy skin patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
+}
+
+export function applyCablePatch(mesh: MeshData, opts: CableKnitOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const diag = modelDiagonal(mesh) || 10;
+  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.cableWidth), opts.quality ?? 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => cableKnit(sub, { ...opts, subdivide: false }), pre);
+  return { kind: 'manifold', label: 'cable knit (patch)', mesh: patched, code: manifoldWrapper([`Cable knit patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
+}
+
+export function applyWafflePatch(mesh: MeshData, opts: WaffleStitchOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const diag = modelDiagonal(mesh) || 10;
+  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.cellWidth), opts.quality ?? 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => waffleStitch(sub, { ...opts, subdivide: false }), pre);
+  return { kind: 'manifold', label: 'waffle stitch (patch)', mesh: patched, code: manifoldWrapper([`Waffle stitch patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
+}
+
+export function applyFurPatch(mesh: MeshData, opts: FurVelvetOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const diag = modelDiagonal(mesh) || 10;
+  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.fiberSpacing), opts.quality ?? 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => furVelvet(sub, { ...opts, subdivide: false }), pre);
+  return { kind: 'manifold', label: 'fur / velvet (patch)', mesh: patched, code: manifoldWrapper([`Fur/velvet patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
+}
+
+export function applyWovenPatch(mesh: MeshData, opts: WovenFabricOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const diag = modelDiagonal(mesh) || 10;
+  const pre = patchSubdivTarget(diag, Math.max(1e-4, opts.threadSpacing), opts.quality ?? 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => wovenFabric(sub, { ...opts, subdivide: false }), pre);
+  return { kind: 'manifold', label: 'woven fabric (patch)', mesh: patched, code: manifoldWrapper([`Woven fabric patch applied on ${today()}.`, `The textured mesh is baked onto api.imports[0].`]) };
+}
+
+export function applySmoothPatch(mesh: MeshData, opts: SmoothOptions, selectedTris: Set<number>): ModifierManifoldResult {
+  const diag = modelDiagonal(mesh) || 10;
+  // Smooth has no feature size — use diagonal/20 as the target (coarse-mesh safety net only)
+  const pre = patchSubdivTarget(diag, diag / 20, 3);
+  const patched = runOnPatch(mesh, selectedTris, (sub) => smoothSurface(sub, { ...opts, subdivide: false }), pre);
+  return { kind: 'manifold', label: 'smoothed (patch)', mesh: patched, code: manifoldWrapper([`Smooth patch applied on ${today()}.`, `The rounded mesh is baked onto api.imports[0].`]) };
+}
+
+export function defaultCableOptions(mesh: MeshData): Required<CableKnitOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  const cw = d * 0.08;
+  return {
+    amplitude: d * 0.03,
+    cableWidth: cw,
+    cablePitch: cw * 2.5,
+    plyWidth: cw * 0.3,
+    grainAngleDeg: 0,
+    variation: 0.08,
+    seed: 1,
+    quality: 3,
+    subdivide: true,
+  };
+}
+
+export function defaultWaffleOptions(mesh: MeshData): Required<WaffleStitchOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  return {
+    amplitude: d * 0.025,
+    cellWidth: d * 0.06,
+    cellHeight: d * 0.06,
+    sharpness: 3,
+    rowOffset: 0,
+    grainAngleDeg: 0,
+    seed: 1,
+    quality: 3,
+    subdivide: true,
+  };
+}
+
+export function defaultFurOptions(mesh: MeshData): Required<FurVelvetOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  const fs = d * 0.02;
+  return {
+    amplitude: d * 0.025,
+    fiberSpacing: fs,
+    fiberLength: fs * 6,
+    octaves: 2,
+    grainAngleDeg: 0,
+    seed: 1,
+    quality: 3,
+    subdivide: true,
+  };
+}
+
+export function defaultWovenOptions(mesh: MeshData): Required<WovenFabricOptions> {
+  const d = modelDiagonal(mesh) || 10;
+  return {
+    amplitude: d * 0.02,
+    threadSpacing: d * 0.04,
+    threadWidth: 0.4,
+    underDepth: 0.3,
+    grainAngleDeg: 0,
+    seed: 1,
+    quality: 3,
+    subdivide: true,
+  };
+}
+
+export function applyCable(mesh: MeshData, opts: CableKnitOptions): ModifierManifoldResult {
+  const baked = cableKnit(mesh, opts);
+  return {
+    kind: 'manifold',
+    label: 'cable knit',
+    mesh: baked,
+    code: manifoldWrapper([
+      `Cable knit applied on ${today()} — cable width ${opts.cableWidth.toFixed(2)}, pitch ${(opts.cablePitch ?? opts.cableWidth * 2.5).toFixed(2)}.`,
+      `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
+  };
+}
+
+export function applyWaffle(mesh: MeshData, opts: WaffleStitchOptions): ModifierManifoldResult {
+  const baked = waffleStitch(mesh, opts);
+  return {
+    kind: 'manifold',
+    label: 'waffle stitch',
+    mesh: baked,
+    code: manifoldWrapper([
+      `Waffle stitch applied on ${today()} — cell ${opts.cellWidth.toFixed(2)} × ${(opts.cellHeight ?? opts.cellWidth).toFixed(2)}, sharpness ${opts.sharpness ?? 3}.`,
+      `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
+  };
+}
+
+export function applyFur(mesh: MeshData, opts: FurVelvetOptions): ModifierManifoldResult {
+  const baked = furVelvet(mesh, opts);
+  return {
+    kind: 'manifold',
+    label: 'fur / velvet',
+    mesh: baked,
+    code: manifoldWrapper([
+      `Fur/velvet texture applied on ${today()} — fiber spacing ${opts.fiberSpacing.toFixed(3)}, length ${(opts.fiberLength ?? opts.fiberSpacing * 6).toFixed(3)}.`,
+      `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
+  };
+}
+
+export function applyWoven(mesh: MeshData, opts: WovenFabricOptions): ModifierManifoldResult {
+  const baked = wovenFabric(mesh, opts);
+  return {
+    kind: 'manifold',
+    label: 'woven fabric',
+    mesh: baked,
+    code: manifoldWrapper([
+      `Woven fabric applied on ${today()} — thread spacing ${opts.threadSpacing.toFixed(3)}, width ${opts.threadWidth ?? 0.4}.`,
+      `The textured mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
+  };
+}
+
+export function applySmooth(mesh: MeshData, opts: SmoothOptions): ModifierManifoldResult {
+  const baked = smoothSurface(mesh, opts);
+  return {
+    kind: 'manifold',
+    label: 'smoothed',
+    mesh: baked,
+    code: manifoldWrapper([
+      `Smoothed on ${today()} — ${opts.iterations ?? 4} Taubin pass pairs.`,
+      `The rounded mesh is baked onto api.imports[0]. Re-apply from the Surface panel to retune.`,
+    ]),
+  };
+}
+
+export interface VoxelizeModifierOptions extends VoxelizeOptions {
+  /** Emit a `.smooth()` call so the voxels render with rounded corners. */
+  smooth?: boolean;
+}
+
+export function applyScale(
+  mesh: MeshData,
+  sx: number,
+  sy: number,
+  sz: number,
+): ModifierManifoldResult {
+  const baked = scaleMesh(mesh, sx, sy, sz);
+  const uniform = sx === sy && sy === sz;
+  const desc = uniform
+    ? `${(sx * 100).toFixed(1)}%`
+    : `X×${sx.toFixed(4)} Y×${sy.toFixed(4)} Z×${sz.toFixed(4)}`;
+  return {
+    kind: 'manifold',
+    label: `scaled (${desc})`,
+    mesh: baked,
+    code: manifoldWrapper([
+      `Scaled on ${today()} — ${desc}.`,
+      `The resized mesh is baked onto api.imports[0]. Open the Resize panel to scale further.`,
+    ]),
+  };
+}
+
+export function applyVoxelize(mesh: MeshData, opts: VoxelizeModifierOptions): ModifierVoxelResult {
+  const grid = voxelizeMesh(mesh, opts);
+  // encodeGrid serializes only occupancy + colors (not the surfacing flag), so
+  // encode first, then flip the in-memory grid to smooth purely so the preview
+  // mesh below matches what the emitted `v.smooth()` produces at runtime.
+  const encoded = encodeGrid(grid);
+  if (opts.smooth) grid.smooth();
+  const smoothCall = opts.smooth ? `\nv.smooth();` : '';
+  const code = `// Voxelized from the current model on ${today()} (resolution ${opts.resolution ?? 32}).
+// Edit below — toggle "Smooth voxels" for rounded corners, or v.fillBox(...) to extend.
+const { voxels } = api;
+const v = voxels.decode(${JSON.stringify(encoded)});${smoothCall}
+return v;
+`;
+  // `meshGrid` honors the grid's surfacing flag (blocks/smooth) and carries
+  // per-voxel colors, so the preview matches what the emitted code renders.
+  return {
+    kind: 'voxel',
+    label: opts.smooth ? 'voxelized (smooth)' : 'voxelized',
+    code,
+    previewMesh: meshGrid(grid),
+  };
+}

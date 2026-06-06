@@ -1,0 +1,8 @@
+# ast-grep config — structural lint for Partwright's UI conventions.
+# Rules are advisory candidate-finders (see docs/agent-tooling.md): they
+# over-report by design and feed the work-reviewer agent, which reasons about
+# each hit against the diff. `ast-grep scan` exits non-zero only on
+# `error`-severity rules, so today's all-`warning`/`hint` set keeps CI green
+# while still gating any rule later promoted to `error` after cleanup.
+ruleDirs:
+  - .ast-grep/rules

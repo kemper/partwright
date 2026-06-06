@@ -12,17 +12,25 @@ import {
   type Session,
   type ExportedSession,
 } from '../storage/sessionManager';
+import type { ImportedMesh } from '../import/importedMesh';
 import { getSessionLatestVersion, getSessionVersionCount } from '../storage/db';
 import { languageBadge } from './languageBadge';
+import { showToast } from './toast';
+import { confirmDialog, promptDialog } from './dialogs';
 
 let modalEl: HTMLElement | null = null;
 let onLoadVersion: ((code: string) => void | Promise<void>) | null = null;
-let regenerateThumbnailFn: ((code: string) => Promise<Blob | null>) | null = null;
+type RegenerateThumbnailFn = (
+  code: string,
+  importedMeshes: ImportedMesh[] | undefined,
+) => Promise<Blob | null>;
+
+let regenerateThumbnailFn: RegenerateThumbnailFn | null = null;
 let onNewSessionFn: (() => void) | null = null;
 
 export function initSessionList(
   loadCode: (code: string) => void | Promise<void>,
-  regenerateThumbnail?: (code: string) => Promise<Blob | null>,
+  regenerateThumbnail?: RegenerateThumbnailFn,
   onNewSession?: () => void,
 ): void {
   onLoadVersion = loadCode;
@@ -71,15 +79,15 @@ export async function showSessionList(): Promise<void> {
         const text = await file.text();
         const data = JSON.parse(text) as ExportedSession;
         if ((!data.partwright && !data.mainifold) || !data.session || !Array.isArray(data.versions)) {
-          alert('Invalid session file.');
+          showToast('Invalid session file.', { variant: 'warn', source: 'import' });
           return;
         }
-        const session = await importSession(data, regenerateThumbnailFn ?? undefined, (msg) => alert(msg));
+        const session = await importSession(data, regenerateThumbnailFn ?? undefined, (msg) => showToast(msg, { variant: 'warn', source: 'import' }));
         const version = await openSession(session.id);
         if (version && onLoadVersion) onLoadVersion(version.code);
         closeModal();
       } catch (e) {
-        alert('Failed to import session: ' + (e as Error).message);
+        showToast('Failed to import session: ' + (e as Error).message, { variant: 'warn', source: 'import' });
       }
     });
     input.click();
@@ -90,7 +98,7 @@ export async function showSessionList(): Promise<void> {
   clearBtn.className = 'px-3 py-1 rounded text-xs bg-red-900/50 hover:bg-red-800 text-red-300 transition-colors';
   clearBtn.textContent = 'Clear All';
   clearBtn.addEventListener('click', async () => {
-    if (confirm('Delete ALL sessions and versions? This cannot be undone.')) {
+    if (await confirmDialog('Delete ALL sessions and versions? This cannot be undone.', { title: 'Clear all sessions', confirmLabel: 'Delete all', danger: true })) {
       await clearAllSessions();
       closeModal();
     }
@@ -101,7 +109,7 @@ export async function showSessionList(): Promise<void> {
   newBtn.className = 'px-3 py-1 rounded text-xs bg-blue-600 hover:bg-blue-500 text-white transition-colors';
   newBtn.textContent = '+ New Session';
   newBtn.addEventListener('click', async () => {
-    const name = prompt('Session name:');
+    const name = await promptDialog('Session name:', { title: 'New session', placeholder: 'Untitled' });
     if (name === null) return;
     await createSession(name || undefined);
     onNewSessionFn?.();
@@ -217,9 +225,10 @@ async function createSessionRow(session: Session): Promise<HTMLElement> {
     const data = await exportSession(session.id);
     if (!data) return;
     if (data.versions.length === 0) {
-      alert(
-        `"${session.name}" has no saved versions, so the export would be empty.\n\n` +
+      showToast(
+        `"${session.name}" has no saved versions, so the export would be empty. ` +
         `Open the session, save a version (\u{1F4BE} Save), then export.`,
+        { variant: 'warn', source: 'export' },
       );
       return;
     }
@@ -238,7 +247,7 @@ async function createSessionRow(session: Session): Promise<HTMLElement> {
   delBtn.textContent = 'Delete';
   delBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
-    if (confirm(`Delete "${session.name}" and all its versions?`)) {
+    if (await confirmDialog(`Delete "${session.name}" and all its versions?`, { title: 'Delete session', confirmLabel: 'Delete', danger: true })) {
       await deleteSession(session.id);
       row.remove();
     }

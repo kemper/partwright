@@ -12,10 +12,17 @@ export interface Session {
    *  fall back to the first part by `order`. Set on every part switch so the
    *  editor restores to the part the user last worked on. */
   currentPartId?: string;
-  /** Last-used AI provider + model for this session, restored when the session
-   *  is reopened so each session remembers which assistant was driving it.
-   *  Plain strings to keep the storage layer decoupled from the AI types. */
-  aiPreference?: { provider: string; model: string };
+  /** Last-used AI config for this session, restored when the session is
+   *  (re)opened or taken control of in another tab — so each session carries
+   *  its own assistant/provider/model and toggle settings across tabs without
+   *  live-bleeding between concurrently-open windows.
+   *
+   *  `provider`/`model` are the human-readable summary (and the back-compat
+   *  shape pre-dating `toggles`). `toggles` is the full {@link ChatToggles}
+   *  snapshot (stored opaquely as a record to keep this storage layer decoupled
+   *  from the AI types) and `preset` mirrors the settings preset. Sessions saved
+   *  before this field gains `toggles` simply restore provider/model only. */
+  aiPreference?: { provider: string; model: string; toggles?: Record<string, unknown>; preset?: string };
 }
 
 /** A modeling target within a session. A session holds one or more parts; each
@@ -66,6 +73,11 @@ export function presetIndex(label: string | undefined): number {
 type LegacyImageAngle = 'front' | 'right' | 'back' | 'left' | 'top' | 'perspective';
 const LEGACY_ANGLES: readonly LegacyImageAngle[] = ['front', 'right', 'back', 'left', 'top', 'perspective'];
 
+/** The mesh-level operation that produced a version. Set alongside
+ *  {@link Version.parentVersionId} when a version is derived from another
+ *  (e.g. a simplify run that wraps the result in `Manifold.ofMesh`). */
+export type VersionOperation = 'simplify' | 'enhance' | 'paint' | 'import' | 'manual';
+
 export interface Version {
   id: string;
   sessionId: string;
@@ -100,25 +112,44 @@ export interface Version {
    *  Only keys that differ from the model defaults are stored; absent when the
    *  version uses all defaults (or declares no parameters). */
   paramValues?: Record<string, number | boolean | string>;
+  /** Companion SCAD files for this version. Maps MEMFS-relative path → source
+   *  text (e.g. `{"models.scad": "function models() = ..."}`) so that
+   *  `include <models.scad>` inside the main code resolves at compile time.
+   *  Only present for SCAD sessions that need companion files. */
+  companionFiles?: Record<string, string>;
+  /** The version this was derived from. Set when a mesh-capture operation
+   *  (simplify, enhance, paint-bake, import) creates a child version from an
+   *  existing parametric version. Absent for versions created from scratch.
+   *  The reference may become null if the parent is later deleted. */
+  parentVersionId?: string | null;
+  /** The operation that produced this version. Set alongside
+   *  {@link parentVersionId} when the version is derived from another. */
+  operation?: VersionOperation | null;
 }
 
-/** Editor working buffer scoped to (session, language). One per language per
- *  session: switching the toolbar's language toggle stashes the previous
- *  language's code here and restores the target language's. Persisted so a
- *  reload doesn't lose in-progress work in either language. Cascade-deleted
- *  with the session. */
+/** Editor working buffer scoped to (session, part, language). One slot per
+ *  (part, language): switching parts or the toolbar language toggle stashes the
+ *  outgoing code here and restores the target slot's. Persisted so a reload
+ *  doesn't lose in-progress work. Cascade-deleted with the session (sessionId
+ *  index); individual part drafts are also pruned when the part is deleted. */
 export interface SessionDraft {
-  /** Composite key: `${sessionId}:${language}`. Lets the cascade delete on
-   *  session removal walk a simple `sessionId` index. */
+  /** Composite key: `${sessionId}:${partId}:${language}` (with partId) or
+   *  legacy `${sessionId}:${language}` (pre-per-part drafts). The cascade
+   *  delete on session removal uses the `sessionId` index, which covers both
+   *  formats. */
   id: string;
   sessionId: string;
   language: 'manifold-js' | 'scad' | 'replicad' | 'voxel';
   code: string;
+  /** Unsaved companion SCAD files (path → content) for this draft, so a reload
+   *  recovers companion-file edits the same way it recovers main-code edits.
+   *  Only written for SCAD drafts that have companions; absent otherwise. */
+  companionFiles?: Record<string, string>;
   updatedAt: number;
 }
 
-function draftId(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): string {
-  return `${sessionId}:${language}`;
+function draftId(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): string {
+  return partId ? `${sessionId}:${partId}:${language}` : `${sessionId}:${language}`;
 }
 
 export interface SessionNote {
@@ -132,7 +163,7 @@ const DB_NAME = 'partwright';
 const LEGACY_DB_NAME = 'mainifold';
 const LEGACY_MIGRATION_KEY = 'partwright-migrated-mainifold-db';
 const PARTS_MIGRATION_KEY = 'partwright-migrated-parts';
-const DB_VERSION = 6;
+const DB_VERSION = 8;
 
 /** Opens the partwright IndexedDB. Exposed so the AI subsystem can attach
  *  its own stores (`aiKeys`, `aiChats`) without duplicating the connection. */
@@ -211,6 +242,27 @@ function openDB(): Promise<IDBDatabase> {
         const store = db.createObjectStore('drafts', { keyPath: 'id' });
         store.createIndex('sessionId', 'sessionId', { unique: false });
       }
+      // v7: source-image store for relief imports. One row per relief session
+      // holds the original picked image/SVG blob so the import wizard can be
+      // reopened (Relief Studio "Edit image", or the Import → relief entry)
+      // pre-loaded with the source — no re-upload needed. Keyed by sessionId so
+      // the session-delete cascade can drop it with a direct key delete.
+      if (!db.objectStoreNames.contains('reliefSources')) {
+        db.createObjectStore('reliefSources', { keyPath: 'sessionId' });
+      }
+      // v8: persisted recent-imports / recent-exports inboxes. Each holds the
+      // last N files the user imported / exported (with the underlying Blob) so
+      // the toolbar's Recent lists survive a page refresh. The newest-first
+      // order and the 10-entry cap are enforced by the in-memory ring buffers
+      // (src/import/importInbox.ts, src/export/exportInbox.ts) — these stores
+      // just mirror each mutation. Keyed by the entry id so a dedupe/overflow
+      // eviction maps to a direct key delete.
+      if (!db.objectStoreNames.contains('importInbox')) {
+        db.createObjectStore('importInbox', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('exportInbox')) {
+        db.createObjectStore('exportInbox', { keyPath: 'id' });
+      }
     };
     req.onsuccess = () => {
       const db = req.result;
@@ -242,10 +294,19 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 export function generateId(): string {
+  // 12-char base62 IDs for local IndexedDB record keys (sessions, parts,
+  // versions, images, chat messages). Sourced from crypto.getRandomValues
+  // rather than Math.random — these aren't security tokens, but a secure
+  // source keeps the entropy unimpeachable and clears static-analysis flags.
+  // Rejection sampling (drop bytes ≥ 248 = 4×62) keeps the distribution
+  // uniform, avoiding the modulo bias of a raw `byte % 62`.
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let id = '';
-  for (let i = 0; i < 12; i++) {
-    id += chars[Math.floor(Math.random() * chars.length)];
+  while (id.length < 12) {
+    const bytes = crypto.getRandomValues(new Uint8Array(12 - id.length));
+    for (const b of bytes) {
+      if (b < 248) id += chars[b % 62];
+    }
   }
   return id;
 }
@@ -547,8 +608,13 @@ export async function deleteSession(id: string): Promise<void> {
   // NotFoundError when the upgrade hasn't run yet.
   const stores = ['sessions', 'versions', 'notes', 'parts', 'aiChats'];
   if (db.objectStoreNames.contains('drafts')) stores.push('drafts');
+  // `reliefSources` only exists from v7 — guard like `drafts` above.
+  if (db.objectStoreNames.contains('reliefSources')) stores.push('reliefSources');
   const txn = db.transaction(stores, 'readwrite');
   txn.objectStore('sessions').delete(id);
+  // The relief source blob is keyed by sessionId, so a direct key delete clears
+  // it (no index walk needed). No-op for non-relief sessions.
+  if (db.objectStoreNames.contains('reliefSources')) txn.objectStore('reliefSources').delete(id);
   // Delete all versions, notes, parts, AI chat messages, and editor drafts
   // belonging to this session. Chats are keyed by id but indexed by sessionId,
   // so they're swept here too — otherwise the transcript is orphaned in
@@ -695,6 +761,14 @@ export async function saveVersion(
   language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel',
   /** Customizer parameter overrides for this version (opaque to the db layer). */
   paramValues?: Record<string, number | boolean | string>,
+  /** Companion SCAD files (path → source) for this version (opaque to the db layer). */
+  companionFiles?: Record<string, string>,
+  /** The version this was derived from (e.g. the parametric version before
+   *  simplify/enhance was applied). Stored so the UI can show provenance and
+   *  offer a one-click jump back to the source. */
+  parentVersionId?: string | null,
+  /** The operation that produced this version. */
+  operation?: VersionOperation | null,
 ): Promise<Version> {
   // Compute the next index and write the version inside ONE readwrite
   // transaction. IndexedDB serializes overlapping readwrite transactions on
@@ -732,6 +806,9 @@ export async function saveVersion(
         ...(annotations && annotations.length > 0 ? { annotations } : {}),
         ...(importedMeshes && importedMeshes.length > 0 ? { importedMeshes } : {}),
         ...(paramValues && Object.keys(paramValues).length > 0 ? { paramValues } : {}),
+        ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
+        ...(parentVersionId ? { parentVersionId } : {}),
+        ...(operation ? { operation } : {}),
       };
       const putReq = store.put(v);
       putReq.onsuccess = () => resolve(v);
@@ -805,6 +882,40 @@ export async function deleteVersion(id: string): Promise<void> {
   const db = await openDB();
   const txn = db.transaction('versions', 'readwrite');
   txn.objectStore('versions').delete(id);
+  await txComplete(txn);
+}
+
+/** Find all versions in a part whose parentVersionId points to the given id.
+ *  Used to warn the user before deleting a version that other versions depend on. */
+export async function findVersionChildren(parentId: string, partId: string): Promise<Version[]> {
+  const versions = await listVersions(partId);
+  return versions.filter(v => v.parentVersionId === parentId);
+}
+
+/** Clear the parentVersionId field on all versions that reference the given id.
+ *  Called after the user confirms deletion of a parent version. */
+export async function clearVersionParentRefs(parentId: string, partId: string): Promise<void> {
+  const children = await findVersionChildren(parentId, partId);
+  if (children.length === 0) return;
+  const db = await openDB();
+  const txn = db.transaction('versions', 'readwrite');
+  const store = txn.objectStore('versions');
+  // Chain all reads and writes without awaiting between them inside the transaction.
+  let pending = children.length;
+  await new Promise<void>((resolve, reject) => {
+    for (const child of children) {
+      const getReq = store.get(child.id);
+      getReq.onsuccess = () => {
+        const v = getReq.result as Version | null;
+        if (v) {
+          v.parentVersionId = null;
+          store.put(v);
+        }
+        if (--pending === 0) resolve();
+      };
+      getReq.onerror = () => reject(getReq.error);
+    }
+  });
   await txComplete(txn);
 }
 
@@ -882,6 +993,7 @@ export async function clearAllData(): Promise<void> {
   const db = await openDB();
   const stores = ['sessions', 'versions', 'notes', 'parts', 'aiChats'];
   if (db.objectStoreNames.contains('drafts')) stores.push('drafts');
+  if (db.objectStoreNames.contains('reliefSources')) stores.push('reliefSources');
   const txn = db.transaction(stores, 'readwrite');
   txn.objectStore('sessions').clear();
   txn.objectStore('versions').clear();
@@ -892,37 +1004,133 @@ export async function clearAllData(): Promise<void> {
   // left for the Uninstall modal's per-category wipe.
   txn.objectStore('aiChats').clear();
   if (db.objectStoreNames.contains('drafts')) txn.objectStore('drafts').clear();
+  if (db.objectStoreNames.contains('reliefSources')) txn.objectStore('reliefSources').clear();
   await txComplete(txn);
 }
 
-// === Editor drafts (per session, per language) ===
+// === Editor drafts (per session, per part, per language) ===
 
-export async function getDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<SessionDraft | null> {
+export async function getDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<SessionDraft | null> {
   const store = await tx('drafts', 'readonly');
-  return reqToPromise(store.get(draftId(sessionId, language))) as Promise<SessionDraft | null>;
+  return reqToPromise(store.get(draftId(sessionId, language, partId))) as Promise<SessionDraft | null>;
 }
 
-export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string): Promise<void> {
+export async function setDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>): Promise<void> {
   const store = await tx('drafts', 'readwrite');
   const row: SessionDraft = {
-    id: draftId(sessionId, language),
+    id: draftId(sessionId, language, partId),
     sessionId,
     language,
     code,
+    ...(companionFiles && Object.keys(companionFiles).length > 0 ? { companionFiles } : {}),
     updatedAt: Date.now(),
   };
   store.put(row);
   await txComplete(store.transaction);
 }
 
-export async function deleteDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<void> {
-  const store = await tx('drafts', 'readwrite');
-  store.delete(draftId(sessionId, language));
-  await txComplete(store.transaction);
-}
 
 export async function listDrafts(sessionId: string): Promise<SessionDraft[]> {
   const store = await tx('drafts', 'readonly');
   const index = store.index('sessionId');
   return reqToPromise(index.getAll(IDBKeyRange.only(sessionId))) as Promise<SessionDraft[]>;
+}
+
+/** Delete the working buffer for a single (session, part, language) triple.
+ *  Called after a version is saved so a now-superseded draft can't shadow the
+ *  freshly-saved code on the next reload. No-ops when no such draft exists. */
+export async function deleteDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<void> {
+  const store = await tx('drafts', 'readwrite');
+  store.delete(draftId(sessionId, language, partId));
+  await txComplete(store.transaction);
+}
+
+/** Delete all per-part drafts for a given part. Called when a part is removed
+ *  so its stashed buffers don't accumulate. */
+export async function deletePartDrafts(sessionId: string, partId: string): Promise<void> {
+  const all = await listDrafts(sessionId);
+  const prefix = `${sessionId}:${partId}:`;
+  const toDelete = all.filter(d => d.id.startsWith(prefix));
+  if (toDelete.length === 0) return;
+  const store = await tx('drafts', 'readwrite');
+  for (const d of toDelete) store.delete(d.id);
+  await txComplete(store.transaction);
+}
+
+// === Relief source images (per session) ===
+
+/** The original image/SVG a relief session was generated from, kept so the
+ *  import wizard can be reopened pre-loaded with the source (no re-upload).
+ *  Keyed by sessionId. Cascade-deleted in {@link deleteSession}. */
+export interface ReliefSourceRecord {
+  sessionId: string;
+  blob: Blob;
+  filename: string;
+  /** True when the source was an SVG (the wizard routes SVGs differently). */
+  isSvg: boolean;
+  timestamp: number;
+}
+
+export async function getReliefSourceRecord(sessionId: string): Promise<ReliefSourceRecord | null> {
+  const db = await openDB();
+  // Store only exists from v7 — older connections shouldn't throw.
+  if (!db.objectStoreNames.contains('reliefSources')) return null;
+  const store = db.transaction('reliefSources', 'readonly').objectStore('reliefSources');
+  return (await reqToPromise(store.get(sessionId)) as ReliefSourceRecord | undefined) ?? null;
+}
+
+export async function setReliefSourceRecord(record: ReliefSourceRecord): Promise<void> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains('reliefSources')) return;
+  const txn = db.transaction('reliefSources', 'readwrite');
+  txn.objectStore('reliefSources').put(record);
+  await txComplete(txn);
+}
+
+
+// === Recent-imports / recent-exports inboxes (persisted ring buffers) ===
+//
+// Storage primitives for the import/export inboxes. The ring-buffer semantics
+// (dedupe, newest-first ordering, 10-entry cap) live in the inbox modules;
+// db.ts only mirrors the resulting mutations to IndexedDB so the lists survive
+// a refresh. Records are stored by their `id` and carry a Blob (structured-
+// clone handles it). Stores only exist from v8, so every accessor guards on
+// `objectStoreNames.contains` like the v7 reliefSources accessors above.
+
+export type InboxStore = 'importInbox' | 'exportInbox';
+
+/** All persisted entries for an inbox, used to rehydrate the in-memory buffer
+ *  on boot. Order isn't guaranteed by IndexedDB; the caller re-sorts. */
+export async function getInboxRecords<T>(store: InboxStore): Promise<T[]> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains(store)) return [];
+  const txn = db.transaction(store, 'readonly');
+  const records = await reqToPromise(txn.objectStore(store).getAll()) as T[];
+  await txComplete(txn);
+  return records;
+}
+
+/** Apply one ring-buffer mutation in a single transaction: drop the ids evicted
+ *  by a dedupe or overflow, then put the freshly-added entry. */
+export async function applyInboxMutation<T extends { id: string }>(
+  store: InboxStore,
+  put: T | null,
+  deleteIds: string[],
+): Promise<void> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains(store)) return;
+  const txn = db.transaction(store, 'readwrite');
+  const os = txn.objectStore(store);
+  for (const id of deleteIds) os.delete(id);
+  if (put) os.put(put);
+  await txComplete(txn);
+}
+
+/** Empty an inbox store (backs the toolbar's "Clear" action). */
+export async function clearInboxStore(store: InboxStore): Promise<void> {
+  const db = await openDB();
+  if (!db.objectStoreNames.contains(store)) return;
+  const txn = db.transaction(store, 'readwrite');
+  txn.objectStore(store).clear();
+  await txComplete(txn);
 }

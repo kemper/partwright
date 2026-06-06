@@ -64,6 +64,58 @@ export async function captureIsoViews(): Promise<ImageSource | null> {
   return { data, mediaType: 'image/png', label: 'iso views (front, right, top, iso)' };
 }
 
+/**
+ * Tile the session's reference images into a single labeled grid PNG, so the
+ * `getReferenceImages` tool can hand the model ALL of them in one multimodal
+ * block (the tool-result channel carries only one image). Each cell shows the
+ * image contain-fit into a square with its caption beneath. Returns null when
+ * there are no images or the canvas can't be created.
+ */
+export async function compositeReferenceGrid(
+  images: Array<{ src: string; label?: string }>,
+): Promise<ImageSource | null> {
+  if (images.length === 0) return null;
+  const tile = images.length > 9 ? 240 : 360;
+  const cols = Math.ceil(Math.sqrt(images.length));
+  const rows = Math.ceil(images.length / cols);
+  const cellH = tile + LABEL_HEIGHT;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = cols * tile;
+  canvas.height = rows * cellH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.fillStyle = '#f4f4f5';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let i = 0; i < images.length; i++) {
+    const x = (i % cols) * tile;
+    const y = Math.floor(i / cols) * cellH;
+    let img: HTMLImageElement | null = null;
+    try { img = await loadImage(images[i].src); } catch { img = null; }
+    if (img && img.width > 0 && img.height > 0) {
+      const scale = Math.min(tile / img.width, tile / img.height);
+      const w = img.width * scale, h = img.height * scale;
+      ctx.drawImage(img, x + (tile - w) / 2, y + (tile - h) / 2, w, h);
+    } else {
+      ctx.fillStyle = '#3f3f46';
+      ctx.fillRect(x, y, tile, tile);
+    }
+    ctx.fillStyle = '#27272a';
+    ctx.fillRect(x, y + tile, tile, LABEL_HEIGHT);
+    ctx.fillStyle = '#f4f4f5';
+    ctx.font = '13px -apple-system, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    const label = images[i].label?.trim() || `#${i + 1}`;
+    ctx.fillText(label, x + tile / 2, y + tile + 16);
+  }
+
+  const blob = await canvasToBlob(canvas, 'image/png');
+  if (!blob) return null;
+  const data = await blobToBase64(blob);
+  return { data, mediaType: 'image/png', label: `${images.length} reference image(s)` };
+}
+
 /** Convert a user-supplied File (drag-drop or paste) to an ImageSource.
  *  Rejects anything that isn't an image. */
 export async function fileToImageSource(file: File): Promise<ImageSource | null> {

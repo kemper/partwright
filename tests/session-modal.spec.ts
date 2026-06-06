@@ -54,17 +54,21 @@ test.describe('Session modal', () => {
     }, MARKER);
     expect(await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getCode())).toContain(MARKER);
 
-    // The modal's New Session button prompts for a name — accept it.
-    page.on('dialog', (d) => d.accept('Fresh Session'));
-
     await page.locator('#btn-sessions').click();
     await expect(page.getByRole('heading', { name: 'Sessions' })).toBeVisible();
     await page.locator('button', { hasText: '+ New Session' }).click();
 
-    // Editor now holds the fresh default, not the old session's code.
+    // The New Session button raises the in-app prompt dialog (was a native
+    // prompt) — fill the name and confirm.
+    const prompt = page.getByRole('dialog');
+    await prompt.locator('input').fill('Fresh Session');
+    await prompt.getByRole('button', { name: 'OK' }).click();
+
+    // Editor now holds the fresh manifold-js default starter, not the old
+    // session's code. The default seeds the CrossSection-based starter model.
     await expect
       .poll(() => page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getCode()))
-      .toContain('// New session');
+      .toContain('CrossSection');
     expect(await page.evaluate(() => (window as unknown as { partwright: PW }).partwright.getCode())).not.toContain(
       MARKER,
     );
