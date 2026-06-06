@@ -108,6 +108,15 @@ export interface AppConfig {
     pointerGraceMs: number;
     /** Max time (ms) to wait for thumbnail generation before giving up. */
     thumbnailTimeoutMs: number;
+    /** Projected triangle count above which the Quality panel's Apply asks for
+     *  a Proceed/Cancel confirmation before running an enhance (the result is
+     *  heavy and slow to display). */
+    enhanceWarnTriangles: number;
+    /** Hard ceiling on an enhance result. The geometry Worker refuses to return
+     *  a refined mesh larger than this, and Apply won't run a target above it —
+     *  prevents a runaway refine from freezing the main thread when the giant
+     *  result is committed to the viewport. */
+    enhanceMaxTriangles: number;
   };
   import: {
     /** Vertex-weld tolerance for STL imports (world units). */
@@ -214,6 +223,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     offscreenIdleDisposeMs: 10_000,
     pointerGraceMs: 350,
     thumbnailTimeoutMs: 4000,
+    enhanceWarnTriangles: 1_000_000,
+    enhanceMaxTriangles: 5_000_000,
   },
   import: {
     stlWeldTolerance: 1e-5,

@@ -48,7 +48,7 @@ import { sourceUsesManifoldText, preloadTextFonts } from './textGlyphs';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
 import { setCircularSegmentsOverride } from './qualitySettings';
 import type { Language } from './engines/types';
-import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, type SimplifyResult, type EnhanceResult } from './simplify';
+import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, isEnhanceExceeded, type SimplifyResult, type EnhanceResult, type EnhanceExceeded } from './simplify';
 import type { MeshData } from './types';
 import { performCut, type CutParams } from '../cut/cutWorker';
 
@@ -364,7 +364,7 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── enhance ────────────────────────────────────────────────────────────
   if (msg.type === 'enhance') {
-    const { callId, mesh, targetTriangles, maxEdgeLength, edgeLength } = msg as unknown as {
+    const { callId, mesh, targetTriangles, maxEdgeLength, edgeLength, maxTriangles } = msg as unknown as {
       callId: string;
       mesh: MeshData;
       targetTriangles: number;
@@ -374,6 +374,10 @@ self.onmessage = async (event: MessageEvent) => {
       // size" knob. Splits only edges longer than this, so the larger triangles
       // densify first.
       edgeLength?: number;
+      // Hard ceiling on the refined triangle count — the Worker refuses to
+      // return a mesh larger than this so a runaway refine can't freeze the
+      // main thread when the result is committed.
+      maxTriangles?: number;
     };
     if (!manifoldReady) {
       self.postMessage({
@@ -388,12 +392,13 @@ self.onmessage = async (event: MessageEvent) => {
     try {
       baseManifold = mod.Manifold.ofMesh(mesh);
       const direct = typeof edgeLength === 'number' && edgeLength > 0;
-      let result: EnhanceResult | null;
+      let result: EnhanceResult | EnhanceExceeded | null;
       if (direct) {
         self.postMessage({ type: 'enhance_progress', callId, fraction: 0 });
         result = refineToEdgeLength(
           baseManifold as unknown as Parameters<typeof refineToEdgeLength>[0],
           edgeLength,
+          maxTriangles,
         );
         self.postMessage({ type: 'enhance_progress', callId, fraction: 1 });
       } else {
@@ -406,6 +411,7 @@ self.onmessage = async (event: MessageEvent) => {
             return new Promise<void>(r => setTimeout(r, 0));
           },
           () => enhanceCancelFlags.get(callId) === true,
+          maxTriangles,
         );
       }
       const cancelled = enhanceCancelFlags.get(callId) === true;
@@ -414,6 +420,13 @@ self.onmessage = async (event: MessageEvent) => {
         self.postMessage({
           type: 'enhance_result', callId, mesh: null, triangleCount: 0,
           cancelled: true, error: null,
+        });
+      } else if (result && isEnhanceExceeded(result)) {
+        // Refused: the refine would exceed the hard cap. Report the count with
+        // no mesh so the main thread can warn without ever committing it.
+        self.postMessage({
+          type: 'enhance_result', callId, mesh: null, triangleCount: result.triangleCount,
+          cancelled: false, exceeded: true, error: null,
         });
       } else if (result) {
         const transfer: Transferable[] = [

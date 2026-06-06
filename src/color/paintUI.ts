@@ -94,6 +94,7 @@ import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
 import { registerExclusiveMode, deactivateMode } from '../ui/modeExclusion';
+import { viewportToolsMount } from '../ui/popoverMenu';
 
 let paintBtn: HTMLButtonElement | null = null;
 let pickerPanel: HTMLElement | null = null;
@@ -127,12 +128,8 @@ export function initPaintUI(controlsContainer: HTMLElement): void {
 
   paintBtn.addEventListener('click', togglePaintMode);
 
-  const measureBtn = controlsContainer.querySelector('#measure-toggle');
-  if (measureBtn) {
-    controlsContainer.insertBefore(paintBtn, measureBtn);
-  } else {
-    controlsContainer.appendChild(paintBtn);
-  }
+  const toolsMount = viewportToolsMount(controlsContainer);
+  toolsMount.appendChild(paintBtn);
 
   // Standalone palette manager entry point — edit filament slots without
   // entering paint mode. Edits propagate to the paint swatches and relief.
@@ -142,7 +139,7 @@ export function initPaintUI(controlsContainer: HTMLElement): void {
   paletteBtn.textContent = '🧵 Palette';
   paletteBtn.title = 'Manage the filament palette (slots, colours, capacity)';
   paletteBtn.addEventListener('click', () => openPaletteManager());
-  controlsContainer.insertBefore(paletteBtn, paintBtn);
+  toolsMount.insertBefore(paletteBtn, paintBtn);
 
   pickerPanel = createPickerPanel();
   // Anchor the panel to the positioned viewport pane (the toolbar's parent)

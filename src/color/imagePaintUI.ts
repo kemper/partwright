@@ -33,6 +33,7 @@ import {
 import { getCurrentMesh as getPaintMesh } from './paintMode';
 import { deactivateMode, registerExclusiveMode } from '../ui/modeExclusion';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
+import { viewportToolsMount } from '../ui/popoverMenu';
 import { forceDeactivate as closeAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as closeAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as closeAnnotateSelect } from '../annotations/selectMode';
@@ -147,14 +148,15 @@ export function initImagePaintUI(controlsContainer: HTMLElement): void {
 
   imagePaintBtn.addEventListener('click', toggleImagePaint);
 
-  // Insert right after the paint toggle button
-  const paintBtn = controlsContainer.querySelector('#paint-toggle');
+  // Insert right after the paint toggle button, within the Tools popover (or the
+  // bar itself as fallback). insertBefore needs the same parent as the reference
+  // node, so anchor off whichever container actually holds the paint button.
+  const toolsMount = viewportToolsMount(controlsContainer);
+  const paintBtn = toolsMount.querySelector('#paint-toggle');
   if (paintBtn?.nextSibling) {
-    controlsContainer.insertBefore(imagePaintBtn, paintBtn.nextSibling);
-  } else if (paintBtn) {
-    controlsContainer.appendChild(imagePaintBtn);
+    toolsMount.insertBefore(imagePaintBtn, paintBtn.nextSibling);
   } else {
-    controlsContainer.appendChild(imagePaintBtn);
+    toolsMount.appendChild(imagePaintBtn);
   }
 
   panel = buildPanel();

@@ -269,7 +269,7 @@ import {
   type GeometryAssertions,
 } from './geometry/statsComputation';
 import { getConfig } from './config/appConfig';
-import { extractPositions, maxEdgeLength, minEdgeLength } from './surface/meshSubdivide';
+import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
 
 // Load examples as raw text — JS and SCAD
 const jsExampleModules = import.meta.glob('../examples/*.js', { query: '?raw', import: 'default' });
@@ -4301,6 +4301,9 @@ async function main() {
   };
   installKeyboardShortcuts({ onSave: saveVersionWithToast });
 
+  // Viewport tools need the editor active and a model on screen to act on.
+  const viewportToolEnabled = () => isEditorActive() && currentMeshData !== null;
+
   // Register command-palette actions (⌘K). Reuses the same handlers the
   // toolbar/session bar/layout already wire up so behavior can’t drift.
   registerCommands([
@@ -4329,6 +4332,18 @@ async function main() {
     // (mirrors the toolbar’s STEP gating); the action toasts if no shape exists.
     { id: 'export-step', title: 'Export STEP', hint: 'Export', keywords: 'download brep cad solidworks fusion freecad', run: () => { void actionExportSTEP(); }, enabled: () => getActiveLanguage() === 'replicad' },
     { id: 'share-link', title: 'Share design (copy link)', hint: 'Share', keywords: 'url public link copy fork readonly', run: () => { void actionShareLink(); }, enabled: canShare },
+    // Viewport tools — now grouped behind the View/Inspect/Tools popovers, so the
+    // palette is the flat, searchable index of everything (keeps grouping cheap
+    // for discoverability). Each fires the existing overlay button by id; click()
+    // works even while the button sits inside a collapsed popover.
+    { id: 'tool-measure', title: 'Measure distance', hint: 'Inspect', keywords: 'distance ruler dimension length point', run: () => document.getElementById('measure-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-cross-section', title: 'Cross section', hint: 'Inspect', keywords: 'clip plane slice cut section interior', run: () => document.getElementById('clip-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-paint', title: 'Paint colors', hint: 'Tools', keywords: 'color region brush bucket filament multicolor airbrush', run: () => document.getElementById('paint-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-palette', title: 'Manage filament palette', hint: 'Tools', keywords: 'palette filament slots colours capacity', run: () => document.getElementById('palette-manager-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-image-paint', title: 'Stamp image onto model', hint: 'Tools', keywords: 'image stamp decal texture paint photo logo', run: () => document.getElementById('image-paint-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-annotate', title: 'Annotate (draw / text)', hint: 'Tools', keywords: 'draw pen text label note markup sketch arrow', run: () => document.getElementById('annotate-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-quality', title: 'Quality: simplify / enhance', hint: 'Tools', keywords: 'simplify enhance decimate reduce triangles quality curvature smoothness', run: () => document.getElementById('simplify-toggle')?.click(), enabled: viewportToolEnabled },
+    { id: 'tool-customize', title: 'Customize parameters', hint: 'Tools', keywords: 'parameters params sliders tweak knobs', run: () => document.getElementById('customize-toggle')?.click(), enabled: () => isEditorActive() && !document.getElementById('customize-toggle')?.classList.contains('hidden') },
     { id: 'toggle-ai', title: 'Toggle AI panel', hint: 'View', keywords: 'chat assistant drawer', run: () => toggleAiPanel() },
     { id: 'toggle-diagnostics', title: 'Toggle diagnostics', hint: 'View', keywords: 'errors warnings console workers webworkers threads memory wasm performance restarts crash timing health log', run: () => toggleDiagnosticsPanel() },
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
@@ -5396,12 +5411,11 @@ async function main() {
     onVisibilityChange: syncCustomizeBtn,
   });
   viewportPane.appendChild(paramsPanel.element);
-  // Sit the Customize pill with the other panel-toggling tools (Paint/Measure),
-  // just after the view-toggle divider — same grouping Paint/Annotate use, so it
-  // reads as a tool and stays clear of the top-left "Show code" button that the
-  // wrapping toolbar’s leftmost item collides with.
-  const measureToggle = clipControls.querySelector('#measure-toggle');
-  if (measureToggle) clipControls.insertBefore(customizeBtn, measureToggle);
+  // Customize is a contextual primary: hidden until a model declares params,
+  // then surfaced top-level (just before the View group) as a strong "this model
+  // is tweakable" signal — not buried inside the Tools popover.
+  const customizeAnchor = clipControls.querySelector('#viewport-view-group');
+  if (customizeAnchor) clipControls.insertBefore(customizeBtn, customizeAnchor);
   else clipControls.appendChild(customizeBtn);
 
   // Init measure tool
@@ -5952,7 +5966,9 @@ async function main() {
         (fraction) => { void onProgress(fraction); },
         signal,
       );
-      return commitMeshOpResult(result, baseline, coloredBaseline);
+      if (result?.exceeded) return { exceeded: true, triangleCount: result.triangleCount };
+      const meshResult = result && result.mesh ? { mesh: result.mesh, triangleCount: result.triangleCount } : null;
+      return commitMeshOpResult(meshResult, baseline, coloredBaseline);
     },
 
     async simplifyByTolerance(tolerance, preserveColor, onProgress, signal) {
@@ -5986,7 +6002,16 @@ async function main() {
         signal,
         edgeLength,
       );
-      return commitMeshOpResult(result, baseline, coloredBaseline);
+      if (result?.exceeded) return { exceeded: true, triangleCount: result.triangleCount };
+      const meshResult = result && result.mesh ? { mesh: result.mesh, triangleCount: result.triangleCount } : null;
+      return commitMeshOpResult(meshResult, baseline, coloredBaseline);
+    },
+
+    estimateRefine(edgeLength) {
+      const baseline = simplifyBaselineMesh;
+      if (!baseline || !(edgeLength > 0)) return baseline?.numTri ?? 0;
+      const positions = extractPositions(baseline);
+      return estimateRefineTriangles(positions, baseline.triVerts, edgeLength);
     },
 
     reset() {
@@ -6511,8 +6536,10 @@ async function main() {
   reliefViewportBtn.textContent = '✦ Relief';
   reliefViewportBtn.title = 'Edit colors for this relief';
   reliefViewportBtn.addEventListener('click', () => toggleReliefStudio());
-  const paintBtnEl = clipControls.querySelector('#paint-toggle');
-  if (paintBtnEl) clipControls.insertBefore(reliefViewportBtn, paintBtnEl);
+  // Relief edit is a contextual primary too (shown only in relief sessions), so
+  // it sits top-level alongside Customize rather than inside the Tools popover.
+  const reliefAnchor = clipControls.querySelector('#viewport-view-group');
+  if (reliefAnchor) clipControls.insertBefore(reliefViewportBtn, reliefAnchor);
   else clipControls.appendChild(reliefViewportBtn);
 
   initEscapeMenuClose();

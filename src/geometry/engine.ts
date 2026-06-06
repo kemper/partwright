@@ -522,6 +522,10 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pending.reject(new Error(error));
       return;
     }
+    if (msg.exceeded) {
+      pending.resolve({ mesh: null, triangleCount: msg.triangleCount as number, exceeded: true });
+      return;
+    }
     if (msg.cancelled || !msg.mesh) {
       pending.resolve(null);
       return;
@@ -900,8 +904,13 @@ export async function simplifyInWorker(
 // ── Enhance Worker client ───────────────────────────────────────────────────
 
 export interface EnhanceWorkerResult {
-  mesh: MeshData;
+  /** The refined mesh, or null when the result was refused for exceeding the
+   *  hard triangle cap (see `exceeded`). */
+  mesh: MeshData | null;
   triangleCount: number;
+  /** True when the refine would have exceeded `maxTriangles`; the mesh was
+   *  discarded in the Worker and never committed. */
+  exceeded?: boolean;
 }
 
 export class EnhanceAbortError extends Error {
@@ -964,8 +973,12 @@ export async function enhanceInWorker(
       numProp: mesh.numProp,
     };
     const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
+    // Read the hard cap on the main thread (where getConfig sees the user's
+    // override) and pass it through — the Worker's own getConfig only sees
+    // static defaults.
+    const maxTriangles = getConfig().renderer.enhanceMaxTriangles;
     engineWorker!.postMessage(
-      { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength,
+      { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength, maxTriangles,
         ...(directEdgeLength && directEdgeLength > 0 ? { edgeLength: directEdgeLength } : {}) },
       transfer,
     );
