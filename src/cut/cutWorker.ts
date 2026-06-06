@@ -300,6 +300,23 @@ function subdivideBoundaryTriangles(
   return { mesh: outMesh, triColors: new Uint8Array(newColors) };
 }
 
+/**
+ * Convert a 12-element column-major 3×4 matrix (the gizmo's `mat4x3`:
+ * [r00,r10,r20, r01,r11,r21, r02,r12,r22, tx,ty,tz]) into the 16-element
+ * column-major 4×4 `Mat4` that manifold-3d's `.transform()` binding requires.
+ * Passing the bare 12-element array makes the binding read past the end and
+ * produces a degenerate (empty) result — see meshOps.ts / curves.ts, which
+ * both build a full 16-float matrix for the same reason.
+ */
+function mat4x3ToMat4(m: number[]): number[] {
+  return [
+    m[0], m[1], m[2], 0, // col 0
+    m[3], m[4], m[5], 0, // col 1
+    m[6], m[7], m[8], 0, // col 2
+    m[9], m[10], m[11], 1, // col 3 (translation + homogeneous 1)
+  ];
+}
+
 function buildCutter(
   Manifold: ManifoldModule['Manifold'],
   shape: string,
@@ -310,6 +327,7 @@ function buildCutter(
   sz: number,
   S: number,
 ): ManifoldInstance | null {
+  const mat = mat4x3ToMat4(mat4x3);
   if (shape === 'plane') {
     // Half-space: large cube offset so its face aligns with the cut plane.
     // keepSide='outside' keeps the +Z half → subtract the -Z cube.
@@ -318,15 +336,15 @@ function buildCutter(
       ? [0, 0, -S / 2]
       : [0, 0, S / 2];
     const halfSpace = Manifold.cube([S, S, S], true).translate(offset);
-    return halfSpace.transform(mat4x3);
+    return halfSpace.transform(mat);
   }
   if (shape === 'box') {
-    return Manifold.cube([sx, sy, sz], true).transform(mat4x3);
+    return Manifold.cube([sx, sy, sz], true).transform(mat);
   }
   if (shape === 'sphere') {
     // scale[0] = full size in local space (proxy.scale.x), so radius = size/2
     const r = sx / 2;
-    return Manifold.sphere(r, 32).transform(mat4x3);
+    return Manifold.sphere(r, 32).transform(mat);
   }
   if (shape === 'cylinder') {
     // scale[0]=scale[1]=diameter, scale[2]=height
@@ -335,7 +353,7 @@ function buildCutter(
     // manifold cylinder goes from z=0 to z=h; center it around z=0.
     // Break chaining to delete the intermediate WASM object.
     const centered = Manifold.cylinder(h, r, r, 32).translate([0, 0, -h / 2]);
-    const transformed = centered.transform(mat4x3);
+    const transformed = centered.transform(mat);
     if (typeof (centered as { delete?: () => void }).delete === 'function') {
       try { (centered as { delete: () => void }).delete(); } catch { /* ignore */ }
     }
