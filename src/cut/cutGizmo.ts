@@ -11,7 +11,6 @@ import { meshBounds } from '../color/slabPaint';
 
 export type CutShape = 'plane' | 'box' | 'sphere' | 'cylinder';
 export type CutMode = 'translate' | 'rotate' | 'scale';
-export type KeepSide = 'outside' | 'inside';
 
 export interface CutGizmoParams {
   /** 4x3 column-major matrix: [r00,r10,r20, r01,r11,r21, r02,r12,r22, tx,ty,tz] */
@@ -20,18 +19,15 @@ export interface CutGizmoParams {
    *  For sphere: [r,r,r]. For cylinder: [r,r,h] (Z-axis aligned). */
   scale: [number, number, number];
   shape: CutShape;
-  keepSide: KeepSide;
 }
 
 let active = false;
 let cutShape: CutShape = 'plane';
 let cutMode: CutMode = 'translate';
-let keepSide: KeepSide = 'outside';
 
 let proxy: THREE.Object3D | null = null;
 let shapeMesh: THREE.Mesh | null = null;
 let shapeEdges: THREE.LineSegments | null = null;
-let planeDirArrow: THREE.ArrowHelper | null = null;
 let gizmo: TransformControls | null = null;
 let gizmoHelper: THREE.Object3D | null = null;
 
@@ -52,7 +48,6 @@ function notifyChange(): void {
 export function isGizmoActive(): boolean { return active; }
 export function getCutShape(): CutShape { return cutShape; }
 export function getCutMode(): CutMode { return cutMode; }
-export function getKeepSide(): KeepSide { return keepSide; }
 
 export function setCutMode(m: CutMode): void {
   // Plane doesn't scale (it's infinite); force translate/rotate
@@ -68,12 +63,6 @@ export function setCutShape(s: CutShape): void {
     rebuildShapeVisual();
     notifyChange();
   }
-}
-
-export function setKeepSide(k: KeepSide): void {
-  keepSide = k;
-  updateArrow();
-  notifyChange();
 }
 
 /** Activate the gizmo for the current mesh. */
@@ -122,7 +111,6 @@ export function getParams(): CutGizmoParams {
       mat4x3: [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
       scale: [1, 1, 1],
       shape: cutShape,
-      keepSide,
     };
   }
   // Extract 4×3 column-major matrix from proxy's world matrix (without scale)
@@ -140,7 +128,7 @@ export function getParams(): CutGizmoParams {
     e[12], e[13], e[14], // translation
   ];
   const scale: [number, number, number] = [proxy.scale.x, proxy.scale.y, proxy.scale.z];
-  return { mat4x3, scale, shape: cutShape, keepSide };
+  return { mat4x3, scale, shape: cutShape };
 }
 
 function makeShapeGeometry(shape: CutShape): THREE.BufferGeometry {
@@ -215,36 +203,6 @@ function buildShapeVisual(): void {
   shapeEdges.renderOrder = 999;
   proxy.add(shapeEdges);
 
-  // Arrow showing keep direction (only for plane)
-  if (cutShape === 'plane') {
-    buildArrow();
-  }
-
-  requestRender();
-}
-
-function buildArrow(): void {
-  if (!proxy) return;
-  const dir = keepSide === 'outside'
-    ? new THREE.Vector3(0, 0, 1)
-    : new THREE.Vector3(0, 0, -1);
-  planeDirArrow = new THREE.ArrowHelper(
-    dir,
-    new THREE.Vector3(0, 0, 0),
-    0.6,
-    keepSide === 'outside' ? 0x44ff44 : 0xff4444,
-  );
-  planeDirArrow.name = 'cut-dir-arrow';
-  proxy.add(planeDirArrow);
-}
-
-function updateArrow(): void {
-  if (!planeDirArrow) return;
-  const dir = keepSide === 'outside'
-    ? new THREE.Vector3(0, 0, 1)
-    : new THREE.Vector3(0, 0, -1);
-  planeDirArrow.setDirection(dir);
-  planeDirArrow.setColor(keepSide === 'outside' ? 0x44ff44 : 0xff4444);
   requestRender();
 }
 
@@ -270,16 +228,6 @@ function disposeShapeVisual(): void {
     (shapeEdges.material as THREE.Material).dispose();
     shapeEdges.parent?.remove(shapeEdges);
     shapeEdges = null;
-  }
-  if (planeDirArrow) {
-    planeDirArrow.traverse(child => {
-      if (child instanceof THREE.Mesh || child instanceof THREE.Line) {
-        child.geometry.dispose();
-        (child.material as THREE.Material).dispose();
-      }
-    });
-    planeDirArrow.parent?.remove(planeDirArrow);
-    planeDirArrow = null;
   }
 }
 

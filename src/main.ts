@@ -5831,6 +5831,9 @@ async function main() {
   // The cut panel booleans the live mesh via the Worker. We keep the pre-cut
   // baseline so "Reset" and "Save" both have access to the original mesh.
   let cutBaseMesh: MeshData | null = null;
+  // True while apply() is rendering a cut result — prevents applyLiveGeometry
+  // from re-centering the gizmo and triggering the auto-preview feedback loop.
+  let suppressCutGizmoUpdate = false;
   let cutResultMesh: MeshData | null = null;
   let cutResultMeshes: MeshData[] | null = null;
   let cutKeptColorsList: Uint8Array[] | null = null;
@@ -5869,7 +5872,7 @@ async function main() {
     }
     updateMesh(mesh);
     updatePaintMesh(mesh);
-    onCutMeshChanged(mesh);
+    if (!suppressCutGizmoUpdate) onCutMeshChanged(mesh);
     updateGeometryData();
     syncClipSliderBounds();
   }
@@ -6438,7 +6441,6 @@ async function main() {
         const result = await cutInWorker(
           base,
           params.shape,
-          params.keepSide,
           params.mat4x3,
           params.scale,
           srcColors,
@@ -6479,10 +6481,13 @@ async function main() {
           : result.triColors
             ? { ...result.mesh, triColors: result.triColors }
             : result.mesh;
-        applyLiveGeometry(meshToShow);
+        suppressCutGizmoUpdate = true;
+        try {
+          applyLiveGeometry(meshToShow);
+        } finally {
+          suppressCutGizmoUpdate = false;
+        }
         cutResultMesh = meshToShow;
-        // Update baseline so a second Apply starts from the current cut result.
-        cutBaseMesh = result.mesh;
         return { triangleCount: result.mesh.numTri, componentCount: result.meshes.length };
       } catch (err) {
         return null;

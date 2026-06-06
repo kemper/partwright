@@ -18,7 +18,7 @@
 //   { type: 'simplify_cancel',   callId }
 //   { type: 'enhance',           callId, mesh, targetTriangles, maxEdgeLength }
 //   { type: 'enhance_cancel',    callId }
-//   { type: 'cut',               callId, mesh, shape, keepSide, mat4x3, scale, triColors? }
+//   { type: 'cut',               callId, mesh, shape, mat4x3, scale, triColors? }
 //
 // Protocol — Worker → Main:
 //   { type: 'ready' }
@@ -637,11 +637,10 @@ self.onmessage = async (event: MessageEvent) => {
 
   // ── cut ──────────────────────────────────────────────────────────────────
   if (msg.type === 'cut') {
-    const { callId, mesh, shape, keepSide, mat4x3, scale, triColors } = msg as unknown as {
+    const { callId, mesh, shape, mat4x3, scale, triColors } = msg as unknown as {
       callId: string;
       mesh: MeshData;
       shape: CutParams['shape'];
-      keepSide: CutParams['keepSide'];
       mat4x3: number[];
       scale: [number, number, number];
       triColors?: Uint8Array;
@@ -655,7 +654,7 @@ self.onmessage = async (event: MessageEvent) => {
     }
     try {
       const mod = getManifoldModule();
-      const result = performCut(mod, mesh, { shape, keepSide, mat4x3, scale, triColors });
+      const result = performCut(mod, mesh, { shape, mat4x3, scale, triColors });
       if (!result) {
         self.postMessage({ type: 'cut_result', callId, mesh: null, triColors: null, error: null });
         return;

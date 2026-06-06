@@ -6,7 +6,6 @@ import type { MeshData } from '../geometry/types';
 
 export interface CutParams {
   shape: 'plane' | 'box' | 'sphere' | 'cylinder';
-  keepSide: 'outside' | 'inside';
   /** 4×3 column-major matrix: [r00,r10,r20, r01,r11,r21, r02,r12,r22, tx,ty,tz] */
   mat4x3: number[];
   /** Shape dimensions in local space. Plane: [size,size,1]. Box: [sx,sy,sz]. Sphere: [r,r,r]. Cylinder: [r,r,h]. */
@@ -109,7 +108,7 @@ export function performCut(
   params: CutParams,
 ): CutResult | null {
   const { Manifold } = mod;
-  const { shape, keepSide, mat4x3, scale, triColors } = params;
+  const { shape, mat4x3, scale, triColors } = params;
   const [sx, sy, sz] = scale;
 
   // Compute mesh bounding-sphere radius for sizing the plane half-space (use original mesh)
@@ -142,14 +141,12 @@ export function performCut(
 
   try {
     base = Manifold.ofMesh(workMesh);
-    cutter = buildCutter(Manifold, shape, keepSide, mat4x3, sx, sy, sz, S);
+    cutter = buildCutter(Manifold, shape, mat4x3, sx, sy, sz, S);
     if (!cutter) return null;
 
-    // keepSide='inside' on volumetric shapes uses intersect; all others use subtract.
-    // The complement always uses the opposite operation.
-    const useIntersectForKept = keepSide === 'inside' && shape !== 'plane';
-    resultKept  = useIntersectForKept ? base.intersect(cutter) : base.subtract(cutter);
-    resultOther = useIntersectForKept ? base.subtract(cutter)  : base.intersect(cutter);
+    // Always compute both sides: subtract(cutter) and intersect(cutter).
+    resultKept  = base.subtract(cutter);
+    resultOther = base.intersect(cutter);
 
     // Preview mesh = the kept side (what the user chose to keep)
     const keptRaw = resultKept.getMesh();
@@ -320,7 +317,6 @@ function mat4x3ToMat4(m: number[]): number[] {
 function buildCutter(
   Manifold: ManifoldModule['Manifold'],
   shape: string,
-  keepSide: string,
   mat4x3: number[],
   sx: number,
   sy: number,
@@ -329,13 +325,9 @@ function buildCutter(
 ): ManifoldInstance | null {
   const mat = mat4x3ToMat4(mat4x3);
   if (shape === 'plane') {
-    // Half-space: large cube offset so its face aligns with the cut plane.
-    // keepSide='outside' keeps the +Z half → subtract the -Z cube.
-    // keepSide='inside'  keeps the -Z half → subtract the +Z cube.
-    const offset: [number, number, number] = keepSide === 'outside'
-      ? [0, 0, -S / 2]
-      : [0, 0, S / 2];
-    const halfSpace = Manifold.cube([S, S, S], true).translate(offset);
+    // Half-space: large cube in the -Z region. subtract(cutter) keeps the +Z side;
+    // intersect(cutter) keeps the -Z side. Both sides are always returned.
+    const halfSpace = Manifold.cube([S, S, S], true).translate([0, 0, -S / 2] as [number, number, number]);
     return halfSpace.transform(mat);
   }
   if (shape === 'box') {

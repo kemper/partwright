@@ -5,22 +5,19 @@
 //
 // The panel lets the user:
 //   1. Choose a cut shape (plane/box/sphere/cylinder) and gizmo mode (T/R/S keys).
-//   2. Choose which side to keep (outside/inside).
-//   3. Position the cutter via XYZ inputs or snap to 25/50/75% along an axis.
-//   4. Optionally preserve triangle colors after the cut.
-//   5. Apply the cut (runs in the geometry Worker via cutInWorker).
-//   6. Save the result as a new session version.
+//   2. Position the cutter via XYZ inputs or snap to 25/50/75% along an axis.
+//   3. Optionally preserve triangle colors after the cut.
+//   4. Apply the cut (runs in the geometry Worker via cutInWorker) — always yields both sides.
+//   5. Save the result as a new session version.
 
 import {
   activate as activateGizmo,
   deactivate as deactivateGizmo,
   setCutShape,
   setCutMode,
-  setKeepSide,
   getParams,
   getCutShape,
   getCutMode,
-  getKeepSide,
   onGizmoChange,
   getProxyPosition,
   setProxyPosition,
@@ -28,7 +25,6 @@ import {
   snapToFaceNormal,
   type CutShape,
   type CutMode,
-  type KeepSide,
   type CutGizmoParams,
 } from '../cut/cutGizmo';
 import { pickModelFace } from '../renderer/viewport';
@@ -330,26 +326,6 @@ function buildPanel(): HTMLElement {
       if (!applying && isCutOpen()) void applyCut();
     }, 300);
   });
-
-  // === Keep side ===
-  appendSectionLabel(content, 'Keep Side');
-  const sideRow = document.createElement('div');
-  sideRow.className = 'grid grid-cols-2 gap-1 mt-1';
-  const sides: [KeepSide, string, string][] = [
-    ['outside', '↑ Outside', 'Keep the region outside the cutter (or the +Z side for plane)'],
-    ['inside',  '↓ Inside',  'Keep the region inside the cutter (or the −Z side for plane)'],
-  ];
-  const sideButtons = new Map<KeepSide, HTMLButtonElement>();
-  for (const [side, label, tooltip] of sides) {
-    const btn = buildToggleBtn(label, tooltip, side === getKeepSide());
-    btn.addEventListener('click', () => {
-      setKeepSide(side);
-      for (const [s, b] of sideButtons) b.className = toggleBtnClass(s === getKeepSide());
-    });
-    sideButtons.set(side, btn);
-    sideRow.appendChild(btn);
-  }
-  content.appendChild(sideRow);
 
   // === Position (XYZ inputs) ===
   appendSectionLabel(content, 'Position');

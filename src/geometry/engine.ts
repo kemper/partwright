@@ -1009,7 +1009,6 @@ export interface CutWorkerResult {
 export async function cutInWorker(
   mesh: MeshData,
   shape: 'plane' | 'box' | 'sphere' | 'cylinder',
-  keepSide: 'outside' | 'inside',
   mat4x3: number[],
   scale: [number, number, number],
   triColors?: Uint8Array,
@@ -1040,7 +1039,7 @@ export async function cutInWorker(
     const colorsCopy = triColors ? triColors.slice() : undefined;
     if (colorsCopy) transfer.push(colorsCopy.buffer);
     engineWorker!.postMessage(
-      { type: 'cut', callId, mesh: meshCopy, shape, keepSide, mat4x3, scale, triColors: colorsCopy },
+      { type: 'cut', callId, mesh: meshCopy, shape, mat4x3, scale, triColors: colorsCopy },
       transfer,
     );
   });
