@@ -22,8 +22,14 @@ import { taubinSmooth, scaleMeshPositions } from './smooth';
 /** Per-triangle voxel coordinate provenance. `triVoxel` is `numTri * 3`,
  *  flattened (x, y, z, x, y, z, …), giving the integer coord of the voxel
  *  each triangle came from. Used by voxel paint mode to map a clicked face
- *  back to a single voxel for color/erase. */
-export interface VoxelMesh { mesh: MeshData; triVoxel: Int16Array }
+ *  back to a single voxel for color/erase.
+ *
+ *  `triNormal` is the matching `numTri * 3` flattened outward face direction
+ *  (each component ∈ {−1,0,1}) — the empty side the triangle faces. Voxel
+ *  Studio's "add" tool places the new cube at `triVoxel + triNormal`, so a
+ *  click on a top face stacks a block on top, a click on a side face extends
+ *  sideways, etc. */
+export interface VoxelMesh { mesh: MeshData; triVoxel: Int16Array; triNormal: Int8Array }
 
 // The 6 face directions: neighbor offset + the 4 corner offsets (relative to
 // the voxel's min corner) in CCW order viewed from outside, so each face's
@@ -128,6 +134,7 @@ export function gridToMeshWithProvenance(grid: VoxelGrid): VoxelMesh {
   const tris: number[] = [];
   const triColors: number[] = [];
   const triVoxelList: number[] = [];
+  const triNormalList: number[] = [];
   const vertIndex = new Map<number, number>();
   const VKEY = (vx: number, vy: number, vz: number) =>
     ((vx + 2048) * 4096 + (vy + 2048)) * 4096 + (vz + 2048);
@@ -154,8 +161,11 @@ export function gridToMeshWithProvenance(grid: VoxelGrid): VoxelMesh {
       const i3 = vertex(x + c3[0], y + c3[1], z + c3[2]);
       tris.push(i0, i1, i2, i0, i2, i3);
       triColors.push(r, g, b, r, g, b);
-      // Both triangles of this face belong to voxel (x, y, z).
+      // Both triangles of this face belong to voxel (x, y, z) and face the
+      // same empty-side direction (the face's outward normal).
       triVoxelList.push(x, y, z, x, y, z);
+      const [nx, ny, nz] = face.d;
+      triNormalList.push(nx, ny, nz, nx, ny, nz);
     }
   });
 
@@ -173,5 +183,6 @@ export function gridToMeshWithProvenance(grid: VoxelGrid): VoxelMesh {
       triColors: triColorArr,
     },
     triVoxel: Int16Array.from(triVoxelList),
+    triNormal: Int8Array.from(triNormalList),
   };
 }

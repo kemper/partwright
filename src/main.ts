@@ -113,6 +113,7 @@ import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
+import { appendVoxelEditsToCode, editOpCount } from './geometry/voxel/editCodegen';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
@@ -6340,8 +6341,9 @@ async function main() {
       const err = voxelPaint.activate(code, {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
+        onStateChange: () => { syncVoxelPaintUI(); },
       }, currentParamValues);
-      if (err) showToast(`Voxel paint: ${err}`, { variant: 'warn' });
+      if (err) showToast(`Voxel Studio: ${err}`, { variant: 'warn' });
       syncVoxelPaintUI();
     },
     deactivate: async () => {
@@ -6349,29 +6351,60 @@ async function main() {
       runCode(getValue());
       syncVoxelPaintUI();
     },
-    bake: async () => {
-      const result = await bakePaintedVoxelsAsVersion('painted');
-      if ('error' in result) showToast(`Voxel paint: ${result.error}`, { variant: 'warn' });
+    updateCode: async () => {
+      const result = await commitVoxelEdits('update', 'voxel edits');
+      if ('error' in result) showToast(`Voxel Studio: ${result.error}`, { variant: 'warn' });
+      else showToast('Voxel edits applied to your code', { variant: 'success' });
+      syncVoxelPaintUI();
+    },
+    saveRaw: async () => {
+      // Replacing destroys the current source; confirm when there's code to lose.
+      if (getValue().trim().length > 0) {
+        const ok = await confirmDialog(
+          'Save as raw voxel data? This replaces the code in the editor with voxels.decode(...) of the current grid.',
+          { title: 'Replace code', confirmLabel: 'Replace', danger: true },
+        );
+        if (!ok) return;
+      }
+      const result = await commitVoxelEdits('replace', 'painted');
+      if ('error' in result) showToast(`Voxel Studio: ${result.error}`, { variant: 'warn' });
       syncVoxelPaintUI();
     },
   });
   setVoxelPaintAvailable(getActiveLanguage() === 'voxel');
 
-  // Single source of truth for "commit the painted voxel grid as a new
-  // version" — called both from the UI Bake button and the partwright API.
-  // Centralising avoids the bake-with-empty-grid / no-session bugs that two
-  // separate implementations introduced.
-  async function bakePaintedVoxelsAsVersion(label: string): Promise<{ versionIndex: number | null; voxelCount: number } | { error: string }> {
-    if (!voxelPaint.isActive()) return { error: 'voxel paint is not active.' };
+  // Single source of truth for committing Voxel Studio edits as a new version.
+  // `mode` picks how the edits land in the editor:
+  //   • 'replace' — overwrite the code with voxels.decode(<full grid>) ("Save
+  //     as raw voxel data"). The UI confirms before calling this; the
+  //     programmatic API (bakeVoxelsToCode) skips the dialog.
+  //   • 'update'  — keep the procedural code and append the edits as explicit
+  //     v.set/v.remove statements ("Update code").
+  async function commitVoxelEdits(
+    mode: 'replace' | 'update',
+    label: string,
+  ): Promise<{ versionIndex: number | null; voxelCount: number } | { error: string }> {
+    if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
     const count = voxelPaint.voxelCount();
-    if (count === 0) return { error: 'The painted grid is empty — paint or keep at least one voxel before baking.' };
-    const code = voxelPaint.bakeToCode('painted');
-    if (!code) return { error: 'voxel paint has no grid to bake.' };
+    if (count === 0) return { error: 'The grid is empty — keep at least one voxel before saving.' };
+
+    let code: string | null;
+    if (mode === 'update') {
+      const ops = voxelPaint.getEditOps();
+      if (editOpCount(ops) === 0) return { error: 'No edits to apply — paint, add, or remove some voxels first.' };
+      code = appendVoxelEditsToCode(getValue(), ops);
+      // No trailing `return …;` to hook onto — fall back to a clean replace.
+      if (code === null) code = voxelPaint.bakeToCode('painted');
+    } else {
+      code = voxelPaint.bakeToCode('painted');
+    }
+    if (!code) return { error: 'Voxel Studio has no grid to save.' };
+
     voxelPaint.deactivate();
     setValue(code);
     await runCodeSync(code);
     // Mirror the runAndSave auto-create pattern so callers don't have to wrap
-    // bake with a manual createSession.
+    // the commit with a manual createSession.
     if (!getState().session) {
       await createSession(label, getActiveLanguage());
     }
@@ -11404,6 +11437,7 @@ async function main() {
       const err = voxelPaint.activate(code, {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
+        onStateChange: () => { syncVoxelPaintUI(); },
       }, currentParamValues);
       if (err) return { error: `activateVoxelPaint: ${err}` };
       syncVoxelPaintUI();
@@ -11437,13 +11471,124 @@ async function main() {
       return { changed, voxelCount: voxelPaint.voxelCount() };
     },
 
+    /** Select the active Voxel Studio tool: 'paint' | 'add' | 'remove' |
+     *  'bucket' | 'level' | 'boxAdd' | 'boxRemove'. Returns `{ tool }` or
+     *  `{ error }`. */
+    setVoxelTool(tool: import('./color/voxelPaint').VoxelTool) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      const tools = ['paint', 'add', 'remove', 'bucket', 'level', 'boxAdd', 'boxRemove'];
+      if (!tools.includes(tool as string)) return { error: `setVoxelTool: tool must be one of ${tools.join(', ')}` };
+      voxelPaint.setTool(tool);
+      syncVoxelPaintUI();
+      return { tool };
+    },
+
+    /** Apply the active tool at a clicked face (the triangle index a raycast
+     *  would return). Optionally sets the color and/or tool first. The box
+     *  tools take two calls (first banks a corner, second completes the box).
+     *  Returns `{ changed, voxelCount, tool, pendingBoxCorner }` or `{ error }`. */
+    voxelStudioApply(opts: { faceIndex: number; color?: [number, number, number] | string | number; tool?: import('./color/voxelPaint').VoxelTool }) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'voxelStudioApply requires { faceIndex }' };
+      if (!Number.isInteger(opts.faceIndex) || opts.faceIndex < 0) return { error: 'voxelStudioApply.faceIndex must be a non-negative integer' };
+      if (opts.tool !== undefined) {
+        const tools = ['paint', 'add', 'remove', 'bucket', 'level', 'boxAdd', 'boxRemove'];
+        if (!tools.includes(opts.tool as string)) return { error: `voxelStudioApply: tool must be one of ${tools.join(', ')}` };
+        voxelPaint.setTool(opts.tool);
+      }
+      if (opts.color !== undefined) {
+        try { voxelPaint.setColor(opts.color); }
+        catch (e) { return { error: (e as Error).message }; }
+      }
+      const changed = voxelPaint.applyAtTriangle(opts.faceIndex);
+      syncVoxelPaintUI();
+      return { changed, voxelCount: voxelPaint.voxelCount(), tool: voxelPaint.getTool(), pendingBoxCorner: voxelPaint.pendingBoxCorner() };
+    },
+
+    /** Undo the last Voxel Studio edit. Returns `{ undone, voxelCount }`. */
+    voxelStudioUndo() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      const undone = voxelPaint.undo();
+      syncVoxelPaintUI();
+      return { undone, voxelCount: voxelPaint.voxelCount() };
+    },
+
+    /** Redo the last undone Voxel Studio edit. Returns `{ redone, voxelCount }`. */
+    voxelStudioRedo() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      const redone = voxelPaint.redo();
+      syncVoxelPaintUI();
+      return { redone, voxelCount: voxelPaint.voxelCount() };
+    },
+
+    /** Configure the brush used by the paint/add/remove tools. `radius` is in
+     *  voxels (0 = a single voxel, max 16); `shape` is 'sphere' | 'cube' |
+     *  'diamond'; `spray` scatters a random subset; `sprayDensity` is 0.05..1.
+     *  Returns the resolved brush settings or `{ error }`. */
+    setVoxelBrush(opts: { radius?: number; shape?: import('./color/voxelPaint').BrushShape; spray?: boolean; sprayDensity?: number } = {}) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      if (opts.radius !== undefined) {
+        if (typeof opts.radius !== 'number' || opts.radius < 0) return { error: 'setVoxelBrush.radius must be a non-negative number' };
+        voxelPaint.setBrushRadius(opts.radius);
+      }
+      if (opts.shape !== undefined) {
+        const shapes = ['sphere', 'cube', 'diamond'];
+        if (!shapes.includes(opts.shape as string)) return { error: `setVoxelBrush.shape must be one of ${shapes.join(', ')}` };
+        voxelPaint.setBrushShape(opts.shape);
+      }
+      if (opts.spray !== undefined) voxelPaint.setSpray(!!opts.spray);
+      if (opts.sprayDensity !== undefined) {
+        if (typeof opts.sprayDensity !== 'number') return { error: 'setVoxelBrush.sprayDensity must be a number 0.05..1' };
+        voxelPaint.setSprayDensity(opts.sprayDensity);
+      }
+      syncVoxelPaintUI();
+      return { radius: voxelPaint.getBrushRadius(), shape: voxelPaint.getBrushShape(), spray: voxelPaint.isSpray(), sprayDensity: voxelPaint.getSprayDensity() };
+    },
+
+    /** Set the axis (0=x, 1=y, 2=z) the 'level' tool recolors. Returns `{ axis }`. */
+    setVoxelLevelAxis(axis: 0 | 1 | 2) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      if (axis !== 0 && axis !== 1 && axis !== 2) return { error: 'setVoxelLevelAxis.axis must be 0, 1, or 2' };
+      voxelPaint.setLevelAxis(axis);
+      syncVoxelPaintUI();
+      return { axis };
+    },
+
+    /** Begin a brush stroke: subsequent `voxelStudioApply` calls collapse into a
+     *  single undo step until `voxelStudioEndStroke()`. This is the programmatic
+     *  equivalent of a click-drag. Returns `{ ok }` or `{ error }`. */
+    voxelStudioBeginStroke() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      voxelPaint.beginStroke();
+      return { ok: true };
+    },
+
+    /** Finish the current brush stroke, committing it as one undo step.
+     *  Returns `{ ok, voxelCount }`. */
+    voxelStudioEndStroke() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      voxelPaint.endStroke();
+      syncVoxelPaintUI();
+      return { ok: true, voxelCount: voxelPaint.voxelCount() };
+    },
+
     /** Bake the painted grid into `voxels.decode(...)` editor code, run it,
      *  and save as a new version. Deactivates voxel paint mode after baking.
      *  Auto-creates a session if none exists. Returns `{ versionIndex,
      *  voxelCount }` or `{ error }`. */
     async bakeVoxelsToCode(opts: { label?: string } = {}) {
       const label = typeof opts.label === 'string' && opts.label ? opts.label : 'painted';
-      const result = await bakePaintedVoxelsAsVersion(label);
+      const result = await commitVoxelEdits('replace', label);
+      syncVoxelPaintUI();
+      return result;
+    },
+
+    /** "Update code": keep the current procedural voxel source and append the
+     *  Studio's edits as explicit v.set/v.remove statements, then save a new
+     *  version. Returns `{ versionIndex, voxelCount }` or `{ error }`. */
+    async updateVoxelCode(opts: { label?: string } = {}) {
+      const label = typeof opts.label === 'string' && opts.label ? opts.label : 'voxel edits';
+      const result = await commitVoxelEdits('update', label);
       syncVoxelPaintUI();
       return result;
     },
