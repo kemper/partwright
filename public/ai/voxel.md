@@ -99,9 +99,9 @@ or near the ground plane (Z=0) by convention.
 
 Each voxel's color is written onto the triangles of its exposed faces, so the
 rendered model is colored with no extra step, and GLB / 3MF / OBJ exports carry
-those colors out. (The face-region **paint tools** are mesh-triangle based and
-designed around the solid engines — painting *on top of* a voxel model is a
-planned follow-up; for now, set color per voxel in code.)
+those colors out. (The face-region **paint tools** in the toolbar are
+mesh-triangle based and designed around the solid engines; for voxel models use
+the **Voxel Studio** overlay below, or set color per voxel in code.)
 
 ## Rounded edges (smooth surfacing)
 
@@ -121,8 +121,10 @@ return voxels()
 - **`iterations`** (1–8, default 2) — more passes = rounder. It's a Taubin
   λ/μ smoothing of the mesh, so the model rounds without collapsing/shrinking.
 - **`detail`** (1–4, default 1) — supersamples the grid ×`detail` before
-  smoothing, giving finer, more controlled rounding on coarse/small models (at
-  more triangles). The result is scaled back to the original world size.
+  smoothing, giving finer rounding on large, coarse shapes (at more triangles).
+  The result is scaled back to the original world size. **Caution:** `detail > 1`
+  on small, dense features (face pixels, fine voxel detail) tends to *add*
+  stair-stepping rather than remove it — use plain `iterations` tuning there.
 
 ```js
 return voxels().fillBox([-4,-4,0],[4,4,8], '#6cf').smooth({ iterations: 4, detail: 2 });
@@ -183,42 +185,132 @@ when voxel paint is active). Format limits, surfaced as a clear `{ error }`:
   nearest kept color — no voxel is ever dropped. `.smooth()` surfacing doesn't
   affect the export; `.vox` always stores the underlying blocky cells.
 
-## Voxel paint
+## Voxel Studio
 
-Click on the **🎨 Voxel paint** button (appears in voxel sessions only,
-viewport overlay) to enter paint mode. Click a face on the model to set that
-voxel's color to the picker color; toggle **⌫ Eraser** to remove voxels
-instead. The editor is locked while paint is active so an auto-run can't
-clobber your edits. When you're done, click **Bake → code** to replace the
-editor with `voxels.decode(<your painted grid>)` and save a new version, or
-**Cancel** to discard.
+Click the **🧊 Voxel Studio** button (appears in voxel sessions only, viewport
+overlay) to enter a Minecraft-style direct-editing mode. It mirrors the main
+Paint menu's layout, adapted for voxels. Pick a **tool**, then click — or
+**drag** — across faces on the model:
 
-> Painting *bakes* the procedural code into a static voxel grid — the new
-> version captures the painted state exactly, while the previous version (with
-> the original code) is preserved in the version history.
+| Tool | Glyph | What it does |
+|------|-------|--------------|
+| Brush | 🖌 | Recolor voxels. **Drag** to paint a stroke; use **Size** for a wider brush. |
+| Add | ➕ | Build new cubes onto the clicked faces (stacks/extends). Drag to sculpt; respects brush size/shape. |
+| Remove | ⌫ | Delete voxels. Drag to erase; respects brush size/shape. |
+| Bucket | 🪣 | Recolor the whole face-connected region that shares the clicked voxel's color. |
+| Level | 🧱 | Recolor a whole **X/Y/Z layer** through the clicked voxel (pick the axis in the panel). |
+| Box fill | ⬚➕ | Click two voxels to fill the inclusive box between them (bridges gaps; use **Add** to grow outward). |
+| Box subtract | ⬚⌫ | Click two voxels to carve out the box between them (great for cutting holes). |
+
+**Brush** (for the Brush / Add / Remove tools): a **Size** slider (0 = a single
+voxel, up to a wide radius), three brush **shapes** — ● sphere, ◻ cube, ◆
+diamond (the 3D analogues of the paint menu's circle/square/diamond) — and a
+**Spray** toggle that scatters a random subset of the footprint (with a density
+slider) for a speckled look. A click-**drag** paints a continuous stroke that
+undoes as a single step.
+
+Pick a color from the swatches or the **custom color** picker (any RGB). **↺
+Undo** / **↻ Redo** (also **Cmd/Ctrl+Z** / **Shift+Cmd/Ctrl+Z**) step through
+your edits. The panel is **draggable** by its header and closes with its **×**
+or **Esc** (discarding edits). The editor is locked while the studio is active
+so an auto-run can't clobber your edits.
+
+Two ways to commit when you're done:
+
+- **Update code** — keeps your existing code and appends your edits as readable
+  `v.set(...)` / `v.remove(...)` statements before the `return`. Best when the
+  code is procedural (`v.fillBox`, `v.sphere`, …) and you want to keep it
+  editable.
+- **Save as raw voxel data** — replaces the editor with `voxels.decode(<your
+  edited grid>)` of the whole grid. It **warns first** because it overwrites
+  whatever code is there. The result is still an editable voxel session you can
+  re-open in the Studio.
+
+> Mesh-only paint features (edge-smoothing/subdivision, geodesic depth, the
+> rotatable shape gizmo, and named color regions) don't apply to voxels —
+> color lives per-cell in the grid and undo/redo replaces region history.
+
+### Editing an imported voxel
+
+Image-import (and `.vox`) sessions open as `voxels.decode("…")` code. That
+string *is* a live grid — Voxel Studio decodes it, so every tool works on an
+imported model too. Use **Box subtract** / **Remove** to carve away parts you
+didn't want, **Add** to extend it, and **Paint** / **Bucket** to recolor, then
+**Update code** (appends the edits) or **Save as raw voxel data** (replaces with
+the full decoded grid) to commit a new version.
 
 ### Programmatic / AI equivalent
 
 ```js
 await partwright.setActiveLanguage('voxel');
 await partwright.run(`return api.voxels().fillBox([-3,-3,0],[3,3,3], '#888');`);
-partwright.activateVoxelPaint();                       // -> { ok, voxelCount } | { error }
+partwright.activateVoxelPaint();                       // -> { voxelCount } | { error }
+
+// Single-voxel paint / erase (back-compat shortcut):
 partwright.paintVoxelFace({ faceIndex: 0, color: [255, 0, 0] });
 partwright.paintVoxelFace({ faceIndex: 12, erase: true });
-await partwright.bakeVoxelsToCode({ label: 'sad-cube' });   // commits + saves
+
+// Multi-tool studio:
+partwright.setVoxelTool('add');                                  // -> { tool }
+partwright.setVoxelBrush({ radius: 2, shape: 'sphere' });        // wider brush
+partwright.voxelStudioApply({ faceIndex: 0, color: [80,160,255] }); // sculpt a blob
+partwright.setVoxelTool('bucket');
+partwright.voxelStudioApply({ faceIndex: 4, color: '#33cc55' });    // flood recolor
+partwright.setVoxelTool('level');
+partwright.setVoxelLevelAxis(2);                                  // z layers
+partwright.voxelStudioApply({ faceIndex: 8, color: '#ffcc00' });    // recolor a layer
+partwright.setVoxelTool('boxRemove');
+partwright.voxelStudioApply({ faceIndex: 0 });   // bank one corner (changed:false)
+partwright.voxelStudioApply({ faceIndex: 30 });  // complete the box → carve it out
+
+// A drag stroke = one undo step (programmatic equivalent of click-drag):
+partwright.setVoxelTool('paint');
+partwright.voxelStudioBeginStroke();
+partwright.voxelStudioApply({ faceIndex: 0, color: '#ff0000' });
+partwright.voxelStudioApply({ faceIndex: 2 });
+partwright.voxelStudioEndStroke();               // -> { ok, voxelCount }
+
+partwright.voxelStudioUndo();                                    // -> { undone, voxelCount }
+partwright.voxelStudioRedo();                                    // -> { redone, voxelCount }
+
+// Commit — two options:
+await partwright.updateVoxelCode({ label: 'castle' });   // keep code, append edits
+await partwright.bakeVoxelsToCode({ label: 'castle' });  // replace with voxels.decode(...)
 // (or) partwright.deactivateVoxelPaint() to cancel without saving
 ```
 
 - `activateVoxelPaint()` re-runs the current code locally to capture the grid
-  + per-triangle voxel provenance. Returns `{ error }` outside voxel sessions
-  or if the code doesn't return a grid.
-- `paintVoxelFace({ faceIndex, color?, erase? })` mutates the live grid.
-  `faceIndex` is the triangle index a raycast would return (e.g. from a
-  pointer event); the API maps it back to the originating voxel. Returns
-  `{ changed, voxelCount }`.
-- `bakeVoxelsToCode({ label? })` deactivates paint, writes
-  `voxels.decode(...)` to the editor, runs it, and saves a new version. Returns
-  `{ versionIndex, voxelCount }` (or `{ error }` for an empty grid).
+  + per-triangle voxel/normal provenance. Returns `{ error }` outside voxel
+  sessions, on a `.smooth()` grid (call `.blocky()` first), or if the code
+  doesn't return a grid.
+- `setVoxelTool(tool)` — `'paint' | 'add' | 'remove' | 'bucket' | 'level' |
+  'boxAdd' | 'boxRemove'`. Returns `{ tool }` or `{ error }`.
+- `setVoxelBrush({ radius?, shape?, spray?, sprayDensity? })` — brush for the
+  paint/add/remove tools. `radius` in voxels (0 = single, max 16); `shape` is
+  `'sphere' | 'cube' | 'diamond'`; `spray` scatters a random subset;
+  `sprayDensity` 0.05..1. Returns the resolved settings.
+- `setVoxelLevelAxis(axis)` — `0`/`1`/`2` (x/y/z) for the `level` tool.
+- `voxelStudioBeginStroke()` / `voxelStudioEndStroke()` — bracket a run of
+  `voxelStudioApply` calls so they collapse into one undo step (the
+  programmatic equivalent of a click-drag).
+- `voxelStudioApply({ faceIndex, color?, tool? })` applies the active tool at a
+  face. `faceIndex` is the triangle index a raycast would return; the API maps
+  it back to the originating voxel (and, for **Add**, the empty cell on the
+  clicked face). The box tools need **two** calls — the first banks a corner
+  (`changed:false`, `pendingBoxCorner` set), the second completes the region.
+  Returns `{ changed, voxelCount, tool, pendingBoxCorner }`.
+- `paintVoxelFace({ faceIndex, color?, erase? })` is the original single-voxel
+  shortcut (paint or erase one voxel); still supported.
+- `voxelStudioUndo()` / `voxelStudioRedo()` step the edit history (returns
+  `{ undone|redone, voxelCount }`). In the UI, Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z
+  do the same while the studio is active.
+- `updateVoxelCode({ label? })` ("Update code") keeps the current procedural
+  source and appends the edits as `v.set` / `v.remove` statements, runs it, and
+  saves a new version. Returns `{ versionIndex, voxelCount }` (or `{ error }`).
+- `bakeVoxelsToCode({ label? })` ("Save as raw voxel data") replaces the editor
+  with `voxels.decode(...)` of the whole grid, runs it, and saves a new version.
+  Returns `{ versionIndex, voxelCount }` (or `{ error }` for an empty grid). The
+  in-app button confirms before overwriting; the API call does not.
 
 ## Image import
 
@@ -316,6 +408,13 @@ the settings you used.
 - **No booleans / fillets / history.** Voxel modeling is direct: place and
   remove cubes. For CSG, fillets, or parametric edits, use manifold-js or BREP.
 - **Coordinate range is −1024…1023 per axis.** Out-of-range coordinates throw.
+- **Catalog thumbnail faces iso azimuth ≈135° (the +X,−Y corner) by default.** The
+  catalog 3/4 tile camera looks from the +X/−Y corner — camera-facing surfaces are
+  the −Y and +X faces. By default, build characters and faced models with their
+  front on the −Y/+X corner; a face authored on flat +Y shows the *back* of the
+  head in the tile. **Or pin the tile angle** instead of reorienting the model:
+  `partwright.setThumbnailCamera({ azimuth, elevation })` (degrees) before saving
+  makes the thumbnail render from any angle you choose.
 
 ## A complete example
 

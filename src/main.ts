@@ -41,6 +41,7 @@ import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { registerCommands } from './ui/commandPalette';
+import { mountHintsTicker, showHintsTicker } from './ui/hints/hintsTicker';
 import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
@@ -112,6 +113,7 @@ import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
+import { appendVoxelEditsToCode, editOpCount } from './geometry/voxel/editCodegen';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
@@ -215,6 +217,7 @@ import {
   deleteParts,
   reorderParts,
   getState,
+  setSessionThumbCamera,
   getSessionUrl,
   getGalleryUrl,
   exportSession,
@@ -265,7 +268,7 @@ import {
   checkAssertions,
   type GeometryAssertions,
 } from './geometry/statsComputation';
-import { getConfig } from './config/appConfig';
+import { getConfig, saveAppConfig } from './config/appConfig';
 import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
 
 // Load examples as raw text — JS and SCAD
@@ -416,6 +419,11 @@ let currentMeshData: MeshData | null = null;
  *  log so users can see how close a run came to the ~4 GB ceiling. Undefined
  *  for non-manifold-js engines (separate heaps) or before the first run. */
 let lastEngineHeapBytes: number | undefined;
+/** Occupied-voxel count reported by the voxel engine for the most recent run.
+ *  Surfaced in the geometry-data stats (so `runAndSave().geometry.voxelCount`
+ *  and the Data panel show it) without re-decoding the grid. Undefined for the
+ *  non-voxel engines or before the first run. */
+let lastVoxelCount: number | undefined;
 /** The pristine mesh produced by the authored code, before any smooth brush
  *  subdivision. `currentMeshData` equals this until a `brushStroke` region
  *  exists, at which point it becomes the refined (subdivided) mesh rebuilt by
@@ -686,6 +694,11 @@ function withSessionContext(data: Record<string, unknown>): Record<string, unkno
   if (lastEngineHeapBytes !== undefined) {
     data.engineMemory = formatEngineMemory(lastEngineHeapBytes);
   }
+  // Voxel models report their occupied-voxel count so the stats double as a
+  // size readout for direct (non-mesh) modeling.
+  if (lastVoxelCount !== undefined) {
+    data.voxelCount = lastVoxelCount;
+  }
   return data;
 }
 
@@ -730,10 +743,14 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
 function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob | null> {
   if (!mesh) return Promise.resolve(null);
   let canvas: HTMLCanvasElement;
+  // Honour a session-pinned thumbnail camera (partwright.setThumbnailCamera);
+  // fall back to the default iso 3/4 view. The pin keeps the perspective ortho
+  // flag of the iso view so a custom angle still reads as a 3/4 tile.
+  const pin = getState().session?.thumbCamera;
   try {
     canvas = renderSingleViewCanvas(applyTriColorsIfVisible(mesh), {
-      elevation: STANDARD_VIEWS.iso.elevation,
-      azimuth: STANDARD_VIEWS.iso.azimuth,
+      elevation: pin ? pin.elevation : STANDARD_VIEWS.iso.elevation,
+      azimuth: pin ? pin.azimuth : STANDARD_VIEWS.iso.azimuth,
       ortho: STANDARD_VIEWS.iso.ortho,
     });
   } catch {
@@ -785,6 +802,23 @@ function getGeometryDataObj(): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+/** Per-region paint summary for the runAndSave / saveVersion response: each user
+ *  paint region's name, descriptor `kind` (so an agent can confirm it used
+ *  `byLabel` rather than coordinate paint — which bloats saved catalog files),
+ *  the resolved label for byLabel regions, and the triangle count it resolved to
+ *  on the current mesh (0 ⇒ the region matched nothing; see the zero-triangle
+ *  warning in `geometryWarnings`). Returns [] when nothing is painted.
+ *  Model-declared label colors are excluded — this reflects the serialized
+ *  paint, which is what determines file size. */
+function colorRegionStats(): { name: string; kind: RegionDescriptor['kind']; label?: string; triangleCount: number }[] {
+  return getRegions().map((r) => ({
+    name: r.name,
+    kind: r.descriptor.kind,
+    ...(r.descriptor.kind === 'byLabel' ? { label: r.descriptor.label } : {}),
+    triangleCount: r.triangles.size,
+  }));
 }
 
 /** Swap the in-memory annotation store to the version's snapshot.
@@ -1680,7 +1714,7 @@ function enrichGeometryDataWithColors(geoData: Record<string, unknown> | null): 
  *  active, or `{ skipped }` when nothing changed since the current version. */
 async function saveCurrentVersion(label?: string): Promise<
   | { error: string }
-  | { id: string; index: number; label: string }
+  | { id: string; index: number; label: string; colorRegions?: ReturnType<typeof colorRegionStats> }
   | { skipped: true; reason: string }
 > {
   if (isSharedPreview()) {
@@ -1718,7 +1752,11 @@ async function saveCurrentVersion(label?: string): Promise<
         if (oldest) partMeshCache.delete(oldest);
       }
     }
-    return { id: version.id, index: version.index, label: version.label };
+    const colorRegions = colorRegionStats();
+    return {
+      id: version.id, index: version.index, label: version.label,
+      ...(colorRegions.length > 0 ? { colorRegions } : {}),
+    };
   }
   return {
     skipped: true as const,
@@ -4067,6 +4105,15 @@ async function main() {
     },
   });
 
+  // "Did you know?" hints ticker — mounts into the toolbar's middle host
+  // (#editor-hints-host, created by createToolbar between the language "?" and
+  // the "Use AI" button). The ticker mounts/unmounts inside it as it's toggled.
+  // Shown by default; hidden per-session via its ✕ or permanently in Advanced
+  // Settings (config.ui.editorHintsEnabled).
+  // Query within editorUI (not document) — it isn't attached to the page yet.
+  const hintsHost = editorUI.querySelector<HTMLElement>('#editor-hints-host');
+  if (hintsHost) mountHintsTicker(hintsHost);
+
   // Init diagnostic panel — attaches to document.body, registers badge subscriber.
   initDiagnosticsPanel();
 
@@ -4301,6 +4348,16 @@ async function main() {
   // Viewport tools need the editor active and a model on screen to act on.
   const viewportToolEnabled = () => isEditorActive() && currentMeshData !== null;
 
+  // Flip the permanent on/off for the hints ticker (also exposed in Advanced
+  // Settings). Turning it on clears any per-session ✕-dismiss so it reappears.
+  function toggleEditorHints(): void {
+    const cfg = getConfig();
+    const next = !cfg.ui.editorHintsEnabled;
+    saveAppConfig({ ...cfg, ui: { ...cfg.ui, editorHintsEnabled: next } });
+    if (next) showHintsTicker();
+    showToast(next ? 'Editor hints shown' : 'Editor hints hidden', { variant: 'neutral' });
+  }
+
   // Register command-palette actions (⌘K). Reuses the same handlers the
   // toolbar/session bar/layout already wire up so behavior can't drift.
   registerCommands([
@@ -4349,6 +4406,7 @@ async function main() {
     { id: 'open-whats-new', title: "Open what's new", hint: 'Navigate', keywords: 'changelog recent features updates release notes', run: () => showWhatsNewPage() },
     { id: 'open-quality', title: 'Settings', hint: 'Settings', keywords: 'resolution curve segments smoothness advanced', run: () => showAdvancedSettingsModal() },
     { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); }, enabled: isEditorActive },
+    { id: 'toggle-hints', title: 'Toggle "Did you know?" hints', hint: 'View', keywords: 'did you know tips ticker discovery hints banner strip', run: () => toggleEditorHints() },
   ]);
 
   // Init gallery — `loadVersion` (in gallery.ts) has already updated state to
@@ -6283,8 +6341,9 @@ async function main() {
       const err = voxelPaint.activate(code, {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
+        onStateChange: () => { syncVoxelPaintUI(); },
       }, currentParamValues);
-      if (err) showToast(`Voxel paint: ${err}`, { variant: 'warn' });
+      if (err) showToast(`Voxel Studio: ${err}`, { variant: 'warn' });
       syncVoxelPaintUI();
     },
     deactivate: async () => {
@@ -6292,29 +6351,60 @@ async function main() {
       runCode(getValue());
       syncVoxelPaintUI();
     },
-    bake: async () => {
-      const result = await bakePaintedVoxelsAsVersion('painted');
-      if ('error' in result) showToast(`Voxel paint: ${result.error}`, { variant: 'warn' });
+    updateCode: async () => {
+      const result = await commitVoxelEdits('update', 'voxel edits');
+      if ('error' in result) showToast(`Voxel Studio: ${result.error}`, { variant: 'warn' });
+      else showToast('Voxel edits applied to your code', { variant: 'success' });
+      syncVoxelPaintUI();
+    },
+    saveRaw: async () => {
+      // Replacing destroys the current source; confirm when there's code to lose.
+      if (getValue().trim().length > 0) {
+        const ok = await confirmDialog(
+          'Save as raw voxel data? This replaces the code in the editor with voxels.decode(...) of the current grid.',
+          { title: 'Replace code', confirmLabel: 'Replace', danger: true },
+        );
+        if (!ok) return;
+      }
+      const result = await commitVoxelEdits('replace', 'painted');
+      if ('error' in result) showToast(`Voxel Studio: ${result.error}`, { variant: 'warn' });
       syncVoxelPaintUI();
     },
   });
   setVoxelPaintAvailable(getActiveLanguage() === 'voxel');
 
-  // Single source of truth for "commit the painted voxel grid as a new
-  // version" — called both from the UI Bake button and the partwright API.
-  // Centralising avoids the bake-with-empty-grid / no-session bugs that two
-  // separate implementations introduced.
-  async function bakePaintedVoxelsAsVersion(label: string): Promise<{ versionIndex: number | null; voxelCount: number } | { error: string }> {
-    if (!voxelPaint.isActive()) return { error: 'voxel paint is not active.' };
+  // Single source of truth for committing Voxel Studio edits as a new version.
+  // `mode` picks how the edits land in the editor:
+  //   • 'replace' — overwrite the code with voxels.decode(<full grid>) ("Save
+  //     as raw voxel data"). The UI confirms before calling this; the
+  //     programmatic API (bakeVoxelsToCode) skips the dialog.
+  //   • 'update'  — keep the procedural code and append the edits as explicit
+  //     v.set/v.remove statements ("Update code").
+  async function commitVoxelEdits(
+    mode: 'replace' | 'update',
+    label: string,
+  ): Promise<{ versionIndex: number | null; voxelCount: number } | { error: string }> {
+    if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
     const count = voxelPaint.voxelCount();
-    if (count === 0) return { error: 'The painted grid is empty — paint or keep at least one voxel before baking.' };
-    const code = voxelPaint.bakeToCode('painted');
-    if (!code) return { error: 'voxel paint has no grid to bake.' };
+    if (count === 0) return { error: 'The grid is empty — keep at least one voxel before saving.' };
+
+    let code: string | null;
+    if (mode === 'update') {
+      const ops = voxelPaint.getEditOps();
+      if (editOpCount(ops) === 0) return { error: 'No edits to apply — paint, add, or remove some voxels first.' };
+      code = appendVoxelEditsToCode(getValue(), ops);
+      // No trailing `return …;` to hook onto — fall back to a clean replace.
+      if (code === null) code = voxelPaint.bakeToCode('painted');
+    } else {
+      code = voxelPaint.bakeToCode('painted');
+    }
+    if (!code) return { error: 'Voxel Studio has no grid to save.' };
+
     voxelPaint.deactivate();
     setValue(code);
     await runCodeSync(code);
     // Mirror the runAndSave auto-create pattern so callers don't have to wrap
-    // bake with a manual createSession.
+    // the commit with a manual createSession.
     if (!getState().session) {
       await createSession(label, getActiveLanguage());
     }
@@ -6688,6 +6778,7 @@ async function main() {
     const manifold = result.manifold ?? (mod && result.mesh ? mod.Manifold.ofMesh(result.mesh) : null);
     const stats = computeGeometryStats(manifold, result.mesh!, elapsed, code);
     if (engineMemory !== undefined) stats.engineMemory = engineMemory;
+    if (result.voxelCount !== undefined) stats.voxelCount = result.voxelCount;
     return {
       geometryData: stats,
       meshData: result.mesh,
@@ -8022,6 +8113,55 @@ async function main() {
       return composite.toDataURL('image/png');
     },
 
+    /** Pin the thumbnail camera angle for the active session so captured
+     *  thumbnails (catalog tile, gallery, version snapshots) render from this
+     *  azimuth / elevation (degrees) instead of the default iso 3/4 view (the
+     *  default is azimuth 135°, elevation 35°). The pin persists on the session
+     *  and survives reload / export, so a faced model can present its front in
+     *  the tile without baking orientation into the geometry.
+     *
+     *  - `setThumbnailCamera({ azimuth, elevation })` — pin an explicit angle.
+     *    Azimuth: 0 = front (+Y), 90 = right (+X), 180 = back (−Y), 270 = left.
+     *    Elevation: 0 = horizon, 90 = top-down.
+     *  - `setThumbnailCamera('current')` — pin the angle you're currently
+     *    looking at in the viewport (orbit to a nice 3/4 view, then call this —
+     *    no guessing numbers). The live viewport's azimuth convention is
+     *    mirrored from the thumbnail camera's, so this converts it for you.
+     *  - `setThumbnailCamera(null)` — clear the pin, back to the default.
+     *
+     *  Returns the resolved camera (or null when cleared), or `{ error }`. */
+    async setThumbnailCamera(camera: { azimuth: number; elevation: number } | 'current' | null) {
+      let resolved: { azimuth: number; elevation: number } | null;
+      if (camera === 'current') {
+        // Viewport azimuth is measured as atan2(dx, −dy); the thumbnail camera
+        // (buildViewCamera) uses atan2(dx, dy). They differ by a 180° mirror,
+        // so convert: thumbAz = 180 − viewportAz.
+        const cs = getCameraState();
+        resolved = { azimuth: ((180 - cs.azimuth) % 360 + 360) % 360, elevation: cs.elevation };
+      } else if (camera === null) {
+        resolved = null;
+      } else {
+        const check = guard(() => {
+          const o = assertObject(camera, 'setThumbnailCamera(camera)')!;
+          assertNoUnknownKeys(o, ['azimuth', 'elevation'], 'setThumbnailCamera(camera)');
+          assertNumber(o.azimuth, 'setThumbnailCamera(camera).azimuth');
+          assertNumber(o.elevation, 'setThumbnailCamera(camera).elevation', { min: -90, max: 90 });
+          return true;
+        });
+        if (typeof check === 'object' && check !== null && 'error' in check) return check;
+        resolved = camera;
+      }
+      if (!getState().session) return { error: 'No active session. Call createSession() or openSession() first.' };
+      await setSessionThumbCamera(resolved);
+      return { thumbCamera: getState().session?.thumbCamera ?? null };
+    },
+
+    /** The active session's pinned thumbnail camera `{ azimuth, elevation }`, or
+     *  null when unpinned (the default iso view is used for thumbnails). */
+    getThumbnailCamera(): { azimuth: number; elevation: number } | null {
+      return getState().session?.thumbCamera ?? null;
+    },
+
     /** Render a cross-section at Z height as an SVG string for visual verification */
     sliceAtZVisual(z: number): { svg: string; area: number; contours: number } | null {
       assertNumber(z, 'sliceAtZVisual(z)');
@@ -8665,6 +8805,7 @@ async function main() {
         ? [...currentLostLabels]
         : undefined;
       const printability = computePrintability(newGeoData);
+      const colorRegions = colorRegionStats();
       return {
         ...(assertions ? { passed: true } : {}),
         geometry: newGeoData,
@@ -8674,6 +8815,7 @@ async function main() {
         galleryUrl: getGalleryUrl(),
         ...(warnings.length > 0 ? { warnings } : {}),
         ...(lostLabels ? { lostLabels } : {}),
+        ...(colorRegions.length > 0 ? { colorRegions } : {}),
       };
     },
 
@@ -11295,6 +11437,7 @@ async function main() {
       const err = voxelPaint.activate(code, {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
+        onStateChange: () => { syncVoxelPaintUI(); },
       }, currentParamValues);
       if (err) return { error: `activateVoxelPaint: ${err}` };
       syncVoxelPaintUI();
@@ -11328,13 +11471,124 @@ async function main() {
       return { changed, voxelCount: voxelPaint.voxelCount() };
     },
 
+    /** Select the active Voxel Studio tool: 'paint' | 'add' | 'remove' |
+     *  'bucket' | 'level' | 'boxAdd' | 'boxRemove'. Returns `{ tool }` or
+     *  `{ error }`. */
+    setVoxelTool(tool: import('./color/voxelPaint').VoxelTool) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      const tools = ['paint', 'add', 'remove', 'bucket', 'level', 'boxAdd', 'boxRemove'];
+      if (!tools.includes(tool as string)) return { error: `setVoxelTool: tool must be one of ${tools.join(', ')}` };
+      voxelPaint.setTool(tool);
+      syncVoxelPaintUI();
+      return { tool };
+    },
+
+    /** Apply the active tool at a clicked face (the triangle index a raycast
+     *  would return). Optionally sets the color and/or tool first. The box
+     *  tools take two calls (first banks a corner, second completes the box).
+     *  Returns `{ changed, voxelCount, tool, pendingBoxCorner }` or `{ error }`. */
+    voxelStudioApply(opts: { faceIndex: number; color?: [number, number, number] | string | number; tool?: import('./color/voxelPaint').VoxelTool }) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'voxelStudioApply requires { faceIndex }' };
+      if (!Number.isInteger(opts.faceIndex) || opts.faceIndex < 0) return { error: 'voxelStudioApply.faceIndex must be a non-negative integer' };
+      if (opts.tool !== undefined) {
+        const tools = ['paint', 'add', 'remove', 'bucket', 'level', 'boxAdd', 'boxRemove'];
+        if (!tools.includes(opts.tool as string)) return { error: `voxelStudioApply: tool must be one of ${tools.join(', ')}` };
+        voxelPaint.setTool(opts.tool);
+      }
+      if (opts.color !== undefined) {
+        try { voxelPaint.setColor(opts.color); }
+        catch (e) { return { error: (e as Error).message }; }
+      }
+      const changed = voxelPaint.applyAtTriangle(opts.faceIndex);
+      syncVoxelPaintUI();
+      return { changed, voxelCount: voxelPaint.voxelCount(), tool: voxelPaint.getTool(), pendingBoxCorner: voxelPaint.pendingBoxCorner() };
+    },
+
+    /** Undo the last Voxel Studio edit. Returns `{ undone, voxelCount }`. */
+    voxelStudioUndo() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      const undone = voxelPaint.undo();
+      syncVoxelPaintUI();
+      return { undone, voxelCount: voxelPaint.voxelCount() };
+    },
+
+    /** Redo the last undone Voxel Studio edit. Returns `{ redone, voxelCount }`. */
+    voxelStudioRedo() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      const redone = voxelPaint.redo();
+      syncVoxelPaintUI();
+      return { redone, voxelCount: voxelPaint.voxelCount() };
+    },
+
+    /** Configure the brush used by the paint/add/remove tools. `radius` is in
+     *  voxels (0 = a single voxel, max 16); `shape` is 'sphere' | 'cube' |
+     *  'diamond'; `spray` scatters a random subset; `sprayDensity` is 0.05..1.
+     *  Returns the resolved brush settings or `{ error }`. */
+    setVoxelBrush(opts: { radius?: number; shape?: import('./color/voxelPaint').BrushShape; spray?: boolean; sprayDensity?: number } = {}) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      if (opts.radius !== undefined) {
+        if (typeof opts.radius !== 'number' || opts.radius < 0) return { error: 'setVoxelBrush.radius must be a non-negative number' };
+        voxelPaint.setBrushRadius(opts.radius);
+      }
+      if (opts.shape !== undefined) {
+        const shapes = ['sphere', 'cube', 'diamond'];
+        if (!shapes.includes(opts.shape as string)) return { error: `setVoxelBrush.shape must be one of ${shapes.join(', ')}` };
+        voxelPaint.setBrushShape(opts.shape);
+      }
+      if (opts.spray !== undefined) voxelPaint.setSpray(!!opts.spray);
+      if (opts.sprayDensity !== undefined) {
+        if (typeof opts.sprayDensity !== 'number') return { error: 'setVoxelBrush.sprayDensity must be a number 0.05..1' };
+        voxelPaint.setSprayDensity(opts.sprayDensity);
+      }
+      syncVoxelPaintUI();
+      return { radius: voxelPaint.getBrushRadius(), shape: voxelPaint.getBrushShape(), spray: voxelPaint.isSpray(), sprayDensity: voxelPaint.getSprayDensity() };
+    },
+
+    /** Set the axis (0=x, 1=y, 2=z) the 'level' tool recolors. Returns `{ axis }`. */
+    setVoxelLevelAxis(axis: 0 | 1 | 2) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      if (axis !== 0 && axis !== 1 && axis !== 2) return { error: 'setVoxelLevelAxis.axis must be 0, 1, or 2' };
+      voxelPaint.setLevelAxis(axis);
+      syncVoxelPaintUI();
+      return { axis };
+    },
+
+    /** Begin a brush stroke: subsequent `voxelStudioApply` calls collapse into a
+     *  single undo step until `voxelStudioEndStroke()`. This is the programmatic
+     *  equivalent of a click-drag. Returns `{ ok }` or `{ error }`. */
+    voxelStudioBeginStroke() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      voxelPaint.beginStroke();
+      return { ok: true };
+    },
+
+    /** Finish the current brush stroke, committing it as one undo step.
+     *  Returns `{ ok, voxelCount }`. */
+    voxelStudioEndStroke() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      voxelPaint.endStroke();
+      syncVoxelPaintUI();
+      return { ok: true, voxelCount: voxelPaint.voxelCount() };
+    },
+
     /** Bake the painted grid into `voxels.decode(...)` editor code, run it,
      *  and save as a new version. Deactivates voxel paint mode after baking.
      *  Auto-creates a session if none exists. Returns `{ versionIndex,
      *  voxelCount }` or `{ error }`. */
     async bakeVoxelsToCode(opts: { label?: string } = {}) {
       const label = typeof opts.label === 'string' && opts.label ? opts.label : 'painted';
-      const result = await bakePaintedVoxelsAsVersion(label);
+      const result = await commitVoxelEdits('replace', label);
+      syncVoxelPaintUI();
+      return result;
+    },
+
+    /** "Update code": keep the current procedural voxel source and append the
+     *  Studio's edits as explicit v.set/v.remove statements, then save a new
+     *  version. Returns `{ versionIndex, voxelCount }` or `{ error }`. */
+    async updateVoxelCode(opts: { label?: string } = {}) {
+      const label = typeof opts.label === 'string' && opts.label ? opts.label : 'voxel edits';
+      const result = await commitVoxelEdits('update', label);
       syncVoxelPaintUI();
       return result;
     },
@@ -12586,6 +12840,9 @@ async function main() {
     // manifold-js engines, which own separate heaps). Surfaced in the Data panel
     // and engine-error log so users can see how close a run came to the ceiling.
     lastEngineHeapBytes = result.engineHeapBytes;
+    // Occupied-voxel count for voxel runs (undefined for other engines, which
+    // resets the readout so a prior voxel session's count doesn't linger).
+    lastVoxelCount = result.voxelCount;
 
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel
