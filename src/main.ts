@@ -41,6 +41,7 @@ import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { registerCommands } from './ui/commandPalette';
+import { mountHintsTicker, showHintsTicker } from './ui/hints/hintsTicker';
 import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
@@ -266,7 +267,7 @@ import {
   checkAssertions,
   type GeometryAssertions,
 } from './geometry/statsComputation';
-import { getConfig } from './config/appConfig';
+import { getConfig, saveAppConfig } from './config/appConfig';
 import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
 
 // Load examples as raw text — JS and SCAD
@@ -4103,6 +4104,15 @@ async function main() {
     },
   });
 
+  // "Did you know?" hints ticker — mounts into the toolbar's middle host
+  // (#editor-hints-host, created by createToolbar between the language "?" and
+  // the "Use AI" button). The ticker mounts/unmounts inside it as it's toggled.
+  // Shown by default; hidden per-session via its ✕ or permanently in Advanced
+  // Settings (config.ui.editorHintsEnabled).
+  // Query within editorUI (not document) — it isn't attached to the page yet.
+  const hintsHost = editorUI.querySelector<HTMLElement>('#editor-hints-host');
+  if (hintsHost) mountHintsTicker(hintsHost);
+
   // Init diagnostic panel — attaches to document.body, registers badge subscriber.
   initDiagnosticsPanel();
 
@@ -4337,6 +4347,16 @@ async function main() {
   // Viewport tools need the editor active and a model on screen to act on.
   const viewportToolEnabled = () => isEditorActive() && currentMeshData !== null;
 
+  // Flip the permanent on/off for the hints ticker (also exposed in Advanced
+  // Settings). Turning it on clears any per-session ✕-dismiss so it reappears.
+  function toggleEditorHints(): void {
+    const cfg = getConfig();
+    const next = !cfg.ui.editorHintsEnabled;
+    saveAppConfig({ ...cfg, ui: { ...cfg.ui, editorHintsEnabled: next } });
+    if (next) showHintsTicker();
+    showToast(next ? 'Editor hints shown' : 'Editor hints hidden', { variant: 'neutral' });
+  }
+
   // Register command-palette actions (⌘K). Reuses the same handlers the
   // toolbar/session bar/layout already wire up so behavior can't drift.
   registerCommands([
@@ -4385,6 +4405,7 @@ async function main() {
     { id: 'open-whats-new', title: "Open what's new", hint: 'Navigate', keywords: 'changelog recent features updates release notes', run: () => showWhatsNewPage() },
     { id: 'open-quality', title: 'Settings', hint: 'Settings', keywords: 'resolution curve segments smoothness advanced', run: () => showAdvancedSettingsModal() },
     { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); }, enabled: isEditorActive },
+    { id: 'toggle-hints', title: 'Toggle "Did you know?" hints', hint: 'View', keywords: 'did you know tips ticker discovery hints banner strip', run: () => toggleEditorHints() },
   ]);
 
   // Init gallery — `loadVersion` (in gallery.ts) has already updated state to

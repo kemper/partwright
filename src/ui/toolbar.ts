@@ -289,10 +289,15 @@ export function createToolbar(
   langHelpBtn.addEventListener('click', () => { void callbacks.onLanguageHelp(); });
   toolbar.appendChild(langHelpBtn);
 
-  // Spacer
-  const spacer = document.createElement('div');
-  spacer.className = 'flex-1';
-  toolbar.appendChild(spacer);
+  // Hints ticker host — fills the flexible middle of the toolbar, between the
+  // language help "?" and the "Use AI" button. Kept flex-1 so it also acts as
+  // the spacer that right-aligns the AI/Import/Export group even when the ticker
+  // is dismissed or disabled (the host is then empty). main.ts mounts the ticker
+  // (src/ui/hints/hintsTicker.ts) into this element by id.
+  const hintsHost = document.createElement('div');
+  hintsHost.id = 'editor-hints-host';
+  hintsHost.className = 'flex-1 min-w-0 flex items-center justify-center mx-2';
+  toolbar.appendChild(hintsHost);
 
   // Use AI — primary entry point to the chat drawer. The activity rail also
   // has a "✦ AI" item, but on mobile it lives in a horizontally-scrollable
