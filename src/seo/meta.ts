@@ -22,7 +22,7 @@ const ROUTE_META: Record<RouteName, RouteMeta> = {
   landing: {
     title: `${BASE_TITLE} — AI-Driven Parametric CAD in Your Browser`,
     description:
-      'Describe a part, get a printable 3D model. Partwright is a browser-based parametric CAD tool with a programmatic API designed for AI agents — no signup, no installs, powered by manifold-3d.',
+      'Describe something, get a printable 3D model. Partwright is a browser-based parametric CAD tool with a programmatic API designed for AI agents — no signup, no installs, powered by manifold-3d.',
     path: '/',
     ogImage: '/og-image.png',
   },
