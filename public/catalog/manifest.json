@@ -647,6 +647,14 @@
       "language": "manifold-js",
       "description": "Squat, chunky two-start spiral cone sized for a pocket and an easy first print — a very steep helix and a generous central bore make it the most fuse-proof of the set. Twist to screw the two halves apart. Fully parametric.",
       "group": "fidget-toys"
+    },
+    {
+      "id": "spiral-screw-cone",
+      "name": "Hidden-Screw Spiral Cone",
+      "file": "spiral_screw_cone.partwright.json",
+      "language": "manifold-js",
+      "description": "Print-in-place nut-and-bolt fidget — a smooth 5-start threaded cone that hides a matching helical screw inside. Twist and it winds apart through the open base, then screws back together. Two genuinely distinct parts (a male bolt + female nut), not a sliced symmetric spiral. Fully parametric: thread starts, height, turns, clearance, thread depth, and bore.",
+      "group": "fidget-toys"
     }
   ]
 }
