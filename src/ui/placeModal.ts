@@ -1,31 +1,36 @@
-// Place-on-plate panel — a compact, draggable viewport panel that repositions
-// the current model onto the print bed: drop its lowest point to Z=0 and/or
-// center it on the X/Y axes. Each action applies immediately and saves a new
-// version (undo is the version history), mirroring the Resize panel.
+// Place / Rotate panel — a compact, draggable viewport panel that repositions
+// and reorients the current model: drop its lowest point to Z=0, center it on
+// X/Y, freely rotate it, or auto lay-flat (rotate the largest flat face onto the
+// bed). Each action applies immediately and saves a new version (undo is the
+// version history), mirroring the Resize panel.
 //
 // Write-back mode: when the model is parametric manifold-js with no manual
 // paint, the user can keep the result as editable code (the source is wrapped
-// and translated) or bake it to a mesh. Otherwise only baking is offered, since
-// world-space paint regions can't follow a parametric move.
+// and the transform chained) or bake it to a mesh. Otherwise only baking is
+// offered, since world-space paint regions can't follow a parametric move.
 
 import { registerCommands } from './commandPalette';
 import { showToast } from './toast';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
 
+type Mode = 'parametric' | 'bake' | 'auto';
 type PlaceOpts = {
   dropToFloor?: boolean;
   centerX?: boolean;
   centerY?: boolean;
   centerZ?: boolean;
-  mode?: 'parametric' | 'bake' | 'auto';
+  mode?: Mode;
   preserveColor?: boolean;
 };
+type RotateOpts = { x?: number; y?: number; z?: number; mode?: Mode; preserveColor?: boolean };
 
 type PlaceResult = { error?: string; ok?: boolean; noop?: boolean; message?: string; warnings?: string[] } & Record<string, unknown>;
 
 export interface PlaceApi {
   placeModel(opts: PlaceOpts): Promise<PlaceResult>;
+  rotateModel(opts: RotateOpts): Promise<PlaceResult>;
+  layFlatModel(opts: { mode?: Mode; preserveColor?: boolean }): Promise<PlaceResult>;
   canPlaceParametric(): boolean;
   modelHasColor(): boolean;
   getGeometryData(): { boundingBox?: { x?: number[]; y?: number[]; z?: number[] } | null } | Record<string, unknown>;
@@ -84,20 +89,20 @@ export function openPlaceModal(api: PlaceApi): void {
 
   // Header — drag handle + title + × button.
   const header = el('div', 'flex items-center justify-between px-4 py-3 border-b border-zinc-700 shrink-0');
-  header.append(el('h2', 'text-sm font-semibold', 'Place on plate'));
+  header.append(el('h2', 'text-sm font-semibold', 'Place / Rotate'));
   const closeBtn = el('button', 'text-zinc-400 hover:text-zinc-100 text-lg leading-none cursor-pointer', '×');
   closeBtn.setAttribute('aria-label', 'Close placement panel');
   header.append(closeBtn);
   panel.append(header);
   const dragHandle = attachViewportPanelDrag(header, panel);
 
-  const body = el('div', 'p-4 flex flex-col gap-3');
+  const body = el('div', 'p-4 flex flex-col gap-3 max-h-[70vh] overflow-y-auto');
   panel.append(body);
 
   body.append(el('p', 'text-[11px] text-zinc-400 leading-snug',
-    'Reposition the model onto the bed: drop its lowest point to the floor, or center it over the origin.'));
+    'Reposition or reorient the model: drop it to the floor, center it, rotate it, or auto lay-flat.'));
 
-  // ---- Action buttons ----
+  // ---- Place actions ----
   const ACTION = 'w-full text-left px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs flex items-center gap-2';
   const dropBtn = el('button', ACTION);
   dropBtn.innerHTML = '<span aria-hidden="true">⤓</span><span>Drop to floor <span class="text-zinc-500">(Z → 0)</span></span>';
@@ -105,7 +110,35 @@ export function openPlaceModal(api: PlaceApi): void {
   centerBtn.innerHTML = '<span aria-hidden="true">⊕</span><span>Center on plate <span class="text-zinc-500">(XY → 0)</span></span>';
   const bothBtn = el('button', ACTION);
   bothBtn.innerHTML = '<span aria-hidden="true">⤓⊕</span><span>Drop &amp; center</span>';
-  body.append(dropBtn, centerBtn, bothBtn);
+  const layFlatBtn = el('button', ACTION);
+  layFlatBtn.innerHTML = '<span aria-hidden="true">▭</span><span>Lay flat <span class="text-zinc-500">(auto-orient largest face down)</span></span>';
+  body.append(dropBtn, centerBtn, bothBtn, layFlatBtn);
+
+  // ---- Rotate section ----
+  const rotWrap = el('div', 'flex flex-col gap-2 pt-1 border-t border-zinc-800');
+  rotWrap.append(el('div', 'text-[11px] text-zinc-400 font-medium pt-2', 'Rotate (degrees, about center)'));
+  const axisInputs: Record<'x' | 'y' | 'z', HTMLInputElement> = {} as Record<'x' | 'y' | 'z', HTMLInputElement>;
+  const axisRow = el('div', 'flex items-center gap-2');
+  (['x', 'y', 'z'] as const).forEach(axis => {
+    const cell = el('label', 'flex items-center gap-1 text-xs text-zinc-300');
+    cell.append(el('span', 'font-mono text-zinc-400 uppercase w-3', axis));
+    const inp = el('input', 'w-full bg-zinc-800 border border-zinc-600 rounded px-1.5 py-0.5 text-right text-zinc-200 font-mono text-xs focus:border-blue-400 focus:outline-none');
+    inp.type = 'number';
+    inp.step = '15';
+    inp.value = '0';
+    inp.setAttribute('aria-label', `Rotate ${axis.toUpperCase()} degrees`);
+    axisInputs[axis] = inp;
+    cell.append(inp);
+    axisRow.append(cell);
+  });
+  rotWrap.append(axisRow);
+  const rotBtnRow = el('div', 'flex items-center gap-2');
+  const rotateBtn = el('button', 'flex-1 px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium', 'Apply rotation');
+  const rotResetBtn = el('button', 'px-2 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs', 'Reset');
+  rotResetBtn.addEventListener('click', () => { axisInputs.x.value = '0'; axisInputs.y.value = '0'; axisInputs.z.value = '0'; });
+  rotBtnRow.append(rotateBtn, rotResetBtn);
+  rotWrap.append(rotBtnRow);
+  body.append(rotWrap);
 
   // ---- Write-back mode ----
   const modeWrap = el('div', 'flex flex-col gap-1.5 pt-1 border-t border-zinc-800');
@@ -161,18 +194,18 @@ export function openPlaceModal(api: PlaceApi): void {
   footer.append(closeFooterBtn);
   panel.append(footer);
 
-  const buttons = [dropBtn, centerBtn, bothBtn];
-  async function runPlacement(ops: PlaceOpts, verb: string): Promise<void> {
+  const buttons = [dropBtn, centerBtn, bothBtn, layFlatBtn, rotateBtn];
+  async function runAction(call: () => Promise<PlaceResult>, verb: string): Promise<void> {
     buttons.forEach(b => (b.disabled = true));
     status.textContent = 'Working…';
     try {
-      const result = await api.placeModel({ ...ops, mode, preserveColor });
+      const result = await call();
       if (result.error) {
         status.textContent = `Error: ${result.error}`;
         return;
       }
       if (result.noop) {
-        status.textContent = result.message ?? 'Model is already positioned.';
+        status.textContent = result.message ?? 'Nothing to do.';
         return;
       }
       const warn = Array.isArray(result.warnings) && result.warnings.length ? ` (${result.warnings.join(' ')})` : '';
@@ -185,9 +218,16 @@ export function openPlaceModal(api: PlaceApi): void {
     }
   }
 
-  dropBtn.addEventListener('click', () => void runPlacement({ dropToFloor: true }, 'Dropped to floor'));
-  centerBtn.addEventListener('click', () => void runPlacement({ centerX: true, centerY: true }, 'Centered on plate'));
-  bothBtn.addEventListener('click', () => void runPlacement({ dropToFloor: true, centerX: true, centerY: true }, 'Dropped & centered'));
+  dropBtn.addEventListener('click', () => void runAction(() => api.placeModel({ dropToFloor: true, mode, preserveColor }), 'Dropped to floor'));
+  centerBtn.addEventListener('click', () => void runAction(() => api.placeModel({ centerX: true, centerY: true, mode, preserveColor }), 'Centered on plate'));
+  bothBtn.addEventListener('click', () => void runAction(() => api.placeModel({ dropToFloor: true, centerX: true, centerY: true, mode, preserveColor }), 'Dropped & centered'));
+  layFlatBtn.addEventListener('click', () => void runAction(() => api.layFlatModel({ mode, preserveColor }), 'Laid flat'));
+  rotateBtn.addEventListener('click', () => {
+    const x = parseFloat(axisInputs.x.value) || 0;
+    const y = parseFloat(axisInputs.y.value) || 0;
+    const z = parseFloat(axisInputs.z.value) || 0;
+    void runAction(() => api.rotateModel({ x, y, z, mode, preserveColor }), `Rotated (${x}°, ${y}°, ${z}°)`);
+  });
 
   const close = () => {
     dragHandle.destroy();
@@ -215,16 +255,16 @@ export function initPlaceUI(api: PlaceApi): void {
   registerCommands([
     {
       id: 'place-model',
-      title: 'Place model on plate',
+      title: 'Place / Rotate model',
       hint: 'Transform',
-      keywords: 'place plate floor bed drop center align lay flat ground origin transform',
+      keywords: 'place rotate plate floor bed drop center align lay flat ground origin orient transform',
       run: () => openPlaceModal(api),
     },
     {
       id: 'place-drop-floor',
       title: 'Drop model to floor',
       hint: 'Transform',
-      keywords: 'drop floor bed z zero ground lay flat sink align',
+      keywords: 'drop floor bed z zero ground sink align',
       run: () => { void api.placeModel({ dropToFloor: true, mode: 'auto' }); },
     },
     {
@@ -233,6 +273,13 @@ export function initPlaceUI(api: PlaceApi): void {
       hint: 'Transform',
       keywords: 'center plate origin xy align middle',
       run: () => { void api.placeModel({ centerX: true, centerY: true, mode: 'auto' }); },
+    },
+    {
+      id: 'place-lay-flat',
+      title: 'Lay model flat (auto-orient)',
+      hint: 'Transform',
+      keywords: 'lay flat auto orient rotate largest face down bed level',
+      run: () => { void api.layFlatModel({ mode: 'auto' }); },
     },
   ]);
 
@@ -246,8 +293,8 @@ export function initPlaceUI(api: PlaceApi): void {
     const btnCls = (styleRef?.className ?? '').split(' ').filter(c => c !== 'hidden').join(' ') || BTN_BASE;
     const btn = el('button', btnCls);
     btn.id = 'place-viewport-toggle';
-    btn.textContent = '⤓ Place';
-    btn.title = 'Drop the model to the floor or center it on the plate';
+    btn.textContent = '⤓ Place/Rotate';
+    btn.title = 'Drop to the floor, center, rotate, or auto lay-flat';
     btn.addEventListener('click', () => openPlaceModal(api));
     host.appendChild(btn);
   };

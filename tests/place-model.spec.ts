@@ -80,15 +80,57 @@ test.describe('Place on plate', () => {
       await pw.run(code);
     }, [FLOATING_CUBE]);
 
-    // Open the Tools popover, then the Place panel.
+    // Open the Tools popover, then the Place/Rotate panel.
     await page.locator('#viewport-tools-group-btn').click();
     await page.locator('#place-viewport-toggle').click();
-    await expect(page.getByText('Place on plate')).toBeVisible();
+    await expect(page.getByText('Place / Rotate')).toBeVisible();
 
     await page.getByRole('button', { name: /Drop to floor/i }).click();
 
     await expect.poll(async () =>
       page.evaluate(() => (window as unknown as { partwright: any }).partwright.getGeometryData().boundingBox?.z?.[0]),
     ).toBeCloseTo(0, 1);
+  });
+
+  test('parametric and bake rotation are geometrically identical', async ({ page }) => {
+    // This is the parity check that proves eulerToMatrix (bake) matches the
+    // engine's .rotate() (parametric): same input → same resulting bbox.
+    const result = await page.evaluate(async ([code]) => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      const rot = { x: 20, y: 35, z: 50 };
+      await pw.createSession('rot-param');
+      await pw.run(code);
+      await pw.rotateModel({ ...rot, mode: 'parametric' });
+      const param = pw.getGeometryData().boundingBox;
+      await pw.createSession('rot-bake');
+      await pw.run(code);
+      await pw.rotateModel({ ...rot, mode: 'bake' });
+      const bake = pw.getGeometryData().boundingBox;
+      return { param, bake };
+    }, ['const { Manifold } = api;\nreturn Manifold.cube([10, 20, 30]).translate([3, 4, 5]);']);
+
+    for (const axis of ['x', 'y', 'z'] as const) {
+      expect(result.param[axis][0]).toBeCloseTo(result.bake[axis][0], 2);
+      expect(result.param[axis][1]).toBeCloseTo(result.bake[axis][1], 2);
+    }
+  });
+
+  test('lay flat auto-orients a tilted slab onto the bed', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: any }).partwright;
+      await pw.createSession('lay-flat');
+      // A thin slab (big 10x20 faces, 4 thick), tilted so it floats at an angle.
+      await pw.run('const { Manifold } = api;\nreturn Manifold.cube([10, 20, 4]).rotate([0, 30, 0]).translate([0, 0, 15]);');
+      const before = pw.getGeometryData().boundingBox;
+      const res = await pw.layFlatModel({ mode: 'parametric' });
+      const after = pw.getGeometryData().boundingBox;
+      return { before, res, after };
+    });
+
+    expect(result.res.error).toBeUndefined();
+    // The big face is now on the bed: floor at Z=0 and the height collapses to
+    // the slab's thin dimension (~4).
+    expect(result.after.z[0]).toBeCloseTo(0, 1);
+    expect(result.after.z[1] - result.after.z[0]).toBeCloseTo(4, 0);
   });
 });

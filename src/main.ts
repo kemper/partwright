@@ -115,8 +115,8 @@ import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, applyTranslate, type ModifierResult } from './surface/modifiers';
-import { buildPlacementCode, computePlacementDelta, isNoopDelta, placementLabel, type PlacementBox, type PlacementOps } from './surface/placement';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, applyTransform, type ModifierResult } from './surface/modifiers';
+import { buildTransformCode, computePlacementDelta, isNoopDelta, isNoopRotation, placementLabel, rotationLabel, rotateAboutCenterSteps, bestFlatDownRotation, applySteps, meshBox, type PlacementBox, type PlacementOps, type TransformStep, type Vec3 } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
@@ -6974,7 +6974,7 @@ async function main() {
     return { ok: true, label: result.label, geometry: getGeometryDataObj() };
   }
 
-  // ---- Placement (drop-to-floor / center on plate) ------------------------
+  // ---- Place / Rotate (drop-to-floor, center, free rotate, auto lay-flat) --
 
   /** The current model's axis-aligned bounding box, from the cached geometry
    *  stats. Null when no model has been run yet. */
@@ -6982,26 +6982,26 @@ async function main() {
     const gd = getGeometryDataObj() as { boundingBox?: { x?: number[]; y?: number[]; z?: number[] } | null } | null;
     const bb = gd?.boundingBox;
     if (!bb?.x || !bb?.y || !bb?.z || bb.x.length < 2 || bb.y.length < 2 || bb.z.length < 2) return null;
-    const min: [number, number, number] = [bb.x[0], bb.y[0], bb.z[0]];
-    const max: [number, number, number] = [bb.x[1], bb.y[1], bb.z[1]];
+    const min: Vec3 = [bb.x[0], bb.y[0], bb.z[0]];
+    const max: Vec3 = [bb.x[1], bb.y[1], bb.z[1]];
     if (![...min, ...max].every(Number.isFinite)) return null;
     return { min, max };
   }
 
-  /** Parametric placement (wrap the source in an IIFE + `.translate`) is only
-   *  safe for manifold-js models with no manual paint: world-space paint-region
-   *  descriptors can't follow a parametric move, so those models must bake (which
-   *  carries per-triangle colors). Model-declared label colors re-resolve from
-   *  the re-run code, so they don't block parametric. */
+  /** Parametric transforms (wrap the source in an IIFE + `.rotate`/`.translate`)
+   *  are only safe for manifold-js models with no manual paint: world-space
+   *  paint-region descriptors can't follow a parametric move, so those models
+   *  must bake (which carries per-triangle colors). Model-declared label colors
+   *  re-resolve from the re-run code, so they don't block parametric. */
   function canPlaceParametric(): boolean {
     return getActiveLanguage() === 'manifold-js' && !hasColorRegions();
   }
 
-  /** Commit a placement as editable code: wrap the source and translate the
-   *  whole result, keeping the model parametric. */
-  async function commitPlacementParametric(delta: [number, number, number], label: string): Promise<Record<string, unknown>> {
+  /** Commit a transform chain as editable code: extend the source's wrapper with
+   *  the new `.rotate`/`.translate` calls, keeping the model parametric. */
+  async function commitTransformParametric(steps: TransformStep[], label: string): Promise<Record<string, unknown>> {
     const date = new Date().toISOString().slice(0, 10);
-    const newCode = buildPlacementCode(getValue(), delta, label, date);
+    const newCode = buildTransformCode(getValue(), steps, label, date);
     setValue(newCode);
     const ok = await runCodeSync(newCode);
     if (!ok) return { error: `Failed to apply ${label}` };
@@ -7010,8 +7010,30 @@ async function main() {
     return { ok: true, label, mode: 'parametric', geometry: getGeometryDataObj() };
   }
 
-  /** Reposition the current model onto the print bed. Picks the write-back mode
-   *  ('auto' → parametric when safe, else bake) and saves a new version. */
+  /** Apply a rigid transform chain to the current model and save a version,
+   *  picking the write-back mode ('auto' → parametric when safe, else bake). */
+  async function commitTransform(steps: TransformStep[], label: string, mode: 'parametric' | 'bake' | 'auto' | undefined, preserveColor: boolean | undefined): Promise<Record<string, unknown>> {
+    let resolved: 'parametric' | 'bake' = mode === undefined || mode === 'auto'
+      ? (canPlaceParametric() ? 'parametric' : 'bake')
+      : mode;
+    const warnings: string[] = [];
+    if (resolved === 'parametric' && !canPlaceParametric()) {
+      resolved = 'bake';
+      warnings.push(getActiveLanguage() === 'manifold-js'
+        ? 'Model has manual paint — baked to a mesh so the paint is preserved.'
+        : 'Parametric transforms are only available for manifold-js models — baked to a mesh.');
+    }
+    let result: Record<string, unknown>;
+    if (resolved === 'parametric') {
+      result = await commitTransformParametric(steps, label);
+    } else {
+      const preserve = preserveColor ?? true;
+      result = await commitSurfaceModifier(applyTransform(meshForModifier(preserve), steps, label), preserve);
+    }
+    return warnings.length && !result.error ? { ...result, warnings } : result;
+  }
+
+  /** Reposition the current model onto the print bed (drop-to-floor / center). */
   async function placeModel(opts?: PlacementOps & { mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }): Promise<Record<string, unknown>> {
     try {
       if (!currentMeshData) return { error: 'No model loaded' };
@@ -7031,27 +7053,50 @@ async function main() {
       if (isNoopDelta(delta, box)) {
         return { ok: true, noop: true, label, message: 'Model is already positioned' };
       }
-      let mode: 'parametric' | 'bake' = opts?.mode === undefined || opts.mode === 'auto'
-        ? (canPlaceParametric() ? 'parametric' : 'bake')
-        : opts.mode;
-      const warnings: string[] = [];
-      if (mode === 'parametric' && !canPlaceParametric()) {
-        mode = 'bake';
-        warnings.push(getActiveLanguage() === 'manifold-js'
-          ? 'Model has manual paint — baked to a mesh so the paint is preserved.'
-          : 'Parametric placement is only available for manifold-js models — baked to a mesh.');
+      return await commitTransform([{ kind: 'translate', v: delta }], label, opts?.mode, opts?.preserveColor);
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /** Freely rotate the current model by Euler degrees, about its own center so
+   *  it spins in place rather than swinging around the world origin. */
+  async function rotateModel(opts?: { x?: number; y?: number; z?: number; mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }): Promise<Record<string, unknown>> {
+    try {
+      if (!currentMeshData) return { error: 'No model loaded' };
+      const box = placementBox();
+      if (!box) return { error: 'No bounding box available — run the model first' };
+      const euler: Vec3 = [opts?.x ?? 0, opts?.y ?? 0, opts?.z ?? 0];
+      if (![...euler].every(Number.isFinite)) return { error: 'rotateModel: x/y/z must be finite degrees' };
+      const label = rotationLabel(euler);
+      if (isNoopRotation(euler)) return { ok: true, noop: true, label, message: 'No rotation requested' };
+      return await commitTransform(rotateAboutCenterSteps(box, euler), label, opts?.mode, opts?.preserveColor);
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /** Auto-orient: find the model's largest flat face, rotate it onto the bed
+   *  (about the model center), and drop the result to the floor. */
+  async function layFlatModel(opts?: { mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }): Promise<Record<string, unknown>> {
+    try {
+      if (!currentMeshData) return { error: 'No model loaded' };
+      const box = placementBox();
+      if (!box) return { error: 'No bounding box available — run the model first' };
+      const euler = bestFlatDownRotation(currentMeshData);
+      if (!euler) return { error: 'Could not find a flat face to lay down' };
+      // Rotate about the model center, then drop to the floor. The drop distance
+      // is measured from the rotated mesh so it's exact regardless of how the
+      // rotation reshapes the bounding box.
+      const rotSteps = rotateAboutCenterSteps(box, euler);
+      const rotated = applySteps(currentMeshData, rotSteps);
+      const minZ = meshBox(rotated).min[2];
+      const steps: TransformStep[] = [...rotSteps, { kind: 'translate', v: [0, 0, -minZ] }];
+      const label = 'lay flat (auto)';
+      if (rotSteps.length === 0 && isNoopDelta([0, 0, -minZ], box)) {
+        return { ok: true, noop: true, label, message: 'Model is already lying flat on the bed' };
       }
-      let result: Record<string, unknown>;
-      if (mode === 'parametric') {
-        result = await commitPlacementParametric(delta, label);
-      } else {
-        const preserve = opts?.preserveColor ?? true;
-        result = await commitSurfaceModifier(
-          applyTranslate(meshForModifier(preserve), delta[0], delta[1], delta[2], label),
-          preserve,
-        );
-      }
-      return warnings.length && !result.error ? { ...result, warnings } : result;
+      return await commitTransform(steps, label, opts?.mode, opts?.preserveColor);
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
     }
@@ -7409,7 +7454,17 @@ async function main() {
     async placeModel(opts?: { dropToFloor?: boolean; centerX?: boolean; centerY?: boolean; centerZ?: boolean; mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }) {
       return placeModel(opts);
     },
-    /** True when a placement can be applied as editable parametric code rather
+    /** Freely rotate the current model by Euler degrees (x/y/z), about its own
+     *  center, and save a new version. Same write-back modes as placeModel. */
+    async rotateModel(opts?: { x?: number; y?: number; z?: number; mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }) {
+      return rotateModel(opts);
+    },
+    /** Auto-orient: rotate the model's largest flat face onto the bed and drop it
+     *  to the floor. Same write-back modes as placeModel. */
+    async layFlatModel(opts?: { mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }) {
+      return layFlatModel(opts);
+    },
+    /** True when a transform can be applied as editable parametric code rather
      *  than baked to a mesh (manifold-js model with no manual paint). */
     canPlaceParametric(): boolean { return canPlaceParametric(); },
     /** Run code string and update all views. Returns geometry data object. */

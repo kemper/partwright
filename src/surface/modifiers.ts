@@ -24,7 +24,7 @@ import { voxelizeMesh, type VoxelizeOptions } from './voxelizeMesh';
 import { extractPositions, bboxOf, subdivideWithMask } from './meshSubdivide';
 import { encodeGrid } from '../geometry/voxel/grid';
 import { scaleMesh } from './scaleMesh';
-import { translateMesh } from './placement';
+import { applySteps, type TransformStep } from './placement';
 import { meshGrid } from '../geometry/voxel/mesher';
 
 export type SurfaceModifierId = 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven' | 'smooth' | 'voxelize';
@@ -484,24 +484,23 @@ export function applyScale(
   };
 }
 
-/** Bake a rigid translation into the mesh (used by the "place on plate" tools
- *  when the user opts to flatten the result to a mesh rather than keep
- *  parametric code). Mirrors applyScale: the moved mesh rides api.imports[0]. */
-export function applyTranslate(
+/** Bake a rigid transform chain (rotate/translate) into the mesh (used by the
+ *  Place/Rotate tools when the user opts to flatten the result to a mesh rather
+ *  than keep parametric code). Mirrors applyScale: the moved mesh rides
+ *  api.imports[0]. */
+export function applyTransform(
   mesh: MeshData,
-  dx: number,
-  dy: number,
-  dz: number,
+  steps: TransformStep[],
   label: string,
 ): ModifierManifoldResult {
-  const baked = translateMesh(mesh, dx, dy, dz);
+  const baked = applySteps(mesh, steps);
   return {
     kind: 'manifold',
     label,
     mesh: baked,
     code: manifoldWrapper([
-      `${label} on ${today()} — moved by [${dx}, ${dy}, ${dz}].`,
-      `The repositioned mesh is baked onto api.imports[0].`,
+      `${label} on ${today()}.`,
+      `The transformed mesh is baked onto api.imports[0].`,
     ]),
   };
 }

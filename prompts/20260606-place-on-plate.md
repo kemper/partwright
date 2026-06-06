@@ -75,3 +75,41 @@ affects the bake path); drop a co-requested `centerZ` from `placementLabel` when
 non-finite guard to `placementBox()`. Left the `z-[60]` token as-is — it's
 inherited verbatim from the cloned resize panel, so changing only this file would
 diverge from its sibling.
+
+## Follow-up: free rotation + auto lay-flat (renamed "Place/Rotate")
+
+Human: add free rotation (same parametric-or-bake choice, detect which is
+possible), an auto-lay-flat that finds the flattest side and lays it on the
+floor, and rename the menu "Place/Rotate".
+
+**Generalized the wrapper from translate-only to a transform chain.**
+`buildPlacementCode` became `buildTransformCode`: the IIFE wrapper now carries a
+chain of `.rotate([…])`/`.translate([…])` calls. New placements extend the
+chain (consecutive translates still merge; rotations chain since Euler
+composition isn't a clean sum); a chain that folds to identity returns the inner
+code unwrapped.
+
+**Bake/parametric rotation parity is the load-bearing invariant.** The baked
+mesh must rotate exactly like manifold's `.rotate([x,y,z])` or the two write-back
+modes diverge. I matched manifold's convention (`M = Rz·Ry·Rx`, X applied first)
+in `eulerToMatrix`, and proved it with an e2e that rotates the same model in both
+modes and asserts identical bounding boxes — convention-name-agnostic, so it
+can't silently rot. `applySteps` (bake) and `.rotate` (parametric) both flow
+from that matrix.
+
+**Rotation is about the model center, not the world origin** (Bambu-like): free
+rotate emits `translate(-c).rotate(e).translate(c)`, so the model spins in place
+instead of swinging away.
+
+**Auto lay-flat = largest flat face → bed.** `bestFlatDownRotation` buckets
+triangles by quantized normal, sums area per bucket, takes the max-area
+(flattest) face, and computes the rotation that points its outward normal at −Z
+(`rotationFromTo` via Rodrigues, decomposed to Euler with `matrixToEuler`).
+The handler rotates about center, measures the rotated mesh's min-Z, then drops
+to the floor — exact regardless of how the rotation reshapes the bbox.
+
+**Dead-code hygiene:** dropping the old translate-only bake path orphaned
+`translateMesh`; removed it (and de-exported the internal `boxCenter`) since
+`applySteps` covers translation. Verified `tsc`, unit (706), `place-model` e2e
+(6, incl. the parity + lay-flat tests), lint:deps/deadcode. Manually verified a
+compound-tilted slab → Lay flat → big face on the bed, height = thin dim.
