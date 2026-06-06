@@ -32,12 +32,13 @@ const vase = Manifold.revolve(CrossSection.hull([
   CrossSection.circle(1).translate([3, 16]),
 ]), 64);
 
-// A tray base ties the four demos into one connected, printable solid.
-const tray = Manifold.cube([86, 24, 3], true).translate([2, 0, 1]);
+// A tray base ties the four demos into one connected, printable solid, sitting
+// flush on the build plate (its underside at z = 0).
+const tray = Manifold.cube([86, 24, 3], true).translate([2, 0, 1.5]);
 return Manifold.union([
   tray,
   boolean.translate([-30, 0, 9]),
-  rounded.translate([-8, 0, 5]),
+  rounded.translate([-8, 0, 7.5]),
   twisted.translate([14, 0, 1]),
   vase.translate([34, 0, 1]),
 ]);
