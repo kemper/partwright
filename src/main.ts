@@ -6539,7 +6539,7 @@ async function main() {
   // Relief edit is a contextual primary too (shown only in relief sessions), so
   // it sits top-level alongside Customize rather than inside the Tools popover.
   const reliefAnchor = clipControls.querySelector('#viewport-view-group');
-  if (reliefAnchor) clipControls.insertBefore(reliefViewportBtn, reliefAnchor);
+  if (reliefAnchor?.parentNode) reliefAnchor.parentNode.insertBefore(reliefViewportBtn, reliefAnchor);
   else clipControls.appendChild(reliefViewportBtn);
 
   initEscapeMenuClose();
