@@ -113,3 +113,9 @@ to the floor — exact regardless of how the rotation reshapes the bbox.
 `applySteps` covers translation. Verified `tsc`, unit (706), `place-model` e2e
 (6, incl. the parity + lay-flat tests), lint:deps/deadcode. Manually verified a
 compound-tilted slab → Lay flat → big face on the bed, height = thin dim.
+
+A second work-reviewer pass on the rotation/lay-flat math came back clean (no
+blockers); added the one defensive nit it raised — `bestFlatDownRotation` now
+skips non-finite triangles (`!(area2 >= 1e-12)`) so a NaN vertex can't poison the
+chosen rotation, even though `placementBox()` already rejects non-finite meshes
+before the real callers reach it.

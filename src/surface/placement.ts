@@ -237,7 +237,9 @@ export function bestFlatDownRotation(mesh: MeshData): Vec3 | null {
     const e2: Vec3 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
     const cr = cross(e1, e2);
     const area2 = len(cr);
-    if (area2 < 1e-12) continue;
+    // Skip degenerate and non-finite triangles (a NaN vertex would otherwise
+    // bucket under "NaN,NaN,NaN" and poison the chosen rotation).
+    if (!(area2 >= 1e-12)) continue;
     const n: Vec3 = [cr[0] / area2, cr[1] / area2, cr[2] / area2];
     const area = area2 / 2;
     const key = `${Math.round(n[0] * 100)},${Math.round(n[1] * 100)},${Math.round(n[2] * 100)}`;
