@@ -1,7 +1,6 @@
 import type { Engine, MeshResult, ValidateResult } from './types';
 import { javaScriptSyntaxDiagnostics, runtimeDiagnostic } from '../sourceDiagnostics';
 import { createCurvesNamespace } from '../curves';
-import { createGridfinityNamespace } from '../generators/gridfinity';
 import { createMeshOpsNamespace } from '../meshOps';
 import { createParamCapture } from '../params';
 import { preloadTextFonts } from '../textGlyphs';
@@ -43,8 +42,6 @@ function renderMesh(meshData: any) {
 let manifoldModule: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let curvesNamespace: any = null;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let gridfinityNamespace: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let meshOpsNamespace: any = null;
 
@@ -110,7 +107,6 @@ export const manifoldJsEngine: Engine = {
     manifoldModule = await Module.default();
     manifoldModule.setup();
     curvesNamespace = createCurvesNamespace(manifoldModule);
-    gridfinityNamespace = createGridfinityNamespace(manifoldModule);
     meshOpsNamespace = createMeshOpsNamespace(manifoldModule);
     // Kick off font pre-loading in the background so they're ready by the
     // time the first api.text() call hits, even if the per-run regex didn't
@@ -252,7 +248,6 @@ export const manifoldJsEngine: Engine = {
       CrossSection,
       params: paramCapture.params,
       Curves: curvesNamespace,
-      Gridfinity: gridfinityNamespace,
       BREP,
       meshOps: meshOpsNamespace,
       sdf: sdfNamespace,

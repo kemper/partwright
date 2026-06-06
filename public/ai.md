@@ -136,7 +136,7 @@ The main reference splits into focused subdocs. **Fetch each by calling `readDoc
 | `voxel` | Before writing voxel-language code or importing an image as voxels. Covers the `api.voxels()` grid API, colors, coordinate system, and image import. |
 | `mechanisms` | Before modeling a print-in-place / multi-part assembly that **moves** — a screw, spinner, hinge, captive ball, or slider. Covers clearance gaps, `componentCount` verification, twist-extrude threads/spirals, matched-taper nesting, and cutaway checks. |
 | `print-safety` | Before exporting STL/3MF for FDM printing — minimum wall thickness, taper traps, sub-extrusion-width layer detection. |
-| `printing` | The design-for-print toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over), `scaleModel` / `splitForPrinting`, printer settings, and the `Gridfinity` generator. Read before declaring a model print-ready or when fitting/splitting to a build volume. |
+| `printing` | The print-readiness toolkit — `checkPrintability` (overhangs, walls, bed fit, tip-over) and `get/setPrinterSettings`. The same check also runs automatically on STL / OBJ / 3MF / GLB export. Read before declaring a model print-ready, then steer the user to the dedicated Resize and Split tools if it doesn't fit. |
 | `colors` | Before any paint operation — the picker decision tree, labelled construction, vision-driven painting, export behavior. |
 | `reference-images` | When the user attaches a photo or asks you to model from one — `setImages` shape, label conventions, the five-step photo-to-model loop. |
 | `file-io` | Before exporting or importing programmatically — `*Data()` byte-returning methods, Recent Exports inbox, session payload shape. |
@@ -409,7 +409,6 @@ const { Manifold, CrossSection, Curves, setCircularSegments } = api;
 **Sandbox environment:** The `api` object provides:
 - `Manifold` and `CrossSection` -- the raw manifold-3d bindings
 - `Curves` -- helpers for smooth/organic shapes (loft, sweep, bezier, arc, naca4, polyline with fillet, arbitrary-axis revolve, fillet/chamfer, pattern arrays). See **[/ai/curves.md](/ai/curves.md)**.
-- `Gridfinity` -- spec-compliant Gridfinity `bin({cols,rows,heightUnits,...})` and `baseplate({cols,rows})` generators (42 mm grid). See **[/ai/printing.md](/ai/printing.md)**.
 - `text(str, opts)` / `textSection(str, opts)` -- extruded or 2D text from Liberation Sans. See **[Text](#text--api-text--api-textsection)** below.
 - `params` -- declare tweakable **Customizer** knobs that surface as sliders/toggles in the viewport (see below).
 - `sdf` -- signed-distance-field builder for smooth blends, twists, gyroids, and shells. Tree-of-expressions style, lowered to a Manifold via `.build()`. See **[/ai/sdf.md](/ai/sdf.md)**.

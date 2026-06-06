@@ -135,3 +135,11 @@ export function createPopoverGroup(opts: PopoverGroupOptions): PopoverGroup {
 export function viewportToolsMount(controlsContainer: HTMLElement): HTMLElement {
   return controlsContainer.querySelector<HTMLElement>('#viewport-tools-menu') ?? controlsContainer;
 }
+
+/**
+ * Same as `viewportToolsMount` but for the Inspect popover (Measure / Cross-section
+ * and any other read-only analysis surfaces).
+ */
+export function viewportInspectMount(controlsContainer: HTMLElement): HTMLElement {
+  return controlsContainer.querySelector<HTMLElement>('#viewport-inspect-menu') ?? controlsContainer;
+}

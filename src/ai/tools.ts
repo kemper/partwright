@@ -949,7 +949,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'checkPrintability',
-    description: 'Analyze the current model for 3D-printing problems and return a structured report: bed fit, overhangs that need support, thin walls (a sampled estimate), small features, tip-over stability (centre of mass vs base footprint), and watertightness. Every check carries a level — pass / warn / fail (fail = won\'t print as-is). Reads the build volume + nozzle from printer settings unless you override them. Call this before telling the user a model is print-ready, and again after geometry changes; then fix any fails — thicken walls, re-orient to remove overhangs, scaleModel to fit, or splitForPrinting when it is simply too big for the bed.',
+    description: 'Analyze the current model for 3D-printing problems and return a structured report: bed fit, overhangs that need support, thin walls (a sampled estimate), small features, tip-over stability (centre of mass vs base footprint), and watertightness. Every check carries a level — pass / warn / fail (fail = won\'t print as-is). Reads the build volume + nozzle from printer settings unless you override them. Call this before telling the user a model is print-ready, and again after geometry changes; then fix any fails — thicken walls, re-orient to remove overhangs, use the Resize tool to fit the bed, or use the Split tool when it is simply too big for the bed. The same check runs automatically on STL / OBJ / 3MF / GLB export and warns via a toast.',
     input_schema: {
       type: 'object',
       properties: {
@@ -961,7 +961,7 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'getPrinterSettings',
-    description: 'Read the target printer settings: build volume bed [x, y, z] (mm), nozzleWidth, overhangAngleDeg, clearance. These drive checkPrintability, scaleModel({fit}), and splitForPrinting.',
+    description: 'Read the target printer settings: build volume bed [x, y, z] (mm), nozzleWidth, overhangAngleDeg, clearance. These drive the checkPrintability tool and the pre-export printability warning.',
     input_schema: { type: 'object', properties: {} },
   },
   {
@@ -975,86 +975,6 @@ const ALL_TOOLS: ToolDefinition[] = [
         overhangAngleDeg: { type: 'number', description: 'Overhang threshold in degrees from horizontal (default 45).' },
         clearance: { type: 'number', description: 'Assembly clearance (mm) used for split connector holes.' },
       },
-    },
-  },
-  {
-    name: 'scaleModel',
-    description: 'Scale the current model and save it as a new version. Provide EXACTLY ONE of: `factor` (uniform multiplier), `scale` [sx,sy,sz] (per-axis), `to` {axis,length} (make that axis an exact size), or `fit` {margin?,mode?} (largest uniform factor that fits the build volume — mode "shrink" only downscales an oversized model, "fit" also upscales to fill). IMPORTANT: this is a GEOMETRIC scale of the rendered mesh — it bakes to a mesh version (like an import) and scales every feature, so holes/clearances scale too. For a parametric model you authored, prefer editing the dimension constants in the code instead, so it stays editable and functional features keep their size. Returns {scale, dimensions, saved}.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        factor: { type: 'number', description: 'Uniform scale multiplier (> 0).' },
-        scale: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Per-axis factors [sx, sy, sz].' },
-        to: {
-          type: 'object',
-          description: 'Scale uniformly so the chosen axis becomes `length`.',
-          properties: { axis: { type: 'string', enum: ['x', 'y', 'z', 'max', 'min'] }, length: { type: 'number' } },
-          required: ['axis', 'length'],
-        },
-        fit: {
-          type: 'object',
-          description: 'Scale uniformly to fit the build volume.',
-          properties: { margin: { type: 'number', description: 'Fraction of the bed kept clear (0–0.5).' }, mode: { type: 'string', enum: ['shrink', 'fit'] } },
-        },
-        save: { type: 'boolean', description: 'Save the result as a new version (default true). Pass false to only preview it live.' },
-      },
-    },
-  },
-  {
-    name: 'splitForPrinting',
-    description: 'Auto-split a model too big for the build volume into bed-sized chunks (axis-aligned grid), drilling matching dowel-pin holes across each cut so the printed pieces register and glue together. Each chunk is added to the session as its own PART (visible in the parts rail). By default it only cuts X/Y (keeping flat bottoms for bed adhesion); enable Z via `axes`. Use after checkPrintability reports the model exceeds the bed AND the user wants it at full size rather than scaled down. For a single user-chosen cut at an arbitrary angle (with peg/screw/dovetail connectors), use splitAlongPlane instead. Returns {partCount, grid, holeCount, notes, parts}.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        bed: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Optional build-volume override [x, y, z] in mm.' },
-        margin: { type: 'number', description: 'Fraction of the bed kept as margin (0–0.5).' },
-        gap: { type: 'number', description: 'Spacing between the laid-out chunks (mm). Default 4.' },
-        axes: { type: 'array', items: { type: 'string', enum: ['x', 'y', 'z'] }, description: 'Axes allowed to be cut. Default ["x", "y"].' },
-        connector: {
-          type: 'object',
-          description: 'Connector across each internal cut. "dowel" (default) drills matching holes for a rod; "peg" mates a peg + socket between adjacent cells; "screw" carves a bolt counterbore + hex nut pocket; "dovetail" places a self-locking tapered key; "none" leaves plain cut faces. ("pin" is a legacy alias for "dowel".)',
-          properties: {
-            type: { type: 'string', enum: ['none', 'dowel', 'peg', 'screw', 'dovetail'] },
-            diameter: { type: 'number', description: 'Pin / peg / screw ⌀ (mm). Default 5.' },
-            depth: { type: 'number', description: 'Depth into each side (mm). Default 8.' },
-            width: { type: 'number', description: 'Dovetail key width (mm). Default 12.' },
-            count: { type: 'integer', description: 'Max connectors per cut plane. Default 2.' },
-          },
-        },
-        save: { type: 'boolean', description: 'Save the result as a new version (default true).' },
-      },
-    },
-  },
-  {
-    name: 'splitAlongPlane',
-    description: 'Split the model along ONE arbitrary plane (a point on it + a normal), applying the chosen connector across the cut, and emit the two pieces as new parts in the session. Connectors: "dowel" (matching holes for a rod), "peg" (integral peg + socket), "screw" (bolt counterbore + hex nut pocket), "dovetail" (self-locking tapered key), or "none". Use for a user-directed cut at a chosen location/angle — e.g. "cut this in half vertically with a dovetail". (The in-app gizmo calls this with its plane; you can call it directly with explicit coordinates.) Returns {partCount, connectorCount, notes, parts}.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        plane: {
-          type: 'object',
-          description: 'The cut plane.',
-          properties: {
-            point: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'A point the plane passes through [x, y, z].' },
-            normal: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3, description: 'Plane normal [x, y, z] (need not be unit length).' },
-          },
-          required: ['point', 'normal'],
-        },
-        connector: {
-          type: 'object',
-          description: 'Connector across the cut.',
-          properties: {
-            type: { type: 'string', enum: ['none', 'dowel', 'peg', 'screw', 'dovetail'], description: 'Default "dowel".' },
-            diameter: { type: 'number', description: 'Pin/peg/screw ⌀ (mm). Default 5.' },
-            depth: { type: 'number', description: 'How far the connector reaches into each side (mm). Default 8.' },
-            width: { type: 'number', description: 'Dovetail key width (mm). Default 12.' },
-            clearance: { type: 'number', description: 'Assembly fit clearance (mm).' },
-          },
-        },
-        count: { type: 'integer', description: 'How many connectors to distribute across the cut (0–8). Default 2.' },
-        save: { type: 'boolean', description: 'Emit the pieces as new parts (default true). Pass false to just preview the plan.' },
-      },
-      required: ['plane'],
     },
   },
   {
@@ -1608,7 +1528,7 @@ export const CONFIRM_REQUIRED_TOOLS = new Set([
 ]);
 
 const RUN_GATED = new Set(['runCode', 'setParams']);
-const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'scaleModel', 'splitForPrinting', 'splitAlongPlane', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric']);
+const SAVE_GATED = new Set(['runAndSave', 'loadVersion', 'saveVersion', 'applyFuzzySkin', 'applyKnitTexture', 'applyCableKnit', 'applyWaffleStitch', 'applyFurVelvet', 'applyWovenFabric']);
 const PAINT_GATED = new Set(['paintRegion', 'paintFaces', 'paintNear', 'paintStroke', 'paintInBox', 'paintInOrientedBox', 'paintSlab', 'paintNearestRegion', 'paintComponent', 'paintByLabel', 'paintByLabels', 'paintConnected', 'undoLastPaint', 'redoLastPaint', 'removeRegion', 'clearColors', 'copyColorsFromVersion']);
 /** Tools that ship a PNG back to the model via a multimodal content
  *  block. Gated by the Views vision toggle so the user can disable
@@ -1638,10 +1558,7 @@ export function buildToolList(toggles: ChatToggles): ToolDefinition[] {
       // so they only need the saveVersions scope. Gating loadVersion here also
       // keeps the model from rewinding state when the user has paused commits.
       // runAndSave runs first, so it additionally needs the runCode scope.
-      // scaleModel / splitForPrinting transform the rendered mesh and bake a
-      // version; they don't execute user code, so (like loadVersion/saveVersion)
-      // they only need the saveVersions scope, not runCode.
-      const nonRunning = t.name === 'loadVersion' || t.name === 'saveVersion' || t.name === 'scaleModel' || t.name === 'splitForPrinting' || t.name === 'splitAlongPlane';
+      const nonRunning = t.name === 'loadVersion' || t.name === 'saveVersion';
       return nonRunning ? toggles.scope.saveVersions : (toggles.scope.runCode && toggles.scope.saveVersions);
     }
     if (PAINT_GATED.has(t.name)) return toggles.scope.paintFaces;
@@ -2091,12 +2008,6 @@ async function dispatch(api: PartwrightAPI, name: string, input: Record<string, 
       return api.getPrinterSettings();
     case 'setPrinterSettings':
       return api.setPrinterSettings(input);
-    case 'scaleModel':
-      return api.scaleModel(input);
-    case 'splitForPrinting':
-      return api.splitForPrinting(input);
-    case 'splitAlongPlane':
-      return api.splitAlongPlane(input);
     case 'importImageAsRelief':
       return api.importImageAsRelief(input);
     case 'importSvgAsRelief':

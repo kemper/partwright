@@ -150,11 +150,7 @@ import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerT
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
 import { initPrintToolsUI, isPrintToolsOpen, forceDeactivate as closePrintToolsMenu, type PrintToolsHandlers } from './ui/printToolsUI';
-import { analyzePrintability } from './geometry/printability';
-import { scaleModelMesh, type ScaleSpec } from './geometry/transform';
-import { splitForPrinting as computeSplitForPrinting, planeSplit, type SplitConnector, type PlaneSpec } from './geometry/splitForPrinting';
-import type { ConnectorSpec, ConnectorType } from './geometry/splitConnectors';
-import { activate as activateSplitPlane, deactivate as deactivateSplitPlane, getSplitPlane, setSplitPlaneMode } from './ui/splitPlaneGizmo';
+import { analyzePrintability, type PrintabilityReport } from './geometry/printability';
 import { loadPrinterSettings, savePrinterSettings, type PrinterSettings } from './geometry/printerSettings';
 import { updatePaintMesh, setOnRegionPainted, setTriangleToBaseMapper } from './color/paintMode';
 import { baseTriangleOf } from './color/baseRemap';
@@ -3828,10 +3824,39 @@ async function main() {
     }
   };
 
+  // Run a quick printability check before each export so the user gets a
+  // heads-up about blockers (bed fit, watertight, …) and warnings (overhangs,
+  // thin walls). Non-blocking — the export still proceeds.
+  function warnIfNotPrintable(format: string): void {
+    if (!currentMeshData) return;
+    const settings = loadPrinterSettings();
+    let isManifold = false;
+    try {
+      const geo = JSON.parse(geometryDataEl.textContent || '{}');
+      isManifold = !!geo.isManifold;
+    } catch { /* default false */ }
+    const report: PrintabilityReport = analyzePrintability(currentMeshData, {
+      bed: settings.bed,
+      nozzleWidth: settings.nozzleWidth,
+      overhangAngleDeg: settings.overhangAngleDeg,
+      isManifold,
+    });
+    const fails = report.checks.filter(c => c.level === 'fail');
+    const warns = report.checks.filter(c => c.level === 'warn');
+    if (fails.length === 0 && warns.length === 0) return;
+    const parts = [
+      fails.length > 0 ? `${fails.length} blocker${fails.length === 1 ? '' : 's'}` : null,
+      warns.length > 0 ? `${warns.length} warning${warns.length === 1 ? '' : 's'}` : null,
+    ].filter(Boolean).join(', ');
+    const first = (fails[0] ?? warns[0]).text;
+    showToast(`${format} export: printability check found ${parts}. ${first}`, { variant: 'warn', source: 'export' });
+  }
+
   const actionExportGLB = async () => {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('GLB'))) return;
+    warnIfNotPrintable('GLB');
     try {
       assertFiniteMesh(currentMeshData);
       notifyMultiPartExport();
@@ -3845,6 +3870,7 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('STL'))) return;
+    warnIfNotPrintable('STL');
     notifyMultiPartExport();
     try { showToast(`Exported ${exportSTL(currentMeshData)}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'STL export failed', { variant: 'warn' }); }
@@ -3853,6 +3879,7 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('OBJ'))) return;
+    warnIfNotPrintable('OBJ');
     notifyMultiPartExport();
     try { showToast(`Exported ${exportOBJ(coloredMeshForExport(currentMeshData))}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : 'OBJ export failed', { variant: 'warn' }); }
@@ -3861,6 +3888,7 @@ async function main() {
     if (isSharedPreview()) { showToast('Fork this shared design before exporting.', { variant: 'warn' }); return; }
     if (!currentMeshData) { noGeometryToast(); return; }
     if (!(await confirmExportOrProceed('3MF'))) return;
+    warnIfNotPrintable('3MF');
     notifyMultiPartExport();
     try { showToast(`Exported ${export3MF(coloredMeshForExport(currentMeshData))}`, { variant: 'success' }); }
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
@@ -5812,55 +5840,6 @@ async function main() {
     syncClipSliderBounds();
   }
 
-  // Bake the live mesh into a new imported-style version (the shared tail of
-  // every geometry-transform tool: simplify, scale, split). Returns the saved
-  // version descriptor, or null when there's no session or no geometry. The
-  // editor is rewritten to a `Manifold.ofMesh(api.imports[0])` wrapper so the
-  // baked result is fully runnable and exportable.
-  async function bakeCurrentAsVersion(filename: string, versionLabel: string = filename): Promise<{ id: string; index: number; label: string } | null> {
-    if (!getState().session || !currentMeshData) return null;
-    const baked = toImportedMesh(filename, currentMeshData);
-    const code = generateImportCode([baked], { manifold: true });
-    setActiveImports([baked]);
-    setValue(code);
-    await runCodeSync(code);
-    const thumbnail = await captureThumbnail();
-    const geometryData = getGeometryDataObj();
-    const version = await saveVersion(code, geometryData, thumbnail, versionLabel, undefined, {
-      force: true,
-      importedMeshes: [baked],
-    });
-    return version ? { id: version.id, index: version.index, label: version.label } : null;
-  }
-
-  // Emit each mesh as its own new Part in the active session (used by the split
-  // tools so every printable piece lands in the parts rail). The original part
-  // is left intact. Switches to the first new part when done.
-  async function createPartsFromMeshes(meshes: MeshData[], baseName: string): Promise<{ count: number; partNames: string[] }> {
-    const partNames: string[] = [];
-    let firstId: string | null = null;
-    for (let i = 0; i < meshes.length; i++) {
-      const partName = `${baseName} ${i + 1}`;
-      const part = await createPart(partName);
-      if (!part) break;
-      if (firstId === null) firstId = part.id;
-      const baked = toImportedMesh(`${baseName}-${i + 1}`, meshes[i]);
-      setActiveImports([baked]);
-      const code = generateImportCode([baked], { manifold: true });
-      setValue(code);
-      await runCodeSync(code);
-      const thumbnail = await captureThumbnail();
-      const geometryData = getGeometryDataObj();
-      await saveVersion(code, geometryData, thumbnail, partName, undefined, { force: true, importedMeshes: [baked] });
-      partNames.push(part.name);
-    }
-    if (firstId) {
-      const version = await changePart(firstId);
-      await loadPartIntoEditor(version);
-    }
-    return { count: partNames.length, partNames };
-  }
-
   /** Apply geometry and ensure colors from the regions module are re-rendered.
    *  `applyLiveGeometry` calls `updateMesh(mesh)` which bypasses color regions;
    *  this overrides that with a colored repaint when regions are active. */
@@ -7366,47 +7345,12 @@ async function main() {
     /** Scale the current model and save as a new version.
      *  sx/sy/sz are multiplicative factors (1 = no change, 2 = double, 0.5 = half).
      *  `preserveColor` (default true) re-resolves paint regions onto the scaled mesh. */
-    async scaleModel(
-      arg1: number | { factor?: number; scale?: [number, number, number]; to?: { axis: 'x' | 'y' | 'z' | 'max' | 'min'; length: number }; fit?: { margin?: number; mode?: 'shrink' | 'fit' }; save?: boolean },
-      sy?: number,
-      sz?: number,
-      posOpts?: { preserveColor?: boolean },
-    ) {
-      // Positional sig (Resize UI): scaleModel(sx, sy, sz, {preserveColor?}).
-      if (typeof arg1 === 'number') {
-        try {
-          if (!currentMeshData) return { error: 'No model loaded' };
-          const preserve = posOpts?.preserveColor ?? true;
-          return await commitSurfaceModifier(applyScale(meshForModifier(preserve), arg1, sy!, sz!), preserve);
-        } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
-      }
-      // Opts sig (Print panel + AI): scaleModel({factor|scale|to|fit, save?}).
-      const opts = arg1;
-      const check = guard(() => {
-        const o = assertObject(opts, 'scaleModel(opts)')!;
-        assertNoUnknownKeys(o, ['factor', 'scale', 'to', 'fit', 'save'], 'scaleModel(opts)');
-        assertNumber(o.factor, 'scaleModel(opts).factor', { optional: true, min: 1e-6 });
-        if (o.scale !== undefined) assertNumberTuple(o.scale, 3, 'scaleModel(opts).scale');
-        assertBoolean(o.save, 'scaleModel(opts).save', { optional: true });
-        return true;
-      });
-      if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
-
-      let spec: ScaleSpec;
-      if (opts.factor !== undefined) spec = { factor: opts.factor };
-      else if (opts.scale !== undefined) spec = { scale: opts.scale };
-      else if (opts.to !== undefined) spec = { to: opts.to };
-      else if (opts.fit !== undefined) spec = { fit: { bed: loadPrinterSettings().bed, margin: opts.fit.margin, mode: opts.fit.mode } };
-      else return { error: 'scaleModel needs one of: factor, scale, to, or fit.' };
-
-      const res = scaleModelMesh(currentMeshData, spec);
-      if ('error' in res) return res;
-      applyLiveGeometry(res.mesh);
-      const [vsx, vsy, vsz] = res.vector;
-      const label = vsx === vsy && vsy === vsz ? `scaled ${vsx.toFixed(2)}×` : `scaled ${vsx.toFixed(2)}×${vsy.toFixed(2)}×${vsz.toFixed(2)}`;
-      const saved = opts.save === false ? null : await bakeCurrentAsVersion(label);
-      return { scale: res.vector, dimensions: res.dimensions, saved };
+    async scaleModel(sx: number, sy: number, sz: number, opts?: { preserveColor?: boolean }) {
+      try {
+        if (!currentMeshData) return { error: 'No model loaded' };
+        const preserve = opts?.preserveColor ?? true;
+        return await commitSurfaceModifier(applyScale(meshForModifier(preserve), sx, sy, sz), preserve);
+      } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Run code string and update all views. Returns geometry data object. */
     async run(code?: string): Promise<Record<string, unknown>> {
@@ -9445,111 +9389,6 @@ async function main() {
       });
     },
 
-
-    /** Split a model too big for the build volume into bed-sized chunks with
-     *  matching dowel-pin holes across each cut, laid out in a row. Applies live
-     *  and (unless save:false) saves a new version. Returns {partCount, grid,
-     *  holeCount, notes, saved}. */
-    async splitForPrinting(opts?: {
-      bed?: [number, number, number];
-      margin?: number;
-      connector?: SplitConnector;
-      gap?: number;
-      axes?: ('x' | 'y' | 'z')[];
-      save?: boolean;
-    }) {
-      const check = guard(() => {
-        if (opts !== undefined) {
-          const o = assertObject(opts, 'splitForPrinting(opts)')!;
-          assertNoUnknownKeys(o, ['bed', 'margin', 'connector', 'gap', 'axes', 'save'], 'splitForPrinting(opts)');
-          if (o.bed !== undefined) assertNumberTuple(o.bed, 3, 'splitForPrinting(opts).bed');
-          assertNumber(o.margin, 'splitForPrinting(opts).margin', { optional: true, min: 0, max: 0.5 });
-          assertNumber(o.gap, 'splitForPrinting(opts).gap', { optional: true, min: 0 });
-          assertBoolean(o.save, 'splitForPrinting(opts).save', { optional: true });
-          if (o.axes !== undefined) {
-            const ax = assertArray(o.axes, 'splitForPrinting(opts).axes');
-            for (let i = 0; i < ax.length; i++) assertEnum(ax[i], ['x', 'y', 'z'], `splitForPrinting(opts).axes[${i}]`);
-          }
-          if (o.connector !== undefined) {
-            const c = assertObject(o.connector, 'splitForPrinting(opts).connector')!;
-            assertNoUnknownKeys(c, ['type', 'diameter', 'depth', 'width', 'clearance', 'count'], 'splitForPrinting(opts).connector');
-            if (c.type !== undefined) assertEnum(c.type, ['none', 'dowel', 'peg', 'screw', 'dovetail', 'pin'], 'splitForPrinting(opts).connector.type');
-            assertNumber(c.diameter, 'splitForPrinting(opts).connector.diameter', { optional: true, min: 0.1 });
-            assertNumber(c.depth, 'splitForPrinting(opts).connector.depth', { optional: true, min: 0.1 });
-            assertNumber(c.width, 'splitForPrinting(opts).connector.width', { optional: true, min: 0.1 });
-            assertNumber(c.clearance, 'splitForPrinting(opts).connector.clearance', { optional: true, min: 0 });
-            assertNumber(c.count, 'splitForPrinting(opts).connector.count', { optional: true, min: 1, integer: true });
-          }
-        }
-        return true;
-      });
-      if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
-      const mod = getModule();
-      if (!mod) return { error: 'Engine not ready.' };
-      const settings = loadPrinterSettings();
-      const res = computeSplitForPrinting(mod, currentMeshData, {
-        bed: opts?.bed ?? settings.bed,
-        margin: opts?.margin,
-        connector: opts?.connector ? { clearance: settings.clearance, ...opts.connector } : { type: 'pin', clearance: settings.clearance },
-        gap: opts?.gap,
-        axes: opts?.axes,
-      });
-      if ('error' in res) return res;
-      if (opts?.save === false) {
-        return { partCount: res.partCount, grid: res.grid, holeCount: res.holeCount, notes: res.notes, saved: null };
-      }
-      if (!getState().session) {
-        applyLiveGeometry(res.layout);
-        return { partCount: res.partCount, grid: res.grid, holeCount: res.holeCount, notes: [...res.notes, 'Open a session to split into separate parts — showed the laid-out preview instead.'], saved: null };
-      }
-      const parts = await createPartsFromMeshes(res.parts, 'Piece');
-      return { partCount: res.partCount, grid: res.grid, holeCount: res.holeCount, notes: res.notes, parts };
-    },
-
-    /** Split the model along one arbitrary plane (point + normal), applying the
-     *  chosen connector across the cut, and emit the two pieces as new parts.
-     *  Used by the interactive split-plane gizmo and available to the AI. */
-    async splitAlongPlane(opts: {
-      plane: { point: [number, number, number]; normal: [number, number, number] };
-      connector?: { type?: ConnectorType; diameter?: number; depth?: number; width?: number; clearance?: number };
-      count?: number;
-      save?: boolean;
-    }) {
-      const check = guard(() => {
-        const o = assertObject(opts, 'splitAlongPlane(opts)')!;
-        assertNoUnknownKeys(o, ['plane', 'connector', 'count', 'save'], 'splitAlongPlane(opts)');
-        const plane = assertObject(o.plane, 'splitAlongPlane(opts).plane')!;
-        assertNoUnknownKeys(plane, ['point', 'normal'], 'splitAlongPlane(opts).plane');
-        assertNumberTuple(plane.point, 3, 'splitAlongPlane(opts).plane.point');
-        assertNumberTuple(plane.normal, 3, 'splitAlongPlane(opts).plane.normal');
-        assertNumber(o.count, 'splitAlongPlane(opts).count', { optional: true, min: 0, max: 8, integer: true });
-        assertBoolean(o.save, 'splitAlongPlane(opts).save', { optional: true });
-        if (o.connector !== undefined) {
-          const c = assertObject(o.connector, 'splitAlongPlane(opts).connector')!;
-          assertNoUnknownKeys(c, ['type', 'diameter', 'depth', 'width', 'clearance'], 'splitAlongPlane(opts).connector');
-          if (c.type !== undefined) assertEnum(c.type, ['none', 'dowel', 'peg', 'screw', 'dovetail'], 'splitAlongPlane(opts).connector.type');
-          assertNumber(c.diameter, 'splitAlongPlane(opts).connector.diameter', { optional: true, min: 0.1 });
-          assertNumber(c.depth, 'splitAlongPlane(opts).connector.depth', { optional: true, min: 0.1 });
-          assertNumber(c.width, 'splitAlongPlane(opts).connector.width', { optional: true, min: 0.1 });
-          assertNumber(c.clearance, 'splitAlongPlane(opts).connector.clearance', { optional: true, min: 0 });
-        }
-        return true;
-      });
-      if (typeof check === 'object' && check !== null && 'error' in check) return check;
-      if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
-      const mod = getModule();
-      if (!mod) return { error: 'Engine not ready.' };
-      const settings = loadPrinterSettings();
-      const spec: ConnectorSpec = { type: 'dowel', clearance: settings.clearance, ...opts.connector };
-      const res = planeSplit(mod, currentMeshData, opts.plane as PlaneSpec, spec, { count: opts.count });
-      if ('error' in res) return res;
-      if (opts.save === false || !getState().session) {
-        return { partCount: res.partCount, connectorCount: res.connectorCount, notes: res.notes, saved: null };
-      }
-      const parts = await createPartsFromMeshes(res.parts, 'Piece');
-      return { partCount: res.partCount, connectorCount: res.connectorCount, notes: res.notes, parts };
-    },
 
     /** Create a session and populate it with multiple versions in one call */
     async createSessionWithVersions(name: string, versions: { code: string; label?: string }[]) {
@@ -12057,9 +11896,9 @@ async function main() {
   // Resize/scale UI (viewport ⇲ Resize button + command-palette entry).
   initResizeUI(partwrightAPI as unknown as Parameters<typeof initResizeUI>[0]);
 
-  // Print tools overlay (build volume / printability / split for printing). Wired
-  // here, after partwrightAPI is defined, so its handlers reuse the same
-  // validated console methods the AI agent calls.
+  // Print tools overlay — informational only: build-volume settings and an
+  // on-demand printability check. Scaling and splitting live in their own
+  // dedicated tools.
   const printToolsHandlers: PrintToolsHandlers = {
     open(userInitiated) {
       if (userInitiated) {
@@ -12073,21 +11912,6 @@ async function main() {
     getSettings: () => loadPrinterSettings(),
     setSettings: (partial) => savePrinterSettings(partial),
     check: () => partwrightAPI.checkPrintability(),
-    scaleToFit: () => partwrightAPI.scaleModel({ fit: {} }),
-    scaleUniform: (factor) => partwrightAPI.scaleModel({ factor }),
-    splitAuto: (c) => partwrightAPI.splitForPrinting({
-      connector: { type: c.type, diameter: c.size, depth: c.depth, width: c.size, count: c.count },
-    }),
-    splitPlane: (c) => partwrightAPI.splitAlongPlane({
-      plane: getSplitPlane(),
-      connector: { type: c.type, diameter: c.size, depth: c.depth, width: c.size },
-      count: c.count,
-    }),
-    setPlaneGizmo: (on) => {
-      if (on) { if (currentMeshData) activateSplitPlane(currentMeshData); }
-      else deactivateSplitPlane();
-    },
-    setPlaneMode: (m) => setSplitPlaneMode(m),
   };
   initPrintToolsUI(clipControls, printToolsHandlers);
 

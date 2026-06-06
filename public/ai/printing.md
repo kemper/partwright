@@ -1,8 +1,10 @@
-# Design for 3D Printing
+# Print Readiness
 
-Tools and helpers for turning a model into something that actually prints well.
-These read a shared **printer profile** (build volume + nozzle), so set that
-first when the user names their machine.
+Informational tools for checking whether a model is ready to print, plus the
+shared **printer profile** (build volume + nozzle) that drives those checks.
+
+Scaling and splitting live in their own dedicated tools — this subdoc covers
+the read-only print-readiness side.
 
 ## Printer settings
 
@@ -30,7 +32,8 @@ geometry change. It returns a structured report; every entry in `checks[]` has a
 `level` of `pass` / `warn` / `fail` (a `fail` means it won't print as-is).
 
 What it inspects:
-- **Bed fit** — bounding box vs the build volume (fail = too big → scale or split).
+- **Bed fit** — bounding box vs the build volume (fail = too big → use the
+  Resize tool to shrink, or the Split tool to cut into bed-sized pieces).
 - **Overhangs** — downward faces shallower than `overhangAngleDeg` (default 45°
   from horizontal) that will need support. Consider re-orienting to remove them.
 - **Thin walls** — a *sampled* interior-ray estimate of the thinnest wall vs the
@@ -44,55 +47,14 @@ const r = partwright.checkPrintability();
 // r.ok === false → read r.checks, fix the `fail` items, re-check.
 ```
 
-Then fix problems at the source: thicken walls, re-orient, `scaleModel`, or
-`splitForPrinting`.
+Then fix problems at the source: thicken walls, re-orient, edit the dimension
+constants in the model code (preferred for parametric models), or steer the
+user toward the Resize / Split tools when bed fit is the blocker.
 
-## scaleModel(opts)
+## Automatic warning on export
 
-Geometric scale of the **rendered mesh**, saved as a new version. Provide exactly
-one of:
-- `{ factor }` — uniform multiplier.
-- `{ scale: [sx,sy,sz] }` — per-axis.
-- `{ to: { axis:'x'|'y'|'z'|'max'|'min', length } }` — make that axis an exact size.
-- `{ fit: { margin?, mode?:'shrink'|'fit' } }` — largest uniform factor that fits
-  the build volume (`shrink` only downscales; `fit` also upscales to fill).
-
-> **Prefer parametric scaling for models you authored.** This bakes to a mesh and
-> scales *every* feature — screw holes, clearances and walls included — so an M3
-> hole becomes oversized. If the model came from your own code, edit the dimension
-> constants instead (so functional features keep their real size). Reach for
-> `scaleModel` for imported meshes, or quick "make it fit / make it half size".
-
-```js
-partwright.scaleModel({ to: { axis: 'max', length: 100 } }); // longest side = 100mm
-partwright.scaleModel({ fit: {} });                          // shrink to fit the bed
-```
-
-## splitForPrinting(opts?)
-
-When a model is bigger than the bed and the user wants it at **full size**, cut it
-into bed-sized chunks with matching dowel-pin holes across each cut (print pins or
-use a rod to register, then glue). Chunks are laid out in a row and saved as a new
-version. Cuts X/Y by default (keeps flat bottoms); pass `axes:['x','y','z']` to
-allow Z.
-
-```js
-partwright.splitForPrinting();                        // auto-cut to the bed
-partwright.splitForPrinting({ connector: { type:'pin', diameter: 6 } });
-```
-
-Returns `{ partCount, grid, holeCount, notes, saved }`.
-
-## Gridfinity generator — `api.Gridfinity`
-
-Inside model code, build spec-compliant Gridfinity storage on the 42 mm grid:
-
-```js
-return api.Gridfinity.bin({ cols: 2, rows: 1, heightUnits: 6 }); // a 2×1×6U bin
-return api.Gridfinity.baseplate({ cols: 4, rows: 3 });            // a 4×3 baseplate
-```
-
-- `bin({ cols=1, rows=1, heightUnits=3, hollow=true, wallThickness=1.2, lip=true, magnetHoles=false })`
-- `baseplate({ cols=1, rows=1 })`
-
-Total bin height is `7 × heightUnits` mm; feet seat into the baseplate sockets.
+The same `checkPrintability` runs automatically every time the user exports to
+**STL / OBJ / 3MF / GLB**. If there are blockers or warnings, a toast surfaces
+a one-line summary alongside the export — the export still proceeds; the warn
+is just a heads-up. The full report stays available via `checkPrintability()`
+or the 🖨 Print panel under **Inspect**.
