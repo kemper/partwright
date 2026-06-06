@@ -1,38 +1,6 @@
 {
   "entries": [
     {
-      "id": "print-fit-enclosure",
-      "name": "Print-Fit Enclosure",
-      "file": "print_fit_enclosure.partwright.json",
-      "language": "manifold-js",
-      "description": "Two-part enclosure with M3 heat-set insert bosses, counterbored screw holes, and an alignment pin/socket pair — assembled with real M3 hardware.",
-      "group": "print-fit"
-    },
-    {
-      "id": "print-fit-bracket",
-      "name": "T-Slot Mounting Bracket",
-      "file": "print_fit_bracket.partwright.json",
-      "language": "manifold-js",
-      "description": "L-bracket with captive M4 nut pockets for sliding into 2020 aluminium extrusion and counterbored M4 screw holes — no tools needed.",
-      "group": "print-fit"
-    },
-    {
-      "id": "print-fit-dovetail",
-      "name": "Sliding Dovetail Joint",
-      "file": "print_fit_dovetail.partwright.json",
-      "language": "manifold-js",
-      "description": "Tail beam and socket beam that slide together — a classic woodworking joint translated to FDM with a snug printable clearance.",
-      "group": "print-fit"
-    },
-    {
-      "id": "print-fit-mounting-plate",
-      "name": "Hardware-Ready Mounting Plate",
-      "file": "print_fit_mounting_plate.partwright.json",
-      "language": "manifold-js",
-      "description": "Flat plate showcasing M3 screw holes, M4 captive nut pockets, and an alignment pin/socket pair — four printFit builders in one part.",
-      "group": "print-fit"
-    },
-    {
       "id": "companion-cube",
       "name": "Portal Companion Cube",
       "file": "companion_cube.partwright.json",
@@ -655,6 +623,38 @@
       "file": "ringed_planet.partwright.json",
       "language": "manifold-js",
       "description": "A banded gas giant encircled by a tilted, multi-band ring system. Latitude color bands are cut from the sphere with overlapping slabs; the concentric ring disk welds into the planet's equator so it prints as one self-colored piece. Parametric planet radius, ring span, band count, and axial tilt."
+    },
+    {
+      "id": "print-fit-knob",
+      "name": "Captive-Nut Tightening Knob",
+      "file": "print_fit_knob.partwright.json",
+      "language": "manifold-js",
+      "description": "A knurled hand knob with a captive M4 hex-nut pocket and a clearance bore — trap a nut and turn it onto any M4 bolt or rod. Useful for jigs, clamps, and adjustable feet. Built with api.printFit.",
+      "group": "print-fit"
+    },
+    {
+      "id": "print-fit-project-box",
+      "name": "Electronics Project Box",
+      "file": "print_fit_project_box.partwright.json",
+      "language": "manifold-js",
+      "description": "A base tray with M3 heat-set insert bosses in the corners and a lid with countersunk M3 screw holes that sit flush — drop in brass inserts and screw the lid down. Built with api.printFit.",
+      "group": "print-fit"
+    },
+    {
+      "id": "print-fit-snap-box",
+      "name": "Snap-Fit Parts Box",
+      "file": "print_fit_snap_box.partwright.json",
+      "language": "manifold-js",
+      "description": "A small parts box whose lid clicks shut with cantilever snap tabs — no screws or glue. Flex the tabs to pop it open. Box and lid print flat. Built with api.printFit.",
+      "group": "print-fit"
+    },
+    {
+      "id": "print-fit-wall-mount",
+      "name": "Dovetail Wall Mount",
+      "file": "print_fit_wall_mount.partwright.json",
+      "language": "manifold-js",
+      "description": "A two-part removable hook: a wall plate that screws up with flush countersunk M4 screws and carries a dovetail rail, plus a hook that slides onto the rail and locks. Print extra hooks for one plate. Built with api.printFit.",
+      "group": "print-fit"
     }
   ]
 }
