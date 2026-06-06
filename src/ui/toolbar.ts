@@ -296,7 +296,7 @@ export function createToolbar(
   // (src/ui/hints/hintsTicker.ts) into this element by id.
   const hintsHost = document.createElement('div');
   hintsHost.id = 'editor-hints-host';
-  hintsHost.className = 'flex-1 min-w-0 flex items-center mx-2';
+  hintsHost.className = 'flex-1 min-w-0 flex items-center justify-center mx-2';
   toolbar.appendChild(hintsHost);
 
   // Use AI — primary entry point to the chat drawer. The activity rail also

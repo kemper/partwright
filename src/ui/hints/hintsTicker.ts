@@ -162,19 +162,26 @@ function renderStrip(): void {
   order = buildOrder();
   idx = 0;
 
-  // Inline toolbar variant: lives in the toolbar's flexible middle, framed by a
-  // vertical divider on each side so the hint region (text + CTA + its ‹ › ✕
-  // controls) reads as one unit, distinct from the toolbar's left and right
-  // button clusters.
+  // Centered, self-contained pill in the toolbar's middle: a subtle bordered
+  // box holding the icon, "Did you know?" label, the rotating hint, its CTA, and
+  // the ‹ › ✕ controls — all one section, distinct from the toolbar's button
+  // clusters. The host centers it (justify-center) and stays flex-1 so it also
+  // right-aligns the AI/Import/Export cluster.
   strip = document.createElement('div');
   strip.id = 'editor-hints';
   strip.setAttribute('role', 'note');
   strip.setAttribute('aria-label', 'Did you know');
-  strip.className = 'flex-1 min-w-0 flex items-center gap-2 text-xs text-zinc-400 overflow-hidden';
+  strip.className =
+    'min-w-0 max-w-full inline-flex items-center gap-2 pl-2.5 pr-1.5 py-1 rounded-md bg-zinc-800/60 border border-zinc-700/70 text-xs text-zinc-400';
+
+  const icon = document.createElement('span');
+  icon.className = 'shrink-0 text-amber-300 flex items-center';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.innerHTML = SPARKLES_SVG;
 
   const badge = document.createElement('span');
   badge.className = 'shrink-0 text-zinc-500 select-none';
-  badge.textContent = '💡 Did you know?';
+  badge.textContent = 'Did you know?';
 
   textEl = document.createElement('span');
   textEl.id = 'editor-hints-text';
@@ -184,17 +191,17 @@ function renderStrip(): void {
   ctaEl.type = 'button';
   ctaEl.className = 'shrink-0 text-blue-400 hover:text-blue-300 hover:underline font-medium transition-colors';
 
-  // ‹ › step + ✕ dismiss, kept tight together and right after a divider so it's
-  // clear they belong to the hints, not the adjacent "Use AI" button.
+  // ‹ › step + ✕ dismiss, kept inside the section, set off by a thin divider so
+  // they read as the hints' own controls.
   const controls = document.createElement('div');
-  controls.className = 'shrink-0 flex items-center gap-0.5 text-zinc-500';
+  controls.className = 'shrink-0 flex items-center gap-0.5 pl-1.5 ml-0.5 border-l border-zinc-700/70 text-zinc-500';
 
   const prevBtn = makeIconBtn('‹', 'Previous hint', () => advance(-1));
   const nextBtn = makeIconBtn('›', 'Next hint', () => advance(1));
   const closeBtn = makeIconBtn('✕', 'Hide hints for this session', dismissForSession);
 
   controls.append(prevBtn, nextBtn, closeBtn);
-  strip.append(makeDivider(), badge, textEl, ctaEl, makeDivider(), controls);
+  strip.append(icon, badge, textEl, ctaEl, controls);
   host.appendChild(strip);
 
   // Degrade gracefully as the toolbar's middle shrinks (e.g. the AI panel opens
@@ -223,13 +230,9 @@ function renderStrip(): void {
   scheduleRotate();
 }
 
-/** A thin vertical divider used to frame the hint region within the toolbar. */
-function makeDivider(): HTMLElement {
-  const d = document.createElement('span');
-  d.className = 'shrink-0 self-center h-5 w-px bg-zinc-700';
-  d.setAttribute('aria-hidden', 'true');
-  return d;
-}
+// Lucide "sparkles" — a cooler stand-in for the old 💡, evoking tips/discovery.
+const SPARKLES_SVG =
+  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .962 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.962 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/></svg>';
 
 /** A compact control button with a ≥44px touch target via padding. */
 function makeIconBtn(glyph: string, label: string, onClick: () => void): HTMLButtonElement {
