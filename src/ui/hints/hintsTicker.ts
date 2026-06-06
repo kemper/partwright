@@ -20,6 +20,7 @@ import { runCommandById, openCommandPalette } from '../commandPalette';
 import { openShortcutsOverlay } from '../shortcutsOverlay';
 import { spotlightElement, dismissCoachmark } from '../coachmark';
 import { getConfig, onConfigChange } from '../../config/appConfig';
+import { getState } from '../../storage/sessionManager';
 
 /** localStorage: ids the user has already been shown (rotate fresh ones first). */
 const SEEN_KEY = 'partwright-hints-seen';
@@ -35,7 +36,12 @@ let order: Hint[] = [];
 let idx = 0;
 let paused = false;
 let configUnsub: (() => void) | null = null;
+let sessionUnsub: (() => void) | null = null;
 let resizeObs: ResizeObserver | null = null;
+/** Last session id seen, so we only restore hints on a real session transition
+ *  (new / opened / switched session) — not on intra-session changes like
+ *  version navigation, which also fire 'session-changed'. */
+let lastSessionId: string | null = null;
 
 // ─── persistence helpers ──────────────────────────────────────────────────────
 
@@ -267,6 +273,25 @@ export function mountHintsTicker(hostEl: HTMLElement): void {
   host = hostEl;
   configUnsub?.();
   configUnsub = onConfigChange(() => refreshHintsTicker());
+
+  // Restore hints when the user starts or opens a *different* session — a ✕
+  // dismiss means "not now, this session", so a new session brings them back.
+  // Seed from the current id so the initial session load isn't seen as a
+  // transition (a reload keeps a same-session dismiss in place).
+  lastSessionId = getState().session?.id ?? null;
+  sessionUnsub?.();
+  const onSessionChanged = () => {
+    const id = getState().session?.id ?? null;
+    if (id && id !== lastSessionId) {
+      lastSessionId = id;
+      showHintsTicker();
+    } else {
+      lastSessionId = id;
+    }
+  };
+  window.addEventListener('session-changed', onSessionChanged);
+  sessionUnsub = () => window.removeEventListener('session-changed', onSessionChanged);
+
   refreshHintsTicker();
 }
 

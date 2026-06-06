@@ -41,6 +41,22 @@ test.describe('editor hints ticker', () => {
     await expect(strip).toHaveCount(0);
   });
 
+  test('a new session restores hints dismissed with ✕', async ({ page }) => {
+    await page.goto('/editor');
+    const strip = page.locator('#editor-hints');
+    await expect(strip).toBeVisible({ timeout: 15_000 });
+
+    await strip.getByRole('button', { name: /Hide hints/ }).click();
+    await expect(strip).toHaveCount(0);
+
+    // Starting a different session means "✕ was just for that session".
+    await page.evaluate(() =>
+      (window as unknown as { partwright: { createSession: (n?: string) => Promise<unknown> } })
+        .partwright.createSession('hints-test'),
+    );
+    await expect(strip).toBeVisible({ timeout: 8000 });
+  });
+
   test('a coach CTA pulses an arrow at the target control', async ({ page }) => {
     await page.goto('/editor');
     const strip = page.locator('#editor-hints');
