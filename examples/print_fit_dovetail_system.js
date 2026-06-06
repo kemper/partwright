@@ -1,9 +1,6 @@
-// Dovetail rail system — a wall-mount plate that carries a dovetail rail and
-// matching hooks that slide on and lock. Print one plate, then print as many
-// hooks as you need. Adjust all dimensions in the Customizer.
-//
-// Mounted orientation: back face (y=0) against the wall, rail protrudes into
-// the room (+Y), rail runs vertically (+Z). Both parts print flat on their backs.
+// Dovetail rail system — a horizontal wall-mount rail and a curved coat hook
+// that slides on and locks. Print one plate, add as many hooks as you need.
+// Rail runs horizontally (X-axis). Hook arm curves down for hanging jackets.
 const { Manifold, CrossSection, printFit } = api;
 
 const p = api.params({
@@ -11,34 +8,39 @@ const p = api.params({
   screwSpacing: { type: 'number', default: 50,  min: 30,  max: 120, step: 5,  unit: 'mm', label: 'Screw spacing' },
   screwSize:    { type: 'select', default: 'M4', options: ['M3', 'M4', 'M5'],              label: 'Screw size' },
   hookReach:    { type: 'number', default: 34,  min: 15,  max: 80,  step: 2,  unit: 'mm', label: 'Hook reach' },
-  lipHeight:    { type: 'number', default: 22,  min: 10,  max: 50,  step: 2,  unit: 'mm', label: 'Lip height' },
 });
 
 // ── Rail plate ────────────────────────────────────────────────────────────────
+// Plate: X = railLen (horizontal), Y = plateT (thickness), Z = plateH (height)
 const railLen  = p.railLength;
 const railW    = 16;
-const plateW   = 44;
+const plateH   = 40;
 const plateT   = 6;
-const chamfer  = 1.5;
+const Cp = 1.5;
 
-const Cp = chamfer;
+// Profile in XY: X = plateH, Y = plateT — chamfered octagon
 const plateProfile = new CrossSection([[
-  [Cp, 0], [plateW - Cp, 0], [plateW, Cp], [plateW, plateT - Cp],
-  [plateW - Cp, plateT], [Cp, plateT], [0, plateT - Cp], [0, Cp],
+  [Cp, 0], [plateH - Cp, 0], [plateH, Cp], [plateH, plateT - Cp],
+  [plateH - Cp, plateT], [Cp, plateT], [0, plateT - Cp], [0, Cp],
 ]]);
-let plate = Manifold.extrude(plateProfile, railLen);
+// Extrude along Z by railLen, rotate so plate runs along X
+let plate = Manifold.extrude(plateProfile, railLen)
+  .rotate([0, -90, 0])
+  .translate([railLen, 0, 0]);
+// Plate: X 0..railLen, Y 0..plateT, Z 0..plateH
 
+// Dovetail tail already runs along X — just translate into position
 const { tail } = printFit.dovetail({ length: railLen, width: railW, depth: 6, angle: 14, fit: 'normal' });
-const rail = tail.rotate([0, -90, 0]).translate([plateW / 2, plateT - 0.5, 0]);
-plate = plate.add(rail);
+plate = plate.add(tail.translate([0, plateT - 0.5, plateH / 2]));
 
+// Screw holes: two Z-columns flanking the rail, rows spaced along X
 const endMargin = 15;
 const usableLen = railLen - 2 * endMargin;
 const levels    = Math.max(1, Math.round(usableLen / p.screwSpacing) + 1);
-const colX      = [plateW * 0.15, plateW * 0.85];
+const colZ      = [plateH * 0.15, plateH * 0.85];
 for (let i = 0; i < levels; i++) {
-  const z = endMargin + (levels === 1 ? usableLen / 2 : (usableLen * i) / (levels - 1));
-  for (const x of colX) {
+  const x = endMargin + (levels === 1 ? usableLen / 2 : (usableLen * i) / (levels - 1));
+  for (const z of colZ) {
     const hole = printFit.screwHole({ size: p.screwSize, length: plateT, head: 'countersunk', through: true })
       .rotate([-90, 0, 0])
       .translate([x, plateT, z]);
@@ -47,14 +49,11 @@ for (let i = 0; i < levels; i++) {
 }
 
 // ── Wall hook ─────────────────────────────────────────────────────────────────
+// Hook block: X = hookBlockW (slides along rail), Y = hookBlockT, Z = hookBlockH
 const hookBlockW = 38;
 const hookBlockT = 14;
-const hookBlockH = 30;
-const armW       = 16;
-const armThk     = 10;
-const roundR     = 3;
-const innerR     = 4;
-const Ch         = 1.5;
+const hookBlockH = 40;
+const Ch = 1.5;
 
 const blockProfile = new CrossSection([[
   [Ch, 0], [hookBlockW - Ch, 0], [hookBlockW, Ch], [hookBlockW, hookBlockT - Ch],
@@ -62,41 +61,49 @@ const blockProfile = new CrossSection([[
 ]]);
 let hook = Manifold.extrude(blockProfile, hookBlockH);
 
-const { socket } = printFit.dovetail({ length: hookBlockH + 20, width: 16, depth: 6, angle: 14, fit: 'normal' });
-const groove = socket.rotate([0, -90, 0]).translate([hookBlockW / 2, 0, -10]);
-hook = hook.subtract(groove);
+// Dovetail socket runs along X — groove centred at hookBlockH/2, 10 mm overhang each side
+const { socket } = printFit.dovetail({ length: hookBlockW + 20, width: railW, depth: 6, angle: 14, fit: 'normal' });
+hook = hook.subtract(socket.translate([-10, 0, hookBlockH / 2]));
 
-const armProfile = CrossSection.square([armW, armThk])
-  .offset(-roundR)
-  .offset(roundR, 'round');
-const armReach = p.hookReach;
-const armX     = hookBlockW / 2 - armW / 2;
-const armZ     = 4;
-const arm      = Manifold.extrude(armProfile, armReach)
+// ── Curved coat hook arm ──────────────────────────────────────────────────────
+const armR       = 7;                         // tube radius (mm)
+const bendR      = 18;                        // bend centre-arc radius (mm)
+const stemLen    = Math.max(5, p.hookReach - bendR);
+const armZCenter = hookBlockH * 0.75;         // arm exits at 75 % of block height
+const cx         = hookBlockW / 2;            // centred in X on block
+
+// Straight stem going in +Y from block front face
+const stem = Manifold.cylinder(stemLen, armR, armR, 24)
   .rotate([-90, 0, 0])
-  .translate([armX, hookBlockT - 0.5, armZ + armThk]);
-hook = hook.add(arm);
+  .translate([cx, hookBlockT, armZCenter]);
 
-const lipH = p.lipHeight;
-const lip  = Manifold.extrude(armProfile, lipH)
-  .translate([armX, hookBlockT - 0.5 + armReach - armThk, armZ]);
-hook = hook.add(lip);
+// Quarter-torus: sweeps from +Y direction to -Z direction.
+// revolve(profile, n, 90) yields a quarter-torus arc in XY: (bendR,0,0)→(0,bendR,0).
+// Two rotations reorient it into YZ: (0,bendR,0)→(0,0,-bendR) — arm curves down.
+const bendProfile = CrossSection.circle(armR, 24).translate([bendR, 0]);
+const bend = Manifold.revolve(bendProfile, 24, 90)
+  .rotate([-90, 0, 0])
+  .rotate([0, 0, 90])
+  .translate([cx, hookBlockT + stemLen - bendR, armZCenter]);
 
-const lip_inner_y = hookBlockT - 0.5 + armReach - armThk;
-const arm_top_z   = armZ + armThk;
-const c           = innerR * Math.SQRT2;
-const cornerCut   = Manifold.cube([armW + 2, c, c], false)
-  .translate([armX - 0.01, -c / 2, -c / 2])
-  .rotate([45, 0, 0])
-  .translate([0, lip_inner_y, arm_top_z]);
-hook = hook.subtract(cornerCut);
+// Downward tapered tip
+const tipBaseY = hookBlockT + stemLen - bendR;
+const tipBaseZ = armZCenter - bendR;
+const tipLen   = 22;
+const tip = Manifold.cylinder(tipLen, armR, armR * 0.55, 24)
+  .rotate([180, 0, 0])
+  .translate([cx, tipBaseY, tipBaseZ]);
 
-// ── Layout: plate on the left, hook on the right ──────────────────────────────
+// Ball cap
+const ball = Manifold.sphere(armR * 0.7, 24)
+  .translate([cx, tipBaseY, tipBaseZ - tipLen]);
+
+hook = hook.add(stem).add(bend).add(tip).add(ball);
+
+// ── Layout: plate left, hook right ───────────────────────────────────────────
 const plateColored = api.label(plate, 'plate', { color: '#b5764f' });
-// Position hook beside the plate, centered on the plate's Z midpoint so the
-// thumbnail shows both parts at comparable scale.
 const hookColored  = api.label(
-  hook.translate([plateW + 20, 0, railLen / 2 - hookBlockH / 2]),
+  hook.translate([railLen + 20, 0, 0]),
   'hook', { color: '#5f8a8c' }
 );
 return plateColored.add(hookColored);
