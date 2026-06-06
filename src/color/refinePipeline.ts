@@ -15,6 +15,7 @@ import {
   deriveSampleNormals,
   strokeFootprintTriangles,
   tangentBasis,
+  wrapAngleGate,
   type BrushStroke,
   type RefineRegion,
 } from './subdivide';
@@ -42,8 +43,10 @@ export function buildBrushStrokeFromDescriptor(
   d: Extract<RegionDescriptor, { kind: 'brushStroke' }>,
   base: MeshData,
 ): BrushStroke {
-  // A spray is always geodesic (surface-following, no through-wall).
-  const surface = d.spray ? 'geodesic' : (d.surface ?? 'slab');
+  // Surface mode is whatever the stroke was painted with (slab by default);
+  // old descriptors — and old geodesic-forced sprays — resolve from their
+  // stored `surface`, falling back to slab for back-compat.
+  const surface = d.surface ?? 'slab';
   const stroke: BrushStroke = {
     samples: d.samples,
     radius: d.radius,
@@ -53,11 +56,20 @@ export function buildBrushStrokeFromDescriptor(
     depth: d.depth !== undefined && d.depth > 0 ? d.depth : d.radius * 0.5,
     spray: d.spray,
   };
+  // Wrap tolerance: gate the surface flood-fill by dihedral angle. Absent ⇒ 180°
+  // (no gate) for strokes saved before the slider. A finite gate (< 180°) needs
+  // the geodesic reachability field even in slab mode, so it's built alongside
+  // the slab prism's per-sample normals there.
+  const wrapAngleDeg = d.wrapAngleDeg ?? 180;
+  const maxBendCos = wrapAngleGate(wrapAngleDeg);
   if (surface === 'geodesic') {
-    stroke.geoField = buildGeodesicField(base, d.samples, d.radius);
+    stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
   } else {
     stroke.sampleNormals = deriveSampleNormals(d.samples, base);
     stroke.sampleTangents = stroke.sampleNormals.map(tangentBasis);
+    if (wrapAngleDeg < 180) {
+      stroke.geoField = buildGeodesicField(base, d.samples, d.radius, maxBendCos);
+    }
   }
   return stroke;
 }

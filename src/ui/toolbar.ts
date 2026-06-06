@@ -14,6 +14,7 @@ import {
   onImportInboxChange,
   type ImportInboxEntry,
 } from '../import/importInbox';
+import { createMenuSectionHeader, createMenuDivider } from './popoverMenu';
 
 export interface ToolbarCallbacks {
   onRun: () => void;
@@ -34,10 +35,15 @@ export interface ToolbarCallbacks {
   onShareLink: () => void;
   onExportRawCode: () => void;
   onImportFile: (file: File) => void | Promise<void>;
+  /** Open the "Import from URL…" modal (share link or remote file URL). */
+  onImportFromURL: () => void;
   /** Re-import a blob already held in the inbox (e.g. recent-imports re-click). */
   onImportInboxEntry: (entry: ImportInboxEntry) => void | Promise<void>;
   /** Open the image → keychain / tile / stepped-relief import wizard. */
   onCreateRelief: () => void;
+  /** Open the image → voxel import modal (modal-first; the user picks the image
+   *  inside). */
+  onCreateVoxel: () => void;
   onLanguageSwitch: (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => void;
   /** "?" link next to the language toggle — opens a modal explaining
    *  what each engine is best for. */
@@ -97,14 +103,22 @@ export function setAiToolbarState(mode: AiToolbarMode | boolean): void {
   if (toolbarBtn) toolbarBtn.title = title;
 }
 
-/** File extensions accepted by the Import button and drag-and-drop. */
-export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp,.vox,.png,.jpg,.jpeg,.gif,.webp,.bmp';
-/** Raster image types accepted by the dedicated "Image → voxel" picker. */
-export const IMAGE_ACCEPT = '.png,.jpg,.jpeg,.gif,.webp,.bmp';
+/** File extensions accepted by the Import button and drag-and-drop. Kept in
+ *  sync with `classifyImportSource` (src/import/importInbox.ts) — every type
+ *  the classifier recognizes should be selectable here. `.svg` opens the
+ *  Relief Studio wizard; `.avif` is treated as a raster image. */
+export const IMPORT_ACCEPT = '.partwright.json,.json,.js,.scad,.stl,.step,.stp,.vox,.svg,.png,.jpg,.jpeg,.gif,.webp,.bmp,.avif';
 
 let _autoRun = true;
 let _onAutoRunChange: ((on: boolean) => void) | null = null;
 let _syncAutoRunUI: (() => void) | null = null;
+let _setRunState: ((running: boolean, elapsedMs: number) => void) | null = null;
+
+/** Show/hide the cancel button and elapsed timer in the toolbar run group.
+ *  Called by main.ts at the start/end of every runCodeSync execution. */
+export function setRunState(running: boolean, elapsedMs = 0): void {
+  _setRunState?.(running, elapsedMs);
+}
 
 /** Whether auto-run on edit is enabled */
 export function isAutoRun(): boolean { return _autoRun; }
@@ -118,8 +132,6 @@ export function setAutoRun(enabled: boolean): void {
 }
 
 /** Register a callback for when auto-run state changes */
-export function onAutoRunChange(cb: (on: boolean) => void): void { _onAutoRunChange = cb; }
-
 // Language toggle state — managed externally via setToolbarLanguage()
 let _langBtnJs: HTMLButtonElement | null = null;
 let _langBtnScad: HTMLButtonElement | null = null;
@@ -157,7 +169,7 @@ export function createToolbar(
   logo.className = 'flex items-center gap-2 mr-4 bg-transparent border-0 p-0 cursor-pointer hover:opacity-80 transition-opacity';
   logo.title = 'Back to home';
   logo.setAttribute('aria-label', 'Partwright home');
-  logo.innerHTML = `${partwrightMarkSvg(20)}<span class="text-zinc-100 font-semibold tracking-tight">Partwright</span>`;
+  logo.innerHTML = `${partwrightMarkSvg(20)}<span class="text-zinc-100 font-semibold tracking-tight">Partwright</span><span class="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/25">Beta</span>`;
   logo.addEventListener('click', callbacks.onGoHome);
   toolbar.appendChild(logo);
 
@@ -196,9 +208,25 @@ export function createToolbar(
     if (_autoRun) callbacks.onRun();
   });
 
+  // Elapsed time label — updated every 100 ms during a render
+  const runElapsedEl = document.createElement('span');
+  runElapsedEl.id = 'run-elapsed';
+  runElapsedEl.className = 'hidden text-xs text-zinc-500 font-mono';
+
+  _setRunState = (running, elapsedMs) => {
+    if (running) {
+      runElapsedEl.classList.remove('hidden');
+      runElapsedEl.textContent = `${(elapsedMs / 1000).toFixed(1)}s`;
+    } else {
+      runElapsedEl.classList.add('hidden');
+      runElapsedEl.textContent = '';
+    }
+  };
+
   syncAutoRunUI();
   runGroup.appendChild(autoRunBtn);
   runGroup.appendChild(btnRun);
+  runGroup.appendChild(runElapsedEl);
   toolbar.appendChild(runGroup);
 
   // Language toggle — segmented JS / SCAD control
@@ -318,7 +346,7 @@ export function createToolbar(
   importDropdown.id = 'import-dropdown';
   importDropdown.className = 'fixed left-2 right-2 top-14 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1 hidden z-20 max-h-[80vh] overflow-y-auto md:absolute md:left-auto md:right-0 md:top-full md:mt-1 md:w-72';
 
-  importDropdown.appendChild(createSectionHeader('From file'));
+  importDropdown.appendChild(createMenuSectionHeader('From file'));
   const chooseFileOpt = createDescribedItem(
     'Choose file\u2026',
     'Open a .partwright.json session, a .js / .scad source file, or an .stl mesh.',
@@ -330,8 +358,18 @@ export function createToolbar(
   });
   importDropdown.appendChild(chooseFileOpt);
 
-  importDropdown.appendChild(createDivider());
-  importDropdown.appendChild(createSectionHeader('Create'));
+  const fromUrlOpt = createDescribedItem(
+    'Import from URL…',
+    'Paste a Partwright share link, or an http(s) link to a session, mesh, or image file.',
+  );
+  fromUrlOpt.addEventListener('click', () => {
+    importDropdown.classList.add('hidden');
+    callbacks.onImportFromURL();
+  });
+  importDropdown.appendChild(fromUrlOpt);
+
+  importDropdown.appendChild(createMenuDivider());
+  importDropdown.appendChild(createMenuSectionHeader('Create'));
   const reliefOpt = createDescribedItem(
     'Image → keychain / tile / relief…',
     'Turn an image (or SVG) into a printable colour tile, keychain, sticker, or stepped relief.',
@@ -348,17 +386,16 @@ export function createToolbar(
   );
   imageVoxelOpt.addEventListener('click', () => {
     importDropdown.classList.add('hidden');
-    // Reuse the single import file input (a second one would break the
-    // `#import-wrapper input[type=file]` selector other tests rely on), just
-    // narrowed to raster images for this row. The change handler routes the
-    // picked image into the voxel-import modal via onImportFile.
-    importInput.accept = IMAGE_ACCEPT;
-    importInput.click();
+    // Modal-first (like the relief row): open the voxel import modal and let the
+    // user pick the image inside it, rather than launching the OS file picker
+    // straight away. Drag-and-drop and the "Choose file…" row still route raster
+    // images here via onImportFile.
+    callbacks.onCreateVoxel();
   });
   importDropdown.appendChild(imageVoxelOpt);
 
   // Recent Imports section — populated from the import inbox.
-  const importRecentDivider = createDivider();
+  const importRecentDivider = createMenuDivider();
   const importRecentHeaderRow = document.createElement('div');
   importRecentHeaderRow.className = 'flex items-center justify-between px-3 pt-1 pb-0.5';
   const importRecentHeader = document.createElement('div');
@@ -479,7 +516,7 @@ export function createToolbar(
   dropdown.className = 'fixed left-2 right-2 top-14 bg-zinc-800 border border-zinc-600 rounded shadow-lg py-1 hidden z-20 max-h-[80vh] overflow-y-auto md:absolute md:left-auto md:right-0 md:top-full md:mt-1 md:w-72';
 
   // Section: 3D model formats
-  dropdown.appendChild(createSectionHeader('3D model'));
+  dropdown.appendChild(createMenuSectionHeader('3D model'));
 
   // Units selector — declares what the model's numbers mean (metadata only,
   // no coordinate transform). Drives export filenames + the 3MF unit
@@ -518,7 +555,7 @@ export function createToolbar(
   unitsRow.appendChild(unitsLabel);
   unitsRow.appendChild(unitsSelect);
   dropdown.appendChild(unitsRow);
-  dropdown.appendChild(createDivider());
+  dropdown.appendChild(createMenuDivider());
 
   const threemfOpt = createDescribedItem(
     '3MF',
@@ -590,8 +627,8 @@ export function createToolbar(
   dropdown.appendChild(voxOpt);
 
   // Section: project / source — for sharing between users or working with the code directly
-  dropdown.appendChild(createDivider());
-  dropdown.appendChild(createSectionHeader('Project'));
+  dropdown.appendChild(createMenuDivider());
+  dropdown.appendChild(createMenuSectionHeader('Project'));
 
   const sessionOpt = createDescribedItem(
     'Session (.partwright.json)',
@@ -625,7 +662,7 @@ export function createToolbar(
   dropdown.appendChild(shareOpt);
 
   // Section: Recent Exports — reuse-anything-you-just-downloaded list. Hidden when empty.
-  const recentDivider = createDivider();
+  const recentDivider = createMenuDivider();
   const recentHeaderRow = document.createElement('div');
   recentHeaderRow.className = 'flex items-center justify-between px-3 pt-1 pb-0.5';
   const recentHeader = document.createElement('div');
@@ -785,19 +822,6 @@ function createDescribedItem(label: string, description: string, badge?: string)
   btn.appendChild(descEl);
 
   return btn;
-}
-
-function createSectionHeader(text: string): HTMLElement {
-  const el = document.createElement('div');
-  el.className = 'px-3 pt-1 pb-0.5 text-[10px] uppercase tracking-wider text-zinc-500 font-semibold';
-  el.textContent = text;
-  return el;
-}
-
-function createDivider(): HTMLElement {
-  const el = document.createElement('div');
-  el.className = 'my-1 border-t border-zinc-700';
-  return el;
 }
 
 function formatSize(bytes: number): string {

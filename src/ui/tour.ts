@@ -112,7 +112,7 @@ const STEPS: TourStep[] = [
     target: '#btn-quality',
     title: 'Settings & Shortcuts',
     description:
-      'Settings tunes curve quality — bump it to the Ultra tier for ultra-smooth exports. Press ⌘K / Ctrl+K anytime for the command palette (where you can also retake this tour), and ? for the keyboard shortcut cheat sheet.',
+      'Settings holds advanced knobs for AI, rendering, and timeouts. Curve quality lives in the ○ Quality button in the viewport. Press ⌘K / Ctrl+K anytime for the command palette (where you can also retake this tour), and ? for the keyboard shortcut cheat sheet.',
     placement: 'right',
   },
   {
@@ -157,7 +157,7 @@ export function maybeStartTour(): void {
   if (localStorage.getItem(STORAGE_KEY)) return;
 
   const params = new URLSearchParams(window.location.search);
-  if (params.has('view') || params.has('session') || params.has('gallery') || params.has('versions') || params.has('images') || params.has('diff') || params.has('notes') || params.has('data')) return;
+  if (params.has('view') || params.has('session') || params.has('gallery') || params.has('versions') || params.has('images') || params.has('diff') || params.has('notes') || params.has('data') || params.has('catalog')) return;
 
   setTimeout(() => startTour(), 800);
 }

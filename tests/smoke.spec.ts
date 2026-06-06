@@ -22,8 +22,13 @@ test.beforeEach(async ({ page }) => {
 test.describe('Landing + editor', () => {
   test('landing page renders hero', async ({ page }) => {
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'Partwright', level: 1 })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Open Editor/i })).toBeVisible();
+    // The landing page is the static #landing-inline document (the app bundle
+    // is not loaded on "/"). The hero h1 is the headline; the "Partwright"
+    // wordmark lives in the nav, and the nav CTA is an "Open editor" link.
+    const landing = page.locator('#landing-inline');
+    await expect(landing.getByText('Partwright', { exact: true })).toBeVisible();
+    await expect(landing.getByRole('heading', { level: 1 })).toBeVisible();
+    await expect(landing.getByRole('link', { name: /Open editor/i })).toBeVisible();
   });
 
   test('editor loads with AI button', async ({ page }) => {
@@ -240,17 +245,19 @@ test.describe('AI chat panel', () => {
     }
   });
 
-  test('drawer never auto-opens on a fresh landing-page load', async ({ page }) => {
+  test('the AI drawer (and app bundle) does not load on the landing route', async ({ page }) => {
     // Open the drawer in the editor so the remembered drawerOpen=true setting
-    // is persisted, then do a FULL reload of the landing page. The drawer must
-    // NOT auto-open there — the remembered open state only applies once the
-    // user is in the editor. (The panel still docks into the app-level row, so
-    // it stays mounted/attached — it's just hidden.)
+    // is persisted, then do a FULL load of the landing page. The landing route
+    // is a separate static document that never loads the app bundle, so the AI
+    // panel isn't present there at all — the remembered open state only applies
+    // once the user is back in the editor.
     await page.goto('/editor');
     await openAiPanel(page);
     await page.goto('/');
-    await page.waitForSelector('#ai-panel', { state: 'attached' });
-    await expect(page.locator('#ai-panel')).toBeHidden();
+    await expect(page.locator('#landing-inline')).toBeVisible();
+    await expect(page.locator('#ai-panel')).toHaveCount(0);
+    // The app's console API is the tell that main.ts booted — it must be absent.
+    expect(await page.evaluate(() => 'partwright' in window)).toBe(false);
 
     // And the remembered preference is untouched: opening the editor again
     // auto-opens the drawer as before.

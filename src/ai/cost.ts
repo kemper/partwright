@@ -30,6 +30,20 @@ const CACHE_WRITE_MULTIPLIER = 1.25;
  *  lie by reading "$0" when the user has typed in a new dated snapshot. */
 const FALLBACK_PRICING: CatalogPricing = { input: 3.0, output: 15.0 };
 
+/** Explicit prices for known cheap models the build-time catalog snapshot
+ *  doesn't carry (it's filtered to the last year of releases, so an
+ *  older-but-still-used id like `gpt-4o-mini` drops out). Without these, a
+ *  catalog miss falls through to the Sonnet-tier `FALLBACK_PRICING`
+ *  ($3/$15 per 1M) and over-reports cost ~5–40×. Compaction's per-provider
+ *  cheap model (`COMPACTION_MODEL` in compaction.ts) is the main caller that
+ *  hit this — its `gemini-2.5-flash-lite` / `claude-haiku-4-5` ids are in the
+ *  snapshot, but `gpt-4o-mini` is not. Keyed `provider/model`; rates are USD
+ *  per 1M tokens. */
+const KNOWN_MODEL_PRICING: Record<string, CatalogPricing> = {
+  // gpt-4o-mini: $0.15 in / $0.60 out, cached input $0.075.
+  'openai/gpt-4o-mini': { input: 0.15, output: 0.6, cacheRead: 0.075 },
+};
+
 function pricingFor(provider: string, model: string): CatalogPricing | null {
   // Local (WebGPU) and custom (self-hosted OpenAI-compatible endpoint) turns
   // are free at the API level — the user paid for the hardware/electricity —
@@ -40,6 +54,10 @@ function pricingFor(provider: string, model: string): CatalogPricing | null {
   // the rest of the cost meter does).
   const fromCatalog = getPricing(provider as Provider, model);
   if (fromCatalog) return fromCatalog;
+  // Known-but-out-of-snapshot ids get their real price before the median
+  // fallback, so the cost meter doesn't massively over-report them.
+  const known = KNOWN_MODEL_PRICING[`${provider}/${model}`];
+  if (known) return known;
   // Hosted provider but unknown id — use the median fallback rather than
   // reporting $0, so the cost meter is conservative on novel snapshots.
   if (provider === 'anthropic' || provider === 'openai' || provider === 'gemini') {

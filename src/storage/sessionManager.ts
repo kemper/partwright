@@ -15,6 +15,8 @@ import {
   deleteVersion as dbDeleteVersion,
   putVersion as dbPutVersion,
   renameVersion as dbRenameVersion,
+  findVersionChildren as dbFindVersionChildren,
+  clearVersionParentRefs as dbClearVersionParentRefs,
   clearAllData,
   updateSession as dbUpdateSession,
   createPart as dbCreatePart,
@@ -30,12 +32,13 @@ import {
   getDraft as dbGetDraft,
   setDraft as dbSetDraft,
   deleteDraft as dbDeleteDraft,
-  listDrafts as dbListDrafts,
+  deletePartDrafts as dbDeletePartDrafts,
   legacyImagesObjectToArray,
   generateId,
   type Session,
   type Part,
   type Version,
+  type VersionOperation,
   type SessionNote,
   type AttachedImage,
 } from './db';
@@ -54,6 +57,7 @@ import {
   type SerializedAnnotation,
 } from '../annotations/annotations';
 import { setActiveImports, type ImportedMesh } from '../import/importedMesh';
+import { setCompanionFiles, companionFilesEqual } from '../import/companionFiles';
 import { getActiveLanguage } from '../geometry/engine';
 import { effectiveVersionLanguage, asLanguage } from './languageFallback';
 
@@ -122,8 +126,19 @@ import { effectiveVersionLanguage, asLanguage } from './languageFallback';
  *           with them (and matches its saved thumbnail/stats). Only non-default
  *           keys are written; pre-1.9 files have none and import with all
  *           defaults. Older readers ignore the field.
+ *  - `1.10` — per-version companion SCAD files (`versions[].companionFiles`).
+ *           A map of MEMFS path → source text for files that the main SCAD code
+ *           `include`s or `use`s but that aren't BOSL2. Written to the OpenSCAD
+ *           WASM virtual filesystem before each compile. Absent for non-SCAD
+ *           versions and SCAD versions with no companions. Older readers ignore
+ *           the field.
+ *  - `1.11` — per-region palette-slot attribution (`colorRegions[].slotId`).
+ *           Painting with a palette slot stamps its id so the region maps onto a
+ *           filament/AMS slot and follows slot recolours. Additive: pre-1.11
+ *           regions omit it and import as unslotted (ad-hoc colour). Older
+ *           readers ignore the field.
  */
-export const SCHEMA_VERSION = '1.9';
+export const SCHEMA_VERSION = '1.11';
 
 const CURRENT_MAJOR = 1;
 
@@ -207,6 +222,14 @@ export interface ExportedSession {
      * @since 1.9
      */
     paramValues?: Record<string, number | boolean | string>;
+    /**
+     * Companion SCAD files — a map of MEMFS path → source text for files the
+     * main SCAD code `include`s or `use`s (beyond BOSL2). Written to the
+     * OpenSCAD WASM virtual filesystem before each compile. Only present for
+     * SCAD sessions that have companions.
+     * @since 1.10
+     */
+    companionFiles?: Record<string, string>;
   }[];
   notes?: { text: string; timestamp: number }[];
   /**
@@ -337,7 +360,7 @@ export function getSchemaCompatibilityWarning(data: ExportedSession): string | n
   return null;
 }
 
-export type { Session, Part, Version, SessionNote, AttachedImage, SessionDraft } from './db';
+export type { Session, Part, Version, VersionOperation, SessionNote, AttachedImage, SessionDraft } from './db';
 
 // Pure resolver for a version's effective modeling language — re-exported from
 // its own tiny module so unit tests can import it without dragging in the
@@ -460,6 +483,7 @@ export async function createSession(name?: string, language?: 'manifold-js' | 's
   // bleeds in from the previously-active session.
   loadAnnotations([]);
   setActiveImports([]);
+  setCompanionFiles({});
   updateURL();
   notify();
   return session;
@@ -498,6 +522,7 @@ export async function openSession(id: string, versionIndex?: number, partId?: st
 
   currentState = { session, parts, currentPart: targetPart, currentVersion: version, versionCount: count };
   setActiveImports((version?.importedMeshes ?? []) as ImportedMesh[]);
+  setCompanionFiles(version?.companionFiles ?? {});
   updateURL();
   notify();
   return version;
@@ -523,6 +548,7 @@ export async function closeSession(): Promise<void> {
   currentState = { session: null, parts: [], currentPart: null, currentVersion: null, versionCount: 0 };
   loadAnnotations([]);
   setActiveImports([]);
+  setCompanionFiles({});
   updateURL();
   notify();
 }
@@ -548,54 +574,78 @@ export async function renameSession(id: string, newName: string): Promise<void> 
   publishTabSync({ kind: 'session-meta', sessionId: id });
 }
 
-// === Editor drafts (per session, per language) ===
+// === Editor drafts (per session, per part, per language) ===
 //
-// Each session keeps a per-language draft slot — manifold-js, SCAD, and
-// replicad (BREP) each get their own — so flipping the toolbar's language
-// toggle preserves whatever the user (or the AI) was writing in the previous
-// language. Drafts are persisted so a reload doesn't lose them; they're
-// cascade-deleted when the session is.
+// Each part keeps a per-language draft slot — manifold-js, SCAD, replicad,
+// and voxel each get their own — so switching parts or flipping the toolbar's
+// language toggle preserves whatever the user (or the AI) was writing.
+// Drafts are persisted so a reload doesn't lose them; they're cascade-deleted
+// with the session (via sessionId index) and pruned when a part is deleted.
 
-/** Read the working buffer for a session in a given language. Returns null
- *  when no draft has been stashed yet (caller should fall back to a stub). */
-export async function readDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<string | null> {
-  const row = await dbGetDraft(sessionId, language);
-  return row ? row.code : null;
+/** The recoverable contents of an editor draft: the main buffer plus, for SCAD
+ *  drafts, any unsaved companion files. */
+export interface DraftContents {
+  code: string;
+  companionFiles?: Record<string, string>;
 }
 
-/** Write the working buffer for a session in a given language. Idempotent —
- *  the row is upserted by composite key. */
-export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string): Promise<void> {
-  await dbSetDraft(sessionId, language, code);
+/** Read the working buffer for a (session, part, language) triple. Pass
+ *  `partId` to scope the draft to a specific part; omit for legacy session-
+ *  wide access. Returns null when no draft exists yet. */
+export async function readDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', partId?: string): Promise<DraftContents | null> {
+  const row = await dbGetDraft(sessionId, language, partId);
+  if (!row) return null;
+  return { code: row.code, companionFiles: row.companionFiles };
 }
 
-/** Drop the working buffer for a (session, language) pair — used when the
- *  caller wants to force the next language switch to land on a stub. */
-export async function clearDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel'): Promise<void> {
-  await dbDeleteDraft(sessionId, language);
+/** Write the working buffer for a (session, part, language) triple. Idempotent
+ *  — the row is upserted by composite key. `companionFiles` is persisted for
+ *  SCAD drafts so companion edits survive a reload; pass `{}` (or omit) for
+ *  languages that don't use them. */
+export async function writeDraft(sessionId: string, language: 'manifold-js' | 'scad' | 'replicad' | 'voxel', code: string, partId?: string, companionFiles?: Record<string, string>): Promise<void> {
+  await dbSetDraft(sessionId, language, code, partId, companionFiles);
 }
 
-/** All drafts stashed for a session, ordered by language. */
-export async function listSessionDrafts(sessionId: string) {
-  return dbListDrafts(sessionId);
-}
 
 // === Per-session AI preference ===
 
-/** Remember which AI provider + model is driving the current session so it can
- *  be restored on reopen. No-op when nothing is open or the value is unchanged.
- *  Not broadcast to peer tabs on purpose — restoring on reload is the goal, not
- *  live-mirroring the active model across windows (which would fight the user). */
-export async function setSessionAiPreference(provider: string, model: string | null): Promise<void> {
+/** Remember the AI config driving the current session (provider, model, and the
+ *  full toggle snapshot + preset) so it can be restored when the session is
+ *  reopened or taken control of in another tab. No-op when nothing is open or
+ *  the value is unchanged. Deliberately NOT broadcast to peer tabs — restoring
+ *  on the explicit open / take-control transitions is the goal, not
+ *  live-mirroring the active model across windows (which would fight the user
+ *  and was the cross-window provider-leak bug). `toggles` is stored opaquely so
+ *  this layer stays decoupled from the AI types. */
+export async function setSessionAiPreference(
+  provider: string,
+  model: string | null,
+  toggles?: Record<string, unknown>,
+  preset?: string,
+): Promise<void> {
   if (!currentState.session || !model) return;
   // A read-only viewer must not mutate the shared session row, or it would
-  // clobber the leader's remembered provider/model (last reopen would win
-  // whatever the viewer last picked).
+  // clobber the leader's remembered config (last reopen would win whatever the
+  // viewer last picked).
   if (isViewerTab()) return;
   const cur = currentState.session.aiPreference;
-  if (cur && cur.provider === provider && cur.model === model) return;
+  const togglesSnap = toggles ?? cur?.toggles;
+  const presetVal = preset ?? cur?.preset;
+  // Skip the write when nothing meaningful changed (cheap + idempotent).
+  if (cur
+    && cur.provider === provider
+    && cur.model === model
+    && (cur.preset ?? undefined) === (presetVal ?? undefined)
+    && JSON.stringify(cur.toggles ?? null) === JSON.stringify(togglesSnap ?? null)) {
+    return;
+  }
   const id = currentState.session.id;
-  const aiPreference = { provider, model };
+  const aiPreference = {
+    provider,
+    model,
+    ...(togglesSnap ? { toggles: togglesSnap } : {}),
+    ...(presetVal ? { preset: presetVal } : {}),
+  };
   await dbUpdateSession(id, { aiPreference });
   if (currentState.session?.id === id) {
     currentState.session = { ...currentState.session, aiPreference };
@@ -643,6 +693,7 @@ export async function createPart(name?: string): Promise<Part | null> {
   };
   loadAnnotations([]);
   setActiveImports([]);
+  setCompanionFiles({});
   broadcastPartChange();
   updateURL();
   notify();
@@ -680,6 +731,7 @@ export async function changePart(partId: string, versionIndex?: number): Promise
   // here so the previous part's strokes don't bleed across the switch.
   loadAnnotations([]);
   setActiveImports((version?.importedMeshes ?? []) as ImportedMesh[]);
+  setCompanionFiles(version?.companionFiles ?? {});
   broadcastPartChange();
   updateURL();
   notify();
@@ -723,6 +775,7 @@ export async function deletePart(partId: string): Promise<DeletePartResult | nul
   if (parts.length <= 1) return null; // keep at least one part
 
   await dbDeletePart(partId);
+  void dbDeletePartDrafts(currentState.session.id, partId).catch(() => {});
 
   const remaining = parts.filter(p => p.id !== partId);
   const wasCurrent = currentState.currentPart?.id === partId;
@@ -768,6 +821,8 @@ export async function deleteParts(partIds: string[]): Promise<DeletePartsResult 
 
   const deletedSet = new Set(targets.map(p => p.id));
   await dbDeleteParts(targets.map(p => p.id));
+  const sid = currentState.session.id;
+  for (const id of deletedSet) void dbDeletePartDrafts(sid, id).catch(() => {});
 
   const remaining = parts.filter(p => !deletedSet.has(p.id));
   const currentId = currentState.currentPart?.id;
@@ -865,12 +920,22 @@ export async function saveVersion(
   thumbnail: Blob | null,
   label?: string,
   notes?: string,
-  options?: { force?: boolean; importedMeshes?: ImportedMesh[]; paramValues?: Record<string, number | boolean | string> },
+  options?: {
+    force?: boolean;
+    importedMeshes?: ImportedMesh[];
+    paramValues?: Record<string, number | boolean | string>;
+    companionFiles?: Record<string, string>;
+    parentVersionId?: string | null;
+    operation?: VersionOperation | null;
+  },
 ): Promise<Version | null> {
   if (!currentState.session || !currentState.currentPart) return null;
+  const sessionId = currentState.session.id;
+  const partId = currentState.currentPart.id;
 
   const annotationSnapshot = serializeAnnotations();
   const paramValues = options?.paramValues;
+  const companionFiles = options?.companionFiles;
 
   // Imports carry forward to new versions automatically: if the user edits
   // their imported-mesh code and re-saves, the same mesh data should still
@@ -879,17 +944,21 @@ export async function saveVersion(
   const prevImports = (currentState.currentVersion?.importedMeshes ?? []) as ImportedMesh[];
   const nextImports = options?.importedMeshes ?? prevImports;
 
-  // Skip if code AND annotations AND color regions are all identical to the
-  // current version (unless forced). Annotations and color regions live
-  // per-version, so a save that only changes either must still create a new
-  // version — comparing code alone would no-op.
+  // Companion files carry forward the same way: if not explicitly provided,
+  // inherit from the current version so they aren't lost on save.
+  const prevCompanions = currentState.currentVersion?.companionFiles ?? {};
+  const nextCompanions = companionFiles ?? prevCompanions;
+
+  // Skip if code AND annotations AND color regions AND companion files are all
+  // identical to the current version (unless forced).
   if (
     !options?.force &&
     currentState.currentVersion &&
     currentState.currentVersion.code === code &&
     annotationsEqual(currentState.currentVersion.annotations, annotationSnapshot) &&
     colorRegionsEqual(currentState.currentVersion.geometryData as Record<string, unknown> | null, geometryData) &&
-    paramValuesEqual(currentState.currentVersion.paramValues, paramValues)
+    paramValuesEqual(currentState.currentVersion.paramValues, paramValues) &&
+    companionFilesEqual(currentState.currentVersion.companionFiles, nextCompanions)
   ) {
     return null;
   }
@@ -910,6 +979,9 @@ export async function saveVersion(
     // engine independently of the session's default.
     getActiveLanguage(),
     paramValues,
+    Object.keys(nextCompanions).length > 0 ? nextCompanions : undefined,
+    options?.parentVersionId ?? null,
+    options?.operation ?? null,
   );
 
   currentState = {
@@ -917,7 +989,18 @@ export async function saveVersion(
     currentVersion: version,
     versionCount: currentState.versionCount + 1,
   };
+  // The saved code is now the tip, so any autosaved draft for this
+  // (session, part, language) is superseded. Clear it — otherwise a stale
+  // draft (e.g. one left behind when a *different* code path, like the AI
+  // tools, commits a new version without touching the editor buffer) would
+  // shadow the freshly-saved version on the next reload via
+  // restoreDraftIfNewer. Best-effort: a draft-delete failure must not fail
+  // the save itself, since the version is already committed.
+  try {
+    await dbDeleteDraft(sessionId, version.language ?? getActiveLanguage(), partId);
+  } catch { /* the version saved; a lingering draft is recoverable, not fatal */ }
   setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
+  setCompanionFiles(version.companionFiles ?? {});
   updateURL();
   notify();
   publishTabSync({ kind: 'session-versions', sessionId: version.sessionId });
@@ -938,6 +1021,7 @@ export async function navigateVersion(direction: 'prev' | 'next'): Promise<Versi
 
   currentState = { ...currentState, currentVersion: target };
   setActiveImports((target.importedMeshes ?? []) as ImportedMesh[]);
+  setCompanionFiles(target.companionFiles ?? {});
   updateURL();
   notify();
   return target;
@@ -969,6 +1053,7 @@ export async function loadVersion(target: number | string): Promise<Version | nu
 
   currentState = { ...currentState, currentVersion: version };
   setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
+  setCompanionFiles(version.companionFiles ?? {});
   updateURL();
   notify();
   return version;
@@ -986,6 +1071,19 @@ export interface DeleteVersionResult {
   wasCurrent: boolean;
   /** The version that became active after deletion (only set when wasCurrent). */
   newCurrent: Version | null;
+}
+
+/** Return versions in the active part whose parentVersionId points to the given id. */
+export async function findVersionChildren(versionId: string): Promise<Version[]> {
+  if (!currentState.currentPart) return [];
+  return dbFindVersionChildren(versionId, currentState.currentPart.id);
+}
+
+/** Clear the parentVersionId field on all versions in the active part that
+ *  reference the given id. Call this after confirming deletion of a parent. */
+export async function clearVersionParentRefs(versionId: string): Promise<void> {
+  if (!currentState.currentPart) return;
+  await dbClearVersionParentRefs(versionId, currentState.currentPart.id);
 }
 
 /**
@@ -1019,6 +1117,7 @@ export async function deleteVersion(versionId: string): Promise<DeleteVersionRes
   };
   if (wasCurrent && newCurrent) {
     setActiveImports((newCurrent.importedMeshes ?? []) as ImportedMesh[]);
+    setCompanionFiles(newCurrent.companionFiles ?? {});
   }
   updateURL();
   notify();
@@ -1041,6 +1140,7 @@ export async function restoreVersion(version: Version, makeCurrent: boolean): Pr
   };
   if (makeCurrent) {
     setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
+    setCompanionFiles(version.companionFiles ?? {});
   }
   updateURL();
   notify();
@@ -1273,6 +1373,7 @@ export async function deleteIfEmpty(sessionId: string): Promise<boolean> {
   if (currentState.session?.id === sessionId) {
     currentState = { session: null, parts: [], currentPart: null, currentVersion: null, versionCount: 0 };
     setActiveImports([]);
+    setCompanionFiles({});
   }
   return true;
 }
@@ -1284,6 +1385,7 @@ export async function clearAllSessions(): Promise<void> {
   currentState = { session: null, parts: [], currentPart: null, currentVersion: null, versionCount: 0 };
   loadAnnotations([]);
   setActiveImports([]);
+  setCompanionFiles({});
   updateURL();
   notify();
   publishTabSync({ kind: 'sessions-cleared' });
@@ -1317,6 +1419,7 @@ async function reloadCurrentSessionFromDB(): Promise<void> {
     // A peer tab deleted the session we had open.
     currentState = { session: null, parts: [], currentPart: null, currentVersion: null, versionCount: 0 };
     setActiveImports([]);
+    setCompanionFiles({});
     updateURL();
     notify();
     return;
@@ -1343,6 +1446,7 @@ async function reloadCurrentSessionFromDB(): Promise<void> {
   }
   currentState = { session, parts, currentPart: targetPart, currentVersion: version, versionCount: count };
   setActiveImports((version?.importedMeshes ?? []) as ImportedMesh[]);
+  setCompanionFiles(version?.companionFiles ?? {});
   updateURL();
   notify();
 }
@@ -1368,6 +1472,7 @@ export function initSessionTabSync(): void {
         currentState = { session: null, parts: [], currentPart: null, currentVersion: null, versionCount: 0 };
         loadAnnotations([]);
         setActiveImports([]);
+        setCompanionFiles({});
         updateURL();
         notify();
         break;
@@ -1520,6 +1625,7 @@ export async function exportSession(
         ...(thumbDataUrl ? { thumbnail: thumbDataUrl } : {}),
         ...(importedMeshes ? { importedMeshes } : {}),
         ...(v.paramValues && Object.keys(v.paramValues).length > 0 ? { paramValues: v.paramValues } : {}),
+        ...(v.companionFiles && Object.keys(v.companionFiles).length > 0 ? { companionFiles: v.companionFiles } : {}),
       };
     }),
     ...(notes.length > 0 ? { notes: notes.map(n => ({ text: n.text, timestamp: n.timestamp })) } : {}),
@@ -1529,7 +1635,10 @@ export async function exportSession(
 
 export async function importSession(
   data: ExportedSession,
-  regenerateThumbnail?: (code: string) => Promise<Blob | null>,
+  regenerateThumbnail?: (
+    code: string,
+    importedMeshes: ImportedMesh[] | undefined,
+  ) => Promise<Blob | null>,
   onWarning?: (message: string) => void,
 ): Promise<Session> {
   const warning = getSchemaCompatibilityWarning(data);
@@ -1613,13 +1722,21 @@ export async function importSession(
         geometryData = { ...(geometryData ?? {}), colorRegions: regions };
       }
 
+      // This version's imported meshes (base64 buffers → ImportedMesh). Needed
+      // both for persistence below AND for the regenerate path: code like
+      // `Manifold.ofMesh(api.imports[0])` only reproduces this version's
+      // geometry if the active-imports register holds these meshes when the
+      // callback runs it — otherwise the run (and its captured thumbnail)
+      // reflects whatever was last in the register (a stale, wrong part).
+      const importedMeshes = deserializeImportedMeshes(v.importedMeshes);
+
       // Prefer an embedded thumbnail (schema 1.3+) — avoids re-running WASM
       // and gives us the exact image the exporter saw. Fall back to
       // regenerating from code when the field is absent.
       let thumbnail: Blob | null = null;
       if (v.thumbnail) thumbnail = dataURLToBlob(v.thumbnail);
       if (!thumbnail && regenerateThumbnail) {
-        thumbnail = await regenerateThumbnail(v.code);
+        thumbnail = await regenerateThumbnail(v.code, importedMeshes);
       }
 
       // Annotations: prefer the per-version field (1.3+). Fall back to the
@@ -1639,7 +1756,7 @@ export async function importSession(
         v.notes,
         v.timestamp,
         versionAnnotations,
-        deserializeImportedMeshes(v.importedMeshes),
+        importedMeshes,
         // Per-version language (schema 1.8+). Pre-1.8 files omit it; the
         // read path falls back to session-level via effectiveVersionLanguage.
         // Run unknown values through `asLanguage` so a malformed export
@@ -1648,9 +1765,14 @@ export async function importSession(
         asLanguage(v.language),
         // Customizer parameter overrides (schema 1.9+). Pre-1.9 files omit it;
         // the version then runs at the model's declared defaults. Validation of
-        // the values against the model's schema happens at run time (coerced /
-        // clamped in resolveParamValues), so a stale value can't break a load.
+        // the values against the model's schema happens at run time (coerced in
+        // resolveParamValues — numerics honored as-is, non-numerics validated),
+        // so a stale value can't break a load.
         v.paramValues && typeof v.paramValues === 'object' ? v.paramValues : undefined,
+        // Companion SCAD files (schema 1.10+). Pre-1.10 files omit this field;
+        // those versions import with no companions, which is correct for all
+        // non-SCAD and pre-companion SCAD sessions.
+        v.companionFiles && typeof v.companionFiles === 'object' ? v.companionFiles as Record<string, string> : undefined,
       );
     }
   }
@@ -1690,6 +1812,7 @@ export async function importSession(
   const latest = currentPart ? await getLatestVersion(currentPart.id) : null;
   currentState = { session: refreshedSession, parts, currentPart, currentVersion: latest, versionCount: count };
   setActiveImports((latest?.importedMeshes ?? []) as ImportedMesh[]);
+  setCompanionFiles(latest?.companionFiles ?? {});
   updateURL();
   notify();
   publishTabSync({ kind: 'session-meta', sessionId: refreshedSession.id });
@@ -1702,4 +1825,145 @@ export async function importSession(
   // can land mid-render and produce a frame that misses the annotations.
 
   return refreshedSession;
+}
+
+export interface MergePartsResult {
+  /** Parts appended to the current session. */
+  addedParts: Part[];
+  /** Total versions copied across all appended parts. */
+  versionCount: number;
+}
+
+/**
+ * Merge the parts of an exported session into the CURRENTLY OPEN session,
+ * appending each as a brand-new part (originals untouched, no navigation away).
+ *
+ * Each imported part's versions are copied across preserving `code`,
+ * per-version `language`, `colorRegions`, `annotations`, `thumbnail`,
+ * `geometryData`, `importedMeshes` (base64 mesh buffers), and `paramValues`.
+ * Part and version ids are freshly minted by the db layer (dbCreatePart /
+ * dbSaveVersion), so there are no id collisions with the host session.
+ *
+ * Mirrors {@link importSession}'s reconstruction (legacy single-part files
+ * with no `parts[]` collapse into one part; the same color-region and
+ * top-level-annotation back-compat fallbacks apply) but writes into the
+ * existing session instead of a fresh one. Returns null if no session is open.
+ */
+export async function importSessionPartsIntoActive(
+  data: ExportedSession,
+  regenerateThumbnail?: (
+    code: string,
+    importedMeshes: ImportedMesh[] | undefined,
+  ) => Promise<Blob | null>,
+): Promise<MergePartsResult | null> {
+  if (!currentState.session) return null;
+  if (!data.session || typeof data.session !== 'object') {
+    throw new Error('Invalid session file: missing "session" data.');
+  }
+  const sessionId = currentState.session.id;
+
+  const versions = Array.isArray(data.versions) ? data.versions : [];
+  if (versions.length === 0) {
+    // A chat/notes-only export carries no parts to merge — nothing to append.
+    throw new Error('That file has no parts to merge.');
+  }
+
+  // Same top-level-annotation back-compat target as importSession: schema 1.2
+  // attached annotations to whichever version was most recent at export.
+  const latestExportedIndex = versions.reduce((m, v) => Math.max(m, v.index), -Infinity);
+
+  // Reconstruct part definitions (legacy files with no `parts[]` collapse into
+  // one default part) and group versions by their owning part's `order`.
+  const partDefs = (Array.isArray(data.parts) && data.parts.length > 0)
+    ? [...data.parts].sort((a, b) => a.order - b.order)
+    : [{ name: DEFAULT_PART_NAME, order: 0 }];
+
+  const versionsByOrder = new Map<number, ExportedSession['versions']>();
+  for (const v of versions) {
+    const order = v.part ?? 0;
+    const arr = versionsByOrder.get(order) ?? [];
+    arr.push(v);
+    versionsByOrder.set(order, arr);
+  }
+
+  // Append after whatever parts the host session already has, preserving the
+  // imported parts' relative order.
+  let nextOrder = currentState.parts.reduce((m, p) => Math.max(m, p.order), -1) + 1;
+  const addedParts: Part[] = [];
+  let copiedVersions = 0;
+
+  for (let i = 0; i < partDefs.length; i++) {
+    const def = partDefs[i];
+    const partVersions = versionsByOrder.get(def.order) ?? [];
+    // Skip an imported part that carries no versions — nothing to seed it with.
+    if (partVersions.length === 0) continue;
+
+    const part = await dbCreatePart(
+      sessionId,
+      (def.name && def.name.trim()) || `Part ${i + 1}`,
+      nextOrder++,
+    );
+    addedParts.push(part);
+
+    const sorted = [...partVersions].sort((a, b) => a.index - b.index);
+    for (const v of sorted) {
+      // Color regions: prefer the explicit (1.1+) field; fall back to the legacy
+      // nested location. Mirror back into geometryData so read paths find them.
+      const explicitRegions = v.colorRegions;
+      const nestedRegions = extractColorRegions(v.geometryData);
+      const regions = explicitRegions ?? nestedRegions;
+
+      let geometryData = v.geometryData;
+      if (regions && (!geometryData || !Array.isArray((geometryData as Record<string, unknown>).colorRegions))) {
+        geometryData = { ...(geometryData ?? {}), colorRegions: regions };
+      }
+
+      // The imported meshes for this version (base64 buffers → ImportedMesh).
+      // Needed both for persistence AND for the regenerate path: code like
+      // `Manifold.ofMesh(api.imports[0])` only reproduces this version's
+      // geometry if the active-imports register holds *this* version's meshes
+      // when the regen callback runs it. Without them the callback would run
+      // against whatever was last in the register (the host/previous part), so
+      // the captured thumbnail would show the wrong — stale — geometry.
+      const importedMeshes = deserializeImportedMeshes(v.importedMeshes);
+
+      // Prefer the embedded thumbnail (1.3+); fall back to regenerating.
+      let thumbnail: Blob | null = null;
+      if (v.thumbnail) thumbnail = dataURLToBlob(v.thumbnail);
+      if (!thumbnail && regenerateThumbnail) thumbnail = await regenerateThumbnail(v.code, importedMeshes);
+
+      // Annotations: per-version (1.3+) preferred; else top-level (1.2) on the
+      // latest exported version only.
+      let versionAnnotations: SerializedAnnotation[] | undefined = v.annotations;
+      if (!versionAnnotations && data.annotations && data.annotations.length > 0 && v.index === latestExportedIndex) {
+        versionAnnotations = data.annotations;
+      }
+
+      // dbSaveVersion mints a fresh version id and assigns the next per-part
+      // index, so the copied sequence preserves order without colliding.
+      await dbSaveVersion(
+        part.id,
+        sessionId,
+        v.code,
+        geometryData,
+        thumbnail,
+        v.label,
+        v.notes,
+        v.timestamp,
+        versionAnnotations,
+        importedMeshes,
+        asLanguage(v.language),
+        v.paramValues && typeof v.paramValues === 'object' ? v.paramValues : undefined,
+      );
+      copiedVersions++;
+    }
+  }
+
+  // Re-read the host session so the parts rail and counts reflect the appended
+  // parts. We deliberately stay on the current part/version — the merge adds
+  // parts alongside, it doesn't navigate away.
+  await reloadCurrentSessionFromDB();
+  broadcastPartChange();
+
+  return { addedParts, versionCount: copiedVersions };
 }

@@ -162,7 +162,11 @@ test.describe('voxel studio', () => {
       pw.activateVoxelPaint();
       pw.setVoxelTool('boxAdd');
 
-      const canvas = document.querySelector('canvas')!;
+      // Let the freshly-activated mesh land in the scene + BVH build before the
+      // raycast (mirrors a real user, who never taps within the same tick).
+      await new Promise<void>((res) => setTimeout(res, 100));
+
+      const canvas = document.querySelector('canvas.viewport-canvas') as HTMLCanvasElement;
       const rect = canvas.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
       const cy = rect.top + rect.height / 2;

@@ -1,9 +1,11 @@
 # connect-src below intentionally allows `https:` and http://localhost / 127.0.0.1
 # so a user-configured Custom (OpenAI-compatible) AI endpoint — e.g. a self-hosted
-# llama.cpp server — is reachable from the browser. The named hosts that follow are
-# the first-party cloud APIs + model CDN; they're subsumed by `https:` but kept as
-# documentation of expected traffic. Plain-HTTP LAN addresses still won't load on the
-# hosted HTTPS site (browser mixed-content rule) — only HTTPS endpoints or localhost.
+# llama.cpp server — is reachable from the browser. The same `https:` allowance also
+# backs the "Import from URL…" feature (fetching a remote .json/.stl/.step/.svg/.vox/
+# image over https), so the browser-side fetch isn't blocked by CSP. The named hosts
+# that follow are the first-party cloud APIs + model CDN; they're subsumed by `https:`
+# but kept as documentation of expected traffic. Plain-HTTP LAN addresses still won't
+# load on the hosted HTTPS site (browser mixed-content rule) — only HTTPS or localhost.
 /*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp

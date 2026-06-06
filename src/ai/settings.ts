@@ -104,6 +104,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     // the lean minimal preset — it's a cost-increasing autonomy feature, so it
     // belongs in the same "off to minimize spend" bucket as vision/thinking.
     autoResume: false,
+    planFirst: false,
     anthropicModel: 'claude-haiku-4-5',
   },
   standard: {
@@ -121,6 +122,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     maxSpend: 'medium',
     thinking: 'high',
     autoResume: true,
+    planFirst: false,
     anthropicModel: 'claude-sonnet-4-6',
   },
   full: {
@@ -131,6 +133,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     maxSpend: 'high',
     thinking: 'high',
     autoResume: true,
+    planFirst: false,
     anthropicModel: 'claude-opus-4-7',
   },
 };
@@ -192,6 +195,7 @@ function cloneToggles(t: ChatToggles): ChatToggles {
     maxSpend: t.maxSpend,
     thinking: t.thinking,
     autoResume: t.autoResume,
+    planFirst: t.planFirst,
     provider: t.provider,
     anthropicModel: t.anthropicModel,
     localModel: t.localModel,
@@ -218,15 +222,31 @@ export function onSettingsChange(fn: (settings: AiSettings) => void): () => void
   return () => listeners.delete(fn);
 }
 
-/** Drop the in-memory cache and re-read settings from localStorage, then
- *  notify listeners. Used when another tab writes settings (the `storage`
- *  event fires only in *other* tabs): our `cached` blob would otherwise shadow
- *  the peer tab's change forever, and the next `saveSettings` here would write
- *  the stale blob back and silently revert their edit. Returns the freshly
- *  loaded settings. */
+/** Re-read settings from localStorage when another tab wrote them (the
+ *  `storage` event fires only in *other* tabs), adopting the peer's changes to
+ *  genuinely-global, additive prefs (custom local models, system-prompt
+ *  overrides, panel width, drawer state, …) so this tab doesn't write a stale
+ *  blob back and silently revert their edit.
+ *
+ *  Crucially, this tab's live AI config — `provider`, every per-provider model
+ *  id, the whole `toggles` object, and `preset` — is PRESERVED, never adopted
+ *  from the peer. Those are per-tab/per-session state (each window drives its
+ *  own session), and blindly adopting a peer's provider/model here was the
+ *  cross-window provider-leak bug: a task in this tab would silently switch to
+ *  whatever provider another window selected. State only crosses tabs on the
+ *  explicit transitions handled elsewhere — opening a session or taking control
+ *  of one (see applySessionAiPreference). Returns the merged settings. */
 export function reloadSettingsFromStorage(): AiSettings {
+  const keepToggles = cached ? cloneToggles(cached.toggles) : null;
+  const keepPreset = cached ? cached.preset : null;
   cached = null;
   const next = loadSettings();
+  if (keepToggles) {
+    // `next` is the live `cached` object; restoring our toggles/preset in place
+    // means the next `saveSettings` writes them back, not the peer's.
+    next.toggles = keepToggles;
+    if (keepPreset) next.preset = keepPreset;
+  }
   for (const fn of listeners) fn(next);
   return next;
 }
@@ -265,6 +285,7 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       maxSpend: p.maxSpend,
       thinking: p.thinking,
       autoResume: p.autoResume,
+      planFirst: p.planFirst,
       // Presets target Anthropic, but if the user is currently on a
       // different provider, keep them on it — the preset only adjusts
       // cost/scope/views.
@@ -421,6 +442,7 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     maxSpend: partial.maxSpend ?? settings.toggles.maxSpend,
     thinking: partial.thinking ?? settings.toggles.thinking,
     autoResume: partial.autoResume ?? settings.toggles.autoResume,
+    planFirst: partial.planFirst ?? settings.toggles.planFirst,
     provider: partial.provider ?? settings.toggles.provider,
     anthropicModel: partial.anthropicModel ?? settings.toggles.anthropicModel,
     localModel: partial.localModel ?? settings.toggles.localModel,
@@ -503,6 +525,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       maxSpend: tgls.maxSpend ?? DEFAULT_SETTINGS.toggles.maxSpend,
       thinking: tgls.thinking ?? DEFAULT_SETTINGS.toggles.thinking,
       autoResume: tgls.autoResume ?? DEFAULT_SETTINGS.toggles.autoResume,
+      planFirst: tgls.planFirst ?? DEFAULT_SETTINGS.toggles.planFirst,
       provider,
       anthropicModel: tgls.anthropicModel ?? legacyAnthropic ?? DEFAULT_SETTINGS.toggles.anthropicModel,
       localModel: validLocalModel,

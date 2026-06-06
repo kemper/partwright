@@ -77,6 +77,10 @@ export interface ReliefCommonOptions {
   resolution: number;
   /** Gaussian-ish blur radius in pixels applied before sampling (0 = none). */
   smoothing: number;
+  /** Auto-detect and remove the background by sampling border pixel colours.
+   *  For flat tiles, cuts background cells from the tile shape; for stepped
+   *  relief and luminance, sets background cells to height 0 (base only). */
+  removeBackground: boolean;
 }
 
 /** Luminance-relief specific knobs. */
@@ -139,6 +143,12 @@ export interface QuantizedOptions {
    *  background instead of auto-detecting from the image's border colours.
    *  The user picks it by clicking the source thumbnail. */
   manualBackground?: [number, number, number];
+  /** Build the tile with the image on both the top and bottom faces.
+   *  Only applies to output='flat'. */
+  doubleSided: boolean;
+  /** When doubleSided is true, mirror the image horizontally on the back face
+   *  so the tile looks correct when flipped over. Default: true. */
+  backMirror: boolean;
 }
 
 export interface ReliefOptions {
@@ -165,6 +175,7 @@ export const DEFAULT_RELIEF_OPTIONS: ReliefOptions = {
     maxHeight: 3,
     resolution: 200,
     smoothing: 0,
+    removeBackground: false,
   },
   luminance: { invert: false, gamma: 1, levels: 16 },
   quantized: {
@@ -178,6 +189,8 @@ export const DEFAULT_RELIEF_OPTIONS: ReliefOptions = {
     holes: [],
     paintingMode: 'single-nozzle',
     invertHeights: false,
+    doubleSided: false,
+    backMirror: true,
   },
   preprocess: { brightness: 0, contrast: 0, saturation: 0, levelsLow: 0, levelsHigh: 255 },
 };
@@ -190,6 +203,9 @@ export interface HeightGrid {
   height: number;
   heights: Float32Array;
   colors?: Uint8Array;
+  /** Per-cell mask (1=keep, 0=background) detected from pre-quantization RGB.
+   *  Only set when removeBackground is enabled on a quantized-mode grid. */
+  bgMask?: Uint8Array;
 }
 
 /** A generated relief: a watertight (when possible) mesh plus the grid it came

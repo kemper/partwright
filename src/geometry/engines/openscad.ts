@@ -5,6 +5,7 @@ import { scanScadLabels } from './scadLabels';
 import { getManifoldModule, manifoldJsEngine } from './manifoldJs';
 import { scadDiagnostics } from '../sourceDiagnostics';
 import { ensureBosl2InMemfs, sourceUsesBosl2 } from '../bosl2Loader';
+import { injectFontsIntoMemfs, preloadFonts, sourceUsesText } from '../fontsLoader';
 import { getDefaultCircularSegments } from '../qualitySettings';
 import { parseScadParams, buildScadDefines } from '../scadParams';
 
@@ -46,16 +47,21 @@ function formatStderr(lines: string[]): string {
 }
 
 /** Create a fresh OpenSCAD WASM instance. Each callMain() can only be called
- *  once per Emscripten instantiation, so we create a new one for every run. */
-async function createInstance(): Promise<{ instance: any; stderr: string[]; stdout: string[] }> {
+ *  once per Emscripten instantiation, so we create a new one for every run.
+ *  preRunHook, if provided, is called during WASM module initialization (before
+ *  callMain), which is the only window where ENV changes like FONTCONFIG_FILE
+ *  take effect. */
+async function createInstance(
+  preRunHook?: (mod: any) => void,
+): Promise<{ instance: any; stderr: string[]; stdout: string[] }> {
   if (!createFn) throw new Error('OpenSCAD factory not loaded — call init() first');
   const stderr: string[] = [];
   const stdout: string[] = [];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const wrapper = await createFn({
     noInitialRun: true,
     print: (s: string) => { stdout.push(s); },
     printErr: (s: string) => { stderr.push(s); },
+    ...(preRunHook ? { preRun: [preRunHook] } : {}),
   });
   const instance = wrapper.getInstance();
   return { instance, stderr, stdout };
@@ -136,16 +142,104 @@ export const openscadEngine: Engine = {
  *  drive via `api.params`. The user's tweaks arrive as `paramOverrides` and are
  *  applied through OpenSCAD's native `-D name=value` flag — no source
  *  rewriting. The parsed schema rides on every result (success and error) so
- *  the panel stays live, matching the other engines. */
-export async function runScadAsync(source: string, paramOverrides?: Record<string, unknown>): Promise<MeshResult> {
+ *  the panel stays live, matching the other engines.
+ *
+ *  onPreview: optional callback invoked after a fast low-resolution preview
+ *  pass (fn=16) completes. Only fires when the active quality setting exceeds
+ *  the preview threshold; the caller can update the viewport immediately while
+ *  the full-quality pass continues in the background. */
+export async function runScadAsync(
+  source: string,
+  paramOverrides?: Record<string, unknown>,
+  onPreview?: (result: MeshResult) => void,
+  companionFiles?: Record<string, string>,
+): Promise<MeshResult> {
   const schema = parseScadParams(source);
   const paramsSchema = schema.length > 0 ? schema : undefined;
   const defines = buildScadDefines(source, paramOverrides);
-  const result = await runScadInner(source, defines);
+  const result = await runScadInner(source, defines, onPreview, companionFiles);
   return paramsSchema ? { ...result, paramsSchema } : result;
 }
 
-async function runScadInner(source: string, defines: string[]): Promise<MeshResult> {
+/** $fn value used for the fast preview pass — matches the "low" quality preset. */
+const SCAD_PREVIEW_FN = 16;
+
+function writeCompanionFilesToMemfs(instance: any, companionFiles: Record<string, string> | undefined): void {
+  if (!companionFiles) return;
+  for (const [path, content] of Object.entries(companionFiles)) {
+    const memfsPath = path.startsWith('/') ? path : `/${path}`;
+    const dir = memfsPath.lastIndexOf('/') > 0
+      ? memfsPath.slice(0, memfsPath.lastIndexOf('/'))
+      : null;
+    if (dir && dir !== '/') {
+      const parts = dir.slice(1).split('/');
+      let cur = '';
+      for (const part of parts) {
+        cur += `/${part}`;
+        try { instance.FS.mkdir(cur); } catch { /* already exists */ }
+      }
+    }
+    instance.FS.writeFile(memfsPath, content);
+  }
+}
+
+/** Pull the paths OpenSCAD couldn't resolve out of a captured stderr blob.
+ *  Matches the family of "Can't open …" warnings OpenSCAD emits for a missing
+ *  `include <>` / `use <>` target. Returns MEMFS-relative paths (leading `./`
+ *  and `/` stripped) so they line up with the companion-file registry keys. */
+function parseUnresolvedIncludes(stderr: string[]): string[] {
+  const re = /can'?t open (?:include file|library|use file|use\/include file)\s+'([^']+)'/i;
+  const found: string[] = [];
+  for (const line of stderr) {
+    const m = re.exec(line);
+    if (!m) continue;
+    let p = m[1].trim();
+    if (p.startsWith('./')) p = p.slice(2);
+    if (p.startsWith('/')) p = p.slice(1);
+    if (p) found.push(p);
+  }
+  return [...new Set(found)];
+}
+
+/** Compile `source` just far enough to resolve its `include`/`use` references
+ *  and report which ones OpenSCAD can't open. Uses binstl export (the same
+ *  format as the real render path) because it reliably emits "Can't open
+ *  include file" warnings before tessellation even starts — so include errors
+ *  surface immediately while the probe stays fast. Uses $fn=1 to minimise
+ *  tessellation work if all includes do happen to resolve.
+ *
+ *  `companionFiles`, if supplied, are written into MEMFS first so deps the user
+ *  has already provided aren't reported as missing. BOSL2 is seeded the same
+ *  way the run path does it. On any internal failure the function throws so the
+ *  worker-level catch converts it to an `error` message and the engine layer
+ *  resolves to `null` ("couldn't determine") — distinct from `[]` ("all
+ *  resolved"), which only fires when the probe genuinely ran clean. */
+export async function detectUnresolvedIncludes(
+  source: string,
+  companionFiles?: Record<string, string>,
+): Promise<string[]> {
+  if (!createFn) throw new Error('OpenSCAD not initialised');
+  const { instance, stderr } = await createInstance();
+  if (sourceUsesBosl2(source)) {
+    try { await ensureBosl2InMemfs(instance); } catch { /* BOSL2 absence is not what we're probing */ }
+  }
+  writeCompanionFilesToMemfs(instance, companionFiles);
+  instance.FS.writeFile('/in.scad', source);
+  // binstl is the proven format that emits "Can't open include file" warnings.
+  // Include resolution happens at parse time so the probe fails fast; $fn=1
+  // caps any accidental tessellation cost if all includes resolve.
+  try {
+    instance.callMain(['-D', '$fn=1', '--export-format=binstl', '-o', '/out.stl', '/in.scad']);
+  } catch { /* parse/runtime throw — stderr still has the include warnings */ }
+  return parseUnresolvedIncludes(stderr);
+}
+
+async function runScadInner(
+  source: string,
+  defines: string[],
+  onPreview?: (result: MeshResult) => void,
+  companionFiles?: Record<string, string>,
+): Promise<MeshResult> {
   if (!createFn) {
     const error = 'OpenSCAD engine not initialized.';
     return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
@@ -154,12 +248,43 @@ async function runScadInner(source: string, defines: string[]): Promise<MeshResu
   // Source-side scan — single linear pass over the user's text. Decides which
   // compile mode we use below (label-aware vs the historical STL fast path).
   const labelScan = scanScadLabels(source);
-  const effectiveSource = LABEL_MODULE_PREFIX + source;
+
+  let preRunHook: ((mod: any) => void) | undefined;
+  if (sourceUsesText(source)) {
+    try {
+      await preloadFonts();
+      preRunHook = injectFontsIntoMemfs;
+    } catch (e) {
+      const error = `Failed to load fonts for text(): ${e instanceof Error ? e.message : String(e)}`;
+      return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
+    }
+  }
+
+  // Phase 1: fast preview pass — run at reduced $fn so the user sees geometry
+  // quickly while the full-quality pass builds in the background. Only runs
+  // when the active quality setting meaningfully exceeds the preview threshold.
+  if (onPreview && getDefaultCircularSegments() > SCAD_PREVIEW_FN) {
+    try {
+      // Cap explicit $fn=N assignments so sources that hard-code a high value
+      // (e.g. $fn=90) compile at preview resolution. Only ever *lower* the
+      // value — a deliberately low $fn (e.g. $fn=6 for a hex) is a shape choice,
+      // not a quality knob, so raising it would distort the geometry.
+      const previewSrc = source.replace(/\$fn\s*=\s*([\d.]+)/g, (_m, n) => `$fn = ${Math.min(parseFloat(n), SCAD_PREVIEW_FN)}`);
+      const { instance: pi, stderr: ps } = await createInstance(preRunHook);
+      try {
+        if (sourceUsesBosl2(source)) await ensureBosl2InMemfs(pi);
+        writeCompanionFilesToMemfs(pi, companionFiles);
+        pi.FS.writeFile('/in.scad', LABEL_MODULE_PREFIX + previewSrc);
+        const pr = await runFlatStlAsync(pi, previewSrc, ps, defines, SCAD_PREVIEW_FN);
+        if (pr.mesh) onPreview(pr);
+      } catch { /* preview failure is non-fatal; full render continues */ }
+    } catch { /* instance creation failure is non-fatal for preview */ }
+  }
 
   let instance: any;
   let stderr: string[];
   try {
-    ({ instance, stderr } = await createInstance());
+    ({ instance, stderr } = await createInstance(preRunHook));
   } catch (e) {
     const error = `Failed to create OpenSCAD instance: ${e instanceof Error ? e.message : String(e)}`;
     return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
@@ -174,7 +299,20 @@ async function runScadInner(source: string, defines: string[]): Promise<MeshResu
         return { mesh: null, manifold: null, error, diagnostics: scadDiagnostics(source, error) };
       }
     }
-    instance.FS.writeFile('/in.scad', effectiveSource);
+    // Cap per-primitive $fn=N arguments to the quality preset. The command-line
+    // `-D $fn=N` only sets the global default; in-source `$fn=N` on individual
+    // primitives (e.g. `sphere(5, $fn=200)`) take precedence over it. We only
+    // *lower* values that exceed the preset so the user's quality selection
+    // caps expensive geometry — but we never *raise* a deliberately low $fn
+    // (e.g. $fn=6 for a hex bolt), which is a shape choice, not a quality knob.
+    // Same pattern as the Phase 1 preview pass.
+    const fn = getDefaultCircularSegments();
+    const qualifiedSrc = source.replace(/\$fn\s*=\s*([\d.]+)/g, (_m, n) => `$fn = ${Math.min(parseFloat(n), fn)}`);
+    instance.FS.writeFile('/in.scad', LABEL_MODULE_PREFIX + qualifiedSrc);
+
+    // Write companion files (includes/uses that aren't BOSL2) into MEMFS so
+    // OpenSCAD can resolve them.
+    writeCompanionFilesToMemfs(instance, companionFiles);
 
     if (labelScan.hasAnyLabelCalls) {
       // Label-aware path: single compile to multi-object AMF via lazy-union,
@@ -207,19 +345,24 @@ async function runScadInner(source: string, defines: string[]): Promise<MeshResu
 }
 
 /** Historical SCAD pipeline: compile to binary STL, weld, round-trip through
- *  Manifold.ofMesh. Used whenever the source has no `label()` calls. */
+ *  Manifold.ofMesh. Used whenever the source has no `label()` calls.
+ *  fnOverride, when set, replaces the quality-preset segment count — used by
+ *  the preview pass so Phase 1 doesn't rely on the global quality setting. */
 async function runFlatStlAsync(
   instance: any,
   source: string,
   stderr: string[],
   defines: string[],
+  fnOverride?: number,
 ): Promise<MeshResult> {
-  // Seed $fn from the user's quality preset. The script can still
-  // reassign $fn=… at the top level or pass $fn= per primitive to override.
+  // Seed $fn from the user's quality preset (or the explicit override for the
+  // preview pass). The script can still reassign $fn=… at the top level or
+  // pass $fn= per primitive to override.
   // Customizer overrides follow as additional `-D` flags.
+  const fn = fnOverride ?? getDefaultCircularSegments();
   const exitCode = instance.callMain([
     '--enable=manifold',
-    '-D', `$fn=${getDefaultCircularSegments()}`,
+    '-D', `$fn=${fn}`,
     ...defines,
     '--export-format=binstl',
     '-o', '/out.stl',
@@ -465,44 +608,3 @@ function resolveLabelMap(
   return out;
 }
 
-/** Async validate — creates a fresh instance, compiles to AST (fast path). */
-export async function validateScadAsync(source: string): Promise<ValidateResult> {
-  if (!createFn) {
-    const error = 'OpenSCAD not initialized';
-    return { valid: false, error, diagnostics: scadDiagnostics(source, error) };
-  }
-
-  let instance: any;
-  let stderr: string[];
-  try {
-    ({ instance, stderr } = await createInstance());
-  } catch (e) {
-    const error = `Failed to create OpenSCAD instance: ${e instanceof Error ? e.message : String(e)}`;
-    return { valid: false, error, diagnostics: scadDiagnostics(source, error) };
-  }
-
-  try {
-    if (sourceUsesBosl2(source)) {
-      try {
-        await ensureBosl2InMemfs(instance);
-      } catch (e) {
-        const error = `Failed to load BOSL2 library: ${e instanceof Error ? e.message : String(e)}`;
-        return { valid: false, error, diagnostics: scadDiagnostics(source, error) };
-      }
-    }
-    // Match runScadAsync — prepend the label() helper so a source that uses
-    // it doesn't trip "unknown module" warnings during the AST pass.
-    instance.FS.writeFile('/v.scad', LABEL_MODULE_PREFIX + source);
-    const code = instance.callMain([
-      '--export-format=ast',
-      '-o', '/v.ast',
-      '/v.scad',
-    ]);
-    if (code === 0) return { valid: true };
-    const error = shiftErrorLines(formatStderr(stderr));
-    return { valid: false, error, diagnostics: scadDiagnostics(source, error) };
-  } catch (e) {
-    const error = e instanceof Error ? e.message : String(e);
-    return { valid: false, error, diagnostics: scadDiagnostics(source, error) };
-  }
-}

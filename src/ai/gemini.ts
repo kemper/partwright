@@ -12,6 +12,7 @@ import type {
 } from './types';
 import type { ToolDefinition } from './tools';
 import { readSseStream } from './sse';
+import { getConfig } from '../config/appConfig';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -135,14 +136,6 @@ export interface GeminiRequestSpec {
   thinking?: ChatToggles['thinking'];
 }
 
-/** Gemini `thinkingBudget` values for each on-level. 'off' is handled
- *  separately (it doesn't set a budget at all). */
-const GEMINI_THINKING_BUDGET: Record<Exclude<ChatToggles['thinking'], 'off'>, number> = {
-  low: 2048,
-  medium: 8192,
-  high: 24576,
-};
-
 /** Build the Gemini `thinkingConfig` for a thinking level.
  *
  *  'off' only flips `includeThoughts` to false — it deliberately does NOT
@@ -154,7 +147,11 @@ const GEMINI_THINKING_BUDGET: Record<Exclude<ChatToggles['thinking'], 'off'>, nu
  *  `thinkingBudget` will clamp it, and the user sees any hard error). */
 function geminiThinkingConfig(level: ChatToggles['thinking']): Record<string, unknown> {
   if (level === 'off') return { includeThoughts: false };
-  return { includeThoughts: true, thinkingBudget: GEMINI_THINKING_BUDGET[level] };
+  const cfg = getConfig().ai;
+  const budget = level === 'low' ? cfg.thinkingBudgetGeminiLow
+    : level === 'medium' ? cfg.thinkingBudgetGeminiMedium
+    : cfg.thinkingBudgetGeminiHigh;
+  return { includeThoughts: true, thinkingBudget: budget };
 }
 
 interface GeminiToolDef {
@@ -194,7 +191,7 @@ export async function streamTurn(
   // reasoning turn can spend the whole budget thinking and return an empty
   // answer (finishReason MAX_TOKENS). Default to a generous ceiling so both
   // fit — it's a cap, not a reservation, so normal turns cost the same.
-  const max_tokens = spec.maxTokens ?? 32768;
+  const max_tokens = spec.maxTokens ?? getConfig().ai.maxOutputTokensGemini;
 
   const tools: GeminiToolDef[] = spec.tools.length > 0
     ? [{ functionDeclarations: spec.tools.map(t => ({
@@ -381,6 +378,15 @@ async function consumeGeminiStream(
     // 🩺 Diagnostics to see what came back.
     stopReason = 'end_turn';
   }
+  if (stopReason === 'malformed_function_call') {
+    // The model tried to call a function but emitted malformed JSON. Any
+    // text that leaked into the stream (e.g. "1}") is partial call payload,
+    // not a real answer. Strip it and the thought signature — replaying
+    // either on a retry feeds the model its own broken output and causes it
+    // to immediately attempt the same malformed call again (a hard loop).
+    collectedText = '';
+    answerSignature = undefined;
+  }
   return {
     text: collectedText,
     toolCalls,
@@ -434,7 +440,14 @@ function buildGeminiContents(history: ChatMessage[]): GeminiContent[] {
         if (tc.thoughtSignature) fcPart.thoughtSignature = tc.thoughtSignature;
         parts.push(fcPart);
       }
-      if (parts.length > 0) out.push({ role: 'model', parts });
+      if (parts.length === 0) {
+        // Preserve user/model alternation when the assistant message has no
+        // text or tool calls (e.g. after malformed_function_call stripping).
+        // Without a placeholder the model turn is skipped, leaving two
+        // consecutive user turns that Gemini rejects with a 400.
+        parts.push({ text: '.' });
+      }
+      out.push({ role: 'model', parts });
     } else {
       // Tool results first, on a user-role message with functionResponse
       // parts. `response` must be a plain object — Gemini's validator

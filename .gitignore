@@ -37,6 +37,11 @@ playwright/.cache/
 # Interstitial planning files
 .plans/
 
+# Environment files — may contain API keys; never commit
+.env
+.env.*
+!.env.example
+
 # Top-level screenshots/images from testing
 /*.png
 /*.jpg
@@ -46,3 +51,6 @@ playwright/.cache/
 # iterates with a temporary id like "test-foo". Real entries don't use the
 # test_ prefix.
 /public/catalog/test_*.partwright.json
+
+# partwright CLI daemon state (pid/ports, logs, persistent Chromium profile)
+.partwright/

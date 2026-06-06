@@ -88,17 +88,38 @@ describe('buildBrushStrokeFromDescriptor', () => {
     expect(stroke.sampleNormals).toBeUndefined();
   });
 
-  test('a spray descriptor forces geodesic surface (no through-wall paint)', () => {
-    const d = {
+  test('a spray descriptor honours its surface mode (slab → depth-gated, not forced geodesic)', () => {
+    const slabSpray = buildBrushStrokeFromDescriptor({
       kind: 'brushStroke' as const,
       samples: [[0, 0, 0]] as [number, number, number][],
       radius: 3, shape: 'circle' as const, maxEdge: 0.5,
-      surface: 'slab' as const, // ← user-requested but…
+      surface: 'slab' as const, depth: 1,
       spray: { strength: 0.5, softness: 0.5, seed: 7 },
-    };
-    const stroke = buildBrushStrokeFromDescriptor(d, base);
-    expect(stroke.surface).toBe('geodesic');
-    expect(stroke.geoField).toBeDefined();
+    }, base);
+    // Spray no longer overrides the surface: a slab spray is a depth-gated slab.
+    expect(slabSpray.surface).toBe('slab');
+    expect(slabSpray.sampleNormals).toBeDefined();
+    expect(slabSpray.geoField).toBeUndefined();
+
+    const geoSpray = buildBrushStrokeFromDescriptor({
+      kind: 'brushStroke' as const,
+      samples: [[0, 0, 0]] as [number, number, number][],
+      radius: 3, shape: 'circle' as const, maxEdge: 0.5,
+      surface: 'geodesic' as const,
+      spray: { strength: 0.5, softness: 0.5, seed: 7 },
+    }, base);
+    expect(geoSpray.surface).toBe('geodesic');
+    expect(geoSpray.geoField).toBeDefined();
+  });
+
+  test('a brushStroke descriptor with no surface field defaults to slab (back-compat)', () => {
+    const stroke = buildBrushStrokeFromDescriptor({
+      kind: 'brushStroke' as const,
+      samples: [[0, 0, 0]] as [number, number, number][],
+      radius: 3, shape: 'circle' as const, maxEdge: 0.5,
+    }, base);
+    expect(stroke.surface).toBe('slab');
+    expect(stroke.sampleNormals).toBeDefined();
   });
 });
 

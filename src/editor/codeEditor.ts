@@ -1,5 +1,6 @@
 import { EditorView } from '@codemirror/view';
-import { EditorState, Compartment, type Extension } from '@codemirror/state';
+import { EditorState, Compartment, Transaction, type Extension } from '@codemirror/state';
+import { openSearchPanel } from '@codemirror/search';
 import { javascript } from '@codemirror/lang-javascript';
 import { StreamLanguage } from '@codemirror/language';
 import { oneDark } from '@codemirror/theme-one-dark';
@@ -9,6 +10,12 @@ import { js as jsBeautify } from 'js-beautify';
 import { manifoldApiCompletion } from './apiCompletions';
 import type { SourceDiagnostic } from '../geometry/types';
 import { getTheme, onThemeChange, type Theme } from '../ui/theme';
+import { readPerTabPref, writePerTabPref } from '../storage/perTabPref';
+import { getConfig } from '../config/appConfig';
+
+/** Tracks which companion editor views are currently in a programmatic content
+ *  load so the onChange listener can skip the spurious re-run. */
+const _programmaticLoad = new WeakMap<EditorView, { active: boolean }>();
 
 /** Replicad/BREP sessions reuse the JavaScript editor since they're written
  *  as JS (`api.BREP.box(...)`), but we still track them as a distinct
@@ -21,10 +28,10 @@ let debounceTimer: number | null = null;
 let idleTimer: number | null = null;
 let activeDiagnostics: Diagnostic[] = [];
 
-/** How long typing must be idle before deferred error UI is surfaced. */
-const ERROR_IDLE_MS = 800;
 let currentLanguage: EditorLanguage = 'manifold-js';
-let autoFormatEnabled: boolean = localStorage.getItem('editor-auto-format') !== 'false';
+// Per-tab (with a shared seed for fresh tabs) so toggling auto-format in one
+// window doesn't flip it in another open window.
+let autoFormatEnabled: boolean = readPerTabPref('editor-auto-format') !== 'false';
 const languageCompartment = new Compartment();
 const readOnlyCompartment = new Compartment();
 const themeCompartment = new Compartment();
@@ -75,8 +82,65 @@ const scadLanguage = StreamLanguage.define({
   },
 });
 
-function languageExt(lang: EditorLanguage): Extension {
+/** CodeMirror syntax-highlighting extension for an editor language. Exported
+ *  so read-only viewers (e.g. the diff view) can highlight the right language
+ *  without duplicating the SCAD StreamLanguage definition. */
+export function languageExt(lang: EditorLanguage): Extension {
   return lang === 'scad' ? scadLanguage : javascript();
+}
+
+/** Create a standalone CodeMirror editor for companion SCAD files.
+ *  Uses the SCAD language extension for syntax highlighting. The caller
+ *  owns the returned EditorView and should call setCompanionEditorContent()
+ *  when switching between companion files. */
+export function createCompanionEditor(
+  parent: HTMLElement,
+  onChange: (content: string) => void,
+): EditorView {
+  const companionThemeCompartment = new Compartment();
+  const loadFlag = { active: false };
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: '',
+      extensions: [
+        basicSetup,
+        scadLanguage,
+        companionThemeCompartment.of(themeExt(getTheme())),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged && !loadFlag.active) onChange(update.state.doc.toString());
+        }),
+        EditorView.theme({
+          '&': { height: '100%', fontSize: '13px' },
+          '.cm-scroller': { overflow: 'auto' },
+          '.cm-content': { fontFamily: 'monospace' },
+        }),
+      ],
+    }),
+    parent,
+  });
+  _programmaticLoad.set(view, loadFlag);
+  onThemeChange((theme) => {
+    view.dispatch({ effects: companionThemeCompartment.reconfigure(themeExt(theme)) });
+  });
+  return view;
+}
+
+/** Replace the full document in a companion editor view (programmatic load
+ *  when switching between companion tabs or after version navigation).
+ *  Sets a flag to suppress the onChange listener so we don't trigger a
+ *  spurious recompile, and marks the transaction non-historical so that
+ *  Ctrl+Z inside a companion file doesn't walk back through tab-switch loads. */
+export function setCompanionEditorContent(view: EditorView, content: string): void {
+  const flag = _programmaticLoad.get(view);
+  if (flag) flag.active = true;
+  try {
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: content },
+      annotations: [Transaction.addToHistory.of(false)],
+    });
+  } finally {
+    if (flag) flag.active = false;
+  }
 }
 
 function clampOffset(offset: number, docLength: number): number {
@@ -170,7 +234,7 @@ export function initEditor(
           if (idleTimer !== null) clearTimeout(idleTimer);
           idleTimer = window.setTimeout(() => {
             hooks.onIdle?.(getValue());
-          }, ERROR_IDLE_MS);
+          }, getConfig().ui.codeEditorErrorIdleMs);
         }
       }),
       EditorView.domEventHandlers({
@@ -233,16 +297,8 @@ export function setValue(code: string): void {
 }
 
 function applyFormat(code: string, lang: EditorLanguage): string {
+  if (lang === 'scad') return code;
   try {
-    if (lang === 'scad') {
-      return jsBeautify(code, {
-        indent_size: 2,
-        brace_style: 'collapse',
-        preserve_newlines: true,
-        max_preserve_newlines: 2,
-        end_with_newline: true,
-      });
-    }
     return jsBeautify(code, {
       indent_size: 2,
       indent_with_tabs: false,
@@ -260,6 +316,11 @@ function applyFormat(code: string, lang: EditorLanguage): string {
   } catch {
     return code;
   }
+}
+
+export function openFindReplace(): void {
+  if (!editorView) return;
+  openSearchPanel(editorView);
 }
 
 export function formatCode(): void {
@@ -289,7 +350,7 @@ export function getAutoFormat(): boolean {
 
 export function setAutoFormat(enabled: boolean): void {
   autoFormatEnabled = enabled;
-  localStorage.setItem('editor-auto-format', enabled ? 'true' : 'false');
+  writePerTabPref('editor-auto-format', enabled ? 'true' : 'false');
 }
 
 export function setEditorDiagnostics(diagnostics: SourceDiagnostic[]): void {

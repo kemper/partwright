@@ -117,8 +117,8 @@ function createImageTile(item: AttachedImage, allImages: AttachedImage[]): HTMLE
   thumbContainer.title = 'Click to enlarge';
 
   const img = document.createElement('img');
-  img.src = item.src;
   img.className = 'w-full h-full object-contain';
+  applyImageSrc(img, item.src);
   thumbContainer.appendChild(img);
   thumbContainer.addEventListener('click', () => showLightbox(item.src, item.label || ''));
   tile.appendChild(thumbContainer);
@@ -346,8 +346,8 @@ function showLightbox(src: string, label: string): void {
   container.className = 'relative max-w-[90vw] max-h-[90vh] flex flex-col items-center';
 
   const img = document.createElement('img');
-  img.src = src;
   img.className = 'max-w-full max-h-[85vh] object-contain rounded-lg shadow-2xl';
+  applyImageSrc(img, src);
   container.appendChild(img);
 
   if (label) {
@@ -373,6 +373,36 @@ function showLightbox(src: string, label: string): void {
     }
   };
   document.addEventListener('keydown', onKey);
+}
+
+/** True for an inline `data:` image (the form the attach flow always stores —
+ *  both file uploads and pasted URLs are fetched and inlined to `data:`). */
+function isInlineImageSrc(src: string): boolean {
+  return src.startsWith('data:');
+}
+
+/** Point an <img> at a stored image source — but only auto-load inline `data:`
+ *  URLs. A remote `http(s)` `src` only reaches here via an imported session
+ *  payload; auto-loading it would fire an off-origin network request (an
+ *  IP/tracking leak) just from viewing the session. Instead we show a
+ *  click-to-load placeholder so the network request is the user's choice. */
+function applyImageSrc(img: HTMLImageElement, src: string): void {
+  if (isInlineImageSrc(src)) {
+    img.src = src;
+    return;
+  }
+  const load = (e?: Event) => {
+    e?.stopPropagation();
+    img.src = src;
+    img.removeEventListener('click', load);
+    img.removeAttribute('title');
+    img.classList.remove('cursor-pointer');
+  };
+  // Defer the network request behind an explicit click on the image.
+  img.alt = 'Remote image — click to load';
+  img.title = 'Remote image — click to load';
+  img.classList.add('cursor-pointer');
+  img.addEventListener('click', load);
 }
 
 function readFileAsDataURL(file: File): Promise<string> {

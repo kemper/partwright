@@ -4,6 +4,7 @@ import type { MeshData } from '../geometry/types';
 import { buildStrokesGroup, disposeStrokesGroup } from '../annotations/annotationOverlay';
 import { presetIndex } from '../storage/db';
 import { CREASE_ANGLE_DEG, resolveEdgeMode, type EdgeMode } from './edgeMode';
+import { getConfig } from '../config/appConfig';
 export { EDGE_MODES, type EdgeMode } from './edgeMode';
 
 /** Composite-render angle sets accepted by `partwright.renderViews`.
@@ -21,10 +22,8 @@ export const STANDARD_VIEWS = {
   front: { label: 'Front', elevation: 0,  azimuth: 0,   ortho: true  },
   right: { label: 'Right', elevation: 0,  azimuth: 90,  ortho: true  },
   top:   { label: 'Top',   elevation: 90, azimuth: 0,   ortho: true  },
-  iso:   { label: 'Iso',   elevation: 35, azimuth: 45,  ortho: false },
+  iso:   { label: 'Iso',   elevation: 35, azimuth: 135, ortho: false },
 } as const;
-export type StandardViewAngle = typeof STANDARD_VIEWS[keyof typeof STANDARD_VIEWS];
-
 /** Solid-shaded grey applied to triangles that have no color region.
  *  Sits between the white render background and the brightest painted
  *  RGB so silhouettes stay visible without overpowering painted
@@ -41,10 +40,10 @@ interface ViewConfig {
 
 // 4 isometric angles from alternating cube corners — every face visible in 3+ views
 const VIEWS: ViewConfig[] = [
-  { name: 'Upper Front-Right', position: (d) => [d, -d, d],     up: [0, 0, 1] },
-  { name: 'Upper Back-Left',   position: (d) => [-d, d, d],     up: [0, 0, 1] },
-  { name: 'Under Front-Left',  position: (d) => [-d, -d, -d],   up: [0, 0, 1] },
-  { name: 'Under Back-Right',  position: (d) => [d, d, -d],     up: [0, 0, 1] },
+  { name: 'Upper Front-Right', position: (d) => [d, d, d],     up: [0, 0, 1] },
+  { name: 'Upper Back-Left',   position: (d) => [-d, -d, d],   up: [0, 0, 1] },
+  { name: 'Under Front-Left',  position: (d) => [-d, d, -d],   up: [0, 0, 1] },
+  { name: 'Under Back-Right',  position: (d) => [d, -d, -d],   up: [0, 0, 1] },
 ];
 
 function meshDataToGeometry(meshData: MeshData): THREE.BufferGeometry {
@@ -115,7 +114,6 @@ let offRendererDisposeTimer: ReturnType<typeof setTimeout> | null = null;
 // at ~16 live WebGL contexts. We dispose the offscreen renderer after a short
 // idle window so GPU memory is reclaimed between user actions; the lazy branch
 // in getOffscreenRenderer re-creates it on the next render.
-const OFFSCREEN_IDLE_DISPOSE_MS = 10_000;
 
 function disposeOffscreenRenderer(): void {
   if (!offRenderer) return;
@@ -131,7 +129,7 @@ function scheduleOffscreenDispose(): void {
   offRendererDisposeTimer = setTimeout(() => {
     offRendererDisposeTimer = null;
     disposeOffscreenRenderer();
-  }, OFFSCREEN_IDLE_DISPOSE_MS);
+  }, getConfig().renderer.offscreenIdleDisposeMs);
 }
 
 function getOffscreenRenderer(size: number): THREE.WebGLRenderer {
@@ -322,7 +320,7 @@ function createElevationScene(geometry: THREE.BufferGeometry, bgColor: number, e
 /** Render a single view from any camera angle. Returns a data URL (PNG).
  *  For orthographic views, pass ortho: true.
  *  elevation/azimuth are in degrees: elevation 0 = horizon, 90 = top-down.
- *  azimuth 0 = front (-Y), 90 = right (+X), 180 = back (+Y), 270 = left (-X). */
+ *  azimuth 0 = front (+Y), 90 = right (+X), 180 = back (-Y), 270 = left (-X). */
 /** Build the same THREE.Camera that `renderSingleView` would render
  *  through for these options. Exported so `probePixel` (in
  *  geometry/rayCast.ts) can replay the camera exactly and unproject
@@ -358,22 +356,30 @@ export function buildViewCamera(meshData: MeshData, options: {
 
   // Spherical to cartesian (Z-up)
   const cx = dist * Math.cos(elevation) * Math.sin(azimuth);
-  const cy = dist * Math.cos(elevation) * (-Math.cos(azimuth));
+  const cy = dist * Math.cos(elevation) * Math.cos(azimuth);
   const cz = dist * Math.sin(elevation);
+
+  // When looking straight down or up (elevation ≈ ±90°), the Z-up vector is
+  // parallel to the look direction — a degenerate case Three.js resolves with
+  // an arbitrary fallback that puts +Y right and +X downward on screen.
+  // Switch to Y-up for polar views so +X is screen-right and +Y is screen-up,
+  // matching the standard slicer/CAD build-plate orientation.
+  const isPolar = Math.abs(Math.sin(elevation)) > 0.999;
+  const [upX, upY, upZ] = isPolar ? [0, 1, 0] : [0, 0, 1];
 
   let camera: THREE.Camera;
   if (options.ortho) {
     const halfExtent = maxDim * 0.7;
     const orthoCamera = new THREE.OrthographicCamera(-halfExtent, halfExtent, halfExtent, -halfExtent, 0.1, 1000);
     orthoCamera.position.set(center.x + cx, center.y + cy, center.z + cz);
-    orthoCamera.up.set(0, 0, 1);
+    orthoCamera.up.set(upX, upY, upZ);
     orthoCamera.lookAt(center);
     orthoCamera.updateProjectionMatrix();
     camera = orthoCamera;
   } else {
     const perspCamera = new THREE.PerspectiveCamera(40, 1, 0.1, 1000);
     perspCamera.position.set(center.x + cx, center.y + cy, center.z + cz);
-    perspCamera.up.set(0, 0, 1);
+    perspCamera.up.set(upX, upY, upZ);
     perspCamera.lookAt(center);
     perspCamera.updateProjectionMatrix();
     camera = perspCamera;

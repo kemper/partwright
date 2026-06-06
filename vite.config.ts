@@ -4,6 +4,7 @@ import { execSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { buildSitemapXml } from './src/seo/sitemap';
+import { prerenderContentPages } from './src/content/build/prerenderPlugin';
 
 // Set charset=utf-8 on .md and .txt files served from public/ during dev.
 // Prevents em-dashes and other UTF-8 chars from rendering as mojibake.
@@ -87,32 +88,6 @@ function parseGitHubRepo(remoteUrl: string): string {
   return m ? m[1] : '';
 }
 
-// Refresh the models.dev catalog snapshot at the start of every production
-// build so the picker menus + cost meter ship with the latest data. Runs in
-// `build` only (not dev) so iterating on the dev server doesn't spam
-// models.dev on every restart — devs can refresh manually with
-// `npm run refresh-models` when they want the freshest data locally.
-//
-// The script is itself defensive: on any network failure it logs a warning
-// and exits 0, leaving the committed snapshot intact, so this hook can
-// never fail a build (CI / Cloudflare Pages stay green when models.dev is
-// down). Synchronous spawn keeps the build's task ordering simple.
-function catalogSnapshot(): Plugin {
-  return {
-    name: 'partwright-catalog-snapshot',
-    apply: 'build',
-    buildStart() {
-      try {
-        execSync('node scripts/refreshModelsSnapshot.mjs', { stdio: 'inherit' });
-      } catch (err) {
-        // The script soft-fails internally — anything reaching here is a
-        // crash (missing node, permissions). Don't break the build over it.
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`[partwright-catalog-snapshot] refresh script crashed: ${msg}`);
-      }
-    },
-  };
-}
 
 function resolveBuildInfo() {
   const git = (cmd: string): string => {
@@ -141,7 +116,7 @@ export default defineConfig({
   define: {
     __BUILD_INFO__: JSON.stringify(resolveBuildInfo()),
   },
-  plugins: [tailwindcss(), absoluteUrls(), markdownCharset(), catalogSnapshot(), dynamicSitemap()],
+  plugins: [tailwindcss(), prerenderContentPages(), absoluteUrls(), markdownCharset(), dynamicSitemap()],
   esbuild: {
     // .tsx files compile JSX via preact/jsx-runtime — keeps the bundle on
     // Preact without pulling in React. Vanilla .ts files in the rest of
@@ -165,7 +140,9 @@ export default defineConfig({
       // external call surfaces here in dev instead of slipping through to
       // production. connect-src allows `https:` + http://localhost / 127.0.0.1
       // so a user-configured Custom (OpenAI-compatible) endpoint — e.g. a
-      // self-hosted llama.cpp server — works (matches _headers). The dev-only
+      // self-hosted llama.cpp server — works (matches _headers). That same
+      // `https:` allowance also backs "Import from URL…" (fetching a remote
+      // file over https). The dev-only
       // delta is the localhost WebSocket Vite uses for HMR/live-reload, which
       // production has no equivalent of. Keep the host allowlist in sync with
       // public/_headers.
@@ -181,16 +158,35 @@ export default defineConfig({
   build: {
     chunkSizeWarningLimit: 520,
     rollupOptions: {
+      // Multi-page: the editor SPA (index.html) plus the four pre-rendered,
+      // app-free content pages. Each content page ships only the shared
+      // Tailwind CSS — no app JS — so it paints instantly for users + crawlers.
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        catalog: resolve(__dirname, 'catalog.html'),
+        help: resolve(__dirname, 'help.html'),
+        legal: resolve(__dirname, 'legal.html'),
+        'whats-new': resolve(__dirname, 'whats-new.html'),
+      },
       output: {
-        manualChunks: {
-          'three': ['three'],
-          'codemirror': [
-            '@codemirror/state',
-            '@codemirror/view',
-            '@codemirror/lang-javascript',
-            '@codemirror/theme-one-dark',
-          ],
-          'manifold': ['manifold-3d'],
+        // Function form (not the object map) so we can isolate Vite's
+        // `__vite_preload` helper into its own tiny chunk. With the object
+        // form, Rollup folded that helper into the `manifold` chunk, which
+        // meant the entry (src/entry.ts) imported manifold (~44 KB) just to
+        // get the helper — pulling engine glue onto the landing route, which
+        // must stay app-free. Keeping it standalone lets the landing entry
+        // load only itself + storage/db.
+        manualChunks(id) {
+          if (id.includes('vite/preload-helper')) return 'vite-preload';
+          if (id.includes('node_modules/three/')) return 'three';
+          if (
+            id.includes('node_modules/@codemirror/state') ||
+            id.includes('node_modules/@codemirror/view') ||
+            id.includes('node_modules/@codemirror/lang-javascript') ||
+            id.includes('node_modules/@codemirror/theme-one-dark')
+          ) return 'codemirror';
+          if (id.includes('node_modules/manifold-3d')) return 'manifold';
+          return undefined;
         },
       },
     },

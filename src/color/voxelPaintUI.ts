@@ -6,6 +6,7 @@
 
 import * as voxelPaint from './voxelPaint';
 import type { VoxelTool, BrushShape } from './voxelPaint';
+import { viewportToolsMount } from '../ui/popoverMenu';
 
 const SWATCHES: string[] = [
   '#ff3b30', '#ff8c42', '#ffd60a', '#34c759', '#5ac8fa',
@@ -79,10 +80,12 @@ export function initVoxelPaintUI(controlsContainer: HTMLElement, callbacks: Voxe
   paintBtn.title = 'Add, remove, brush, and recolor voxels — then bake to code.';
   paintBtn.addEventListener('click', toggle);
 
-  // Slot next to the existing paint button so the two read as related.
-  const sibling = controlsContainer.querySelector('#paint-toggle');
-  if (sibling) controlsContainer.insertBefore(paintBtn, sibling);
-  else controlsContainer.appendChild(paintBtn);
+  // Slot next to the existing paint button so the two read as related. Anchor
+  // within whichever container holds the paint button (the Tools popover).
+  const toolsMount = viewportToolsMount(controlsContainer);
+  const sibling = toolsMount.querySelector('#paint-toggle');
+  if (sibling) toolsMount.insertBefore(paintBtn, sibling);
+  else toolsMount.appendChild(paintBtn);
 
   panel = createPanel();
   const positionedAncestor = findPositionedAncestor(controlsContainer);

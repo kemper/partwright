@@ -102,6 +102,64 @@ test.describe('smooth paintbrush', () => {
     expect(out.after).toBeGreaterThan(out.before); // the stroke subdivided the mesh
   });
 
+  test('wrap tolerance slider is present, defaults to 90°, and round-trips', async ({ page }) => {
+    await openEditor(page);
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
+
+    const wrapSlider = page.locator('#paint-picker-panel input[type="range"][title*="How sharp an edge"]');
+    await expect(wrapSlider).toBeVisible();
+    await expect(wrapSlider).toHaveAttribute('min', '0');
+    await expect(wrapSlider).toHaveAttribute('max', '180');
+    await expect(wrapSlider).toHaveValue('90'); // default
+
+    const cfg = await page.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      const clampHi = pw.setBrushWrapAngle(999);
+      const clampLo = pw.setBrushWrapAngle(-5);
+      const bad = pw.setBrushWrapAngle('lots');
+      const ok = pw.setBrushWrapAngle(120);
+      return { clampHi, clampLo, bad, ok, get: pw.getBrushWrapAngle() };
+    });
+    expect(cfg.clampHi.wrapAngleDeg).toBe(180);
+    expect(cfg.clampLo.wrapAngleDeg).toBe(0);
+    expect(cfg.bad.error).toBeTruthy();
+    expect(cfg.ok.wrapAngleDeg).toBe(120);
+    expect(cfg.get.wrapAngleDeg).toBe(120);
+  });
+
+  test('wrap tolerance stops a stroke at a 90° edge (no wrap), 180° still wraps', async ({ page }) => {
+    await openEditor(page);
+    const out = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      // A 20mm cube: top face at z=10, side walls fold 90° at the top edge. A wide
+      // brush on the top centre reaches the walls, so a slab stroke "wraps a bit"
+      // onto them — exactly the reported behaviour. The wrap gate should stop that.
+      await pw.run(`const { Manifold } = api; return Manifold.cube([20, 20, 20], true);`);
+      const paintMinZ = (wrapAngleDeg: number, surface: string) => {
+        pw.clearColors();
+        pw.paintStroke({ points: [[0, 0, 10]], radius: 12, surface, wrapAngleDeg, color: [1, 0, 0] });
+        return pw.listRegions()[0].bbox.min[2];
+      };
+      return {
+        slabWrap90: paintMinZ(90, 'slab'),
+        slabWrap180: paintMinZ(180, 'slab'),
+        geoWrap90: paintMinZ(90, 'geodesic'),
+        geoWrap180: paintMinZ(180, 'geodesic'),
+      };
+    });
+    // At 90° the stroke stays on the top face (the 90° top edge blocks the
+    // wrap), so the painted region's lowest point sits at/near the top (z≈10).
+    expect(out.slabWrap90).toBeGreaterThan(9);
+    expect(out.geoWrap90).toBeGreaterThan(9);
+    // At 180° paint wraps over the edge and runs down the side walls (z well
+    // below the top), proving the gate is what stopped it at 90°.
+    expect(out.slabWrap180).toBeLessThan(8);
+    expect(out.geoWrap180).toBeLessThan(8);
+  });
+
   test('setBrushSmooth / setBrushSmoothDivisor validate, clamp, and round-trip', async ({ page }) => {
     await openEditor(page);
     const result = await page.evaluate(() => {
@@ -169,7 +227,7 @@ test.describe('smooth paintbrush', () => {
     expect(out.deep).toBeGreaterThan(out.thin); // a deep slab reaches the back face; the shallow one doesn't
   });
 
-  test('geodesic surface mode (the default) never bleeds through a wall', async ({ page }) => {
+  test('geodesic surface mode never bleeds through a wall', async ({ page }) => {
     await openEditor(page);
     const out = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -184,7 +242,7 @@ test.describe('smooth paintbrush', () => {
       const slabDeep = pw.paintStroke({ points: [[0, 0, 1]], radius: 4, maxEdge: 0.5, surface: 'slab', depth: 5, color: [0, 1, 0] }).triangles;
       return { geo, slabDeep, surface: pw.getBrushSurface().surface };
     });
-    expect(out.surface).toBe('geodesic');        // new painting defaults to geodesic
+    expect(out.surface).toBe('slab');            // new painting now defaults to slab
     expect(out.geo).toBeGreaterThan(0);          // the top surface was painted
     expect(out.slabDeep).toBeGreaterThan(out.geo); // geodesic stayed on the top; the deep slab reached the back
   });

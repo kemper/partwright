@@ -3,23 +3,44 @@
 
 import * as THREE from 'three';
 import type { MeshData } from '../geometry/types';
-import { pickFace } from './facePicker';
-import { buildAdjacency, findCoplanarRegion, getTriangleNormal, type AdjacencyGraph } from './adjacency';
-import { addRegion, getRegions } from './regions';
+import { pickFace, type FacePickResult } from './facePicker';
+import { projectBrushFootprint, invalidateProjection, disposeProjection } from './projectionPaint';
+import { disposeBaseRemap } from './baseRemap';
+import { buildAdjacency, findColorRegion, findCoplanarRegion, gateRegionByBend, getTriangleNormal, type AdjacencyGraph } from './adjacency';
+import { addRegion, getRegions, buildTriColors } from './regions';
 import { getScene, getMeshGroup, getRenderer, addPointerSuppressor, isPointerOverModel, requestRender } from '../renderer/viewport';
 import { activate as activateSlabDrag, deactivate as deactivateSlabDrag, onMeshChanged as onSlabDragMeshChanged } from './slabDrag';
 import { activate as activateBoxDrag, deactivate as deactivateBoxDrag, onMeshChanged as onBoxDragMeshChanged } from './boxDrag';
 import { smoothEdgeForResolution } from './slabPaint';
-import { tangentBasis, type BrushShape } from './subdivide';
+import { setPaintAccessors } from './paintAccessors';
+import { getSlotById, hexToRgb } from './palette';
+import { tangentBasis, wrapAngleGate, type BrushShape } from './subdivide';
 export { setSlabAxis, getSlabAxis } from './slabDrag';
 
-export type PaintTool = 'bucket' | 'brush' | 'slab' | 'box';
+export type PaintTool = 'bucket' | 'brush' | 'slab' | 'box' | 'replace';
 export type { BrushShape };
 
 let active = false;
 let currentColor: [number, number, number] = [1, 0.2, 0.2]; // default red
+// Active palette slot, or null for an ad-hoc (unslotted) colour. Painted
+// regions are stamped with this so they map onto a filament/AMS slot and follow
+// slot recolours. `setSlot` keeps `currentColor` in sync with the slot's hex;
+// `setColor` (the custom picker) clears it back to unslotted.
+let currentSlotId: string | null = null;
 let currentTool: PaintTool = 'brush';
+/** Color-distance tolerance for the bucket tool in color mode. Range [0, 1]
+ *  where 0 = exact color match only, 1 = fill entire connected component.
+ *  Default 0.05 (5 % of max RGB distance). */
+let bucketColorTolerance = 0.05;
+/** Geometry tolerance for the bucket tool in geometry mode. Cosine of the
+ *  maximum allowed bend angle between adjacent faces. Range [-1, 1] where
+ *  1 = strict coplanar and -1 = whole connected component. Default 0.9995 ≈ 1.8°. */
 let bucketTolerance = 0.9995;
+/** Which flood-fill strategy the bucket tool uses. */
+let bucketMode: 'color' | 'geometry' = 'color';
+/** Color selected as the "source" by the Replace tool (null = unset). */
+let replaceSourceColor: [number, number, number] | null = null;
+let replaceSourceChangeListener: (() => void) | null = null;
 /** Brush radius in mesh units. Default 1. 0 = single-triangle (legacy). */
 let brushRadius = 1;
 let brushShape: BrushShape = 'circle';
@@ -35,19 +56,33 @@ let brushSmooth = true;
 let brushSmoothDivisor = 64;
 export const SMOOTH_DIVISOR_MIN = 2;
 export const SMOOTH_DIVISOR_MAX = 1024;
-/** Brush surface mode. `geodesic` (default for new painting) flood-fills the
- *  footprint along the connected surface so paint never bleeds through a wall and
- *  needs no depth tuning; `slab` keeps a thin shell within `depth` of the surface
- *  (the depth knob below). Old sessions resolve as `slab` for back-compat. */
-let brushSurface: 'geodesic' | 'slab' = 'geodesic';
+/** Brush surface mode. `slab` (the default for new painting) keeps a thin shell
+ *  within `depth` of the picked surface (the depth knob below) so paint can't
+ *  bleed through a wall thicker than `depth`; `geodesic` instead flood-fills the
+ *  footprint along the connected surface — pick it for curved/organic shapes or
+ *  gap-separated geometry, where a thin slab would clip the dab or a generous one
+ *  would reach a nearby surface. Old sessions resolve as `slab` for back-compat. */
+let brushSurface: 'geodesic' | 'slab' = 'slab';
 /** Paint depth in mesh units: how far through the surface a slab-mode stroke may
  *  reach. 0 = auto (half the brush radius), resolved at commit time. */
 let brushPaintDepth = 0;
 
-/** Airbrush spray: when on, the brush sprays a soft geodesic speckle instead of
- *  a solid fill. `strength` is the core density (light by default), `softness`
- *  the feather fraction. Each committed stroke gets the next seed so overlapping
- *  sprays vary; the seed is persisted per stroke so the speckle reloads exactly. */
+/** Wrap tolerance in degrees (0–180): paint flows across an edge only when the
+ *  two faces bend by ≤ this angle, so a stroke follows gentle curves / bumpy
+ *  near-coplanar facets but stops at a sharp corner. 90° (default) stops at
+ *  right-angle folds — the outside of a box, or the inner walls of a hollow one;
+ *  180° lets paint wrap across any edge (the pre-slider behaviour). Applies to
+ *  both surface modes. */
+let brushWrapAngle = 90;
+export const WRAP_ANGLE_MIN = 0;
+export const WRAP_ANGLE_MAX = 180;
+
+/** Airbrush spray: when on, the brush sprays a soft speckle instead of a solid
+ *  fill. It honours the active surface mode (slab by default, geodesic if
+ *  picked), so a slab spray can't bleed through a wall thicker than `depth`.
+ *  `strength` is the core density (light by default), `softness` the feather
+ *  fraction. Each committed stroke gets the next seed so overlapping sprays vary;
+ *  the seed is persisted per stroke so the speckle reloads exactly. */
 let brushSpray = false;
 let brushSprayStrength = 0.4;
 let brushSpraySoftness = 0.5;
@@ -62,9 +97,23 @@ let strokeSamples: [number, number, number][] = [];
 let adjacency: AdjacencyGraph | null = null;
 let currentMesh: MeshData | null = null;
 
+// Maps a current-mesh triangle id back to its base-mesh id. Set by main.ts when
+// the working mesh has been refined under a stroke; null (identity) on the
+// pristine mesh. Projection paint stores base ids so a later refine remaps them
+// correctly (base→child) instead of smearing refined-space ids across the mesh.
+let triangleToBase: ((id: number) => number) | null = null;
+export function setTriangleToBaseMapper(fn: ((id: number) => number) | null): void {
+  triangleToBase = fn;
+}
+
 // Hover highlight state
 let highlightMesh: THREE.Mesh | null = null;
 let hoveredTriangles: Set<number> | null = null;
+// Triangle the bucket cursor last hovered, so the flood-fill preview can be
+// recomputed at a new tolerance/mode without waiting for a mouse move (driven by
+// `refreshBucketPreview`). null whenever the cursor isn't over the model with the
+// bucket tool active.
+let lastBucketSeed: number | null = null;
 
 // Brush ring indicator — outline showing the brush footprint in world space
 let brushRingMesh: THREE.LineLoop | null = null;
@@ -107,10 +156,26 @@ export function isActive(): boolean { return active; }
 
 export function setColor(color: [number, number, number]): void {
   currentColor = color;
+  currentSlotId = null; // ad-hoc colour — no longer tied to a palette slot
 }
 
 export function getColor(): [number, number, number] {
   return currentColor;
+}
+
+/** Select a palette slot as the active paint colour. Looks up the slot's hex so
+ *  the brush/bucket/slab/box tools paint with it, and stamps painted regions
+ *  with `slotId` for filament/AMS mapping and slot-recolour. Unknown ids are
+ *  ignored. */
+export function setSlot(slotId: string): void {
+  const slot = getSlotById(slotId);
+  if (!slot) return;
+  currentColor = hexToRgb(slot.hex);
+  currentSlotId = slot.id;
+}
+
+export function getSlotId(): string | null {
+  return currentSlotId;
 }
 
 export function setTool(tool: PaintTool): void {
@@ -134,12 +199,53 @@ export function getTool(): PaintTool {
   return currentTool;
 }
 
+/** Geometry-mode bucket tolerance: cosine of max bend angle, range [-1, 1]. */
 export function setBucketTolerance(tol: number): void {
   bucketTolerance = Math.max(-1, Math.min(1, tol));
 }
-
 export function getBucketTolerance(): number {
   return bucketTolerance;
+}
+/** Color-mode bucket tolerance: normalised RGB distance, range [0, 1]. */
+export function setBucketColorTolerance(tol: number): void {
+  bucketColorTolerance = Math.max(0, Math.min(1, tol));
+}
+export function getBucketColorTolerance(): number {
+  return bucketColorTolerance;
+}
+export function setBucketMode(mode: 'color' | 'geometry'): void {
+  bucketMode = mode;
+}
+export function getBucketMode(): 'color' | 'geometry' {
+  return bucketMode;
+}
+export function setReplaceSourceColor(color: [number, number, number] | null): void {
+  replaceSourceColor = color;
+  if (replaceSourceChangeListener) replaceSourceChangeListener();
+  if (color && adjacency && currentMesh) {
+    const triColors = buildTriColors(currentMesh.numTri);
+    if (triColors) {
+      const matching = new Set<number>();
+      const tol = 0.01;
+      for (let t = 0; t < currentMesh.numTri; t++) {
+        const dr = triColors[t * 3] / 255 - color[0];
+        const dg = triColors[t * 3 + 1] / 255 - color[1];
+        const db = triColors[t * 3 + 2] / 255 - color[2];
+        if (dr * dr + dg * dg + db * db <= tol * tol * 3) matching.add(t);
+      }
+      showHighlight(matching);
+    } else {
+      clearHighlight();
+    }
+  } else if (!color) {
+    clearHighlight();
+  }
+}
+export function getReplaceSourceColor(): [number, number, number] | null {
+  return replaceSourceColor;
+}
+export function onReplaceSourceColorChange(fn: () => void): void {
+  replaceSourceChangeListener = fn;
 }
 
 export function setBrushRadius(r: number): void {
@@ -191,6 +297,15 @@ export function getBrushPaintDepth(): number {
   return brushPaintDepth;
 }
 
+/** Set the wrap tolerance (degrees, 0–180): max edge bend paint may flow across. */
+export function setBrushWrapAngle(deg: number): void {
+  brushWrapAngle = Math.max(WRAP_ANGLE_MIN, Math.min(WRAP_ANGLE_MAX, Math.round(deg)));
+}
+
+export function getBrushWrapAngle(): number {
+  return brushWrapAngle;
+}
+
 /** True when the active brush settings will subdivide the mesh on commit. */
 export function brushWillSubdivide(): boolean {
   return (brushSmooth || brushSpray) && brushRadius > 0;
@@ -221,7 +336,7 @@ export function getShapeSmoothResolution(): number { return shapeSmoothResolutio
 /** Smoothing fields to stamp onto a slab/box descriptor at paint time, resolved
  *  against `mesh` at the current shape-smoothing settings. With smoothing off
  *  the fields refine nothing (preserving the original blocky edge). */
-export function shapeSmoothDescriptorFields(mesh: MeshData): { smooth: boolean; maxEdge: number } {
+function shapeSmoothDescriptorFields(mesh: MeshData): { smooth: boolean; maxEdge: number } {
   if (!shapeSmooth) return { smooth: false, maxEdge: 0 };
   return { smooth: true, maxEdge: smoothEdgeForResolution(mesh, shapeSmoothResolution) };
 }
@@ -230,22 +345,22 @@ export function setOnRegionPainted(fn: () => void): void {
   onRegionPainted = fn;
 }
 
-export function setOnToolChange(fn: (tool: PaintTool) => void): void {
-  onToolChange = fn;
-}
 
 export function getCurrentMesh(): MeshData | null {
   return currentMesh;
 }
 
-export function getAdjacency(): AdjacencyGraph | null {
-  return adjacency;
-}
+// Publish the state accessors the drag tools (boxDrag/slabDrag) need, so they
+// don't import this module back (which would be a circular dependency).
+setPaintAccessors({ getColor, getSlotId, getCurrentMesh, shapeSmoothDescriptorFields });
+
 
 /** Rebuild adjacency graph for a new mesh. Call this whenever updateMesh fires. */
 export function updatePaintMesh(mesh: MeshData): void {
   currentMesh = mesh;
   adjacency = null; // invalidate — mesh changed
+  lastBucketSeed = null; // the remembered seed indexes the old tessellation
+  invalidateProjection(); // the id-buffer geometry is rebuilt against the new mesh
   if (active) {
     adjacency = buildAdjacency(mesh);
     onSlabDragMeshChanged();
@@ -325,6 +440,8 @@ export function deactivate(): void {
   canvas.style.cursor = '';
   clearHighlight();
   clearBrushRing();
+  disposeProjection();
+  disposeBaseRemap();
   brushPainting = false;
   brushSession = null;
   mouseDownOffModel = false;
@@ -355,6 +472,11 @@ function cancelPendingMove(): void {
 function processMouseMove(event: MouseEvent): void {
   if (!adjacency || !currentMesh) return;
 
+  // Default to "no bucket seed"; only the bucket branch below re-establishes it.
+  // Every other path (hover-off, other tools) leaves it null so a later tolerance
+  // tweak doesn't redraw a stale flood-fill region.
+  lastBucketSeed = null;
+
   // Slab and box tools own their own gizmo / drag interactions; the
   // bucket-vs-brush hover preview gets out of the way.
   if (currentTool === 'slab' || currentTool === 'box') {
@@ -371,6 +493,18 @@ function processMouseMove(event: MouseEvent): void {
 
   // Brush drag: collect triangles into the active brush session.
   if (currentTool === 'brush' && brushPainting && brushSession) {
+    // Safety net: if we think we're painting but no button is held, a pointerup
+    // was missed (e.g. it landed on an overlay that captured the pointer). Treat
+    // the button-less move as the release — commit and stop — instead of
+    // painting a runaway stroke that only a page refresh would clear.
+    if (event.buttons === 0) {
+      if (hasActiveStroke()) commitBrushStroke();
+      brushPainting = false;
+      brushSession = null;
+      strokeSamples = [];
+      clearHighlight();
+      return;
+    }
     const result = pickFace(event);
     if (result) {
       const added = recordStrokeSample(result.point);
@@ -381,7 +515,7 @@ function processMouseMove(event: MouseEvent): void {
         // not a full rebuild of the whole trail each mousemove.
         if (added) appendBrushFillStamp(result.point, result.normal);
       } else {
-        addBrushFootprint(result.triangleIndex, result.point, brushSession);
+        collectBrushFootprint(event, result, brushSession);
         showHighlight(brushSession);
       }
       // Ring must come after showHighlight (which calls clearHighlight internally).
@@ -414,10 +548,19 @@ function processMouseMove(event: MouseEvent): void {
   let region: Set<number>;
   if (currentTool === 'brush') {
     region = new Set<number>();
-    addBrushFootprint(result.triangleIndex, result.point, region);
-  } else {
+    collectBrushFootprint(event, result, region);
+  } else if (currentTool === 'replace') {
     clearBrushRing();
-    region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
+    region = new Set<number>([result.triangleIndex]);
+  } else {
+    // bucket
+    clearBrushRing();
+    lastBucketSeed = result.triangleIndex;
+    if (bucketMode === 'geometry') {
+      region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
+    } else {
+      region = findColorRegion(result.triangleIndex, adjacency, buildTriColors(currentMesh.numTri), bucketColorTolerance);
+    }
   }
 
   if (hoveredTriangles && setsEqual(hoveredTriangles, region)) {
@@ -438,6 +581,15 @@ function onPointerDown(event: PointerEvent): void {
   if (!adjacency || !currentMesh) return;
   if (event.button !== 0) return;
   if (currentTool === 'slab' || currentTool === 'box') return;
+
+  // This listener is registered on the container in the CAPTURE phase, so it
+  // also sees pointerdowns on overlay panels (paint picker, AI drawer, modals)
+  // that sit in front of the 3D view. Only start a stroke when the press landed
+  // on the canvas itself — otherwise a click on a panel raycasts a hit on the
+  // model *behind* it and paints, and setPointerCapture binds the pointer to the
+  // panel, so the matching pointerup never reaches our canvas handler and
+  // `brushPainting` stays stuck on (every later move then paints with no button).
+  if (event.target !== getRenderer().domElement) return;
 
   // Off-model click → OrbitControls is rotating; remember so pointerup doesn't
   // paint if the user happens to release over the model after a rotation.
@@ -463,7 +615,7 @@ function onPointerDown(event: PointerEvent): void {
       clearHighlight();
       appendBrushFillStamp(result.point, result.normal);
     } else {
-      addBrushFootprint(result.triangleIndex, result.point, brushSession);
+      collectBrushFootprint(event, result, brushSession);
       showHighlight(brushSession);
     }
     event.preventDefault();
@@ -517,50 +669,59 @@ function commitBrushStroke(): void {
         radius: brushRadius,
         shape: brushShape,
         maxEdge: brushTargetEdge(),
-        // A spray is always geodesic; descriptorToStroke also forces this.
-        surface: brushSpray ? 'geodesic' : brushSurface,
+        surface: brushSurface,
         depth: brushPaintDepth,
+        wrapAngleDeg: brushWrapAngle,
         spray: brushSpray ? { strength: brushSprayStrength, softness: brushSpraySoftness, seed: spraySeed++ } : undefined,
       },
       new Set<number>(),
+      true,
+      currentSlotId ?? undefined,
     );
   } else if (brushSession && brushSession.size > 0) {
-    addRegion(name, color, 'paintbrush', { kind: 'triangles', ids: [...brushSession] }, brushSession);
+    // Projection paint collects ids in the *current* (possibly refined) mesh's
+    // index space. Store them as base-mesh ids so a later smooth/slab stroke
+    // that refines the mesh remaps them correctly (base→child) instead of
+    // smearing refined-space ids. On the pristine mesh the map is identity.
+    const ids = triangleToBase
+      ? [...new Set([...brushSession].map(t => triangleToBase!(t)))]
+      : [...brushSession];
+    addRegion(name, color, 'paintbrush', { kind: 'triangles', ids }, brushSession, true, currentSlotId ?? undefined);
     if (onRegionPainted) onRegionPainted();
   }
 }
 
-/** Expand a single picked triangle into the brush's full footprint.
- *  At brushRadius=0 this just adds the picked triangle.
- *  At brushRadius>0 the footprint shape is controlled by brushShape:
- *    circle  — sphere test: distance ≤ radius
- *    square  — cube test:   |dx|, |dy|, |dz| all ≤ radius
- *    diamond — L1 test:     |dx|+|dy|+|dz| ≤ radius */
-function addBrushFootprint(seedTri: number, seedPoint: [number, number, number], target: Set<number>): void {
-  target.add(seedTri);
-  if (brushRadius <= 0 || !adjacency) return;
-
-  const { centroids } = adjacency;
-  const numTri = centroids.length / 3;
-  const r = brushRadius;
-  const r2 = r * r;
-  const sx = seedPoint[0], sy = seedPoint[1], sz = seedPoint[2];
-
-  for (let t = 0; t < numTri; t++) {
-    if (target.has(t)) continue;
-    const dx = centroids[t * 3]     - sx;
-    const dy = centroids[t * 3 + 1] - sy;
-    const dz = centroids[t * 3 + 2] - sz;
-    let inside: boolean;
-    if (brushShape === 'square') {
-      inside = Math.abs(dx) <= r && Math.abs(dy) <= r && Math.abs(dz) <= r;
-    } else if (brushShape === 'diamond') {
-      inside = Math.abs(dx) + Math.abs(dy) + Math.abs(dz) <= r;
-    } else {
-      inside = dx * dx + dy * dy + dz * dz <= r2;
-    }
-    if (inside) target.add(t);
+/** The regular (non-smooth) brush footprint: the triangles *visible* under the
+ *  brush disk on screen — "paint exactly what I see". Falls back to the picked
+ *  triangle when projection isn't available (radius 0, or no mesh/GPU). Occluded
+ *  back faces are excluded by the projection's depth test, so paint never bleeds
+ *  through to the far side of a thin wall. */
+function collectBrushFootprint(event: MouseEvent, result: FacePickResult, target: Set<number>): void {
+  const seed = result.triangleIndex;
+  target.add(seed);
+  if (brushRadius <= 0 || !currentMesh) return;
+  const proj = projectBrushFootprint({
+    event,
+    mesh: currentMesh,
+    radius: brushRadius,
+    shape: brushShape,
+    hitPoint: result.point,
+  });
+  if (!proj) return;
+  // Apply the wrap tolerance: the screen-projection footprint is a flat spatial
+  // set with no surface gate, so on its own it wraps over any edge inside the
+  // brush disk. Restrict it to the part connected to the picked triangle without
+  // crossing an edge sharper than the tolerance — the same dihedral gate the
+  // smooth/geodesic brush applies in `buildGeodesicField`, so non-wrapping
+  // behaves identically with smooth edges on or off. 180° (cos -1) is a no-op.
+  const maxBendCos = wrapAngleGate(brushWrapAngle);
+  if (maxBendCos <= -1 || !adjacency) {
+    for (const t of proj) target.add(t);
+    return;
   }
+  const footprint = new Set<number>(proj);
+  footprint.add(seed);
+  for (const t of gateRegionByBend(footprint, seed, adjacency, maxBendCos)) target.add(t);
 }
 
 // ---------------------------------------------------------------------------
@@ -737,26 +898,58 @@ function onPointerUp(event: PointerEvent): void {
     return;
   }
 
-  // Bucket: paint on click release (matches the previous click behavior)
   const result = pickFace(event);
   if (!result) return;
 
-  const region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
-  const normal = getTriangleNormal(result.triangleIndex, adjacency);
+  // Replace tool: set the source color from the clicked triangle
+  if (currentTool === 'replace') {
+    const triColors = buildTriColors(currentMesh.numTri);
+    const t = result.triangleIndex;
+    const color: [number, number, number] = triColors
+      ? [triColors[t * 3] / 255, triColors[t * 3 + 1] / 255, triColors[t * 3 + 2] / 255]
+      : [0, 0, 0];
+    setReplaceSourceColor(color);
+    return;
+  }
 
-  const existingCount = getRegions().length;
-  addRegion(
-    `Region ${existingCount + 1}`,
-    [...currentColor] as [number, number, number],
-    'face-pick',
-    {
-      kind: 'coplanar',
-      seedPoint: result.point,
-      seedNormal: normal,
-      normalTolerance: bucketTolerance,
-    },
-    region,
-  );
+  // Bucket: paint on click release
+  let region: Set<number>;
+  if (bucketMode === 'geometry') {
+    region = findCoplanarRegion(result.triangleIndex, adjacency, bucketTolerance);
+    const normal = getTriangleNormal(result.triangleIndex, adjacency);
+    const existingCount = getRegions().length;
+    addRegion(
+      `Region ${existingCount + 1}`,
+      [...currentColor] as [number, number, number],
+      'face-pick',
+      { kind: 'coplanar', seedPoint: result.point, seedNormal: normal, normalTolerance: bucketTolerance },
+      region,
+      true,
+      currentSlotId ?? undefined,
+    );
+  } else {
+    const seedTri = result.triangleIndex;
+    const triColors = buildTriColors(currentMesh.numTri);
+    region = findColorRegion(seedTri, adjacency, triColors, bucketColorTolerance);
+    const normal = getTriangleNormal(seedTri, adjacency);
+    // The color we matched (the surface under the cursor *before* this fill
+    // recolors it). Stored on the descriptor so the region re-floods the same
+    // color on every reconcile — a `triangles` snapshot can't survive a
+    // brush-refined mesh, where the fill lives at sub-base-triangle resolution.
+    const seedColor: [number, number, number] = triColors
+      ? [triColors[seedTri * 3] / 255, triColors[seedTri * 3 + 1] / 255, triColors[seedTri * 3 + 2] / 255]
+      : [0, 0, 0];
+    const existingCount = getRegions().length;
+    addRegion(
+      `Region ${existingCount + 1}`,
+      [...currentColor] as [number, number, number],
+      'face-pick',
+      { kind: 'colorFlood', seedPoint: result.point, seedNormal: normal, seedColor, colorTolerance: bucketColorTolerance },
+      region,
+      true,
+      currentSlotId ?? undefined,
+    );
+  }
 
   clearHighlight();
   if (onRegionPainted) onRegionPainted();
@@ -785,6 +978,23 @@ function onPointerCancel(event: PointerEvent): void {
 export function previewTriangles(triangles: Set<number>, color?: [number, number, number]): () => void {
   showHighlight(triangles, color);
   return () => clearHighlight();
+}
+
+/** Recompute and redraw the bucket hover preview for the triangle the cursor is
+ *  currently over, using the *current* tolerance and mode. The paint UI calls
+ *  this from the bucket tolerance slider/input and the color/geometry mode toggle
+ *  so the previewed flood-fill region grows and shrinks live as the setting is
+ *  dialled in, instead of staying frozen until the next mouse move. No-op unless
+ *  the bucket tool is active and the cursor last hovered a triangle. */
+export function refreshBucketPreview(): void {
+  if (!active || currentTool !== 'bucket') return;
+  if (!adjacency || !currentMesh || lastBucketSeed === null) return;
+  if (lastBucketSeed >= currentMesh.numTri) { lastBucketSeed = null; return; }
+  const region = bucketMode === 'geometry'
+    ? findCoplanarRegion(lastBucketSeed, adjacency, bucketTolerance)
+    : findColorRegion(lastBucketSeed, adjacency, buildTriColors(currentMesh.numTri), bucketColorTolerance);
+  hoveredTriangles = region;
+  showHighlight(region);
 }
 
 function showHighlight(triangles: Set<number>, colorOverride?: [number, number, number]): void {

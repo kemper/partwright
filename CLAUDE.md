@@ -8,6 +8,10 @@ npm run build        # Production build to dist/ (runs tsc first — also the ty
 npm run test:unit    # Fast vitest unit tier (pure-logic, no browser) — ~1s
 npm run test:e2e     # Playwright browser suite (auto-starts dev server)
 npm test             # Both tiers: unit, then e2e
+npm run lint:consistency  # ast-grep UI-convention scan (advisory)
+npm run lint:deadcode     # knip: dead deps/imports (gate) + unused exports (advisory)
+npm run lint:deps         # madge: circular dependencies (gate — graph is acyclic)
+npm run model:preview -- <file.js>   # headless model stats + 4-view PNG (Node+WASM, ~2s) — see below
 ```
 
 Open `http://localhost:5173/editor` to go straight to the editor. AI agents drive the tool via the `window.partwright` console API and see geometry by calling the render tools (`renderViews`/`renderView`), so there is no special view to preselect.
@@ -28,15 +32,17 @@ Hosted on **Cloudflare Pages**. Three branches map to three environments, wired 
 
 1. Feature PRs merge into **`main`** (the integration branch). Cloudflare deploys the main preview immediately on push — that preview is intentionally *pre-test*, so it can be broken.
 2. On every push to main, the **`Gate main → staging`** GitHub Action (`.github/workflows/staging-gate.yml`) runs `npm run build`, `npm run test:unit`, and `npm run test:e2e`. **Only if all pass** does it fast-forward `staging` to that commit, which Cloudflare then deploys to the staging preview. A red gate leaves `staging` parked on the last known-good commit.
-3. **Release is manual:** once you've validated the staging preview, open a PR from **`staging` → `production`** and merge it. Cloudflare deploys `production` to `www.partwrightstudio.com`.
+3. **Release is manual:** once you've validated the staging preview, open a PR from **`staging` → `production`** and merge it. Cloudflare deploys `production` to `www.partwrightstudio.com`. The release PR must be a **pure promotion** — it carries only commits already on `main` (see the superset rule below); any changelog/release-note edits go through `main` *first*, never onto the release branch.
 
 > **Feature work now targets `main`, not `staging`.** `staging` is written only by the gate Action — never push to it or open a PR into it directly. `production` is written only by the manual release PR.
+
+> **`main` is the superset — `staging` and `production` must never hold content `main` lacks.** The pipeline is strictly one-directional: every change reaches `staging`/`production` only *after* it lands on `main`. `staging` is just `main` fast-forwarded by the gate, so it can't drift. The one drift vector is the **manual release PR into `production`**: a release PR must be a **pure promotion** of gated `staging` — it must introduce **zero** content that isn't already on `main`. **Never commit changelog, release-note, help, or any other edits onto the release branch.** Release notes are normal product changes: write them on a feature branch into `main` first (`docs:` PR), let the gate advance `staging`, *then* cut the release from `staging`. The `production-promotion-guard` Action (`.github/workflows/production-promotion-guard.yml`) fails any production PR that carries content beyond `main` — if it trips, you've put release-time edits in the wrong place. (This is the rule that the May 2026 changelog/help drift violated: release-note commits added straight onto release branches never flowed back to `main`, so a later `main`-side refactor silently clobbered them.)
 
 Feature work follows a **draft-PR-first** flow: open the PR as a draft the moment the implementation looks good, and PR-checks runs the full suite — build + unit *and* the e2e shards — on every push, draft or ready. Marking the PR ready for review is a review-readiness signal, not a CI trigger; your task is done once every PR-checks shard goes green. The full sequence:
 
 1. **Start from the latest `main`.** Before writing any code, run `git fetch origin main` and base your feature branch on `origin/main`. Do this at the *start* of the task, not just before the final push.
-2. **Implement** until the change looks good and working by your own lightweight checks (render/stat verification, a quick read-through of the diff). You needn't run the slow e2e suite locally yet — CI runs it on the draft once it's up.
-3. **Pre-flight, then push a draft PR.** Re-sync with the latest main (`git fetch origin main`, then merge `origin/main` into your branch, or rebase onto it if the branch hasn't been pushed yet, resolving conflicts), run the fast `npm run build` + `npm run test:unit` to catch type errors and logic regressions, push the branch, and open the PR into `main` **as a draft** (`create_pull_request` with `draft: true`). Keep the pre-flight light — build + unit only; let CI run the slow suite. The PR-checks CI (`.github/workflows/pr-checks.yml`) runs build + unit **and** the sharded `npm run test:e2e` shards on every PR push, draft or ready — so the full suite fires on the draft immediately, no need to flip to ready first. See [Pull Requests](#pull-requests--open-a-draft-when-the-work-looks-good).
+2. **Implement, then manually verify in the browser.** Once the change looks right, exercise the feature in a real browser by writing and running a short Playwright spec that navigates to it, interacts, and writes a screenshot file — then view the PNG and post it in the chat so the user can see it working. (There is **no** Playwright MCP in this environment; the spec-driven screenshot *is* the manual check.) See [Manual Verification](#manual-verification--checking-your-work-in-the-browser) for the full pattern and the scope by change type. You don't need the full automated e2e suite at this stage; CI runs it on the draft. But do run a targeted spec if one exists for the area you changed: `npx playwright test --grep "describe block"` (~30 s for one spec) catches obvious regressions before the push.
+3. **Pre-flight, then push a draft PR.** Re-sync with the latest main (`git fetch origin main`, then merge `origin/main` into your branch, or rebase onto it if the branch hasn't been pushed yet, resolving conflicts), run `npm run build` + `npm run test:unit` to catch type errors and logic regressions, push the branch, and open the PR into `main` **as a draft** (`create_pull_request` with `draft: true`). The PR-checks CI (`.github/workflows/pr-checks.yml`) runs build + unit **and** the sharded `npm run test:e2e` shards on every PR push, draft or ready — so the full suite fires on the draft immediately. See [Pull Requests](#pull-requests--open-a-draft-when-the-work-looks-good).
 4. **Watch the full suite green on the draft.** PR-checks runs build + unit + the 3 e2e shards on every draft push — no flip to ready required. Subscribe to PR activity, follow the shards, and run any deeper or manual verification the change warrants alongside CI. Fix failures on the same branch (each push re-runs build + unit + e2e). Only fall back to local `npm run test:e2e` if you need a tight loop on a failure CI surfaced. **The task is not done until every PR-checks shard is green.** See [After Opening a PR](#after-opening-a-pr).
 5. **Mark the PR ready for review.** Once every PR-checks shard is green and your own light checks (render/stat verification, code review of the diff) look good, mark the PR ready (`update_pull_request` with `draft: false`). This is purely a review-readiness signal — CI already ran on the draft, so flipping to ready doesn't re-run it.
 6. After the feature PR merges to `main`, the staging gate runs the full e2e suite; on green it advances `staging`, which auto-deploys to the staging preview. Once validated there, open a PR from `staging` → `production` for the production release.
@@ -47,7 +53,7 @@ Feature work follows a **draft-PR-first** flow: open the PR as a draft the momen
 
 When an implementation looks good and working, **open a draft pull request into `main`** — don't wait until you've run the slow verification. This is a standing instruction that overrides any default "don't open a PR unless explicitly asked" behavior: treat "the implementation looks done" as the authorization to open the draft. Don't pause to ask whether to create one, and don't report a task as done without it.
 
-Open it as a **draft** (`create_pull_request` with `draft: true`) after a fast pre-flight only — re-sync `origin/main` and run `npm run build` + `npm run test:unit`. **Defer the slow `test:e2e` run and any deeper verification until after the draft is up** (see [After Opening a PR](#after-opening-a-pr)); the draft PR is what *kicks off* that verification phase. PR-checks runs the full suite — build + unit **and** the e2e shards — on every draft push, so you watch e2e on the draft itself. Marking the PR ready for review (`update_pull_request` with `draft: false`) is a review-readiness signal, not a CI trigger. The task is done once every PR-checks shard is green.
+Open it as a **draft** (`create_pull_request` with `draft: true`) after a fast pre-flight — re-sync `origin/main`, run `npm run build` + `npm run test:unit`, and do a quick manual browser check (run a Playwright spec that screenshots the change — see [Manual Verification](#manual-verification--checking-your-work-in-the-browser)) if not already done. **Defer the full `test:e2e` suite until after the draft is up** (see [After Opening a PR](#after-opening-a-pr)); the draft PR is what *kicks off* the CI verification phase. PR-checks runs the full suite — build + unit **and** the e2e shards — on every draft push, so you watch e2e on the draft itself. Marking the PR ready for review (`update_pull_request` with `draft: false`) is a review-readiness signal, not a CI trigger. The task is done once every PR-checks shard is green.
 
 Skip the PR only when the user explicitly scoped you away from it — a request to "just commit" or "push to the branch" is *not* a request for a PR — or for a pure throwaway experiment. If you genuinely can't tell whether the work is a complete, reviewable unit, ask. Follow the [commit & PR conventions](#commit--pr-conventions) below for the title, prefix, and labels.
 
@@ -86,8 +92,9 @@ assembly in a real browser).
 
 `tests/*.spec.ts`, run against a Vite dev server Playwright starts
 automatically. **Run this whenever you touch UI, routing, or anything in
-`src/ai/` or `src/ui/ai*`** — it covers landing → editor → AI panel toggle →
-key modal → toggle pills → ai.md serving, plus paint/export/import flows.
+`src/ai/`, `src/ui/ai*`, `src/surface/`, or paint/import/export pipelines** —
+it covers landing → editor → AI panel toggle → key modal → toggle pills →
+ai.md serving, plus paint/export/import/surface-modifier flows.
 
 Each e2e test boots WASM in its own browser page, which is CPU-heavy, so the
 suite runs **serially on any single machine** (`playwright.config.ts` pins
@@ -100,116 +107,85 @@ every shard is itself serial and contention-free while wall-clock time
 drops ~3×. `testMatch` is pinned to `**/*.spec.ts` so the unit
 tier's `.test.ts` files stay out of the Playwright run.
 
-### Multi-environment browser detection
+See `docs/playwright-guide.md` for sandbox vs laptop Chromium binary detection and Playwright agent gotchas.
 
-`playwright.config.ts` auto-picks the right Chromium binary so the same
-test command works on a developer laptop and inside the Anthropic Claude
-Code on the web sandbox without per-environment setup:
+## Manual Verification — Checking Your Work in the Browser
 
-- **Sandbox** (`/opt/pw-browsers/` exists): config picks the highest
-  installed `chromium-N` directory and uses its `chrome` binary directly
-  via `launchOptions.executablePath`. The version pinned by the
-  `playwright` npm package may differ from what's cached, but the
-  installed browser still satisfies the test runner — no download
-  needed (which is good, because the sandbox often blocks Chrome for
-  Testing's CDN).
-- **Local laptop** (no `/opt/pw-browsers/`): config leaves
-  `executablePath` unset, and Playwright finds its own cache at
-  `~/.cache/ms-playwright/` (Linux) or `~/Library/Caches/ms-playwright/`
-  (macOS). Run `npx playwright install chromium` once on a new machine.
+**Manually verify any UI-visible change in a real browser before pushing.**
 
-If the auto-detection picks the wrong binary, override it at the shell:
+> **How to drive the browser in this environment: write and run a Playwright spec — there is no Playwright MCP.** The remote/web execution environment only configures the `typescript` MCP server (see `.mcp.json`); the `playwright_navigate` / `playwright_click` / `playwright_screenshot` tools do **not** exist here. Don't waste turns calling them. The real eyes-on check is a short `.spec.ts` that navigates, interacts, and writes a screenshot file you then view.
+
+The pattern:
+
+1. **Install deps once per container:** a fresh remote container starts with no `node_modules` — run `npm ci` before your first `npx playwright test` (you'll get `Cannot find package 'playwright'` otherwise).
+2. **Write a spec that screenshots the feature.** It can be a throwaway probe (`tests/_scratch-*.spec.ts`, delete it after) or — better, for a new feature — the permanent golden-path spec you'd add anyway. Navigate, exercise the change, and capture the result:
+
+   ```ts
+   import { test } from 'playwright/test';
+
+   test('scratch: my feature renders', async ({ page }) => {
+     await page.goto('/editor');
+     await page.waitForTimeout(4000);            // let WASM + viewport settle
+     // ...click/type to exercise the change...
+     await page.screenshot({ path: 'test-results/my-feature.png' });
+   });
+   ```
+
+3. **Run it:** `npx playwright test _scratch-` (or the spec name). You do **not** need to start the dev server yourself — `playwright.config.ts`'s `webServer` block boots `npm run dev` automatically and reuses an already-running one, and the config auto-detects the sandbox Chromium under `/opt/pw-browsers/`.
+4. **View the screenshot and post it in the chat** — `Read` the PNG to see it inline, then `SendUserFile` to surface it to the user. This is the most valuable thing you can do: the user is watching the session and wants to see the feature working (or not) at each meaningful step — opened panel, rendered output, before/after comparison, edge case.
+
+This takes a handful of tool calls and catches wiring mistakes, visual regressions, and WASM timing issues that TypeScript can't see. It's your own eyes-on check before CI runs the headless suite. If you used a throwaway `_scratch-*.spec.ts`, delete it (and its `test-results/*.png`) before pushing.
+
+**Scope by change type:**
+
+| Changed area | Required verification |
+|---|---|
+| Routing, Vite config, `index.html`, init | Run `/smoke-test` (16-item checklist) |
+| New UI feature or changed visible behavior | Navigate to it, exercise golden path, screenshot |
+| AI panel / provider changes | Open panel, verify connection indicator, basic interaction |
+| Surface modifiers (fuzzy/smooth/voxelize/scale) | Trigger the modifier, verify the result renders correctly |
+| Paint, import, export | Trigger the specific flow, verify output |
+| Pure logic, no UI | Unit tests sufficient; Playwright not required |
+
+**When to add a Playwright spec:** When you land a new UI feature, add a `tests/*.spec.ts` that covers its golden path. Not exhaustive coverage — one `test()` that opens the feature, performs the core interaction, and asserts the key visible outcome is enough to catch future regressions.
+
+## Headless Model Preview — `model:preview` (for CLI agents authoring geometry)
+
+When you're iterating on a **model snippet** (catalog entries, `examples/`, mechanism prototypes) from the CLI, don't round-trip through the browser for every guess. `npm run model:preview -- <file.js>` runs the snippet against the **real `manifold-js` engine in Node** (via vite SSR — no dev server, no Playwright, ~2 s) and gives you everything needed to self-correct in one call:
 
 ```bash
-PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/path/to/chrome npm run test:e2e
+npm run model:preview -- .plans/fidgets/spiral-cone.js          # writes <file>.preview.png + prints JSON
+npm run model:preview -- model.js --json                        # stats only, no PNG
+npm run model:preview -- model.js --png out.png -p turns=6      # override api.params, custom PNG path
 ```
 
-### When AI agents need to run a browser test
+- **JSON stat block** (stdout): `isManifold`, `componentCount`, per-component `{volume, bbox, triangleCount}`, `volume`, `surfaceArea`, `genus`, `bbox`, `aspectRatio`, `minEdgeLength`/`meanEdgeLength`, model-declared `labels` (name + color), `paramsSchema`, and a `warnings[]` array (fused parts, tri-count over the ~200k catalog budget, sub-0.4 mm detail, …).
+- **4-view PNG** (front / right / top / iso), shaded by face normal with the model's own label colors — enough to judge proportions, spirals, and color at a glance. `Read` it like a thumbnail.
+- Implementation: `scripts/model-preview.mjs` (CLI + pure-JS rasterizer → `sharp`) + `src/tools/previewModel.ts` (the faithful engine call). No WebGL needed.
 
-1. Don't reinstall browsers blindly. Check `/opt/pw-browsers/` first; the
-   sandbox image already has Chromium. `playwright.config.ts` handles the
-   wiring.
-2. The default Desktop Chrome viewport (1280×720) clips the AI panel's
-   toggle strip. The config sets 1280×900 — keep it that way for
-   anything that interacts with elements in the bottom half of the
-   panel.
-3. Tiny flex children of recently-transformed parents sometimes fail
-   Playwright's viewport hit-test (`Element is outside of the viewport`).
-   When the bounding box is verifiably inside, prefer
-   `locator.dispatchEvent('click')` over `locator.click({ force: true })`
-   — the latter still enforces the viewport bound.
-4. Each Playwright test gets a fresh `BrowserContext`, so localStorage
-   and IndexedDB are isolated by default. **Don't add `localStorage.clear()`
-   in `beforeEach`** unless you mean it — it'll fire on `page.reload()`
-   inside a test too, breaking any "state persists across reload"
-   assertion.
-5. Tests must run with no external network. The `validateKey` flow hits
-   `api.anthropic.com`; assert on the surfaced error message, not on
-   whether the request succeeded.
+**`componentCount` is the instrument for print-in-place mechanisms.** A model that returns separate moving parts (screw, spinner, hinge, captive ball, two-tone spiral) must report `componentCount === N`. If it fuses to `1`, the clearance gap is too small or parts collide. The reliable recipe for splitting one solid into interleaved colored parts: subtract a clearance-thick cutter (e.g. a full-diameter helical **slab** for a spiral), then `manifold.decompose()` and color each component. Verify topological/geometric claims with `model:preview`, not from memory.
 
-## Smoke Test — Verifying the App Works
-
-After any changes that touch routing, Vite config, index.html, or initialization code, verify these things still work:
-
-1. **Landing page**: Navigate to `http://localhost:5173/` — should show the hero section ("Partwright", "AI-driven parametric CAD in your browser"), CTA buttons, and a Recent Sessions grid (or empty state).
-2. **Open Editor**: Click "Open Editor" on the landing page — URL should change to `/editor`, status should show "Ready" (green), the code editor should appear on the left with a default example, and a 3D model should render in the viewport on the right.
-3. **WASM engine loads**: The status indicator (small pill in the top-left of the viewport) should say "Ready" in green, NOT "Loading WASM..." or "WASM failed". If it shows "WASM failed", check:
-   - `coi-serviceworker.js` loads without 404 (check Network tab)
-   - `manifold.wasm` loads without 403 (check Network tab) — if 403, check `server.fs.strict` in vite.config.ts
-   - COEP/COOP headers are present on responses (check Response Headers)
-4. **Help page**: Click the `?` icon in the toolbar — should navigate to `/help` and show the help content. "Back" should return to the editor.
-5. **AI agent bypass**: `http://localhost:5173/editor` should skip the landing page and go straight to the editor (Interactive tab). `window.partwright.renderViews({views:"box"})` returns a 6-face composite PNG data URL.
-6. **Session loading**: Click a session tile on the landing page — should load the session code in the editor, show the session name in the session bar, and update the URL to `/editor?session=<id>`.
-7. **Build**: `npm run build` should succeed with no TypeScript errors.
-8. **Paint mode**: Click the Paint button in the viewport overlay. A color picker panel should appear. Click a face on the model — it should paint the coplanar region in the selected color. The Paint button badge should show the region count.
-9. **Editor lock**: After painting a face, the editor should show a lock banner ("This version has color regions applied.") and become read-only. The run button should be disabled.
-10. **Unlock modal**: Click "Unlock to edit" — a modal should appear with two options (preserve/destructive). Clicking "Unlock editor" with the default "preserve" option should save the colored version and create a new uncolored version. The editor should unlock.
-11. **Gallery badges**: Colored versions in the gallery should show small color-swatch dots next to the version label.
-12. **Color export**: With color regions painted, export GLB — the file should carry vertex colors. Export 3MF — the file should include `<basematerials>` and per-triangle `pid` attributes.
-13. **Annotations are per-version**: Annotate v1, save v2 (annotations persist into v2). Clear annotations, draw a different one, save v3. Navigating v1↔v2↔v3 should swap annotations to match each version (v1 empty, v2 first set, v3 second set). Importing a schema-1.2 file (top-level `annotations`) should attach those annotations to the latest version on import.
-14. **Local model picker**: Click the `✦ Connect AI` (or `✦ AI`) chip → in the modal, follow "Run a local model in your browser". A second modal lists Small / Medium / Large / Vision options with download sizes. The WebGPU banner shows green on Chrome/Edge/Safari 26+ and red elsewhere. The "Use this model" / "Download X GB" button only triggers a network request the first time; cached models show a "Downloaded" pill and skip straight to GPU load. Closing the tab during a download cancels it cleanly.
-15. **STL import**: Click Import → "Choose file…" → pick an `.stl`. With no session open, a new session is created named after the file. Whenever a session is open, an **import-target modal** appears first so the current part is never wiped without consent: choose **New part** (adds a separate part to the session), **Add to / Use for current part** (seeds an empty/starter part, or composes the mesh into the current part's geometry via `Manifold.compose` — works for both imported-mesh and hand-coded parts), or **New session**. A fresh `/editor` (still showing the starter) recommends "Use for current part"; a part with real work recommends "New part" and the part's unsaved code is saved first. In all cases the editor shows a short `return Manifold.ofMesh(api.imports[0])` wrapper (or a `Manifold.compose([...])` form when combined), the mesh renders, and the version label is "imported". Editing the wrapper (e.g. adding `.subtract(Manifold.cube([5,5,5], true))`) re-renders correctly. Closing and reopening the session must restore the imported mesh from IndexedDB.
-16. **Merge parts**: In the Parts rail, check two or more parts (the multi-select checkboxes used for bulk delete). The bulk-action bar gains a **Merge N** button beside Delete. Clicking it opens a modal to either **combine into a new part** (keeps the originals) or **merge into one part** (replaces the selected parts with the combination). Each selected part's latest version is baked to geometry and composed — so it works for hand-coded parts, not just imported ones (the case that used to fail with "No geometry data") — producing a new "merged" version that holds the inputs as separate compose components. The current part's unsaved edits are saved first, so no manual Save is needed before merging.
+> **CLI agents vs in-app/extension AI.** `model:preview` is for agents running in *this repo* (you). The in-app and chrome-extension AI cannot run a CLI — they verify with the in-browser `renderViews()` / `runAndSave(code, label, {maxComponents})` and read `public/ai/*.md` subdocs (e.g. `mechanisms`). Keep tool-specific instructions in `CLAUDE.md`/`docs/` (this audience) and in-browser instructions in `ai.md`/subdocs (that audience).
 
 ## AI Agent Workflow & API Reference
 
 For the full Manifold/CrossSection API, `window.partwright` console API, session workflow, verification patterns, and photo-to-model workflow, see `public/ai.md`. The legacy `window.mainifold` alias remains available for older prompts.
 
-### In-app AI chat — four providers
+### In-app AI chat — five providers
 
 The right-side AI drawer can drive Partwright through any of:
 
 - **Anthropic (cloud)** — user pastes their own API key (`src/ai/anthropic.ts`). Streams from Anthropic's hosted Claude with prompt caching on the long system prompt + tool list.
-- **OpenAI (cloud)** — `src/ai/openai.ts`. Raw `fetch` with SSE streaming; no extra SDK. The agent loop (`streamTurn`) routes **per model** (gated by `isReasoningModel`): reasoning models (gpt-5 family incl. gpt-5.5, o1/o3/o4) go to the **Responses API** (`/v1/responses`) because gpt-5.5+ reject `reasoning_effort` alongside function tools on `/v1/chat/completions` and direct callers to `/v1/responses`; every other / older model (gpt-4o, gpt-4.1, and legacy gpt-4 / gpt-3.5-turbo, some of which exist *only* on Chat Completions) stays on **Chat Completions** (`/v1/chat/completions`). The Responses path converts history to the `input` shape (`message`/`function_call`/`function_call_output` items linked by `call_id`); the Chat path uses the `messages`/`tool_calls`/`tool` shape. Both share the same dangling-tool-call repair, image handling, and review serialization. The non-tool, non-reasoning helpers (`validateKey`/`listModels`/`summarize`) always use `/v1/chat/completions` (works for every model).
-- **Google Gemini (cloud)** — `src/ai/gemini.ts`. Raw `fetch` against `generativelanguage.googleapis.com` with SSE streaming via `:streamGenerateContent?alt=sse`; no extra SDK. The Gemini wire format wants `functionResponse.response` as a plain object — `toFunctionResponseObject` unwraps the JSON-stringified tool result before sending, otherwise Gemini silently drops the message and returns zero candidates on the next turn. **Thought signatures (Gemini 3+):** the model attaches an opaque `thoughtSignature` that must be echoed back on the next request *in the exact part it was received on* — a missing one on a `functionCall` part is a hard 400, and a missing one on a text part silently degrades reasoning (the model bails out early with a tiny `end_turn`, the "Gemini stalls after thinking" symptom). In streaming the signature can ride the `functionCall` part, the answer text part, **or a trailing part whose text is empty** — so `consumeGeminiStream` captures it off *any* part (`pendingSignature`) and binds it to the first tool call (mandatory) or the answer text block (`textThoughtSignature` → persisted on the text `ChatBlock`, replayed by `buildGeminiContents`). Skipping empty-text parts is the classic bug here.
+- **OpenAI (cloud)** — `src/ai/openai.ts`. Raw `fetch` with SSE streaming; no extra SDK. Routes per model: reasoning models (`gpt-5*`, `o1/o3/o4`) use the Responses API (`/v1/responses`); all others use Chat Completions (`/v1/chat/completions`). See `docs/ai-internals.md` for routing details.
+- **Google Gemini (cloud)** — `src/ai/gemini.ts`. Raw `fetch` against `generativelanguage.googleapis.com` with SSE streaming via `:streamGenerateContent?alt=sse`; no extra SDK. Requires careful handling of `functionResponse.response` (plain object, not JSON string) and `thoughtSignature` echo-back. See `docs/ai-internals.md` for thought-signature and routing details.
 - **Local (WebGPU)** — runs a model entirely in the browser via [WebLLM](https://webllm.mlc.ai) (`src/ai/local.ts`). The user opts in from the AI settings modal and the weights download once into the browser cache. No API key, no network traffic per turn.
+- **Custom (OpenAI-compatible)** — `src/ai/custom.ts`. Points to any OpenAI-compatible endpoint (llama.cpp, vLLM, LM Studio, Ollama, …). User sets a base URL in AI settings; optional API key stored in `aiKeys` keyed by `'custom'`. Model id and base URL live on `ChatToggles` as `customModel` / `customBaseUrl`.
 
-API keys live in IndexedDB (`aiKeys` store, keyed by provider). `ChatToggles` carries a separate model id per provider (`anthropicModel`, `openaiModel`, `geminiModel`, `localModel`) so switching providers preserves each one's previous selection — see `activeModel(toggles)` in `src/ai/types.ts`.
+API keys live in IndexedDB (`aiKeys` store, keyed by provider). `ChatToggles` carries a separate model id per provider (`anthropicModel`, `openaiModel`, `geminiModel`, `localModel`, `customModel`) so switching providers preserves each one's previous selection — see `activeModel(toggles)` in `src/ai/types.ts`.
 
 All providers share the same chat loop (`src/ai/chatLoop.ts`), the same tool schemas (`src/ai/tools.ts`), and the same `public/ai.md` system prompt (or its slim local variant) — only the request transport differs. `chatLoop` dispatches by `toggles.provider` via an if/else chain at the streamTurn call site. The WebLLM SDK is still loaded via dynamic `import()` so users who stick with hosted providers never pay the ~6 MB chunk download.
 
-#### Thinking box (reasoning models)
-
-Gemini 3 thinking models emit their reasoning as `thought:true` text parts (we opt in with `generationConfig.thinkingConfig.includeThoughts`). `gemini.ts` routes those to a separate channel (`StreamResult.thinking` + the `onThinking` stream callback) so they never bleed into the answer bubble. `chatLoop` persists the reasoning as a `'thinking'` `ChatBlock` (rendered above the answer); the panel shows a live indigo preview box while it streams (`renderLiveThinkingBox`), then collapses it into an expand/contract box (`renderThinkingBox`) once the next step — answer text or a tool call — begins. The `onThinking` delta beats the stall watchdog (via `onProgress({phase:'thinking'})`), so a long silent think doesn't trip a spurious abort. `'thinking'` blocks are display-only: no provider's request builder replays them as model text (re-feeding the prose wastes tokens).
-
-#### Thinking level (the 🧠 pill)
-
-`ChatToggles.thinking` (`off` | `low` | `medium` | `high`, default **off**) is a per-session knob in the toggle strip, sourced from `THINKING_LEVELS` in `types.ts`. Each provider maps it to its own wire format at request build time, so 'off' sends no thinking request at all and reproduces the pre-feature behavior:
-
-- **Anthropic** — `low/medium/high` enable extended thinking with `budget_tokens` 2048/8192/16384 (`THINKING_BUDGET` in `anthropic.ts`), and `max_tokens` is floated above the budget (the API requires `>`). Because the agent is a tool-use loop, the API requires the signed `thinking` block to precede each `tool_use` on replay: `collectResult` captures the blocks (with `signature`, plus any `redacted_thinking`) into `ChatMessage.thinkingBlocks`, and `assistantBlocksToApi` re-emits them first — but only when thinking is on for the current request (`buildApiMessages(history, { replayThinking })`). Sending them with thinking off, or replaying display prose, is never done. This path can't be exercised offline (no network in tests/sandbox), so it's covered by request-shape unit tests rather than a live round-trip.
-- **Gemini** — `off` only flips `includeThoughts:false` (deliberately NOT `thinkingBudget:0`, which some Pro models reject); `low/medium/high` set `includeThoughts:true` + a growing `thinkingBudget`. Note: this changed Gemini from always-on thinking to opt-in.
-- **OpenAI** — maps to the Responses `reasoning.effort` (`low/medium/high`), sent only for reasoning models (`gpt-5*`, `o1/o3/o4` — sniffed by `isReasoningModel`, which is also what routes them to the Responses endpoint). 'off' omits the `reasoning` field. Non-reasoning models go down the Chat Completions path, which never sends a reasoning request in either spelling, so they don't 400. OpenAI hides reasoning-model CoT, so this controls cost/quality but never surfaces a thinking box.
-- **Local** — no effect (WebLLM models reason on their own; `<think>` is still stripped).
-
-#### Auto-continue (the ♾ pill)
-
-`ChatToggles.autoResume` (boolean, **on by default** in the standard/full presets — off in the lean minimal preset; per-session) makes the agent keep working until the model explicitly signals completion by calling the **`finish`** sentinel tool, instead of stopping at every `end_turn`. It's the antidote to models (notably Gemini) that end a turn early without finishing the task. The default lives in `DEFAULT_TOGGLES_BY_PRESET`; turning it off writes a `custom` preset that the `??`-based `mergeWithDefaults` preserves across reloads (an explicit `false` is never overwritten by the on-by-default). When **on**:
-
-- `buildToolList` adds the `finish` tool (gated by `AUTORESUME_GATED` in `tools.ts`); `executeTool` short-circuits it to a sentinel ack (it never touches `window.partwright`). `toggleSuffix` appends an instruction telling the model to call `finish` only when truly done.
-- In `chatLoop`, a turn that ends with `end_turn` (text **or** empty) **without** a `finish` call appends a synthetic user nudge (`AUTO_RESUME_PROMPT`, persisted with `ChatMessage.autoResumeNudge` → rendered as a subtle divider, not a blue bubble) and loops again. A turn that **does** call `finish` runs any remaining tools, then stops cleanly with reason `end_turn`.
-- It's bounded by the existing **iteration cap** (the `for` loop) and **spend cap** (checked each iteration) — whichever trips first — so a model that never calls `finish` lands on the normal iteration-cap "Keep going" notice rather than looping forever. A queued human message takes priority over a `finish` stop (the loop delivers it instead of stopping).
-- A no-progress ceiling (`MAX_CONSECUTIVE_AUTO_RESUMES` in `chatLoop.ts`) caps consecutive nudges that make no progress (no tool call), resetting on any tool call — so even under infinite iteration + spend caps a model that never calls `finish` can't loop forever. The auto-resume nudge also handles the `empty_final` case: an empty assistant turn gets a `(no response)` placeholder so it isn't dropped by the request builders (which would otherwise leave two consecutive `user` turns — a hard 400 on Anthropic). A human message queued mid-turn is delivered on the resume path in preference to the synthetic nudge.
-- Turning it **off** is byte-for-byte the old behavior (no `finish` tool, no nudges, stop at each `end_turn`) and is remembered across reloads.
+See `docs/ai-internals.md` for per-provider thinking/auto-continue wire-format details (thinking box, thought signatures, thinking level mappings, auto-continue implementation, OpenAI routing).
 
 #### Cross-provider review
 
@@ -217,17 +193,26 @@ A "👁" button in the panel header opens `src/ui/aiReviewModal.ts`. The user pi
 
 #### AI Call Log (per-provider diagnostics)
 
-A "🩺" button in the panel header opens `src/ui/aiDiagnosticsModal.ts`. Shows the last 50 provider API calls from an in-memory ring buffer (`src/ai/diagnostics.ts`): provider/model/kind, duration, status, full error messages (errors auto-expand), token usage, stop reason, request summary. Filter (all/errors/successes), Clear, Copy JSON. This is distinct from the app-wide **Diagnostic Log** (`src/diagnostics/errorLog.ts`, toolbar ⚠ button) which captures uncaught errors/console warnings; the AI Call Log adds per-call detail (successes, tokens, the "empty_final" non-error case) the general log intentionally doesn't. To avoid double-listing, the AI Call Log mirrors to `console.info`/`console.debug` (not `warn`/`error`), and hard provider errors reach the app-wide log via `chatLoop`'s `onError → errorLog.capture({source:'ai'})`.
+A "🩺" button in the panel header opens `src/ui/aiDiagnosticsModal.ts`. Shows the last 50 provider API calls from an in-memory ring buffer (`src/ai/diagnostics.ts`): provider/model/kind, duration, status, full error messages (errors auto-expand), token usage, stop reason, request summary. Filter (all/errors/successes), Clear, Copy JSON. This is distinct from the app-wide **Diagnostic Log** (`src/diagnostics/errorLog.ts`, toolbar ⚠ button) which captures uncaught errors, intercepted `console.warn`/`console.error`, and every toast (see [User Messaging & the Diagnostic Log](#user-messaging--the-diagnostic-log)); the AI Call Log adds per-call detail (successes, tokens, the "empty_final" non-error case) the general log intentionally doesn't. To avoid double-listing, the AI Call Log mirrors to `console.info`/`console.debug` (not `warn`/`error`), and hard provider errors reach the app-wide log via `chatLoop`'s `onError → errorLog.capture({source:'ai'})`.
+
+#### Slash commands
+
+The AI chat input supports `/command` shortcuts (`src/ai/slashCommands.ts`). A lone `/word` is parsed before being sent to the model; anything else (a path like `/usr/bin`, or `/think it over`) is forwarded normally.
+
+| Command | What it does |
+|---|---|
+| `/compact` | Summarize older turns and promote insights to session notes |
+| `/clear` | Delete this chat (saved versions & notes are kept) |
+| `/review` | Open the cross-provider review modal |
+| `/export` | Download the conversation as Markdown |
+| `/models` (alias `/settings`) | Open AI settings modal |
+| `/help` (alias `/commands`) | List all commands in chat |
+
+The command names and descriptions are defined in `SLASH_COMMANDS` in `slashCommands.ts`; the panel's handler map is type-checked against `SlashCommandName` so a name can't exist without a handler. Tests: `tests/unit/slashCommands.test.ts` (unit), `tests/ai-slash-commands.spec.ts` (e2e).
 
 #### Adding a new hosted provider
 
-1. Add the id to `Provider` in `src/ai/types.ts` and a `<name>Model` field to `ChatToggles` (+ default in `settings.ts`).
-2. Add a sibling case to `activeModel(toggles)`.
-3. Create `src/ai/<name>.ts` exporting `streamTurn`, `summarize`, `validateKey`, `resetClient` — same shape as `anthropic.ts`.
-4. Register pricing in `src/ai/cost.ts`'s `PROVIDER_PRICING`.
-5. Add a `<name>_MODEL_OPTIONS` array + `set<Name>Model` setter in `src/ai/settings.ts`.
-6. Add dispatch + compaction branches in `chatLoop.ts` / `compaction.ts`.
-7. Add a `buildHostedProviderSection(<name>, …)` call in `aiSettingsModal.ts`, a `PROVIDER_UI` entry in `aiKeyModal.ts`, and a `hostedConfig` entry in `aiPanel.ts`'s `renderModelPicker()`.
+Run `/add-provider` for the full 7-step integration checklist.
 
 Key rules:
 - **Always use sessions** for user-requested geometry — never create files in `examples/`
@@ -263,6 +248,7 @@ Static site, no backend. Vanilla TypeScript + Vite.
 - `src/import/parsers/stl.ts` — STL import (binary + ASCII)
 - `src/import/codegen.ts` — Generates `Manifold.ofMesh(api.imports[i])` wrapper code
 - `src/import/importedMesh.ts` — Active-imports register exposed to the sandbox as `api.imports`
+- `src/surface/modifiers.ts` — Surface modifier pipeline: `applyFuzzy` (noise-displaced skin), `applySmooth` (Taubin smoothing pass), `applyVoxelize` (mesh → voxel grid), `applyScale` (non-destructive resize). Each returns a `ModifierResult` — either `'manifold'` (baked mesh + wrapper code, mirroring the STL import path) or `'voxel'` (encoded grid + inline `voxels.decode(…)` code). Pure math lives in sibling modules: `fuzzySkin.ts`, `smoothSurface.ts`, `voxelizeMesh.ts`, `meshSubdivide.ts`, `colorTransfer.ts`, `scaleMesh.ts`. Unit tests: `tests/unit/surface.test.ts`.
 
 ### Modeling engines (three of them)
 
@@ -288,9 +274,7 @@ The user pays for a non-default engine only when they reach for it:
 - **OpenCASCADE / replicad** — `await import('replicad')` + `await import('replicad-opencascadejs/...')` inside `ensureBrepLoaded()` in `src/geometry/brepRuntime.ts`. Triggered (a) in any manifold-js run whose code mentions `BREP`, or (b) on first replicad-language session run.
 - **WebLLM** — `await import('@mlc-ai/web-llm')` inside `src/ai/local.ts`. Triggered on first local-model use.
 
-Each loader is idempotent and caches the resolved module. Vite splits each one into its own chunk (verify by inspecting `npm run build` output — the OCCT WASM lands as `replicad_single-*.wasm` (~10 MB) outside the main bundle).
-
-When adding a new lazy-loaded module, follow `brepRuntime.ts`'s pattern: one `ensureXLoaded()` promise that's cached after success and cleared on failure so the next call retries.
+Each loader is idempotent and caches the resolved module. Vite splits each one into its own chunk. See `docs/architecture-notes.md` for the `ensureXLoaded()` pattern when adding new lazy-loaded modules.
 
 ## Coordinate System
 
@@ -301,7 +285,7 @@ When adding a new lazy-loaded module, follow `brepRuntime.ts`'s pattern: one `en
 
 ### Planning Files
 
-Write interstitial planning, design, and brainstorming documents to `.plans/` (gitignored). Do **not** write plan files to `docs/` — that directory is reserved for user-facing documentation that ships with the project.
+Write interstitial planning, design, and brainstorming documents to `.plans/` (gitignored). `docs/` is for **stable reference documentation that ships with the project** — both user-facing content (help page source, changelog) and developer/AI-agent reference docs (architecture notes, AI internals, test guides). Do **not** put ephemeral plan files or scratch notes in `docs/`.
 
 ### URL State
 
@@ -311,6 +295,7 @@ The app uses path-based routing for top-level pages and query parameters for vie
 - `/` — Landing page (hero + recent sessions grid)
 - `/editor` — Editor view (code + viewport)
 - `/catalog` — Curated catalog of premade sessions
+- `/ideas` — Ideas/showcase page: starter prompts, technique showcases, and interactive "use your own photo" flows. Backed by the `src/ideas/ideas.ts` dataset, which also powers the AI panel's 💡 prompt library + empty-state chips. Starter/technique tiles drop a prompt into the AI panel (populate, don't send — `prefillAiInput`); interactive tiles reuse the image→voxel and Relief import flows.
 - `/help` — Help/docs page
 
 **Query parameters** (on `/editor`):
@@ -324,17 +309,7 @@ Any `/editor` URL bypasses the landing page entirely. Tab switching is handled i
 
 ### Browser History (Back Button) Preservation
 
-`updateURL()` in `src/storage/sessionManager.ts` uses `history.replaceState`, not push. That is intentional for in-place updates within the editor (switching versions, naming a session) — those should not pollute the back stack. But it is a trap when navigating *into* the editor from another top-level page (`/`, `/catalog`, `/help`):
-
-- If you call any session-mutating function (`openSession`, `createSession`, `closeSession`, or anything that calls `importSessionPayload`) BEFORE pushing the editor history entry, that internal `replaceState` will overwrite the page you came from and break the browser back button.
-- **Always push the destination history entry first**, then run the state change. See `handleCatalogEntryLoad` and `openSessionFromLanding` in `src/main.ts` for the canonical ordering.
-- For in-page "Back" buttons on top-level pages (catalog, help), prefer `window.history.back()` when there's a real previous entry on the stack — falling back to `replace` (not push) when the page was loaded directly by URL. See the `helpHasAppBackTarget` / `catalogHasAppBackTarget` patterns.
-
-When adding a new top-level page or any cross-page navigation, walk through the flow before merging:
-
-1. Where am I coming from? What's already on the back stack?
-2. What does `window.location` look like after every async step (especially DB or session operations)?
-3. After landing on the destination, does the browser back button take me to the prior page, not two pages back?
+`updateURL()` in `src/storage/sessionManager.ts` uses `history.replaceState`, not push — intentional for in-editor updates, but a trap for cross-page navigation. **Always push the destination history entry first**, then run any session-mutating call (`openSession`, `createSession`, `closeSession`, `importSessionPayload`). See `docs/architecture-notes.md` for the full pattern and the canonical examples in `src/main.ts`.
 
 ### Resource Lifecycle
 
@@ -356,9 +331,71 @@ Every URL parameter the app writes must also be read back correctly everywhere:
 
 Always await `txn.oncomplete` before returning from functions that modify IndexedDB data. Awaiting individual request promises within a transaction is not sufficient — the transaction can still fail to commit after those promises resolve. Follow the pattern in `clearAllData()`.
 
+**Never `await` between a `get` and the `put`/`delete` that depends on it inside one readwrite transaction.** Awaiting yields the microtask queue and lets IndexedDB auto-commit the (now request-less) transaction before the write is queued — a `TransactionInactiveError`, and across two tabs a lost update. Issue the dependent write from inside the `get`'s `onsuccess` callback (chain further requests from *their* callbacks too), then await `txn.oncomplete` once. See `recordUsage`, `updateSession`, and `putAttachment` for the pattern.
+
+### Cross-Tab Isolation — No Data Bleed Between Windows
+
+The app runs in multiple browser windows/tabs at once, often each driving a **different session** (and a different AI provider). Tabs share one origin, so they share IndexedDB *and* localStorage; separate windows do **not** share JS module memory. The rule:
+
+> State must not bleed or cause side effects from one tab into another. The only times state should cross tabs are the **explicit** transitions: opening a session (incl. a previously-closed one) in a tab, or **taking control** of a session in another tab. Anything else changing in tab B must not silently alter tab A.
+
+See `docs/architecture-notes.md` for the concrete implementation patterns (per-tab prefs, `storage`-event scoping, global-state rules).
+
+### Numeric Constants and App Config
+
+Never hardcode numeric tuning constants — timeouts, limits, thresholds, budgets, quality knobs — directly in source files. Instead:
+
+1. **Add the constant to `src/config/appConfig.ts`** — pick the right section (`ai`, `renderer`, `import`, or `ui`), add a typed field to `AppConfig`, a default in `APP_CONFIG_DEFAULTS`, and a JSDoc comment explaining what it controls.
+2. **Read it with `getConfig().<section>.<field>`** at the call site rather than storing it in a module-level `const`. This lets the user's saved override take effect immediately.
+3. **Expose it in `src/ui/advancedSettingsModal.tsx`** — add a `<Field>` inside the matching `<Section>` with `label`, `hint`, `defaultValue`, `min`, `max`, and an `onChange` that calls `set(section, key, v)`.
+4. **Worker context**: `getConfig()` in a Worker returns static defaults (no `localStorage`). If the value must be live for a Worker, thread it through the relevant message (e.g. `toolCallTimeoutMs` is passed via the `run_turn` message in `agentWorkerClient.ts`).
+
+The only exceptions are values that are truly structural constants (array indices, enum values, magic bytes) rather than tunable knobs.
+
 ### Dead Code
 
-Don't export functions unless they're imported elsewhere. When removing usage of an exported function, delete the export too. Periodically grep for exported symbols to verify they have importers.
+Don't export functions unless they're imported elsewhere. When removing usage of an exported function, delete the export too. Periodically grep for exported symbols to verify they have importers — or run `npm run lint:deadcode` (knip), which reports exports with no importers and unused files/types.
+
+### Agent Tooling & Static Analysis
+
+This repo ships custom Claude Code subagents and a deterministic static-analysis layer they lean on — see `docs/agent-tooling.md` for the full reference. In short:
+
+- **`work-reviewer`** (`.claude/agents/work-reviewer.md`, Opus, read-only) reviews the branch diff vs `origin/main` for correctness, back-compat, security, and **UI consistency** against the shared component layer (`modalShell`, `styleConstants` `BUTTON_*`, `showToast`, `commandPalette` keyboard model). Launch it before marking a PR ready.
+- **`explore`** (`.claude/agents/explore.md`, Sonnet, read-only) overrides the built-in Haiku Explore agent for sharper codebase discovery, preferring the TypeScript LSP MCP (`mcp__typescript__*`, configured in `.mcp.json`) for reference/definition queries.
+- **`lint:consistency`** (ast-grep), **`lint:deadcode`** (knip), and **`lint:deps`** (madge) run in CI (`code-quality.yml`). `lint:consistency` gates on `error`-severity ast-grep rules (`no-native-dialogs` is `error`; the rest are `warning`/`hint` — promote one to `error` once the codebase is clean for it). `lint:deadcode` gates on knip's trustworthy categories (`dependencies`/`unlisted`/`unresolved`/`files`) but keeps `exports`/`types` advisory (knip can't see exports used only via the e2e suite's dynamic `import('/src/…')`, and the dead-export backlog needs per-symbol triage). `lint:deps` (madge circular deps) is a **gate**: the module graph is acyclic, so any new cycle fails CI. Scope each advisory hit to the diff — they over-report by design. See `docs/agent-tooling.md`.
+
+### Module Layering — keep the dependency graph acyclic
+
+The module graph is **cycle-free** and CI gates on it (`lint:deps`). To keep it that way, follow the dependency direction and the patterns below — they're the ones used to untangle the original cycles, and each has a canonical example in the tree:
+
+- **Direction:** the renderer (`src/renderer/viewport.ts`) is a *low* layer; feature layers (`src/annotations/`, `src/color/`) sit above it and may import it (`requestRender`, camera accessors), but **the renderer must never import a feature layer.** When the viewport needs to drive a feature subsystem (phantom geometry, annotation overlay, session plane), the subsystem registers a lifecycle hook via the leaf `src/renderer/viewportRegistry.ts` (wired in `src/renderer/viewportSubsystems.ts`, imported once for side effects in `main.ts`) instead of the viewport importing it.
+- **Mutually-exclusive tools coordinate through a leaf, never each other.** Paint and the annotate sub-modes (pen/text/select) register their `forceDeactivate` with `src/ui/modeExclusion.ts` and call `deactivateMode(id, opts)` to turn a sibling off. No mode imports another mode.
+- **Shared state that two mutually-importing modules both need goes in a leaf.** Selection state lives in `src/annotations/selectionState.ts` (so the overlay can observe it without importing `selectMode`); paint-state accessors the drag tools read live in `src/color/paintAccessors.ts` (published once by `paintMode`). The owning module sets the leaf; consumers read it.
+
+When you add a feature that would otherwise import "sideways" or "down into" a lower layer, reach for one of these leaf patterns rather than adding the back-edge. Run `npm run lint:deps` before pushing.
+
+### Retros — continuous improvement loop
+
+This repo runs a lightweight self-improving loop so agents make the *next* agent faster and more reliable. See `retros/README.md` for the full picture.
+
+- **When you finish a meaningful task (≈ a PR), run `/retro`** (`.claude/skills/retro.md`). It drops a short **4-Ls** reflection — *Liked · Lacked · Learned · Longed for* — into `retros/inbox/`. Think like an engineer about your own toolchain: the most valuable note is what would have made delivery faster (the "Longed for" bucket), not just what broke. A `Stop` hook nudges you when the tree is dirty, but the call is yours — skip it when nothing was notable. Entries are append-only and commit with the work.
+- **`/retro-review`** (`.claude/skills/retro-review.md`) is the weekly facilitator, fired by a scheduled trigger. It clusters the inbox (frequency across independent agents = the vote), applies the confident process diffs to `CLAUDE.md`/`docs`/skills, files tooling asks as backlog items, writes a durable report to `retros/reports/`, archives the entries, and opens a **draft PR** for human review. It never merges itself.
+
+### Prompt Logs
+
+Every commit that changes non-prompt files must also stage a sanitized **prompt log** under `prompts/`, documenting the human request and your key decisions behind the change. See `.claude/skills/promptlog.md` for the format (one YAML frontmatter block, `## Human` / `## Assistant` decision-focused sections — write *why*, not a changelog). A `PreToolUse` guard (`.claude/hooks/promptlog-guard.sh`) **blocks** any `git commit` that touches non-prompt files without one; for a genuinely mechanical commit (merge/rebase/backfill) re-run with `--no-verify`.
+
+> This guard is the harness-level replacement for the old `lefthook` `prompt-log` pre-commit rule, which silently stopped firing in web/remote sessions because git hooks are never installed there (no `npm install` → no `lefthook install` → empty `.git/hooks`). A skill on disk doesn't run itself; the hook is what makes the workflow actually fire.
+
+### User Messaging & the Diagnostic Log
+
+There is **one** messaging system; use it, don't invent parallel ones. Every error, warning, or notice a user sees must also land in the central **Diagnostic Log** (`src/diagnostics/errorLog.ts`, toolbar ⚠ button) so there's a durable, reviewable record — the on-screen surface is transient, the log is the history.
+
+- **Transient notifications → `showToast` (`src/ui/toast.ts`).** A toast is the standard bottom-center, fades-away message for save/export confirmations, action feedback, and recoverable failures. Every `showToast` is **automatically mirrored** into the Diagnostic Log, so you don't capture separately for toasts. Variant maps to log level: `warn` → `'warn'`; `success`/`neutral` → `'info'` (routine activity, recorded but kept out of the unseen-error badge). Pass `{ log: false }` only for the rare toast that must stay screen-only, and `{ source }` to tag the subsystem (`'import'`, `'export'`, …).
+- **Variant semantics.** `success` = it worked; `neutral` = informational/in-progress; `warn` = something went wrong or was blocked. Pick by meaning, not color. Don't hand-roll `position:fixed` message nodes — route through `showToast`.
+- **Failures that don't toast → `errorLog.capture({ level, source, message, detail })` directly** with an explicit `source` tag. Anything caught in a `catch` that the user won't otherwise see (Worker/engine failures, background tasks) belongs in the log even when there's no toast.
+- **Persistent status ≠ transient notification.** Standing indicators that reflect *current* state — e.g. the viewport **printability pill** (`printabilityIndicatorEl` in `src/main.ts`), which stays up while the live model has print-blocking structural issues — are *status*, not toasts. They persist until the underlying state changes and must not be implemented as (or mistaken for) fading messages. Give them a `title` so users understand what they are.
+- **Don't assert what you didn't measure.** Render-only imports (e.g. colour reliefs) carry no `Manifold`, so `isManifold` is `false` for lack of measurement — *not* because the mesh is non-watertight. `computePrintability` treats that case (`manifoldStatus === 'render-only (not manifold)'`) as unverified rather than failed, so the pill doesn't cry "not watertight" about a mesh that was verified watertight at build time.
 
 ### Internal Links and Paths
 
@@ -404,41 +441,26 @@ Subject is imperative and lowercase after the prefix: `feat: add light/dark mode
 
 Anything unlabeled lands in "Other Changes." That's fine for occasional internal cleanup, but features and fixes should always be labeled.
 
+### Agent working discipline (git, PRs, tool output)
+
+Guardrails for automated work, learned the hard way:
+
+- **Irreversible GitHub actions stand alone, after an explicit decision.** Closing or merging a PR, deleting a branch, or force-pushing is outward-facing and hard to undo. Never batch such a call in the same tool block as other work (a sibling call fires even if the call meant to gate it errored or was never answered), and never infer the go-ahead — issue it as its own step only when the user explicitly asked for it. A PR close/merge is never a default or a guess. (A `PreToolUse` hook in `.claude/settings.json` also pauses for confirmation before `merge_pull_request` and a `state: closed` `update_pull_request`, as a backstop.)
+- **A failed or unreadable tool result is not a success.** If a call errors (e.g. an `AskUserQuestion` that didn't validate) or its output comes back garbled / empty / out-of-order, re-run or re-verify state before proceeding — never act on an answer you didn't actually receive, and never treat a laggy/garbled shell as ground truth.
+- **Git is single-writer.** The working tree and index are shared mutable state. Don't run git mutations while a subagent is also touching the same checkout. Resolve merges/rebases inline yourself; if you must delegate git work to a subagent, give it an isolated worktree (`isolation: "worktree"`).
+- **Verify state between destructive git steps.** After a merge / rebase / reset, confirm `git status` and HEAD, and that local HEAD matches what you pushed, before moving on.
+
 ### After Opening a PR
 
-Opening the **draft** PR (see [the standing instruction](#pull-requests--open-a-draft-when-the-work-looks-good) above) isn't the finish line — it's the start of the verification phase. PR-checks runs the full suite — build + unit, then the 3 e2e shards — on every push, draft or ready, so the draft gets full signal immediately. The task is done when every shard is green; marking the PR ready for review (step 6 below) is the final step, a review-readiness signal rather than a CI trigger.
+Opening the draft is the start of the verification phase, not the finish line. The task is done when every PR-checks shard is green.
 
-**1. Watch the full suite on the draft.** PR-checks runs build + unit **and** the 3 e2e shards on every push, draft included, so the draft gets full CI signal immediately — you don't flip to ready to trigger it. Subscribe to PR activity (`subscribe_pr_activity`) and watch the shards rather than running e2e locally up front. Run any deeper or manual verification the change warrants — e.g. exercising the affected UI in a browser per the [Smoke Test](#smoke-test--verifying-the-app-works) — alongside CI. Fall back to local `npm run test:e2e` only when iterating tight on a failure CI surfaced. Fix failures on the same branch (each push re-runs build + unit + e2e) until every shard goes green. Watching means watching mergeability too, not just the shards: if `main` advances and the branch goes out-of-date or conflicting, that's an actionable event — resolve it on the branch (step 4 below).
-
-**2. Kick off an automated review pass.** Right after pushing the draft, launch a review subagent (the Agent tool) over your branch diff against `origin/main` and the code it touches. Have it hunt specifically for problems your change may have introduced:
-
-- **Defects** — logic errors, unhandled cases, broken or orphaned call sites in the new code.
-- **Functionality dropped in a merge** — features or code paths silently lost while resolving conflicts or re-syncing with `origin/main`. Diff against what was there before, not just your own edits.
-- **Backwards-incompatible changes** — anything that breaks existing persisted data or files. Watch session/schema changes most closely: old sessions saved in IndexedDB, and previously exported files (GLB/3MF and any versioned schema), must still import and load. A schema bump needs a migration or back-compat read path, not a hard break.
-- **Security issues** — injection (command/SQL), XSS or unsafe HTML insertion, leaked API keys/secrets, or weakened CSP/COEP/COOP headers.
-
-Surface the results on the PR (a review comment, or fold clear fixes straight into the branch). If the pass turns up something ambiguous or large, raise it with the user rather than silently reworking.
-
-**3. Follow CI and auto-fix what you can.** Watch the PR's checks — the **PR-checks** workflow (build + unit, then the 3 sharded e2e jobs) and the Cloudflare Pages preview deployment — and **auto-fix failures when you can** by pushing a fix straight to the PR branch.
-
-1. Reproduce the failure locally first (`npm run build`, `npm run test:unit`, `npm run test:e2e`) so you're fixing the real cause, not guessing from the log.
-2. Re-sync with the latest `origin/main` if the branch has drifted (see the Deployment workflow), then commit and push the fix to the same PR branch.
-3. Re-check CI after the push, and keep iterating until the checks are green.
-
-Only push fixes you're confident in — failures clearly caused by your own changes. If a failure is ambiguous, unrelated to your changes, or would require a large refactor or a risky/destructive change to resolve, stop and ask the user instead of pushing speculative fixes.
-
-**4. Resolve merge conflicts when the base branch moves under the PR.** When you're watching a PR and `main` advances — the branch falls behind, or GitHub reports it no longer mergeable — treat that like a CI failure: an actionable event to fix on the branch, not something to park for a human. Bring it up to date: `git fetch origin main`, merge `origin/main` into the branch (or rebase onto it), resolve the conflicts, and push to the same PR branch.
-
-But the bar is an **integrated, working result — not just a clean merge.** A conflict is two intentions colliding, and clearing the markers is the easy part. Before you push:
-
-1. **Understand and respect the work you're merging in.** Read what actually landed on `main` since the branch diverged — the conflicting commits and the PRs/notes behind them — and reconcile your change *with* it. Keep both sides unless one genuinely supersedes the other; never drop someone else's recently merged work just to make your own side apply cleanly. (This is the clobbering trap the re-sync rule above warns about.)
-2. **Then prove it still works.** A resolution that compiles is not a resolution that's correct. Re-run `npm run build` + `npm run test:unit`, let PR-checks re-run the e2e shards on the push, and redo any manual/render verification the touched area warrants — per the automated review pass (step 2 above; watch for functionality silently dropped in the merge) and the [Smoke Test](#smoke-test--verifying-the-app-works). Treat the merged result as new code to verify, because it is.
-
-If the conflict is large, lands in code you don't understand, or resolving it would mean materially changing recently-merged behavior, **stop and ask** (`AskUserQuestion`) rather than push a speculative resolution — same bar as the CI auto-fix rule above.
-
-**5. Keep the PR description in sync with the branch.** Any time you push new work to an open PR — review fixes, CI fixes, or follow-up commits that go beyond the PR's original scope — re-check the PR description and update it to cover the *totality* of the work now on the branch, not just what existed when the PR was first opened. Fold the new changes into the Summary, refresh the Test plan, and bring the title, prefix, and labels back in line with the [commit & PR conventions](#commit--pr-conventions) if the scope has grown. The description and the branch diff should never tell different stories — don't let the description silently drift behind the work.
-
-**6. Mark ready for review, label, and confirm green.** Once every PR-checks shard plus the Cloudflare Pages preview are green and the automated review pass is clean, mark the PR ready for review (`update_pull_request` with `draft: false`) and apply the [release-note labels](#commit--pr-conventions). Marking ready is a review-readiness signal — CI already ran on the draft, so it doesn't re-trigger the suite. The task is done once CI is green. If verification surfaced something ambiguous or large, keep the PR in draft and raise it with the user instead of pushing speculative fixes.
+1. **Subscribe and watch CI.** Call `subscribe_pr_activity`. PR-checks runs build + unit + 3 e2e shards on every push, draft or ready — don't flip to ready to trigger it. Fix failures on the branch (each push re-runs the suite); fall back to local `npm run test:e2e` only when iterating tight on a CI failure.
+2. **Confirm manual browser verification happened.** If you haven't yet exercised the feature in the browser and posted a screenshot in the chat, do it now — write/run a Playwright spec that navigates to the changed feature and screenshots the result, then view and post the PNG (see [Manual Verification](#manual-verification--checking-your-work-in-the-browser)). There is no Playwright MCP here; the spec is the check. The user is watching this session and this is the most direct signal that the feature works.
+3. **Launch a review subagent** (Agent tool) over the diff vs `origin/main`. Hunt for: defects and unhandled cases; functionality silently dropped in a merge; backwards-incompatible schema changes (old IndexedDB sessions and exported files must still load); security issues (XSS, leaked keys, weakened CSP/COEP/COOP). Surface findings as PR comments or fold clear fixes into the branch; raise ambiguous/large ones with the user.
+4. **Auto-fix CI failures you're confident about.** Reproduce locally first. Re-sync `origin/main` if the branch has drifted, then push the fix. Ask the user for anything ambiguous, unrelated to your changes, or requiring a large refactor.
+5. **Resolve merge conflicts when `main` advances.** Treat a stale/conflicting branch like a CI failure — actionable, not parkable. Fetch + merge `origin/main`, resolve conflicts by reconciling both sides (never drop recently-merged work to make your side apply cleanly), then prove it still works: `npm run build` + `npm run test:unit`, let CI re-run e2e, redo any manual verification the touched area warrants. Stop and ask if the conflict is large or lands in code you don't understand.
+6. **Keep the PR description in sync** with the totality of what's on the branch — update Summary, Test plan, title/prefix/labels any time you push follow-up work.
+7. **Mark ready, label, confirm green.** Once every shard and the Cloudflare preview are green and the review pass is clean: `update_pull_request` with `draft: false`, apply [release-note labels](#commit--pr-conventions).
 
 ## Common Errors
 

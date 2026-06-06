@@ -8,26 +8,31 @@ import { runTurn as runTurnInWorker, pushQueuedBlocks } from '../ai/agentWorkerC
 import { listMessages, GLOBAL_CHAT_BUCKET, putMessages, deleteMessages, getKey, clearChat, mergeChatBucket } from '../ai/db';
 import { proposeCompaction } from '../ai/compaction';
 import { captureIsoViews, fileToImageSource } from '../ai/images';
+import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
 import { loadSettings, saveSettings, setAnthropicModel, setOpenaiModel, setGeminiModel, setCustomModel, setProvider, setLocalModel, setToggles, providerLabel, aiConnectionMode, ANTHROPIC_MODEL_OPTIONS, OPENAI_MODEL_OPTIONS, GEMINI_MODEL_OPTIONS, MAX_ITERATIONS_OPTIONS, MAX_SPEND_OPTIONS, THINKING_OPTIONS, RENDER_RESOLUTION_OPTIONS, VERIFY_ANGLE_OPTIONS, type AiSettings } from '../ai/settings';
 import { buildLocalSystemPrompt, buildMediumLocalSystemPrompt, buildSystemPrompt, loadAiMd } from '../ai/systemPrompt';
 import { estimateTurnCostUsd, formatUsd } from '../ai/cost';
 import { getLimits } from '../ai/catalog';
 import { generateId } from '../storage/db';
 import { showAiKeyModal } from './aiKeyModal';
+import { confirmDialog } from './dialogs';
 import { showAiSettingsModal } from './aiSettingsModal';
 import { showAiReviewModal } from './aiReviewModal';
 import { showAiDiagnosticsModal } from './aiDiagnosticsModal';
+import { showAiPromptLibraryModal } from './aiPromptLibraryModal';
+import { starterChipIdeas } from '../ideas/ideas';
 import { showAiLocalModal } from './aiLocalModal';
 import { showSystemPromptModal } from './aiSystemPromptModal';
 import { showCompactConfirmModal } from './aiCompactModal';
 import { showAttachmentModal } from './aiAttachmentModal';
 import { putAttachment } from '../ai/attachments';
 import { exportChatMarkdown } from '../export/chat';
-import { getState, setSessionAiPreference } from '../storage/sessionManager';
+import { getState, setSessionAiPreference, refreshCurrentSession } from '../storage/sessionManager';
 import { onTabSync, publishTabSync } from '../storage/tabSync';
 import { onOwnershipChange } from '../storage/sessionLock';
 import { ensureModelLoaded, effectiveContextCeiling, interruptLocal, isModelLoaded, resolveLocalModel } from '../ai/local';
-import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Provider, type TurnOutcomeReason } from '../ai/types';
+import { activeModel, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type ImageSource, type PersistedToolResult, type Preset, type Provider, type TurnOutcomeReason } from '../ai/types';
+import { matchSlashCommands, parseSlashCommand, slashMenuPrefix, type SlashCommandName, type SlashCommandSpec } from '../ai/slashCommands';
 import { errorLog } from '../diagnostics/errorLog';
 
 interface PanelState {
@@ -49,6 +54,17 @@ interface PanelState {
    *  removed by one rewind operation. Popped by fast-forward to restore.
    *  Cleared when the user sends a new message (conversation has diverged). */
   rewindStack: ChatMessage[][];
+  /** Set when planFirst mode has generated a plan and is awaiting user
+   *  approval. Cleared on approve (which fires the real execution turn) or
+   *  reject (which removes planning messages from history and restores the
+   *  original input). null when no plan is pending. */
+  pendingPlanApproval: {
+    originalText: string;
+    originalImages: ImageSource[];
+    /** Length of state.history before the planning turn was sent, so
+     *  reject can remove exactly the planning messages that were added. */
+    historyLengthBefore: number;
+  } | null;
 }
 
 const state: PanelState = {
@@ -60,6 +76,7 @@ const state: PanelState = {
   inFlightController: null,
   queuedBlocks: [],
   rewindStack: [],
+  pendingPlanApproval: null,
 };
 
 /** Cached length of `public/ai.md` + PREAMBLE, in characters, populated
@@ -143,6 +160,23 @@ let forwardBtnRef: HTMLButtonElement | null = null;
 let drawerEl: HTMLElement | null = null;
 let transcriptEl: HTMLElement | null = null;
 let inputEl: HTMLTextAreaElement | null = null;
+let planApprovalBarEl: HTMLElement | null = null;
+
+// The docked panel is an editor tool: it only takes layout space on the editor
+// route. On overlay pages (e.g. /ideas) it's force-hidden so those pages render
+// full-width, WITHOUT disturbing the remembered `drawerOpen` preference — the
+// panel reappears (if it was open) the moment we're back in the editor.
+let routeActive = true;
+
+// Slash-command autocomplete menu state. The menu sits just above the input
+// row and shows while the user is typing a "/command" token. `slashMenuItems`
+// is the currently-filtered list; `slashMenuIndex` is the keyboard highlight;
+// `slashMenuUserSelected` records whether the user has explicitly arrowed to a
+// choice (so a stray Enter on a bare "/" doesn't fire the default command).
+let slashMenuEl: HTMLElement | null = null;
+let slashMenuItems: SlashCommandSpec[] = [];
+let slashMenuIndex = 0;
+let slashMenuUserSelected = false;
 
 /** "Stuck to bottom" detection for the transcript. The auto-scroll on every
  *  streamed delta used to fight the user when they scrolled up to read earlier
@@ -278,6 +312,8 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
   // and the human's instructions almost never make sense out of context.
   state.queuedBlocks = [];
   renderQueuedBadge();
+  state.pendingPlanApproval = null;
+  renderPlanApprovalBar();
   await loadHistoryForCurrentSession();
   await applySessionAiPreference();
   renderTranscript();
@@ -290,6 +326,18 @@ export async function setActiveSession(sessionId: string | null): Promise<void> 
 export function toggleAiPanel(): void {
   if (state.open) hideDrawer();
   else showDrawer();
+}
+
+/** Open the AI panel (if closed) and drop `text` into the chat input without
+ *  sending it — the user reads/tweaks it and hits send themselves. Used by the
+ *  prompt library and the /ideas page so picking a prompt lands here. */
+export function prefillAiInput(text: string): void {
+  if (!state.open) showDrawer(false);
+  if (!inputEl) return;
+  inputEl.value = text;
+  inputEl.focus();
+  const end = text.length;
+  inputEl.setSelectionRange(end, end);
 }
 
 /** Re-render everything that an AI-settings change (provider / model / key)
@@ -348,12 +396,12 @@ function applyDockLayout(): void {
 function showDrawer(focusInput = true): void {
   if (!drawerEl) return;
   state.open = true;
-  drawerEl.classList.remove('hidden');
+  drawerEl.classList.toggle('hidden', !routeActive);
   applyDockLayout();
-  window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: true } }));
+  window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: routeActive } }));
   window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: true });
-  if (focusInput) inputEl?.focus();
+  if (focusInput && routeActive) inputEl?.focus();
 }
 
 function hideDrawer(): void {
@@ -363,6 +411,21 @@ function hideDrawer(): void {
   window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: false } }));
   window.dispatchEvent(new Event('resize'));
   saveSettings({ ...loadSettings(), drawerOpen: false });
+}
+
+/** Mark whether the current route is the editor. The docked panel only occupies
+ *  layout space on the editor route; on overlay pages it's hidden so they get
+ *  full width. Does NOT change `state.open` or the saved `drawerOpen` setting,
+ *  so the panel restores to its prior state when the editor returns. */
+export function setAiPanelRouteActive(active: boolean): void {
+  if (routeActive === active) return;
+  routeActive = active;
+  if (!drawerEl) return;
+  const visible = state.open && routeActive;
+  drawerEl.classList.toggle('hidden', !visible);
+  if (visible) applyDockLayout();
+  window.dispatchEvent(new CustomEvent('ai-panel-toggled', { detail: { open: visible } }));
+  window.dispatchEvent(new Event('resize'));
 }
 
 async function loadHistoryForCurrentSession(): Promise<void> {
@@ -384,24 +447,45 @@ async function isProviderModelUsable(provider: Provider, model: string): Promise
   return !!(await getKey(provider));
 }
 
-/** Record the active provider + model as the current session's preference so
- *  reopening the session restores it. Cheap and idempotent. */
+/** Record the active AI config (provider + model + the full toggle set +
+ *  preset) as the current session's preference so reopening — or taking control
+ *  of — the session in another tab restores exactly what this tab was using.
+ *  Cheap and idempotent (the storage layer skips no-op writes). Only ever
+ *  called on a real user-initiated change, never on load, so a freshly-opened
+ *  session the user hasn't touched keeps no stored config (and the global
+ *  default applies). */
 function recordSessionAiPreference(): void {
   const s = loadSettings();
   const model = activeModel(s.toggles);
   if (typeof model === 'string' && model.length > 0) {
-    void setSessionAiPreference(s.toggles.provider, model);
+    void setSessionAiPreference(
+      s.toggles.provider,
+      model,
+      s.toggles as unknown as Record<string, unknown>,
+      s.preset,
+    );
   }
 }
 
-/** On session open, restore the session's remembered provider/model into the
- *  active settings. If that model isn't available right now we keep the user's
- *  current model and show a non-blocking notice — without erasing the stored
- *  preference, so it snaps back once the model is available again. */
+/** Apply a user-initiated change from the toggle strip: write it to this tab's
+ *  settings AND persist the full toggle set as the session's remembered config,
+ *  so it carries over when the session is reopened or taken control of in
+ *  another tab. (Per-tab live; per-session persisted — never broadcast, so it
+ *  doesn't bleed into other open windows.) */
+function applyToggleChange(partial: Parameters<typeof setToggles>[1]): void {
+  saveSettings(setToggles(loadSettings(), partial));
+  recordSessionAiPreference();
+}
+
+/** Restore the session's remembered AI config into THIS tab's settings — called
+ *  on session open and when this tab takes control of the session (not live on
+ *  every peer write, so windows never bleed into each other). If the remembered
+ *  model isn't available right now we keep the user's current model and show a
+ *  non-blocking notice — without erasing the stored preference, so it snaps back
+ *  once the model is available again. */
 async function applySessionAiPreference(): Promise<void> {
-  // Only the writer applies its session's remembered model. A viewer (or a
-  // background tab) applying would rewrite the shared global settings blob and
-  // nudge the peer/owner tab's model via the settings storage event.
+  // Only the writer applies its session's remembered config. A viewer applying
+  // would mutate this tab's settings to mirror a session it can't drive.
   if (!writeOwner) return;
   hidePrefNotice();
   const pref = getState().session?.aiPreference;
@@ -414,17 +498,27 @@ async function applySessionAiPreference(): Promise<void> {
     return;
   }
   const cur = loadSettings();
-  // Already active — don't re-write settings. This makes the focus re-assert
-  // cheap and stops two tabs on different sessions from ping-ponging the global
-  // model through the cross-tab settings `storage` event.
-  if (cur.toggles.provider === provider && activeModel(cur.toggles) === pref.model) return;
-  let next = setProvider(cur, provider);
-  switch (provider) {
-    case 'anthropic': next = setAnthropicModel(next, pref.model); break;
-    case 'openai': next = setOpenaiModel(next, pref.model); break;
-    case 'gemini': next = setGeminiModel(next, pref.model); break;
-    case 'custom': next = setCustomModel(next, pref.model); break;
-    case 'local': next = setLocalModel(next, pref.model); break;
+  let next: AiSettings;
+  if (pref.toggles) {
+    // Full per-session toggle snapshot (current format): restore provider,
+    // every per-provider model id, and all the toggles in one shot. Skip when
+    // already applied so the focus / take-control re-assert is a cheap no-op
+    // (no needless settings write or transcript-shifting re-render).
+    const sameToggles = JSON.stringify(cur.toggles) === JSON.stringify(pref.toggles);
+    if (sameToggles && (!pref.preset || cur.preset === pref.preset)) return;
+    next = setToggles(cur, pref.toggles as unknown as Parameters<typeof setToggles>[1]);
+    if (pref.preset) next = { ...next, preset: pref.preset as Preset };
+  } else {
+    // Legacy {provider, model} only (sessions saved before toggles were stored).
+    if (cur.toggles.provider === provider && activeModel(cur.toggles) === pref.model) return;
+    next = setProvider(cur, provider);
+    switch (provider) {
+      case 'anthropic': next = setAnthropicModel(next, pref.model); break;
+      case 'openai': next = setOpenaiModel(next, pref.model); break;
+      case 'gemini': next = setGeminiModel(next, pref.model); break;
+      case 'custom': next = setCustomModel(next, pref.model); break;
+      case 'local': next = setLocalModel(next, pref.model); break;
+    }
   }
   saveSettings(next);
   renderModelPicker();
@@ -478,12 +572,24 @@ async function reloadChatFromPeer(sessionId: string): Promise<void> {
 function applyOwnership(owned: boolean): void {
   // No real session (global bucket) = no contention = always writable.
   const noRealSession = !state.sessionId || state.sessionId === GLOBAL_CHAT_BUCKET;
+  const wasOwner = writeOwner;
   writeOwner = noRealSession ? true : owned;
   // The whole-screen viewer overlay (viewerMode.ts) is the single "locked" UI
   // now; the send-disable + sendMessage guard stay as a backstop.
   if (sendBtnRef) sendBtnRef.disabled = !writeOwner;
   // Becoming a viewer mid-turn (another tab took control): stop our run.
   if (!writeOwner) stopActiveTurn();
+  // Gaining write-ownership of a real session — "Take control" in a new tab —
+  // is one of the explicit transitions where state SHOULD carry over from the
+  // tab that had it. Re-read the session from IndexedDB first (the previous
+  // writer persisted its config there without broadcasting), then apply it so
+  // this tab adopts that session's provider/model/toggles.
+  if (writeOwner && !wasOwner && !noRealSession) {
+    void (async () => {
+      await refreshCurrentSession();
+      await applySessionAiPreference();
+    })();
+  }
 }
 
 /** Abort any in-flight AI turn — used by the Stop button and when this tab
@@ -577,6 +683,13 @@ function buildDrawer(): void {
   clearBtn.addEventListener('click', () => { void clearCurrentChat(); });
   header.appendChild(clearBtn);
 
+  const promptsBtn = createIconButton('Prompt library', '💡');
+  promptsBtn.title = 'Prompt library — example prompts to try. Pick one to drop it into the chat box (you can edit it before sending).';
+  promptsBtn.addEventListener('click', () => {
+    showAiPromptLibraryModal({ onSelect: (idea) => prefillAiInput(idea.prompt ?? '') });
+  });
+  header.appendChild(promptsBtn);
+
   const diagBtn = createIconButton('AI Call Log', '🩺');
   diagBtn.title = 'AI Call Log — recent provider API calls: request shape, stop reason, token usage, full error messages. Open this when a turn ends with a confusing status.';
   diagBtn.addEventListener('click', () => { showAiDiagnosticsModal(); });
@@ -617,6 +730,7 @@ function buildDrawer(): void {
 
   // Transcript
   transcriptEl = document.createElement('div');
+  transcriptEl.id = 'ai-transcript';
   transcriptEl.className = 'flex-1 overflow-y-auto px-3 py-3 flex flex-col gap-3';
   root.appendChild(transcriptEl);
 
@@ -630,10 +744,20 @@ function buildDrawer(): void {
   inputResizeHandle.appendChild(inputResizeStripe);
   root.appendChild(inputResizeHandle);
 
+  // Plan approval bar — shown after planFirst mode generates a plan, until
+  // the user approves (proceeds to execution) or rejects (restores input).
+  planApprovalBarEl = document.createElement('div');
+  planApprovalBarEl.className = 'px-3 py-2 border-t border-amber-700/60 bg-amber-900/20 flex items-center gap-2 shrink-0 hidden';
+  root.appendChild(planApprovalBarEl);
+
   // Bottom section — rewind, toggles, cost, input
   const bottomSection = document.createElement('div');
-  bottomSection.className = 'flex flex-col shrink-0 overflow-hidden';
-  bottomSection.style.height = '220px';
+  // min-height (not a fixed height) so the section can grow to keep the input
+  // readable: when sibling rows below appear (progress, pending images, queued
+  // badge, a wrapped toggle strip) they no longer compress the textarea — the
+  // whole section expands instead, preserving the textarea's 3-row floor.
+  bottomSection.className = 'flex flex-col shrink-0';
+  bottomSection.style.minHeight = '220px';
   initInputResizer(inputResizeHandle, bottomSection);
 
 
@@ -674,15 +798,50 @@ function buildDrawer(): void {
   inputRow.className = 'px-3 pt-2 pb-2 border-t border-zinc-700 flex flex-col gap-2 flex-1 min-h-0';
 
   const ta = document.createElement('textarea');
-  ta.placeholder = 'Ask the AI to model something...';
-  ta.rows = 2;
-  ta.className = 'w-full flex-1 min-h-0 px-2 py-1.5 rounded bg-zinc-800 border border-zinc-600 text-zinc-100 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 resize-none';
+  ta.placeholder = 'Ask the AI to model something…  (type / for commands)';
+  ta.rows = 3;
+  // Hard 3-row floor: `flex-1` still lets the textarea grow to fill the pane,
+  // but min-height keeps it readable/typeable no matter what siblings claim
+  // space below. 3 rows of text-sm (20px line-height) + py-1.5 padding +
+  // border ≈ 74px. Replaces the old `min-h-0`, which let flexbox squish it
+  // all the way to 0.
+  ta.className = 'w-full flex-1 px-2 py-1.5 rounded bg-zinc-800 border border-zinc-600 text-zinc-100 text-sm placeholder:text-zinc-500 focus:outline-none focus:border-blue-500 resize-none';
+  ta.style.minHeight = '74px';
   ta.addEventListener('keydown', e => {
+    // When the slash-command menu is open it owns the arrow/Tab/Enter/Escape
+    // keys so the user can navigate and run a command without it being sent
+    // to the model as a message.
+    if (isSlashMenuOpen()) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); moveSlashSelection(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); moveSlashSelection(-1); return; }
+      if (e.key === 'Tab') { e.preventDefault(); completeSlashSelection(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); hideSlashMenu(); return; }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        // Only run on Enter when the choice is unambiguous: the user has
+        // explicitly highlighted an item (arrow keys), or the filter has
+        // narrowed to a single command. A bare "/" — or any prefix matching
+        // several commands — leaves the highlight on whatever is first, so a
+        // stray Enter would silently fire that command (e.g. /compact). In
+        // that case consume the Enter and keep the menu open to refine.
+        if (slashSelectionConfirmed()) {
+          const cmd = slashMenuItems[slashMenuIndex];
+          if (cmd) runSlashCommand(cmd.name as SlashCommandName);
+        }
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      // A bare "/command" runs the command instead of being sent as a message.
+      if (maybeRunSlashCommand()) return;
       void sendMessage();
     }
   });
+  ta.addEventListener('input', () => { updateSlashMenu(); });
+  // Hide the menu when focus genuinely leaves the input. Row clicks keep focus
+  // (they preventDefault on mousedown), so this fires only on a real blur.
+  ta.addEventListener('blur', () => { window.setTimeout(() => hideSlashMenu(), 120); });
   ta.addEventListener('paste', e => {
     if (!e.clipboardData) return;
     for (const item of Array.from(e.clipboardData.items)) {
@@ -763,6 +922,8 @@ function buildDrawer(): void {
   sendBtn.className = 'shrink-0 px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-50 disabled:cursor-not-allowed';
   sendBtn.textContent = 'Send';
   sendBtn.addEventListener('click', () => {
+    // A bare "/command" runs the command rather than being sent/queued.
+    if (maybeRunSlashCommand()) return;
     // While a turn is in flight, Send queues — the agent picks the
     // message up at the next natural pause (between tool round-trips or
     // at end-of-turn) without us aborting the current run. Stop is the
@@ -779,6 +940,20 @@ function buildDrawer(): void {
   inputRow.appendChild(inputBtnRow);
   bottomSection.appendChild(inputRow);
   root.appendChild(bottomSection);
+
+  // Slash-command autocomplete menu — a floating overlay anchored just above
+  // the input. It uses `position: fixed` (coordinates set in
+  // positionSlashMenu() from the textarea's rect) so it overlays the content
+  // above the input instead of taking flow space — the textarea never changes
+  // size or shape. Fixed positioning also escapes the bottom section's
+  // `overflow-hidden`, which would otherwise clip an upward-growing menu.
+  slashMenuEl = document.createElement('div');
+  slashMenuEl.id = 'ai-slash-menu';
+  slashMenuEl.className = 'fixed z-50 rounded border border-zinc-600 bg-zinc-800 shadow-xl max-h-56 overflow-y-auto hidden';
+  root.appendChild(slashMenuEl);
+  // Keep the overlay glued to the input if the viewport (or panel) resizes
+  // while it's open. Keystrokes already reposition via renderSlashMenu().
+  window.addEventListener('resize', () => { if (isSlashMenuOpen()) positionSlashMenu(); });
 
   // Drag-drop image handling
   root.addEventListener('dragover', e => { e.preventDefault(); root.classList.add('ring-2', 'ring-blue-500'); });
@@ -858,7 +1033,7 @@ function initInputResizer(handle: HTMLElement, bottomSection: HTMLElement): void
     const delta = startY - e.clientY;
     const minH = 100;
     const maxH = 520;
-    bottomSection.style.height = `${Math.max(minH, Math.min(maxH, startHeight + delta))}px`;
+    bottomSection.style.minHeight = `${Math.max(minH, Math.min(maxH, startHeight + delta))}px`;
   });
 
   const onInputResizeEnd = (e: PointerEvent) => {
@@ -1049,7 +1224,7 @@ function renderToggleStrip(): void {
     toggles.vision.views,
     'Auto-render: lets the model call renderView() to take its own screenshots after paint / geometry changes. Each render ≈ 1500 tokens of input on the next turn — verification is valuable but it adds up. The 📷 Show AI button still works manually when this is OFF.',
     () => {
-      saveSettings(setToggles(loadSettings(), { vision: { views: !toggles.vision.views } }));
+      applyToggleChange({ vision: { views: !toggles.vision.views } });
       renderToggleStrip();
       renderCostMeter();
     },
@@ -1070,7 +1245,7 @@ function renderToggleStrip(): void {
   }
   resSel.value = toggles.vision.resolution;
   resSel.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { vision: { resolution: resSel.value as ChatToggles['vision']['resolution'] } }));
+    applyToggleChange({ vision: { resolution: resSel.value as ChatToggles['vision']['resolution'] } });
     renderCostMeter();
   });
   adv.appendChild(resSel);
@@ -1088,7 +1263,7 @@ function renderToggleStrip(): void {
   }
   anglesSel.value = toggles.vision.angles;
   anglesSel.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { vision: { angles: anglesSel.value as ChatToggles['vision']['angles'] } }));
+    applyToggleChange({ vision: { angles: anglesSel.value as ChatToggles['vision']['angles'] } });
   });
   adv.appendChild(anglesSel);
 
@@ -1097,7 +1272,7 @@ function renderToggleStrip(): void {
     toggles.scope.runCode,
     'Run code: allow the AI to execute geometry code (runCode, runAndSave). OFF makes it suggest code in chat without running.',
     () => {
-      saveSettings(setToggles(loadSettings(), { scope: { runCode: !toggles.scope.runCode } }));
+      applyToggleChange({ scope: { runCode: !toggles.scope.runCode } });
       renderToggleStrip();
     },
   ));
@@ -1106,7 +1281,7 @@ function renderToggleStrip(): void {
     toggles.scope.saveVersions,
     'Save versions: allow the AI to commit results to the gallery (runAndSave, loadVersion). OFF keeps the model in run-only / dry-run mode.',
     () => {
-      saveSettings(setToggles(loadSettings(), { scope: { saveVersions: !toggles.scope.saveVersions } }));
+      applyToggleChange({ scope: { saveVersions: !toggles.scope.saveVersions } });
       renderToggleStrip();
     },
   ));
@@ -1115,7 +1290,7 @@ function renderToggleStrip(): void {
     toggles.scope.paintFaces,
     'Paint: allow the AI to set color regions (paintInBox, paintSlab, paintNear, etc.). OFF by default — painting locks the editor and is the easiest place for the AI to over-select.',
     () => {
-      saveSettings(setToggles(loadSettings(), { scope: { paintFaces: !toggles.scope.paintFaces } }));
+      applyToggleChange({ scope: { paintFaces: !toggles.scope.paintFaces } });
       renderToggleStrip();
     },
   ));
@@ -1124,7 +1299,7 @@ function renderToggleStrip(): void {
     toggles.scope.sessionNotes,
     'Session notes: allow the AI to call addSessionNote to log design decisions. OFF saves a tool round-trip per note — the chat transcript already records the reasoning.',
     () => {
-      saveSettings(setToggles(loadSettings(), { scope: { sessionNotes: !toggles.scope.sessionNotes } }));
+      applyToggleChange({ scope: { sessionNotes: !toggles.scope.sessionNotes } });
       renderToggleStrip();
     },
   ));
@@ -1133,7 +1308,16 @@ function renderToggleStrip(): void {
     toggles.autoResume,
     'Auto-continue: the agent keeps working until it calls the finish tool to declare the task done — if a turn ends without calling finish, it is automatically resumed instead of stopping. Bounded by the ⟲ iteration cap and the $ spend cap (whichever trips first). Useful for models that tend to stop early (e.g. Gemini). ON by default; turn it OFF to stop at each end_turn as usual (your choice is remembered).',
     () => {
-      saveSettings(setToggles(loadSettings(), { autoResume: !toggles.autoResume }));
+      applyToggleChange({ autoResume: !toggles.autoResume });
+      renderToggleStrip();
+    },
+  ));
+  primary.appendChild(togglePill(
+    '📋 Plan',
+    toggles.planFirst,
+    'Plan first: when ON, the AI writes a step-by-step plan before doing any work. You approve or reject the plan before execution starts. Useful for complex requests where you want to review the approach first.',
+    () => {
+      applyToggleChange({ planFirst: !toggles.planFirst });
       renderToggleStrip();
     },
   ));
@@ -1149,7 +1333,7 @@ function renderToggleStrip(): void {
   }
   retry.value = String(toggles.autoRetry);
   retry.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { autoRetry: Number(retry.value) as 0 | 1 | 3 }));
+    applyToggleChange({ autoRetry: Number(retry.value) as 0 | 1 | 3 });
   });
   adv.appendChild(retry);
 
@@ -1168,7 +1352,7 @@ function renderToggleStrip(): void {
   }
   iterCap.value = toggles.maxIterations;
   iterCap.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { maxIterations: iterCap.value as ChatToggles['maxIterations'] }));
+    applyToggleChange({ maxIterations: iterCap.value as ChatToggles['maxIterations'] });
   });
   adv.appendChild(iterCap);
 
@@ -1188,7 +1372,7 @@ function renderToggleStrip(): void {
   }
   spendCap.value = toggles.maxSpend;
   spendCap.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { maxSpend: spendCap.value as ChatToggles['maxSpend'] }));
+    applyToggleChange({ maxSpend: spendCap.value as ChatToggles['maxSpend'] });
   });
   adv.appendChild(spendCap);
 
@@ -1209,7 +1393,7 @@ function renderToggleStrip(): void {
   }
   thinkSel.value = toggles.thinking;
   thinkSel.addEventListener('change', () => {
-    saveSettings(setToggles(loadSettings(), { thinking: thinkSel.value as ChatToggles['thinking'] }));
+    applyToggleChange({ thinking: thinkSel.value as ChatToggles['thinking'] });
     renderCostMeter();
   });
   adv.appendChild(thinkSel);
@@ -1441,7 +1625,7 @@ async function clearCurrentChat(): Promise<void> {
   const scope = state.sessionId === GLOBAL_CHAT_BUCKET
     ? 'the global chat (before any session was opened)'
     : 'this session';
-  if (!confirm(`Clear chat for ${scope}? ${state.history.length} message(s) will be deleted from your browser. Saved versions and session notes are untouched.`)) return;
+  if (!(await confirmDialog(`Clear chat for ${scope}? ${state.history.length} message(s) will be deleted from your browser. Saved versions and session notes are untouched.`, { title: 'Clear chat', confirmLabel: 'Clear', danger: true }))) return;
   try {
     await clearChat(state.sessionId);
   } catch (err) {
@@ -1449,6 +1633,8 @@ async function clearCurrentChat(): Promise<void> {
     return;
   }
   state.history = [];
+  state.pendingPlanApproval = null;
+  renderPlanApprovalBar();
   broadcastChatChanged();
   renderTranscript();
   renderCostMeter();
@@ -1459,23 +1645,147 @@ function formatDuration(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
+function renderPlanApprovalBar(): void {
+  if (!planApprovalBarEl) return;
+  if (!state.pendingPlanApproval || state.inFlight) {
+    planApprovalBarEl.classList.add('hidden');
+    return;
+  }
+  planApprovalBarEl.classList.remove('hidden');
+  planApprovalBarEl.replaceChildren();
+
+  const label = document.createElement('span');
+  label.className = 'text-[11px] text-amber-200 flex-1';
+  label.textContent = '📋 Plan mode — type to refine, or approve/reject.';
+  planApprovalBarEl.appendChild(label);
+
+  const approveBtn = document.createElement('button');
+  approveBtn.className = 'shrink-0 px-2 py-1 rounded text-[11px] font-medium bg-blue-600 hover:bg-blue-500 text-white';
+  approveBtn.textContent = '✓ Approve';
+  approveBtn.title = 'Approve this plan and start building.';
+  approveBtn.addEventListener('click', () => { void approvePlan(); });
+  planApprovalBarEl.appendChild(approveBtn);
+
+  const rejectBtn = document.createElement('button');
+  rejectBtn.className = 'shrink-0 px-2 py-1 rounded text-[11px] text-zinc-300 bg-zinc-700 hover:bg-zinc-600';
+  rejectBtn.textContent = '✗ Reject';
+  rejectBtn.title = 'Reject this plan and edit your request.';
+  rejectBtn.addEventListener('click', () => { void rejectPlan(); });
+  planApprovalBarEl.appendChild(rejectBtn);
+}
+
+async function approvePlan(): Promise<void> {
+  if (!state.pendingPlanApproval) return;
+  state.pendingPlanApproval = null;
+  renderPlanApprovalBar();
+
+  const settings = loadSettings();
+  const apiKey = await preflightTurn(settings, () => { void approvePlan(); });
+  if (apiKey === PREFLIGHT_ABORT) return;
+
+  state.rewindStack = [];
+  progressState.retryCount = 0;
+  stalledByWatchdog = false;
+  pinTranscriptToBottom();
+  // Approval is the hand-off from planning to building: force planFirst off for
+  // this turn so the model actually receives the tool list. Leaving it on would
+  // make buildToolList return [] and emit the "do NOT call any tools" suffix, so
+  // the approved turn could only re-plan, never execute.
+  await runTurnWithStallRetry(apiKey, { ...settings.toggles, planFirst: false }, [
+    { type: 'text', text: 'Plan approved. Please proceed.' },
+  ]);
+}
+
+async function rejectPlan(): Promise<void> {
+  if (!state.pendingPlanApproval) return;
+  const { originalText, originalImages, historyLengthBefore } = state.pendingPlanApproval;
+
+  const msgsToRemove = state.history.slice(historyLengthBefore);
+  if (msgsToRemove.length > 0) {
+    await deleteMessages(msgsToRemove.map(m => m.id));
+    state.history = state.history.slice(0, historyLengthBefore);
+  }
+
+  state.pendingPlanApproval = null;
+
+  if (inputEl) {
+    inputEl.value = originalText;
+    inputEl.dispatchEvent(new Event('input'));
+    inputEl.focus();
+  }
+  state.pendingImages = [...originalImages];
+  renderPendingImages();
+  renderPlanApprovalBar();
+  renderTranscript();
+  updateRewindButtons();
+}
+
 // === Transcript rendering ===
+
+/** Empty-state shown when a chat has no messages yet. Beyond the one-line
+ *  hint, it surfaces a few tappable starter-prompt chips (and a link to the
+ *  full prompt library) so a user who doesn't know what to ask for can get
+ *  going in one click — populate, don't send. */
+function renderEmptyState(): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'flex-1 flex flex-col items-center justify-center gap-3 text-center px-6';
+
+  const hint = document.createElement('p');
+  hint.className = 'text-zinc-500 text-xs';
+  hint.textContent = state.sessionId === GLOBAL_CHAT_BUCKET
+    ? 'Open a session and ask the AI to model something — or start with one of these:'
+    : 'Ask the AI to model, modify, or describe this session — or start with one of these:';
+  wrap.appendChild(hint);
+
+  const chips = document.createElement('div');
+  chips.className = 'flex flex-wrap items-center justify-center gap-1.5';
+  for (const idea of starterChipIdeas(4)) {
+    chips.appendChild(buildPromptChip(`${idea.emoji} ${idea.title}`, idea.title, () => {
+      prefillAiInput(idea.prompt ?? '');
+    }));
+  }
+  // "More…" opens the full prompt library.
+  chips.appendChild(buildPromptChip('More ideas…', 'Browse the prompt library', () => {
+    showAiPromptLibraryModal({ onSelect: (idea) => prefillAiInput(idea.prompt ?? '') });
+  }));
+  wrap.appendChild(chips);
+
+  return wrap;
+}
+
+/** A small pill button used in the empty-state suggestion row. */
+function buildPromptChip(label: string, title: string, onClick: () => void): HTMLButtonElement {
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = 'px-2.5 py-1 rounded-full text-[11px] text-zinc-300 bg-zinc-800 border border-zinc-700 hover:border-zinc-500 hover:text-zinc-100 transition-colors';
+  chip.textContent = label;
+  chip.title = title;
+  chip.addEventListener('click', onClick);
+  return chip;
+}
 
 function renderTranscript(): void {
   if (!transcriptEl) return;
   // Measure before replaceChildren — clearing children clamps scrollTop, so
   // any post-clear check would mis-report the user's intent.
   const pinned = isTranscriptPinnedToBottom();
+
+  // Preserve open state of thinking boxes the user manually expanded. Keyed
+  // by "messageId:index" so each box in a multi-thinking message is tracked
+  // independently.
+  const openThinkingBoxes = new Set<string>();
+  for (const msgEl of transcriptEl.querySelectorAll('[data-message-id]')) {
+    const msgId = (msgEl as HTMLElement).dataset.messageId!;
+    msgEl.querySelectorAll('details[data-thinking-box]').forEach((box, i) => {
+      if ((box as HTMLDetailsElement).open) openThinkingBoxes.add(`${msgId}:${i}`);
+    });
+  }
+
   transcriptEl.replaceChildren();
   const hasHistory = state.history.length > 0;
   const hasQueue = state.queuedBlocks.length > 0;
   if (!hasHistory && !hasQueue) {
-    const empty = document.createElement('div');
-    empty.className = 'flex-1 flex items-center justify-center text-zinc-600 text-xs text-center px-6';
-    empty.textContent = state.sessionId === GLOBAL_CHAT_BUCKET
-      ? 'Open a session and ask the AI to model something. Try: "Build a coffee mug, 80mm tall."'
-      : 'Ask the AI to model, modify, or describe this session.';
-    transcriptEl.appendChild(empty);
+    transcriptEl.appendChild(renderEmptyState());
     return;
   }
   for (const msg of state.history) {
@@ -1489,6 +1799,17 @@ function renderTranscript(): void {
   if (hasQueue) {
     transcriptEl.appendChild(renderQueuedPreview());
   }
+
+  // Restore thinking boxes that were open before the re-render.
+  if (openThinkingBoxes.size > 0) {
+    for (const msgEl of transcriptEl.querySelectorAll('[data-message-id]')) {
+      const msgId = (msgEl as HTMLElement).dataset.messageId!;
+      msgEl.querySelectorAll('details[data-thinking-box]').forEach((box, i) => {
+        if (openThinkingBoxes.has(`${msgId}:${i}`)) (box as HTMLDetailsElement).open = true;
+      });
+    }
+  }
+
   if (pinned) pinTranscriptToBottom();
 }
 
@@ -1814,7 +2135,7 @@ async function resumeFromNotice(noticeMsgId: string, raiseSpendCap: boolean): Pr
     const cur = loadSettings().toggles.maxSpend;
     const next = nextSpendTier(cur);
     if (next !== cur) {
-      saveSettings(setToggles(loadSettings(), { maxSpend: next }));
+      applyToggleChange({ maxSpend: next });
       renderToggleStrip();
       renderCostMeter();
     }
@@ -1944,6 +2265,7 @@ function renderToolCallChip(name: string, input: Record<string, unknown>): HTMLE
  *  bury the actual reply. Indigo-tinted to read apart from tool chips. */
 function renderThinkingBox(text: string): HTMLElement {
   const chip = document.createElement('details');
+  chip.dataset.thinkingBox = '1';
   chip.className = 'max-w-[90%] text-[11px] rounded border border-indigo-800/50 bg-indigo-950/20 px-2 py-1';
   const summary = document.createElement('summary');
   summary.className = 'cursor-pointer text-indigo-300/90 select-none';
@@ -2296,6 +2618,156 @@ async function preflightTurn(
   return apiKey;
 }
 
+// === Slash commands ===
+//
+// A bare "/command" typed in the input runs a panel action instead of being
+// sent to the model. Each command mirrors a header button, giving the whole
+// chat-management surface a keyboard path. The command names live in the pure
+// `slashCommands` module; this map binds each to its handler and is type-
+// checked against `SlashCommandName`, so adding a name there without a handler
+// here (or vice versa) is a compile error.
+const SLASH_HANDLERS: Record<SlashCommandName, () => void> = {
+  compact: () => { void runCompact(); },
+  clear: () => { void clearCurrentChat(); },
+  review: () => { void launchReview(); },
+  export: () => { exportCurrentChat(); },
+  models: () => { void showAiSettingsModal({ onChange: afterAiSettingsChange }); },
+  help: () => { openSlashHelp(); },
+  portrait: () => { prefillAiInput(PHOTO_BUST_PROMPT); },
+};
+
+/** Interpret the current input as a slash command. Returns true when it was a
+ *  slash-command invocation — known commands run, unknown ones surface a hint
+ *  — so the caller skips the normal send/queue path. Returns false for any
+ *  ordinary message (which then sends as usual). */
+function maybeRunSlashCommand(): boolean {
+  if (!inputEl) return false;
+  const parsed = parseSlashCommand(inputEl.value);
+  if (!parsed) return false;
+  if (parsed.name) {
+    runSlashCommand(parsed.name);
+  } else {
+    hideSlashMenu();
+    setTransientStatus(`Unknown command /${parsed.token} — type /help to list commands.`);
+  }
+  return true;
+}
+
+/** Run a resolved command: dismiss the menu, clear the input, dispatch. */
+function runSlashCommand(name: SlashCommandName): void {
+  hideSlashMenu();
+  if (inputEl) inputEl.value = '';
+  SLASH_HANDLERS[name]();
+}
+
+function isSlashMenuOpen(): boolean {
+  return !!slashMenuEl && !slashMenuEl.classList.contains('hidden') && slashMenuItems.length > 0;
+}
+
+/** Re-filter the menu against the current input and show or hide it. Called on
+ *  every input event: shows while the user is mid-"/command", hides once a
+ *  space is typed or the leading slash is gone. */
+function updateSlashMenu(): void {
+  if (!inputEl) return;
+  const prefix = slashMenuPrefix(inputEl.value);
+  if (prefix === null) { hideSlashMenu(); return; }
+  showSlashMenu(prefix);
+}
+
+/** Open the menu showing every command — the /help action. */
+function openSlashHelp(): void {
+  showSlashMenu('');
+  inputEl?.focus();
+}
+
+function showSlashMenu(prefix: string): void {
+  slashMenuItems = matchSlashCommands(prefix);
+  slashMenuIndex = 0;
+  // Re-filtering resets the highlight, so any prior explicit selection is
+  // stale — require fresh confirmation before Enter runs anything.
+  slashMenuUserSelected = false;
+  renderSlashMenu();
+}
+
+function hideSlashMenu(): void {
+  slashMenuItems = [];
+  slashMenuIndex = 0;
+  slashMenuUserSelected = false;
+  if (slashMenuEl) {
+    slashMenuEl.replaceChildren();
+    slashMenuEl.classList.add('hidden');
+  }
+}
+
+function moveSlashSelection(delta: number): void {
+  if (slashMenuItems.length === 0) return;
+  slashMenuIndex = (slashMenuIndex + delta + slashMenuItems.length) % slashMenuItems.length;
+  slashMenuUserSelected = true;
+  renderSlashMenu();
+}
+
+/** Whether an Enter press should run the highlighted command: true once the
+ *  user has explicitly arrowed to a choice, or the filter has narrowed to a
+ *  single command (typing the full name, or a unique prefix). Guards against a
+ *  stray Enter on an ambiguous menu firing the first command. */
+function slashSelectionConfirmed(): boolean {
+  return slashMenuUserSelected || slashMenuItems.length === 1;
+}
+
+/** Tab-complete the highlighted command into the input, then re-filter so the
+ *  menu narrows to the now-exact token. */
+function completeSlashSelection(): void {
+  const cmd = slashMenuItems[slashMenuIndex];
+  if (!cmd || !inputEl) return;
+  inputEl.value = `/${cmd.name}`;
+  updateSlashMenu();
+}
+
+function renderSlashMenu(): void {
+  if (!slashMenuEl) return;
+  if (slashMenuItems.length === 0) { hideSlashMenu(); return; }
+  slashMenuEl.replaceChildren();
+
+  const header = document.createElement('div');
+  header.className = 'px-2 py-1 text-[10px] uppercase tracking-wide text-zinc-500 border-b border-zinc-700/60 sticky top-0 bg-zinc-800/95';
+  header.textContent = 'Slash commands';
+  slashMenuEl.appendChild(header);
+
+  slashMenuItems.forEach((cmd, i) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = `w-full text-left px-2 py-1.5 flex flex-col gap-0.5 ${i === slashMenuIndex ? 'bg-zinc-700' : 'hover:bg-zinc-700/50'}`;
+    const nameEl = document.createElement('span');
+    nameEl.className = 'text-[12px] font-medium text-blue-300';
+    nameEl.textContent = `/${cmd.name}`;
+    const sumEl = document.createElement('span');
+    sumEl.className = 'text-[10px] text-zinc-400';
+    sumEl.textContent = cmd.summary;
+    row.append(nameEl, sumEl);
+    // Keep focus in the textarea so the click handler can clear it and the
+    // blur-hide never races the click.
+    row.addEventListener('mousedown', e => e.preventDefault());
+    row.addEventListener('click', () => { runSlashCommand(cmd.name as SlashCommandName); });
+    slashMenuEl!.appendChild(row);
+  });
+
+  slashMenuEl.classList.remove('hidden');
+  positionSlashMenu();
+}
+
+/** Anchor the floating menu just above the input, matching its width. Uses
+ *  the textarea's viewport rect with `position: fixed`, so the overlay never
+ *  reflows the input and isn't clipped by the bottom section. */
+function positionSlashMenu(): void {
+  if (!slashMenuEl || !inputEl) return;
+  const r = inputEl.getBoundingClientRect();
+  slashMenuEl.style.left = `${Math.round(r.left)}px`;
+  slashMenuEl.style.width = `${Math.round(r.width)}px`;
+  // Pin the menu's bottom edge 6px above the input's top; it grows upward.
+  slashMenuEl.style.bottom = `${Math.round(window.innerHeight - r.top + 6)}px`;
+  slashMenuEl.style.top = 'auto';
+}
+
 async function sendMessage(): Promise<void> {
   if (state.inFlight) return;
   // Another tab is the leader for this session — don't run a second chat loop
@@ -2324,12 +2796,16 @@ async function sendMessage(): Promise<void> {
   const apiKey = await preflightTurn(settings, () => { void sendMessage(); });
   if (apiKey === PREFLIGHT_ABORT) return;
 
+  // Capture content before clearing the input so plan mode can restore it on reject.
+  const capturedText = text;
+  const capturedImages = [...state.pendingImages];
+
   const blocks: ChatBlock[] = [];
-  if (text.length > 0) blocks.push({ type: 'text', text });
+  if (capturedText.length > 0) blocks.push({ type: 'text', text: capturedText });
   // Only attach images the user added if vision is on. Iso views are
   // user-initiated via Show AI; pending images get sent regardless because
   // the user's intent is explicit when they attached them.
-  for (const img of state.pendingImages) blocks.push({ type: 'image', source: img });
+  for (const img of capturedImages) blocks.push({ type: 'image', source: img });
 
   inputEl.value = '';
   state.pendingImages = [];
@@ -2343,6 +2819,56 @@ async function sendMessage(): Promise<void> {
   // bottom so the user's own bubble and the streamed reply are visible even
   // if they had been scrolled up reading earlier history.
   pinTranscriptToBottom();
+
+  if (settings.toggles.planFirst || state.pendingPlanApproval) {
+    // Plan-first mode or an in-flight plan refinement: keep tools off so the
+    // model can't execute anything until the user approves. If this is a
+    // follow-up (pendingPlanApproval is already set), the user is replying to
+    // a clarifying question or asking the model to revise — just send the
+    // message as-is; the planning prefix is only for the very first turn.
+    const planToggles: ChatToggles = {
+      ...settings.toggles,
+      // The pending-approval state is the source of truth for "we're planning,"
+      // not the live Plan pill — force planFirst on so a refinement turn keeps
+      // its empty tool list and plan-mode suffix even if the user toggled the
+      // pill off while a plan was pending.
+      planFirst: true,
+      scope: { runCode: false, saveVersions: false, paintFaces: false, sessionNotes: false },
+      autoResume: false,
+    };
+
+    let planBlocks: ChatBlock[];
+    if (state.pendingPlanApproval) {
+      // Refinement turn: plain user message, no prefix. historyLengthBefore
+      // stays fixed so Reject still removes all planning messages.
+      // Refinement: remind the model it is still in plan mode so it doesn't
+      // switch to execution mode when it receives the information it asked for.
+      const refinePrefix = '[Plan refinement — revise or extend the plan only, do not call any tools or start building]: ';
+      planBlocks = [];
+      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: refinePrefix + capturedText });
+      for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
+    } else {
+      // First planning turn: prefix with the planning instruction.
+      const planPrefix =
+        'Before doing anything, write a concise plan for the following request. '
+        + 'Describe your approach, key steps, and any design decisions. '
+        + 'Do NOT call any tools or start building yet — I will approve or reject your plan first.\n\n'
+        + '---\n\n';
+      planBlocks = [];
+      if (capturedText.length > 0) planBlocks.push({ type: 'text', text: planPrefix + capturedText });
+      for (const img of capturedImages) planBlocks.push({ type: 'image', source: img });
+      state.pendingPlanApproval = {
+        originalText: capturedText,
+        originalImages: capturedImages,
+        historyLengthBefore: state.history.length,
+      };
+    }
+
+    await runTurnWithStallRetry(apiKey, planToggles, planBlocks);
+    renderPlanApprovalBar();
+    return;
+  }
+
   await runTurnWithStallRetry(apiKey, settings.toggles, blocks);
 }
 
@@ -2401,6 +2927,53 @@ function formatTurnOutcome(o: TurnOutcome): string {
  *  streamLocalTurn throws "Local model … is not loaded" even when the weights
  *  are cached and the model is resident in GPU on the main thread. Running the
  *  loop here reunites streamLocalTurn (and interruptLocal) with that engine. */
+/** Show a blocking overlay asking the user to allow or decline an AI-initiated
+ *  import. Resolves true (allow) or false (decline). */
+function showToolConfirmation(toolName: string): Promise<boolean> {
+  return new Promise(resolve => {
+    const label = toolName === 'importImageAsRelief'
+      ? 'import an image as a 3D relief'
+      : toolName === 'importSvgAsRelief'
+      ? 'import an SVG as a 3D relief tile'
+      : `run "${toolName}"`;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/60';
+
+    const card = document.createElement('div');
+    card.className = 'bg-zinc-800 rounded-lg p-5 max-w-sm mx-4 shadow-xl border border-zinc-600';
+
+    const msg = document.createElement('p');
+    msg.className = 'text-sm text-zinc-200 mb-4';
+    msg.textContent = `The AI wants to ${label}. Allow this?`;
+
+    const btns = document.createElement('div');
+    btns.className = 'flex gap-2 justify-end';
+
+    const declineBtn = document.createElement('button');
+    declineBtn.className = 'px-3 py-1.5 text-sm rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors';
+    declineBtn.textContent = 'Decline';
+
+    const allowBtn = document.createElement('button');
+    allowBtn.className = 'px-3 py-1.5 text-sm rounded bg-blue-600 hover:bg-blue-500 text-white transition-colors';
+    allowBtn.textContent = 'Allow';
+
+    btns.appendChild(declineBtn);
+    btns.appendChild(allowBtn);
+    card.appendChild(msg);
+    card.appendChild(btns);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+
+    const done = (allowed: boolean) => {
+      overlay.remove();
+      resolve(allowed);
+    };
+    allowBtn.addEventListener('click', () => done(true));
+    declineBtn.addEventListener('click', () => done(false));
+  });
+}
+
 function runTurn(input: RunTurnInput, callbacks?: RunTurnCallbacks): Promise<ChatMessage[]> {
   return input.toggles.provider === 'local'
     ? runTurnOnMainThread(input, callbacks)
@@ -2521,6 +3094,7 @@ async function runTurnWithStallRetry(apiKey: string | undefined, toggles: ChatTo
         renderTranscript();
         renderCostMeter();
       },
+      confirmTool: (toolName) => showToolConfirmation(toolName),
       onToolResult: (_id, _name, result) => {
         if (result.isError) setTransientStatus('A tool errored. The agent will retry or surface the issue.');
       },

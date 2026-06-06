@@ -1,0 +1,26 @@
+id: no-native-dialogs
+language: typescript
+severity: error
+message: >-
+  Native browser dialog (alert/confirm/prompt) blocks the thread and ignores
+  the app's UI system. Use showToast() for notices, and confirmDialog() /
+  promptDialog() from src/ui/dialogs.ts for yes/no or text input.
+note: >-
+  Partwright has one messaging system. Notices belong in showToast()
+  (src/ui/toast.ts), which mirrors to the Diagnostic Log; confirmations and
+  prompts belong in the stackable dialogs in src/ui/dialogs.ts. See CLAUDE.md
+  "User Messaging". Patterns require a message argument so a local helper
+  named `confirm()` (zero args) is not flagged.
+files:
+  - "src/**/*.ts"
+  - "src/**/*.tsx"
+rule:
+  any:
+    - pattern: alert($MSG)
+    - pattern: window.alert($MSG)
+    - pattern: confirm($MSG)
+    - pattern: window.confirm($MSG)
+    - pattern: prompt($MSG)
+    - pattern: prompt($MSG, $DEF)
+    - pattern: window.prompt($MSG)
+    - pattern: window.prompt($MSG, $DEF)
