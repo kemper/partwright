@@ -2,7 +2,7 @@
 // in/out test and the boundary-conforming clip). Pure geometry — no browser.
 
 import { describe, test, expect } from 'vitest';
-import { strokeSignedDist, sprayCoverage, airbrushDither, strokeFootprintTriangles, buildGeodesicField, deriveSampleNormals, type BrushStroke } from '../../src/color/subdivide';
+import { strokeSignedDist, sprayCoverage, airbrushDither, strokeFootprintTriangles, buildGeodesicField, deriveSampleNormals, wrapAngleGate, type BrushStroke } from '../../src/color/subdivide';
 import { closestPointOnTriangle } from '../../src/color/adjacency';
 import type { MeshData } from '../../src/geometry/types';
 
@@ -260,6 +260,73 @@ describe('buildGeodesicField', () => {
     expect(field.reachableAt(6, 5, 0)).toBe(true);    // near sheet, within radius
     expect(field.reachableAt(5, 5, 0.5)).toBe(false); // directly above, far sheet — gapped
     expect(field.reachableAt(6, 5, 0.5)).toBe(false); // far sheet, within radius but disconnected
+  });
+
+  // A floor quad in z=0 (x∈[0,1]) folded 90° into a wall in the x=1 plane
+  // (z∈[0,1]), sharing the crease edge. Two shared-vertex quads → real edge
+  // adjacency across a sharp fold. Floor normal +z, wall normal ±x ⇒ a 90° bend.
+  function foldedStrip(): MeshData {
+    const verts = [
+      0, 0, 0, // 0
+      0, 1, 0, // 1
+      1, 0, 0, // 2 crease
+      1, 1, 0, // 3 crease
+      1, 0, 1, // 4 wall top
+      1, 1, 1, // 5 wall top
+    ];
+    const tris = [
+      0, 2, 3, 0, 3, 1, // floor (normal +z)
+      2, 4, 5, 2, 5, 3, // wall  (normal -x) sharing edge 2-3
+    ];
+    return {
+      vertProperties: new Float32Array(verts),
+      triVerts: new Uint32Array(tris),
+      numVert: 6,
+      numTri: 4,
+      numProp: 3,
+    };
+  }
+
+  test('wrap tolerance gate stops the flood fill at a sharp (90°) fold', () => {
+    const base = foldedStrip();
+    const samples: [number, number, number][] = [[0.4, 0.5, 0]];
+    const radius = 3; // covers the wall, so only the angle gate can block it
+
+    // No gate (cos 180° = −1): paint reaches across the fold onto the wall.
+    const open = buildGeodesicField(base, samples, radius, -1);
+    expect(open.reachableAt(0.4, 0.5, 0)).toBe(true);  // floor seed
+    expect(open.reachableAt(1, 0.5, 0.8)).toBe(true);  // wall, across the fold
+
+    // 45° tolerance: the 90° fold (cos 0) exceeds it, so the wall is blocked
+    // while the floor the seed sits on still paints.
+    const gated = buildGeodesicField(base, samples, radius, wrapAngleGate(45));
+    expect(gated.reachableAt(0.4, 0.5, 0)).toBe(true);
+    expect(gated.reachableAt(1, 0.5, 0.8)).toBe(false);
+  });
+
+  test('wrap tolerance still flows over a gently curved (wrinkled) surface', () => {
+    // A shallow wrinkle bends adjacent faces by only a few degrees, so a 60°
+    // tolerance leaves the spread unchanged — curves and bumps still flow.
+    const base = planeGrid(8, 0, 0.4);
+    const samples: [number, number, number][] = [[4, 4, 0]];
+    const radius = 3;
+    const open = buildGeodesicField(base, samples, radius, -1);
+    const gated = buildGeodesicField(base, samples, radius, wrapAngleGate(60));
+    for (const [x, y] of [[4, 4], [6, 4], [4, 6], [3, 5]] as const) {
+      expect(gated.reachableAt(x, y, 0)).toBe(open.reachableAt(x, y, 0));
+    }
+  });
+});
+
+describe('wrapAngleGate', () => {
+  test('maps degrees to the cosine bend threshold', () => {
+    expect(wrapAngleGate(180)).toBeCloseTo(-1, 10); // wrap freely
+    expect(wrapAngleGate(90)).toBeCloseTo(0, 10);   // stop at right angles
+    expect(wrapAngleGate(0)).toBeCloseTo(1, 10);    // coplanar only
+  });
+  test('clamps out-of-range angles', () => {
+    expect(wrapAngleGate(-30)).toBeCloseTo(1, 10);
+    expect(wrapAngleGate(360)).toBeCloseTo(-1, 10);
   });
 });
 

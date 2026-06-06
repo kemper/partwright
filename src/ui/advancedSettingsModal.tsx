@@ -552,6 +552,24 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
           min={500} max={30_000} integer
           onChange={v => set('renderer', 'thumbnailTimeoutMs', v)}
         />
+        <Field
+          label="Enhance warn triangles"
+          unit="tris"
+          tooltip="When the Quality panel's Apply projects an enhance result above this triangle count, it asks for a Proceed/Cancel confirmation first — a model this dense is slow to display and edit."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.enhanceWarnTriangles}
+          value={c.renderer.enhanceWarnTriangles}
+          min={10_000} max={50_000_000} integer
+          onChange={v => set('renderer', 'enhanceWarnTriangles', v)}
+        />
+        <Field
+          label="Enhance max triangles"
+          unit="tris"
+          tooltip="Hard ceiling on an enhance result. The geometry worker refuses to return a refined mesh larger than this, and Apply won't run a target above it — prevents a runaway refine from freezing the page when the giant result is committed to the viewport."
+          defaultValue={APP_CONFIG_DEFAULTS.renderer.enhanceMaxTriangles}
+          value={c.renderer.enhanceMaxTriangles}
+          min={100_000} max={100_000_000} integer
+          onChange={v => set('renderer', 'enhanceMaxTriangles', v)}
+        />
       </Section>
 
       <Section title="Import">

@@ -380,18 +380,19 @@ export function initResizeUI(api: ResizeApi): void {
 
   const mount = () => {
     if (document.getElementById('resize-viewport-toggle')) return;
-    const anchor = document.getElementById('surface-viewport-toggle')
-      ?? document.getElementById('relief-viewport-toggle')
-      ?? document.getElementById('paint-toggle')
-      ?? document.querySelector<HTMLElement>('[id$="-viewport-toggle"]');
-    if (!anchor || !anchor.parentElement) return;
-    const btnCls = anchor.className.split(' ').filter(c => c !== 'hidden').join(' ') || BTN_BASE;
+    // Land inside the Tools popover (after Surface, if present), matching the
+    // neighbouring tool pill's styling.
+    const styleRef = document.getElementById('surface-viewport-toggle')
+      ?? document.getElementById('paint-toggle');
+    const host = document.getElementById('viewport-tools-menu') ?? styleRef?.parentElement;
+    if (!host) return;
+    const btnCls = (styleRef?.className ?? '').split(' ').filter(c => c !== 'hidden').join(' ') || BTN_BASE;
     const btn = el('button', btnCls);
     btn.id = 'resize-viewport-toggle';
     btn.textContent = '⇲ Resize';
     btn.title = 'Scale the model along X, Y, and Z';
     btn.addEventListener('click', () => openResizeModal(api));
-    anchor.after(btn);
+    host.appendChild(btn);
   };
   let tries = 0;
   const timer = setInterval(() => {

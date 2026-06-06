@@ -657,17 +657,19 @@ export function initSurfaceUI(api: SurfaceApi): void {
   // touching the overlay's creation code. Match the neighbour's styling.
   const mount = () => {
     if (document.getElementById('surface-viewport-toggle')) return;
-    const anchor = document.getElementById('relief-viewport-toggle')
-      ?? document.getElementById('paint-toggle')
-      ?? document.querySelector<HTMLElement>('[id$="-viewport-toggle"]');
-    if (!anchor || !anchor.parentElement) return;
-    const btnCls = anchor.className.split(' ').filter(c => c !== 'hidden').join(' ') || BTN_BASE;
+    // Land inside the Tools popover; borrow the paint button's styling so the
+    // pill matches its neighbours. Falls back to the paint button's parent for
+    // any non-grouped layout.
+    const styleRef = document.getElementById('paint-toggle');
+    const host = document.getElementById('viewport-tools-menu') ?? styleRef?.parentElement;
+    if (!host) return;
+    const btnCls = (styleRef?.className ?? '').split(' ').filter(c => c !== 'hidden').join(' ') || BTN_BASE;
     const btn = el('button', btnCls);
     btn.id = 'surface-viewport-toggle';
     btn.textContent = '✦ Surface';
     btn.title = 'Apply fuzzy skin, smooth/round, or voxelize the current model';
     btn.addEventListener('click', () => openSurfaceModal(api));
-    anchor.after(btn);
+    host.appendChild(btn);
   };
   // The overlay may mount after init; retry a few times then give up (commands
   // still work even if the button never lands).

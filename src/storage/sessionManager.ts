@@ -132,12 +132,17 @@ import { effectiveVersionLanguage, asLanguage } from './languageFallback';
  *           WASM virtual filesystem before each compile. Absent for non-SCAD
  *           versions and SCAD versions with no companions. Older readers ignore
  *           the field.
- *  - `1.11` — session-level pinned thumbnail camera (`session.thumbCamera`).
+ *  - `1.11` — per-region palette-slot attribution (`colorRegions[].slotId`).
+ *           Painting with a palette slot stamps its id so the region maps onto a
+ *           filament/AMS slot and follows slot recolours. Additive: pre-1.11
+ *           regions omit it and import as unslotted (ad-hoc colour). Older
+ *           readers ignore the field.
+ *  - `1.12` — session-level pinned thumbnail camera (`session.thumbCamera`).
  *           `{ azimuth, elevation }` in degrees; when present, captured
  *           thumbnails render from this angle instead of the default iso view.
  *           Absent ⇒ the default iso 3/4 view. Older readers ignore the field.
  */
-export const SCHEMA_VERSION = '1.11';
+export const SCHEMA_VERSION = '1.12';
 
 const CURRENT_MAJOR = 1;
 

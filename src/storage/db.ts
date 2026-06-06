@@ -301,10 +301,19 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 export function generateId(): string {
+  // 12-char base62 IDs for local IndexedDB record keys (sessions, parts,
+  // versions, images, chat messages). Sourced from crypto.getRandomValues
+  // rather than Math.random — these aren't security tokens, but a secure
+  // source keeps the entropy unimpeachable and clears static-analysis flags.
+  // Rejection sampling (drop bytes ≥ 248 = 4×62) keeps the distribution
+  // uniform, avoiding the modulo bias of a raw `byte % 62`.
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let id = '';
-  for (let i = 0; i < 12; i++) {
-    id += chars[Math.floor(Math.random() * chars.length)];
+  while (id.length < 12) {
+    const bytes = crypto.getRandomValues(new Uint8Array(12 - id.length));
+    for (const b of bytes) {
+      if (b < 248) id += chars[b % 62];
+    }
   }
   return id;
 }

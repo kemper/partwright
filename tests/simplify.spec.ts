@@ -1,9 +1,9 @@
 // Smoke tests for the Simplify overlay tool:
 //  - the panel opens from the viewport overlay and shows a slider + a typeable
 //    "max triangles" input bounded by the model's current triangle count
-//  - setting a target alone does nothing; clicking Apply reduces the live
-//    model; Reset restores it
-//  - "Save as version" bakes the reduced mesh into a new saved version
+//  - setting a target alone does nothing; Reset clears the pending target
+//  - the single shared Apply reduces the live model AND bakes the result into a
+//    new saved version in one step (there is no separate "Save as version")
 //
 // Uses dispatchEvent('click') instead of .click() to dodge the onboarding tour
 // backdrop that can intercept pointer events on first load of the editor.
@@ -49,50 +49,35 @@ test.describe('Simplify tool', () => {
     await expect(page.locator('#simplify-original')).toContainText(base.toLocaleString());
   });
 
-  test('setting a target does nothing until Apply; Apply reduces and Reset restores', async ({ page }) => {
+  test('setting a target does nothing until Apply; Reset clears the pending target', async ({ page }) => {
     const base = await openEditorWithSphere(page);
 
     await page.locator('#simplify-toggle').dispatchEvent('click');
     await page.waitForSelector('#simplify-panel:not(.hidden)');
 
+    // Nothing pending yet → both Reset and Apply start disabled.
+    await expect(page.locator('#simplify-reset')).toBeDisabled();
+    await expect(page.locator('#simplify-apply')).toBeDisabled();
+
     const target = Math.max(50, Math.round(base / 4));
     await page.locator('#simplify-input').fill(String(target));
 
-    // Setting the target no longer touches the live model — that's Apply's job.
-    // Apply becomes enabled, but the mesh stays at full detail until clicked.
+    // Setting the target doesn't touch the live model — that's Apply's job.
+    // Apply (and Reset) become enabled, but the mesh stays at full detail.
     await expect(page.locator('#simplify-apply')).toBeEnabled();
+    await expect(page.locator('#simplify-reset')).toBeEnabled();
     expect(await triangleCount(page)).toBe(base);
 
-    // Apply runs the reduction; wait for the model to actually shrink.
-    await page.locator('#simplify-apply').dispatchEvent('click');
-    await page.waitForFunction(
-      (b) => {
-        const pw = (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } } }).partwright;
-        return (pw.getGeometryData().triangleCount ?? b) < b;
-      },
-      base,
-      { timeout: 10000 },
-    );
-
-    const reduced = await triangleCount(page);
-    expect(reduced).toBeLessThan(base);
-    expect(reduced).toBeLessThanOrEqual(target);
-    expect(reduced).toBeGreaterThanOrEqual(4);
-
-    // Reset puts the full-detail mesh back on screen.
+    // Reset clears the pending target without ever running the op, so both go
+    // idle again and the model is untouched.
     await page.locator('#simplify-reset').dispatchEvent('click');
-    await page.waitForFunction(
-      (b) => {
-        const pw = (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } } }).partwright;
-        return (pw.getGeometryData().triangleCount ?? 0) === b;
-      },
-      base,
-      { timeout: 10000 },
-    );
+    await expect(page.locator('#simplify-apply')).toBeDisabled();
+    await expect(page.locator('#simplify-reset')).toBeDisabled();
+    await expect(page.locator('#simplify-input')).toHaveValue(String(base));
     expect(await triangleCount(page)).toBe(base);
   });
 
-  test('Save as version bakes the reduced mesh into a new version', async ({ page }) => {
+  test('Apply reduces the mesh and bakes a new saved version in one step', async ({ page }) => {
     const base = await openEditorWithSphere(page);
     // Commit the parametric sphere as v1 so we can see the count grow.
     await page.evaluate(async () => {
@@ -109,18 +94,16 @@ test.describe('Simplify tool', () => {
 
     const target = Math.max(50, Math.round(base / 4));
     await page.locator('#simplify-input').fill(String(target));
-    await page.locator('#simplify-apply').dispatchEvent('click');
-    await page.waitForFunction(
-      (b) => {
-        const pw = (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } } }).partwright;
-        return (pw.getGeometryData().triangleCount ?? b) < b;
-      },
-      base,
-      { timeout: 10000 },
-    );
 
-    await page.locator('#simplify-save').dispatchEvent('click');
-    await expect(page.locator('#simplify-status')).toContainText('Saved', { timeout: 10000 });
+    // The single Apply both reduces the live mesh and saves a version — there
+    // is no separate "Save as version" step.
+    await page.locator('#simplify-apply').dispatchEvent('click');
+    await expect(page.locator('#simplify-status')).toContainText('Saved', { timeout: 15000 });
+
+    const reduced = await triangleCount(page);
+    expect(reduced).toBeLessThan(base);
+    expect(reduced).toBeLessThanOrEqual(target);
+    expect(reduced).toBeGreaterThanOrEqual(4);
 
     const versions = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { listVersions(): Promise<{ label: string | null }[]> } }).partwright;
@@ -128,9 +111,13 @@ test.describe('Simplify tool', () => {
     });
     expect(versions.length).toBe(before + 1);
     expect(versions[versions.length - 1].label).toBe('simplified');
+
+    // Apply committed everything, so both Reset and Apply are idle again.
+    await expect(page.locator('#simplify-apply')).toBeDisabled();
+    await expect(page.locator('#simplify-reset')).toBeDisabled();
   });
 
-  test('Save as version preserves an unsaved edited original as its own version', async ({ page }) => {
+  test('Apply preserves an unsaved edited original as its own version', async ({ page }) => {
     const base = await openEditorWithSphere(page);
 
     // Commit a baseline sphere as a saved version.
@@ -157,19 +144,10 @@ test.describe('Simplify tool', () => {
 
     const target = Math.max(50, Math.round(base / 4));
     await page.locator('#simplify-input').fill(String(target));
+    // Apply reduces and bakes in one step; the status line calls out that the
+    // unsaved original was preserved as its own version, not just saved.
     await page.locator('#simplify-apply').dispatchEvent('click');
-    await page.waitForFunction(
-      (b) => {
-        const pw = (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } } }).partwright;
-        return (pw.getGeometryData().triangleCount ?? b) < b;
-      },
-      base,
-      { timeout: 10000 },
-    );
-
-    await page.locator('#simplify-save').dispatchEvent('click');
-    // The status line calls out that the original was preserved, not just saved.
-    await expect(page.locator('#simplify-status')).toContainText('original', { timeout: 10000 });
+    await expect(page.locator('#simplify-status')).toContainText('original', { timeout: 15000 });
 
     const indices = await page.evaluate(async () => {
       const pw = (window as unknown as { partwright: { listVersions(): Promise<{ index: number; label: string | null }[]> } }).partwright;
@@ -309,7 +287,7 @@ test.describe('Quality panel — edge-length & size knobs', () => {
     }, MIXED);
   }
 
-  test('Enhance + Edge knob refines the large triangles; Reset restores', async ({ page }) => {
+  test('Enhance + Edge knob refines the large triangles', async ({ page }) => {
     const base = await openEditorWithMixed(page);
     expect(base).toBeGreaterThan(100);
 
@@ -324,6 +302,7 @@ test.describe('Quality panel — edge-length & size knobs', () => {
     await expect(page.locator('#simplify-slider')).toBeHidden();
 
     // A small target edge length splits the big box faces → more triangles.
+    // The single Apply refines and bakes the result in one step.
     await page.locator('#simplify-length-input').fill('3');
     await page.locator('#simplify-length-input').dispatchEvent('change');
     await page.locator('#simplify-apply').dispatchEvent('click');
@@ -336,16 +315,6 @@ test.describe('Quality panel — edge-length & size knobs', () => {
       { timeout: 15000 },
     );
     expect(await triangleCount(page)).toBeGreaterThan(base);
-
-    await page.locator('#simplify-reset').dispatchEvent('click');
-    await page.waitForFunction(
-      (b) => {
-        const pw = (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } } }).partwright;
-        return (pw.getGeometryData().triangleCount ?? 0) === b;
-      },
-      base,
-      { timeout: 10000 },
-    );
   });
 
   test('an edge length longer than every edge warns and leaves the mesh unchanged', async ({ page }) => {
@@ -387,5 +356,93 @@ test.describe('Quality panel — edge-length & size knobs', () => {
       { timeout: 15000 },
     );
     expect(await triangleCount(page)).toBeLessThan(base);
+  });
+});
+
+test.describe('Quality panel — heavy-enhance guard', () => {
+  // Inject a low warn threshold (and a high hard cap) so an ordinary enhance
+  // trips the Proceed/Cancel confirmation without needing a 10M-triangle model.
+  async function openWithLowWarn(page: Page): Promise<number> {
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem('partwright-tour-completed', '1');
+        localStorage.setItem('partwright-app-config-v1', JSON.stringify({
+          renderer: { enhanceWarnTriangles: 100, enhanceMaxTriangles: 100_000_000 },
+        }));
+      } catch { /* ignore */ }
+    });
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    return page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: { createSession(n?: string): Promise<unknown>; run(c: string): Promise<unknown>; getGeometryData(): { triangleCount?: number } } }).partwright;
+      await pw.createSession('heavy-enhance');
+      await pw.run('const { Manifold } = api; return Manifold.sphere(10, 48);');
+      return pw.getGeometryData().triangleCount ?? 0;
+    });
+  }
+
+  test('an enhance over the warn limit asks before applying; Cancel leaves the mesh', async ({ page }) => {
+    const base = await openWithLowWarn(page);
+    expect(base).toBeGreaterThan(100);
+
+    await page.locator('#simplify-toggle').dispatchEvent('click');
+    await page.waitForSelector('#simplify-panel:not(.hidden)');
+    // Enhance mode (count knob default target is base×2 → well over the warn=100).
+    await page.getByRole('button', { name: 'Enhance', exact: true }).dispatchEvent('click');
+
+    await page.locator('#simplify-apply').dispatchEvent('click');
+    // The confirmation modal appears instead of immediately running.
+    const proceed = page.locator('[data-testid="heavy-enhance-proceed"]');
+    await expect(proceed).toBeVisible({ timeout: 5000 });
+
+    // Cancel → nothing runs, the mesh stays at its original count.
+    await page.locator('[data-testid="heavy-enhance-cancel"]').click();
+    await expect(proceed).toBeHidden();
+    expect(await triangleCount(page)).toBe(base);
+
+    // Apply again and proceed → the enhance runs and the mesh grows.
+    await page.locator('#simplify-apply').dispatchEvent('click');
+    await expect(proceed).toBeVisible({ timeout: 5000 });
+    await proceed.click();
+    await page.waitForFunction(
+      (b) => {
+        const pw = (window as unknown as { partwright: { getGeometryData(): { triangleCount?: number } } }).partwright;
+        return (pw.getGeometryData().triangleCount ?? 0) > b;
+      },
+      base,
+      { timeout: 15000 },
+    );
+    expect(await triangleCount(page)).toBeGreaterThan(base);
+  });
+
+  test('an enhance over the hard cap is refused, not applied', async ({ page }) => {
+    // Tiny cap so even a modest enhance is refused outright (no confirm, no commit).
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem('partwright-tour-completed', '1');
+        localStorage.setItem('partwright-app-config-v1', JSON.stringify({
+          renderer: { enhanceWarnTriangles: 10, enhanceMaxTriangles: 100 },
+        }));
+      } catch { /* ignore */ }
+    });
+    await page.goto('/editor');
+    await page.waitForSelector('text=Ready', { timeout: 15000 });
+    const base = await page.evaluate(async () => {
+      const pw = (window as unknown as { partwright: { createSession(n?: string): Promise<unknown>; run(c: string): Promise<unknown>; getGeometryData(): { triangleCount?: number } } }).partwright;
+      await pw.createSession('enhance-cap');
+      await pw.run('const { Manifold } = api; return Manifold.sphere(10, 48);');
+      return pw.getGeometryData().triangleCount ?? 0;
+    });
+    expect(base).toBeGreaterThan(100); // already above the tiny cap
+
+    await page.locator('#simplify-toggle').dispatchEvent('click');
+    await page.waitForSelector('#simplify-panel:not(.hidden)');
+    await page.getByRole('button', { name: 'Enhance', exact: true }).dispatchEvent('click');
+    await page.locator('#simplify-apply').dispatchEvent('click');
+
+    // Refused before running — status calls out the limit and the mesh is untouched.
+    await expect(page.locator('#simplify-status')).toContainText('over the', { timeout: 5000 });
+    await expect(page.locator('[data-testid="heavy-enhance-proceed"]')).toHaveCount(0);
+    expect(await triangleCount(page)).toBe(base);
   });
 });

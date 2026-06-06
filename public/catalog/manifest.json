@@ -1,32 +1,11 @@
 {
   "entries": [
     {
-      "id": "creeper-head",
-      "name": "Creeper Head",
-      "file": "creeper_head.partwright.json",
-      "language": "manifold-js",
-      "description": "Blocky creeper head with the classic frown face — raised dark relief on a mossy-green cube."
-    },
-    {
-      "id": "question-block",
-      "name": "Super Mario ? Block",
-      "file": "question_block.partwright.json",
-      "language": "manifold-js",
-      "description": "Classic Super Mario question-mark block: a warm-yellow cube with brown corner rivets and a bold ? glyph."
-    },
-    {
       "id": "companion-cube",
       "name": "Portal Companion Cube",
       "file": "companion_cube.partwright.json",
       "language": "manifold-js",
       "description": "Portal Weighted Companion Cube — light-gray cube with pink hearts on each face and steel edge bars."
-    },
-    {
-      "id": "space-invader",
-      "name": "Space Invader",
-      "file": "space_invader.partwright.json",
-      "language": "manifold-js",
-      "description": "The classic 8-bit \"crab\" Space Invader sprite, extruded as a lime-green pixel-art slab."
     },
     {
       "id": "pacman-ghost",
@@ -97,13 +76,6 @@
       "file": "boombox.partwright.json",
       "language": "manifold-js",
       "description": "80s boombox with twin speaker grilles, a cassette deck, control buttons, and a carry handle."
-    },
-    {
-      "id": "pixel-heart",
-      "name": "Pixel Heart",
-      "file": "pixel_heart.partwright.json",
-      "language": "manifold-js",
-      "description": "8-bit pixel heart built from unit cubes — bold red with a highlight shine."
     },
     {
       "id": "lowpoly-fox",
@@ -274,13 +246,6 @@
       "description": "A stylised flower showcasing the SDF combinators — ellipsoid petals fanned out with polarArray (no hand-written coordinates), a flattened pollen centre, and a taper-narrowed stem. Three painted regions."
     },
     {
-      "id": "rangefinder-camera",
-      "name": "Vintage Rangefinder Camera",
-      "file": "rangefinder_camera.partwright.json",
-      "language": "scad",
-      "description": "A classic 35mm rangefinder camera with a chrome top plate, leatherette body, a fixed lens with a dark recessed front element, twin viewfinder windows, a brass shutter release, and a wind-lever knob."
-    },
-    {
       "id": "smiley-cactus",
       "name": "Smiley Cactus",
       "file": "smiley_cactus.partwright.json",
@@ -356,20 +321,6 @@
       "file": "bird_feeder.partwright.json",
       "language": "replicad",
       "description": "A gazebo-style hanging bird feeder with conical wood roof, revolved seed reservoir, lipped dish, and circular perches — showcasing revolve + circularPattern + paint."
-    },
-    {
-      "id": "pendant-lamp",
-      "name": "Pendant Chandelier",
-      "file": "pendant_lamp.partwright.json",
-      "language": "replicad",
-      "description": "A 5-arm pendant chandelier with brass arms, glass bulbs, central canopy, and a decorative finial — showcasing BREP.circularPattern + paint."
-    },
-    {
-      "id": "wall-clock",
-      "name": "Wall Clock",
-      "file": "wall_clock.partwright.json",
-      "language": "replicad",
-      "description": "A classic round analog wall clock with chamfered bezel, painted hour markers, hour + minute hands, and a center spindle — showcasing circularPattern + paint."
     },
     {
       "id": "vintage-camera",
@@ -587,6 +538,91 @@
       "file": "retro_tv.partwright.json",
       "language": "manifold-js",
       "description": "A retro CRT television with a lofted tapered housing, a curved-glass screen, a swept carry handle, round control knobs, and rabbit-ear antennas."
+    },
+    {
+      "id": "japanese-pagoda",
+      "name": "Japanese Pagoda",
+      "file": "japanese_pagoda.partwright.json",
+      "language": "manifold-js",
+      "description": "A five-story vermilion-and-white temple pagoda whose dark tiled roofs sweep up into graceful upturned eaves, crowned by a gilt-bronze sōrin spire atop a stepped stone base."
+    },
+    {
+      "id": "steampunk-airship",
+      "name": "Steampunk Airship",
+      "file": "steampunk_airship.partwright.json",
+      "language": "manifold-js",
+      "description": "A crimson-silk dirigible with a brass-ribbed envelope, a wooden gondola lined with brass portholes, a verdigris-copper wheelhouse, cruciform tail fins, and an outrigger propeller."
+    },
+    {
+      "id": "mechanical-orrery",
+      "name": "Mechanical Orrery",
+      "file": "mechanical_orrery.partwright.json",
+      "language": "scad",
+      "description": "A brass tabletop orrery whose meshing involute gear train drives a gilded sun, with red, blue, and ringed teal planets swinging out on graceful arms at staggered orbits."
+    },
+    {
+      "id": "pocket-watch",
+      "name": "Pocket Watch Movement",
+      "file": "pocket_watch.partwright.json",
+      "language": "scad",
+      "description": "An open-face skeleton pocket watch laid bare — a stepped brass bezel with a fluted crown and suspension bow framing an exposed train of involute spur gears down to a blued balance, jeweled with red rubies at every pivot."
+    },
+    {
+      "id": "turbofan-engine",
+      "name": "Turbofan Jet Engine",
+      "file": "turbofan_engine.partwright.json",
+      "language": "replicad",
+      "description": "The front of a high-bypass airliner turbofan: a smoothly swept nacelle cowl with a chamfered intake lip, a dark spinner cone, and a full ring of fan blades — an exact-surface BREP showcase."
+    },
+    {
+      "id": "kitchen-faucet",
+      "name": "Kitchen Faucet",
+      "file": "kitchen_faucet.partwright.json",
+      "language": "replicad",
+      "description": "A sleek brushed-metal gooseneck mixer tap, its tall toroidal spout arching from a flared deck column down to a flush aerator, with a single blue lever handle at the bend — a smooth-surface BREP showcase."
+    },
+    {
+      "id": "voxel-pirate-ship",
+      "name": "Voxel Pirate Ship",
+      "file": "voxel_pirate_ship.partwright.json",
+      "language": "voxel",
+      "description": "A blocky pirate galleon — a curved wooden hull with a red gold-windowed stern castle, three masts of billowing cream sails, a crow's nest, iron cannons, a gilded figurehead, and a skull-and-crossbones flag."
+    },
+    {
+      "id": "voxel-locomotive",
+      "name": "Voxel Steam Locomotive",
+      "file": "voxel_locomotive.partwright.json",
+      "language": "voxel",
+      "description": "A cute blocky 4-4-0 steam engine — a green brass-banded boiler, a flared funnel trailing a white smoke puff, twin steam domes, a windowed wood cab, big red driving wheels linked by silver rods, and a cowcatcher."
+    },
+    {
+      "id": "spiral-fidget-cone",
+      "name": "Spiral Fidget Cone",
+      "file": "spiral_fidget_cone.partwright.json",
+      "language": "manifold-js",
+      "description": "Print-in-place bolt & nut — a 5-start helical screw captive inside a matching spiral-cage cone. Twist and it rides the threads; prints in one piece and unscrews apart.",
+      "group": "fidget-toys"
+    },
+    {
+      "id": "dna-helix",
+      "name": "DNA Double Helix",
+      "file": "dna_helix.partwright.json",
+      "language": "manifold-js",
+      "description": "A double-helix model of DNA — two antiparallel sugar-phosphate backbones (orange and teal beads) spiralling around a shared axis, joined by colored base-pair rungs in the four nucleotide colors. Self-colored via labeled regions; parametric turns, radius, pitch, and bead density."
+    },
+    {
+      "id": "fountain-pen",
+      "name": "Fountain Pen",
+      "file": "fountain_pen.partwright.json",
+      "language": "manifold-js",
+      "description": "A capped-and-posted fountain pen — gold nib, black grip, burgundy barrel with gold trim bands, a posted cap with finial, and a sprung pocket clip. A turned object composed from stacked tapered cylinders along one axis, self-colored via labeled regions. Color and length are parametric."
+    },
+    {
+      "id": "ringed-planet",
+      "name": "Ringed Planet",
+      "file": "ringed_planet.partwright.json",
+      "language": "manifold-js",
+      "description": "A banded gas giant encircled by a tilted, multi-band ring system. Latitude color bands are cut from the sphere with overlapping slabs; the concentric ring disk welds into the planet's equator so it prints as one self-colored piece. Parametric planet radius, ring span, band count, and axial tilt."
     }
   ]
 }

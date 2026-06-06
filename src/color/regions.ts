@@ -13,6 +13,11 @@ export interface ColorRegion {
   order: number;
   visible: boolean;
   triangles: Set<number>; // resolved triangle indices (transient, not persisted)
+  // Optional palette-slot attribution (filament/AMS slot). `color` stays the
+  // render source of truth; when `slotId` is set it mirrors that slot's colour,
+  // so recolouring a slot recolours every region on it, and export can group
+  // by slot order. Unset = ad-hoc colour (unslotted) — back-compat default.
+  slotId?: string;
   /** Per-triangle colors for image-paint regions; overrides `color` per
    *  triangle in buildTriColors. Transient — rebuilt from the descriptor. */
   perTriColors?: Map<number, [number, number, number]>;
@@ -71,7 +76,11 @@ export type RegionDescriptor =
   // saved before this omit both and are read as `slab` with an auto depth.
   // `spray` turns the stroke into a geodesic airbrush: a soft speckle whose
   // coverage fades from the core out via a per-triangle dither (no hard edge).
-  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: 'geodesic' | 'slab'; depth?: number; spray?: { strength: number; softness: number; seed: number } }
+  // `wrapAngleDeg` is the wrap tolerance (0–180°): paint only flows across an
+  // edge when the faces bend by ≤ this angle, so a stroke stops at sharp corners
+  // (≥90°) but flows over gentle curves. Omitted ⇒ 180° (no gate) for back-compat
+  // with strokes saved before the slider existed.
+  | { kind: 'brushStroke'; samples: [number, number, number][]; radius: number; shape: BrushShape; maxEdge: number; surface?: 'geodesic' | 'slab'; depth?: number; wrapAngleDeg?: number; spray?: { strength: number; softness: number; seed: number } }
   // Image projection: per-triangle colors computed at apply-time by projecting
   // an image onto the mesh from a chosen axis direction. The projected result is
   // stored as a flat [triIdx, r, g, b, …] array (r/g/b in 0–255) so the region
@@ -97,6 +106,7 @@ export interface SerializedColorRegion {
   descriptor: RegionDescriptor;
   order: number;
   visible?: boolean; // optional for backward compat — defaults to true on load
+  slotId?: string;   // palette-slot attribution (schema 1.11+); omitted = unslotted
 }
 
 type ChangeListener = () => void;
@@ -131,6 +141,11 @@ let regionRedoStack: ColorRegion[] = [];
 // Clear snapshot — saved when clearRegions() is called. Nulled when a new
 // region is added so undo-clear is only valid until the next paint operation.
 let clearSnapshot: ColorRegion[] | null = null;
+// True when the snapshot came from a *scoped* clear (clearRegionsBySource) that
+// removed only some regions and left the rest in place. undoClear then merges
+// the snapshot back into the surviving regions instead of replacing the whole
+// array, so a scoped clear doesn't resurrect regions the user never cleared.
+let clearSnapshotPartial = false;
 
 function notify(): void {
   for (const fn of listeners) fn();
@@ -189,9 +204,14 @@ export function canUndoClear(): boolean {
 
 export function undoClear(): void {
   if (!clearSnapshot) return;
-  regions = [...clearSnapshot];
-  nextOrder = regions.reduce((max, r) => Math.max(max, r.order + 1), 1);
+  // A scoped clear (clearRegionsBySource) left other regions in place, so merge
+  // the removed ones back in. A full clear replaces the (now-empty) array. Render
+  // priority keys on each region's `order` field, not array position, so a plain
+  // append restores the original layering. `nextOrder` only ever grows.
+  regions = clearSnapshotPartial ? [...regions, ...clearSnapshot] : [...clearSnapshot];
+  nextOrder = regions.reduce((max, r) => Math.max(max, r.order + 1), clearSnapshotPartial ? nextOrder : 1);
   clearSnapshot = null;
+  clearSnapshotPartial = false;
   clearRedoStack();
   notify();
   notifyClearSnapshot();
@@ -222,6 +242,7 @@ export function addRegion(
   descriptor: RegionDescriptor,
   triangles: Set<number>,
   visible: boolean = true,
+  slotId?: string,
   perTriColors?: Map<number, [number, number, number]>,
 ): ColorRegion {
   const id = nextRegionId++;
@@ -234,6 +255,7 @@ export function addRegion(
     order: nextOrder++,
     visible,
     triangles,
+    slotId,
     perTriColors,
   };
   regions.push(region);
@@ -296,6 +318,84 @@ export function updateRegionColor(id: number, color: [number, number, number]): 
     region.color = color;
     notify();
   }
+}
+
+/** Recolour every region attributed to a palette slot — used when the user
+ *  edits that slot's colour in the palette editor, so all regions painted with
+ *  it update at once. Returns the number of regions changed and fires a single
+ *  notify (which drives the live re-render). */
+export function recolorRegionsForSlot(slotId: string, color: [number, number, number]): number {
+  let changed = 0;
+  for (const region of regions) {
+    if (region.slotId === slotId) {
+      region.color = color;
+      changed++;
+    }
+  }
+  if (changed > 0) notify();
+  return changed;
+}
+
+/** Distinct palette slots in use across the current user regions. Drives the
+ *  paint panel's over-budget badge (count vs. palette capacity). */
+export function usedSlotIds(): Set<string> {
+  const ids = new Set<string>();
+  for (const region of regions) if (region.slotId) ids.add(region.slotId);
+  return ids;
+}
+
+const colorDist = (a: readonly number[], b: readonly number[]) =>
+  Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
+
+/** Reconcile a model colour: recolour every region within `tolerance` of
+ *  `fromColor` to `toColor`, and set their palette attribution to `toSlotId`
+ *  (pass `undefined` to clear it — the colour is now ad-hoc). This is the
+ *  primitive behind the palette tool's Replace (swap to a palette/history
+ *  colour) and Merge (collapse one model colour into another). Returns the
+ *  number of regions changed. */
+export function reassignRegionColor(
+  fromColor: [number, number, number],
+  toColor: [number, number, number],
+  toSlotId: string | undefined,
+  tolerance = 0.02,
+): number {
+  let count = 0;
+  for (const r of regions) {
+    if (colorDist(r.color, fromColor) <= tolerance) {
+      r.color = [...toColor] as [number, number, number];
+      r.slotId = toSlotId;
+      count++;
+    }
+  }
+  if (count > 0) notify();
+  return count;
+}
+
+/** Auto-match every user region to the nearest palette slot (Euclidean RGB),
+ *  recolouring it to that slot's colour and stamping its `slotId`. Used by the
+ *  palette tool's "Apply palette" to reconcile an off-palette or freshly
+ *  imported model in one step. `slots` is the ordered palette. Returns the
+ *  number of regions changed. */
+export function applyPaletteAutoMatch(
+  slots: ReadonlyArray<{ id: string; color: [number, number, number] }>,
+): number {
+  if (slots.length === 0) return 0;
+  let count = 0;
+  for (const r of regions) {
+    let best = slots[0];
+    let bestD = Infinity;
+    for (const s of slots) {
+      const d = colorDist(r.color, s.color);
+      if (d < bestD) { bestD = d; best = s; }
+    }
+    // Skip a no-op (already exactly this slot's colour and attribution).
+    if (r.slotId === best.id && colorDist(r.color, best.color) === 0) continue;
+    r.color = [...best.color] as [number, number, number];
+    r.slotId = best.id;
+    count++;
+  }
+  if (count > 0) notify();
+  return count;
 }
 
 /** Batch-replace the color of every user region whose color is within
@@ -373,8 +473,24 @@ export function setRegionTriangles(
 export function clearRegions(): void {
   if (regions.length === 0) return;
   clearSnapshot = [...regions];
+  clearSnapshotPartial = false;
   regions = [];
   nextOrder = 1;
+  clearRedoStack();
+  notify();
+  notifyClearSnapshot();
+}
+
+/** Clear only the regions with the given `source` (e.g. `'imagePaint'` stamps),
+ *  leaving every other region (brush strokes, face picks, …) untouched. Saves a
+ *  partial snapshot so "Undo clear" restores exactly the removed regions back
+ *  into the surviving list. No-op when nothing matches. */
+export function clearRegionsBySource(source: ColorRegion['source']): void {
+  const removed = regions.filter(r => r.source === source);
+  if (removed.length === 0) return;
+  clearSnapshot = removed;
+  clearSnapshotPartial = true;
+  regions = regions.filter(r => r.source !== source);
   clearRedoStack();
   notify();
   notifyClearSnapshot();
@@ -521,6 +637,7 @@ export function serialize(): SerializedColorRegion[] {
     descriptor: r.descriptor,
     order: r.order,
     visible: r.visible,
+    ...(r.slotId ? { slotId: r.slotId } : {}),
   }));
 }
 
