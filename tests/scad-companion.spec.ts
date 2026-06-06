@@ -20,7 +20,7 @@ type Api = {
 
 test('SCAD companion file: add, edit, include, and persist across reload', async ({ page }) => {
   await page.goto('/editor');
-  await page.waitForSelector('#simplify-toggle');
+  await page.waitForSelector('#simplify-toggle', { state: 'attached' });
   await page.waitForFunction(
     () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
     { timeout: 30_000 },
@@ -83,7 +83,7 @@ test('SCAD companion file: add, edit, include, and persist across reload', async
   const url = page.url();
   expect(url).toContain('session=');
   await page.goto(url);
-  await page.waitForSelector('#simplify-toggle');
+  await page.waitForSelector('#simplify-toggle', { state: 'attached' });
   await page.waitForFunction(
     () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
     { timeout: 30_000 },
