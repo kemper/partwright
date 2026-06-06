@@ -115,10 +115,12 @@ import type { VoxelGrid } from './geometry/voxel/grid';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
-import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, type ModifierResult } from './surface/modifiers';
+import { applyFuzzy, applyFuzzyPatch, applyKnit, applyKnitAsync, applyKnitPatch, applyKnitPatchAsync, applyCable, applyCablePatch, applyWaffle, applyWafflePatch, applyFur, applyFurPatch, applyWoven, applyWovenPatch, applySmooth, applySmoothPatch, applyVoxelize, applyScale, defaultFuzzyOptions, defaultKnitOptions, defaultCableOptions, defaultWaffleOptions, defaultFurOptions, defaultWovenOptions, defaultSmoothOptions, modelDiagonal, applyTranslate, type ModifierResult } from './surface/modifiers';
+import { buildPlacementCode, computePlacementDelta, isNoopDelta, placementLabel, type PlacementBox, type PlacementOps } from './surface/placement';
 import { nearestTriangleMap } from './surface/colorTransfer';
 import { initSurfaceUI } from './ui/surfaceModal';
 import { initResizeUI } from './ui/resizeModal';
+import { initPlaceUI } from './ui/placeModal';
 import { generateRelief, generateReliefFromSvg } from './relief/imageToRelief';
 import { DEFAULT_RELIEF_OPTIONS, type ReliefOptions, type ReliefImportMode, type ReliefCommonOptions, type SeedRegion, type PreviewMode, type GenerateReliefResult } from './relief/types';
 import { computeReliefTriColors, getSwapGuideFor, setPreviewMode as ctlSetReliefPreviewMode, getPreviewMode as ctlGetReliefPreviewMode, isPreviewActive as isReliefPreviewActive } from './relief/reliefController';
@@ -6972,6 +6974,89 @@ async function main() {
     return { ok: true, label: result.label, geometry: getGeometryDataObj() };
   }
 
+  // ---- Placement (drop-to-floor / center on plate) ------------------------
+
+  /** The current model's axis-aligned bounding box, from the cached geometry
+   *  stats. Null when no model has been run yet. */
+  function placementBox(): PlacementBox | null {
+    const gd = getGeometryDataObj() as { boundingBox?: { x?: number[]; y?: number[]; z?: number[] } | null } | null;
+    const bb = gd?.boundingBox;
+    if (!bb?.x || !bb?.y || !bb?.z || bb.x.length < 2 || bb.y.length < 2 || bb.z.length < 2) return null;
+    return {
+      min: [bb.x[0], bb.y[0], bb.z[0]],
+      max: [bb.x[1], bb.y[1], bb.z[1]],
+    };
+  }
+
+  /** Parametric placement (wrap the source in an IIFE + `.translate`) is only
+   *  safe for manifold-js models with no manual paint: world-space paint-region
+   *  descriptors can't follow a parametric move, so those models must bake (which
+   *  carries per-triangle colors). Model-declared label colors re-resolve from
+   *  the re-run code, so they don't block parametric. */
+  function canPlaceParametric(): boolean {
+    return getActiveLanguage() === 'manifold-js' && !hasColorRegions();
+  }
+
+  /** Commit a placement as editable code: wrap the source and translate the
+   *  whole result, keeping the model parametric. */
+  async function commitPlacementParametric(delta: [number, number, number], label: string): Promise<Record<string, unknown>> {
+    const date = new Date().toISOString().slice(0, 10);
+    const newCode = buildPlacementCode(getValue(), delta, label, date);
+    setValue(newCode);
+    const ok = await runCodeSync(newCode);
+    if (!ok) return { error: `Failed to apply ${label}` };
+    const thumbnail = await captureThumbnail();
+    await saveVersion(newCode, enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { force: true });
+    return { ok: true, label, mode: 'parametric', geometry: getGeometryDataObj() };
+  }
+
+  /** Reposition the current model onto the print bed. Picks the write-back mode
+   *  ('auto' → parametric when safe, else bake) and saves a new version. */
+  async function placeModel(opts?: PlacementOps & { mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }): Promise<Record<string, unknown>> {
+    try {
+      if (!currentMeshData) return { error: 'No model loaded' };
+      const box = placementBox();
+      if (!box) return { error: 'No bounding box available — run the model first' };
+      const ops: PlacementOps = {
+        dropToFloor: opts?.dropToFloor ?? false,
+        centerX: opts?.centerX ?? false,
+        centerY: opts?.centerY ?? false,
+        centerZ: opts?.centerZ ?? false,
+      };
+      if (!ops.dropToFloor && !ops.centerX && !ops.centerY && !ops.centerZ) {
+        return { error: 'placeModel: choose at least one of dropToFloor, centerX, centerY, centerZ' };
+      }
+      const delta = computePlacementDelta(box, ops);
+      const label = placementLabel(ops);
+      if (isNoopDelta(delta, box)) {
+        return { ok: true, noop: true, label, message: 'Model is already positioned' };
+      }
+      let mode: 'parametric' | 'bake' = opts?.mode === undefined || opts.mode === 'auto'
+        ? (canPlaceParametric() ? 'parametric' : 'bake')
+        : opts.mode;
+      const warnings: string[] = [];
+      if (mode === 'parametric' && !canPlaceParametric()) {
+        mode = 'bake';
+        warnings.push(getActiveLanguage() === 'manifold-js'
+          ? 'Model has manual paint — baked to a mesh so the paint is preserved.'
+          : 'Parametric placement is only available for manifold-js models — baked to a mesh.');
+      }
+      let result: Record<string, unknown>;
+      if (mode === 'parametric') {
+        result = await commitPlacementParametric(delta, label);
+      } else {
+        const preserve = opts?.preserveColor ?? true;
+        result = await commitSurfaceModifier(
+          applyTranslate(meshForModifier(preserve), delta[0], delta[1], delta[2], label),
+          preserve,
+        );
+      }
+      return warnings.length && !result.error ? { ...result, warnings } : result;
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   // Build a modifier result from an id + options (shared by apply and preview).
   // All three modifiers receive the color-baked mesh when preserveColor is on:
   // fuzzy/smooth carry triColors (with _painted) through subdivision so the
@@ -7316,6 +7401,17 @@ async function main() {
         return await commitSurfaceModifier(applyScale(meshForModifier(preserve), sx, sy, sz), preserve);
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
+    /** Reposition the current model onto the print bed and save a new version.
+     *  Combine any of `dropToFloor` (Z-min → 0), `centerX`, `centerY`, `centerZ`.
+     *  `mode`: 'auto' (default) keeps the model parametric when safe, else bakes;
+     *  'parametric' wraps the source + `.translate`; 'bake' flattens to a mesh.
+     *  Returns `{ ok, noop }` when the model is already positioned. */
+    async placeModel(opts?: { dropToFloor?: boolean; centerX?: boolean; centerY?: boolean; centerZ?: boolean; mode?: 'parametric' | 'bake' | 'auto'; preserveColor?: boolean }) {
+      return placeModel(opts);
+    },
+    /** True when a placement can be applied as editable parametric code rather
+     *  than baked to a mesh (manifold-js model with no manual paint). */
+    canPlaceParametric(): boolean { return canPlaceParametric(); },
     /** Run code string and update all views. Returns geometry data object. */
     async run(code?: string): Promise<Record<string, unknown>> {
       assertString(code, 'run(code)', { optional: true, allowEmpty: false });
@@ -11806,6 +11902,8 @@ async function main() {
   initSurfaceUI(partwrightAPI as unknown as Parameters<typeof initSurfaceUI>[0]);
   // Resize/scale UI (viewport ⇲ Resize button + command-palette entry).
   initResizeUI(partwrightAPI as unknown as Parameters<typeof initResizeUI>[0]);
+  // Placement UI (viewport ⤓ Place button + command-palette entries).
+  initPlaceUI(partwrightAPI as unknown as Parameters<typeof initPlaceUI>[0]);
 
   // Log API availability for AI agents
   console.info('Partwright: AI agents should use window.partwright -- start with partwright.help(). window.mainifold remains as a legacy alias. See /llms.txt');

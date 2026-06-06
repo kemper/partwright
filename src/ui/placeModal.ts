@@ -1,0 +1,255 @@
+// Place-on-plate panel — a compact, draggable viewport panel that repositions
+// the current model onto the print bed: drop its lowest point to Z=0 and/or
+// center it on the X/Y axes. Each action applies immediately and saves a new
+// version (undo is the version history), mirroring the Resize panel.
+//
+// Write-back mode: when the model is parametric manifold-js with no manual
+// paint, the user can keep the result as editable code (the source is wrapped
+// and translated) or bake it to a mesh. Otherwise only baking is offered, since
+// world-space paint regions can't follow a parametric move.
+
+import { registerCommands } from './commandPalette';
+import { showToast } from './toast';
+import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
+import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
+
+type PlaceOpts = {
+  dropToFloor?: boolean;
+  centerX?: boolean;
+  centerY?: boolean;
+  centerZ?: boolean;
+  mode?: 'parametric' | 'bake' | 'auto';
+  preserveColor?: boolean;
+};
+
+type PlaceResult = { error?: string; ok?: boolean; noop?: boolean; message?: string; warnings?: string[] } & Record<string, unknown>;
+
+export interface PlaceApi {
+  placeModel(opts: PlaceOpts): Promise<PlaceResult>;
+  canPlaceParametric(): boolean;
+  modelHasColor(): boolean;
+  getGeometryData(): { boundingBox?: { x?: number[]; y?: number[]; z?: number[] } | null } | Record<string, unknown>;
+}
+
+let openModal: HTMLDivElement | null = null;
+let currentPlaceClose: (() => void) | null = null;
+
+const placeRegistryEntry = { close(): void { currentPlaceClose?.(); } };
+
+function onPlaceEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  if (document.querySelector('[role="dialog"]')) return;
+  currentPlaceClose?.();
+}
+
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text = ''): HTMLElementTagNameMap[K] {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text) e.textContent = text;
+  return e;
+}
+
+/** Find the viewport container used by the other overlay panels. */
+function getViewportContainer(): HTMLElement {
+  return (document.getElementById('clip-controls')?.offsetParent as HTMLElement | null) ?? document.body;
+}
+
+function bboxSummary(api: PlaceApi): string | null {
+  try {
+    const gd = api.getGeometryData() as { boundingBox?: { x?: number[]; y?: number[]; z?: number[] } | null };
+    const bb = gd?.boundingBox;
+    if (bb?.x && bb?.y && bb?.z) {
+      const cx = ((bb.x[0] + bb.x[1]) / 2);
+      const cy = ((bb.y[0] + bb.y[1]) / 2);
+      return `Floor Z = ${bb.z[0].toFixed(2)} · XY center = (${cx.toFixed(2)}, ${cy.toFixed(2)})`;
+    }
+  } catch { /* fall through */ }
+  return null;
+}
+
+export function openPlaceModal(api: PlaceApi): void {
+  if (openModal) { openModal.remove(); openModal = null; currentPlaceClose = null; }
+
+  const canParametric = api.canPlaceParametric();
+  const hasColor = api.modelHasColor();
+  let mode: 'parametric' | 'bake' = canParametric ? 'parametric' : 'bake';
+  let preserveColor = true;
+
+  const container = getViewportContainer();
+  const panel = el('div', 'absolute z-[60] bg-zinc-900 text-zinc-100 rounded-lg border border-zinc-700 shadow-xl w-[min(94vw,320px)] select-none flex flex-col');
+
+  // Header — drag handle + title + × button.
+  const header = el('div', 'flex items-center justify-between px-4 py-3 border-b border-zinc-700 shrink-0');
+  header.append(el('h2', 'text-sm font-semibold', 'Place on plate'));
+  const closeBtn = el('button', 'text-zinc-400 hover:text-zinc-100 text-lg leading-none cursor-pointer', '×');
+  closeBtn.setAttribute('aria-label', 'Close placement panel');
+  header.append(closeBtn);
+  panel.append(header);
+  const dragHandle = attachViewportPanelDrag(header, panel);
+
+  const body = el('div', 'p-4 flex flex-col gap-3');
+  panel.append(body);
+
+  body.append(el('p', 'text-[11px] text-zinc-400 leading-snug',
+    'Reposition the model onto the bed: drop its lowest point to the floor, or center it over the origin.'));
+
+  // ---- Action buttons ----
+  const ACTION = 'w-full text-left px-3 py-2 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-100 text-xs flex items-center gap-2';
+  const dropBtn = el('button', ACTION);
+  dropBtn.innerHTML = '<span aria-hidden="true">⤓</span><span>Drop to floor <span class="text-zinc-500">(Z → 0)</span></span>';
+  const centerBtn = el('button', ACTION);
+  centerBtn.innerHTML = '<span aria-hidden="true">⊕</span><span>Center on plate <span class="text-zinc-500">(XY → 0)</span></span>';
+  const bothBtn = el('button', ACTION);
+  bothBtn.innerHTML = '<span aria-hidden="true">⤓⊕</span><span>Drop &amp; center</span>';
+  body.append(dropBtn, centerBtn, bothBtn);
+
+  // ---- Write-back mode ----
+  const modeWrap = el('div', 'flex flex-col gap-1.5 pt-1 border-t border-zinc-800');
+  modeWrap.append(el('div', 'text-[11px] text-zinc-400 font-medium pt-2', 'Write-back'));
+  if (canParametric) {
+    const mkRadio = (value: 'parametric' | 'bake', label: string, hint: string): HTMLElement => {
+      const row = el('label', 'flex items-start gap-2 text-xs text-zinc-300 cursor-pointer');
+      const radio = el('input', 'accent-sky-500 mt-0.5');
+      radio.type = 'radio';
+      radio.name = 'place-writeback';
+      radio.value = value;
+      radio.checked = mode === value;
+      radio.addEventListener('change', () => { if (radio.checked) mode = value; });
+      const txt = el('span', '');
+      txt.append(el('span', 'text-zinc-200', label));
+      txt.append(el('span', 'block text-[10px] text-zinc-500', hint));
+      row.append(radio, txt);
+      return row;
+    };
+    modeWrap.append(
+      mkRadio('parametric', 'Keep editable code', 'Wraps your model code and translates it — stays parametric.'),
+      mkRadio('bake', 'Bake to mesh', 'Flattens the moved model to a fixed mesh.'),
+    );
+  } else {
+    modeWrap.append(el('p', 'text-[11px] text-zinc-500 leading-snug',
+      hasColor
+        ? 'This model has manual paint, so the result is baked to a mesh (keeps the paint).'
+        : 'Baked to a mesh (parametric placement is only available for manifold-js models).'));
+  }
+  body.append(modeWrap);
+
+  // ---- Preserve colors (bake path only) ----
+  if (hasColor) {
+    const colorRow = el('label', 'flex items-center gap-2 text-xs text-zinc-300 cursor-pointer');
+    const colorCheck = el('input', 'accent-sky-500');
+    colorCheck.type = 'checkbox';
+    colorCheck.checked = preserveColor;
+    colorCheck.addEventListener('change', () => { preserveColor = colorCheck.checked; });
+    colorRow.append(colorCheck, el('span', '', 'Preserve colors (best-effort)'));
+    body.append(colorRow);
+  }
+
+  // ---- Status / current placement ----
+  const status = el('div', 'text-[11px] text-zinc-400 min-h-[1rem]');
+  const summary = bboxSummary(api);
+  if (summary) status.textContent = summary;
+  body.append(status);
+
+  // Footer
+  const footer = el('div', 'flex justify-end gap-2 px-4 pb-4 shrink-0');
+  const closeFooterBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs', 'Close');
+  footer.append(closeFooterBtn);
+  panel.append(footer);
+
+  const buttons = [dropBtn, centerBtn, bothBtn];
+  async function runPlacement(ops: PlaceOpts, verb: string): Promise<void> {
+    buttons.forEach(b => (b.disabled = true));
+    status.textContent = 'Working…';
+    try {
+      const result = await api.placeModel({ ...ops, mode, preserveColor });
+      if (result.error) {
+        status.textContent = `Error: ${result.error}`;
+        return;
+      }
+      if (result.noop) {
+        status.textContent = result.message ?? 'Model is already positioned.';
+        return;
+      }
+      const warn = Array.isArray(result.warnings) && result.warnings.length ? ` (${result.warnings.join(' ')})` : '';
+      showToast(`${verb}${warn}`, { variant: warn ? 'warn' : 'success' });
+      status.textContent = bboxSummary(api) ?? `${verb}.`;
+    } catch (e) {
+      status.textContent = `Error: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      buttons.forEach(b => (b.disabled = false));
+    }
+  }
+
+  dropBtn.addEventListener('click', () => void runPlacement({ dropToFloor: true }, 'Dropped to floor'));
+  centerBtn.addEventListener('click', () => void runPlacement({ centerX: true, centerY: true }, 'Centered on plate'));
+  bothBtn.addEventListener('click', () => void runPlacement({ dropToFloor: true, centerX: true, centerY: true }, 'Dropped & centered'));
+
+  const close = () => {
+    dragHandle.destroy();
+    panel.remove();
+    openModal = null;
+    currentPlaceClose = null;
+    closeViewportPanel(placeRegistryEntry);
+    document.removeEventListener('keydown', onPlaceEscape);
+  };
+  closeBtn.addEventListener('click', close);
+  closeFooterBtn.addEventListener('click', close);
+
+  container.append(panel);
+  setInitialPanelPosition(panel);
+  currentPlaceClose = close;
+  openViewportPanel(placeRegistryEntry);
+  document.addEventListener('keydown', onPlaceEscape);
+  openModal = panel as HTMLDivElement;
+}
+
+const BTN_BASE =
+  'px-2 py-1 rounded text-xs bg-zinc-800/80 backdrop-blur border border-zinc-700 text-zinc-200 hover:bg-zinc-700';
+
+export function initPlaceUI(api: PlaceApi): void {
+  registerCommands([
+    {
+      id: 'place-model',
+      title: 'Place model on plate',
+      hint: 'Transform',
+      keywords: 'place plate floor bed drop center align lay flat ground origin transform',
+      run: () => openPlaceModal(api),
+    },
+    {
+      id: 'place-drop-floor',
+      title: 'Drop model to floor',
+      hint: 'Transform',
+      keywords: 'drop floor bed z zero ground lay flat sink align',
+      run: () => { void api.placeModel({ dropToFloor: true, mode: 'auto' }); },
+    },
+    {
+      id: 'place-center-plate',
+      title: 'Center model on plate',
+      hint: 'Transform',
+      keywords: 'center plate origin xy align middle',
+      run: () => { void api.placeModel({ centerX: true, centerY: true, mode: 'auto' }); },
+    },
+  ]);
+
+  const mount = () => {
+    if (document.getElementById('place-viewport-toggle')) return;
+    const styleRef = document.getElementById('resize-viewport-toggle')
+      ?? document.getElementById('surface-viewport-toggle')
+      ?? document.getElementById('paint-toggle');
+    const host = document.getElementById('viewport-tools-menu') ?? styleRef?.parentElement;
+    if (!host) return;
+    const btnCls = (styleRef?.className ?? '').split(' ').filter(c => c !== 'hidden').join(' ') || BTN_BASE;
+    const btn = el('button', btnCls);
+    btn.id = 'place-viewport-toggle';
+    btn.textContent = '⤓ Place';
+    btn.title = 'Drop the model to the floor or center it on the plate';
+    btn.addEventListener('click', () => openPlaceModal(api));
+    host.appendChild(btn);
+  };
+  let tries = 0;
+  const timer = setInterval(() => {
+    mount();
+    if (document.getElementById('place-viewport-toggle') || ++tries > 20) clearInterval(timer);
+  }, 250);
+  mount();
+}
