@@ -94,6 +94,9 @@ let updatingInputs = false; // prevents feedback loops when setting inputs progr
 // Keyboard shortcut listener — added when panel opens, removed when it closes
 let keydownListener: ((e: KeyboardEvent) => void) | null = null;
 
+// Debounced auto-preview timer (module scope so closePanel can cancel it)
+let autoPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+
 // Face-align mode: user clicks a model face to snap the cutter's orientation
 let faceAlignMode = false;
 let faceAlignClickHandler: ((e: MouseEvent) => void) | null = null;
@@ -181,6 +184,7 @@ function openPanel(): void {
 
 function closePanel(): void {
   cancelFaceAlign();
+  if (autoPreviewTimer !== null) { clearTimeout(autoPreviewTimer); autoPreviewTimer = null; }
   panel?.classList.add('hidden');
   if (cutBtn) cutBtn.className = BTN_INACTIVE;
   deactivateGizmo();
@@ -307,7 +311,6 @@ function buildPanel(): HTMLElement {
   content.appendChild(modeRow);
 
   // Sync shape/mode buttons on gizmo changes; auto-preview after 300 ms idle
-  let autoPreviewTimer: ReturnType<typeof setTimeout> | null = null;
   onGizmoChange(() => {
     for (const [s, b] of shapeButtons) b.className = toggleBtnClass(s === getCutShape());
     updateModeButtons();

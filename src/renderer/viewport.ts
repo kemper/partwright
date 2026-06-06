@@ -775,6 +775,9 @@ export function pickModelFace(
   const hits = raycasterForHit.intersectObjects(meshGroup.children, true);
   for (const hit of hits) {
     if (!hit.face || !hit.object.visible) continue;
+    // Skip wireframe and clip-cap overlays — only hit the solid geometry
+    const name = hit.object.name;
+    if (name === 'wireframe' || name === 'clip-cap') continue;
     const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
     return { point: hit.point.clone(), normal };
   }

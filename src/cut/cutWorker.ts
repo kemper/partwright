@@ -235,7 +235,8 @@ function subdivideBoundaryTriangles(
     const z1 = mesh.vertProperties[v1 * stride + 2];
     const d0 = (x0 - ox) * nx + (y0 - oy) * ny + (z0 - oz) * nz;
     const d1 = (x1 - ox) * nx + (y1 - oy) * ny + (z1 - oz) * nz;
-    const t = d0 / (d0 - d1);
+    const denom = d0 - d1;
+    const t = Math.abs(denom) < 1e-9 ? 0.5 : d0 / denom;
     const newIdx = numNewVert++;
     for (let p = 0; p < stride; p++) {
       newVerts.push(mesh.vertProperties[v0 * stride + p] * (1 - t) + mesh.vertProperties[v1 * stride + p] * t);
