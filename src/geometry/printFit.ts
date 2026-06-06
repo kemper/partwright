@@ -414,7 +414,8 @@ export function createPrintFitNamespace(module: any, deps: PrintFitDeps = {}) {
      * (SUBTRACT from the mating wall) the hook clicks through.
      * Local frame: beam back face on y=0, hook protrudes +Y.
      *
-     * opts: { width, length, thickness?, hookDepth?, leadAngle?, fit? }
+     * opts: { width, length, thickness?, hookDepth?, leadAngle?, fit?, rounded? }
+     *   rounded: round the retention edge of the hook for smoother snap-in/out.
      */
     snapFit(o0: unknown): { clip: any; catch: any } {
       const o = opts(o0, 'snapFit');
@@ -424,6 +425,7 @@ export function createPrintFitNamespace(module: any, deps: PrintFitDeps = {}) {
       const hookDepth = num(o.hookDepth, 'hookDepth', { def: thickness * 0.8, min: 0.2 });
       const leadAngle = num(o.leadAngle, 'leadAngle', { def: 45, min: 10 });
       const gap = clearance(o.fit ?? 'normal');
+      const rounded = bool(o.rounded, false);
 
       // Beam: a box width×thickness rising in Z. Back face on y=0.
       const beam = Manifold.cube([width, thickness, length], false).translate([-width / 2, 0, 0]);
@@ -432,18 +434,29 @@ export function createPrintFitNamespace(module: any, deps: PrintFitDeps = {}) {
       // prism in the Y-Z plane: flat retention face (bottom), ramped top.
       const ramp = hookDepth / Math.tan((Math.PI / 180) * leadAngle);
       const hookH = Math.min(ramp + hookDepth, length * 0.6);
-      // Profile in XY (x=y-protrusion, y=z-height), extruded along Z(width) then
-      // rotated into place. Simpler: assemble from a box + a cut.
       const hookBlock = Manifold.cube([width, hookDepth + thickness, hookH], false)
         .translate([-width / 2, 0, length - hookH]);
-      // Slice the outer-top corner off to make the lead-in ramp: subtract a
-      // rotated box.
+      // Slice the outer-top corner off to make the lead-in ramp.
       const cutter = Manifold.cube([width + 2, hookDepth * 2 + 2, hookH * 2], false)
         .translate([-width / 2 - 1, thickness, length])
         .rotate([leadAngle, 0, 0])
         .translate([0, 0, 0]);
       const hook = hookBlock.subtract(cutter);
-      const clip = beam.add(hook);
+      let clipResult = beam.add(hook);
+
+      if (rounded) {
+        // Chamfer the retention edge — the convex corner where the outer face
+        // (y = thickness+hookDepth) meets the retention face (z = length-hookH) —
+        // with a 45°-rotated cube cut. Produces a clean diagonal bevel that
+        // reduces snap-in/out force without adding separate geometry.
+        const r = Math.max(0.5, Math.min(hookDepth * 0.5, 1.5));
+        const c = r * Math.SQRT2;
+        const chamferCutter = Manifold.cube([width + 2, c, c], false)
+          .translate([-width / 2 - 1, -c / 2, -c / 2])
+          .rotate([45, 0, 0])
+          .translate([0, thickness + hookDepth, length - hookH]);
+        clipResult = clipResult.subtract(chamferCutter);
+      }
 
       // Catch: a rectangular window the hook passes through, sized with
       // clearance. Centered on the hook protrusion, as a negative slab in Y.
@@ -451,7 +464,7 @@ export function createPrintFitNamespace(module: any, deps: PrintFitDeps = {}) {
       const winH = hookDepth + 2 * gap;
       const catchTool = Manifold.cube([winW, thickness + 2 * LIP, winH], false)
         .translate([-winW / 2, -LIP, length - hookH - gap]);
-      return { clip, catch: catchTool };
+      return { clip: clipResult, catch: catchTool };
     },
 
     /**
