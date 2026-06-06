@@ -1,0 +1,36 @@
+{
+  "partwright": "1.10",
+  "session": {
+    "name": "Print-Fit Enclosure",
+    "created": 1749254400000,
+    "updated": 1749254460000,
+    "images": null
+  },
+  "parts": [{"name": "Part 1", "order": 0}],
+  "versions": [
+    {
+      "index": 1,
+      "language": "manifold-js",
+      "timestamp": 1749254430000,
+      "label": "v0",
+      "thumbnail": null,
+      "code": "// Two-part enclosure — base with M3 heat-set insert bosses + alignment pin,\n// lid with counterbored M3 screws + registration socket.\nconst { Manifold, printFit } = api;\n\nconst W = 50, D = 40, H = 18;\nconst wall = 2;\nconst inset = 8;\n\nconst anchors = [\n  [inset, inset],\n  [W - inset, D - inset],\n];\n\n// ---- Base ----\nlet base = Manifold.cube([W, D, H], false);\nconst cavity = Manifold.cube([W - 2*wall, D - 2*wall, H], false)\n  .translate([wall, wall, wall]);\nbase = base.subtract(cavity);\n\nfor (const [x, y] of anchors) {\n  const boss = printFit.insertBoss({ size: 'M3', height: 8, wall: 2 })\n    .translate([x, y, wall - 0.5]);\n  base = base.add(boss);\n}\n\nconst postLen = H - wall + 1;\nbase = base.add(\n  printFit.pin({ diameter: 4, length: postLen }).translate([wall, wall, wall - 0.5]),\n);\n\n// ---- Lid ----\nconst lidT = 6;\nlet lid = Manifold.cube([W, D, lidT], false);\n\nfor (const [x, y] of anchors) {\n  const hole = printFit.screwHole({ size: 'M3', length: lidT, head: 'socket' })\n    .translate([x, y, lidT]);\n  lid = lid.subtract(hole);\n}\n\nlid = lid.subtract(\n  printFit.socket({ diameter: 4, depth: 5, fit: 'snug' })\n    .translate([wall, wall, lidT]),\n);\n\nlid = lid.translate([W + 10, 0, 0]);\n\nreturn base.add(lid);",
+      "geometryData": {
+        "status": "ok",
+        "vertexCount": 2679,
+        "triangleCount": 5358,
+        "isManifold": true,
+        "componentCount": 2,
+        "volume": 21864.722,
+        "surfaceArea": 15614.004,
+        "genus": 1,
+        "boundingBox": {
+          "x": [0, 110],
+          "y": [0, 40],
+          "z": [0, 18.5],
+          "dimensions": [110, 40, 18.5]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "partwright": "1.10",
+  "session": {
+    "name": "Hardware-Ready Mounting Plate",
+    "created": 1749254700000,
+    "updated": 1749254760000,
+    "images": null
+  },
+  "parts": [{"name": "Part 1", "order": 0}],
+  "versions": [
+    {
+      "index": 1,
+      "language": "manifold-js",
+      "timestamp": 1749254730000,
+      "label": "v0",
+      "thumbnail": null,
+      "code": "// Hardware-ready mounting plate — a single flat plate that showcases four\n// printFit builders at once: M3 counterbored screw holes in the corners,\n// M4 captive nut pockets along the centre spine, and an alignment pin + socket\n// pair on the short edges so two plates stack and register perfectly.\nconst { Manifold, printFit } = api;\n\nconst W = 80, D = 50, T = 6;   // plate dimensions\nconst cornerInset = 8;          // screw holes inset from corners\nconst nutSpacing = 22;          // nut pocket spacing from centre\n\n// ---- Base plate ----\nlet plate = Manifold.cube([W, D, T], false);\n\n// ---- M3 socket-head counterbored holes in the four corners ----\nfor (const [x, y] of [\n  [cornerInset,     cornerInset],\n  [W - cornerInset, cornerInset],\n  [cornerInset,     D - cornerInset],\n  [W - cornerInset, D - cornerInset],\n]) {\n  plate = plate.subtract(\n    printFit.screwHole({ size: 'M3', length: T, head: 'socket' })\n      .translate([x, y, T]),\n  );\n}\n\n// ---- M4 captive nut pockets along the midline (for T-slot or panel nuts) ----\nfor (const x of [W / 2 - nutSpacing, W / 2 + nutSpacing]) {\n  // nutPocket opens at z=0; subtract from the bottom face (z=0, pointing -Z).\n  plate = plate.subtract(\n    printFit.nutPocket({ size: 'M4', depth: 4, captive: true })\n      .translate([x, D / 2, 0]),\n  );\n}\n\n// ---- Alignment pin on the +X edge, socket on the -X edge ----\n// Pin rises 5 mm above the plate; embedded 0.5 mm into the face for a solid union.\nplate = plate.add(\n  printFit.pin({ diameter: 4, length: 6 })\n    .translate([W - 0.5, D / 2, T / 2]),\n);\n// Socket is a negative cut into the -X face.\nplate = plate.subtract(\n  printFit.socket({ diameter: 4, depth: 5, fit: 'snug' })\n    .rotate([0, -90, 0])\n    .translate([0, D / 2, T / 2]),\n);\n\nreturn plate;",
+      "geometryData": {
+        "status": "ok",
+        "vertexCount": 2864,
+        "triangleCount": 5740,
+        "isManifold": true,
+        "componentCount": 1,
+        "volume": 23499.488,
+        "surfaceArea": 9961.861,
+        "genus": 4,
+        "boundingBox": {
+          "x": [0, 81.5],
+          "y": [0, 50],
+          "z": [0, 9],
+          "dimensions": [81.5, 50, 9]
+        }
+      }
+    }
+  ]
+}

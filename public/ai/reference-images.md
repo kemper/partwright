@@ -35,6 +35,8 @@ partwright.getImages()  // -> [{id, src, label?}, ...]
 
 Attached images appear in the Images tab and the Gallery; render the model with `renderViews` to compare it against them at matching angles.
 
+**Seeing the references as the AI:** in the in-app AI chat, call the **`getReferenceImages`** tool — it returns every attached reference as one labeled grid image (plus a text list of the labels), so the model can actually look at what the user attached on any turn rather than guess.
+
 ## Photo-to-model workflow
 
 > **Optional tooling.** This workflow uses `scripts/generate-views.js` and Gemini, which may not be installed in every environment. If unavailable, skip the analysis step and supply images manually via `setImages()`.

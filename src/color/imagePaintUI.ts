@@ -19,7 +19,7 @@ import {
   getRegions,
   onChange as onRegionsChange,
   removeLastRegion,
-  clearRegions,
+  clearRegionsBySource,
   isVisible as isPaintVisible,
   setVisible as setPaintVisible,
   canUndoClear,
@@ -33,6 +33,7 @@ import {
 import { getCurrentMesh as getPaintMesh } from './paintMode';
 import { deactivateMode, registerExclusiveMode } from '../ui/modeExclusion';
 import { forceDeactivate as closeSimplifyMenu } from '../ui/simplifyUI';
+import { viewportToolsMount } from '../ui/popoverMenu';
 import { forceDeactivate as closeAnnotate } from '../annotations/annotateUI';
 import { forceDeactivate as closeAnnotateText } from '../annotations/textMode';
 import { forceDeactivate as closeAnnotateSelect } from '../annotations/selectMode';
@@ -107,6 +108,21 @@ export function setSmoothStampCallback(cb: SmoothStampCallback): void {
   smoothStampCb = cb;
 }
 
+// The stamp flow (smooth or flat) already produces the final mesh and resolves
+// every region's triangles itself, so committing the new stamp region must NOT
+// kick off the paint reconciler — when brush strokes (or other refine regions)
+// are present the reconciler would rebuild the mesh from base and wipe both the
+// just-placed stamp (its colours live in runtime perTriColors, not the
+// descriptor) and the existing brush paint. main.ts registers a hook that wraps
+// the region commit so it runs with the reconciler suspended, then refreshes the
+// composited colours directly. Falls back to running the commit as-is.
+type StampCommitHook = (commit: () => void) => void;
+let stampCommitHook: StampCommitHook | null = null;
+
+export function setStampCommitHook(hook: StampCommitHook): void {
+  stampCommitHook = hook;
+}
+
 // Hint element for stamp instructions
 let stampHintEl: HTMLElement | null = null;
 
@@ -132,14 +148,15 @@ export function initImagePaintUI(controlsContainer: HTMLElement): void {
 
   imagePaintBtn.addEventListener('click', toggleImagePaint);
 
-  // Insert right after the paint toggle button
-  const paintBtn = controlsContainer.querySelector('#paint-toggle');
+  // Insert right after the paint toggle button, within the Tools popover (or the
+  // bar itself as fallback). insertBefore needs the same parent as the reference
+  // node, so anchor off whichever container actually holds the paint button.
+  const toolsMount = viewportToolsMount(controlsContainer);
+  const paintBtn = toolsMount.querySelector('#paint-toggle');
   if (paintBtn?.nextSibling) {
-    controlsContainer.insertBefore(imagePaintBtn, paintBtn.nextSibling);
-  } else if (paintBtn) {
-    controlsContainer.appendChild(imagePaintBtn);
+    toolsMount.insertBefore(imagePaintBtn, paintBtn.nextSibling);
   } else {
-    controlsContainer.appendChild(imagePaintBtn);
+    toolsMount.appendChild(imagePaintBtn);
   }
 
   panel = buildPanel();
@@ -345,7 +362,7 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
 
   stampCounter++;
   const triangles = new Set(result.perTriColors.keys());
-  addRegion(
+  const commit = () => addRegion(
     `Stamp ${stampCounter}`,
     result.avgColor,
     'imagePaint',
@@ -364,8 +381,13 @@ function executeStamp(hitPoint: [number, number, number], hitNormal: [number, nu
     },
     triangles,
     true,
+    undefined, // unslotted — image-paint carries per-triangle colours, not a palette slot
     result.perTriColors,
   );
+  // Commit through the reconcile-suspending hook when wired (see setStampCommitHook),
+  // so adding the stamp can't trigger a mesh rebuild that drops it or existing paint.
+  if (stampCommitHook) stampCommitHook(commit);
+  else commit();
 }
 
 // ─── Panel construction ───────────────────────────────────────────────────────
@@ -494,8 +516,8 @@ function buildPanel(): HTMLElement {
   const clearBtn = document.createElement('button');
   clearBtn.className = 'px-2 py-1 rounded text-[10px] bg-red-700/60 text-red-200 hover:bg-red-600/60 transition-colors';
   clearBtn.textContent = 'Clear';
-  clearBtn.title = 'Remove all paint regions';
-  clearBtn.addEventListener('click', clearRegions);
+  clearBtn.title = 'Remove all image stamps (keeps brush paint and other regions)';
+  clearBtn.addEventListener('click', () => clearRegionsBySource('imagePaint'));
   footer.appendChild(clearBtn);
 
   el.appendChild(footer);

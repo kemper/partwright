@@ -12,6 +12,8 @@
 // Kept dependency-free so the pure helpers below stay unit-testable and both
 // the page and the modal can import the list without a network fetch.
 
+import { PHOTO_BUST_PROMPT } from '../ai/photoModelPrompt';
+
 export type IdeaCategory = 'starter' | 'technique' | 'interactive';
 
 /** Built-in interactive flow an "interactive" idea triggers. The handler lives
@@ -99,6 +101,15 @@ export const IDEAS: Idea[] = [
     emoji: '☕',
     tags: ['mug', 'kitchen', 'beginner', 'hollow'],
     prompt: 'Build a coffee mug about 90mm tall with a 5mm-thick wall, a rounded base, and a comfortable handle on the side.',
+  },
+  {
+    id: 'photo-bust',
+    title: 'A stylized bust from your photo',
+    blurb: 'Attach a photo and the AI analyses it, then sculpts a clean stylized 3D bust of the person.',
+    category: 'starter',
+    emoji: '\u{1F5FF}', // moai — a sculpted head
+    tags: ['photo', 'portrait', 'bust', 'face', 'selfie', 'character'],
+    prompt: PHOTO_BUST_PROMPT,
   },
   {
     id: 'phone-stand',

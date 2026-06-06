@@ -31,6 +31,7 @@ export interface ToolDefinition {
 }
 
 import type { ImageSource } from './types';
+import { compositeReferenceGrid } from './images';
 
 export interface ToolExecResult {
   content: string;
@@ -295,6 +296,11 @@ const ALL_TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'getReferenceImages',
+    description: 'See the reference images the user attached to this session (the "Images" / reference panel — e.g. photos or alternate-angle views to model from or match). Returns ALL of them as ONE labeled grid image (each tile captioned with its label) plus a text list of the labels. Call this at the START of any task that refers to attached photos/views, and again whenever you need to re-check them — do NOT guess at a subject you have not actually seen. If nothing is attached, it says so.',
+    input_schema: { type: 'object', properties: {} },
+  },
+  {
     name: 'renderView',
     description: 'Render the current model from ONE angle and return the PNG as a multimodal image. Cheap (one render, ~1500 input tokens next turn). Use when you have a specific suspicion to confirm from a known angle. For general "did this paint land correctly" verification, prefer renderViews — a single angle can hide an error visible from another.',
     input_schema: {
@@ -420,13 +426,13 @@ const ALL_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'readDoc',
-    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, print-fit, reference-images, file-io, annotations, relief, iteration-workflow, gotchas, visual-verification, spending, manifold-api.',
+    description: 'Fetch one of the topic-specific docs from /ai/<name>.md. Use this when the core ai.md points you at a subdoc and you need its full content before writing code. Names: curves, bosl2, replicad, sdf, voxel, colors, print-safety, print-fit, reference-images, file-io, annotations, relief, textures, mechanisms, iteration-workflow, gotchas, visual-verification, spending, manifold-api.',
     input_schema: {
       type: 'object',
       properties: {
         name: {
           type: 'string',
-          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'relief', 'textures'],
+          enum: ['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'relief', 'textures', 'mechanisms'],
           description: 'Subdoc name without the .md extension.',
         },
       },
@@ -490,6 +496,7 @@ const ALL_TOOLS: ToolDefinition[] = [
         resolution: { type: 'number', description: 'Smoothness detail: target triangle edge = radius / resolution. Higher = smoother + more triangles. Default 256, clamped 2–1024.' },
         maxEdge: { type: 'number', description: 'Optional absolute override for the target edge length (mesh units). Takes precedence over resolution.' },
         shape: { type: 'string', enum: ['circle', 'square', 'diamond'], description: 'Brush footprint shape. Default "circle".' },
+        wrapAngleDeg: { type: 'number', description: 'Wrap tolerance (0–180): the max edge bend, in degrees, paint may flow across. The stroke follows gentle curves/bumps but stops at sharper folds — 90 stops at right-angle corners (so paint on one face of a box stays off the adjacent faces), 180 (default) wraps across any edge. Lower it to keep a stroke on a single face.' },
         color: { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 },
         name: { type: 'string' },
       },
@@ -1434,6 +1441,7 @@ const ALWAYS_AVAILABLE = new Set([
   'getGeometryData',
   'getMeshSummary',
   'getFeatureCentroids',
+  'getReferenceImages',
   'getSessionContext',
   'listVersions',
   // loadVersion is intentionally NOT here — it's listed in SAVE_GATED so
@@ -1569,6 +1577,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
     if (name === 'renderViews') return await executeRenderViews(api, input);
     if (name === 'runIsolated') return await executeRunIsolated(api, input);
     if (name === 'sliceAtZVisual') return await executeSliceAtZVisual(api, input);
+    if (name === 'getReferenceImages') return await executeGetReferenceImages(api);
 
     const result = await dispatch(api, name, input);
     if (result === undefined) return { content: '(ok)', isError: false };
@@ -1626,7 +1635,7 @@ function detectLanguageMismatch(code: string): string | null {
  *  `tools.ts` to import the engine module statically. The function lives
  *  in `src/geometry/engine.ts` and is already loaded by the app shell at
  *  startup, so a require-style lookup via `window.partwright` is safe. */
-const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'relief', 'textures', 'iteration-workflow', 'gotchas', 'visual-verification', 'spending', 'manifold-api']);
+const SUBDOC_NAMES = new Set(['curves', 'bosl2', 'replicad', 'sdf', 'voxel', 'colors', 'print-safety', 'print-fit', 'reference-images', 'file-io', 'annotations', 'relief', 'textures', 'mechanisms', 'iteration-workflow', 'gotchas', 'visual-verification', 'spending', 'manifold-api']);
 
 /** Fetch a topic subdoc by short name. Same fetch path for Anthropic and
  *  local providers — both run inside the user's browser tab, so this is
@@ -1654,6 +1663,31 @@ function readActiveLanguage(): 'manifold-js' | 'scad' | 'replicad' | 'voxel' | n
   } catch {
     return null;
   }
+}
+
+async function executeGetReferenceImages(api: PartwrightAPI): Promise<ToolExecResult> {
+  const raw = typeof api.getImages === 'function' ? api.getImages() : [];
+  const images = (Array.isArray(raw) ? raw : []) as Array<{ src?: string; label?: string }>;
+  const usable = images
+    .filter(im => typeof im.src === 'string' && im.src.length > 0)
+    .map(im => ({ src: im.src as string, label: im.label }));
+  if (usable.length === 0) {
+    return {
+      content: 'No reference images are attached to this session. If the task refers to photos or views, ask the user to attach them in the Images panel (or via the Self-Modeling Studio) — do not invent a subject.',
+      isError: false,
+    };
+  }
+  const labels = usable.map((im, i) => `${i + 1}. ${im.label?.trim() || '(no label)'}`).join('\n');
+  let grid: ImageSource | null = null;
+  try { grid = await compositeReferenceGrid(usable); } catch { grid = null; }
+  if (!grid) {
+    return { content: `${usable.length} reference image(s) attached, but the grid could not be rendered. Labels:\n${labels}`, isError: false };
+  }
+  return {
+    content: `${usable.length} reference image(s), tiled left-to-right, top-to-bottom in the attached grid:\n${labels}`,
+    image: grid,
+    isError: false,
+  };
 }
 
 function executeRenderView(api: PartwrightAPI, input: Record<string, unknown>): ToolExecResult {

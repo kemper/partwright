@@ -42,6 +42,7 @@ import { setAnnotationsVisible, isAnnotationsVisible } from './annotationOverlay
 import { endSession as endSessionPlane, hidePlaneOutline } from './sessionPlane';
 import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
+import { viewportToolsMount } from '../ui/popoverMenu';
 
 const PRESET_COLORS: [number, number, number][] = [
   [0.95, 0.20, 0.45], // hot pink (default)
@@ -100,11 +101,9 @@ export function initAnnotateUI(controlsContainer: HTMLElement): void {
 
   annotateBtn.addEventListener('click', toggleAnnotateMode);
 
-  const paintBtn = controlsContainer.querySelector('#paint-toggle');
-  const measureBtn = controlsContainer.querySelector('#measure-toggle');
-  const anchor = paintBtn ?? measureBtn;
-  if (anchor) controlsContainer.insertBefore(annotateBtn, anchor);
-  else controlsContainer.appendChild(annotateBtn);
+  // Mount the button into the Tools popover (falls back to the bar itself).
+  // Order within the popover follows init order; no sibling anchoring needed.
+  viewportToolsMount(controlsContainer).appendChild(annotateBtn);
 
   pickerPanel = createPickerPanel();
   // Parent to the viewport container (same as paint panel) so the panel can be

@@ -4,6 +4,14 @@
 
 export type CatalogLanguage = 'manifold-js' | 'scad' | 'replicad' | 'voxel';
 
+/** Canonical order for the language filter pills (only present ones render). */
+export const CATALOG_LANGUAGE_ORDER: CatalogLanguage[] = ['manifold-js', 'scad', 'replicad', 'voxel'];
+
+/** Curated, language-independent groups. Unlike the engine-derived categories
+ *  below, a curated group is assigned explicitly per manifest entry (via
+ *  `group`) so a themed collection can span every engine. */
+export type CuratedGroupId = 'fidget-toys' | 'print-fit';
+
 export interface CatalogManifestEntry {
   /** Stable id used as a slug; also the manifest dedupe key. */
   id: string;
@@ -15,11 +23,16 @@ export interface CatalogManifestEntry {
   file: string;
   /** Optional language hint for the badge before the JSON loads. */
   language?: CatalogLanguage;
+  /** Optional curated group. When set, the entry is bucketed into this themed,
+   *  language-independent section instead of its engine-derived category. */
+  group?: CuratedGroupId;
 }
 
 /** The catalog is sectioned so each tile's reason for being here is obvious.
- *  Categories are mutually exclusive; array order is the on-page section order. */
-export type CategoryId = 'customizable' | 'manifold' | 'sdf' | 'voxel' | 'scad' | 'brep';
+ *  Engine-derived categories are mutually exclusive; curated groups (assigned
+ *  explicitly via `entry.group`) lead the list. Array order is the on-page
+ *  section order. */
+export type CategoryId = CuratedGroupId | 'customizable' | 'manifold' | 'sdf' | 'voxel' | 'scad' | 'brep';
 
 export interface CategoryDef {
   id: CategoryId;
@@ -28,6 +41,8 @@ export interface CategoryDef {
 }
 
 export const CATEGORIES: CategoryDef[] = [
+  { id: 'fidget-toys', title: 'Fidget Toys', blurb: 'Twisty, spinny, squishy desk toys — popular 3D-print fidgets you can print and tweak. Spans every engine.' },
+  { id: 'print-fit', title: 'Hardware-Ready Joinery', blurb: 'Enclosures, brackets, and joints sized to real hardware — M2–M8 screws, heat-set inserts, captive nuts, dovetails, and alignment pins built with the api.printFit helpers.' },
   { id: 'customizable', title: 'Customizable', blurb: 'Tweak these live with sliders and toggles — open the 🎛 Customize panel in the editor, no code changes needed.' },
   { id: 'manifold', title: 'JavaScript Models', blurb: 'Built with the default manifold-3d mesh API — the everyday JS modeling path.' },
   { id: 'sdf', title: 'Implicit Surfaces (SDF)', blurb: 'Signed-distance-field models via the Sdf builder — gyroids, lattices, and organic blends.' },
@@ -48,10 +63,12 @@ export function deriveCharacteristics(id: string, code: string): { hasParams: bo
   return { hasParams, isSDF };
 }
 
-/** Assign one category. Parametric models lead (the trait users most want to
- *  find); otherwise split by engine, with SDF pulled out of the manifold-js
- *  bucket as its own showcase. */
-export function categorizeOf(opts: { hasParams: boolean; isSDF: boolean; language: CatalogLanguage }): CategoryId {
+/** Assign one category. A curated group wins outright (it's an explicit,
+ *  language-independent editorial choice); otherwise parametric models lead
+ *  (the trait users most want to find), then split by engine, with SDF pulled
+ *  out of the manifold-js bucket as its own showcase. */
+export function categorizeOf(opts: { hasParams: boolean; isSDF: boolean; language: CatalogLanguage; group?: CuratedGroupId }): CategoryId {
+  if (opts.group) return opts.group;
   if (opts.hasParams) return 'customizable';
   if (opts.language === 'scad') return 'scad';
   if (opts.language === 'replicad') return 'brep';

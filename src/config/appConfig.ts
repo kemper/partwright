@@ -108,6 +108,15 @@ export interface AppConfig {
     pointerGraceMs: number;
     /** Max time (ms) to wait for thumbnail generation before giving up. */
     thumbnailTimeoutMs: number;
+    /** Projected triangle count above which the Quality panel's Apply asks for
+     *  a Proceed/Cancel confirmation before running an enhance (the result is
+     *  heavy and slow to display). */
+    enhanceWarnTriangles: number;
+    /** Hard ceiling on an enhance result. The geometry Worker refuses to return
+     *  a refined mesh larger than this, and Apply won't run a target above it —
+     *  prevents a runaway refine from freezing the main thread when the giant
+     *  result is committed to the viewport. */
+    enhanceMaxTriangles: number;
   };
   import: {
     /** Vertex-weld tolerance for STL imports (world units). */
@@ -153,6 +162,12 @@ export interface AppConfig {
     defaultQuality: number;
     /** Default circular segment count for OpenSCAD ($fn) geometry renders. */
     scadDefaultQuality: number;
+    /** Default colour-palette slot capacity — how many filament slots the
+     *  target printer has (e.g. 4 for one Bambu AMS). Drives the paint panel's
+     *  over-budget warning; never blocks painting or export. */
+    defaultPaletteCapacity: number;
+    /** Max colours kept in the palette's recent-colour history ring. */
+    paletteHistoryMax: number;
     /** In-memory ring buffer size for the worker run-history log (recent
      *  geometry runs shown in the worker health panel). */
     workerRunHistorySize: number;
@@ -208,6 +223,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     offscreenIdleDisposeMs: 10_000,
     pointerGraceMs: 350,
     thumbnailTimeoutMs: 4000,
+    enhanceWarnTriangles: 1_000_000,
+    enhanceMaxTriangles: 5_000_000,
   },
   import: {
     stlWeldTolerance: 1e-5,
@@ -231,6 +248,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     sessionLockStaleMs: 8000,
     defaultQuality: 128,
     scadDefaultQuality: 32,
+    defaultPaletteCapacity: 4,
+    paletteHistoryMax: 48,
     workerRunHistorySize: 50,
     workerPanelRefreshMs: 1000,
   },

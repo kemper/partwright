@@ -26,6 +26,72 @@ export const WHATS_NEW_INTRO =
 // Most recent first. Each entry is a calendar week (Mon–Sun) of shipped work.
 export const WHATS_NEW_WEEKS: WeekEntry[] = [
   {
+    range: 'June 5, 2026',
+    headline: 'Filament palettes, the Self-Modeling Studio, and a searchable catalog',
+    groups: [
+      {
+        label: 'Filament palette & multi-color',
+        items: [
+          {
+            title: 'Filament palette manager',
+            body: 'A standalone palette manager opens from a new 🧵 Palette pill in the viewport: define your printer’s filament slots, reorder or reset them, and constrain new colors to the palette. The paint panel keeps a live swatch row, a custom-color picker, and an over-budget badge (colors used vs. slot capacity), with a “Manage…” link into the full editor — edits propagate everywhere live.',
+          },
+          {
+            title: 'Slot-aware painting',
+            body: 'Painting with a slot stamps each region with a stable slot id, so a multi-color model maps cleanly onto a printer’s AMS/filament slots — recolor a slot and every region on it recolors at once. Multi-color 3MF export now orders its materials by slot so the material index follows AMS slot order, and the export step warns you when a model is over palette budget or when exporting to color-less STL.',
+          },
+          {
+            title: 'Build a palette from a photo',
+            body: 'Import palette colors straight from an image: the manager auto-detects the dominant colors and gives you a click-to-eyedrop canvas to pick exact filament colors from a screenshot. A “Recent colors” history keeps colors you’ve used so you can re-add them as slots.',
+          },
+          {
+            title: 'Reconcile a model against the palette',
+            body: 'A “Colors in this model” view tags every color as on- or off-palette and offers Replace (swap to a palette or recent color), Merge (collapse one color into another), and Apply-palette auto-match (snap every color to its nearest slot). Save, switch, rename, and delete named palette collections for different printers or projects.',
+          },
+        ],
+      },
+      {
+        label: 'Self-Modeling Studio',
+        items: [
+          {
+            title: 'Photo → multi-view → 3D',
+            body: 'A guided Studio (Import → “Photo → 3D”) turns a single photo into a model: upload a source image, generate a turntable of alternate angles with a Gemini image model (or upload the angles by hand), curate the tiles, then either carve a voxel model from the silhouettes or hand the angle set straight to the AI modeler. Cardinal / Isometric / Full angle-set presets pick how many views to use.',
+          },
+          {
+            title: 'The AI reads your reference images',
+            body: 'The assistant can now pull in attached images as a single labeled grid, so the Studio’s reference angles — and any photos you attach — actually feed the AI’s vision when it models for you.',
+          },
+        ],
+      },
+      {
+        label: 'Catalog',
+        items: [
+          {
+            title: 'Searchable, filterable catalog',
+            body: 'Both the /catalog page and the in-editor catalog overlay gained a search box and per-language filter pills, so you can narrow a growing gallery by keyword or by modeling language. A new curated “Fidget Toys” group leads the catalog.',
+          },
+          {
+            title: 'Print-in-place fidgets',
+            body: 'The spiral fidget cone is now a real print-in-place mechanism — a cone split by a helical slab into two interleaved ribbons that twist apart straight off the bed, with a built-in clearance gap.',
+          },
+        ],
+      },
+      {
+        label: 'Painting & editor',
+        items: [
+          {
+            title: 'Wrap tolerance stops paint at sharp edges',
+            body: 'The paintbrush gained a “Wrap tolerance” slider (0–180°, default 90°): a stroke crosses an edge only when the two faces bend by no more than the tolerance, so paint flows over gentle curves but stops at a sharp fold instead of bleeding onto an adjacent face or the next wall of a hollow part.',
+          },
+          {
+            title: 'Starters you can experiment with',
+            body: 'The JavaScript, OpenSCAD, and BREP starters are now capability samplers — a row of primitives, booleans, and operations to poke at — and the voxel starter is a layered pine tree with ornaments and a star. The Quality panel’s curvature preview also gained an explicit Apply button.',
+          },
+        ],
+      },
+    ],
+  },
+  {
     range: 'June 4, 2026',
     headline: 'Fabric textures, image paint, region-targeted modifiers, and a catalog refresh',
     groups: [
