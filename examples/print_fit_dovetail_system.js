@@ -7,7 +7,7 @@ const p = api.params({
   railLength:   { type: 'number', default: 120, min: 60,  max: 400, step: 10, unit: 'mm', label: 'Rail length' },
   screwSpacing: { type: 'number', default: 50,  min: 30,  max: 120, step: 5,  unit: 'mm', label: 'Screw spacing' },
   screwSize:    { type: 'select', default: 'M4', options: ['M3', 'M4', 'M5'],              label: 'Screw size' },
-  hookReach:    { type: 'number', default: 34,  min: 15,  max: 80,  step: 2,  unit: 'mm', label: 'Hook reach' },
+  hookReach:    { type: 'number', default: 45,  min: 25,  max: 120, step: 5,  unit: 'mm', label: 'Arm reach' },
 });
 
 // ── Rail plate ────────────────────────────────────────────────────────────────
@@ -50,8 +50,8 @@ for (let i = 0; i < levels; i++) {
 
 // ── Wall hook ─────────────────────────────────────────────────────────────────
 // Hook block: X = hookBlockW (slides along rail), Y = hookBlockT, Z = hookBlockH
-const hookBlockW = 38;
-const hookBlockT = 14;
+const hookBlockW = 34;
+const hookBlockT = 20;   // deep enough to anchor the arm cleanly
 const hookBlockH = 40;
 const Ch = 1.5;
 
@@ -66,36 +66,42 @@ const { socket } = printFit.dovetail({ length: hookBlockW + 20, width: railW, de
 hook = hook.subtract(socket.translate([-10, 0, hookBlockH / 2]));
 
 // ── Curved coat hook arm ──────────────────────────────────────────────────────
-const armR       = 7;                         // tube radius (mm)
-const bendR      = 18;                        // bend centre-arc radius (mm)
-const stemLen    = Math.max(5, p.hookReach - bendR);
-const armZCenter = hookBlockH * 0.75;         // arm exits at 75 % of block height
-const cx         = hookBlockW / 2;            // centred in X on block
+// Arm path (side/YZ view): exits block front at mid-height (Z=armZCenter), goes
+// straight forward (+Y), bends 90° down, then hangs as a tapered tip below the block.
+//
+// Key invariant: tipBaseY = hookBlockT + stemLen - bendR must be > hookBlockT
+// (tip must clear the block face). With stemLen = hookReach and min hookReach=25,
+// tipBaseY = hookBlockT + hookReach - bendR = 20 + 25 - 20 = 25 > 20. ✓
+const armR       = 10;           // tube radius — substantial 20mm diameter
+const bendR      = 20;           // quarter-circle bend radius
+const stemLen    = p.hookReach;  // straight forward reach (arm param drives this directly)
+const armZCenter = hookBlockH / 2; // arm exits at mid-height; tipBaseZ = armZCenter - bendR = 0
+const cx         = hookBlockW / 2;
 
 // Straight stem going in +Y from block front face
 const stem = Manifold.cylinder(stemLen, armR, armR, 24)
   .rotate([-90, 0, 0])
   .translate([cx, hookBlockT, armZCenter]);
 
-// Quarter-torus: sweeps from +Y direction to -Z direction.
-// revolve(profile, n, 90) yields a quarter-torus arc in XY: (bendR,0,0)→(0,bendR,0).
-// Two rotations reorient it into YZ: (0,bendR,0)→(0,0,-bendR) — arm curves down.
+// Quarter-torus bend: sweeps from +Y direction to -Z direction.
+// revolve(profile, n, 90) yields arc in XY: (bendR,0,0)→(0,bendR,0).
+// rotate([-90,0,0]).rotate([0,0,90]) reorients into YZ: (0,bendR,0)→(0,0,-bendR).
 const bendProfile = CrossSection.circle(armR, 24).translate([bendR, 0]);
 const bend = Manifold.revolve(bendProfile, 24, 90)
   .rotate([-90, 0, 0])
   .rotate([0, 0, 90])
   .translate([cx, hookBlockT + stemLen - bendR, armZCenter]);
 
-// Downward tapered tip
+// Tapered downward tip — hangs below the block
 const tipBaseY = hookBlockT + stemLen - bendR;
-const tipBaseZ = armZCenter - bendR;
-const tipLen   = 22;
-const tip = Manifold.cylinder(tipLen, armR, armR * 0.55, 24)
+const tipBaseZ = armZCenter - bendR;  // = 0 (flush with block bottom)
+const tipLen   = 30;
+const tip = Manifold.cylinder(tipLen, armR, armR * 0.6, 24)
   .rotate([180, 0, 0])
   .translate([cx, tipBaseY, tipBaseZ]);
 
-// Ball cap
-const ball = Manifold.sphere(armR * 0.7, 24)
+// Ball cap at tip end
+const ball = Manifold.sphere(armR * 0.75, 24)
   .translate([cx, tipBaseY, tipBaseZ - tipLen]);
 
 hook = hook.add(stem).add(bend).add(tip).add(ball);
