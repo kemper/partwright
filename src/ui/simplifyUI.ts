@@ -30,6 +30,7 @@ import { showToast } from './toast';
 import { isWireframeVisible, setWireframeVisible } from '../renderer/viewport';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
+import { viewportToolsMount } from './popoverMenu';
 import { QUALITY_OPTIONS, QUALITY_SEGMENTS, loadQualitySettings, type QualitySettings } from '../geometry/qualitySettings';
 import { saveQualityForLang, initQualityLogic, notifyLanguageChange as notifyQualityLangChange } from './curvatureQualityPanel';
 import { showHeavyEnhanceConfirm } from './heavyMeshConfirmModal';
@@ -215,13 +216,8 @@ export function initSimplifyUI(
   simplifyBtn.title = 'Adjust curvature quality and simplify or enhance triangle count';
   simplifyBtn.addEventListener('click', toggle);
 
-  // Sit immediately before Measure so the overlay reads Paint · Simplify · Measure.
-  const measureBtn = controlsContainer.querySelector('#measure-toggle');
-  if (measureBtn) {
-    controlsContainer.insertBefore(simplifyBtn, measureBtn);
-  } else {
-    controlsContainer.appendChild(simplifyBtn);
-  }
+  // Mount into the Tools popover (falls back to the bar itself).
+  viewportToolsMount(controlsContainer).appendChild(simplifyBtn);
 
   panel = buildPanel();
   const overlayHost = controlsContainer.parentElement ?? controlsContainer;

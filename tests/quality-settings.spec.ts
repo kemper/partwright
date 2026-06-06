@@ -13,12 +13,19 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+// The "○ Quality" button now lives inside the viewport Tools popover, so open
+// the group before clicking it. The popover auto-closes once the panel opens.
+async function openQualityPanel(page: import('playwright/test').Page) {
+  await page.locator('#viewport-tools-group-btn').click();
+  await page.locator('#simplify-toggle').click();
+}
+
 test.describe('Modeling quality settings', () => {
   test('viewport quality button opens panel showing Highest as default', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#simplify-toggle');
+    await page.waitForSelector('#simplify-toggle', { state: 'attached' });
 
-    await page.locator('#simplify-toggle').click();
+    await openQualityPanel(page);
     await expect(page.locator('#simplify-panel')).toBeVisible();
 
     // Highest preset radio should be checked on first load.
@@ -32,9 +39,9 @@ test.describe('Modeling quality settings', () => {
 
   test('applying Low is reflected in panel and in-memory', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#simplify-toggle');
+    await page.waitForSelector('#simplify-toggle', { state: 'attached' });
 
-    await page.locator('#simplify-toggle').click();
+    await openQualityPanel(page);
     await page.locator('#simplify-panel input[type=radio][value=low]').check();
 
     // Radio should be checked immediately (live preview).
@@ -48,15 +55,15 @@ test.describe('Modeling quality settings', () => {
 
     // Close + reopen panel — Low should still be selected (committed in-memory).
     await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
-    await page.locator('#simplify-toggle').click();
+    await openQualityPanel(page);
     await expect(page.locator('#simplify-panel input[type=radio][value=low]')).toBeChecked();
   });
 
   test('closing without Apply reverts the quality preview', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#simplify-toggle');
+    await page.waitForSelector('#simplify-toggle', { state: 'attached' });
 
-    await page.locator('#simplify-toggle').click();
+    await openQualityPanel(page);
     // Default is Highest; preview Low without applying.
     await expect(page.locator('#simplify-panel input[type=radio][value=highest]')).toBeChecked();
     await page.locator('#simplify-panel input[type=radio][value=low]').check();
@@ -64,7 +71,7 @@ test.describe('Modeling quality settings', () => {
 
     // Close without Apply — the preview should snap back to the committed Highest.
     await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
-    await page.locator('#simplify-toggle').click();
+    await openQualityPanel(page);
     await expect(page.locator('#simplify-panel input[type=radio][value=highest]')).toBeChecked();
     // Apply is disabled again because nothing is pending after the revert.
     await expect(page.locator('#simplify-apply')).toBeDisabled();
@@ -72,7 +79,7 @@ test.describe('Modeling quality settings', () => {
 
   test('manifold-js engine applies the chosen segment count', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#simplify-toggle');
+    await page.waitForSelector('#simplify-toggle', { state: 'attached' });
     await page.waitForFunction(
       () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
       { timeout: 20_000 },
@@ -90,7 +97,7 @@ test.describe('Modeling quality settings', () => {
     expect(high.triangleCount ?? 0).toBeGreaterThan(2000);
 
     // Drop to Low via the panel and Apply to commit it.
-    await page.locator('#simplify-toggle').click();
+    await openQualityPanel(page);
     await page.locator('#simplify-panel input[type=radio][value=low]').check();
     await page.locator('#simplify-apply').click();
     await page.locator('#simplify-panel button[aria-label="Close quality panel"]').click();
@@ -106,7 +113,7 @@ test.describe('Modeling quality settings', () => {
 
   test('Ultra preset persists and yields more triangles than the default', async ({ page }) => {
     await page.goto('/editor');
-    await page.waitForSelector('#simplify-toggle');
+    await page.waitForSelector('#simplify-toggle', { state: 'attached' });
     await page.waitForFunction(
       () => !!(window as unknown as { partwright?: { run?: unknown } }).partwright?.run,
       { timeout: 20_000 },
@@ -123,7 +130,7 @@ test.describe('Modeling quality settings', () => {
     }, cylinderCode);
 
     // Switch to Ultra (1024 segments) and Apply to commit it.
-    await page.locator('#simplify-toggle').click();
+    await openQualityPanel(page);
     await page.locator('#simplify-panel input[type=radio][value=ultra]').check();
     await expect(page.locator('#simplify-panel input[type=radio][value=ultra]')).toBeChecked();
     await page.locator('#simplify-apply').click();

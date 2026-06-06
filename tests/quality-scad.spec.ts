@@ -13,7 +13,7 @@ test.beforeEach(async ({ page }) => {
 
 test('SCAD engine applies the chosen $fn from quality preset', async ({ page }) => {
   await page.goto('/editor');
-  await page.waitForSelector('#simplify-toggle');
+  await page.waitForSelector('#simplify-toggle', { state: 'attached' });
 
   type RunResult = { triangleCount?: number; error?: string };
   type PartwrightApi = {
@@ -48,7 +48,9 @@ test('SCAD engine applies the chosen $fn from quality preset', async ({ page }) 
   expect(high.triangleCount ?? 0).toBeGreaterThan(100);
 
   // Drop to Low via the curvature quality panel, then Apply to commit it
-  // (picking a preset only previews; closing without Apply would revert).
+  // (picking a preset only previews; closing without Apply would revert). The
+  // Quality button now lives in the viewport Tools popover, so open it first.
+  await page.locator('#viewport-tools-group-btn').click();
   await page.locator('#simplify-toggle').click();
   await page.locator('#simplify-panel input[type=radio][value=low]').check();
   await page.locator('#simplify-apply').click();
