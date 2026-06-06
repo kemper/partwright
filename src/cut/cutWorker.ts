@@ -80,6 +80,7 @@ function decomposeToParts(
   result: ManifoldInstance,
   inputMesh: MeshData,
   triColors: Uint8Array | undefined,
+  inputCentroids: Float32Array,
 ): { meshes: MeshData[]; colorsList: Uint8Array[] | undefined } {
   const pieces = result.decompose();
   const hasColors = !!(triColors && triColors.length === inputMesh.numTri * 3);
@@ -90,7 +91,7 @@ function decomposeToParts(
     if (pm.numTri > 0) {
       const cm = cloneMeshData(pm);
       meshes.push(cm);
-      if (colorsList && triColors) colorsList.push(mapColors(inputMesh, triColors, cm));
+      if (colorsList && triColors) colorsList.push(mapColors(triColors, inputCentroids, cm));
     }
     safeDelete(p);
   }
@@ -107,9 +108,28 @@ export function performCut(
   const { shape, keepSide, mat4x3, scale, triColors } = params;
   const [sx, sy, sz] = scale;
 
-  // Compute mesh bounding-sphere radius for sizing the plane half-space
+  // Compute mesh bounding-sphere radius for sizing the plane half-space (use original mesh)
   const meshRadius = meshBoundingRadius(inputMesh);
   const S = Math.max(meshRadius * 20, 1000);
+
+  // For plane cuts with paint colors, subdivide triangles straddling the cut plane
+  // so that boundary-region colors are preserved exactly after the boolean.
+  let workMesh = inputMesh;
+  let workColors = triColors;
+  if (shape === 'plane' && triColors && triColors.length === inputMesh.numTri * 3) {
+    // mat4x3 = [r00,r10,r20, r01,r11,r21, r02,r12,r22, tx,ty,tz]
+    // Column 2 (indices 6-8) is the plane's Z-axis = normal direction
+    const planeOrigin: [number, number, number] = [mat4x3[9], mat4x3[10], mat4x3[11]];
+    const planeNormal: [number, number, number] = [mat4x3[6], mat4x3[7], mat4x3[8]];
+    const sub = subdivideBoundaryTriangles(workMesh, planeOrigin, planeNormal, triColors);
+    workMesh = sub.mesh;
+    workColors = sub.triColors;
+  }
+
+  // Hoist centroid computation once — shared across all decomposeToParts calls
+  const inputCentroids = (workColors && workColors.length === workMesh.numTri * 3)
+    ? buildCentroids(workMesh)
+    : new Float32Array(0);
 
   let base: ManifoldInstance | null = null;
   let cutter: ManifoldInstance | null = null;
@@ -117,7 +137,7 @@ export function performCut(
   let resultOther: ManifoldInstance | null = null;
 
   try {
-    base = Manifold.ofMesh(inputMesh);
+    base = Manifold.ofMesh(workMesh);
     cutter = buildCutter(Manifold, shape, keepSide, mat4x3, sx, sy, sz, S);
     if (!cutter) return null;
 
@@ -134,11 +154,11 @@ export function performCut(
     const mesh = cloneMeshData(keptRaw);
 
     // Decompose each side into connected components, then combine all non-empty pieces.
-    const { meshes: keptMeshes, colorsList: keptColors } = decomposeToParts(resultKept, inputMesh, triColors);
+    const { meshes: keptMeshes, colorsList: keptColors } = decomposeToParts(resultKept, workMesh, workColors, inputCentroids);
     safeDelete(resultKept);
     resultKept = null;
 
-    const { meshes: otherMeshes, colorsList: otherColors } = decomposeToParts(resultOther, inputMesh, triColors);
+    const { meshes: otherMeshes, colorsList: otherColors } = decomposeToParts(resultOther, workMesh, workColors, inputCentroids);
     safeDelete(resultOther);
     resultOther = null;
 
@@ -152,8 +172,8 @@ export function performCut(
 
     // Colors for the combined preview mesh
     let outColors: Uint8Array | undefined;
-    if (triColors && triColors.length === inputMesh.numTri * 3 && mesh.numTri > 0) {
-      outColors = mapColors(inputMesh, triColors, mesh);
+    if (workColors && workColors.length === workMesh.numTri * 3 && mesh.numTri > 0) {
+      outColors = mapColors(workColors, inputCentroids, mesh);
     }
 
     return { mesh, meshes, triColors: outColors, triColorsList };
@@ -163,6 +183,106 @@ export function performCut(
     safeDelete(resultKept);
     safeDelete(resultOther);
   }
+}
+
+/**
+ * Subdivide triangles in `mesh` that straddle the cut plane (defined by a
+ * world-space `planeOrigin` and `planeNormal`). Each straddling triangle is
+ * split into three sub-triangles (one alone vertex + two on the other side),
+ * all inheriting the parent's color. Non-straddling triangles pass through
+ * unchanged. Returns the original mesh if no triangles straddle the plane.
+ */
+function subdivideBoundaryTriangles(
+  mesh: MeshData,
+  planeOrigin: [number, number, number],
+  planeNormal: [number, number, number],
+  triColors: Uint8Array,
+): { mesh: MeshData; triColors: Uint8Array } {
+  const stride = mesh.numProp;
+  const [ox, oy, oz] = planeOrigin;
+  const [nx, ny, nz] = planeNormal;
+
+  // Classify each vertex: +1 = positive side, -1 = non-positive side
+  const side = new Int8Array(mesh.numVert);
+  for (let v = 0; v < mesh.numVert; v++) {
+    const x = mesh.vertProperties[v * stride] - ox;
+    const y = mesh.vertProperties[v * stride + 1] - oy;
+    const z = mesh.vertProperties[v * stride + 2] - oz;
+    side[v] = (x * nx + y * ny + z * nz) > 0 ? 1 : -1;
+  }
+
+  // Early exit if no straddling triangles
+  let straddleCount = 0;
+  for (let t = 0; t < mesh.numTri; t++) {
+    const s = side[mesh.triVerts[t * 3]] + side[mesh.triVerts[t * 3 + 1]] + side[mesh.triVerts[t * 3 + 2]];
+    if (s !== 3 && s !== -3) straddleCount++;
+  }
+  if (straddleCount === 0) return { mesh, triColors };
+
+  // Build new geometry: copy all existing vertices, then add edge midpoints
+  const newVerts: number[] = Array.from(mesh.vertProperties);
+  let numNewVert = mesh.numVert;
+  const newTris: number[] = [];
+  const newColors: number[] = [];
+
+  // Insert interpolated vertex at the plane crossing between v0 and v1
+  function addEdgeMidpoint(v0: number, v1: number): number {
+    const x0 = mesh.vertProperties[v0 * stride];
+    const y0 = mesh.vertProperties[v0 * stride + 1];
+    const z0 = mesh.vertProperties[v0 * stride + 2];
+    const x1 = mesh.vertProperties[v1 * stride];
+    const y1 = mesh.vertProperties[v1 * stride + 1];
+    const z1 = mesh.vertProperties[v1 * stride + 2];
+    const d0 = (x0 - ox) * nx + (y0 - oy) * ny + (z0 - oz) * nz;
+    const d1 = (x1 - ox) * nx + (y1 - oy) * ny + (z1 - oz) * nz;
+    const t = d0 / (d0 - d1);
+    const newIdx = numNewVert++;
+    for (let p = 0; p < stride; p++) {
+      newVerts.push(mesh.vertProperties[v0 * stride + p] * (1 - t) + mesh.vertProperties[v1 * stride + p] * t);
+    }
+    return newIdx;
+  }
+
+  for (let t = 0; t < mesh.numTri; t++) {
+    const v0 = mesh.triVerts[t * 3];
+    const v1 = mesh.triVerts[t * 3 + 1];
+    const v2 = mesh.triVerts[t * 3 + 2];
+    const s0 = side[v0], s1 = side[v1], s2 = side[v2];
+    const s = s0 + s1 + s2;
+    const r = triColors[t * 3], g = triColors[t * 3 + 1], b = triColors[t * 3 + 2];
+
+    if (s === 3 || s === -3) {
+      // Non-straddling: keep as-is
+      newTris.push(v0, v1, v2);
+      newColors.push(r, g, b);
+    } else {
+      // Find the "alone" vertex (the one on the minority side)
+      let alone: number, a: number, bv: number;
+      if (s0 !== s1 && s0 !== s2) {
+        alone = v0; a = v1; bv = v2;
+      } else if (s1 !== s0 && s1 !== s2) {
+        alone = v1; a = v0; bv = v2;
+      } else {
+        alone = v2; a = v0; bv = v1;
+      }
+      // Split into three triangles along the plane crossing edges
+      const mab = addEdgeMidpoint(alone, a);
+      const mbb = addEdgeMidpoint(alone, bv);
+      newTris.push(alone, mab, mbb);  newColors.push(r, g, b);
+      newTris.push(mab, a, bv);       newColors.push(r, g, b);
+      newTris.push(mab, bv, mbb);     newColors.push(r, g, b);
+    }
+  }
+
+  const numTri = newTris.length / 3;
+  const outMesh: MeshData = {
+    vertProperties: new Float32Array(newVerts),
+    triVerts: new Uint32Array(newTris),
+    numVert: numNewVert,
+    numTri,
+    numProp: stride,
+  };
+  return { mesh: outMesh, triColors: new Uint8Array(newColors) };
 }
 
 function buildCutter(
@@ -211,11 +331,10 @@ function buildCutter(
 
 /** Map input triangle colors to output triangles using centroid nearest-neighbor (best effort). */
 function mapColors(
-  inputMesh: MeshData,
   inputColors: Uint8Array,
+  inputCentroids: Float32Array,
   outputMesh: MeshData,
 ): Uint8Array {
-  const inputCentroids = buildCentroids(inputMesh);
   const outputColors = new Uint8Array(outputMesh.numTri * 3);
   const outStride = outputMesh.numProp;
 

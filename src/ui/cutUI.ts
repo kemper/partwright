@@ -25,11 +25,16 @@ import {
   getProxyPosition,
   setProxyPosition,
   setGizmoHandlesVisible,
+  snapToFaceNormal,
   type CutShape,
   type CutMode,
   type KeepSide,
   type CutGizmoParams,
 } from '../cut/cutGizmo';
+import { pickModelFace } from '../renderer/viewport';
+import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
+import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
+import { registerExclusiveMode, deactivateMode } from './modeExclusion';
 import type { MeshData } from '../geometry/types';
 import { showToast } from './toast';
 import { meshBounds } from '../color/slabPaint';
@@ -75,6 +80,8 @@ let applyBtn: HTMLButtonElement | null = null;
 let saveBtn: HTMLButtonElement | null = null;
 let applying = false;
 
+const registryEntry = { close(): void { if (isCutOpen()) closePanel(); } };
+
 let preserveColors = true;
 let showHandles = true;
 
@@ -86,6 +93,21 @@ let updatingInputs = false; // prevents feedback loops when setting inputs progr
 
 // Keyboard shortcut listener — added when panel opens, removed when it closes
 let keydownListener: ((e: KeyboardEvent) => void) | null = null;
+
+// Face-align mode: user clicks a model face to snap the cutter's orientation
+let faceAlignMode = false;
+let faceAlignClickHandler: ((e: MouseEvent) => void) | null = null;
+
+function cancelFaceAlign(): void {
+  if (!faceAlignMode) return;
+  faceAlignMode = false;
+  if (faceAlignClickHandler) {
+    document.removeEventListener('click', faceAlignClickHandler, { capture: true } as AddEventListenerOptions);
+    faceAlignClickHandler = null;
+  }
+  const canvas = document.querySelector('canvas');
+  if (canvas) canvas.style.cursor = '';
+}
 
 /** Initialize the Cut UI — adds the toolbar button and builds the floating panel. */
 export function initCutUI(controlsContainer: HTMLElement, h: CutHandlers): void {
@@ -105,6 +127,7 @@ export function initCutUI(controlsContainer: HTMLElement, h: CutHandlers): void 
 
   panel = buildPanel();
   controlsContainer.appendChild(panel);
+  registerExclusiveMode('cut', () => { if (isCutOpen()) closePanel(); });
 }
 
 export function isCutOpen(): boolean {
@@ -129,17 +152,24 @@ function openPanel(): void {
     showToast(res.reason, { variant: 'warn' });
     return;
   }
+  deactivateMode('paint');
+  deactivateMode('imagePaint');
+  deactivateMode('pen');
+  deactivateMode('text');
+  deactivateMode('select');
+  openViewportPanel(registryEntry);
+  setInitialPanelPosition(panel);
   panel.classList.remove('hidden');
   if (cutBtn) cutBtn.className = BTN_ACTIVE;
   // Activate the 3-D gizmo.
   const mesh = handlers.getMesh();
   if (mesh) activateGizmo(mesh);
-  // Keyboard shortcuts: T = translate, R = rotate, S = scale
-  // triggerMode is defined inside buildPanel and stored as _triggerMode on the element.
+  // Keyboard shortcuts: T = translate, R = rotate, S = scale, Escape = close
   keydownListener = (e: KeyboardEvent) => {
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     const k = e.key.toLowerCase();
+    if (k === 'escape') { closePanel(); return; }
     const tm = panel && (panel as HTMLElement & { _triggerMode?: (m: CutMode) => void })._triggerMode;
     if (!tm) return;
     if (k === 't') tm('translate');
@@ -150,9 +180,11 @@ function openPanel(): void {
 }
 
 function closePanel(): void {
+  cancelFaceAlign();
   panel?.classList.add('hidden');
   if (cutBtn) cutBtn.className = BTN_INACTIVE;
   deactivateGizmo();
+  closeViewportPanel(registryEntry);
   if (keydownListener) {
     document.removeEventListener('keydown', keydownListener);
     keydownListener = null;
@@ -196,7 +228,7 @@ function buildPanel(): HTMLElement {
   header.appendChild(closeBtn);
   p.appendChild(header);
 
-  makeDraggable(p, header);
+  attachViewportPanelDrag(header, p);
 
   // ── Scrollable content ───────────────────────────────────────────────────────
   const content = document.createElement('div');
@@ -274,11 +306,18 @@ function buildPanel(): HTMLElement {
   }
   content.appendChild(modeRow);
 
-  // Sync shape/mode buttons on gizmo changes
+  // Sync shape/mode buttons on gizmo changes; auto-preview after 300 ms idle
+  let autoPreviewTimer: ReturnType<typeof setTimeout> | null = null;
   onGizmoChange(() => {
     for (const [s, b] of shapeButtons) b.className = toggleBtnClass(s === getCutShape());
     updateModeButtons();
     syncPositionInputs();
+    // Debounced auto-preview: fires 300 ms after the last gizmo change
+    if (autoPreviewTimer !== null) clearTimeout(autoPreviewTimer);
+    autoPreviewTimer = setTimeout(() => {
+      autoPreviewTimer = null;
+      if (!applying && isCutOpen()) void applyCut();
+    }, 300);
   });
 
   // === Keep side ===
@@ -369,6 +408,42 @@ function buildPanel(): HTMLElement {
     }
   }
   content.appendChild(snapGrid);
+
+  // === Face align ===
+  appendSectionLabel(content, 'Align to Face');
+  const faceAlignRow = document.createElement('div');
+  faceAlignRow.className = 'mt-1';
+  const faceAlignBtn = document.createElement('button');
+  faceAlignBtn.className = 'w-full px-2 py-1.5 rounded text-[11px] bg-zinc-700/40 text-zinc-300 hover:bg-zinc-600/60 border border-transparent transition-colors';
+  faceAlignBtn.textContent = '⊙ Click a face to align';
+  faceAlignBtn.title = "Click this button, then click a face on the model to snap the cutter to that face's normal";
+  faceAlignBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (faceAlignMode) {
+      cancelFaceAlign();
+      faceAlignBtn.textContent = '⊙ Click a face to align';
+      faceAlignBtn.className = 'w-full px-2 py-1.5 rounded text-[11px] bg-zinc-700/40 text-zinc-300 hover:bg-zinc-600/60 border border-transparent transition-colors';
+      return;
+    }
+    faceAlignMode = true;
+    faceAlignBtn.textContent = '⊙ Waiting for click… (Esc to cancel)';
+    faceAlignBtn.className = 'w-full px-2 py-1.5 rounded text-[11px] bg-blue-500/30 text-blue-200 border border-blue-500/50 transition-colors';
+    const canvas = document.querySelector('canvas');
+    if (canvas) canvas.style.cursor = 'crosshair';
+    faceAlignClickHandler = (ev: MouseEvent) => {
+      const hit = pickModelFace(ev.clientX, ev.clientY);
+      if (hit) {
+        snapToFaceNormal(hit.normal);
+        syncPositionInputs();
+      }
+      cancelFaceAlign();
+      faceAlignBtn.textContent = '⊙ Click a face to align';
+      faceAlignBtn.className = 'w-full px-2 py-1.5 rounded text-[11px] bg-zinc-700/40 text-zinc-300 hover:bg-zinc-600/60 border border-transparent transition-colors';
+    };
+    document.addEventListener('click', faceAlignClickHandler, { capture: true });
+  });
+  faceAlignRow.appendChild(faceAlignBtn);
+  content.appendChild(faceAlignRow);
 
   // === Options (preserve colors + show handles) ===
   const optionsRow = document.createElement('div');
@@ -529,31 +604,3 @@ function modeBtnClass(active: boolean, disabled: boolean): string {
     : 'px-1.5 py-1 rounded text-[10px] bg-zinc-700/40 text-zinc-300 hover:bg-zinc-600/60 border border-transparent transition-colors text-center';
 }
 
-/** Make an element draggable on desktop by its header. Uses Pointer Events API. */
-function makeDraggable(el: HTMLElement, handle: HTMLElement): void {
-  let startX = 0, startY = 0, startRight = 0, startTop = 0;
-
-  handle.addEventListener('pointerdown', (e: PointerEvent) => {
-    if (e.button !== 0) return;
-    // Dragging only makes sense on desktop (md+).
-    if (window.matchMedia('(max-width: 767px)').matches) return;
-    handle.setPointerCapture(e.pointerId);
-    const rect = el.getBoundingClientRect();
-    startX = e.clientX;
-    startY = e.clientY;
-    startRight = window.innerWidth - rect.right;
-    startTop = rect.top;
-    // Switch from Tailwind positioning classes to explicit inline style.
-    el.style.right = `${startRight}px`;
-    el.style.top = `${startTop}px`;
-    el.classList.remove('right-0', 'top-10');
-  });
-
-  handle.addEventListener('pointermove', (e: PointerEvent) => {
-    if (!handle.hasPointerCapture(e.pointerId)) return;
-    const dx = e.clientX - startX;
-    const dy = e.clientY - startY;
-    el.style.right = `${Math.max(0, startRight - dx)}px`;
-    el.style.top = `${Math.max(0, startTop + dy)}px`;
-  });
-}

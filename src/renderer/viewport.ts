@@ -759,6 +759,28 @@ export function isPointerOverModel(event: { clientX: number; clientY: number }):
   return raycasterForHit.intersectObject(solid).length > 0;
 }
 
+/** Raycast the model at (clientX, clientY) and return the world-space hit point
+ *  and face normal, or null if nothing is hit. Used by the Cut tool's face-align. */
+export function pickModelFace(
+  clientX: number,
+  clientY: number,
+): { point: THREE.Vector3; normal: THREE.Vector3 } | null {
+  const canvas = renderer.domElement;
+  const rect = canvas.getBoundingClientRect();
+  ndcForHit.set(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1,
+  );
+  raycasterForHit.setFromCamera(ndcForHit, camera);
+  const hits = raycasterForHit.intersectObjects(meshGroup.children, true);
+  for (const hit of hits) {
+    if (!hit.face || !hit.object.visible) continue;
+    const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+    return { point: hit.point.clone(), normal };
+  }
+  return null;
+}
+
 function isVerticallyScrollable(el: HTMLElement): boolean {
   const style = getComputedStyle(el);
   const overflowY = style.overflowY;

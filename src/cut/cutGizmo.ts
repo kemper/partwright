@@ -338,3 +338,18 @@ export function setProxyPosition(x: number, y: number, z: number): void {
   notifyChange();
   requestRender();
 }
+
+/** Snap the cutter's orientation so the cut plane aligns with the given
+ *  world-space normal. For plane mode: the cut plane normal becomes `normal`.
+ *  For box/sphere/cylinder: the Z-axis of the cutter aligns with `normal`.
+ *  After snapping, calls notifyChange() and requestRender(). */
+export function snapToFaceNormal(normal: THREE.Vector3): void {
+  if (!proxy) return;
+  const q = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 0, 1),
+    normal.clone().normalize(),
+  );
+  proxy.quaternion.copy(q);
+  notifyChange();
+  requestRender();
+}
