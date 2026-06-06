@@ -46,6 +46,7 @@ const cases: Array<{ name: string; code: string; maxComponents?: number }> = [
   { name: 'dovetail.tail', code: `return api.printFit.dovetail({ length: 30, width: 10 }).tail;` },
   { name: 'dovetail.socket', code: `return api.printFit.dovetail({ length: 30, width: 10, fit: 'loose' }).socket;` },
   { name: 'snapFit.clip', code: `return api.printFit.snapFit({ width: 8, length: 14 }).clip;` },
+  { name: 'snapFit.clip (rounded)', code: `return api.printFit.snapFit({ width: 8, length: 14, rounded: true }).clip;` },
   { name: 'snapFit.catch', code: `return api.printFit.snapFit({ width: 8, length: 14 }).catch;` },
   { name: 'clearanceCoupon', code: `return api.printFit.clearanceCoupon({ size: 'M3' });`, maxComponents: 1 },
 ];
