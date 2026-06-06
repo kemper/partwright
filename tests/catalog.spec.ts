@@ -64,10 +64,13 @@ test.describe('Catalog page (static)', () => {
 
     const fidget = page.locator('main section[data-category="fidget-toys"]');
     await expect(fidget.locator('h2')).toHaveText('Fidget Toys');
-    // Currently one verified print-in-place mechanism (the spiral cone); the
-    // remaining fidgets are being rebuilt as mechanisms in follow-up work.
-    expect(await fidget.locator('div.grid > a').count()).toBe(1);
-    await expect(fidget).toContainText('Spiral Fidget Cone');
+    // Four verified print-in-place spiral-cone mechanisms (2/3/4 interleaved
+    // helical blades that screw apart), all parametric.
+    expect(await fidget.locator('div.grid > a').count()).toBe(4);
+    await expect(fidget).toContainText('Spiral Twist Cone');
+    await expect(fidget).toContainText('Triple Helix Tornado');
+    await expect(fidget).toContainText('Quad Spiral Spire');
+    await expect(fidget).toContainText('Pocket Twist Top');
   });
 
   test('search narrows tiles, updates section counts, and hides empty sections', async ({ page }) => {
