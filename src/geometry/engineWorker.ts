@@ -653,23 +653,30 @@ self.onmessage = async (event: MessageEvent) => {
       if (result.mesh.runIndex)      transfer.push(result.mesh.runIndex.buffer);
       if (result.mesh.runOriginalID) transfer.push(result.mesh.runOriginalID.buffer);
       if (result.triColors)          transfer.push(result.triColors.buffer);
-      // Transfer all per-component mesh buffers
-      for (const m of result.meshes) {
+      // Transfer all per-component mesh buffers (kept, complement, and flat list)
+      function addMeshBuffers(m: MeshData): void {
         transfer.push(m.vertProperties.buffer, m.triVerts.buffer);
         if (m.mergeFromVert) transfer.push(m.mergeFromVert.buffer);
         if (m.mergeToVert)   transfer.push(m.mergeToVert.buffer);
         if (m.runIndex)      transfer.push(m.runIndex.buffer);
         if (m.runOriginalID) transfer.push(m.runOriginalID.buffer);
       }
-      if (result.triColorsList) {
-        for (const c of result.triColorsList) transfer.push(c.buffer);
-      }
+      for (const m of result.keptMeshes) addMeshBuffers(m);
+      for (const m of result.complementMeshes) addMeshBuffers(m);
+      if (result.keptColorsList)        for (const c of result.keptColorsList)        transfer.push(c.buffer);
+      if (result.complementColorsList)  for (const c of result.complementColorsList)  transfer.push(c.buffer);
+      if (result.triColorsList)         for (const c of result.triColorsList)         transfer.push(c.buffer);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (self as any).postMessage(
         {
           type: 'cut_result', callId,
-          mesh: result.mesh, meshes: result.meshes,
+          mesh: result.mesh,
+          keptMeshes: result.keptMeshes,
+          complementMeshes: result.complementMeshes,
+          meshes: result.meshes,
           triColors: result.triColors ?? null,
+          keptColorsList: result.keptColorsList ?? null,
+          complementColorsList: result.complementColorsList ?? null,
           triColorsList: result.triColorsList ?? null,
           error: null,
         },

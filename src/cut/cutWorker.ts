@@ -16,17 +16,21 @@ export interface CutParams {
 }
 
 export interface CutResult {
-  /** The "kept side" mesh — shown in the Apply preview. */
+  /** The "kept side" mesh (undecomposed). */
   mesh: MeshData;
-  /**
-   * All resulting parts: the kept side + the complement, each decomposed into
-   * connected components. Every non-empty piece becomes a separate session Part on
-   * Save. Length ≥ 1.
-   */
+  /** Kept-side components (decomposed). Parallel to `keptColorsList`. */
+  keptMeshes: MeshData[];
+  /** Complement-side components (decomposed). Parallel to `complementColorsList`. */
+  complementMeshes: MeshData[];
+  /** All components flat (kept then complement) — kept for backward-compat. */
   meshes: MeshData[];
-  /** Colors for the preview mesh. */
+  /** Colors for the kept-side preview mesh. */
   triColors?: Uint8Array;
-  /** Colors per component, parallel to `meshes`. */
+  /** Colors per kept component. */
+  keptColorsList?: Uint8Array[];
+  /** Colors per complement component. */
+  complementColorsList?: Uint8Array[];
+  /** Colors per all component (flat). */
   triColorsList?: Uint8Array[];
 }
 
@@ -162,7 +166,8 @@ export function performCut(
     safeDelete(resultOther);
     resultOther = null;
 
-    const meshes: MeshData[] = [...keptMeshes, ...otherMeshes];
+    const complementMeshes = otherMeshes;
+    const meshes: MeshData[] = [...keptMeshes, ...complementMeshes];
     if (meshes.length === 0) meshes.push(mesh); // shouldn't happen, but guard
 
     const hasColorsList = !!(keptColors || otherColors);
@@ -170,13 +175,22 @@ export function performCut(
       ? [...(keptColors ?? []), ...(otherColors ?? [])]
       : undefined;
 
-    // Colors for the combined preview mesh
+    // Colors for the kept-side preview mesh
     let outColors: Uint8Array | undefined;
     if (workColors && workColors.length === workMesh.numTri * 3 && mesh.numTri > 0) {
       outColors = mapColors(workColors, inputCentroids, mesh);
     }
 
-    return { mesh, meshes, triColors: outColors, triColorsList };
+    return {
+      mesh,
+      keptMeshes,
+      complementMeshes,
+      meshes,
+      triColors: outColors,
+      keptColorsList: keptColors ?? undefined,
+      complementColorsList: otherColors ?? undefined,
+      triColorsList,
+    };
   } finally {
     safeDelete(base);
     safeDelete(cutter);
@@ -395,4 +409,90 @@ function meshBoundingRadius(mesh: MeshData): number {
     maxR2 = Math.max(maxR2, x * x + y * y + z * z);
   }
   return Math.sqrt(maxR2);
+}
+
+/**
+ * Merge multiple MeshData objects into one by concatenating their vertex and
+ * triangle arrays. The resulting mesh has disconnected components — one per
+ * input mesh. Returns null if the input is empty.
+ */
+export function mergeMeshData(meshes: MeshData[]): MeshData | null {
+  const nonempty = meshes.filter(m => m.numTri > 0 && m.numVert > 0);
+  if (nonempty.length === 0) return null;
+  if (nonempty.length === 1) return nonempty[0];
+
+  const stride = nonempty[0].numProp;
+  let totalVerts = 0;
+  let totalTris = 0;
+  for (const m of nonempty) { totalVerts += m.numVert; totalTris += m.numTri; }
+
+  const vertProperties = new Float32Array(totalVerts * stride);
+  const triVerts = new Uint32Array(totalTris * 3);
+
+  let vOff = 0;
+  let tOff = 0;
+  for (const m of nonempty) {
+    vertProperties.set(m.vertProperties, vOff * stride);
+    for (let t = 0; t < m.numTri; t++) {
+      triVerts[tOff * 3]     = m.triVerts[t * 3]     + vOff;
+      triVerts[tOff * 3 + 1] = m.triVerts[t * 3 + 1] + vOff;
+      triVerts[tOff * 3 + 2] = m.triVerts[t * 3 + 2] + vOff;
+      tOff++;
+    }
+    vOff += m.numVert;
+  }
+
+  return { vertProperties, triVerts, numVert: totalVerts, numTri: totalTris, numProp: stride };
+}
+
+/**
+ * Build an "exploded view" mesh that shows both the kept and complement sides
+ * simultaneously, each offset by `offsetDist` along the cut normal so the gap
+ * between them makes the cut plane visible. The kept side is pushed in the
+ * +normal direction, the complement in -normal. Colors are concatenated in the
+ * same order. Returns null if no non-empty meshes exist.
+ */
+export function buildExplodedMesh(
+  keptMeshes: MeshData[],
+  complementMeshes: MeshData[],
+  cutNormal: [number, number, number],
+  offsetDist: number,
+  keptColorsList?: Uint8Array[],
+  complementColorsList?: Uint8Array[],
+): { mesh: MeshData; triColors: Uint8Array | undefined } | null {
+  const [nx, ny, nz] = cutNormal;
+
+  function offsetMesh(m: MeshData, dx: number, dy: number, dz: number): MeshData {
+    const vp = new Float32Array(m.vertProperties);
+    const stride = m.numProp;
+    for (let v = 0; v < m.numVert; v++) {
+      vp[v * stride]     += dx;
+      vp[v * stride + 1] += dy;
+      vp[v * stride + 2] += dz;
+    }
+    return { ...m, vertProperties: vp };
+  }
+
+  const keptOffset  =  offsetDist;
+  const compOffset  = -offsetDist;
+
+  const offsetKept = keptMeshes.map(m => offsetMesh(m, nx * keptOffset, ny * keptOffset, nz * keptOffset));
+  const offsetComp = complementMeshes.map(m => offsetMesh(m, nx * compOffset, ny * compOffset, nz * compOffset));
+
+  const merged = mergeMeshData([...offsetKept, ...offsetComp]);
+  if (!merged) return null;
+
+  // Build combined color array if paint data is present
+  let triColors: Uint8Array | undefined;
+  const hasColors = !!(keptColorsList?.length || complementColorsList?.length);
+  if (hasColors) {
+    const totalTris = [...offsetKept, ...offsetComp].reduce((s, m) => s + m.numTri, 0);
+    const combined = new Uint8Array(totalTris * 3);
+    let off = 0;
+    const allColors = [...(keptColorsList ?? []), ...(complementColorsList ?? [])];
+    for (const c of allColors) { combined.set(c, off); off += c.length; }
+    triColors = combined;
+  }
+
+  return { mesh: merged, triColors };
 }

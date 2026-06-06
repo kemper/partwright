@@ -149,7 +149,8 @@ import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook } from './
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
-import { initCutUI, isCutOpen, forceDeactivate as closeCutMenu, type CutHandlers } from './ui/cutUI';
+import { initCutUI, isCutOpen, forceDeactivate as closeCutMenu, type CutHandlers, type CutResultMode } from './ui/cutUI';
+import { buildExplodedMesh, mergeMeshData } from './cut/cutWorker';
 import { onMeshChanged as onCutMeshChanged } from './cut/cutGizmo';
 import { updatePaintMesh, setOnRegionPainted, setTriangleToBaseMapper } from './color/paintMode';
 import { baseTriangleOf } from './color/baseRemap';
@@ -5761,6 +5762,8 @@ async function main() {
   let cutBaseMesh: MeshData | null = null;
   let cutResultMesh: MeshData | null = null;
   let cutResultMeshes: MeshData[] | null = null;
+  let cutKeptColorsList: Uint8Array[] | null = null;
+  let cutComplementColorsList: Uint8Array[] | null = null;
 
   // Replace the live geometry with `mesh`: rebuild the queryable Manifold and
   // refresh the viewport, paint-adjacency map, stats, and clip bounds. Mirrors
@@ -6332,6 +6335,8 @@ async function main() {
       if (!cutBaseMesh) cutBaseMesh = currentMeshData;
       cutResultMesh = null;
       cutResultMeshes = null;
+      cutKeptColorsList = null;
+      cutComplementColorsList = null;
       return { ok: true };
     },
 
@@ -6359,15 +6364,42 @@ async function main() {
         // Bail if a code run updated the mesh while we were waiting.
         if (cutBaseMesh !== baseSnapshot) return null;
         if (!result) return null;
-        // If the Worker returned colors, embed them in the mesh for the viewport.
-        const meshToShow: MeshData = result.triColors
-          ? { ...result.mesh, triColors: result.triColors }
-          : result.mesh;
+        // Store per-side color data for save().
+        cutKeptColorsList = result.keptColorsList ?? null;
+        cutComplementColorsList = result.complementColorsList ?? null;
+        cutResultMeshes = result.meshes;
+        // Build an exploded-view preview: both sides pulled apart along the cut normal.
+        // mat4x3 col 2 (indices 6-8) is the local Z axis = the cut plane normal.
+        const rawNx = params.mat4x3[6], rawNy = params.mat4x3[7], rawNz = params.mat4x3[8];
+        const nLen = Math.sqrt(rawNx * rawNx + rawNy * rawNy + rawNz * rawNz);
+        const cutNormal: [number, number, number] = nLen > 1e-9
+          ? [rawNx / nLen, rawNy / nLen, rawNz / nLen]
+          : [0, 0, 1];
+        // Offset distance = 8% of the base mesh's max bounding-box dimension.
+        const bb = meshBounds(base);
+        const offsetDist = Math.max(
+          bb.max[0] - bb.min[0],
+          bb.max[1] - bb.min[1],
+          bb.max[2] - bb.min[2],
+        ) * 0.08;
+        const exploded = result.complementMeshes.length > 0
+          ? buildExplodedMesh(
+              result.keptMeshes,
+              result.complementMeshes,
+              cutNormal,
+              offsetDist,
+              result.keptColorsList,
+              result.complementColorsList,
+            )
+          : null;
+        const meshToShow: MeshData = exploded
+          ? (exploded.triColors ? { ...exploded.mesh, triColors: exploded.triColors } : exploded.mesh)
+          : result.triColors
+            ? { ...result.mesh, triColors: result.triColors }
+            : result.mesh;
         applyLiveGeometry(meshToShow);
         cutResultMesh = meshToShow;
-        cutResultMeshes = result.meshes;
-        // Update baseline so a second Apply starts from the current cut result,
-        // keeping paint regions and triangle counts consistent.
+        // Update baseline so a second Apply starts from the current cut result.
         cutBaseMesh = result.mesh;
         return { triangleCount: result.mesh.numTri, componentCount: result.meshes.length };
       } catch (err) {
@@ -6375,7 +6407,7 @@ async function main() {
       }
     },
 
-    async save() {
+    async save(resultMode: CutResultMode) {
       if (!getState().session) {
         return { ok: false, message: 'Open a session before saving.' };
       }
@@ -6393,15 +6425,9 @@ async function main() {
           savedOriginal = !!(await saveVersion(originalCode, original.geometryData, original.thumbnail));
         }
 
-        // Create one new part per disconnected component (kept + complement, each decomposed).
-        const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-        for (let i = 0; i < componentMeshes.length; i++) {
-          const componentMesh = componentMeshes[i];
-          const partName = componentMeshes.length === 1
-            ? 'Cut Result'
-            : `Cut ${LETTERS[i] ?? String(i + 1)}`;
+        async function savePart(partName: string, partMesh: MeshData): Promise<void> {
           await createPart(partName);
-          const baked = toImportedMesh(`cut-${componentMesh.numTri}tri`, componentMesh);
+          const baked = toImportedMesh(`cut-${partMesh.numTri}tri`, partMesh);
           const code = generateImportCode([baked], { manifold: true });
           setActiveImports([baked]);
           setValue(code);
@@ -6414,11 +6440,50 @@ async function main() {
           });
         }
 
+        let partsCount: number;
+        if (resultMode === 'combined') {
+          // Merge all components (kept + complement) into one part.
+          const merged = mergeMeshData(componentMeshes);
+          if (!merged) {
+            return { ok: false, message: 'Cut produced no usable geometry.' };
+          }
+          // Combine colors from both sides if present.
+          const allColors = [...(cutKeptColorsList ?? []), ...(cutComplementColorsList ?? [])];
+          let combinedColors: Uint8Array | undefined;
+          if (allColors.length > 0) {
+            const total = allColors.reduce((s, c) => s + c.length, 0);
+            const buf = new Uint8Array(total);
+            let off = 0;
+            for (const c of allColors) { buf.set(c, off); off += c.length; }
+            combinedColors = buf;
+          }
+          const partMesh = combinedColors ? { ...merged, triColors: combinedColors } : merged;
+          await savePart('Cut Result', partMesh);
+          partsCount = 1;
+        } else {
+          // Separate: one part per disconnected component.
+          const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+          for (let i = 0; i < componentMeshes.length; i++) {
+            const componentMesh = componentMeshes[i];
+            // Attach per-component colors from the flat triColorsList if available.
+            const colors = cutResultMeshes && (cutKeptColorsList || cutComplementColorsList)
+              ? [...(cutKeptColorsList ?? []), ...(cutComplementColorsList ?? [])][i]
+              : undefined;
+            const coloredMesh = colors ? { ...componentMesh, triColors: colors } : componentMesh;
+            const partName = componentMeshes.length === 1
+              ? 'Cut Result'
+              : `Cut ${LETTERS[i] ?? String(i + 1)}`;
+            await savePart(partName, coloredMesh);
+          }
+          partsCount = componentMeshes.length;
+        }
+
         cutBaseMesh = null;
         cutResultMesh = null;
         cutResultMeshes = null;
-        const n = componentMeshes.length;
-        const partsLabel = `${n} part${n > 1 ? 's' : ''}`;
+        cutKeptColorsList = null;
+        cutComplementColorsList = null;
+        const partsLabel = `${partsCount} part${partsCount > 1 ? 's' : ''}`;
         return {
           ok: true,
           message: savedOriginal
@@ -12851,6 +12916,8 @@ async function main() {
       cutBaseMesh = null;
       cutResultMesh = null;
       cutResultMeshes = null;
+      cutKeptColorsList = null;
+      cutComplementColorsList = null;
       simplifyBaselineColoredMesh = null;
       simplifyBaselineRegions = null;
       simplifyBaselineModelRegions = null;

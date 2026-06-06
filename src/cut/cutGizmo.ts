@@ -82,7 +82,8 @@ export function activate(mesh: MeshData): void {
   active = true;
   buildShape(mesh);
   buildGizmo();
-  notifyChange();
+  // Do NOT call notifyChange() here — the auto-preview fires on every change
+  // notification and would immediately cut the model on panel open.
 }
 
 export function deactivate(): void {

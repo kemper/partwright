@@ -485,12 +485,20 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     const mesh = msg.mesh as MeshData | null;
     if (!mesh) { pending.resolve(null); return; }
     const triColors = msg.triColors as Uint8Array | null;
+    const keptMeshes = msg.keptMeshes as MeshData[] | null;
+    const complementMeshes = msg.complementMeshes as MeshData[] | null;
     const meshes = msg.meshes as MeshData[] | null;
+    const keptColorsList = msg.keptColorsList as Uint8Array[] | null;
+    const complementColorsList = msg.complementColorsList as Uint8Array[] | null;
     const triColorsList = msg.triColorsList as Uint8Array[] | null;
     pending.resolve({
       mesh,
+      keptMeshes: keptMeshes ?? [mesh],
+      complementMeshes: complementMeshes ?? [],
       meshes: meshes ?? [mesh],
       triColors: triColors ?? undefined,
+      keptColorsList: keptColorsList ?? undefined,
+      complementColorsList: complementColorsList ?? undefined,
       triColorsList: triColorsList ?? undefined,
     });
     return;
@@ -968,10 +976,16 @@ export async function enhanceInWorker(
 
 export interface CutWorkerResult {
   mesh: MeshData;
-  /** One mesh per disconnected component. Length ≥ 1. */
+  /** Kept-side components (decomposed). */
+  keptMeshes: MeshData[];
+  /** Complement-side components (decomposed). */
+  complementMeshes: MeshData[];
+  /** All components flat (kept then complement). Length ≥ 1. */
   meshes: MeshData[];
   triColors?: Uint8Array;
-  /** Colors per component, parallel to `meshes`. Only present when meshes.length > 1 and input had colors. */
+  keptColorsList?: Uint8Array[];
+  complementColorsList?: Uint8Array[];
+  /** Colors per component (flat), parallel to `meshes`. */
   triColorsList?: Uint8Array[];
 }
 

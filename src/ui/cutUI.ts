@@ -41,6 +41,9 @@ import { meshBounds } from '../color/slabPaint';
 
 export type { CutGizmoParams };
 
+/** How the cut result is saved: one part per component, or all merged into one. */
+export type CutResultMode = 'separate' | 'combined';
+
 export interface CutApplyResult {
   triangleCount: number;
   componentCount: number;
@@ -64,7 +67,7 @@ export interface CutHandlers {
     preserveColors: boolean,
   ): Promise<CutApplyResult | null>;
   /** Bake the cut result as a new session version. */
-  save(): Promise<CutSaveResult>;
+  save(resultMode: CutResultMode): Promise<CutSaveResult>;
 }
 
 // Button style constants
@@ -84,6 +87,7 @@ const registryEntry = { close(): void { if (isCutOpen()) closePanel(); } };
 
 let preserveColors = true;
 let showHandles = true;
+let cutResultMode: CutResultMode = 'separate';
 
 // XYZ position inputs — kept in module scope so the gizmo-change listener can update them
 let posXInput: HTMLInputElement | null = null;
@@ -166,7 +170,10 @@ function openPanel(): void {
   if (cutBtn) cutBtn.className = BTN_ACTIVE;
   // Activate the 3-D gizmo.
   const mesh = handlers.getMesh();
-  if (mesh) activateGizmo(mesh);
+  if (mesh) {
+    activateGizmo(mesh);
+    syncPositionInputs(); // sync XYZ inputs to gizmo's initial position
+  }
   // Keyboard shortcuts: T = translate, R = rotate, S = scale, Escape = close
   keydownListener = (e: KeyboardEvent) => {
     const tag = (e.target as HTMLElement)?.tagName;
@@ -448,6 +455,26 @@ function buildPanel(): HTMLElement {
   faceAlignRow.appendChild(faceAlignBtn);
   content.appendChild(faceAlignRow);
 
+  // === Save result mode: separate parts vs combined ===
+  appendSectionLabel(content, 'Save As');
+  const modeToggleRow = document.createElement('div');
+  modeToggleRow.className = 'grid grid-cols-2 gap-1 mt-1';
+  const resultModes: [CutResultMode, string, string][] = [
+    ['separate', '⧉ Separate', 'Each cut piece becomes its own part in the session'],
+    ['combined', '▣ Combined', 'All cut pieces are merged into a single part'],
+  ];
+  const modeToggleBtns = new Map<CutResultMode, HTMLButtonElement>();
+  for (const [mode, label, tooltip] of resultModes) {
+    const btn = buildToggleBtn(label, tooltip, mode === cutResultMode);
+    btn.addEventListener('click', () => {
+      cutResultMode = mode;
+      for (const [m, b] of modeToggleBtns) b.className = toggleBtnClass(m === cutResultMode);
+    });
+    modeToggleBtns.set(mode, btn);
+    modeToggleRow.appendChild(btn);
+  }
+  content.appendChild(modeToggleRow);
+
   // === Options (preserve colors + show handles) ===
   const optionsRow = document.createElement('div');
   optionsRow.className = 'flex flex-col gap-1.5';
@@ -556,7 +583,7 @@ async function doSave(): Promise<void> {
   setButtonsDisabled(true);
   if (statusEl) statusEl.textContent = 'Saving…';
   try {
-    const res = await handlers.save();
+    const res = await handlers.save(cutResultMode);
     if (statusEl) statusEl.textContent = res.message;
     if (res.ok && saveBtn) {
       saveBtn.disabled = true;
