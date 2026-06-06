@@ -641,19 +641,11 @@
       "group": "print-fit"
     },
     {
-      "id": "print-fit-rail-plate",
-      "name": "Dovetail Rail Plate",
-      "file": "print_fit_rail_plate.partwright.json",
+      "id": "print-fit-dovetail-system",
+      "name": "Dovetail Rail System",
+      "file": "print_fit_dovetail_system.partwright.json",
       "language": "manifold-js",
-      "description": "A wall-mount plate with a full-length dovetail rail and auto-spaced countersunk screw holes. Print one plate, then print as many Dovetail Wall Hooks as you need — they slide on and lock. Built with api.printFit.",
-      "group": "print-fit"
-    },
-    {
-      "id": "print-fit-wall-hook",
-      "name": "Dovetail Wall Hook",
-      "file": "print_fit_wall_hook.partwright.json",
-      "language": "manifold-js",
-      "description": "A chamfer-edged hook that slides onto a Dovetail Rail Plate and locks against pulling forward — lift to remove. A rounded J-hook out front cradles cables, headphones, keys, or tools. Built with api.printFit.",
+      "description": "A wall-mount plate with a full-length dovetail rail and a matching hook that slides on and locks — lift to remove. Print one plate, print as many hooks as you need. Both parts parameterizable. Built with api.printFit.",
       "group": "print-fit"
     }
   ]
