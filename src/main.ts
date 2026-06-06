@@ -41,6 +41,7 @@ import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { registerCommands } from './ui/commandPalette';
+import { mountHintsTicker, showHintsTicker } from './ui/hints/hintsTicker';
 import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
@@ -218,6 +219,7 @@ import {
   deleteParts,
   reorderParts,
   getState,
+  setSessionThumbCamera,
   getSessionUrl,
   getGalleryUrl,
   exportSession,
@@ -268,7 +270,7 @@ import {
   checkAssertions,
   type GeometryAssertions,
 } from './geometry/statsComputation';
-import { getConfig } from './config/appConfig';
+import { getConfig, saveAppConfig } from './config/appConfig';
 import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
 
 // Load examples as raw text — JS and SCAD
@@ -419,6 +421,11 @@ let currentMeshData: MeshData | null = null;
  *  log so users can see how close a run came to the ~4 GB ceiling. Undefined
  *  for non-manifold-js engines (separate heaps) or before the first run. */
 let lastEngineHeapBytes: number | undefined;
+/** Occupied-voxel count reported by the voxel engine for the most recent run.
+ *  Surfaced in the geometry-data stats (so `runAndSave().geometry.voxelCount`
+ *  and the Data panel show it) without re-decoding the grid. Undefined for the
+ *  non-voxel engines or before the first run. */
+let lastVoxelCount: number | undefined;
 /** The pristine mesh produced by the authored code, before any smooth brush
  *  subdivision. `currentMeshData` equals this until a `brushStroke` region
  *  exists, at which point it becomes the refined (subdivided) mesh rebuilt by
@@ -689,6 +696,11 @@ function withSessionContext(data: Record<string, unknown>): Record<string, unkno
   if (lastEngineHeapBytes !== undefined) {
     data.engineMemory = formatEngineMemory(lastEngineHeapBytes);
   }
+  // Voxel models report their occupied-voxel count so the stats double as a
+  // size readout for direct (non-mesh) modeling.
+  if (lastVoxelCount !== undefined) {
+    data.voxelCount = lastVoxelCount;
+  }
   return data;
 }
 
@@ -733,10 +745,14 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
 function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob | null> {
   if (!mesh) return Promise.resolve(null);
   let canvas: HTMLCanvasElement;
+  // Honour a session-pinned thumbnail camera (partwright.setThumbnailCamera);
+  // fall back to the default iso 3/4 view. The pin keeps the perspective ortho
+  // flag of the iso view so a custom angle still reads as a 3/4 tile.
+  const pin = getState().session?.thumbCamera;
   try {
     canvas = renderSingleViewCanvas(applyTriColorsIfVisible(mesh), {
-      elevation: STANDARD_VIEWS.iso.elevation,
-      azimuth: STANDARD_VIEWS.iso.azimuth,
+      elevation: pin ? pin.elevation : STANDARD_VIEWS.iso.elevation,
+      azimuth: pin ? pin.azimuth : STANDARD_VIEWS.iso.azimuth,
       ortho: STANDARD_VIEWS.iso.ortho,
     });
   } catch {
@@ -788,6 +804,23 @@ function getGeometryDataObj(): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+/** Per-region paint summary for the runAndSave / saveVersion response: each user
+ *  paint region’s name, descriptor `kind` (so an agent can confirm it used
+ *  `byLabel` rather than coordinate paint — which bloats saved catalog files),
+ *  the resolved label for byLabel regions, and the triangle count it resolved to
+ *  on the current mesh (0 ⇒ the region matched nothing; see the zero-triangle
+ *  warning in `geometryWarnings`). Returns [] when nothing is painted.
+ *  Model-declared label colors are excluded — this reflects the serialized
+ *  paint, which is what determines file size. */
+function colorRegionStats(): { name: string; kind: RegionDescriptor['kind']; label?: string; triangleCount: number }[] {
+  return getRegions().map((r) => ({
+    name: r.name,
+    kind: r.descriptor.kind,
+    ...(r.descriptor.kind === 'byLabel' ? { label: r.descriptor.label } : {}),
+    triangleCount: r.triangles.size,
+  }));
 }
 
 /** Swap the in-memory annotation store to the version’s snapshot.
@@ -1683,7 +1716,7 @@ function enrichGeometryDataWithColors(geoData: Record<string, unknown> | null): 
  *  active, or `{ skipped }` when nothing changed since the current version. */
 async function saveCurrentVersion(label?: string): Promise<
   | { error: string }
-  | { id: string; index: number; label: string }
+  | { id: string; index: number; label: string; colorRegions?: ReturnType<typeof colorRegionStats> }
   | { skipped: true; reason: string }
 > {
   if (isSharedPreview()) {
@@ -1721,7 +1754,11 @@ async function saveCurrentVersion(label?: string): Promise<
         if (oldest) partMeshCache.delete(oldest);
       }
     }
-    return { id: version.id, index: version.index, label: version.label };
+    const colorRegions = colorRegionStats();
+    return {
+      id: version.id, index: version.index, label: version.label,
+      ...(colorRegions.length > 0 ? { colorRegions } : {}),
+    };
   }
   return {
     skipped: true as const,
@@ -4070,6 +4107,15 @@ async function main() {
     },
   });
 
+  // "Did you know?" hints ticker — mounts into the toolbar's middle host
+  // (#editor-hints-host, created by createToolbar between the language "?" and
+  // the "Use AI" button). The ticker mounts/unmounts inside it as it's toggled.
+  // Shown by default; hidden per-session via its ✕ or permanently in Advanced
+  // Settings (config.ui.editorHintsEnabled).
+  // Query within editorUI (not document) — it isn't attached to the page yet.
+  const hintsHost = editorUI.querySelector<HTMLElement>('#editor-hints-host');
+  if (hintsHost) mountHintsTicker(hintsHost);
+
   // Init diagnostic panel — attaches to document.body, registers badge subscriber.
   initDiagnosticsPanel();
 
@@ -4304,6 +4350,16 @@ async function main() {
   // Viewport tools need the editor active and a model on screen to act on.
   const viewportToolEnabled = () => isEditorActive() && currentMeshData !== null;
 
+  // Flip the permanent on/off for the hints ticker (also exposed in Advanced
+  // Settings). Turning it on clears any per-session ✕-dismiss so it reappears.
+  function toggleEditorHints(): void {
+    const cfg = getConfig();
+    const next = !cfg.ui.editorHintsEnabled;
+    saveAppConfig({ ...cfg, ui: { ...cfg.ui, editorHintsEnabled: next } });
+    if (next) showHintsTicker();
+    showToast(next ? 'Editor hints shown' : 'Editor hints hidden', { variant: 'neutral' });
+  }
+
   // Register command-palette actions (⌘K). Reuses the same handlers the
   // toolbar/session bar/layout already wire up so behavior can’t drift.
   registerCommands([
@@ -4352,6 +4408,7 @@ async function main() {
     { id: 'open-whats-new', title: "Open what’s new", hint: 'Navigate', keywords: 'changelog recent features updates release notes', run: () => showWhatsNewPage() },
     { id: 'open-quality', title: 'Settings', hint: 'Settings', keywords: 'resolution curve segments smoothness advanced', run: () => showAdvancedSettingsModal() },
     { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); }, enabled: isEditorActive },
+    { id: 'toggle-hints', title: 'Toggle "Did you know?" hints', hint: 'View', keywords: 'did you know tips ticker discovery hints banner strip', run: () => toggleEditorHints() },
   ]);
 
   // Init gallery — `loadVersion` (in gallery.ts) has already updated state to
@@ -6883,6 +6940,7 @@ async function main() {
     const manifold = result.manifold ?? (mod && result.mesh ? mod.Manifold.ofMesh(result.mesh) : null);
     const stats = computeGeometryStats(manifold, result.mesh!, elapsed, code);
     if (engineMemory !== undefined) stats.engineMemory = engineMemory;
+    if (result.voxelCount !== undefined) stats.voxelCount = result.voxelCount;
     return {
       geometryData: stats,
       meshData: result.mesh,
@@ -8217,6 +8275,55 @@ async function main() {
       return composite.toDataURL('image/png');
     },
 
+    /** Pin the thumbnail camera angle for the active session so captured
+     *  thumbnails (catalog tile, gallery, version snapshots) render from this
+     *  azimuth / elevation (degrees) instead of the default iso 3/4 view (the
+     *  default is azimuth 135°, elevation 35°). The pin persists on the session
+     *  and survives reload / export, so a faced model can present its front in
+     *  the tile without baking orientation into the geometry.
+     *
+     *  - `setThumbnailCamera({ azimuth, elevation })` — pin an explicit angle.
+     *    Azimuth: 0 = front (+Y), 90 = right (+X), 180 = back (−Y), 270 = left.
+     *    Elevation: 0 = horizon, 90 = top-down.
+     *  - `setThumbnailCamera('current')` — pin the angle you're currently
+     *    looking at in the viewport (orbit to a nice 3/4 view, then call this —
+     *    no guessing numbers). The live viewport's azimuth convention is
+     *    mirrored from the thumbnail camera's, so this converts it for you.
+     *  - `setThumbnailCamera(null)` — clear the pin, back to the default.
+     *
+     *  Returns the resolved camera (or null when cleared), or `{ error }`. */
+    async setThumbnailCamera(camera: { azimuth: number; elevation: number } | 'current' | null) {
+      let resolved: { azimuth: number; elevation: number } | null;
+      if (camera === 'current') {
+        // Viewport azimuth is measured as atan2(dx, −dy); the thumbnail camera
+        // (buildViewCamera) uses atan2(dx, dy). They differ by a 180° mirror,
+        // so convert: thumbAz = 180 − viewportAz.
+        const cs = getCameraState();
+        resolved = { azimuth: ((180 - cs.azimuth) % 360 + 360) % 360, elevation: cs.elevation };
+      } else if (camera === null) {
+        resolved = null;
+      } else {
+        const check = guard(() => {
+          const o = assertObject(camera, 'setThumbnailCamera(camera)')!;
+          assertNoUnknownKeys(o, ['azimuth', 'elevation'], 'setThumbnailCamera(camera)');
+          assertNumber(o.azimuth, 'setThumbnailCamera(camera).azimuth');
+          assertNumber(o.elevation, 'setThumbnailCamera(camera).elevation', { min: -90, max: 90 });
+          return true;
+        });
+        if (typeof check === 'object' && check !== null && 'error' in check) return check;
+        resolved = camera;
+      }
+      if (!getState().session) return { error: 'No active session. Call createSession() or openSession() first.' };
+      await setSessionThumbCamera(resolved);
+      return { thumbCamera: getState().session?.thumbCamera ?? null };
+    },
+
+    /** The active session's pinned thumbnail camera `{ azimuth, elevation }`, or
+     *  null when unpinned (the default iso view is used for thumbnails). */
+    getThumbnailCamera(): { azimuth: number; elevation: number } | null {
+      return getState().session?.thumbCamera ?? null;
+    },
+
     /** Render a cross-section at Z height as an SVG string for visual verification */
     sliceAtZVisual(z: number): { svg: string; area: number; contours: number } | null {
       assertNumber(z, 'sliceAtZVisual(z)');
@@ -8860,6 +8967,7 @@ async function main() {
         ? [...currentLostLabels]
         : undefined;
       const printability = computePrintability(newGeoData);
+      const colorRegions = colorRegionStats();
       return {
         ...(assertions ? { passed: true } : {}),
         geometry: newGeoData,
@@ -8869,6 +8977,7 @@ async function main() {
         galleryUrl: getGalleryUrl(),
         ...(warnings.length > 0 ? { warnings } : {}),
         ...(lostLabels ? { lostLabels } : {}),
+        ...(colorRegions.length > 0 ? { colorRegions } : {}),
       };
     },
 
@@ -12781,6 +12890,9 @@ async function main() {
     // manifold-js engines, which own separate heaps). Surfaced in the Data panel
     // and engine-error log so users can see how close a run came to the ceiling.
     lastEngineHeapBytes = result.engineHeapBytes;
+    // Occupied-voxel count for voxel runs (undefined for other engines, which
+    // resets the readout so a prior voxel session's count doesn't linger).
+    lastVoxelCount = result.voxelCount;
 
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel

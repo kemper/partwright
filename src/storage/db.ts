@@ -23,6 +23,13 @@ export interface Session {
    *  from the AI types) and `preset` mirrors the settings preset. Sessions saved
    *  before this field gains `toggles` simply restore provider/model only. */
   aiPreference?: { provider: string; model: string; toggles?: Record<string, unknown>; preset?: string };
+  /** Pinned thumbnail camera angle (degrees). When set, captured thumbnails
+   *  (catalog tiles, gallery, version snapshots) render from this azimuth /
+   *  elevation instead of the default iso 3/4 view — so a faced model can show
+   *  its front in the tile without baking orientation into the geometry. Set
+   *  via `partwright.setThumbnailCamera({ azimuth, elevation })`; absent ⇒ the
+   *  default iso view. Persisted so re-bakes and reloads reuse the angle. */
+  thumbCamera?: { azimuth: number; elevation: number };
 }
 
 /** A modeling target within a session. A session holds one or more parts; each
@@ -586,7 +593,7 @@ export function legacyImagesObjectToArray(obj: LegacyImagesObject): AttachedImag
   return result;
 }
 
-export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'currentPartId' | 'aiPreference'>>): Promise<void> {
+export async function updateSession(id: string, updates: Partial<Pick<Session, 'name' | 'created' | 'updated' | 'images' | 'language' | 'currentPartId' | 'aiPreference' | 'thumbCamera'>>): Promise<void> {
   const store = await tx('sessions', 'readwrite');
   // Read-modify-write inside one transaction: queue the put from the get's
   // callback (awaiting between them risks auto-commit), then await oncomplete.

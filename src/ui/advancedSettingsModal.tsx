@@ -104,6 +104,38 @@ function Field(props: FieldProps) {
   );
 }
 
+interface ToggleFieldProps {
+  label: string;
+  hint?: string;
+  defaultValue: boolean;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}
+
+function ToggleField(props: ToggleFieldProps) {
+  const { label, hint, defaultValue, value, onChange } = props;
+  const changed = value !== defaultValue;
+  return (
+    <div class="flex flex-col gap-1">
+      <label class="flex items-center gap-2 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={value}
+          class="w-4 h-4 accent-blue-500"
+          onChange={e => onChange((e.currentTarget as HTMLInputElement).checked)}
+        />
+        <span class="text-xs font-medium text-zinc-300 flex-1">{label}</span>
+        {changed && (
+          <span class="text-[9px] text-amber-400 border border-amber-400/30 rounded px-1 py-px uppercase tracking-wide">
+            modified
+          </span>
+        )}
+      </label>
+      {hint && <p class="text-[10px] text-zinc-500 leading-snug pl-6">{hint}</p>}
+    </div>
+  );
+}
+
 interface SectionProps {
   title: string;
   children: ComponentChildren;
@@ -136,7 +168,7 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
     );
   });
 
-  function set<S extends keyof AppConfig>(section: S, key: keyof AppConfig[S], value: number): void {
+  function set<S extends keyof AppConfig>(section: S, key: keyof AppConfig[S], value: number | boolean): void {
     const next = cloneConfig(cfg.value);
     (next[section] as Record<string, unknown>)[key as string] = value;
     cfg.value = next;
@@ -644,6 +676,23 @@ function AdvancedSettingsBody(props: { cfg: Signal<AppConfig>; onReset: () => vo
       </Section>
 
       <Section title="UI">
+        <ToggleField
+          label="Show editor hints"
+          hint={'The "Did you know?" strip at the top of the editor that rotates through tips. Off hides it everywhere; the strip’s ✕ only hides it for the current tab.'}
+          defaultValue={APP_CONFIG_DEFAULTS.ui.editorHintsEnabled}
+          value={c.ui.editorHintsEnabled}
+          onChange={v => set('ui', 'editorHintsEnabled', v)}
+        />
+        <Field
+          label="Hint rotation interval"
+          unit="ms"
+          hint="How long each editor hint shows before the strip rotates to the next."
+          tooltip="The 'Did you know?' strip auto-advances to the next tip after this long. Hovering the strip pauses rotation; the ‹ › arrows step manually. Raise it to read each tip longer; lower it to cycle faster."
+          defaultValue={APP_CONFIG_DEFAULTS.ui.hintRotationMs}
+          value={c.ui.hintRotationMs}
+          min={3_000} max={60_000} integer
+          onChange={v => set('ui', 'hintRotationMs', v)}
+        />
         <Field
           label="Toast duration"
           unit="ms"

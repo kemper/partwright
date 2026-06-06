@@ -13,6 +13,10 @@ name: Code quality
 #   - dead-code (knip) is ADVISORY for exports/types: it prints findings for
 #     reviewers but never fails the job on those, because the codebase has known
 #     pre-existing hits being worked down. See docs/agent-tooling.md.
+#   - catalog file sizes (lint:catalog) is a GATE. Catalog entries embed a
+#     base64 thumbnail and, with coordinate paint, per-triangle id lists that can
+#     balloon a file to multiple MB; the script fails on any entry over its hard
+#     limit so that regression class can't land. See public/catalog/README.md.
 #
 # This job runs on PRs only — it does not gate the main->staging promotion.
 
@@ -51,3 +55,6 @@ jobs:
 
       - name: Circular deps (madge) — gates on any cycle
         run: npm run lint:deps
+
+      - name: Catalog file sizes — gates on entries over the hard limit
+        run: npm run lint:catalog

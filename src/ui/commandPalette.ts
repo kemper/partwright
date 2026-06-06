@@ -32,6 +32,19 @@ function getCommands(): Command[] {
   return [...registry.values()];
 }
 
+/**
+ * Run a registered command by id, honoring its `enabled` gate. Returns false
+ * when the id is unknown or the command is currently disabled (so callers can
+ * fall back). Lets non-palette UI (e.g. the hints ticker) reuse the same
+ * actions the palette exposes without duplicating their wiring.
+ */
+export function runCommandById(id: string): boolean {
+  const cmd = registry.get(id);
+  if (!cmd || (cmd.enabled && !cmd.enabled())) return false;
+  cmd.run();
+  return true;
+}
+
 // --- Palette UI ---
 
 let overlayEl: HTMLElement | null = null;

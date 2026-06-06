@@ -600,7 +600,7 @@
       "name": "Spiral Fidget Cone",
       "file": "spiral_fidget_cone.partwright.json",
       "language": "manifold-js",
-      "description": "Print-in-place spiral cone — twist the two interleaved helical ribbons and they screw apart. A captive two-part fidget printed in one piece.",
+      "description": "Print-in-place bolt & nut — a 5-start helical screw captive inside a matching spiral-cage cone. Twist and it rides the threads; prints in one piece and unscrews apart.",
       "group": "fidget-toys"
     },
     {
