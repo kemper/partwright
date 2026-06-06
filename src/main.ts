@@ -4068,15 +4068,14 @@ async function main() {
     },
   });
 
-  // "Did you know?" hints ticker — a stable host slotted between the toolbar and
-  // the session bar (both append to editorUI, so appending now lands it second).
-  // The ticker mounts/unmounts inside this host as it's toggled, so layout stays
-  // put. Shown by default; hidden per-session via its ✕ or permanently in
-  // Advanced Settings (config.ui.editorHintsEnabled).
-  const hintsHost = document.createElement('div');
-  hintsHost.id = 'editor-hints-host';
-  editorUI.appendChild(hintsHost);
-  mountHintsTicker(hintsHost);
+  // "Did you know?" hints ticker — mounts into the toolbar's middle host
+  // (#editor-hints-host, created by createToolbar between the language "?" and
+  // the "Use AI" button). The ticker mounts/unmounts inside it as it's toggled.
+  // Shown by default; hidden per-session via its ✕ or permanently in Advanced
+  // Settings (config.ui.editorHintsEnabled).
+  // Query within editorUI (not document) — it isn't attached to the page yet.
+  const hintsHost = editorUI.querySelector<HTMLElement>('#editor-hints-host');
+  if (hintsHost) mountHintsTicker(hintsHost);
 
   // Init diagnostic panel — attaches to document.body, registers badge subscriber.
   initDiagnosticsPanel();

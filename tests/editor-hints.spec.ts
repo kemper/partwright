@@ -3,9 +3,14 @@ import { test, expect } from 'playwright/test';
 // Golden path for the "Did you know?" hints ticker (src/ui/hints/*).
 test.describe('editor hints ticker', () => {
   test.beforeEach(async ({ page }) => {
-    // Suppress the first-run guided tour — its backdrop would intercept clicks.
     await page.addInitScript(() => {
-      try { localStorage.setItem('partwright-tour-completed', '1'); } catch { /* ignore */ }
+      try {
+        // Suppress the first-run guided tour — its backdrop intercepts clicks.
+        localStorage.setItem('partwright-tour-completed', '1');
+        // Start with the AI panel closed so the toolbar's middle has room for
+        // the inline ticker (it collapses responsively when space is tight).
+        localStorage.setItem('partwright-ai-settings-v1', JSON.stringify({ drawerOpen: false }));
+      } catch { /* ignore */ }
     });
   });
 
@@ -21,7 +26,7 @@ test.describe('editor hints ticker', () => {
     await expect(cta).toBeVisible();
 
     // The hint text is non-empty.
-    const hintText = strip.locator('span').nth(1);
+    const hintText = page.locator('#editor-hints-text');
     const first = (await hintText.textContent())?.trim() ?? '';
     expect(first.length).toBeGreaterThan(0);
 
@@ -42,7 +47,7 @@ test.describe('editor hints ticker', () => {
     await expect(strip).toBeVisible({ timeout: 15_000 });
 
     // Step to the BREP-engine hint, whose CTA coaches the language toggle.
-    const hintText = strip.locator('span').nth(1);
+    const hintText = page.locator('#editor-hints-text');
     let found = false;
     for (let i = 0; i < 12; i++) {
       const t = (await hintText.textContent())?.toLowerCase() ?? '';

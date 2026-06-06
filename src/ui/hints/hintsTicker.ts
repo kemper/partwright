@@ -35,6 +35,7 @@ let order: Hint[] = [];
 let idx = 0;
 let paused = false;
 let configUnsub: (() => void) | null = null;
+let resizeObs: ResizeObserver | null = null;
 
 // ─── persistence helpers ──────────────────────────────────────────────────────
 
@@ -138,6 +139,8 @@ function scheduleRotate(): void {
 function teardownStrip(): void {
   window.clearTimeout(rotateTimer);
   rotateTimer = 0;
+  resizeObs?.disconnect();
+  resizeObs = null;
   dismissCoachmark();
   if (host) host.replaceChildren();
   strip = null;
@@ -153,35 +156,56 @@ function renderStrip(): void {
   order = buildOrder();
   idx = 0;
 
+  // Inline toolbar variant: lives in the toolbar's flexible middle, framed by a
+  // vertical divider on each side so the hint region (text + CTA + its ‹ › ✕
+  // controls) reads as one unit, distinct from the toolbar's left and right
+  // button clusters.
   strip = document.createElement('div');
   strip.id = 'editor-hints';
   strip.setAttribute('role', 'note');
   strip.setAttribute('aria-label', 'Did you know');
-  strip.className =
-    'flex items-center gap-2 px-3 py-1 bg-zinc-900 border-b border-zinc-800 text-xs text-zinc-400 shrink-0 overflow-hidden';
+  strip.className = 'flex-1 min-w-0 flex items-center gap-2 text-xs text-zinc-400 overflow-hidden';
 
   const badge = document.createElement('span');
   badge.className = 'shrink-0 text-zinc-500 select-none';
   badge.textContent = '💡 Did you know?';
 
   textEl = document.createElement('span');
+  textEl.id = 'editor-hints-text';
   textEl.className = 'min-w-0 truncate text-zinc-300';
 
   ctaEl = document.createElement('button');
   ctaEl.type = 'button';
   ctaEl.className = 'shrink-0 text-blue-400 hover:text-blue-300 hover:underline font-medium transition-colors';
 
-  // ‹ › step + ✕ dismiss, grouped at the right.
+  // ‹ › step + ✕ dismiss, kept tight together and right after a divider so it's
+  // clear they belong to the hints, not the adjacent "Use AI" button.
   const controls = document.createElement('div');
-  controls.className = 'shrink-0 flex items-center gap-0.5 ml-auto text-zinc-500';
+  controls.className = 'shrink-0 flex items-center gap-0.5 text-zinc-500';
 
   const prevBtn = makeIconBtn('‹', 'Previous hint', () => advance(-1));
   const nextBtn = makeIconBtn('›', 'Next hint', () => advance(1));
   const closeBtn = makeIconBtn('✕', 'Hide hints for this session', dismissForSession);
 
   controls.append(prevBtn, nextBtn, closeBtn);
-  strip.append(badge, textEl, ctaEl, controls);
+  strip.append(makeDivider(), badge, textEl, ctaEl, makeDivider(), controls);
   host.appendChild(strip);
+
+  // Degrade gracefully as the toolbar's middle shrinks (e.g. the AI panel opens
+  // or on a narrow screen): drop the "💡 Did you know?" badge first, then hide
+  // the whole strip when there's no room — so it never overflows into the
+  // adjacent toolbar buttons. The host stays flex-1, so it keeps right-aligning
+  // the AI/Import/Export cluster even when the strip is hidden.
+  const applyWidth = () => {
+    if (!strip) return;
+    const w = host!.clientWidth;
+    strip.style.display = w >= 200 ? '' : 'none';
+    badge.style.display = w >= 360 ? '' : 'none';
+  };
+  resizeObs?.disconnect();
+  resizeObs = new ResizeObserver(applyWidth);
+  resizeObs.observe(host);
+  applyWidth();
 
   // Pause rotation while the user is reading (hover) or interacting (focus).
   strip.addEventListener('pointerenter', () => { paused = true; });
@@ -191,6 +215,14 @@ function renderStrip(): void {
 
   showCurrent();
   scheduleRotate();
+}
+
+/** A thin vertical divider used to frame the hint region within the toolbar. */
+function makeDivider(): HTMLElement {
+  const d = document.createElement('span');
+  d.className = 'shrink-0 self-center h-5 w-px bg-zinc-700';
+  d.setAttribute('aria-hidden', 'true');
+  return d;
 }
 
 /** A compact control button with a ≥44px touch target via padding. */
