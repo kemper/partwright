@@ -18,6 +18,7 @@
 //   { type: 'simplify_cancel',   callId }
 //   { type: 'enhance',           callId, mesh, targetTriangles, maxEdgeLength }
 //   { type: 'enhance_cancel',    callId }
+//   { type: 'cut',               callId, mesh, shape, keepSide, mat4x3, scale, triColors? }
 //
 // Protocol — Worker → Main:
 //   { type: 'ready' }
@@ -33,7 +34,7 @@
 //   { type: 'simplify_result',         callId, mesh, triangleCount, tolerance, cancelled, error }
 //   { type: 'enhance_progress',        callId, fraction }
 //   { type: 'enhance_result',          callId, mesh, triangleCount, cancelled, error }
-//   { type: 'error',                   callId, message }
+//   { type: 'cut_result',              callId, mesh, meshes, triColors, triColorsList, error }
 //
 // Mesh typed arrays are transferred (zero-copy) to the main thread.
 // labelMap (Map<string, Set<number>>) is serialised as [string, number[]][].
@@ -49,6 +50,7 @@ import { setCircularSegmentsOverride } from './qualitySettings';
 import type { Language } from './engines/types';
 import { simplifyToTriangleBudget, enhanceToTriangleBudget, simplifyToTolerance, refineToEdgeLength, isEnhanceExceeded, type SimplifyResult, type EnhanceResult, type EnhanceExceeded } from './simplify';
 import type { MeshData } from './types';
+import { performCut, type CutParams } from '../cut/cutWorker';
 
 /** Per-callId cancel flags for in-flight simplify jobs. The simplify loop
  *  yields to the event loop between iterations, so a `simplify_cancel`
@@ -627,6 +629,75 @@ self.onmessage = async (event: MessageEvent) => {
       self.postMessage({
         type: 'clearBrepImports_result',
         callId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+
+  // ── cut ──────────────────────────────────────────────────────────────────
+  if (msg.type === 'cut') {
+    const { callId, mesh, shape, keepSide, mat4x3, scale, triColors } = msg as unknown as {
+      callId: string;
+      mesh: MeshData;
+      shape: CutParams['shape'];
+      keepSide: CutParams['keepSide'];
+      mat4x3: number[];
+      scale: [number, number, number];
+      triColors?: Uint8Array;
+    };
+    if (!manifoldReady) {
+      self.postMessage({
+        type: 'cut_result', callId, mesh: null, triColors: null,
+        error: 'Geometry engine not initialised — try again after loading completes.',
+      });
+      return;
+    }
+    try {
+      const mod = getManifoldModule();
+      const result = performCut(mod, mesh, { shape, keepSide, mat4x3, scale, triColors });
+      if (!result) {
+        self.postMessage({ type: 'cut_result', callId, mesh: null, triColors: null, error: null });
+        return;
+      }
+      const transfer: Transferable[] = [result.mesh.vertProperties.buffer, result.mesh.triVerts.buffer];
+      if (result.mesh.mergeFromVert) transfer.push(result.mesh.mergeFromVert.buffer);
+      if (result.mesh.mergeToVert)   transfer.push(result.mesh.mergeToVert.buffer);
+      if (result.mesh.runIndex)      transfer.push(result.mesh.runIndex.buffer);
+      if (result.mesh.runOriginalID) transfer.push(result.mesh.runOriginalID.buffer);
+      if (result.triColors)          transfer.push(result.triColors.buffer);
+      // Transfer all per-component mesh buffers (kept, complement, and flat list)
+      function addMeshBuffers(m: MeshData): void {
+        transfer.push(m.vertProperties.buffer, m.triVerts.buffer);
+        if (m.mergeFromVert) transfer.push(m.mergeFromVert.buffer);
+        if (m.mergeToVert)   transfer.push(m.mergeToVert.buffer);
+        if (m.runIndex)      transfer.push(m.runIndex.buffer);
+        if (m.runOriginalID) transfer.push(m.runOriginalID.buffer);
+      }
+      for (const m of result.keptMeshes) addMeshBuffers(m);
+      for (const m of result.complementMeshes) addMeshBuffers(m);
+      if (result.keptColorsList)        for (const c of result.keptColorsList)        transfer.push(c.buffer);
+      if (result.complementColorsList)  for (const c of result.complementColorsList)  transfer.push(c.buffer);
+      if (result.triColorsList)         for (const c of result.triColorsList)         transfer.push(c.buffer);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (self as any).postMessage(
+        {
+          type: 'cut_result', callId,
+          mesh: result.mesh,
+          keptMeshes: result.keptMeshes,
+          complementMeshes: result.complementMeshes,
+          meshes: result.meshes,
+          triColors: result.triColors ?? null,
+          keptColorsList: result.keptColorsList ?? null,
+          complementColorsList: result.complementColorsList ?? null,
+          triColorsList: result.triColorsList ?? null,
+          error: null,
+        },
+        transfer,
+      );
+    } catch (err) {
+      self.postMessage({
+        type: 'cut_result', callId, mesh: null, triColors: null,
         error: err instanceof Error ? err.message : String(err),
       });
     }

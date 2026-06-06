@@ -22,7 +22,7 @@
 import './style.css';
 import { errorLog } from './diagnostics/errorLog';
 import { initDiagnosticsPanel, toggleDiagnosticsPanel } from './ui/diagnosticsPanel';
-import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
+import { initEngine, executeCode, executeCodeAsync, validateCodeAsync, detectScadIncludesAsync, ensureEngineReady, getModule, getActiveLanguage, setActiveLanguage, exportLastBrepAsSTEP, importSTEPToBrep, importSTEPToMesh, clearBrepImports, clearBrepShape, simplifyInWorker, cutInWorker, enhanceInWorker, cancelCurrentExecution, type Language } from './geometry/engine';
 import { formatEngineMemory } from './geometry/engineMemory';
 import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
@@ -150,6 +150,9 @@ import { initImagePaintUI, setSmoothStampCallback, setStampCommitHook } from './
 import { stampImageOntoMesh, buildTangentFrame, entriesToPerTriColors, remapPerTriColors, loadImageDataFromUrl } from './color/imagePaint';
 import { initVoxelPaintUI, setVoxelPaintAvailable, syncActiveState as syncVoxelPaintUI } from './color/voxelPaintUI';
 import { initSimplifyUI, isSimplifyOpen, refreshSimplifyIfOpen, forceDeactivate as closeSimplifyMenu, notifyQualityLangChanged, setQualityRenderState, type SimplifyHandlers } from './ui/simplifyUI';
+import { initCutUI, isCutOpen, forceDeactivate as closeCutMenu, type CutHandlers, type CutResultMode } from './ui/cutUI';
+import { buildExplodedMesh, mergeMeshData } from './cut/cutWorker';
+import { onMeshChanged as onCutMeshChanged } from './cut/cutGizmo';
 import { updatePaintMesh, setOnRegionPainted, setTriangleToBaseMapper } from './color/paintMode';
 import { baseTriangleOf } from './color/baseRemap';
 import { initAnnotateUI, isAnnotateOpen, closeMenu as closeAnnotateMenu } from './annotations/annotateUI';
@@ -388,7 +391,7 @@ return v;`;
 
 // Customizer state. `currentParamSchema` is the parameter schema the active
 // model declared via `api.params({...})` on its last run (null when it declared
-// none); `currentParamValues` holds the user's overrides (only keys differing
+// none); `currentParamValues` holds the user’s overrides (only keys differing
 // from defaults — pruned each run). `paramsPanel` is the viewport overlay that
 // renders the schema as widgets. All three are kept in sync by runCodeSync.
 let currentParamSchema: ParamSpec[] | null = null;
@@ -434,7 +437,7 @@ let paintBaseMesh: MeshData | null = null;
  *  stroke) and refine incrementally from the current mesh, instead of replaying
  *  every stroke from the base (which is O(strokes²) and made painting lag). */
 let lastStrokeList: RegionDescriptor[] = [];
-/** Set while rehydration adds regions in bulk, so each addRegion doesn't kick
+/** Set while rehydration adds regions in bulk, so each addRegion doesn’t kick
  *  off a reconcile mid-rebuild. */
 let suspendReconcile = false;
 /** Stored reference to the smooth-stamp callback set by setSmoothStampCallback so
@@ -449,17 +452,17 @@ let smoothReplayCb: SmoothReplayCb | null = null;
  *    - `asyncReconcileDirty`: a region change arrived during a running job;
  *      the post-job loop re-runs once it lands.
  *    - `paintAbort`: cancels the running worker job (Cancel button or an
- *      agent-API sync action that's taking over). */
+ *      agent-API sync action that’s taking over). */
 let asyncReconcileInFlight = false;
 let asyncReconcileDirty = false;
 let paintAbort: AbortController | null = null;
 /** Id of the in-flight progress-modal job for the active worker call (paint
- *  subdivision). Tracked so a stale endProgress from a superseded job can't
+ *  subdivision). Tracked so a stale endProgress from a superseded job can’t
  *  dismiss the new modal. */
 let paintProgressId: number | null = null;
 /** Monotonic generation tag for paint state. Incremented every time the sync
  *  agent-API path (`withSyncReconcile`) mutates the region store while an
- *  async worker job is in flight, so the worker's continuation can detect
+ *  async worker job is in flight, so the worker’s continuation can detect
  *  that it was superseded and discard its result instead of clobbering the
  *  mesh / region triangles the sync work just produced. Each async tick
  *  captures the generation at start and checks it on completion. */
@@ -471,10 +474,10 @@ let paintGeneration = 0;
  *  cancel handler runs. */
 let pendingInternalAbort = false;
 /** Id of the most recently created brushStroke region that is still awaiting
- *  the worker's triangle resolution. `handlePaintCancel` removes exactly this
+ *  the worker’s triangle resolution. `handlePaintCancel` removes exactly this
  *  region on a user cancel — narrowing to the id avoids wiping an unrelated
  *  brushStroke region that legitimately resolved to zero triangles. Cleared
- *  once the stroke's refine lands (or its cancel is handled). */
+ *  once the stroke’s refine lands (or its cancel is handled). */
 let pendingStrokeRegionId: number | null = null;
 /** Deferred that resolves once `asyncReconcileInFlight` flips false (so any
  *  coalesced follow-ups have also drained). `partwright.waitForPaint()` and
@@ -496,11 +499,11 @@ let currentManifold: any = null;
  *  to the triangle ids that came from the labelled input. Rebuilt on every
  *  successful run; null when no labels were registered or no code has run. */
 let currentLabelMap: Map<string, Set<number>> | null = null;
-/** Per-run list of label names the user wrote but that didn't make it into
+/** Per-run list of label names the user wrote but that didn’t make it into
  *  `currentLabelMap` — typically because the label sat inside a SCAD boolean
  *  the CGAL backend stripped, or a for-loop expansion produced a count
  *  mismatch. Surfaced to agent callers via `runAndSave().lostLabels` and
- *  `listLabels().lostLabels` so they don't have to diff by hand. */
+ *  `listLabels().lostLabels` so they don’t have to diff by hand. */
 let currentLostLabels: string[] | null = null;
 
 // Per-version mesh cache: avoids recompiling SCAD (or any engine) when
@@ -522,7 +525,7 @@ let geometryDataEl: HTMLElement;
 let printabilityIndicatorEl: HTMLElement | null = null;
 // The disconnected-components warning is surfaced as a transient toast (recorded
 // in the Diagnostic Log) rather than the persistent pill. Track the last one we
-// toasted so re-runs of an unchanged broken model don't re-spam the same toast;
+// toasted so re-runs of an unchanged broken model don’t re-spam the same toast;
 // reset to null whenever the warning clears so its next occurrence toasts again.
 let lastDisconnectedWarning: string | null = null;
 
@@ -531,17 +534,17 @@ let lastDisconnectedWarning: string | null = null;
 // When the editor is showing a decoded share link (`/editor#share=…`), it is a
 // strictly READ-ONLY preview of UNTRUSTED code: nothing the sharer wrote may
 // execute until the viewer explicitly Forks. This module-scoped flag is the
-// chokepoint guard — every code-execution entry point bails while it's set:
+// chokepoint guard — every code-execution entry point bails while it’s set:
 // `runCode`/`runCodeSync` (and the console `partwright.run()`/`runAndSave()`
 // that route through them), `executeIsolated` (which backs the AI-exposed
 // `runIsolated`/`runAndAssert`/`runDecompose`, modify/test, and forkVersion),
 // and `setReferenceGeometry`, plus `saveCurrentVersion` and the export actions.
-// It's separate from the CodeMirror read-only flag (which only blocks typing)
+// It’s separate from the CodeMirror read-only flag (which only blocks typing)
 // and from the multi-tab viewer flag.
 let _sharedPreview = false;
 
 /** Error string returned by the execution chokepoints while a read-only shared
- *  preview is on screen — the sharer's untrusted code must not run until Fork. */
+ *  preview is on screen — the sharer’s untrusted code must not run until Fork. */
 const SHARED_PREVIEW_REFUSAL = 'Read-only shared preview — fork this design first to run code.';
 
 /** True while the editor is showing a decoded share link (read-only preview).
@@ -550,7 +553,7 @@ function isSharedPreview(): boolean {
   return _sharedPreview;
 }
 
-/** The encoded value of the current `#share=` hash, or null when the hash isn't
+/** The encoded value of the current `#share=` hash, or null when the hash isn’t
  *  a share link. Used to detect share links and to guard hashchange re-entrancy. */
 function getShareHashValue(): string | null {
   const hash = window.location.hash;
@@ -678,7 +681,7 @@ function clearEditorErrorPanel(panel: HTMLElement): void {
   panel.replaceChildren();
 }
 
-// Surface session URLs in geometry-data so they're accessible even when
+// Surface session URLs in geometry-data so they’re accessible even when
 // getGalleryUrl() is sandbox-blocked. Shared by the live geometry-data panel
 // and the off-screen version snapshot below so both carry the same context.
 function withSessionContext(data: Record<string, unknown>): Record<string, unknown> {
@@ -708,7 +711,7 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
   }
 
   // currentManifold may be null for render-only imports (sculpted STLs that
-  // can't form a watertight manifold). computeGeometryStats degrades gracefully.
+  // can’t form a watertight manifold). computeGeometryStats degrades gracefully.
   const data = withSessionContext(computeGeometryStats(currentManifold, currentMeshData, executionTimeMs, sourceCode));
   geometryDataEl.textContent = JSON.stringify(data, null, 2);
   if (printabilityIndicatorEl) {
@@ -724,7 +727,7 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
       printabilityIndicatorEl.textContent = '⚠ ' + pillIssues.join(' · ');
       printabilityIndicatorEl.style.display = '';
     }
-    // Toast once per change so re-running an unchanged broken model isn't spammy.
+    // Toast once per change so re-running an unchanged broken model isn’t spammy.
     if (disconnected && disconnected !== lastDisconnectedWarning) {
       showToast('⚠ ' + disconnected, { variant: 'warn', source: 'engine' });
     }
@@ -804,7 +807,7 @@ function getGeometryDataObj(): Record<string, unknown> | null {
 }
 
 /** Per-region paint summary for the runAndSave / saveVersion response: each user
- *  paint region's name, descriptor `kind` (so an agent can confirm it used
+ *  paint region’s name, descriptor `kind` (so an agent can confirm it used
  *  `byLabel` rather than coordinate paint — which bloats saved catalog files),
  *  the resolved label for byLabel regions, and the triangle count it resolved to
  *  on the current mesh (0 ⇒ the region matched nothing; see the zero-triangle
@@ -820,7 +823,7 @@ function colorRegionStats(): { name: string; kind: RegionDescriptor['kind']; lab
   }));
 }
 
-/** Swap the in-memory annotation store to the version's snapshot.
+/** Swap the in-memory annotation store to the version’s snapshot.
  *  Treats absence as "empty", so navigating to a version without annotations
  *  clears any that were on screen for the previously-active version. */
 function applyVersionAnnotations(version: Version | null | undefined): void {
@@ -828,7 +831,7 @@ function applyVersionAnnotations(version: Version | null | undefined): void {
   loadAnnotations(snapshot);
 }
 
-/** Rehydrate color regions from a version's geometryData.
+/** Rehydrate color regions from a version’s geometryData.
  *  Rebuilds adjacency + BFS for coplanar descriptors against the current mesh.
  *  Returns the names of regions that resolved to ≥1 triangle (`carried`) vs.
  *  those whose descriptor no longer matches the current geometry (`dropped`),
@@ -1019,7 +1022,7 @@ function resolveDescriptorTriangles(
       return { triangles: strokeFootprintTriangles(mesh, descriptorToStroke(descriptor)) };
     case 'imagePaint':
       // Re-expand the stored [triIdx,r,g,b,…] entries through the subdivision
-      // map (children inherit their parent's projected color).
+      // map (children inherit their parent’s projected color).
       return entriesToPerTriColors(descriptor.entries, parentToChildren);
   }
 }
@@ -1027,7 +1030,7 @@ function resolveDescriptorTriangles(
 /** Normalize a brushStroke descriptor to a BrushStroke, filling a sane default
  *  maxEdge (matching the default detail divisor) for any malformed/legacy data.
  *  For the `slab` surface constraint, derives a per-sample surface normal from
- *  the pristine base mesh (stable across reloads) when the descriptor doesn't
+ *  the pristine base mesh (stable across reloads) when the descriptor doesn’t
  *  carry one, and defaults `depth` to half the radius when unset (0/omitted). */
 // Resolved-stroke cache: descriptorToStroke is called for the same descriptor
 // both when collecting refine regions and when resolving triangles (and again on
@@ -1077,7 +1080,7 @@ function descriptorToStroke(d: Extract<RegionDescriptor, { kind: 'brushStroke' }
 
 /** Cancel any in-flight subdivision worker job and reset the async paint state.
  *  Called before paths that wholesale replace the region store (session
- *  rehydrate, unlock-to-edit), so a worker continuation can't land on the new
+ *  rehydrate, unlock-to-edit), so a worker continuation can’t land on the new
  *  state and stamp stale triangle ids onto fresh regions. The worker process
  *  itself is terminated; a fresh one spins up on the next refine. */
 function resetPaintWorkerState(): void {
@@ -1134,7 +1137,7 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   const adjacency = buildAdjacency(mesh);
 
   // Bulk-add the resolved standard regions without letting each addRegion
-  // trigger a reconcile (we've already built the mesh here).
+  // trigger a reconcile (we’ve already built the mesh here).
   suspendReconcile = true;
   for (const region of standardRegions) {
     const { triangles, perTriColors } = resolveDescriptorTriangles(region.descriptor, mesh, adjacency, parentToChildren, region.id);
@@ -1148,7 +1151,7 @@ async function rehydrateColorRegions(geometryData: Record<string, unknown> | nul
   suspendReconcile = false;
 
   // Replay smooth imagePaint stamps in order. Each stamp call updates
-  // currentMeshData and paintBaseMesh via the callback's side effects, so
+  // currentMeshData and paintBaseMesh via the callback’s side effects, so
   // sequential stamps (M0→M1→M2→M3) accumulate correctly.
   if (smoothImageStamps.length > 0 && smoothReplayCb) {
     suspendReconcile = true;
@@ -1225,7 +1228,7 @@ function paintedColorRefresh(): void {
 
 /** Full rebuild: refine the pristine base by every current stroke and re-resolve
  *  all regions. Used on undo/clear/non-stroke changes (when an incremental
- *  append doesn't apply) — not on the hot path of painting more strokes. */
+ *  append doesn’t apply) — not on the hot path of painting more strokes. */
 function rebuildPaintedGeometry(): void {
   const base = paintBaseMesh;
   if (!base) return;
@@ -1260,9 +1263,9 @@ function appendStrokeRefine(descriptor: Extract<RegionDescriptor, { kind: 'brush
   const splitParents = new Set<number>();
   for (const [parent, children] of parentToChildren) if (children.length > 1) splitParents.add(parent);
 
-  // A region must be re-resolved by descriptor when it's freshly added (no
+  // A region must be re-resolved by descriptor when it’s freshly added (no
   // triangles yet, e.g. the new stroke) or overlaps the split — because a
-  // spatial/footprint/flood descriptor's split children can fall outside it,
+  // spatial/footprint/flood descriptor’s split children can fall outside it,
   // which a naive parent→children carry would wrongly keep. Explicit sets
   // (triangles/byLabel) always carry forward. This keeps the live result
   // identical to a reload (determinism) while staying ~O(painted) per stroke.
@@ -1297,7 +1300,7 @@ function strokeDescriptors(): RegionDescriptor[] {
  *  callsite to be `await`-aware (and break the existing console / test
  *  contract). So they suspend the async listener, mutate the region store,
  *  then call this helper to do the same work the listener would have done —
- *  but inline, on the main thread, blocking until the refined region's
+ *  but inline, on the main thread, blocking until the refined region’s
  *  triangles are populated. */
 function reconcilePaintedGeometrySync(): void {
   syncLockState();
@@ -1328,7 +1331,7 @@ function reconcilePaintedGeometrySync(): void {
  *
  *  If a worker job is currently in flight (e.g. the user is mid-stroke and
  *  then the agent fires `paintStroke` / `clearColors`), we abort it and bump
- *  `paintGeneration` so the worker's continuation discards its result instead
+ *  `paintGeneration` so the worker’s continuation discards its result instead
  *  of overwriting the mesh + region triangles the sync rebuild just
  *  produced. `pendingInternalAbort` tells the abort handler not to surface a
  *  user-facing toast — the agent action took over by design. */
@@ -1407,7 +1410,7 @@ async function reconcilePaintedGeometryAsyncTick(): Promise<void> {
   if (!refinedActive) {
     lastStrokeList = [];
     // Re-bake per-triangle colours regardless of whether the Paint UI is
-    // open — the Relief Studio's Edit colors panel also mutates regions
+    // open — the Relief Studio’s Edit colors panel also mutates regions
     // (updateRegionColor / removeRegion) and the user expects the model to
     // update in realtime from there too. paintedColorRefresh is a no-op
     // when there are no regions or paint visibility is off, so calling it
@@ -1421,7 +1424,7 @@ async function reconcilePaintedGeometryAsyncTick(): Promise<void> {
     const newDesc = strokesNow[strokesNow.length - 1] as Extract<RegionDescriptor, { kind: 'brushStroke' }>;
     try {
       await appendStrokeRefineAsync(newDesc);
-      // The stroke resolved successfully, so it's no longer a cancel orphan.
+      // The stroke resolved successfully, so it’s no longer a cancel orphan.
       pendingStrokeRegionId = null;
       // Region set may have shifted while the await was in flight (coalesced
       // changes, or an agent-API sync action via withSyncReconcile). Re-read.
@@ -1461,7 +1464,7 @@ function isAbortError(err: unknown): boolean {
 
 /** Worker-backed incremental append. Mirrors the sync `appendStrokeRefine`
  *  but offloads `buildStrokeMesh` to a dedicated thread, so a heavy stroke
- *  doesn't freeze the viewport. The Cancel button on the progress badge
+ *  doesn’t freeze the viewport. The Cancel button on the progress badge
  *  aborts the in-flight job. */
 async function appendStrokeRefineAsync(
   descriptor: Extract<RegionDescriptor, { kind: 'brushStroke' }>,
@@ -1479,7 +1482,7 @@ async function appendStrokeRefineAsync(
     onCancel: () => abort.abort(),
     // The subdivision pipeline is one big buildRefinedMesh call with
     // variable pass count — no natural fraction to report. The animated
-    // indeterminate stripe still telegraphs "something's happening."
+    // indeterminate stripe still telegraphs "something’s happening."
     indeterminate: true,
   });
   paintProgressId = progressId;
@@ -1492,7 +1495,7 @@ async function appendStrokeRefineAsync(
       signal: abort.signal,
     });
     // If a sync agent action (withSyncReconcile) mutated paint state while
-    // this worker job was running, the mesh / regions we'd apply are stale.
+    // this worker job was running, the mesh / regions we’d apply are stale.
     // Drop the result silently — the sync path already produced the right
     // state, and our `finally` still cleans up the progress badge.
     if (myGen !== paintGeneration) return;
@@ -1601,7 +1604,7 @@ async function rebuildPaintedGeometryAsync(): Promise<void> {
  *      `lastStrokeList` reflect the post-removal state.
  *    - `withSyncReconcile` aborted us so an agent action could take over
  *      (`pendingInternalAbort`): the sync rebuild has already produced
- *      correct state — don't remove anything, don't toast, just let the
+ *      correct state — don’t remove anything, don’t toast, just let the
  *      pending-promise unwind clean up.
  *
  *  `appendStrokeRefineAsync` / `rebuildPaintedGeometryAsync`'s finally has
@@ -1642,7 +1645,7 @@ function handlePaintCancel(): void {
   showToast('Painting cancelled.', { variant: 'neutral' });
 }
 
-/** Pull a version's serialized color regions out of its geometryData blob
+/** Pull a version’s serialized color regions out of its geometryData blob
  *  (where saveVersion persists them via enrichGeometryDataWithColors).
  *  Returns [] when the version has no colors. */
 function versionColorRegions(v: Version | null | undefined): SerializedColorRegion[] {
@@ -1729,7 +1732,7 @@ async function saveCurrentVersion(label?: string): Promise<
   const version = await saveVersion(getValue(), enrichGeometryDataWithColors(getGeometryDataObj()), thumbnail, label, undefined, { paramValues: currentParamValues, companionFiles: getCompanionFiles() });
   if (version) {
     // Keep the mesh cache valid for the newly-saved version so that switching
-    // away and back doesn't trigger a recompile. The code/geometry didn't
+    // away and back doesn’t trigger a recompile. The code/geometry didn’t
     // change (only paint or annotations may have), so the current in-memory
     // mesh is still correct for the new version id.
     // Cache the coarse pre-refinement base mesh (paintBaseMesh) so that
@@ -1839,7 +1842,7 @@ function shouldShowLanding(): boolean {
 
 function shouldShowHelp(): boolean {
   // A `/help#share=…` link must open the shared preview (editor), not Help —
-  // mirrors shouldShowLanding's share-hash exclusion.
+  // mirrors shouldShowLanding’s share-hash exclusion.
   return window.location.pathname === '/help' && !hasShareHash();
 }
 
@@ -1866,7 +1869,7 @@ function shouldShow404(): boolean {
 }
 
 /** True when the editor view is the active page. Editor-scoped command-palette
- *  actions (tab switches, the guided tour) gate on this so they don't fire from
+ *  actions (tab switches, the guided tour) gate on this so they don’t fire from
  *  the landing / help / catalog pages — which would rewrite the URL to
  *  `/editor?…` and toggle hidden panes without ever transitioning into the
  *  editor. A `#share=…` link also lands in the editor, so it counts too. */
@@ -1916,16 +1919,16 @@ async function main() {
 
   // Rehydrate the Recent Imports / Recent Exports lists from IndexedDB so they
   // survive a refresh. Fire-and-forget: each notifies its subscribers (the
-  // toolbar dropdowns) when the load completes, so boot isn't blocked on IDB
-  // and the order relative to toolbar mount doesn't matter.
+  // toolbar dropdowns) when the load completes, so boot isn’t blocked on IDB
+  // and the order relative to toolbar mount doesn’t matter.
   void hydrateImportInbox();
   void hydrateExportInbox();
 
   // If the user already has a saved API key, ask the browser to make storage
-  // persistent so it isn't evicted under storage pressure (mobile browsers,
+  // persistent so it isn’t evicted under storage pressure (mobile browsers,
   // iOS Safari ITP especially, evict best-effort IndexedDB and wipe the key).
   // New saves request this from putKey; this covers installs keyed before that
-  // shipped. Gated on having a key so we don't prompt (Firefox) unprompted users.
+  // shipped. Gated on having a key so we don’t prompt (Firefox) unprompted users.
   void (async () => {
     const keyed = await Promise.all(
       (['anthropic', 'openai', 'gemini', 'custom'] as const).map((p) => getKey(p)),
@@ -1982,7 +1985,7 @@ async function main() {
 
   // Shared validator for parsed session JSON. Returns null if shape is wrong.
   // A chat- or notes-only export (a session used before any geometry was saved)
-  // is legitimate per importSession's contract — accept it when versions are
+  // is legitimate per importSession’s contract — accept it when versions are
   // absent as long as chat or notes are present.
   function validateSessionPayload(data: unknown): ExportedSession | null {
     if (!data || typeof data !== 'object') return null;
@@ -1998,11 +2001,11 @@ async function main() {
   // Import an already-parsed session payload. Used by both file import and the
   // window.partwright.importSessionData() API so AI agents can bypass the file picker.
   async function importSessionPayload(data: ExportedSession): Promise<{ sessionId: string }> {
-    // Seed the active-imports register with each version's own meshes before
+    // Seed the active-imports register with each version’s own meshes before
     // running its code: `Manifold.ofMesh(api.imports[0])` only reproduces this
-    // version's geometry (and thus a correct thumbnail) if the register holds
+    // version’s geometry (and thus a correct thumbnail) if the register holds
     // these meshes — otherwise the run captures a stale, previously-loaded part.
-    // importSession resets the register to the latest version's imports when it
+    // importSession resets the register to the latest version’s imports when it
     // finishes, so no manual restore is needed here.
     const session = await importSession(data, async (code, importedMeshes) => {
       setActiveImports(importedMeshes ?? []);
@@ -2017,7 +2020,7 @@ async function main() {
   // Cancel an active voxel-paint session. Its live grid + per-triangle
   // provenance map are bound to the OUTGOING code, so it must stop before we
   // load or import different code — otherwise a later click/bake writes into the
-  // wrong model. Safe no-op when paint isn't active.
+  // wrong model. Safe no-op when paint isn’t active.
   function cancelVoxelPaintIfActive(): void {
     if (voxelPaint.isActive()) {
       voxelPaint.deactivate();
@@ -2025,15 +2028,15 @@ async function main() {
     }
   }
 
-  // Drop the outgoing target's paint state — color regions, the model-declared
+  // Drop the outgoing target’s paint state — color regions, the model-declared
   // color underlay, and any in-flight subdivision worker job — then re-sync the
-  // editor lock. These live in module state the session/part layer doesn't own,
+  // editor lock. These live in module state the session/part layer doesn’t own,
   // so a fresh target (new session, new part, freshly imported model) must wipe
-  // them or it inherits the previous one's regions: the next runCodeSync
+  // them or it inherits the previous one’s regions: the next runCodeSync
   // re-resolves them onto the new mesh and the editor opens locked.
   function dropPaintState(): void {
     // Drop any in-flight subdivision worker job before clearing regions, so a
-    // late continuation can't stamp triangle ids onto regions that no longer
+    // late continuation can’t stamp triangle ids onto regions that no longer
     // exist (or overwrite the freshly-loaded mesh).
     resetPaintWorkerState();
     clearRegions();
@@ -2042,7 +2045,7 @@ async function main() {
     // them here so an editor reset (new part / new session / fresh import) is
     // self-contained rather than relying on the session manager clearing them
     // first via loadAnnotations([]). clearAll() early-returns when already
-    // empty, so this is a no-op in the common case and won't disturb the
+    // empty, so this is a no-op in the common case and won’t disturb the
     // per-version annotation swap on version navigation.
     clearAllAnnotations();
     syncLockState();
@@ -2061,14 +2064,14 @@ async function main() {
       }
       renderCompanionFilesBar();
     }
-    // A freshly imported model starts unpainted. Clear the previous session's
+    // A freshly imported model starts unpainted. Clear the previous session’s
     // live voxel paint and color regions before running, or runCodeSync
-    // re-resolves those stale regions onto the new mesh — e.g. a painted part's
+    // re-resolves those stale regions onto the new mesh — e.g. a painted part’s
     // colors bleeding onto image→voxel art — and the editor opens locked.
     cancelVoxelPaintIfActive();
     dropPaintState();
     clearMesh();
-    // Clear stale params panel immediately so old controls don't linger while
+    // Clear stale params panel immediately so old controls don’t linger while
     // the new model is loading — syncParamsPanel runs again after the run.
     syncParamsPanel(undefined);
     setValue(code);
@@ -2076,9 +2079,9 @@ async function main() {
     return { sessionId: session.id };
   }
 
-  // Seed pre-computed colour regions (relief's per-colour bands, or a coloured
-  // mesh import's own regions) onto the just-run mesh and repaint. Shared by the
-  // mesh-placement helpers so relief's colours survive into whatever
+  // Seed pre-computed colour regions (relief’s per-colour bands, or a coloured
+  // mesh import’s own regions) onto the just-run mesh and repaint. Shared by the
+  // mesh-placement helpers so relief’s colours survive into whatever
   // part/session the import-target modal sends them to.
   function seedImportRegions(seedRegions: SeedRegion[] | undefined): void {
     if (!seedRegions || seedRegions.length === 0) return;
@@ -2090,7 +2093,7 @@ async function main() {
 
   // Import a parsed mesh (STL today) as a new session.
   //
-  // Unlike code imports, the parsed mesh bytes don't live in the editor — they
+  // Unlike code imports, the parsed mesh bytes don’t live in the editor — they
   // ride on the Version via `importedMeshes`. We must persist v1 immediately
   // so the imports survive a reload and so future saveVersion calls (which
   // carry forward `importedMeshes` from the prior version) have something to
@@ -2098,9 +2101,9 @@ async function main() {
   async function importMeshPayload(mesh: ImportedMesh, sessionName: string, opts: { manifold: boolean; seedRegions?: SeedRegion[] } = { manifold: true }): Promise<{ sessionId: string }> {
     if (getActiveLanguage() !== 'manifold-js') await switchLanguage('manifold-js');
     const session = await createSession(sessionName, 'manifold-js');
-    // Fresh session: drop the previous model's paint before running the import
+    // Fresh session: drop the previous model’s paint before running the import
     // wrapper (same reason as importCodePayload). seedRegions below are added
-    // AFTER this clear, so an imported colored mesh's own seeds survive.
+    // AFTER this clear, so an imported colored mesh’s own seeds survive.
     cancelVoxelPaintIfActive();
     dropPaintState();
     setActiveImports([mesh]);
@@ -2120,7 +2123,7 @@ async function main() {
 
   // === Relief Studio (image → printable colour tile / stepped relief) ===
   let reliefStudio: ReliefStudioHandle | null = null;
-  // True only while the editor pane was collapsed by THIS module's show-studio
+  // True only while the editor pane was collapsed by THIS module’s show-studio
   // call, so the close path can restore symmetrically without clobbering a
   // pre-existing manual collapse the user set up before opening the studio.
   let studioCollapsedEditor = false;
@@ -2133,7 +2136,7 @@ async function main() {
   // Single source of truth for recoloring the displayed mesh: relief preview
   // when active (and only in a relief session — the preview mode is a module
   // global, so gating on isReliefSession keeps a leftover mode from bleeding
-  // onto a normal session's mesh), otherwise the normal painted-region colors.
+  // onto a normal session’s mesh), otherwise the normal painted-region colors.
   // Relief preview + normal painted-region coloring share one chokepoint
   // (module-level paintedColorRefresh) so the smooth-brush reconcile path and
   // the relief/AI paths stay in sync.
@@ -2174,7 +2177,7 @@ async function main() {
 
   // Show/hide the studio in response to a session change. Keeps the panel from
   // hovering over an unrelated session, and re-syncs the preview mode pills
-  // from the new session's saved settings.
+  // from the new session’s saved settings.
   function syncReliefStudioForSession(): void {
     if (!reliefStudio) return;
     const sid = getState().session?.id ?? null;
@@ -2277,7 +2280,7 @@ async function main() {
       numProp: result.mesh.numProp,
     };
     // Quantized + SVG modes pre-compute seedRegion triangle ids in the input
-    // mesh's order; Manifold.ofMesh reorders triangles internally, which would
+    // mesh’s order; Manifold.ofMesh reorders triangles internally, which would
     // scramble that mapping. Bring those imports in as render-only
     // (api.renderMesh preserves ids). Luminance imports have no pre-computed
     // ids, so they keep the real Manifold (and stay manifold:true) for
@@ -2292,13 +2295,13 @@ async function main() {
     // (importImageAsRelief/importSvgAsRelief) stays modal-free so agents — and
     // tests that import twice in one page.evaluate — never block on a click,
     // matching how voxel/image console imports already behave. Skip the modal
-    // too when there's no real work to protect (no session, or an expendable
+    // too when there’s no real work to protect (no session, or an expendable
     // starter); then a fresh session is the right, non-destructive default
-    // (today's behavior, and what keeps a fresh-/editor relief import
+    // (today’s behavior, and what keeps a fresh-/editor relief import
     // modal-free). The per-colour seed regions ride through new-part and
     // new-session unchanged (single-mesh order preserved). "Add to current
-    // part" is disabled here: relief's seed-region triangle ids are indexed
-    // against the relief mesh's own triangle order, which compose-into would
+    // part" is disabled here: relief’s seed-region triangle ids are indexed
+    // against the relief mesh’s own triangle order, which compose-into would
     // scramble — same out-of-scope call BREP imports make.
     let sessionId: string;
     if (!interactive || !getState().session || currentPartIsExpendable()) {
@@ -2318,7 +2321,7 @@ async function main() {
         ({ sessionId } = await importMeshPayload(mesh, sourceName, { manifold: useManifold, seedRegions }));
       } else {
         // 'new-part' (default; 'current-part' is disabled above so never reached).
-        // seedNewPartWithMesh runs + saves the import wrapper as the new part's
+        // seedNewPartWithMesh runs + saves the import wrapper as the new part’s
         // v1; seed the relief colours onto that version so they persist with it.
         await seedNewPartWithMesh(mesh, `${sourceName}.relief`, useManifold, seedRegions);
         sessionId = getState().session?.id ?? '';
@@ -2343,7 +2346,7 @@ async function main() {
   /** Single-nozzle stepped relief needs each cluster on its own layer-height
    *  band, otherwise two cluster filaments would have to swap mid-layer and
    *  the user would see colour stripes inside a single Z. The minimum
-   *  maxHeight is `(clusters - 1) * layerHeight` — anything less can't fit. */
+   *  maxHeight is `(clusters - 1) * layerHeight` — anything less can’t fit. */
   function steppedReliefLayerFitError(opts: ReliefOptions): string | null {
     if (opts.mode !== 'quantized') return null;
     if (opts.quantized.output !== 'relief') return null;
@@ -2383,7 +2386,7 @@ async function main() {
     return commitGeneratedRelief(result, opts, sourceName, sourceFile, true, interactive);
   }
 
-  // Seed color regions from an imported stepped-relief STL's existing Z plateaus so the
+  // Seed color regions from an imported stepped-relief STL’s existing Z plateaus so the
   // user can recolor each printed layer band. Reuses the slab selector.
   async function detectReliefLevels(): Promise<void> {
     if (!currentMeshData) return;
@@ -2418,7 +2421,7 @@ async function main() {
     reliefStudio?.refresh();
   }
 
-  // Quick offline auto-tune used by the import wizard's "AI assist" button.
+  // Quick offline auto-tune used by the import wizard’s "AI assist" button.
   // (A hosted-LLM suggestion path can replace this; the hook is the same.)
   function suggestReliefOptions(image: ImageData, opts: ReliefOptions): Partial<ReliefOptions> & { note?: string } {
     const total = image.width * image.height;
@@ -2453,9 +2456,9 @@ async function main() {
       initialFile,
       initialOptions,
       onAiAssist: async (image, opts) => suggestReliefOptions(image, opts),
-      // Don't catch — let runCreate (inside the wizard) handle the error: it
+      // Don’t catch — let runCreate (inside the wizard) handle the error: it
       // already shows an inline aiNote and keeps the modal open so the user
-      // doesn't lose their tuned settings. Swallowing here would also let the
+      // doesn’t lose their tuned settings. Swallowing here would also let the
       // wizard think the create succeeded and close itself.
       onCreate: async (image, opts, name, sourceFile) => {
         // interactive: true → the wizard is the only entry point that may show
@@ -2513,7 +2516,7 @@ async function main() {
     }
     const data = validateSessionPayload(parsed);
     if (!data) {
-      showToast(`"${filename}" doesn't look like a Partwright session file.`, { variant: 'warn', source: 'import' });
+      showToast(`"${filename}" doesn’t look like a Partwright session file.`, { variant: 'warn', source: 'import' });
       return false;
     }
     // Show the destination chooser (new session vs merge) and import. The merge
@@ -2541,7 +2544,7 @@ async function main() {
     }
 
     // For SCAD files, detect missing includes before showing the placement modal
-    // so the companion modal can run first (it acts as the user's intent signal).
+    // so the companion modal can run first (it acts as the user’s intent signal).
     let scadCode: string | undefined;
     let scadCompanions: Record<string, string> | undefined;
     if (source === 'SCAD') {
@@ -2550,8 +2553,8 @@ async function main() {
       if (missing.length > 0) {
         // Open the modal immediately on the static regex candidates, and kick
         // off a fast OpenSCAD compile probe in parallel that narrows the list to
-        // the dependencies OpenSCAD genuinely can't resolve. `null` from the
-        // probe means it couldn't run — the modal keeps all candidates.
+        // the dependencies OpenSCAD genuinely can’t resolve. `null` from the
+        // probe means it couldn’t run — the modal keeps all candidates.
         const refine = detectScadIncludesAsync(scadCode).catch(() => null);
         const result = await showScadCompanionModal({
           filename: file.name,
@@ -2586,7 +2589,7 @@ async function main() {
         committed = await handleStepImport(file);
       } else if (source === 'IMAGE') {
         // This is the GENERIC image import path (toolbar "Choose file…" or
-        // drag-and-drop), where the user hasn't expressed an intent — so first
+        // drag-and-drop), where the user hasn’t expressed an intent — so first
         // ask whether to build a relief or voxels. The explicit "Image → voxel…"
         // and "Image → relief…" menu items bypass handleImportFile entirely
         // (openVoxelImportFlow / openReliefImportFlow), and the console API
@@ -2602,7 +2605,7 @@ async function main() {
       } else if (source === 'VOX') {
         committed = await handleVoxImport(file);
       } else if (source === 'SVG') {
-        // SVG has no standalone mesh importer — it's a Relief Studio source.
+        // SVG has no standalone mesh importer — it’s a Relief Studio source.
         // Open the relief wizard pre-loaded with the dropped file (its own
         // Create registers the Recent-Imports entry + thumbnail), so a dropped
         // .svg lands somewhere sensible instead of silently doing nothing.
@@ -2611,7 +2614,7 @@ async function main() {
       }
       // IMAGE registers itself inside handleImageImport (it owns the chosen
       // voxel options + thumbnail it needs to stash for a faithful re-import).
-      // Snapshot the bytes so a later re-import doesn't depend on the original
+      // Snapshot the bytes so a later re-import doesn’t depend on the original
       // (possibly moved/dropped) OS file handle.
       if (committed && source !== 'IMAGE') await registerImportSnapshot(file, file.name, source, undefined, undefined, scadCompanions);
       return committed;
@@ -2657,12 +2660,12 @@ async function main() {
     const choice = await showImportPreview(filename, summary, { mergeTargetName });
     if (choice === 'cancel') return false;
     if (choice === 'merge') {
-      // The regen callback runs each imported version's code to snapshot a
+      // The regen callback runs each imported version’s code to snapshot a
       // thumbnail. Code like `Manifold.ofMesh(api.imports[0])` reads the active-
-      // imports register, so we must seed it with *that* version's meshes
+      // imports register, so we must seed it with *that* version’s meshes
       // before running — otherwise the run produces the host (previously
-      // selected) part's geometry and the captured thumbnail is stale. Restore
-      // the host's own imports afterwards so the closing re-render is correct.
+      // selected) part’s geometry and the captured thumbnail is stale. Restore
+      // the host’s own imports afterwards so the closing re-render is correct.
       const hostImports = getActiveImports();
       const result = await importSessionPartsIntoActive(data, async (code, importedMeshes) => {
         setActiveImports(importedMeshes ?? []);
@@ -2672,9 +2675,9 @@ async function main() {
       setActiveImports(hostImports);
       if (result) {
         // Merging an imported version with no embedded thumbnail runs that
-        // version's code through runCodeSync to capture one — which leaves the
+        // version’s code through runCodeSync to capture one — which leaves the
         // viewport showing the last imported geometry while the editor still
-        // shows the active version's code. Re-render the active version so the
+        // shows the active version’s code. Re-render the active version so the
         // editor text and viewport agree again.
         const st = getState();
         if (st.currentVersion) await runCodeSync(st.currentVersion.code);
@@ -2707,7 +2710,7 @@ async function main() {
       throw new Error(`The server responded ${res.status} ${res.statusText}.`);
     }
 
-    // Defense-in-depth: parseImportUrlInput only vetted the *initial* URL's
+    // Defense-in-depth: parseImportUrlInput only vetted the *initial* URL’s
     // scheme. With redirect: 'follow', the final URL could in theory be a
     // non-http(s) scheme; browsers already block http(s)→file:/data: redirects,
     // but re-check the resolved URL before touching the body just in case.
@@ -2764,14 +2767,14 @@ async function main() {
     const ok = await handleImportFile(file);
     if (!ok) {
       // handleImportFile surfaces its own alert on hard failure; a soft "false"
-      // (e.g. user cancelled a sub-modal) shouldn't be reported as an error.
+      // (e.g. user cancelled a sub-modal) shouldn’t be reported as an error.
       throw new Error('Import was cancelled or the file could not be read.');
     }
   }
 
   /** Read a fetch Response body into a Uint8Array, aborting once the streamed
    *  total exceeds `cap`. Falls back to a plain arrayBuffer() read (still cap-
-   *  checked) when the body isn't a readable stream. */
+   *  checked) when the body isn’t a readable stream. */
   async function readBodyCapped(res: Response, cap: number, controller: AbortController): Promise<Uint8Array> {
     const body = res.body;
     if (!body || typeof body.getReader !== 'function') {
@@ -2801,7 +2804,7 @@ async function main() {
     return out;
   }
 
-  /** Open the "Import from URL…" modal and route the user's input to either the
+  /** Open the "Import from URL…" modal and route the user’s input to either the
    *  local share decode or the size-capped remote fetch. */
   function openImportFromUrl(): void {
     showImportUrlModal({
@@ -2832,8 +2835,8 @@ async function main() {
   }
 
   /** Decode an image URL (a `data:` URL or same-origin URL) into ImageData via
-   *  an `<img>` element. Uses an img-src load, not `fetch`, so it isn't blocked
-   *  by the app's strict CSP `connect-src` (which rejects `fetch('data:…')`). */
+   *  an `<img>` element. Uses an img-src load, not `fetch`, so it isn’t blocked
+   *  by the app’s strict CSP `connect-src` (which rejects `fetch('data:…')`). */
   async function decodeImageUrlToImageData(url: string): Promise<ImageData> {
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -2851,7 +2854,7 @@ async function main() {
   /** Shared tail of every image→voxel import (drag/drop, recent re-click, and
    *  the modal-first menu): turn the modal result into a voxel session + a
    *  Recent Imports entry. `fallbackFile` seeds the source blob when the result
-   *  didn't carry one (the picker flows always do). */
+   *  didn’t carry one (the picker flows always do). */
   async function finishVoxelImport(result: ImageVoxelModalResult, fallbackFile?: File): Promise<boolean> {
     const { options: opts, image: chosenImage, file: chosenFile, filename: chosenName } = result;
     const sourceFile = chosenFile ?? fallbackFile ?? null;
@@ -2911,11 +2914,11 @@ async function main() {
       return false;
     }
     // Let the user dial in resolution / mode / depth / color before
-    // committing. The modal's Cancel doubles as the back-out, so the generic
+    // committing. The modal’s Cancel doubles as the back-out, so the generic
     // pre-import confirm is skipped for images (see handleImportFile).
     // `initialOptions` pre-fills the controls when re-importing a past entry.
     // The user may also swap the source image inside the modal ("Choose a
-    // different image…"), so build everything from the RESULT's image / file /
+    // different image…"), so build everything from the RESULT’s image / file /
     // name rather than the originally-picked one.
     const result = await showImageVoxelImportModal({ filename: file.name, image: imageData, file, initialOptions });
     if (!result) return false;
@@ -2984,7 +2987,7 @@ async function main() {
       // The canonical "return the import" starter so the user can iterate
       // immediately.
       const starter = `// Imported from ${file.name}\n// api.imports[0] is the BREP shape parsed from the STEP file.\nconst { BREP } = api;\nreturn api.imports[0];\n`;
-      // Push this file's shape into the worker's pending-imports list. Drop any
+      // Push this file’s shape into the worker’s pending-imports list. Drop any
       // previously-imported BREP shapes first — otherwise the list accumulates
       // and the seeded `return api.imports[0]` would render the *first* file.
       // (Belt-and-suspenders with the session-change clear when a new session
@@ -3002,8 +3005,8 @@ async function main() {
 
       // No session open (or the user picks "new session"): open a fresh BREP
       // session named after the file. Switch the editor to the BREP language
-      // FIRST so the session-change listener's clearBrepImports/clearBrepShape
-      // fires (and is enqueued on the worker) before we push this file's shape —
+      // FIRST so the session-change listener’s clearBrepImports/clearBrepShape
+      // fires (and is enqueued on the worker) before we push this file’s shape —
       // otherwise it would wipe the just-imported shape. switchLanguage resets
       // the editor to a stub starter; we overwrite that below.
       const openInNewSession = async (): Promise<boolean> => {
@@ -3021,7 +3024,7 @@ async function main() {
       if (!state.session || currentPartIsExpendable()) return openInNewSession();
 
       // A session is open: offer new-part / new-session (current-part is out of
-      // scope — composing an exact BREP shape into a mesh part isn't supported).
+      // scope — composing an exact BREP shape into a mesh part isn’t supported).
       const choice = await showImportTargetModal({
         title: 'Import STEP (BREP)',
         filename: file.name,
@@ -3035,7 +3038,7 @@ async function main() {
 
       // new-part: add a BREP part to the current session, seed the starter, run
       // it, and save v1 tagged `replicad`. preserveCurrentEditsIfNeeded first so
-      // the current part's unsaved work isn't lost. Parse the STEP shape BEFORE
+      // the current part’s unsaved work isn’t lost. Parse the STEP shape BEFORE
       // creating the part — a parse failure must not leave a freshly-created
       // empty part orphaned as the current part.
       await preserveCurrentEditsIfNeeded();
@@ -3043,11 +3046,11 @@ async function main() {
       if (!(await pushBrepShape())) return false;
       const part = await createPart(baseName);
       if (!part) return false;
-      // Wipe the outgoing part's paint state (color regions, model-color
+      // Wipe the outgoing part’s paint state (color regions, model-color
       // underlay, annotations) BEFORE running/saving the new part — otherwise
       // the leftover regions are re-resolved onto the imported mesh and
-      // serialized into the new part's version, so it "inherits" the previous
-      // part's colors. (The mesh path does this via applyImportWrapper; the
+      // serialized into the new part’s version, so it "inherits" the previous
+      // part’s colors. (The mesh path does this via applyImportWrapper; the
       // voxel path via applyCodeToCurrentPart — this hand-written BREP branch
       // was the one path that missed it.)
       cancelVoxelPaintIfActive();
@@ -3074,7 +3077,7 @@ async function main() {
     }
     // Mirror STL flow: try to construct a Manifold from the tessellation so
     // boolean / paint downstream tools work; fall back to render-only if
-    // the OCCT mesh isn't watertight.
+    // the OCCT mesh isn’t watertight.
     const trial = tryConstructManifold(mesh);
     const parsed: ParsedSTL = {
       mesh: toImportedMesh(file.name, mesh, 'step'),
@@ -3086,7 +3089,7 @@ async function main() {
 
   /** Read an STL file, parse it, and verify Manifold.ofMesh() accepts the result.
    *  Tries progressively looser weld tolerances to absorb float-precision noise.
-   *  If the mesh still won't form a manifold (common for sculpted/scanned models
+   *  If the mesh still won’t form a manifold (common for sculpted/scanned models
    *  with self-intersections or open edges), prompts the user to import as
    *  render-only — visible and exportable, but no booleans/paint/slice. */
   async function parseSTLFile(file: File): Promise<ParsedSTL | null> {
@@ -3100,7 +3103,7 @@ async function main() {
       return null;
     }
 
-    // Scale-aware fallback tolerance: 5 ppm of the mesh's bounding-box diagonal
+    // Scale-aware fallback tolerance: 5 ppm of the mesh’s bounding-box diagonal
     // catches imports that ship in unusual units (μm or m) where 1e-3 absolute
     // is either way too tight or way too loose.
     const bbox = bboxFromMesh(probe);
@@ -3129,8 +3132,8 @@ async function main() {
     // a Baby Yoda / Eiffel Tower scan just want to look at it, not boolean-op it.
     const accepted = await showInlineConfirm(
       editorUI,
-      `${file.name} won't form a clean manifold — typical for sculpted or scanned models with self-intersections, open edges, or T-junctions.\n\n` +
-      `You can still import it as render-only: the mesh displays and exports normally, but boolean operations, paint, and cross-sections won't work.\n\n` +
+      `${file.name} won’t form a clean manifold — typical for sculpted or scanned models with self-intersections, open edges, or T-junctions.\n\n` +
+      `You can still import it as render-only: the mesh displays and exports normally, but boolean operations, paint, and cross-sections won’t work.\n\n` +
       `For full editing, repair the mesh first in MeshLab or Blender, then re-import.\n\n` +
       `${probe.numTri.toLocaleString()} triangles · ${probe.numVert.toLocaleString()} vertices · tried weld tolerances up to ${maxTried.toExponential(1)} · ${manifoldError}`,
       {
@@ -3208,7 +3211,7 @@ async function main() {
     return !!s.currentPart && !s.currentVersion && isStarterCode(getValue());
   }
 
-  /** Save the current part's editor content as a version when it holds real,
+  /** Save the current part’s editor content as a version when it holds real,
    *  unsaved work — so a following import/merge never loses it and a part that
    *  was only run (not saved) can still be used as merge input. */
   async function preserveCurrentEditsIfNeeded(): Promise<void> {
@@ -3237,7 +3240,7 @@ async function main() {
    *  active imports, render, and save a version that carries the mesh data. */
   async function applyImportWrapper(components: ImportedMesh[], manifold: boolean, seedRegions?: SeedRegion[]): Promise<void> {
     // Same reset as the other import chokepoints: an import wrapper replaces the
-    // part's geometry, so the previous part's regions can't survive (compose
+    // part’s geometry, so the previous part’s regions can’t survive (compose
     // even rebuilds topology wholesale). Callers run preserveCurrentEditsIfNeeded
     // first, so the painted version is already saved before we drop live paint —
     // otherwise runCodeSync re-resolves stale regions onto the new mesh and locks
@@ -3254,7 +3257,7 @@ async function main() {
     setValue(code);
     await runCodeSync(code);
     // Seed any pre-computed colour regions (relief bands) AFTER the live-paint
-    // reset above, so the import's own colours survive into the saved version.
+    // reset above, so the import’s own colours survive into the saved version.
     seedImportRegions(seedRegions);
     const thumbnail = await captureThumbnail();
     const geometryData = enrichGeometryDataWithColors(getGeometryDataObj());
@@ -3265,7 +3268,7 @@ async function main() {
     });
   }
 
-  /** Execute a part's latest version off-editor and capture its geometry as a
+  /** Execute a part’s latest version off-editor and capture its geometry as a
    *  single compose component. Returns null when the part has no version or
    *  produced no usable mesh (e.g. render-only or a code error). */
   async function bakePartComponents(partId: string, label: string): Promise<ImportedMesh[] | null> {
@@ -3289,7 +3292,7 @@ async function main() {
   }
 
   /** Add the imported mesh as a brand-new part (becomes current). Optional
-   *  seedRegions (relief's per-colour bands) are painted onto the saved v1. */
+   *  seedRegions (relief’s per-colour bands) are painted onto the saved v1. */
   async function seedNewPartWithMesh(mesh: ImportedMesh, filename: string, manifold: boolean, seedRegions?: SeedRegion[]): Promise<void> {
     const part = await createPart(filename.replace(/\.[^.]+$/, ''));
     if (!part) return;
@@ -3302,8 +3305,8 @@ async function main() {
    *  version correctly — a voxel part must read back as `voxel`, a BREP part as
    *  `replicad` (per-version language). */
   async function applyCodeToCurrentPart(code: string, language: Language, companions?: Record<string, string>): Promise<void> {
-    // An import replaces the part's geometry, so the previous part's regions /
-    // live paint can't survive — clear them before running, or runCodeSync
+    // An import replaces the part’s geometry, so the previous part’s regions /
+    // live paint can’t survive — clear them before running, or runCodeSync
     // re-resolves stale regions onto the new mesh and locks the editor.
     cancelVoxelPaintIfActive();
     dropPaintState();
@@ -3311,12 +3314,12 @@ async function main() {
     if (getActiveLanguage() !== language) await switchLanguage(language);
     // Register companions before the compile so their tabs appear immediately and
     // MEMFS already contains them on the first (and only) run. createPart clears
-    // the registry, so we always set here — don't addCompanionFileToRegistry.
+    // the registry, so we always set here — don’t addCompanionFileToRegistry.
     if (companions !== undefined) {
       setCompanionFiles(companions);
       renderCompanionFilesBar();
     }
-    // Clear stale params panel immediately so old controls don't linger while
+    // Clear stale params panel immediately so old controls don’t linger while
     // the new model is loading.
     syncParamsPanel(undefined);
     setValue(code);
@@ -3328,7 +3331,7 @@ async function main() {
     const partIdBeforeRun = getState().currentPart?.id;
     const ran = await runCodeSync(code);
     // Cancelled (user navigated away mid-compile): preserveCurrentEditsIfNeeded
-    // will have saved a draft version; don't double-save here.
+    // will have saved a draft version; don’t double-save here.
     if (!ran) return;
     if (getState().currentPart?.id !== partIdBeforeRun) return;
     const thumbnail = await captureThumbnail();
@@ -3339,7 +3342,7 @@ async function main() {
     await saveVersion(code, geometryData, thumbnail, 'imported', undefined, { force: true, companionFiles: companions });
   }
 
-  /** Add code (voxel / BREP starter) as a brand-new part's first version.
+  /** Add code (voxel / BREP starter) as a brand-new part’s first version.
    *  Mirrors seedNewPartWithMesh but for editor code + a language tag instead
    *  of a parsed mesh. */
   async function seedNewPartWithCode(code: string, name: string, language: Language, companions?: Record<string, string>): Promise<void> {
@@ -3390,7 +3393,7 @@ async function main() {
     // Past this point the current part holds real work (not an expendable
     // starter), so the current-part choice can only compose-into — and only
     // when the import is composable (voxel bakes to a mesh; a BREP starter
-    // can't compose into a mesh part).
+    // can’t compose into a mesh part).
     const canAddToCurrent = !!state.currentPart && opts.composable;
     const target = await showImportTargetModal({
       title,
@@ -3411,7 +3414,7 @@ async function main() {
       await seedNewPartWithCode(code, sessionName, language);
       return true;
     }
-    // current-part: compose the import's baked mesh into the existing part
+    // current-part: compose the import’s baked mesh into the existing part
     // (composable imports only).
     await preserveCurrentEditsIfNeeded();
     const baked = await bakeCodeComponent(code, language, sessionName);
@@ -3430,7 +3433,7 @@ async function main() {
     return true;
   }
 
-  /** Compose the imported mesh with the current part's existing geometry. */
+  /** Compose the imported mesh with the current part’s existing geometry. */
   async function composeMeshIntoCurrentPart(mesh: ImportedMesh): Promise<boolean> {
     const cur = getState().currentPart;
     if (!cur) return false;
@@ -3475,7 +3478,7 @@ async function main() {
         ? 'Render-only meshes can’t be combined into an existing part.'
         : undefined,
       // Default to a new part so an import never silently overwrites the
-      // current part's real work.
+      // current part’s real work.
       recommend: 'new-part',
     });
     if (!target) return false;
@@ -3507,10 +3510,10 @@ async function main() {
     const sessionName = filename.replace(/\.(js|scad)$/i, '');
     const state = getState();
 
-    // Register any companion files that rode along with the import (the modal's
+    // Register any companion files that rode along with the import (the modal’s
     // supplied deps, plus optionally the imported file itself), re-run with them
     // in place, and persist so the saved version already carries them. A no-op
-    // when there's nothing to add — the seeding path saves its own base version.
+    // when there’s nothing to add — the seeding path saves its own base version.
     const applyCompanions = async (self?: { path: string; content: string }): Promise<void> => {
       let any = false;
       if (self) { addCompanionFileToRegistry(self.path, self.content); any = true; }
@@ -3529,7 +3532,7 @@ async function main() {
 
     if (!state.session || currentPartIsExpendable()) {
       // No real "current part" to attach to (no session, or just starter code) —
-      // import straight into a fresh session. Pass companions directly so they're
+      // import straight into a fresh session. Pass companions directly so they’re
       // registered before the first compile (tabs appear immediately) and MEMFS
       // already contains them on that one compile — no second run needed.
       await importCodePayload(code, lang, sessionName, companions);
@@ -3545,7 +3548,7 @@ async function main() {
       currentPartName: state.currentPart?.name ?? null,
       canAddToCurrent: true,
       currentPartTitle: `Replace current part — ${partLabel}`,
-      currentPartDesc: "Replace this part's code with the imported file. The current code is saved as a version first.",
+      currentPartDesc: "Replace this part’s code with the imported file. The current code is saved as a version first.",
       // Companion attach only makes sense for a .scad imported into a SCAD part.
       canAddAsCompanion: lang === 'scad' && getActiveLanguage() === 'scad',
       recommend: 'new-part',
@@ -3567,7 +3570,7 @@ async function main() {
       await preserveCurrentEditsIfNeeded();
       await seedNewPartWithCode(code, sessionName, lang, companions);
     } else {
-      // current-part: replace current part's code with the imported file.
+      // current-part: replace current part’s code with the imported file.
       await preserveCurrentEditsIfNeeded();
       await applyCodeToCurrentPart(code, lang, companions);
     }
@@ -3609,7 +3612,7 @@ async function main() {
     return true;
   }
 
-  /** Combine the multi-selected parts into one. Each part's latest version is
+  /** Combine the multi-selected parts into one. Each part’s latest version is
    *  baked to geometry and composed; the result is a new part, optionally
    *  replacing the originals. */
   async function mergePartsFlow(ids: string[]): Promise<void> {
@@ -3706,7 +3709,7 @@ async function main() {
       const code = await entry.blob.text();
       const lang: Language = entry.source === 'SCAD' ? 'scad' : 'manifold-js';
       // Restore companions captured at import time so re-imports from history
-      // don't lose the companion files the user originally provided.
+      // don’t lose the companion files the user originally provided.
       await placeImportedCodeFile(code, lang, entry.filename, entry.companions);
     } catch (e) {
       showToast(`Failed to re-import "${entry.filename}": ${(e as Error).message}`, { variant: 'warn', source: 'import' });
@@ -3743,7 +3746,7 @@ async function main() {
     if (scadFiles.length > 1) {
       // Read all SCAD files in parallel.
       const contents = await Promise.all(scadFiles.map(async f => ({ f, code: await f.text() })));
-      // A file that's referenced by another is a companion candidate.
+      // A file that’s referenced by another is a companion candidate.
       const mainCandidates = contents.filter(({ f, code }) => {
         const needed = detectMissingIncludes(code);
         // A main file either imports others in the batch, or has none of the
@@ -3755,7 +3758,7 @@ async function main() {
 
       if (mainCandidates.length === 1) {
         // One file imports the others — treat the rest as companions. Match the
-        // dropped companions to the main file's include paths, then route the
+        // dropped companions to the main file’s include paths, then route the
         // main file through placeImportedCodeFile so the drop inherits the same
         // placement modal + unsaved-edit preservation as a single-file import
         // (rather than silently clobbering the current session).
@@ -3768,7 +3771,7 @@ async function main() {
           companionsMap[matchedPath] = cfCode;
         }
         const committed = await placeImportedCodeFile(mainCode, 'scad', mainFile.name, companionsMap);
-        // Warn about any include the drop didn't supply a file for.
+        // Warn about any include the drop didn’t supply a file for.
         if (committed) {
           const stillMissing = missing.filter(p => getCompanionFiles()[p] === undefined);
           if (stillMissing.length > 0) {
@@ -3836,7 +3839,7 @@ async function main() {
   }
 
   // One standardized "nothing to export" toast for every mesh export action, so
-  // the feedback is consistent instead of some formats silently no-op'ing and
+  // the feedback is consistent instead of some formats silently no-op’ing and
   // others (GLB) producing a bogus empty file.
   const noGeometryToast = () => showToast('No geometry to export — run a model first.', { variant: 'warn' });
 
@@ -3848,7 +3851,7 @@ async function main() {
 
   /** Non-blocking heads-up that a multi-part session exports only the active
    *  part (mesh exports consume the single `currentMeshData`). Mirrors the
-   *  share-link warning so users aren't silently handed one part of an
+   *  share-link warning so users aren’t silently handed one part of an
    *  assembly. */
   const notifyMultiPartExport = () => {
     const parts = getState().parts;
@@ -3896,7 +3899,7 @@ async function main() {
     catch (e) { showToast(e instanceof Error ? e.message : '3MF export failed', { variant: 'warn' }); }
   };
   // The integer VoxelGrid behind a voxel session. The engine meshes in the
-  // Worker, so the grid isn't on the main thread after a normal run — re-run the
+  // Worker, so the grid isn’t on the main thread after a normal run — re-run the
   // current code locally to recover it (the same trick voxel paint uses), or use
   // the live painted grid when paint is active so unbaked edits are exported.
   const getCurrentVoxelGrid = (): VoxelGrid | null => {
@@ -3951,7 +3954,7 @@ async function main() {
 
   // Hard cap on the encoded share string. Browsers and chat apps choke on very
   // long URLs; past this we drop the thumbnail once and, if still too big, abort
-  // with a toast rather than minting a link that silently won't open.
+  // with a toast rather than minting a link that silently won’t open.
   const MAX_SHARE_ENCODED_CHARS = 1_500_000;
 
   /** Encode the current committed version into a self-contained `#share=…`
@@ -3989,7 +3992,7 @@ async function main() {
     const sessionId = state.session!.id;
     // Single-version, lean payload: no chat, no notes. Name the shared session
     // after the current part when the session is multi-part so the preview reads
-    // sensibly (the share covers only the current part's current version).
+    // sensibly (the share covers only the current part’s current version).
     const exported = await exportSession(sessionId, {
       versionIndices: [versionIndex],
       includeChat: false,
@@ -4000,7 +4003,7 @@ async function main() {
     }
     if (state.parts.length > 1) {
       // A share link carries one version of one part. Tell the user so a
-      // multi-part assembly isn't silently reduced, and name the shared session
+      // multi-part assembly isn’t silently reduced, and name the shared session
       // after the current part.
       const partName = state.currentPart?.name;
       if (partName) exported.session = { ...exported.session, name: partName };
@@ -4096,9 +4099,9 @@ async function main() {
     onToggleAi: () => { void toggleAiPanelFromToolbar(); },
     onLanguageSwitch: async (lang: 'manifold-js' | 'scad' | 'replicad' | 'voxel') => {
       if (lang === getActiveLanguage()) return;
-      // Stash the current language's editor buffer as a draft on the active
-      // session, then swap engines and restore (or seed) the other language's
-      // draft. Versions in this session aren't touched — they remember the
+      // Stash the current language’s editor buffer as a draft on the active
+      // session, then swap engines and restore (or seed) the other language’s
+      // draft. Versions in this session aren’t touched — they remember the
       // language they were authored in.
       await switchLanguageWithDrafts(lang);
     },
@@ -4117,8 +4120,8 @@ async function main() {
   initDiagnosticsPanel();
 
   // Reset the editor to a blank starting point for a freshly created session.
-  // Shared by the session bar's "+ New Session" button and the session modal's,
-  // so both clear the previous session's code instead of leaving it behind.
+  // Shared by the session bar’s "+ New Session" button and the session modal’s,
+  // so both clear the previous session’s code instead of leaving it behind.
   function resetEditorToStarter() {
     dropPaintState();
     const lang = getActiveLanguage();
@@ -4136,16 +4139,16 @@ async function main() {
   }
 
   // Reset the editor for a freshly created part. Unlike a new session, parts
-  // share the session's reference images, so those are left intact.
+  // share the session’s reference images, so those are left intact.
   function startNewPartInEditor() {
     resetEditorToStarter();
   }
 
-  // Load a part's active version into the editor, or reset to a blank part when
+  // Load a part’s active version into the editor, or reset to a blank part when
   // the part has no saved versions yet. A saved version carries its own language
   // and `loadVersionIntoEditor` swaps the engine to match. A version-less part
   // falls back to the manifold-js starter: the engine MUST be on manifold-js
-  // before we seed + run it — otherwise the starter's `Manifold.cube(...)` runs
+  // before we seed + run it — otherwise the starter’s `Manifold.cube(...)` runs
   // under whatever engine the previously-active part left behind (e.g. voxel,
   // where `api.Manifold` is undefined). This is the mixed-language case a JSON
   // merge creates: a voxel Part 2 alongside an unsaved manifold-js Part 1.
@@ -4170,10 +4173,10 @@ async function main() {
       thumbnail: await captureThumbnail(),
     }),
     onLoadVersion: async (_code: string) => {
-      // The session bar's prev/next/version-dropdown handlers update
+      // The session bar’s prev/next/version-dropdown handlers update
       // currentVersion before firing this; route through loadVersionIntoEditor
       // so cross-language navigation swaps the engine and stashes the
-      // previous language's draft. The `code` argument is redundant once we
+      // previous language’s draft. The `code` argument is redundant once we
       // read the version from state — kept on the callback to avoid churning
       // the SessionBarCallbacks signature.
       const v = getState().currentVersion;
@@ -4188,7 +4191,7 @@ async function main() {
     onOpenCatalog: () => { void showCatalogPage(); },
     onToggleDiagnostics: () => { toggleDiagnosticsPanel(); },
     onOpenSessionList: () => showSessionList(),
-    // The rail only renders inside the editor, so the tour's spotlight targets
+    // The rail only renders inside the editor, so the tour’s spotlight targets
     // already exist — start it directly without re-navigating.
     onStartTour: () => { resetTour(); startTour(); },
   });
@@ -4202,17 +4205,17 @@ async function main() {
   printabilityIndicatorEl.className = 'absolute top-8 left-2 z-20 text-xs text-amber-300 font-mono bg-zinc-900/80 px-2 py-0.5 rounded border border-amber-700/60 cursor-help';
   // A persistent status indicator, not a transient toast: it stays up while the
   // current model has structural issues that would prevent a clean 3D print.
-  // The title explains what it is so it doesn't read as a stray message (and is
+  // The title explains what it is so it doesn’t read as a stray message (and is
   // hoverable — hence no `pointer-events-none`).
   printabilityIndicatorEl.title = 'This model has structural issues that may prevent a clean 3D print. Open the ⚠ Diagnostic Log in the toolbar for details.';
   printabilityIndicatorEl.style.display = 'none';
   viewportPane.appendChild(printabilityIndicatorEl);
 
-  // Parts rail — IDE-style list of the session's parts.
+  // Parts rail — IDE-style list of the session’s parts.
   createPartList(partsRail, {
     onSelectPart: async (partId: string) => {
-      // Cancel any in-flight render so stale Part N previews can't land on
-      // the viewport after we've switched away to a different part.
+      // Cancel any in-flight render so stale Part N previews can’t land on
+      // the viewport after we’ve switched away to a different part.
       cancelCurrentExecution();
       // Save any unsaved non-starter edits as a version (imported SCAD with
       // errors, etc.) so they survive the switch and are loadable on return.
@@ -4227,7 +4230,7 @@ async function main() {
       const version = await changePart(partId);
       // skipDraftSave: the outgoing draft was already saved above.
       await loadPartIntoEditor(version, { skipDraftSave: true });
-      // Restore the incoming part's unsaved work (if any) on top of the
+      // Restore the incoming part’s unsaved work (if any) on top of the
       // saved version that loadPartIntoEditor just loaded.
       await restoreDraftIfNewer();
     },
@@ -4272,7 +4275,7 @@ async function main() {
     onToggleCollapse: () => togglePartsRail(),
   });
 
-  // Keep the editor title showing the active part's name (falls back to the
+  // Keep the editor title showing the active part’s name (falls back to the
   // generic filename when no part/session is open). The element is looked up on
   // each call rather than captured, since the editor root may not be mounted in
   // the document when this wiring first runs.
@@ -4319,9 +4322,9 @@ async function main() {
       result = await saveCurrentVersion();
     } catch (e) {
       // An explicit Save that fails (e.g. a full quota) must surface the
-      // failure — never the "Saved" toast — so the user knows it didn't
+      // failure — never the "Saved" toast — so the user knows it didn’t
       // persist. No caller inspects the result, so a warn toast is the
-      // signal (we don't re-throw, which would just be an unhandled
+      // signal (we don’t re-throw, which would just be an unhandled
       // rejection through the `void` call sites).
       if (isQuotaError(e)) {
         showToast('Storage full — could not save this version. Free up space or export your work.', { variant: 'warn' });
@@ -4336,8 +4339,8 @@ async function main() {
       showToast('No changes to save', { variant: 'neutral' });
     } else if (getGeometryDataObj()?.status === 'error') {
       // Checkpointing a broken model is allowed, but warn that this version
-      // won't render correctly so the save isn't mistaken for a clean one.
-      showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}, but the model has errors and won't render correctly`, { variant: 'warn' });
+      // won’t render correctly so the save isn’t mistaken for a clean one.
+      showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}, but the model has errors and won’t render correctly`, { variant: 'warn' });
     } else {
       showToast(`Saved v${result.index}${result.label ? ` — ${result.label}` : ''}`, { variant: 'success' });
     }
@@ -4358,7 +4361,7 @@ async function main() {
   }
 
   // Register command-palette actions (⌘K). Reuses the same handlers the
-  // toolbar/session bar/layout already wire up so behavior can't drift.
+  // toolbar/session bar/layout already wire up so behavior can’t drift.
   registerCommands([
     { id: 'run', title: 'Run code', hint: 'Editor', keywords: 'execute render', run: () => runCode() },
     { id: 'save', title: 'Save version', hint: 'Session', shortcut: combo(MOD_LABEL, 'S'), keywords: 'commit snapshot', run: () => { void saveVersionWithToast(); } },
@@ -4378,11 +4381,11 @@ async function main() {
     { id: 'export-3mf', title: 'Export 3MF', hint: 'Export', keywords: 'download print color', run: actionExport3MF, enabled: () => currentMeshData !== null },
     // VOX exports the voxel grid (getCurrentVoxelGrid), not currentMeshData, so
     // gate on the active language — the grid is re-derived on demand inside the
-    // action, which also toasts if there's nothing to export. (Re-running the
+    // action, which also toasts if there’s nothing to export. (Re-running the
     // model inside an `enabled` predicate would be far too heavy.)
     { id: 'export-vox', title: 'Export VOX', hint: 'Export', keywords: 'download magicavoxel voxel goxel', run: actionExportVOX, enabled: () => getActiveLanguage() === 'voxel' },
     // STEP exports the retained BREP shape, only available in replicad sessions
-    // (mirrors the toolbar's STEP gating); the action toasts if no shape exists.
+    // (mirrors the toolbar’s STEP gating); the action toasts if no shape exists.
     { id: 'export-step', title: 'Export STEP', hint: 'Export', keywords: 'download brep cad solidworks fusion freecad', run: () => { void actionExportSTEP(); }, enabled: () => getActiveLanguage() === 'replicad' },
     { id: 'share-link', title: 'Share design (copy link)', hint: 'Share', keywords: 'url public link copy fork readonly', run: () => { void actionShareLink(); }, enabled: canShare },
     // Viewport tools — now grouped behind the View/Inspect/Tools popovers, so the
@@ -4402,7 +4405,7 @@ async function main() {
     { id: 'open-catalog', title: 'Open catalog', hint: 'Navigate', keywords: 'examples premade browse', run: () => { void showCatalogPage(); } },
     { id: 'open-ideas', title: 'Open ideas', hint: 'Navigate', keywords: 'prompts examples inspiration showcase what can i do', run: () => { showIdeasPage(); } },
     { id: 'open-help', title: 'Open help', hint: 'Navigate', keywords: 'docs documentation guide', run: () => showHelp() },
-    { id: 'open-whats-new', title: "Open what's new", hint: 'Navigate', keywords: 'changelog recent features updates release notes', run: () => showWhatsNewPage() },
+    { id: 'open-whats-new', title: "Open what’s new", hint: 'Navigate', keywords: 'changelog recent features updates release notes', run: () => showWhatsNewPage() },
     { id: 'open-quality', title: 'Settings', hint: 'Settings', keywords: 'resolution curve segments smoothness advanced', run: () => showAdvancedSettingsModal() },
     { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); }, enabled: isEditorActive },
     { id: 'toggle-hints', title: 'Toggle "Did you know?" hints', hint: 'View', keywords: 'did you know tips ticker discovery hints banner strip', run: () => toggleEditorHints() },
@@ -4450,7 +4453,7 @@ async function main() {
     },
   });
 
-  // Refresh tabs when they're selected
+  // Refresh tabs when they’re selected
   window.addEventListener('tab-switched', ((e: CustomEvent) => {
     if (e.detail.tab === 'gallery') refreshGallery();
     if (e.detail.tab === 'versions') refreshVersions();
@@ -4463,8 +4466,8 @@ async function main() {
   // Init session list
   initSessionList(
     async (code: string) => {
-      // Restore the engine to the loaded version's language. The opened
-      // session's current-version pointer was just refreshed by openSession,
+      // Restore the engine to the loaded version’s language. The opened
+      // session’s current-version pointer was just refreshed by openSession,
       // so currentVersion.language (with session-level fallback) is the
       // right signal here — not session.language alone, which would miss
       // mixed-language sessions where the active version uses the other
@@ -4478,7 +4481,7 @@ async function main() {
       runCode(code);
     },
     async (code: string, importedMeshes) => {
-      // Seed this version's imported meshes so `api.imports[0]` resolves to its
+      // Seed this version’s imported meshes so `api.imports[0]` resolves to its
       // own geometry when the thumbnail is regenerated (else a stale capture).
       setActiveImports(importedMeshes ?? []);
       await runCodeSync(code);
@@ -4514,16 +4517,16 @@ async function main() {
   let legalHasAppBackTarget = false;
   let notFoundEl: HTMLElement | null = null;
   // Declared early so async callbacks (e.g. runCodeSync triggered during
-  // initial syncEditorFromURL) don't hit a TDZ error before this point.
+  // initial syncEditorFromURL) don’t hit a TDZ error before this point.
   let _running = false;
   // Monotonically-increasing counter that identifies the most-recently-started
-  // runCodeSync call. When a Worker result arrives, it's only applied if its
+  // runCodeSync call. When a Worker result arrives, it’s only applied if its
   // generation matches the current value — any lower value means a newer
   // version-switch or run has already superseded it, and applying the stale
   // result would overwrite the wrong mesh/manifold/colour state.
   let _runGeneration = 0;
   // Elapsed-time display for slow renders (SCAD, complex JS). The cancel
-  // button and timer are hidden until 400 ms have elapsed so fast runs don't
+  // button and timer are hidden until 400 ms have elapsed so fast runs don’t
   // flash them. _runShowTimer is the delayed-show timeout; _runTimerInterval
   // fires every 100 ms to update the displayed elapsed time.
   let _runTimerStart = 0;
@@ -4570,7 +4573,7 @@ async function main() {
   async function loadVersionIntoEditor(version: Version, opts: { skipDraftSave?: boolean } = {}, cachedEntry?: PartMeshCacheEntry) {
     // Cancel any active voxel paint before loading a different version — its
     // live grid and provenance map are bound to the OUTGOING code, so a Bake
-    // after navigation would write the wrong session's voxels into the new
+    // after navigation would write the wrong session’s voxels into the new
     // editor. Also unlocks the editor and clears the floating panel.
     cancelVoxelPaintIfActive();
     // Each version remembers the language it was authored in (per-version
@@ -4578,8 +4581,8 @@ async function main() {
     // engine default. Lets a single session hold mixed JS + SCAD versions
     // and switch the engine as you click between them. When crossing a
     // language boundary we stash the current editor buffer as a draft for
-    // the previous language first, so navigate ↔ toggle round-trips don't
-    // silently drop work-in-progress in the language we're leaving.
+    // the previous language first, so navigate ↔ toggle round-trips don’t
+    // silently drop work-in-progress in the language we’re leaving.
     // skipDraftSave is set by onSelectPart, which saves the outgoing draft
     // before calling changePart (ensuring it lands under the correct part id).
     const versionLang = effectiveVersionLanguage(version, getState().session);
@@ -4597,9 +4600,9 @@ async function main() {
     }
     setActiveImports((version.importedMeshes ?? []) as ImportedMesh[]);
     setValue(version.code);
-    // Restore this version's Customizer overrides so it re-runs (and renders)
+    // Restore this version’s Customizer overrides so it re-runs (and renders)
     // with the values it was saved at — keeping geometry consistent with the
-    // saved thumbnail/stats. runCodeSync prunes these against the model's
+    // saved thumbnail/stats. runCodeSync prunes these against the model’s
     // declared schema, so stale keys from a previous model fall away.
     currentParamValues = { ...(version.paramValues ?? {}) };
 
@@ -4652,11 +4655,11 @@ async function main() {
       const meshBeforeRun = currentMeshData;
       const applied = await runCodeSync(version.code);
       // If a newer version-switch arrived while we were compiling, our result
-      // was discarded — don't rehydrate colours or annotations for the wrong version.
+      // was discarded — don’t rehydrate colours or annotations for the wrong version.
       if (!applied) return;
       // Store the freshly compiled result so the next switch back is instant.
       // Only cache on a successful mesh-producing run (compile errors leave
-      // currentMeshData as the previous part's mesh, i.e. unchanged).
+      // currentMeshData as the previous part’s mesh, i.e. unchanged).
       if (currentMeshData !== null && currentMeshData !== meshBeforeRun) {
         const entry: PartMeshCacheEntry = {
           meshData: currentMeshData,
@@ -4700,7 +4703,7 @@ async function main() {
 
   // Launch the guided tour from an entry point outside the editor (the landing
   // CTA or the help page button): the tour spotlights editor chrome, so make
-  // sure we're in the editor with a live session before it starts.
+  // sure we’re in the editor with a live session before it starts.
   async function takeGuidedTour() {
     updateAppHistory('/editor', 'push');
     transitionToEditor();
@@ -4714,12 +4717,12 @@ async function main() {
     startTour();
   }
 
-  // The landing page is a separate, static document — index.html's
+  // The landing page is a separate, static document — index.html’s
   // #landing-inline markup, enhanced in place by src/landing/landingEntry.ts.
   // This app bundle is never loaded on the landing route, so "showing" the
   // landing from within the app is a real navigation back to "/", which loads
   // the lightweight landing entry instead of this bundle. (Callers: the boot
-  // router and syncRouteFromURL's popstate handler.)
+  // router and syncRouteFromURL’s popstate handler.)
   function showLandingPage() {
     window.location.assign('/');
   }
@@ -4779,7 +4782,7 @@ async function main() {
     updateDocumentTitle({ page: 'help' });
   }
 
-  // Helper to show legal page — mirrors showHelp's history / in-page-Back pattern.
+  // Helper to show legal page — mirrors showHelp’s history / in-page-Back pattern.
   function showLegal(options: { history?: 'push' | 'replace' | 'none' } = {}) {
     const historyMode = options.history ?? 'push';
     if (historyMode !== 'none') {
@@ -4898,7 +4901,7 @@ async function main() {
   // deep-link from the static landing page. Mirrors handleCatalogEntryLoad but
   // sources the payload from the URL rather than an in-memory tile click. The
   // editor is already entered (this runs inside syncEditorFromURL), so no
-  // history push is needed — importSessionPayload's openSession replaceState
+  // history push is needed — importSessionPayload’s openSession replaceState
   // rewrites the URL to /editor?session=<id>.
   async function loadCatalogFileIntoEditor(file: string): Promise<void> {
     try {
@@ -4906,7 +4909,7 @@ async function main() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const payload = await res.json() as ExportedSession;
       await importSessionPayload(payload);
-      // importSessionPayload's openSession appended ?session=&v= but preserved
+      // importSessionPayload’s openSession appended ?session=&v= but preserved
       // the one-shot ?catalog= param; drop it now for a clean editor URL.
       const url = new URL(window.location.href);
       if (url.searchParams.has('catalog')) {
@@ -4915,7 +4918,7 @@ async function main() {
       }
       updateDocumentTitle({ page: 'editor' });
     } catch {
-      // Couldn't load the entry (bad/removed file, offline). Don't leave the
+      // Couldn’t load the entry (bad/removed file, offline). Don’t leave the
       // editor stuck on "Loading WASM…" — fall back to a default session.
       if (!getState().session) await createSession();
       setStatus(statusBar, 'ready', 'Ready');
@@ -4935,7 +4938,7 @@ async function main() {
     await ensureEditorReady();
   }
 
-  // A starter/technique idea — drop its prompt into the AI panel (don't send).
+  // A starter/technique idea — drop its prompt into the AI panel (don’t send).
   async function handleIdeaUsePrompt(idea: Idea): Promise<void> {
     await enterEditorForIdea();
     if (window.location.pathname !== '/editor') return;
@@ -4948,7 +4951,7 @@ async function main() {
     prefillAiInput(idea.prompt ?? '');
   }
 
-  // An interactive idea: turn the user's photo into a colored voxel session
+  // An interactive idea: turn the user’s photo into a colored voxel session
   // (reuses the existing image→voxel import flow, modal and all).
   async function handleIdeaPhotoToVoxel(file: File): Promise<void> {
     await enterEditorForIdea();
@@ -4957,7 +4960,7 @@ async function main() {
     updateDocumentTitle({ page: 'editor' });
   }
 
-  // An interactive idea: emboss the user's photo as a smooth relief tile
+  // An interactive idea: emboss the user’s photo as a smooth relief tile
   // (reuses the existing Relief import wizard).
   async function handleIdeaPhotoToRelief(file: File): Promise<void> {
     await enterEditorForIdea();
@@ -5010,9 +5013,9 @@ async function main() {
   let sharedBannerEl: HTMLElement | null = null;
   let sharedOverlayEl: HTMLElement | null = null;
 
-  /** Toggle a control's disabled state + dimmed/non-interactive styling. Used to
+  /** Toggle a control’s disabled state + dimmed/non-interactive styling. Used to
    *  neutralize Paint, Save, and the language toggle in shared preview without
-   *  re-implementing each control's own logic. */
+   *  re-implementing each control’s own logic. */
   function setControlNeutralized(id: string, off: boolean): void {
     const el = document.getElementById(id);
     if (!el) return;
@@ -5048,7 +5051,7 @@ async function main() {
 
   /** Leave shared-preview mode: re-enable every control and remove the banner +
    *  overlay. Disposes nothing on the GPU here — the cold preview never built a
-   *  Three.js mesh — but tears down the overlay's <img> via .remove(). */
+   *  Three.js mesh — but tears down the overlay’s <img> via .remove(). */
   function exitSharedMode(): void {
     _sharedPreview = false;
     setReadOnlyReason('shared', false);
@@ -5112,13 +5115,13 @@ async function main() {
       return;
     }
 
-    // Valid: strip the hash immediately so refresh / Back can't re-fire it.
+    // Valid: strip the hash immediately so refresh / Back can’t re-fire it.
     stripShareHash();
 
     const version = payload.versions[0];
     const lang = asLanguage(version.language ?? payload.session.language) ?? 'manifold-js';
 
-    // Apply the version's language with the BARE alias (engine + editor only —
+    // Apply the version’s language with the BARE alias (engine + editor only —
     // never switchLanguageWithDrafts, which would createSession() + runCode()).
     if (lang !== getActiveLanguage()) await switchLanguage(lang);
 
@@ -5148,7 +5151,7 @@ async function main() {
   async function onFork(): Promise<void> {
     const payload = pendingSharedPayload;
     if (!payload) return;
-    // Leave shared mode FIRST so the import's runCode() isn't refused by the
+    // Leave shared mode FIRST so the import’s runCode() isn’t refused by the
     // execution guard.
     exitSharedMode();
     pendingSharedPayload = null;
@@ -5171,7 +5174,7 @@ async function main() {
     const sid = getState().session?.id;
     if (!sid) return;
     const pid = getState().currentPart?.id;
-    // Only at the tip: if a specific older version is loaded, don't override it.
+    // Only at the tip: if a specific older version is loaded, don’t override it.
     const current = getState().currentVersion;
     if (current) {
       const versions = await listCurrentVersions();
@@ -5202,7 +5205,7 @@ async function main() {
 
     // Catalog deep-link: /editor?catalog=<file> imports that catalog entry as a
     // fresh session. The static landing page links its catalog tiles here
-    // because it can't hand an in-memory payload across a real navigation.
+    // because it can’t hand an in-memory payload across a real navigation.
     const catalogFile = new URLSearchParams(window.location.search).get('catalog');
     if (catalogFile) {
       await loadCatalogFileIntoEditor(catalogFile);
@@ -5230,7 +5233,7 @@ async function main() {
           return;
         }
         // No version returned. If the session nonetheless opened (it exists but
-        // the active part has no saved versions yet), show that part's starter
+        // the active part has no saved versions yet), show that part’s starter
         // — loadPartIntoEditor also clears stale paint state — instead of the
         // generic default example.
         if (getState().session?.id === sessionId) {
@@ -5240,10 +5243,10 @@ async function main() {
           if (tab === 'versions') refreshVersions();
           return;
         }
-        // Otherwise the session ID in the URL doesn't exist in IndexedDB (a
+        // Otherwise the session ID in the URL doesn’t exist in IndexedDB (a
         // stale bookmark or a URL shared from another device). Fall through to
         // create a fresh session and run defaults, so the viewport renders and
-        // the status doesn't stay stuck on "Loading WASM...".
+        // the status doesn’t stay stuck on "Loading WASM...".
       } else {
         return;
       }
@@ -5259,10 +5262,10 @@ async function main() {
     // Routing to a non-editor page (landing, catalog, help, 404) drops
     // the AI chat back to the global bucket. The drawer is a body-level
     // overlay that follows the user across pages, so without this the
-    // last session's transcript would still be visible after clicking
+    // last session’s transcript would still be visible after clicking
     // Home — confusing because no editor / session is loaded to act on
-    // it. /editor's own loader updates the AI session via onStateChange
-    // when a session opens, so we don't need to set it explicitly here.
+    // it. /editor’s own loader updates the AI session via onStateChange
+    // when a session opens, so we don’t need to set it explicitly here.
     if (shouldShowLanding() || shouldShowHelp() || shouldShowCatalog() || shouldShowIdeas() || shouldShowLegal() || shouldShowWhatsNew() || shouldShow404()) {
       void setAiActiveSession(null);
     }
@@ -5296,8 +5299,8 @@ async function main() {
 
   // Pasting a share URL into an already-open editor changes only the hash, which
   // fires `hashchange` (NOT popstate). Decode it into a read-only preview.
-  // Re-entrancy guard: skip if we're already previewing this exact hash (entering
-  // shared mode itself strips the hash, so this won't loop on our own change).
+  // Re-entrancy guard: skip if we’re already previewing this exact hash (entering
+  // shared mode itself strips the hash, so this won’t loop on our own change).
   let lastSharedHash: string | null = null;
   window.addEventListener('hashchange', () => {
     const value = getShareHashValue();
@@ -5340,8 +5343,8 @@ async function main() {
   // Geometry engine initialisation — deferred until the user first opens the
   // editor. WASM is never loaded on landing / catalog / help page visits.
   const COI_MISSING_MSG =
-    "This browser tab is not cross-origin isolated, so the WASM engine (which needs SharedArrayBuffer) can't start. " +
-    "This usually fixes itself on reload; if it persists, the required COOP/COEP headers aren't reaching the page " +
+    "This browser tab is not cross-origin isolated, so the WASM engine (which needs SharedArrayBuffer) can’t start. " +
+    "This usually fixes itself on reload; if it persists, the required COOP/COEP headers aren’t reaching the page " +
     '(a proxy, extension, or unsupported browser can strip them).';
 
   function ensureEngineStarted(): Promise<void> {
@@ -5353,7 +5356,7 @@ async function main() {
       // service worker and reloads once; until a controller exists, that reload
       // is still pending, so stay on the neutral "Loading…" message rather than
       // alarming the user. We remember that we waited so a second non-isolated
-      // load (where the shim can't help) surfaces the explanation.
+      // load (where the shim can’t help) surfaces the explanation.
       let coiReloadPending = false;
       try {
         const waited = sessionStorage.getItem('partwright-coi-waited') === '1';
@@ -5396,7 +5399,7 @@ async function main() {
   initViewport(viewportPane);
 
   // Indeterminate progress bar shown over the viewport while WASM loads on
-  // first editor open. Hidden by ensureEngineStarted's finally block.
+  // first editor open. Hidden by ensureEngineStarted’s finally block.
   {
     const style = document.createElement('style');
     style.textContent = '@keyframes pw-bar{0%{left:0;width:30%}50%{left:35%;width:30%}100%{left:70%;width:30%}}';
@@ -5436,7 +5439,7 @@ async function main() {
   //
   // A "Customize" toggle pill in the viewport toolbar (created below) is the
   // discoverable open/reopen affordance: it appears only when the active model
-  // declares parameters, shows the count, and mirrors the panel's open state —
+  // declares parameters, shows the count, and mirrors the panel’s open state —
   // so closing the panel never strands the user without a way back in.
   const customizeBtn = document.createElement('button');
   customizeBtn.id = 'customize-toggle';
@@ -5469,7 +5472,7 @@ async function main() {
   // then surfaced top-level (just before the View group) as a strong "this model
   // is tweakable" signal — not buried inside the Tools popover.
   const customizeAnchor = clipControls.querySelector('#viewport-view-group');
-  if (customizeAnchor) clipControls.insertBefore(customizeBtn, customizeAnchor);
+  if (customizeAnchor?.parentNode) customizeAnchor.parentNode.insertBefore(customizeBtn, customizeAnchor);
   else clipControls.appendChild(customizeBtn);
 
   // Init measure tool
@@ -5500,12 +5503,12 @@ async function main() {
     },
   });
 
-  // Persist the editor's working buffer to the active session's draft so an
-  // accidental reload / tab-close / crash doesn't lose unsaved typing. Reads
+  // Persist the editor’s working buffer to the active session’s draft so an
+  // accidental reload / tab-close / crash doesn’t lose unsaved typing. Reads
   // getActiveLanguage() + getValue() SYNCHRONOUSLY at fire time so the draft
   // lands under the right (session, language) key — same key version-load and
   // the language-toggle path use — and never writes OLD code under a NEW
-  // language. Skips when no session is open so we don't auto-create empty
+  // language. Skips when no session is open so we don’t auto-create empty
   // sessions (which would fight deleteIfEmpty on unload). Best-effort: a quota
   // failure is swallowed with a warn toast since autosave is non-critical.
   function autosaveDraft(): void {
@@ -5527,7 +5530,7 @@ async function main() {
   // the idle + blur hooks surface the held-back error gently once typing settles.
   // The same idle/blur ticks autosave the draft. A programmatic setValue
   // (version load / language switch) cancels the pending onIdle (see
-  // codeEditor.setValue), so autosave never fires for code the user didn't type.
+  // codeEditor.setValue), so autosave never fires for code the user didn’t type.
   initEditor(editorContainer, defaultCode, (code: string) => {
     if (isAutoRun()) runCode(code, { surfaceErrors: false });
   }, 'manifold-js', {
@@ -5538,14 +5541,14 @@ async function main() {
 
   // Autosave when the tab is hidden (switching apps, closing) — the most
   // reliable "user is leaving" signal that still permits an async IDB write,
-  // unlike beforeunload which can't await. Singleton listener (main runs once).
+  // unlike beforeunload which can’t await. Singleton listener (main runs once).
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) autosaveDraft();
   });
 
   // ── Companion SCAD files ────────────────────────────────────────────────────
   // Secondary tab strip shown in SCAD mode. Each session can have companion
-  // files (e.g. models.scad) that are written to OpenSCAD's MEMFS before every
+  // files (e.g. models.scad) that are written to OpenSCAD’s MEMFS before every
   // compile. Tabs let the user view and edit them; "+" adds a new one; "×"
   // removes one. The companion editor panel (a styled textarea) replaces the
   // main CodeMirror view while a companion tab is active.
@@ -5555,8 +5558,8 @@ async function main() {
   const companionEditorPanel = document.getElementById('companion-editor-panel') as HTMLElement;
 
   // Debounced draft autosave for companion-file edits — mirrors the main
-  // editor's idle autosave so companion typing survives a reload without an
-  // explicit save, but coalesces keystrokes so IndexedDB isn't hit per-key.
+  // editor’s idle autosave so companion typing survives a reload without an
+  // explicit save, but coalesces keystrokes so IndexedDB isn’t hit per-key.
   let _companionDraftTimer: number | undefined;
   function scheduleCompanionDraftSave(): void {
     if (_companionDraftTimer !== undefined) clearTimeout(_companionDraftTimer);
@@ -5720,13 +5723,13 @@ async function main() {
 
     if (_companionActiveTab !== null) {
       // Keep the companion tab active unless the companion is no longer present
-      // (e.g. navigated to a version that doesn't have it). Staying on the
+      // (e.g. navigated to a version that doesn’t have it). Staying on the
       // companion tab after a plain save is correct UX — the user was editing
-      // a companion file and shouldn't be yanked back to main.scad on save.
+      // a companion file and shouldn’t be yanked back to main.scad on save.
       if (getCompanionFiles()[_companionActiveTab] === undefined) {
         switchToMainTab();
       } else {
-        // Refresh editor content in case version navigation changed what's in
+        // Refresh editor content in case version navigation changed what’s in
         // this companion file (the registry was updated but the CodeMirror view
         // still shows the old content).
         if (_companionEditor !== null) {
@@ -5745,7 +5748,7 @@ async function main() {
   // One-time low-memory heads-up. On devices reporting <= 4 GB RAM
   // (navigator.deviceMemory), the WASM engines + Three.js can get sluggish or
   // OOM on heavy models. Shown as a DISMISSIBLE banner (not a toast — a toast
-  // can't be persistently dismissed) with the choice remembered in
+  // can’t be persistently dismissed) with the choice remembered in
   // localStorage. deviceMemory is undefined in Firefox/Safari, so the
   // typeof-number guard means those browsers never see it (no false alarm).
   const LOWMEM_DISMISS_KEY = 'partwright-lowmem-dismissed';
@@ -5790,7 +5793,7 @@ async function main() {
   let closeMeasureIfActive: () => boolean = () => false;
 
   // === Simplify (mesh decimation) bridge ===
-  // The simplify panel reduces the live model's triangle count. Because that
+  // The simplify panel reduces the live model’s triangle count. Because that
   // changes mesh topology — not something derivable from the parametric code —
   // it operates on the rendered result: the baseline is the full-detail mesh
   // captured when the panel opens, previews swap the live mesh in place (so
@@ -5804,11 +5807,11 @@ async function main() {
   // Serialized paint (user) regions from the baseline — restored when the user resets.
   let simplifyBaselineRegions: SerializedColorRegion[] | null = null;
   // Model color region snapshot — these come from code declarations, not user paint,
-  // so they aren't captured by serializeRegions(). Captured separately at open time.
+  // so they aren’t captured by serializeRegions(). Captured separately at open time.
   let simplifyBaselineModelRegions: Array<{ name: string; color: [number, number, number]; triangles: Set<number> }> | null = null;
 
   // Restore the baseline mesh and all its color state (user regions + model regions).
-  // Used by simplify/enhance's "already at full detail" early-out and by Reset.
+  // Used by simplify/enhance’s "already at full detail" early-out and by Reset.
   async function restoreBaselineColors(baseline: MeshData): Promise<void> {
     if (simplifyBaselineColoredMesh) {
       resetPaintWorkerState();
@@ -5825,6 +5828,14 @@ async function main() {
     }
   }
 
+  // The cut panel booleans the live mesh via the Worker. We keep the pre-cut
+  // baseline so "Reset" and "Save" both have access to the original mesh.
+  let cutBaseMesh: MeshData | null = null;
+  let cutResultMesh: MeshData | null = null;
+  let cutResultMeshes: MeshData[] | null = null;
+  let cutKeptColorsList: Uint8Array[] | null = null;
+  let cutComplementColorsList: Uint8Array[] | null = null;
+
   // Replace the live geometry with `mesh`: rebuild the queryable Manifold and
   // refresh the viewport, paint-adjacency map, stats, and clip bounds. Mirrors
   // the tail of runCodeSync so exports / slicing / measurements stay correct.
@@ -5839,7 +5850,7 @@ async function main() {
       try { currentManifold.delete(); } catch { /* already deleted */ }
     }
     const mod = getModule();
-    // Mirror the post-run path (see runCodeSync's ofMesh reconstruction): a
+    // Mirror the post-run path (see runCodeSync’s ofMesh reconstruction): a
     // simplify / enhance / paint-refine result can come back not-quite-manifold
     // (degenerate tris, non-2-manifold edges), and Manifold.ofMesh throws
     // "Not manifold" on those. Without this guard the exception escapes the
@@ -5858,6 +5869,7 @@ async function main() {
     }
     updateMesh(mesh);
     updatePaintMesh(mesh);
+    onCutMeshChanged(mesh);
     updateGeometryData();
     syncClipSliderBounds();
   }
@@ -5922,6 +5934,7 @@ async function main() {
         // Don’t let two overlay panels share the top-right slot.
         if (isPaintOpen()) closePaintMenu();
         if (isAnnotateOpen()) closeAnnotateMenu();
+        if (isCutOpen()) closeCutMenu();
         closeMeasureIfActive();
       }
       if (!currentMeshData) {
@@ -6146,7 +6159,7 @@ async function main() {
     const { triIndex: startTri } = findNearestTriangle([hpX, hpY, hpZ], currentMeshData, adjacency);
     if (startTri < 0) return null;
 
-    // Footprint test: UV square (with margin) AND depth slab so we don't cross
+    // Footprint test: UV square (with margin) AND depth slab so we don’t cross
     // through the model to the far side.
     const MARGIN = 0.15;
     const lo = -(1 + MARGIN), hi = 1 + MARGIN;
@@ -6159,7 +6172,7 @@ async function main() {
     };
 
     // Step 1: BFS from the hit triangle — walk across shared mesh edges, only
-    // continuing through forward-facing triangles. This mirrors the paint brush's
+    // continuing through forward-facing triangles. This mirrors the paint brush’s
     // geodesic approach: paint stays on the reachable surface, never bleeds
     // through the model to the far side.
     const footprintTris = new Set<number>();
@@ -6190,9 +6203,9 @@ async function main() {
     if (footprintTris.size === 0) return null;
 
     // Supplement the BFS with a full forward-face scan for any triangle that
-    // passes the footprint bounds but wasn't reachable via adjacency. Prior
+    // passes the footprint bounds but wasn’t reachable via adjacency. Prior
     // stamp subdivisions create T-junctions between fine (stamp) and medium
-    // (outer) triangles — the BFS can't cross T-junctions, so medium boundary
+    // (outer) triangles — the BFS can’t cross T-junctions, so medium boundary
     // triangles are missed. stampImageOntoMesh colors triangles by centroid
     // (not adjacency), so a missed medium triangle would get painted at full
     // coarse size and appear as a large triangular patch outside the circle.
@@ -6216,7 +6229,7 @@ async function main() {
     // stamp square (+ a thin margin) and the depth slab: as a big seed triangle
     // splits 1→4, children that land outside the square stop refining, so the
     // fine tessellation stays within the stamp footprint instead of flooding the
-    // whole base triangle. This is the paint-tool's "refine only within the
+    // whole base triangle. This is the paint-tool’s "refine only within the
     // region" strategy — a 12-tri cube now grows a few thousand triangles inside
     // the stamp, not 500k across the whole face.
     const REFINE_MARGIN = 0.03;
@@ -6304,7 +6317,7 @@ async function main() {
         // the one-step parentToChildren map produces wrong triangle ids on the 3rd+
         // stamp (entries from stamp 1 are M1 indices; stamp 3's map is M2→M3).
         // region.triangles is always the current runtime set, already correctly
-        // mapped by the previous stamp's step 4 — remap it directly.
+        // mapped by the previous stamp’s step 4 — remap it directly.
         setRegionTriangles(region.id, remapTriangleIds(region.triangles, parentToChildren), remapPerTriColors(region.perTriColors, parentToChildren));
       } else {
         if (!regionAdjacency && (d.kind === 'coplanar' || d.kind === 'connectedFromSeed')) regionAdjacency = buildAdjacency(mesh);
@@ -6370,7 +6383,7 @@ async function main() {
     voxelPaint.deactivate();
     setValue(code);
     await runCodeSync(code);
-    // Mirror the runAndSave auto-create pattern so callers don't have to wrap
+    // Mirror the runAndSave auto-create pattern so callers don’t have to wrap
     // bake with a manual createSession.
     if (!getState().session) {
       await createSession(label, getActiveLanguage());
@@ -6384,6 +6397,188 @@ async function main() {
     initialLang: getActiveLanguage(),
     onCancelRender: () => { cancelCurrentExecution(); },
   });
+
+  // --- Cut panel ---
+  // Boolean-cuts the live mesh off the main thread via the geometry Worker.
+  // The baseline is snapshotted when the panel opens; apply swaps the live
+  // mesh in place; save bakes the result as a new imported-style version.
+  const cutHandlers: CutHandlers = {
+    open(userInitiated) {
+      if (userInitiated) {
+        if (isPaintOpen()) closePaintMenu();
+        if (isAnnotateOpen()) closeAnnotateMenu();
+        if (isSimplifyOpen()) closeSimplifyMenu();
+        closeMeasureIfActive();
+      }
+      if (!currentMeshData) {
+        return { ok: false, reason: "Run some code first — there’s no model to cut." };
+      }
+      // Snapshot the baseline on first open (or after a reset).
+      if (!cutBaseMesh) cutBaseMesh = currentMeshData;
+      cutResultMesh = null;
+      cutResultMeshes = null;
+      cutKeptColorsList = null;
+      cutComplementColorsList = null;
+      return { ok: true };
+    },
+
+    getMesh() {
+      return currentMeshData;
+    },
+
+    async apply(params, preserveColors) {
+      const base = cutBaseMesh ?? currentMeshData;
+      if (!base) return null;
+      const baseSnapshot = cutBaseMesh;
+      // Gather paint tri-colors if the user wants them preserved.
+      const srcColors = preserveColors && (hasColorRegions() || hasModelColorRegions())
+        ? buildTriColors(base.numTri) ?? undefined
+        : undefined;
+      try {
+        const result = await cutInWorker(
+          base,
+          params.shape,
+          params.keepSide,
+          params.mat4x3,
+          params.scale,
+          srcColors,
+        );
+        // Bail if a code run updated the mesh while we were waiting.
+        if (cutBaseMesh !== baseSnapshot) return null;
+        if (!result) return null;
+        // Store per-side color data for save().
+        cutKeptColorsList = result.keptColorsList ?? null;
+        cutComplementColorsList = result.complementColorsList ?? null;
+        cutResultMeshes = result.meshes;
+        // Build an exploded-view preview: both sides pulled apart along the cut normal.
+        // mat4x3 col 2 (indices 6-8) is the local Z axis = the cut plane normal.
+        const rawNx = params.mat4x3[6], rawNy = params.mat4x3[7], rawNz = params.mat4x3[8];
+        const nLen = Math.sqrt(rawNx * rawNx + rawNy * rawNy + rawNz * rawNz);
+        const cutNormal: [number, number, number] = nLen > 1e-9
+          ? [rawNx / nLen, rawNy / nLen, rawNz / nLen]
+          : [0, 0, 1];
+        // Offset distance = 8% of the base mesh's max bounding-box dimension.
+        const bb = meshBounds(base);
+        const offsetDist = Math.max(
+          bb.max[0] - bb.min[0],
+          bb.max[1] - bb.min[1],
+          bb.max[2] - bb.min[2],
+        ) * 0.08;
+        const exploded = result.complementMeshes.length > 0
+          ? buildExplodedMesh(
+              result.keptMeshes,
+              result.complementMeshes,
+              cutNormal,
+              offsetDist,
+              result.keptColorsList,
+              result.complementColorsList,
+            )
+          : null;
+        const meshToShow: MeshData = exploded
+          ? (exploded.triColors ? { ...exploded.mesh, triColors: exploded.triColors } : exploded.mesh)
+          : result.triColors
+            ? { ...result.mesh, triColors: result.triColors }
+            : result.mesh;
+        applyLiveGeometry(meshToShow);
+        cutResultMesh = meshToShow;
+        // Update baseline so a second Apply starts from the current cut result.
+        cutBaseMesh = result.mesh;
+        return { triangleCount: result.mesh.numTri, componentCount: result.meshes.length };
+      } catch (err) {
+        return null;
+      }
+    },
+
+    async save(resultMode: CutResultMode) {
+      if (!getState().session) {
+        return { ok: false, message: 'Open a session before saving.' };
+      }
+      if (!cutResultMesh || !cutResultMeshes) {
+        return { ok: false, message: 'Apply the cut first, then save.' };
+      }
+      const componentMeshes = cutResultMeshes;
+      try {
+        const originalCode = getValue();
+        const current = getState().currentVersion;
+        let savedOriginal = false;
+        const baseline = cutBaseMesh;
+        if (baseline && (!current || editorContentDiffersFrom(current.code))) {
+          const original = await snapshotMeshAsVersion(baseline, originalCode);
+          savedOriginal = !!(await saveVersion(originalCode, original.geometryData, original.thumbnail));
+        }
+
+        async function savePart(partName: string, partMesh: MeshData): Promise<void> {
+          await createPart(partName);
+          const baked = toImportedMesh(`cut-${partMesh.numTri}tri`, partMesh);
+          const code = generateImportCode([baked], { manifold: true });
+          setActiveImports([baked]);
+          setValue(code);
+          await runCodeSync(code);
+          const thumbnail = await captureThumbnail();
+          const geometryData = getGeometryDataObj();
+          await saveVersion(code, geometryData, thumbnail, 'cut', undefined, {
+            force: true,
+            importedMeshes: [baked],
+          });
+        }
+
+        let partsCount: number;
+        if (resultMode === 'combined') {
+          // Merge all components (kept + complement) into one part.
+          const merged = mergeMeshData(componentMeshes);
+          if (!merged) {
+            return { ok: false, message: 'Cut produced no usable geometry.' };
+          }
+          // Combine colors from both sides if present.
+          const allColors = [...(cutKeptColorsList ?? []), ...(cutComplementColorsList ?? [])];
+          let combinedColors: Uint8Array | undefined;
+          if (allColors.length > 0) {
+            const total = allColors.reduce((s, c) => s + c.length, 0);
+            const buf = new Uint8Array(total);
+            let off = 0;
+            for (const c of allColors) { buf.set(c, off); off += c.length; }
+            combinedColors = buf;
+          }
+          const partMesh = combinedColors ? { ...merged, triColors: combinedColors } : merged;
+          await savePart('Cut Result', partMesh);
+          partsCount = 1;
+        } else {
+          // Separate: one part per disconnected component.
+          const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+          for (let i = 0; i < componentMeshes.length; i++) {
+            const componentMesh = componentMeshes[i];
+            // Attach per-component colors from the flat triColorsList if available.
+            const colors = cutResultMeshes && (cutKeptColorsList || cutComplementColorsList)
+              ? [...(cutKeptColorsList ?? []), ...(cutComplementColorsList ?? [])][i]
+              : undefined;
+            const coloredMesh = colors ? { ...componentMesh, triColors: colors } : componentMesh;
+            const partName = componentMeshes.length === 1
+              ? 'Cut Result'
+              : `Cut ${LETTERS[i] ?? String(i + 1)}`;
+            await savePart(partName, coloredMesh);
+          }
+          partsCount = componentMeshes.length;
+        }
+
+        cutBaseMesh = null;
+        cutResultMesh = null;
+        cutResultMeshes = null;
+        cutKeptColorsList = null;
+        cutComplementColorsList = null;
+        const partsLabel = `${partsCount} part${partsCount > 1 ? 's' : ''}`;
+        return {
+          ok: true,
+          message: savedOriginal
+            ? `Saved original + ${partsLabel} from cut.`
+            : `Saved ${partsLabel} from cut.`,
+        };
+      } catch (e) {
+        return { ok: false, message: `Save failed: ${(e as Error).message}` };
+      }
+    },
+  };
+  initCutUI(clipControls, cutHandlers);
+
   initMeasureToggle(clipControls);
   initOrbitLockToggle(clipControls);
   initResetViewButton(clipControls);
@@ -6401,7 +6596,7 @@ async function main() {
   // Relief edit is a contextual primary too (shown only in relief sessions), so
   // it sits top-level alongside Customize rather than inside the Tools popover.
   const reliefAnchor = clipControls.querySelector('#viewport-view-group');
-  if (reliefAnchor) clipControls.insertBefore(reliefViewportBtn, reliefAnchor);
+  if (reliefAnchor?.parentNode) reliefAnchor.parentNode.insertBefore(reliefViewportBtn, reliefAnchor);
   else clipControls.appendChild(reliefViewportBtn);
 
   initEscapeMenuClose();
@@ -6411,10 +6606,10 @@ async function main() {
     scheduleColorRefresh();
   });
 
-  // Projection paint collects triangle ids in the current working mesh's index
+  // Projection paint collects triangle ids in the current working mesh’s index
   // space; this maps them back to pristine-base ids before storage so a later
   // refine remaps them correctly. Reads live state: identity (no work) while the
-  // mesh is unrefined, a base-mesh closest-point lookup once it's been refined.
+  // mesh is unrefined, a base-mesh closest-point lookup once it’s been refined.
   setTriangleToBaseMapper((t) => {
     const cm = currentMeshData, base = paintBaseMesh;
     if (!cm || !base || cm === base) return t;
@@ -6424,7 +6619,7 @@ async function main() {
   // Any region change reconciles the working mesh: incremental stroke append,
   // full rebuild, or the lightweight no-subdivision refresh. The async variant
   // runs the heavy subdivision in a Web Worker (with a Cancel button) so a
-  // single max-settings stroke can't freeze the tab — see
+  // single max-settings stroke can’t freeze the tab — see
   // reconcilePaintedGeometryAsync.
   onColorRegionsChange(() => { void reconcilePaintedGeometryAsync(); });
 
@@ -6439,9 +6634,9 @@ async function main() {
 
   // Start guided tour on first visit (after editor fully renders) — but not over
   // a shared preview, which is a read-only landing surface for an external link.
-  // /editor?tour=1 (the static landing's "Take the guided tour" CTA): force the
+  // /editor?tour=1 (the static landing’s "Take the guided tour" CTA): force the
   // guided tour even for users who already completed it once, then strip the
-  // param so a refresh doesn't relaunch it. maybeStartTour() below then fires on
+  // param so a refresh doesn’t relaunch it. maybeStartTour() below then fires on
   // the now-clean editor URL.
   if (new URLSearchParams(window.location.search).get('tour') === '1') {
     resetTour();
@@ -6468,7 +6663,7 @@ async function main() {
     }
   }
 
-  // Keep this tab's session state in sync with peer tabs that mutate the same
+  // Keep this tab’s session state in sync with peer tabs that mutate the same
   // session in another window, and coordinate single-writer leadership.
   initSessionTabSync();
   initSessionLeader();
@@ -6481,7 +6676,7 @@ async function main() {
   // the retained STEP-export shape) can be flushed when the session changes —
   // both live module-global in the worker and would otherwise bleed across
   // sessions (a second STEP-as-BREP import accumulating in `api.imports`, or
-  // exportSTEP serializing a previous session's shape).
+  // exportSTEP serializing a previous session’s shape).
   let lastBrepSessionId: string | null = getState().session?.id ?? null;
 
   // Update document title when session state changes (create, open, close, rename)
@@ -6496,29 +6691,29 @@ async function main() {
     // Re-bind the AI panel to the current session so chat history follows.
     void setAiActiveSession(state.session?.id ?? null);
     // Claim (or queue for) write-ownership of the now-active session so two
-    // tabs on the same session don't both drive the chat / save versions.
+    // tabs on the same session don’t both drive the chat / save versions.
     void acquireSessionLock(state.session?.id ?? null);
-    // A read-only viewer mirrors the leader's current (latest) version into its
+    // A read-only viewer mirrors the leader’s current (latest) version into its
     // editor + viewport so it reads along instead of freezing on an old one.
     if (isReadOnlyViewer() && state.currentVersion && getValue() !== state.currentVersion.code) {
       void loadVersionIntoEditor(state.currentVersion);
     }
   });
 
-  // Tell the session manager this tab's viewer status so cross-tab reloads
-  // follow the latest version when we're a viewer; and when we *become* a
-  // viewer (a peer took control), snap to the leader's latest state.
+  // Tell the session manager this tab’s viewer status so cross-tab reloads
+  // follow the latest version when we’re a viewer; and when we *become* a
+  // viewer (a peer took control), snap to the leader’s latest state.
   setViewerPredicate(() => isReadOnlyViewer());
   onOwnershipChange(({ sessionId, owned }) => {
     if (sessionId && !owned) void refreshCurrentSession();
   });
 
   // syncEditorFromURL() above opened the initial session BEFORE the listener
-  // was registered, so claim that session's leadership explicitly now —
+  // was registered, so claim that session’s leadership explicitly now —
   // otherwise a tab that loads straight into a session (?session=…) never
   // engages the single-writer lock. ?takeover=1 (from a "Take control" reload)
   // claims leadership outright, bumping the other tab to read-only; strip it so
-  // it doesn't stick on refresh.
+  // it doesn’t stick on refresh.
   {
     const tparams = new URLSearchParams(window.location.search);
     const steal = tparams.get('takeover') === '1';
@@ -6549,11 +6744,11 @@ async function main() {
       await setAiActiveSession(cur.session?.id ?? null);
       await refreshAiToolbarChip();
       // Watch for key/provider changes via a poll-on-focus trigger — cheap,
-      // and matches the chip's update cadence in the AI settings modal.
+      // and matches the chip’s update cadence in the AI settings modal.
       window.addEventListener('focus', () => { void refreshAiToolbarChip(); });
       // Also watch localStorage for cross-tab provider switches. Drop our
       // cached settings blob first so refreshAiToolbarChip (and any
-      // onSettingsChange subscriber, e.g. the AI panel) reads the peer tab's
+      // onSettingsChange subscriber, e.g. the AI panel) reads the peer tab’s
       // change instead of our stale copy.
       window.addEventListener('storage', e => {
         if (e.key === 'partwright-ai-settings-v1') {
@@ -6573,20 +6768,20 @@ async function main() {
     setAiToolbarState(await aiConnectionMode());
   }
 
-  // Set initial editor title if we're on the editor page
+  // Set initial editor title if we’re on the editor page
   if (!showLanding && !showHelpPage && !showCatalog && !showIdeas && !showLegalPage && !showWhatsNew && !show404) {
     updateDocumentTitle({ page: 'editor' });
   }
 
   // Clean up empty auto-created sessions when leaving the page, and warn
-  // when there are painted color regions that haven't been saved yet.
+  // when there are painted color regions that haven’t been saved yet.
   window.addEventListener('beforeunload', (event) => {
     const state = getState();
     if (state.session && state.versionCount === 0) {
       deleteIfEmpty(state.session.id);
     }
     // Warn if in-memory color regions exist but the current persisted version
-    // doesn't have them — i.e. the user painted but hasn't hit Save yet.
+    // doesn’t have them — i.e. the user painted but hasn’t hit Save yet.
     if (hasColorRegions()) {
       const persistedRegions = (state.currentVersion?.geometryData as Record<string, unknown> | null | undefined)?.colorRegions;
       const alreadySaved = Array.isArray(persistedRegions) && (persistedRegions as unknown[]).length > 0;
@@ -6600,17 +6795,17 @@ async function main() {
 
   // === Language switching helpers ===
 
-  /** Low-level: swap the engine and the editor's display language, leaving
+  /** Low-level: swap the engine and the editor’s display language, leaving
    *  the editor contents alone. Used by version navigation (where the new
    *  contents are provided by the caller) and as a primitive for the
-   *  draft-swap path below. Does NOT touch session.language — that's still a
+   *  draft-swap path below. Does NOT touch session.language — that’s still a
    *  "default for new sessions / fallback for pre-1.8 versions" hint and is
    *  only updated on session creation or by an explicit AI/console call. */
   async function applyEngineLanguage(lang: Language) {
     if (lang === getActiveLanguage()) return;
     // Leaving a replicad session: drop the retained STEP-export shape so a
-    // later exportSTEP can't serialize a stale shape that belonged to the
-    // previous BREP model (it's module-global in the worker and only replaced
+    // later exportSTEP can’t serialize a stale shape that belonged to the
+    // previous BREP model (it’s module-global in the worker and only replaced
     // by the next replicad run).
     if (getActiveLanguage() === 'replicad') void clearBrepShape().catch(() => {});
     setActiveLanguage(lang);
@@ -6637,11 +6832,11 @@ async function main() {
   }
 
   /** Toolbar / AI language toggle: stash the current editor buffer as a draft
-   *  on the active session, swap engines, then restore the target language's
+   *  on the active session, swap engines, then restore the target language’s
    *  draft (seeded with a stub if none has been stashed yet). Versions are not
    *  touched — they keep the language they were authored in. Auto-creates a
    *  session first when none is open, so a sessionless toggle (rare — usually
-   *  there's an auto-created session on first edit) doesn't silently drop the
+   *  there’s an auto-created session on first edit) doesn’t silently drop the
    *  current editor buffer with no place to stash it. */
   async function switchLanguageWithDrafts(lang: Language) {
     if (lang === getActiveLanguage()) return;
@@ -6649,8 +6844,8 @@ async function main() {
     const currentCode = getValue();
     if (!getState().session) {
       // No session means no draft store to stash into. Mirror the auto-create
-      // behavior used elsewhere in the editor so the user's in-progress code
-      // doesn't vanish. The new session is tagged with the PREVIOUS language
+      // behavior used elsewhere in the editor so the user’s in-progress code
+      // doesn’t vanish. The new session is tagged with the PREVIOUS language
       // (the one the current code is in) so its session-level fallback hint
       // stays meaningful for the buffer being stashed.
       await createSession(undefined, prevLang);
@@ -6658,7 +6853,7 @@ async function main() {
     const sid = getState().session?.id;
     const pid = getState().currentPart?.id;
     if (sid) {
-      // Persist the previous language's working buffer so flipping back
+      // Persist the previous language’s working buffer so flipping back
       // restores it exactly. Both languages stay live in IDB until the
       // part/session is deleted. Companions ride along for the SCAD buffer.
       await writeDraft(sid, prevLang, currentCode, pid, getCompanionFiles());
@@ -6676,7 +6871,7 @@ async function main() {
         : lang === 'voxel' ? STARTER_VOXEL
         : defaultCode;
     }
-    // Restore the target language's companion set: the SCAD draft's saved
+    // Restore the target language’s companion set: the SCAD draft’s saved
     // companions, or empty for any non-SCAD buffer (which never has them).
     setCompanionFiles(lang === 'scad' ? (nextCompanions ?? {}) : {});
     setValue(nextCode);
@@ -6692,13 +6887,13 @@ async function main() {
 
   // === Execution state ===
   // (`_running` is declared at the top of main() so async callbacks fired
-  // during initial load don't hit a Temporal Dead Zone error.)
+  // during initial load don’t hit a Temporal Dead Zone error.)
 
   async function executeIsolated(code: string, lang?: Language) {
     // Hard refusal in a read-only shared preview. executeIsolated is the single
     // funnel for every isolated run — runIsolated / runAndAssert / runDecompose
     // (all AI-exposed tools), modify/test, and forkVersion — so guarding it here
-    // stops the sharer's untrusted code from reaching the `new Function` sandbox
+    // stops the sharer’s untrusted code from reaching the `new Function` sandbox
     // (and thus fetch / indexedDB) via any of them. Fork clears the flag before
     // importing, so the consented run is unaffected.
     if (isSharedPreview()) {
@@ -6719,7 +6914,7 @@ async function main() {
     const elapsed = Math.round(performance.now() - t0);
 
     // Engine WASM heap high-water for this run (manifold-js only) so isolated
-    // runs report memory in their stats just like the editor's Data panel.
+    // runs report memory in their stats just like the editor’s Data panel.
     const engineMemory = result.engineHeapBytes !== undefined
       ? formatEngineMemory(result.engineHeapBytes)
       : undefined;
@@ -6785,7 +6980,7 @@ async function main() {
   }
 
   /** Pre-run validation warnings for texture operations. Checks amplitude and
-   *  feature size relative to the model's bounding-box diagonal so the AI gets
+   *  feature size relative to the model’s bounding-box diagonal so the AI gets
    *  actionable feedback before spending time on a degenerate run. */
   function textureWarnings(
     id: 'fuzzy' | 'knit' | 'cable' | 'waffle' | 'fur' | 'woven',
@@ -6896,9 +7091,9 @@ async function main() {
     return warnings;
   }
 
-  // Non-destructive preview: swap the viewport mesh to the modifier's result
+  // Non-destructive preview: swap the viewport mesh to the modifier’s result
   // WITHOUT running the engine or saving a version. Cleared by reverting to the
-  // current model's mesh (clearSurfacePreview). Mirrors the relief preview path.
+  // current model’s mesh (clearSurfacePreview). Mirrors the relief preview path.
   // Colors are carried through subdivision in buildSurfaceModifier, so result.mesh
   // already has the correct per-triangle colors — no post-hoc transfer needed.
   function previewSurfaceModifier(result: ModifierResult, _preserveColor: boolean): void {
@@ -6934,7 +7129,7 @@ async function main() {
     for (let t = 0; t < newMesh.numTri; t++) {
       const o = nearest[t];
       if (o < 0) continue;
-      if (painted && !painted[o]) continue; // skip triangles that weren't painted
+      if (painted && !painted[o]) continue; // skip triangles that weren’t painted
       const r = oldColors[o * 3], g = oldColors[o * 3 + 1], b = oldColors[o * 3 + 2];
       const rgb = (r << 16) | (g << 8) | b;
       let arr = groups.get(rgb);
@@ -7160,7 +7355,7 @@ async function main() {
         return { ok: true };
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
-    /** Discard a live surface preview and restore the current model's mesh. */
+    /** Discard a live surface preview and restore the current model’s mesh. */
     clearSurfacePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
     /** Apply a fuzzy-skin surface texture to the current model; saves a new version.
      *  `preserveColor` (default true) re-resolves paint regions onto the new mesh.
@@ -7362,7 +7557,7 @@ async function main() {
         return { ok: true };
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
-    /** Discard a live scale preview and restore the current model's mesh. */
+    /** Discard a live scale preview and restore the current model’s mesh. */
     clearScalePreview(): { ok: true } { clearSurfacePreview(); return { ok: true }; },
     /** Scale the current model and save as a new version.
      *  sx/sy/sz are multiplicative factors (1 = no change, 2 = double, 0.5 = half).
@@ -7391,7 +7586,7 @@ async function main() {
     getGeometryData(): Record<string, unknown> {
       const geo = JSON.parse(geometryDataEl.textContent || '{}') as Record<string, unknown>;
       const warnings = geometryWarnings(geo);
-      // Flag stale results: setCode() doesn't re-run, so the cached geometry may
+      // Flag stale results: setCode() doesn’t re-run, so the cached geometry may
       // reflect a previous version of the code. Callers should run or runAndSave
       // before relying on component counts or other stats.
       const stale = typeof geo.codeHash === 'string' && simpleHash(getValue()) !== geo.codeHash;
@@ -7424,7 +7619,7 @@ async function main() {
     },
 
     /** Set one or more Customizer parameter overrides and re-run the model —
-     *  the language-based equivalent of dragging the panel's sliders. Unknown
+     *  the language-based equivalent of dragging the panel’s sliders. Unknown
      *  keys are ignored; a numeric value beyond the declared min/max is honored
      *  as typed (the bounds only size the slider), and only wrong-type values
      *  fall back to the declared default (never throws on a bad value). Returns
@@ -7453,7 +7648,7 @@ async function main() {
       if (!currentManifold) return { error: 'No geometry loaded' };
       const result = sliceAtZ(currentManifold, z);
       // sliceAtZ now returns a reference into a per-(manifold,z) memo cache.
-      // Hand external (console/AI) callers a copy so mutating the result can't
+      // Hand external (console/AI) callers a copy so mutating the result can’t
       // corrupt the cache; in-app callers keep the fast shared reference.
       return result ? structuredClone(result) : result;
     },
@@ -7502,7 +7697,7 @@ async function main() {
      *  sessions only (the integer grid is re-derived from the current code, or
      *  the live painted grid when paint is active). Returns
      *  `{ ok, filename }` or `{ error }` (no grid, or a model larger than the
-     *  format's 256-per-axis limit). */
+     *  format’s 256-per-axis limit). */
     exportVOX(filename?: string) {
       assertString(filename, 'exportVOX(filename)', { optional: true });
       const grid = getCurrentVoxelGrid();
@@ -7514,7 +7709,7 @@ async function main() {
     /** Export the most-recent BREP shape as a STEP file. Only meaningful in
      *  replicad-language sessions — BREP shapes built ad-hoc inside a
      *  manifold-js session (via api.BREP.*) are not retained past the
-     *  toManifold() conversion, so this won't pick them up. Returns
+     *  toManifold() conversion, so this won’t pick them up. Returns
      *  `{ ok: true, filename, sizeBytes }` on success, or
      *  `{ ok: false, error }` when no BREP shape is available. */
     async exportSTEP(filename?: string) {
@@ -7543,7 +7738,7 @@ async function main() {
 
     // === AI-friendly export API ===
     // These return file contents over the API instead of triggering a browser
-    // download — so AI agents (which can't observe Downloads-folder files) can
+    // download — so AI agents (which can’t observe Downloads-folder files) can
     // inspect, save elsewhere, or pipe the bytes onward. Each export is also
     // added to the Recent Exports inbox so the user can re-download from the UI.
 
@@ -7577,7 +7772,7 @@ async function main() {
 
     /**
      * Build an OBJ. If the mesh has painted color regions the result is a ZIP
-     * (returned as base64); otherwise it's plain text (returned as `text`).
+     * (returned as base64); otherwise it’s plain text (returned as `text`).
      * Inspect `mimeType` to tell which.
      */
     async exportOBJData(filename?: string) {
@@ -7614,7 +7809,7 @@ async function main() {
 
     /** Build a MagicaVoxel `.vox` and return its bytes as base64. Voxel sessions
      *  only. Returns `{ error }` with no grid, or when the model exceeds the
-     *  format's 256-per-axis limit. */
+     *  format’s 256-per-axis limit. */
     async exportVOXData(filename?: string) {
       assertString(filename, 'exportVOXData(filename)', { optional: true });
       const grid = getCurrentVoxelGrid();
@@ -7778,7 +7973,7 @@ async function main() {
     },
 
     // === Recent Exports inbox ===
-    // The same list shown in the toolbar's Export → Recent Exports section.
+    // The same list shown in the toolbar’s Export → Recent Exports section.
 
     /** List recent exports (newest first). Bytes are not included — call getRecentExport() for those. */
     listRecentExports() {
@@ -7852,8 +8047,8 @@ async function main() {
     },
 
     /** Swap the active engine. The current editor buffer is stashed as a draft
-     *  on the active session, and the target language's draft is restored (or
-     *  a stub if you've never written in it on this session). Versions in the
+     *  on the active session, and the target language’s draft is restored (or
+     *  a stub if you’ve never written in it on this session). Versions in the
      *  session are not touched — they keep the language they were authored in
      *  and re-load you into that engine when you navigate to them. */
     async setActiveLanguage(lang: Language): Promise<void> {
@@ -8041,7 +8236,7 @@ async function main() {
       }
       if (!currentMeshData) return null;
       // Angle set and tile size default to the spending-mode budget when the
-      // caller doesn't specify them; an explicit size still wins.
+      // caller doesn’t specify them; an explicit size still wins.
       const budget = getRenderBudget();
       const which = options?.views ?? budget.angles;
       const tileSize = options?.size ?? budget.defaultPx;
@@ -8145,7 +8340,7 @@ async function main() {
      *
      *  - `axis`: 'x' | 'y' | 'z' (default 'z')
      *  - `offset`: where along the axis to cut. If omitted, defaults to the
-     *    midpoint of the model's bounding box along that axis.
+     *    midpoint of the model’s bounding box along that axis.
      *  - `size`: pixel size of the rendered SVG (default 400). The result is
      *    a data URL the agent can drop straight into setImages or display.
      *
@@ -8263,7 +8458,7 @@ async function main() {
       if (!mod) return null;
       // Capture each Manifold allocation separately so we can .delete() all of
       // them. `Manifold.cube(...).translate(...)` allocates two — the un-named
-      // intermediate would otherwise leak the cube's WASM heap memory.
+      // intermediate would otherwise leak the cube’s WASM heap memory.
       const cube = mod.Manifold.cube([eps, eps, eps], true);
       const probe = cube.translate(p);
       const inter = probe.intersect(currentManifold);
@@ -8295,7 +8490,7 @@ async function main() {
         components: beforePieces.length,
       };
       for (const p of beforePieces) { try { p.delete?.(); } catch { /* ignore */ } }
-      // Per manifold-3d's docs, simplify(tol) with tol less than the manifold's
+      // Per manifold-3d’s docs, simplify(tol) with tol less than the manifold’s
       // stored tolerance falls back to the stored value — so 0 (the default
       // here) is the lightest-touch heal. Pass a positive value to collapse
       // edges aggressively. (The binding rejects no-arg .simplify().)
@@ -8309,7 +8504,7 @@ async function main() {
       for (const p of afterPieces) { try { p.delete?.(); } catch { /* ignore */ } }
       // Apply the healed manifold as the new current geometry, so the
       // viewport reflects the cleanup. The mesh extraction path mirrors
-      // applyLiveGeometry's flow.
+      // applyLiveGeometry’s flow.
       const mesh = cleaned.getMesh();
       const meshData: MeshData = {
         vertProperties: mesh.vertProperties,
@@ -8489,7 +8684,7 @@ async function main() {
       if (typeof check === 'object' && check !== null && 'error' in check) return check;
       const version = await openSession(id);
       if (version) {
-        // Restore engine to the loaded version's language (per-version since
+        // Restore engine to the loaded version’s language (per-version since
         // schema 1.8, with session-level fallback for older data).
         const lang = effectiveVersionLanguage(version, getState().session);
         if (lang !== getActiveLanguage()) {
@@ -8551,7 +8746,7 @@ async function main() {
     },
 
     /** Switch the active part. Pass a part id string, or { id } / { name } from
-     *  listParts(). Loads that part's latest version into the editor. */
+     *  listParts(). Loads that part’s latest version into the editor. */
     async changePart(target: string | { id?: string; name?: string }) {
       const part = resolvePartTarget(target, 'changePart');
       if ('error' in part) return part;
@@ -8574,7 +8769,7 @@ async function main() {
       return { id: part.id, name: newName };
     },
 
-    /** Delete a part and its versions. Refuses to delete a session's last part.
+    /** Delete a part and its versions. Refuses to delete a session’s last part.
      *  Deleting the active part activates and loads an adjacent one. */
     async deletePart(target: string | { id?: string; name?: string }) {
       const part = resolvePartTarget(target, 'deletePart');
@@ -8611,7 +8806,7 @@ async function main() {
      *    without re-running. Equivalent to `saveVersion`.
      *  - `commitWithColors({label?})` — code omitted: same as `saveVersion`.
      *
-     *  Use this when you're an agent and the runAndSave-vs-saveVersion
+     *  Use this when you’re an agent and the runAndSave-vs-saveVersion
      *  decision feels brittle — calling `runAndSave` for a color-only
      *  change wastes the WASM re-run; calling `saveVersion` when you
      *  meant to update geometry silently snapshots stale colors. This
@@ -8621,9 +8816,9 @@ async function main() {
       assertString(o.code, 'commitWithColors(opts).code', { optional: true });
       assertString(o.label, 'commitWithColors(opts).label', { optional: true });
       if (o.assertions !== undefined) validateAssertionsShape(o.assertions, 'commitWithColors(opts).assertions');
-      // If no code is given, or the code matches what's in the editor, just
+      // If no code is given, or the code matches what’s in the editor, just
       // snapshot. The current-code check is intentionally string-equality —
-      // whitespace-equivalent reformatting will still re-run, but that's
+      // whitespace-equivalent reformatting will still re-run, but that’s
       // safer than skipping a meaningful change because of a hash collision.
       const editorCode = getValue();
       const shouldRun = typeof o.code === 'string' && o.code !== editorCode;
@@ -8648,7 +8843,7 @@ async function main() {
     },
 
     /** Load a version into the editor. Pass { index } or { id } from listVersions().
-     *  Returns the loaded version's code and stats, or { error } if not found. */
+     *  Returns the loaded version’s code and stats, or { error } if not found. */
     async loadVersion(target: { index?: number; id?: string }) {
       const parsed = parseVersionTarget(target, 'loadVersion');
       if ('error' in parsed) return parsed;
@@ -8662,13 +8857,13 @@ async function main() {
       }
       // Each version remembers the language it was authored in (since schema
       // 1.8). Swap the engine before re-running so a JS version loaded while
-      // SCAD is active doesn't hit a parse error in the wrong engine.
+      // SCAD is active doesn’t hit a parse error in the wrong engine.
       const versionLang = effectiveVersionLanguage(version, getState().session);
       if (versionLang !== getActiveLanguage()) {
         await switchLanguage(versionLang);
       }
       setValue(version.code);
-      // Restore this version's Customizer overrides before the re-run so it
+      // Restore this version’s Customizer overrides before the re-run so it
       // renders with the values it was saved at (matches loadVersionIntoEditor).
       currentParamValues = { ...(version.paramValues ?? {}) };
       await runCodeSync(version.code);
@@ -8698,7 +8893,7 @@ async function main() {
       if (version) {
         // Each version remembers the language it was authored in (since schema
         // 1.8). Swap the engine before re-running so a JS version stepped into
-        // while another engine is active doesn't run under the wrong sandbox —
+        // while another engine is active doesn’t run under the wrong sandbox —
         // e.g. a manifold-js version under the voxel/replicad engine, whose
         // `api` has no `params` (and voxel no `Manifold`), which surfaced as
         // "api.params is not a function" / "reading 'cube' of undefined".
@@ -8708,7 +8903,7 @@ async function main() {
           await switchLanguage(versionLang);
         }
         setValue(version.code);
-        // Restore this version's Customizer overrides before the re-run so it
+        // Restore this version’s Customizer overrides before the re-run so it
         // renders with the values it was saved at (matches loadVersion).
         currentParamValues = { ...(version.paramValues ?? {}) };
         await runCodeSync(version.code);
@@ -8788,9 +8983,9 @@ async function main() {
 
     /** Fork a prior version: load its code, apply transformFn, validate, and save as a new version.
      *  target: { index } or { id } from listVersions().
-     *  transformFn: (code: string) => string — modifies the parent's code. Return the full new code.
+     *  transformFn: (code: string) => string — modifies the parent’s code. Return the full new code.
      *  Eliminates the load + getCode + modify + save round-trip chain.
-     *  Returns { error } if the parent isn't found or transformFn throws.
+     *  Returns { error } if the parent isn’t found or transformFn throws.
      *  Returns { passed, failures } without saving if assertions fail.
      *  On success: { passed?, parent, geometry, version, diff, galleryUrl }. */
     async forkVersion(
@@ -8820,9 +9015,9 @@ async function main() {
         return { error: `No version found with ${parsed.kind} "${parsed.value}" in the active session. Use listVersions() to see valid ${parsed.kind}s.` };
       }
 
-      // Fork into the parent's language. If the active engine is the other
+      // Fork into the parent’s language. If the active engine is the other
       // one (e.g. user toggled to SCAD then forked a JS version), swap first
-      // so the isolated execution doesn't hit a parse error.
+      // so the isolated execution doesn’t hit a parse error.
       const parentLang = effectiveVersionLanguage(parent, getState().session);
       if (parentLang !== getActiveLanguage()) {
         await switchLanguage(parentLang);
@@ -8862,8 +9057,8 @@ async function main() {
       }
       const newGeoData = JSON.parse(geometryDataEl.textContent || '{}');
 
-      // Re-apply the parent's color regions to the forked geometry before
-      // snapshotting the thumbnail and saving, so a geometry tweak doesn't
+      // Re-apply the parent’s color regions to the forked geometry before
+      // snapshotting the thumbnail and saving, so a geometry tweak doesn’t
       // force the agent to repaint. Descriptors are re-resolved against the
       // new mesh; non-matching regions drop out and are reported. When not
       // carrying, clear any stale in-memory regions so the fork is clean.
@@ -8874,9 +9069,9 @@ async function main() {
         clearRegions();
       }
 
-      // Carry the PARENT's annotations onto the fork. saveVersion snapshots
+      // Carry the PARENT’s annotations onto the fork. saveVersion snapshots
       // the in-memory annotation store, which still holds the previously
-      // active version's strokes — without this the fork would silently
+      // active version’s strokes — without this the fork would silently
       // inherit the wrong annotations (or drop them). Mirrors how
       // loadVersion swaps annotations to the version it loads.
       applyVersionAnnotations(parent);
@@ -8906,7 +9101,7 @@ async function main() {
     },
 
     /** Transfer the color regions from a prior version onto the CURRENT
-     *  geometry by re-resolving each region's descriptor against the live
+     *  geometry by re-resolving each region’s descriptor against the live
      *  mesh — instead of repainting region by region after a rebuild. Any
      *  colors currently on the model are replaced. Regions whose descriptor
      *  no longer resolves (a dropped label, raw-triangle regions on changed
@@ -8955,14 +9150,14 @@ async function main() {
 
     /** Mint a self-contained, read-only share link for the current version.
      *
-     *  This is the link to hand back to the user when you're done — unlike
+     *  This is the link to hand back to the user when you’re done — unlike
      *  `getSessionUrl()`/`getGalleryUrl()` (which only resolve on this browser,
-     *  against this browser's IndexedDB), a share link encodes the whole design
+     *  against this browser’s IndexedDB), a share link encodes the whole design
      *  into the URL hash, so anyone can open it anywhere and fork it into their
      *  own editable copy. Nothing is uploaded to a server.
      *
      *  Commits the current buffer first (so unsaved edits are captured), then
-     *  encodes the current part's current version. Multi-part sessions share one
+     *  encodes the current part’s current version. Multi-part sessions share one
      *  part per link. Returns `{ url, encodedBytes }` on success or `{ error }`
      *  (e.g. no session open, browser lacks CompressionStream, or the design is
      *  too large to fit in a URL). */
@@ -9005,7 +9200,7 @@ async function main() {
       return { success: true };
     },
 
-    /** Update a session note's text by ID */
+    /** Update a session note’s text by ID */
     async updateSessionNote(noteId: string, text: string) {
       const check = guard(() => {
         assertString(noteId, 'updateSessionNote(noteId)', { allowEmpty: false });
@@ -9055,7 +9250,7 @@ async function main() {
         assertNumber(s.updated, 'importSession(data).session.updated');
         // `versions` is optional — chat- or notes-only exports omit it.
         // sessionManager.importSession rejects payloads where versions,
-        // chat, and notes are ALL empty, so we don't need to re-check
+        // chat, and notes are ALL empty, so we don’t need to re-check
         // that here.
         if (d.versions !== undefined) {
           const versions = assertArray(d.versions, 'importSession(data).versions');
@@ -9066,7 +9261,7 @@ async function main() {
             assertString(v.label, `importSession(data).versions[${i}].label`, { allowEmpty: true });
             assertNumber(v.timestamp, `importSession(data).versions[${i}].timestamp`);
             if (v.notes !== undefined) assertString(v.notes, `importSession(data).versions[${i}].notes`, { allowEmpty: true });
-            // geometryData may be null or an object; don't over-specify shape (historical data varies)
+            // geometryData may be null or an object; don’t over-specify shape (historical data varies)
             if (v.geometryData !== null && v.geometryData !== undefined) {
               assertObject(v.geometryData, `importSession(data).versions[${i}].geometryData`);
             }
@@ -9087,7 +9282,7 @@ async function main() {
       const session = await importSession(
         data,
         async (code: string, importedMeshes) => {
-          // Seed this version's imported meshes so `api.imports[0]` resolves to
+          // Seed this version’s imported meshes so `api.imports[0]` resolves to
           // its own geometry when regenerating the thumbnail (else a stale part).
           setActiveImports(importedMeshes ?? []);
           await runCodeSync(code);
@@ -9123,7 +9318,7 @@ async function main() {
     /** Run code without mutating editor, viewport, or session state.
      *  Returns geometry stats + thumbnail. By default the thumbnail is
      *  the standard 4-iso composite; pass `view` to render a single
-     *  named angle instead — useful when the feature you're verifying
+     *  named angle instead — useful when the feature you’re verifying
      *  (a smile on a face, a logo on a flat panel) only reads from one
      *  specific direction. Same shape `renderView` accepts, including
      *  `edges` ('none' | 'crease' | 'wireframe'). */
@@ -9400,7 +9595,7 @@ async function main() {
       }
 
       // Include current stats for convenience, with a stale flag when the editor
-      // code doesn't match the last-executed code (setCode was called without run).
+      // code doesn’t match the last-executed code (setCode was called without run).
       const rawStats = JSON.parse(geometryDataEl.textContent || '{}') as Record<string, unknown>;
       const stale = typeof rawStats.codeHash === 'string' && simpleHash(getValue()) !== rawStats.codeHash;
       if (stale) rawStats.stale = true;
@@ -9498,7 +9693,7 @@ async function main() {
      *  the ray. Defaults to FRONT-FACE hits only (the outer-surface hits a
      *  closed solid presents to an outside observer), so `hits[0]` is the
      *  nearest exterior surface — which is almost always what you want for
-     *  "find the surface I'm aiming at". Pass `{ allHits: true }` to opt
+     *  "find the surface I’m aiming at". Pass `{ allHits: true }` to opt
      *  into the full entry/exit soup (`DoubleSide`), useful for thickness
      *  / through-piece queries. */
     probeRay(
@@ -9517,7 +9712,7 @@ async function main() {
      *  back to a world-space hit on the mesh — exact surface point,
      *  face normal, and triangle id of the front-most hit (occlusion-
      *  correct by construction). The `view` argument must be the SAME
-     *  shape `renderView` accepted for the image you're probing; the
+     *  shape `renderView` accepted for the image you’re probing; the
      *  camera is rebuilt deterministically so screen coordinates round-
      *  trip without drift. Returns `null` when the pixel is background.
      *
@@ -9531,7 +9726,7 @@ async function main() {
      *    pixel: [180, 220],
      *    view:  { elevation: 0, azimuth: 0, ortho: true, size: 320 },
      *  });
-     *  // On a miss, `hit.hint` reports the model's pixel bounds so you can
+     *  // On a miss, `hit.hint` reports the model’s pixel bounds so you can
      *  // re-aim; on a hit, `hit.point`/`hit.normal` carry the surface seed.
      *  if ('point' in hit) partwright.paintNear({ point: hit.point, radius: 4, color: [...] });
      *  ``` */
@@ -9567,7 +9762,7 @@ async function main() {
         const b = result.modelPixelBounds;
         // Thin-feature heuristic: if the model occupies fewer than ~32 px
         // along either screen axis at the current size, the feature is
-        // smaller than the AI's pixel-estimation noise — bumping the
+        // smaller than the AI’s pixel-estimation noise — bumping the
         // render size makes each "perceived pixel" cover a smaller real
         // area, so a future probe is more likely to land on geometry.
         const thinAxis = b ? Math.min(b.maxX - b.minX, b.maxY - b.minY) : Infinity;
@@ -9588,20 +9783,20 @@ async function main() {
 
     /** Paint a connected patch starting from a seed point on the
      *  surface, expanding through adjacent triangles only as far as the
-     *  surface stays within `maxDeviationDeg` of the seed's normal.
+     *  surface stays within `maxDeviationDeg` of the seed’s normal.
      *
      *  Unlike `paintRegion` (which compares each adjacent pair, so on a
      *  smooth surface the threshold is bimodal — all or nothing),
      *  `paintConnected` compares every candidate triangle against the
-     *  SEED's normal directly. That means picking a seed on a hand and
-     *  flooding with 30° tolerance gives you the hand's surface that
+     *  SEED’s normal directly. That means picking a seed on a hand and
+     *  flooding with 30° tolerance gives you the hand’s surface that
      *  faces roughly the same way, no matter how curved the connecting
      *  geometry is.
      *
      *  Best when paired with `probePixel`: probe a pixel in a rendered
      *  view, take the returned `point` + `normal`, hand them to
      *  `paintConnected`. The patch follows real mesh topology rather
-     *  than a coordinate box, so it doesn't bleed across feature
+     *  than a coordinate box, so it doesn’t bleed across feature
      *  boundaries (a robe collar stops where the skin starts).
      *
      *  ```
@@ -9617,17 +9812,17 @@ async function main() {
       maxDeviationDeg?: number;
       color: [number, number, number];
       name?: string;
-      /** Spatial clamp — the flood-fill won't walk into triangles whose
+      /** Spatial clamp — the flood-fill won’t walk into triangles whose
        *  centroid falls outside this AABB. Essential when painting one
        *  feature of a `BREP.fuseAll` / `Manifold.union` result: the
        *  topology is one big connected mesh and `maxDeviationDeg` alone
-       *  can't stop the walk from bleeding across the join between (say)
+       *  can’t stop the walk from bleeding across the join between (say)
        *  a dome and the collar beneath it. Either field can be omitted to
        *  leave that side unbounded. */
       withinBox?: { min?: [number, number, number]; max?: [number, number, number] };
       /** Convenience shortcuts for axis-aligned ranges — equivalent to
        *  `withinBox: { min: [-∞,-∞,zMin], max: [∞,∞,zMax] }`. Combine with
-       *  withinBox for tighter constraints (AND'd together). */
+       *  withinBox for tighter constraints (AND’d together). */
       zMin?: number;
       zMax?: number;
     }) {
@@ -9889,7 +10084,7 @@ async function main() {
     /** Paint a coplanar region by snapping the seed point to the nearest face on
      *  the model. Tolerant of off-surface points within `searchRadius` (default
      *  `Infinity` — always picks the closest face). The seed normal is taken
-     *  from the snapped triangle, so callers don't need to know it. Returns
+     *  from the snapped triangle, so callers don’t need to know it. Returns
      *  `{ id, name, triangles, snappedTo: { point, normal, distance } }` on
      *  success, or `{ error, nearestDistance? }` on failure. */
     paintNearestRegion(opts: {
@@ -10042,7 +10237,7 @@ async function main() {
      *  `bbox` (axis-aligned bounding box of the painted triangles' vertices)
      *  and `centroid` (mean of those vertex positions) so callers can verify
      *  *where* a region landed without re-rendering. Returns `{ ..., bbox: null,
-     *  centroid: null }` for regions whose triangles haven't been resolved
+     *  centroid: null }` for regions whose triangles haven’t been resolved
      *  yet (e.g. just deserialized from a saved version). */
     listRegions() {
       const mesh = currentMeshData;
@@ -10088,7 +10283,7 @@ async function main() {
       const numVert = mesh.numVert;
 
       // Pack vertex positions into a tight Float32Array (mesh.vertProperties may
-      // include per-vertex extras like colors that callers don't need).
+      // include per-vertex extras like colors that callers don’t need).
       const vertices = new Float32Array(numVert * 3);
       for (let v = 0; v < numVert; v++) {
         vertices[v * 3] = mesh.vertProperties[v * mesh.numProp];
@@ -10168,7 +10363,7 @@ async function main() {
       coverageMode?: CoverageMode;
       /** Skip any triangle whose world-space area exceeds this threshold.
        *  Backstop against fan-topology bleed when `coverageMode` alone
-       *  isn't enough. Inspect `largestTriangleArea` from `paintPreview`
+       *  isn’t enough. Inspect `largestTriangleArea` from `paintPreview`
        *  to pick a sensible value. */
       maxTriangleArea?: number;
     }) {
@@ -10190,9 +10385,9 @@ async function main() {
     },
 
     /** Paint every triangle whose centroid lies inside an *oriented* bounding
-     *  box — same selector the UI's Box tool uses, but with explicit
+     *  box — same selector the UI’s Box tool uses, but with explicit
      *  center/size/quaternion instead of a gizmo. Use this when you need
-     *  arbitrary rotation that an AABB can't express (e.g. painting a tilted
+     *  arbitrary rotation that an AABB can’t express (e.g. painting a tilted
      *  panel on an oriented part).
      *
      *  `quaternion` defaults to identity `[0, 0, 0, 1]` if omitted, which
@@ -10218,7 +10413,7 @@ async function main() {
       };
       color: [number, number, number];
       name?: string;
-      /** Smooth the box's painted edge by subdividing the mesh near its faces.
+      /** Smooth the box’s painted edge by subdividing the mesh near its faces.
        *  On by default — pass `false` to keep the blocky base tessellation. */
       smooth?: boolean;
       /** Smoothing detail: target boundary edge length = model bbox diagonal /
@@ -10309,7 +10504,7 @@ async function main() {
       if (!Array.isArray(opts.color) || opts.color.length !== 3) return { error: 'color must be [r,g,b] with values 0..1' };
 
       const triangles = collectTrianglesBySphere(currentMeshData, opts.point as [number, number, number], opts.radius, cone, opts.coverageMode, opts.maxTriangleArea);
-      if (triangles.size === 0) return { error: `paintNear: no triangles within ${opts.radius} of [${opts.point.join(', ')}]${opts.coverageMode === 'fully_inside' ? ' (with coverageMode: fully_inside)' : ''}${opts.maxTriangleArea !== undefined ? ` (with maxTriangleArea: ${opts.maxTriangleArea})` : ''}. Try a larger radius — call findFaces() with a bigger box first to see what's around.` };
+      if (triangles.size === 0) return { error: `paintNear: no triangles within ${opts.radius} of [${opts.point.join(', ')}]${opts.coverageMode === 'fully_inside' ? ' (with coverageMode: fully_inside)' : ''}${opts.maxTriangleArea !== undefined ? ` (with maxTriangleArea: ${opts.maxTriangleArea})` : ''}. Try a larger radius — call findFaces() with a bigger box first to see what’s around.` };
 
       return commitPaintFromSet(triangles, opts.color, opts.name, 'paintbrush');
     },
@@ -10365,10 +10560,10 @@ async function main() {
       const { smooth, maxEdge } = resolveShapeSmoothFields(opts);
 
       // First pass: find triangles that match the cylinder selector on the
-      // CURRENT mesh. If we're going to subdivide, the post-refine resolver
+      // CURRENT mesh. If we’re going to subdivide, the post-refine resolver
       // (see RegionDescriptor 'cylinder' case) will re-collect against the
       // refined mesh — but we still need a non-empty seed set so addRegion
-      // doesn't reject the call with "0 triangles".
+      // doesn’t reject the call with "0 triangles".
       const triangles = collectTrianglesByCylinder(
         currentMeshData,
         center,
@@ -10490,7 +10685,7 @@ async function main() {
 
     /** Diagnose an existing painted region: returns counts, bbox, area,
      *  a normal-distribution histogram (axis-aligned bins), and a yellow-
-     *  highlighted thumbnail of just the region's triangles overlaid on
+     *  highlighted thumbnail of just the region’s triangles overlaid on
      *  the current model. Use to self-correct after a bad paint without
      *  the paint → render → undo → repaint cycle.
      *
@@ -10627,7 +10822,7 @@ async function main() {
     removeRegion(id: number) {
       if (!Number.isFinite(id)) return { error: 'removeRegion(id) requires a finite integer id from listRegions()' };
       // Removing a refining region (brushStroke / smooth slab / smooth box)
-      // requires re-refining without it; do it synchronously so the caller's
+      // requires re-refining without it; do it synchronously so the caller’s
       // immediate getMesh() sees the post-removal mesh.
       const ok = withSyncReconcile(() => removeRegion(id));
       if (!ok) return { error: `No region with id=${id}. Call listRegions() to see current ids.` };
@@ -10638,8 +10833,8 @@ async function main() {
 
     /** Toggle whether a single region is rendered in the viewport. Hidden
      *  regions still ship in GLB/3MF exports — visibility is a UI-only flag
-     *  meant for previewing the model without a region's overlay. Mirrors the
-     *  eye-icon button in the paint panel's region list. Returns
+     *  meant for previewing the model without a region’s overlay. Mirrors the
+     *  eye-icon button in the paint panel’s region list. Returns
      *  `{ id, visible }` on success or `{ error }` if no region matches. */
     setRegionVisibility(id: number, visible: boolean) {
       if (!Number.isFinite(id)) return { error: 'setRegionVisibility(id, visible) requires a finite integer id from listRegions()' };
@@ -10726,7 +10921,7 @@ async function main() {
     },
 
     /** Surface-painting settings for the UI brush tool. `slab` (default) keeps a
-     *  stroke's footprint a thin shell on the picked surface so paint can't bleed
+     *  stroke’s footprint a thin shell on the picked surface so paint can’t bleed
      *  through thin / hollow walls; `depth` (mesh units, 0 = auto = half the
      *  radius) is how far through the wall paint may reach. */
     getBrushSurface() {
@@ -10796,7 +10991,7 @@ async function main() {
      *  straight edges are crisp at any setting. `maxEdge` (optional) overrides
      *  it with an absolute target edge length in
      *  mesh units (e.g. `maxEdge: 0.1` for crisp 0.1-unit edges). `shape` is
-     *  circle|square|diamond. This MUTATES the working mesh's tessellation
+     *  circle|square|diamond. This MUTATES the working mesh’s tessellation
      *  (triangle count grows near the stroke) and is more expensive than the
      *  region selectors — prefer `paintNear`/`paintInBox`/`paintConnected` for
      *  flat-edged fills; use this only when a rounded painted edge matters. */
@@ -10869,7 +11064,7 @@ async function main() {
       );
       if (region.triangles.size === 0) {
         // Drop the empty region through the same sync path so the async
-        // reconcile listener doesn't kick a wasted worker rebuild against a
+        // reconcile listener doesn’t kick a wasted worker rebuild against a
         // stale lastStrokeList.
         withSyncReconcile(() => removeRegion(region.id));
         return { error: 'paintStroke: no surface fell within the stroke footprint — check the points are on the model and the radius is large enough.' };
@@ -10963,7 +11158,7 @@ async function main() {
       );
       if (region.triangles.size === 0) {
         // Drop the empty region through the same sync path so the async
-        // reconcile listener doesn't kick a wasted worker rebuild against a
+        // reconcile listener doesn’t kick a wasted worker rebuild against a
         // stale lastStrokeList.
         withSyncReconcile(() => removeRegion(region.id));
         return { error: 'paintAirbrush: no surface was sprayed — check the points are on the model, the radius is large enough, and strength > 0.' };
@@ -10981,7 +11176,7 @@ async function main() {
 
     /** Resolves when no paint subdivision job is in flight on the worker. The
      *  agent paint APIs (`paintStroke`, `paintAirbrush`) already return a
-     *  populated region synchronously, so they don't need this — but the
+     *  populated region synchronously, so they don’t need this — but the
      *  interactive brush (driven by mouse events from a test or external
      *  driver) commits via the async listener path, where the mesh updates a
      *  worker round-trip later. Tests and scripts that drive the canvas
@@ -10992,7 +11187,7 @@ async function main() {
 
     /** Test-only knob: how long the progress modal waits before appearing
      *  (default 250ms). Tests that exercise the Cancel button set this to 0
-     *  so the modal shows synchronously and the test doesn't depend on the
+     *  so the modal shows synchronously and the test doesn’t depend on the
      *  worker taking >250ms. Returns the previous value. Same modal covers
      *  paint and simplify, so both feature tests use this. */
     __setProgressModalDelay(ms: number): number {
@@ -11001,7 +11196,7 @@ async function main() {
 
     /** Undo the most recent paint operation. The removed region goes onto
      *  a redo stack — `redoLastPaint()` puts it back. Returns the removed
-     *  region's metadata, or `{ error }` if nothing to undo. */
+     *  region’s metadata, or `{ error }` if nothing to undo. */
     undoLastPaint() {
       // Undoing a refining stroke (brushStroke / smooth slab / smooth box)
       // requires re-refining without it, which the async listener does on
@@ -11221,7 +11416,7 @@ async function main() {
       // model can pass `withinBox` to get only the groups in that region.
       // Cheap to compute (we already have group bboxes); keeps the per-
       // group `triangleIds` payload from drowning the response in groups
-      // the agent doesn't care about.
+      // the agent doesn’t care about.
       let groups = summary.groups;
       const within = (opts as { withinBox?: { min?: unknown; max?: unknown } } | undefined)?.withinBox;
       if (within && typeof within === 'object') {
@@ -11243,7 +11438,7 @@ async function main() {
 
     /** Paint a single boolean-distinct component by index from
      *  `listComponents()`. Convenience wrapper that runs decompose, pulls
-     *  the component's bounding box, and calls paintInBox in one round
+     *  the component’s bounding box, and calls paintInBox in one round
      *  trip. Use this when you already know "the 3rd unioned part is the
      *  mouth, paint it red" — saves the listComponents → paintInBox
      *  two-call dance. */
@@ -11268,7 +11463,7 @@ async function main() {
         }
         const bb = getBoundingBox(parts[opts.index]);
         if (!bb) return { error: `Component ${opts.index} has no bounding box (degenerate geometry?).` };
-        // Pad the box slightly so a flat coplanar boundary doesn't miss
+        // Pad the box slightly so a flat coplanar boundary doesn’t miss
         // triangles whose centroid lies exactly on the edge.
         const pad = 1e-4;
         const box = {
@@ -11286,7 +11481,7 @@ async function main() {
     /** Token-cheap planning aid for paint workflows: returns just the
      *  centroid + normal + bbox of each coplanar face group, no triangle
      *  IDs. Same as `getMeshSummary({maxTrianglesPerGroup: 0, maxGroups})`
-     *  but a one-liner that signals "I'm planning, not painting yet". */
+     *  but a one-liner that signals "I’m planning, not painting yet". */
     getFeatureCentroids(opts?: { maxGroups?: number; withinBox?: { min: [number, number, number]; max: [number, number, number] } }) {
       const maxGroups = Math.max(1, opts?.maxGroups ?? 32);
       return partwrightAPI.getMeshSummary({ maxTrianglesPerGroup: 0, maxGroups, ...(opts?.withinBox ? { withinBox: opts.withinBox } : {}) });
@@ -11327,13 +11522,13 @@ async function main() {
     },
 
     /** List labels registered by `api.label(shape, name)` in the current
-     *  run's code. Returns `[{name, triangleCount, bbox}]`. The triangle
+     *  run’s code. Returns `[{name, triangleCount, bbox}]`. The triangle
      *  buckets survive boolean ops cleanly (manifold-3d propagates the
      *  originalID of every input through `runOriginalID` on the result
      *  mesh) — so for a model built as
      *  `api.label(head, 'head').add(api.label(eye, 'eye'))` you get one
      *  entry per labelled piece, no matter how they overlap. Empty list
-     *  when the code didn't use `api.label`. */
+     *  when the code didn’t use `api.label`. */
     listLabels() {
       if (!currentMeshData) return { error: 'No geometry loaded — run code first.' };
       const lost = currentLostLabels && currentLostLabels.length > 0
@@ -11372,11 +11567,11 @@ async function main() {
     },
 
     /** Paint a labelled feature by name. The label must have been
-     *  registered in the current run's code via `api.label(shape, name)`
+     *  registered in the current run’s code via `api.label(shape, name)`
      *  or `api.labeledUnion([{name, shape}, ...])`. This is the cleanest
      *  paint primitive on agent-authored geometry — no coordinate
      *  guessing, no bounding-box estimation, no fan-bleed: the
-     *  triangle set comes straight from manifold-3d's provenance
+     *  triangle set comes straight from manifold-3d’s provenance
      *  tracking and is exact even for overlapping inputs.
      *
      *  ```
@@ -11392,7 +11587,7 @@ async function main() {
     /** Voxel paint mode — only valid in `voxel` language sessions. Activates a
      *  per-voxel click-to-color edit loop: the current code is re-run locally
      *  to capture the grid + per-triangle voxel provenance, the editor is
-     *  locked (read-only) so auto-run can't clobber edits, and clicks on the
+     *  locked (read-only) so auto-run can’t clobber edits, and clicks on the
      *  3D model set or erase voxels in the live grid. Call
      *  `bakeVoxelsToCode()` to commit; `deactivateVoxelPaint()` to cancel.
      *  Returns `{ voxelCount }` or `{ error }`. */
@@ -11415,13 +11610,13 @@ async function main() {
     deactivateVoxelPaint() {
       if (!voxelPaint.isActive()) return { error: 'voxel paint is not active' };
       voxelPaint.deactivate();
-      // Trigger a fresh render so the viewport returns to the code's output.
+      // Trigger a fresh render so the viewport returns to the code’s output.
       runCode(getValue());
       syncVoxelPaintUI();
       return { ok: true };
     },
 
-    /** Click on a face during voxel paint: set the underlying voxel's color
+    /** Click on a face during voxel paint: set the underlying voxel’s color
      *  (or remove it when `erase: true`). Use this instead of synthesising
      *  pointer events. Returns whether the grid actually changed. */
     paintVoxelFace(opts: { faceIndex: number; color?: [number, number, number] | string | number; erase?: boolean }) {
@@ -11465,7 +11660,7 @@ async function main() {
       const regionName = opts.name ?? opts.label;
       const cone = resolvePaintCone(opts.normalCone, opts.topOnly);
       if (cone) {
-        // Filter the label's triangle set by normal direction. Use a
+        // Filter the label’s triangle set by normal direction. Use a
         // triangles descriptor (not byLabel) so the exact filtered set
         // is preserved on re-hydration rather than restoring the full set.
         const adjacency = buildAdjacency(mesh);
@@ -11949,7 +12144,7 @@ async function main() {
   }
 
   /** Pick the angle set for `renderViews`. `auto` reads the current
-   *  manifold's bounding box and chooses based on aspect ratio:
+   *  manifold’s bounding box and chooses based on aspect ratio:
    *  - very flat (dz / max(dx, dy) < 0.15) → [Top, Iso]: front view
    *    would be a thin sliver, top carries the information.
    *  - very tall (max(dx, dy) / dz < 0.3) → [Front, Right, Iso]:
@@ -11973,7 +12168,7 @@ async function main() {
       TOP,
       { label: 'Bottom', opts: { elevation: -90, azimuth: 0, ortho: true } },
     ];
-    // 'auto': inspect the current manifold's bounding box.
+    // 'auto': inspect the current manifold’s bounding box.
     let bb: { min: [number, number, number]; max: [number, number, number] } | null = null;
     if (currentManifold) {
       try { bb = getBoundingBox(currentManifold); } catch { bb = null; }
@@ -12453,8 +12648,8 @@ async function main() {
       if (geo.manifoldStatus === 'render-only (not manifold)') {
         // Render-only imports (colour reliefs, sculpted STLs) carry no Manifold,
         // so watertightness was never measured — isManifold is false for lack of
-        // measurement, NOT a detected defect. Don't claim the mesh will fail to
-        // print; state the actual situation so the agent doesn't chase a phantom.
+        // measurement, NOT a detected defect. Don’t claim the mesh will fail to
+        // print; state the actual situation so the agent doesn’t chase a phantom.
         warnings.push(
           'render-only import — no Manifold is available, so watertightness is ' +
           'unverified (this is not a detected defect). Reliefs and sculpted STL ' +
@@ -12476,7 +12671,7 @@ async function main() {
       const enclosed = typeof geo.containedComponents === 'number' ? geo.containedComponents : 0;
       const floating = cc - enclosed;
       // Only warn about true floaters — fully-enclosed interior components (e.g.
-      // sealed voids inside voxel shells) won't detach in print and shouldn't
+      // sealed voids inside voxel shells) won’t detach in print and shouldn’t
       // block a single-piece assertion.
       if (floating > 1) {
         // Partwright exists to produce printable parts, so a multi-component
@@ -12505,13 +12700,13 @@ async function main() {
         // All extra components are sealed interior voids — informational only
         warnings.push(
           `componentCount: ${cc} — ${enclosed} component${enclosed > 1 ? 's are' : ' is'} a sealed interior void fully enclosed within another solid. ` +
-          `These won't detach in print. Call runAndExplain(code) to inspect each component individually.`,
+          `These won’t detach in print. Call runAndExplain(code) to inspect each component individually.`,
         );
       }
     }
     // Surface color regions that no longer resolve to any triangles on
     // the freshly-run mesh — descriptors are still serialized (so the
-    // user's intent is preserved), but the live render shows zero paint
+    // user’s intent is preserved), but the live render shows zero paint
     // for them. The most common cause is editing the code so a
     // previously-registered api.label / BREP.label is gone, or switching
     // modeling languages: byLabel descriptors then silently drop on
@@ -12576,7 +12771,7 @@ async function main() {
   }
 
   function runCode(code?: string, opts: { surfaceErrors?: boolean } = {}) {
-    // Never execute the sharer's untrusted code in a read-only preview. Fork first.
+    // Never execute the sharer’s untrusted code in a read-only preview. Fork first.
     if (isSharedPreview()) return;
     const src = code ?? getValue();
     setStatus(statusBar, 'running', 'Running...');
@@ -12596,7 +12791,7 @@ async function main() {
           return;
         }
       }
-      // Record which generation we're about to start so a later RAF can
+      // Record which generation we’re about to start so a later RAF can
       // cancel only this specific run (not an explicit run that superseded it).
       const myRafGen = _runGeneration + 1;
       _rafOwnedGeneration = myRafGen;
@@ -12638,12 +12833,12 @@ async function main() {
   async function runCodeSync(src: string, opts: { surfaceErrors?: boolean } = {}): Promise<boolean> {
     // Hard refusal in shared-preview mode: this is the single execution
     // chokepoint that the console API (partwright.run / runAndSave) also routes
-    // through, so guarding it here keeps the sharer's untrusted code from ever
+    // through, so guarding it here keeps the sharer’s untrusted code from ever
     // reaching `new Function('api', code)` until the viewer forks.
     if (isSharedPreview()) return false;
     // Manual runs (Run button, version load, partwright.run) surface errors
     // immediately; auto-runs defer to the idle/blur triggers so the editor
-    // doesn't flicker an error on every keystroke.
+    // doesn’t flicker an error on every keystroke.
     const surfaceErrors = opts.surfaceErrors ?? true;
     const myGen = ++_runGeneration;
     _running = true;
@@ -12665,13 +12860,13 @@ async function main() {
         }
       : undefined;
 
-    // Feed the Customizer's current overrides into the model's api.params(...).
+    // Feed the Customizer’s current overrides into the model’s api.params(...).
     let result: Awaited<ReturnType<typeof executeCodeAsync>>;
     try {
       result = await executeCodeAsync(src, undefined, currentParamValues, onScadPreview);
     } catch (err) {
       // Worker was terminated (cancelled by user, cancelled for a newer run,
-      // timeout, or crash). Only clean up if we're still the active run —
+      // timeout, or crash). Only clean up if we’re still the active run —
       // a newer run already owns _running and the timer when myGen differs.
       if (myGen !== _runGeneration) return false;
       _running = false;
@@ -12703,7 +12898,7 @@ async function main() {
     // schema rides on the result for both success and error, so the panel
     // stays visible (and editable) even while the model is mid-error. Prune
     // overrides to the keys the model still declares so values from a previous
-    // model don't linger, then reflect resolved values in the widgets.
+    // model don’t linger, then reflect resolved values in the widgets.
     syncParamsPanel(result.paramsSchema);
 
     if (result.error) {
@@ -12759,12 +12954,12 @@ async function main() {
       // subdivision; rehydrating a saved version rebuilds the refined mesh from
       // this base + its stroke descriptors right after.
       paintBaseMesh = result.mesh;
-      // Release the previous Manifold's WASM-heap memory before overwriting.
+      // Release the previous Manifold’s WASM-heap memory before overwriting.
       // Manifold objects live outside the JS heap and require manual .delete().
       if (currentManifold && typeof currentManifold.delete === 'function') {
         try { currentManifold.delete(); } catch { /* already deleted */ }
       }
-      // The geometry Worker returns manifold=null (live WASM objects can't
+      // The geometry Worker returns manifold=null (live WASM objects can’t
       // cross thread boundaries). Reconstruct a queryable Manifold from the
       // transferred mesh data so sliceAtZ, getBoundingBox, decompose, etc.
       // keep working without changes on the main thread.
@@ -12795,11 +12990,11 @@ async function main() {
       setPaintLabels(currentLabelMap);
 
       // Model-declared colors (api.label(shape, name, { color })) become a
-      // derived underlay: resolve each labelled name's triangles from the fresh
+      // derived underlay: resolve each labelled name’s triangles from the fresh
       // labelMap and hand them to the model-region layer. Rebuilt every run
       // (so editing a color in code updates the render) and replaced wholesale
-      // — passing [] when nothing was declared clears any prior run's layer.
-      // This layer never locks the editor and is never serialized; the user's
+      // — passing [] when nothing was declared clears any prior run’s layer.
+      // This layer never locks the editor and is never serialized; the user’s
       // manual paint composites on top of it. See src/color/regions.ts.
       const modelColorDecls: { name: string; color: [number, number, number]; triangles: Set<number> }[] = [];
       if (result.labelColors && currentLabelMap) {
@@ -12824,12 +13019,12 @@ async function main() {
         rebuildPaintedGeometry();
         lastStrokeList = strokeDescriptors();
       } else if (hasColorRegions() || hasModelColorRegions()) {
-        // Re-resolve each non-refining region's triangles against the
+        // Re-resolve each non-refining region’s triangles against the
         // freshly-run mesh. Without this, the in-memory `triangles` Set
         // still indexes the previous mesh — wrong colors when the
         // triangle count changes, and the `byLabel` / `coplanar` /
         // `connectedFromSeed` cases that depend on engine state
-        // (labelMap, surface positions) don't re-evaluate on the new
+        // (labelMap, surface positions) don’t re-evaluate on the new
         // run. Cheap when there are no regions; O(regions * tris) when
         // there are.
         const mesh = result.mesh;
@@ -12845,16 +13040,23 @@ async function main() {
         const displayMesh = applyTriColorsIfVisible(mesh);
         updateMesh(displayMesh);
         updatePaintMesh(mesh);
+        onCutMeshChanged(mesh);
       } else {
         updateMesh(result.mesh);
         updatePaintMesh(result.mesh); // always pass uncolored mesh for adjacency
+        onCutMeshChanged(result.mesh);
       }
 
       updateGeometryData(elapsed, src);
       syncClipSliderBounds();
-      // A fresh run replaces the geometry, so any simplify baseline is stale.
-      // Drop it and let an open panel re-snapshot the new mesh.
+      // A fresh run replaces the geometry, so any simplify/cut baseline is stale.
+      // Drop them and let open panels re-snapshot the new mesh.
       simplifyBaselineMesh = null;
+      cutBaseMesh = null;
+      cutResultMesh = null;
+      cutResultMeshes = null;
+      cutKeptColorsList = null;
+      cutComplementColorsList = null;
       simplifyBaselineColoredMesh = null;
       simplifyBaselineRegions = null;
       simplifyBaselineModelRegions = null;
@@ -12950,6 +13152,7 @@ async function main() {
         close();
       } else {
         closeSimplifyMenu();
+        closeCutMenu();
         activateMeasure();
         setMeasureLock(true);
         measureBtn.className = activeClass;
@@ -12972,6 +13175,7 @@ async function main() {
       if (isAnnotateOpen()) { closeAnnotateMenu(); closed = true; }
       if (isPaintOpen()) { closePaintMenu(); closed = true; }
       if (isSimplifyOpen()) { closeSimplifyMenu(); closed = true; }
+      if (isCutOpen()) { closeCutMenu(); closed = true; }
       if (closeMeasureIfActive()) closed = true;
       if (getClipState().enabled) { setClipping(false); syncClipUI(); closed = true; }
       if (closed) e.preventDefault();
@@ -12985,7 +13189,7 @@ async function main() {
     const inactiveClass = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
     const activeClass = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-blue-500/20 backdrop-blur text-blue-400 [@media(hover:hover)]:hover:bg-blue-500/30 transition-colors border border-blue-500/30';
 
-    // Drive the button visuals from the viewport's change events so it stays in
+    // Drive the button visuals from the viewport’s change events so it stays in
     // sync whether the user clicked it or paint mode forced edges on/off.
     const applyState = (visible: boolean) => {
       wireBtn.className = visible ? activeClass : inactiveClass;
@@ -13062,7 +13266,7 @@ async function main() {
 const SHORTCUTS_HINT_KEY = 'partwright-shortcuts-hint-seen';
 
 /** One-time, non-intrusive nudge toward the `?` shortcuts cheat sheet. Only
- *  shown to users who've already finished the first-run tour (so it never
+ *  shown to users who’ve already finished the first-run tour (so it never
  *  competes with onboarding), and only once ever. */
 function maybeShowShortcutsHint(): void {
   try {
@@ -13122,7 +13326,7 @@ function showInlineConfirm(_container: HTMLElement, message: string, options: Co
     overlay.className = 'confirm-modal-overlay fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center';
 
     // Modal box — wider than the default 'max-w-sm' so multi-line prompts
-    // don't reflow into long thin columns.
+    // don’t reflow into long thin columns.
     const modal = document.createElement('div');
     modal.className = 'bg-zinc-800 border border-zinc-600 rounded-xl shadow-2xl p-5 max-w-md mx-4 animate-modal-in';
 

@@ -112,6 +112,7 @@ const pendingSimplifies  = new Map<string, {
   reject: (e: Error) => void;
   onProgress: (fraction: number) => void;
 }>();
+const pendingCuts = new Map<string, { resolve: (r: CutWorkerResult | null) => void; reject: (e: Error) => void }>();
 const pendingEnhances = new Map<string, {
   resolve: (r: EnhanceWorkerResult | null) => void;
   reject: (e: Error) => void;
@@ -131,6 +132,7 @@ function geometryInFlight(): number {
     pendingClearBrepImports.size +
     pendingClearBrepShapes.size +
     pendingSimplifies.size +
+    pendingCuts.size +
     pendingEnhances.size
   );
 }
@@ -193,6 +195,7 @@ function rejectAllPending(err: Error): void {
   for (const p of pendingClearBrepImports.values()) p.reject(err);
   for (const p of pendingClearBrepShapes.values()) p.reject(err);
   for (const p of pendingSimplifies.values()) p.reject(err);
+  for (const p of pendingCuts.values()) p.reject(err);
   for (const p of pendingEnhances.values()) p.reject(err);
   pendingExecutions.clear();
   pendingValidations.clear();
@@ -203,6 +206,7 @@ function rejectAllPending(err: Error): void {
   pendingClearBrepImports.clear();
   pendingClearBrepShapes.clear();
   pendingSimplifies.clear();
+  pendingCuts.clear();
   pendingEnhances.clear();
 }
 
@@ -472,6 +476,35 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
     return;
   }
 
+  if (msg.type === 'cut_result') {
+    const callId = msg.callId as string;
+    const pending = pendingCuts.get(callId);
+    if (!pending) return;
+    pendingCuts.delete(callId);
+    const error = msg.error as string | null;
+    if (error) { pending.reject(new Error(error)); return; }
+    const mesh = msg.mesh as MeshData | null;
+    if (!mesh) { pending.resolve(null); return; }
+    const triColors = msg.triColors as Uint8Array | null;
+    const keptMeshes = msg.keptMeshes as MeshData[] | null;
+    const complementMeshes = msg.complementMeshes as MeshData[] | null;
+    const meshes = msg.meshes as MeshData[] | null;
+    const keptColorsList = msg.keptColorsList as Uint8Array[] | null;
+    const complementColorsList = msg.complementColorsList as Uint8Array[] | null;
+    const triColorsList = msg.triColorsList as Uint8Array[] | null;
+    pending.resolve({
+      mesh,
+      keptMeshes: keptMeshes ?? [mesh],
+      complementMeshes: complementMeshes ?? [],
+      meshes: meshes ?? [mesh],
+      triColors: triColors ?? undefined,
+      keptColorsList: keptColorsList ?? undefined,
+      complementColorsList: complementColorsList ?? undefined,
+      triColorsList: triColorsList ?? undefined,
+    });
+    return;
+  }
+
   if (msg.type === 'enhance_progress') {
     const callId = msg.callId as string;
     const pending = pendingEnhances.get(callId);
@@ -529,6 +562,8 @@ function handleEngineWorkerMessage(event: MessageEvent): void {
       pendingClearBrepShapes.delete(callId ?? '');
       pendingSimplifies.get(callId)?.reject(err);
       pendingSimplifies.delete(callId ?? '');
+      pendingCuts.get(callId)?.reject(err);
+      pendingCuts.delete(callId ?? '');
       pendingEnhances.get(callId)?.reject(err);
       pendingEnhances.delete(callId ?? '');
     }
@@ -946,6 +981,66 @@ export async function enhanceInWorker(
     engineWorker!.postMessage(
       { type: 'enhance', callId, mesh: meshCopy, targetTriangles, maxEdgeLength, maxTriangles,
         ...(directEdgeLength && directEdgeLength > 0 ? { edgeLength: directEdgeLength } : {}) },
+      transfer,
+    );
+  });
+}
+
+// ── Cut Worker client ──────────────────────────────────────────────────────────
+
+export interface CutWorkerResult {
+  mesh: MeshData;
+  /** Kept-side components (decomposed). */
+  keptMeshes: MeshData[];
+  /** Complement-side components (decomposed). */
+  complementMeshes: MeshData[];
+  /** All components flat (kept then complement). Length ≥ 1. */
+  meshes: MeshData[];
+  triColors?: Uint8Array;
+  keptColorsList?: Uint8Array[];
+  complementColorsList?: Uint8Array[];
+  /** Colors per component (flat), parallel to `meshes`. */
+  triColorsList?: Uint8Array[];
+}
+
+/** Run a boolean cut inside the geometry Worker. The mesh is copied (zero-copy
+ *  transfer) so the main thread retains its own copy. Resolves to null when the
+ *  cutter doesn't intersect the model (empty result); rejects on a worker fault. */
+export async function cutInWorker(
+  mesh: MeshData,
+  shape: 'plane' | 'box' | 'sphere' | 'cylinder',
+  keepSide: 'outside' | 'inside',
+  mat4x3: number[],
+  scale: [number, number, number],
+  triColors?: Uint8Array,
+): Promise<CutWorkerResult | null> {
+  initEngineWorker();
+  await workerReady;
+  const callId = `cut-${++callIdCounter}`;
+  const timeoutMs = getWorkerOpTimeoutMs('scad');
+
+  return new Promise<CutWorkerResult | null>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (pendingCuts.has(callId)) {
+        restartEngineWorker(`Cut timed out after ${timeoutMs / 1000}s`);
+      }
+    }, timeoutMs);
+    pendingCuts.set(callId, {
+      resolve: (r) => { clearTimeout(timer); resolve(r); },
+      reject:  (e) => { clearTimeout(timer); reject(e); },
+    });
+    const meshCopy: MeshData = {
+      vertProperties: mesh.vertProperties.slice(),
+      triVerts: mesh.triVerts.slice(),
+      numVert: mesh.numVert,
+      numTri: mesh.numTri,
+      numProp: mesh.numProp,
+    };
+    const transfer: Transferable[] = [meshCopy.vertProperties.buffer, meshCopy.triVerts.buffer];
+    const colorsCopy = triColors ? triColors.slice() : undefined;
+    if (colorsCopy) transfer.push(colorsCopy.buffer);
+    engineWorker!.postMessage(
+      { type: 'cut', callId, mesh: meshCopy, shape, keepSide, mat4x3, scale, triColors: colorsCopy },
       transfer,
     );
   });
