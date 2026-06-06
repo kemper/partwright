@@ -137,8 +137,12 @@ import { effectiveVersionLanguage, asLanguage } from './languageFallback';
  *           filament/AMS slot and follows slot recolours. Additive: pre-1.11
  *           regions omit it and import as unslotted (ad-hoc colour). Older
  *           readers ignore the field.
+ *  - `1.12` — session-level pinned thumbnail camera (`session.thumbCamera`).
+ *           `{ azimuth, elevation }` in degrees; when present, captured
+ *           thumbnails render from this angle instead of the default iso view.
+ *           Absent ⇒ the default iso 3/4 view. Older readers ignore the field.
  */
-export const SCHEMA_VERSION = '1.11';
+export const SCHEMA_VERSION = '1.12';
 
 const CURRENT_MAJOR = 1;
 
@@ -160,7 +164,7 @@ export interface ExportedSession {
   mainifold?: string;
   /** Images may be the array form or the legacy object map ({front, right, ...}).
    * Both also exist under `referenceImages` for pre-rename exports. */
-  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel' };
+  session: { name: string; created: number; updated: number; images?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; referenceImages?: AttachedImage[] | Partial<Record<LegacyImageAngle, string>> | null; language?: 'manifold-js' | 'scad' | 'replicad' | 'voxel'; thumbCamera?: { azimuth: number; elevation: number } };
   /**
    * The session's parts, ordered by `order`. Present from schema 1.7. Pre-1.7
    * files omit this; on import they collapse into a single default part.
@@ -649,6 +653,34 @@ export async function setSessionAiPreference(
   await dbUpdateSession(id, { aiPreference });
   if (currentState.session?.id === id) {
     currentState.session = { ...currentState.session, aiPreference };
+  }
+}
+
+// === Per-session thumbnail camera ===
+
+/** Coerce an untrusted value (from an export file or an API caller) into a
+ *  valid `{ azimuth, elevation }` thumbnail-camera record, or null. Elevation
+ *  is clamped to the renderable −90…90 range; azimuth wraps freely. */
+function asThumbCamera(v: unknown): { azimuth: number; elevation: number } | null {
+  if (!v || typeof v !== 'object') return null;
+  const { azimuth, elevation } = v as { azimuth?: unknown; elevation?: unknown };
+  if (typeof azimuth !== 'number' || !Number.isFinite(azimuth)) return null;
+  if (typeof elevation !== 'number' || !Number.isFinite(elevation)) return null;
+  return { azimuth, elevation: Math.max(-90, Math.min(90, elevation)) };
+}
+
+/** Pin (or clear, with `null`) the thumbnail camera angle for the current
+ *  session. Persisted to the session row and reflected in runtime state so the
+ *  next `captureThumbnail` uses it. No-op when nothing is open or in a viewer
+ *  tab (a read-only viewer must not mutate the shared session row). */
+export async function setSessionThumbCamera(camera: { azimuth: number; elevation: number } | null): Promise<void> {
+  if (!currentState.session) return;
+  if (isViewerTab()) return;
+  const next = camera ? asThumbCamera(camera) ?? undefined : undefined;
+  const id = currentState.session.id;
+  await dbUpdateSession(id, { thumbCamera: next });
+  if (currentState.session?.id === id) {
+    currentState.session = { ...currentState.session, thumbCamera: next };
   }
 }
 
@@ -1603,7 +1635,7 @@ export async function exportSession(
 
   return {
     partwright: SCHEMA_VERSION,
-    session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}) },
+    session: { name: session.name, created: session.created, updated: session.updated, images: session.images ?? null, ...(session.language ? { language: session.language } : {}), ...(session.thumbCamera ? { thumbCamera: session.thumbCamera } : {}) },
     parts: parts.map(p => ({ name: p.name, order: p.order })),
     versions: flat.map(({ v, partOrder }, i) => {
       const colorRegions = opts.includeColorRegions ? extractColorRegions(v.geometryData) : undefined;
@@ -1676,6 +1708,11 @@ export async function importSession(
       : legacyImagesObjectToArray(rawImages);
     await dbUpdateSession(session.id, { images: imagesArr });
   }
+
+  // Restore the pinned thumbnail camera (schema 1.11+). Validate both angles
+  // are finite numbers so a malformed export can't poison captureThumbnail.
+  const cam = asThumbCamera(data.session.thumbCamera);
+  if (cam) await dbUpdateSession(session.id, { thumbCamera: cam });
 
   // Determine the index of the latest exported version. Schema 1.2 stored
   // annotations at the top level; for back-compat we attach them to whichever
