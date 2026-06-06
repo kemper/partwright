@@ -16,7 +16,8 @@
     "refresh-models": "node scripts/refreshModelsSnapshot.mjs",
     "lint:consistency": "ast-grep scan",
     "lint:deadcode": "knip",
-    "lint:deps": "madge --circular --extensions ts,tsx src"
+    "lint:deps": "madge --circular --extensions ts,tsx src",
+    "lint:catalog": "node scripts/lint-catalog.mjs"
   },
   "devDependencies": {
     "@ast-grep/cli": "^0.43.0",

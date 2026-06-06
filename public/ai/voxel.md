@@ -318,10 +318,13 @@ the settings you used.
 - **No booleans / fillets / history.** Voxel modeling is direct: place and
   remove cubes. For CSG, fillets, or parametric edits, use manifold-js or BREP.
 - **Coordinate range is −1024…1023 per axis.** Out-of-range coordinates throw.
-- **Catalog thumbnail faces iso azimuth ≈135° (the +X,−Y corner).** The catalog
-  3/4 tile camera looks from the +X/−Y corner — camera-facing surfaces are the
-  −Y and +X faces. Build characters and faced models with their front on the
-  −Y/+X corner; a face authored on flat +Y shows the *back* of the head in the tile.
+- **Catalog thumbnail faces iso azimuth ≈135° (the +X,−Y corner) by default.** The
+  catalog 3/4 tile camera looks from the +X/−Y corner — camera-facing surfaces are
+  the −Y and +X faces. By default, build characters and faced models with their
+  front on the −Y/+X corner; a face authored on flat +Y shows the *back* of the
+  head in the tile. **Or pin the tile angle** instead of reorienting the model:
+  `partwright.setThumbnailCamera({ azimuth, elevation })` (degrees) before saving
+  makes the thumbnail render from any angle you choose.
 
 ## A complete example
 
