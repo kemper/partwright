@@ -20,6 +20,7 @@ import { normalizeColor, type VoxelGrid } from '../geometry/voxel/grid';
 import { gridToMeshWithProvenance } from '../geometry/voxel/mesher';
 import { runVoxelForPaint, type VoxelPaintRun } from '../geometry/engines/voxel';
 import { bucketRecolor, clearBox, fillBoxRecolor, addTarget, brushApply, levelRecolor, type BrushShape } from '../geometry/voxel/edits';
+import { diffGrids, type VoxelEditOps } from '../geometry/voxel/editCodegen';
 import { generateVoxelImportCode } from '../import/imageToVoxel';
 import { addPointerSuppressor, isPointerOverModel, getRenderer } from '../renderer/viewport';
 import { pickFace } from './facePicker';
@@ -49,6 +50,9 @@ const UNDO_CAP = 100;
 
 let active = false;
 let run: VoxelPaintRun | null = null;
+// Snapshot of the grid as the code produced it, taken at activate — the "Update
+// code" action diffs the edited grid against this to emit only the changes.
+let baselineGrid: VoxelGrid | null = null;
 let color: [number, number, number] = [255, 0, 0];
 let eraser = false;            // legacy single-voxel paint/erase modifier
 let tool: VoxelTool = 'paint';
@@ -127,6 +131,13 @@ export function pendingBoxCorner(): [number, number, number] | null {
  *  (e.g. `.vox` export) capture unbaked edits without re-running the code. */
 export function getGrid(): VoxelGrid | null { return run?.grid ?? null; }
 
+/** The delta from the code's own output to the current edited grid — what the
+ *  "Update code" action appends to the source. Empty when nothing changed. */
+export function getEditOps(): VoxelEditOps {
+  if (!run || !baselineGrid) return { set: [], remove: [] };
+  return diffGrids(baselineGrid, run.grid);
+}
+
 // ── Stroke transactions ────────────────────────────────────────────────────
 // A click-drag stroke (or a programmatic begin/apply…/end) collapses into a
 // single undo step: snapshot once at begin, mutate in place per sample, push
@@ -177,6 +188,7 @@ export function activate(code: string, callbacks: VoxelPaintCallbacks, paramOver
     return `Voxel Studio is capped at ${MAX_PAINT_VOXELS.toLocaleString()} voxels for responsiveness; this model has ${r.data.grid.size.toLocaleString()}. Reduce the grid before editing.`;
   }
   run = r.data;
+  baselineGrid = r.data.grid.clone();
   active = true;
   tool = 'paint';
   boxCorner = null;
@@ -206,6 +218,7 @@ export function deactivate(): void {
   const notify = cbStateChange;
   cbStateChange = null;
   run = null;
+  baselineGrid = null;
   boxCorner = null;
   undoStack = [];
   redoStack = [];

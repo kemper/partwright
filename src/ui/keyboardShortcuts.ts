@@ -24,6 +24,7 @@ import {
 } from '../color/regions';
 import { isActive as isPaintActive } from '../color/paintMode';
 import { isPaintOpen } from '../color/paintUI';
+import { isActive as isVoxelStudioActive, undo as voxelStudioUndo, redo as voxelStudioRedo } from '../color/voxelPaint';
 import { removeLastStroke, redoLastStroke } from '../annotations/annotations';
 import { isActive as isSelectActive } from '../annotations/selectMode';
 import { isAnnotateOpen } from '../annotations/annotateUI';
@@ -107,6 +108,15 @@ export function installKeyboardShortcuts(handlers: ShortcutHandlers): void {
     if (key === 's' && !e.shiftKey) {
       e.preventDefault();
       handlers.onSave();
+      return;
+    }
+
+    // Voxel Studio owns undo/redo while active — the code editor is locked, so
+    // route here even if the (read-only) editor still holds focus, before the
+    // editable-target guard below.
+    if (isVoxelStudioActive() && (key === 'z' || (key === 'y' && !IS_MAC))) {
+      const redo = e.shiftKey || key === 'y';
+      if (redo ? voxelStudioRedo() : voxelStudioUndo()) e.preventDefault();
       return;
     }
 

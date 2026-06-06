@@ -208,18 +208,25 @@ slider) for a speckled look. A click-**drag** paints a continuous stroke that
 undoes as a single step.
 
 Pick a color from the swatches or the **custom color** picker (any RGB). **↺
-Undo** / **↻ Redo** step through your edits. The editor is locked while the
-studio is active so an auto-run can't clobber your edits. When you're done,
-click **Bake → code** to replace the editor with `voxels.decode(<your edited
-grid>)` and save a new version, or **Cancel** to discard.
+Undo** / **↻ Redo** (also **Cmd/Ctrl+Z** / **Shift+Cmd/Ctrl+Z**) step through
+your edits. The panel is **draggable** by its header and closes with its **×**
+or **Esc** (discarding edits). The editor is locked while the studio is active
+so an auto-run can't clobber your edits.
+
+Two ways to commit when you're done:
+
+- **Update code** — keeps your existing code and appends your edits as readable
+  `v.set(...)` / `v.remove(...)` statements before the `return`. Best when the
+  code is procedural (`v.fillBox`, `v.sphere`, …) and you want to keep it
+  editable.
+- **Save as raw voxel data** — replaces the editor with `voxels.decode(<your
+  edited grid>)` of the whole grid. It **warns first** because it overwrites
+  whatever code is there. The result is still an editable voxel session you can
+  re-open in the Studio.
 
 > Mesh-only paint features (edge-smoothing/subdivision, geodesic depth, the
 > rotatable shape gizmo, and named color regions) don't apply to voxels —
 > color lives per-cell in the grid and undo/redo replaces region history.
-
-> Editing *bakes* the procedural code into a static voxel grid — the new
-> version captures the edited state exactly, while the previous version (with
-> the original code) is preserved in the version history.
 
 ### Editing an imported voxel
 
@@ -227,7 +234,8 @@ Image-import (and `.vox`) sessions open as `voxels.decode("…")` code. That
 string *is* a live grid — Voxel Studio decodes it, so every tool works on an
 imported model too. Use **Box subtract** / **Remove** to carve away parts you
 didn't want, **Add** to extend it, and **Paint** / **Bucket** to recolor, then
-**Bake** to commit the result as a new `voxels.decode(...)` version.
+**Update code** (appends the edits) or **Save as raw voxel data** (replaces with
+the full decoded grid) to commit a new version.
 
 ### Programmatic / AI equivalent
 
@@ -263,7 +271,9 @@ partwright.voxelStudioEndStroke();               // -> { ok, voxelCount }
 partwright.voxelStudioUndo();                                    // -> { undone, voxelCount }
 partwright.voxelStudioRedo();                                    // -> { redone, voxelCount }
 
-await partwright.bakeVoxelsToCode({ label: 'castle' });   // commits + saves
+// Commit — two options:
+await partwright.updateVoxelCode({ label: 'castle' });   // keep code, append edits
+await partwright.bakeVoxelsToCode({ label: 'castle' });  // replace with voxels.decode(...)
 // (or) partwright.deactivateVoxelPaint() to cancel without saving
 ```
 
@@ -290,10 +300,15 @@ await partwright.bakeVoxelsToCode({ label: 'castle' });   // commits + saves
 - `paintVoxelFace({ faceIndex, color?, erase? })` is the original single-voxel
   shortcut (paint or erase one voxel); still supported.
 - `voxelStudioUndo()` / `voxelStudioRedo()` step the edit history (returns
-  `{ undone|redone, voxelCount }`).
-- `bakeVoxelsToCode({ label? })` deactivates the studio, writes
-  `voxels.decode(...)` to the editor, runs it, and saves a new version. Returns
-  `{ versionIndex, voxelCount }` (or `{ error }` for an empty grid).
+  `{ undone|redone, voxelCount }`). In the UI, Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z
+  do the same while the studio is active.
+- `updateVoxelCode({ label? })` ("Update code") keeps the current procedural
+  source and appends the edits as `v.set` / `v.remove` statements, runs it, and
+  saves a new version. Returns `{ versionIndex, voxelCount }` (or `{ error }`).
+- `bakeVoxelsToCode({ label? })` ("Save as raw voxel data") replaces the editor
+  with `voxels.decode(...)` of the whole grid, runs it, and saves a new version.
+  Returns `{ versionIndex, voxelCount }` (or `{ error }` for an empty grid). The
+  in-app button confirms before overwriting; the API call does not.
 
 ## Image import
 

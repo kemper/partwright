@@ -112,6 +112,7 @@ import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
+import { appendVoxelEditsToCode, editOpCount } from './geometry/voxel/editCodegen';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
@@ -6293,29 +6294,60 @@ async function main() {
       runCode(getValue());
       syncVoxelPaintUI();
     },
-    bake: async () => {
-      const result = await bakePaintedVoxelsAsVersion('painted');
+    updateCode: async () => {
+      const result = await commitVoxelEdits('update', 'voxel edits');
+      if ('error' in result) showToast(`Voxel Studio: ${result.error}`, { variant: 'warn' });
+      else showToast('Voxel edits applied to your code', { variant: 'success' });
+      syncVoxelPaintUI();
+    },
+    saveRaw: async () => {
+      // Replacing destroys the current source; confirm when there's code to lose.
+      if (getValue().trim().length > 0) {
+        const ok = await confirmDialog(
+          'Save as raw voxel data? This replaces the code in the editor with voxels.decode(...) of the current grid.',
+          { title: 'Replace code', confirmLabel: 'Replace', danger: true },
+        );
+        if (!ok) return;
+      }
+      const result = await commitVoxelEdits('replace', 'painted');
       if ('error' in result) showToast(`Voxel Studio: ${result.error}`, { variant: 'warn' });
       syncVoxelPaintUI();
     },
   });
   setVoxelPaintAvailable(getActiveLanguage() === 'voxel');
 
-  // Single source of truth for "commit the painted voxel grid as a new
-  // version" — called both from the UI Bake button and the partwright API.
-  // Centralising avoids the bake-with-empty-grid / no-session bugs that two
-  // separate implementations introduced.
-  async function bakePaintedVoxelsAsVersion(label: string): Promise<{ versionIndex: number | null; voxelCount: number } | { error: string }> {
-    if (!voxelPaint.isActive()) return { error: 'voxel paint is not active.' };
+  // Single source of truth for committing Voxel Studio edits as a new version.
+  // `mode` picks how the edits land in the editor:
+  //   • 'replace' — overwrite the code with voxels.decode(<full grid>) ("Save
+  //     as raw voxel data"). The UI confirms before calling this; the
+  //     programmatic API (bakeVoxelsToCode) skips the dialog.
+  //   • 'update'  — keep the procedural code and append the edits as explicit
+  //     v.set/v.remove statements ("Update code").
+  async function commitVoxelEdits(
+    mode: 'replace' | 'update',
+    label: string,
+  ): Promise<{ versionIndex: number | null; voxelCount: number } | { error: string }> {
+    if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
     const count = voxelPaint.voxelCount();
-    if (count === 0) return { error: 'The painted grid is empty — paint or keep at least one voxel before baking.' };
-    const code = voxelPaint.bakeToCode('painted');
-    if (!code) return { error: 'voxel paint has no grid to bake.' };
+    if (count === 0) return { error: 'The grid is empty — keep at least one voxel before saving.' };
+
+    let code: string | null;
+    if (mode === 'update') {
+      const ops = voxelPaint.getEditOps();
+      if (editOpCount(ops) === 0) return { error: 'No edits to apply — paint, add, or remove some voxels first.' };
+      code = appendVoxelEditsToCode(getValue(), ops);
+      // No trailing `return …;` to hook onto — fall back to a clean replace.
+      if (code === null) code = voxelPaint.bakeToCode('painted');
+    } else {
+      code = voxelPaint.bakeToCode('painted');
+    }
+    if (!code) return { error: 'Voxel Studio has no grid to save.' };
+
     voxelPaint.deactivate();
     setValue(code);
     await runCodeSync(code);
     // Mirror the runAndSave auto-create pattern so callers don't have to wrap
-    // bake with a manual createSession.
+    // the commit with a manual createSession.
     if (!getState().session) {
       await createSession(label, getActiveLanguage());
     }
@@ -11437,7 +11469,17 @@ async function main() {
      *  voxelCount }` or `{ error }`. */
     async bakeVoxelsToCode(opts: { label?: string } = {}) {
       const label = typeof opts.label === 'string' && opts.label ? opts.label : 'painted';
-      const result = await bakePaintedVoxelsAsVersion(label);
+      const result = await commitVoxelEdits('replace', label);
+      syncVoxelPaintUI();
+      return result;
+    },
+
+    /** "Update code": keep the current procedural voxel source and append the
+     *  Studio's edits as explicit v.set/v.remove statements, then save a new
+     *  version. Returns `{ versionIndex, voxelCount }` or `{ error }`. */
+    async updateVoxelCode(opts: { label?: string } = {}) {
+      const label = typeof opts.label === 'string' && opts.label ? opts.label : 'voxel edits';
+      const result = await commitVoxelEdits('update', label);
       syncVoxelPaintUI();
       return result;
     },

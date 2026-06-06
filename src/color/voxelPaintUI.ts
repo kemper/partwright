@@ -7,6 +7,8 @@
 import * as voxelPaint from './voxelPaint';
 import type { VoxelTool, BrushShape } from './voxelPaint';
 import { viewportToolsMount } from '../ui/popoverMenu';
+import { attachViewportPanelDrag, setInitialPanelPosition } from '../ui/viewportPanelDrag';
+import { openViewportPanel, closeViewportPanel } from '../ui/viewportPanelRegistry';
 
 const SWATCHES: string[] = [
   '#ff3b30', '#ff8c42', '#ffd60a', '#34c759', '#5ac8fa',
@@ -38,9 +40,21 @@ let paintBtn: HTMLButtonElement | null = null;
 let panel: HTMLElement | null = null;
 let onActivate: (() => Promise<void> | void) | null = null;
 let onDeactivate: (() => Promise<void> | void) | null = null;
-let onBake: (() => Promise<void> | void) | null = null;
+let onUpdateCode: (() => Promise<void> | void) | null = null;
+let onSaveRaw: (() => Promise<void> | void) | null = null;
 let active = false;
 let currentColor = SWATCHES[0];
+
+// One-of-N viewport panel: opening Paint/Annotate/etc. closes the studio.
+const registryEntry = { close(): void { if (active) void doDeactivate(); } };
+
+// Esc closes the studio (discarding edits) — but defer to any open dialog,
+// matching the paint menu's Escape behavior.
+function onStudioEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  if (document.querySelector('[role="dialog"]')) return;
+  if (active) void doDeactivate();
+}
 
 // Live element refs so refreshControls can reflect engine state in the panel.
 let toolBtns: Partial<Record<VoxelTool, HTMLButtonElement>> = {};
@@ -63,15 +77,18 @@ export interface VoxelPaintUICallbacks {
   activate: () => Promise<void> | void;
   /** Called to cancel editing without committing. */
   deactivate: () => Promise<void> | void;
-  /** Called to bake the edited grid into code + save a new version. */
-  bake: () => Promise<void> | void;
+  /** Called to append the edits to the existing code as v.set/v.remove ops. */
+  updateCode: () => Promise<void> | void;
+  /** Called to replace the code with voxels.decode(...) of the full grid. */
+  saveRaw: () => Promise<void> | void;
 }
 
 /** Mount the Voxel Studio button into the viewport's controls container. */
 export function initVoxelPaintUI(controlsContainer: HTMLElement, callbacks: VoxelPaintUICallbacks): void {
   onActivate = callbacks.activate;
   onDeactivate = callbacks.deactivate;
-  onBake = callbacks.bake;
+  onUpdateCode = callbacks.updateCode;
+  onSaveRaw = callbacks.saveRaw;
 
   paintBtn = document.createElement('button');
   paintBtn.id = 'voxel-paint-toggle';
@@ -88,8 +105,12 @@ export function initVoxelPaintUI(controlsContainer: HTMLElement, callbacks: Voxe
   else toolsMount.appendChild(paintBtn);
 
   panel = createPanel();
-  const positionedAncestor = findPositionedAncestor(controlsContainer);
-  (positionedAncestor ?? document.body).appendChild(panel);
+  // Anchor to the positioned viewport pane (the toolbar's parent), not the
+  // small top-right toolbar box — so the panel's `max-h-[calc(100%-…)]` and the
+  // mobile bottom-sheet layout measure against the full viewport (matches the
+  // Paint panel).
+  const overlayHost = controlsContainer.parentElement ?? controlsContainer;
+  overlayHost.appendChild(panel);
 }
 
 /** Toggle button visibility based on whether the active language is voxel. */
@@ -99,9 +120,16 @@ export function setVoxelPaintAvailable(available: boolean): void {
   if (!available && active) void doDeactivate();
 }
 
-/** Reflect the engine's active state on the toggle button + panel. */
+/** Reflect the engine's active state on the toggle button + panel. Runs on
+ *  every state change, so the enter/exit side-effects (positioning, the
+ *  one-panel registry, the Esc listener) are guarded by a transition check —
+ *  that way they fire once whether the studio was opened from the button or
+ *  programmatically (activateVoxelPaint), and never re-position mid-drag. */
 export function syncActiveState(): void {
-  active = voxelPaint.isActive();
+  const nowActive = voxelPaint.isActive();
+  const entered = nowActive && !active;
+  const exited = !nowActive && active;
+  active = nowActive;
   if (!paintBtn || !panel) return;
   if (active) {
     paintBtn.classList.add('bg-emerald-700/60', 'text-emerald-100', 'border-emerald-500/50');
@@ -111,6 +139,16 @@ export function syncActiveState(): void {
     paintBtn.classList.remove('bg-emerald-700/60', 'text-emerald-100', 'border-emerald-500/50');
     paintBtn.classList.add('text-zinc-400');
     panel.classList.add('hidden');
+  }
+  if (entered) {
+    setInitialPanelPosition(panel);          // place it below the toolbar
+    openViewportPanel(registryEntry);        // close any other viewport panel
+    document.addEventListener('keydown', onStudioEscape);
+    voxelPaint.setColor(currentColor);
+    voxelPaint.setTool('paint');
+  } else if (exited) {
+    document.removeEventListener('keydown', onStudioEscape);
+    closeViewportPanel(registryEntry);
   }
   refreshControls();
 }
@@ -167,8 +205,9 @@ async function toggle(): Promise<void> {
 async function doActivate(): Promise<void> {
   if (!onActivate) return;
   await onActivate();
+  // syncActiveState (called by the activate callback + here) handles the
+  // enter side-effects: positioning, the one-panel registry, Esc, seeding.
   syncActiveState();
-  if (active) { voxelPaint.setColor(currentColor); voxelPaint.setTool('paint'); refreshControls(); }
 }
 
 async function doDeactivate(): Promise<void> {
@@ -182,22 +221,39 @@ async function doDeactivate(): Promise<void> {
 function createPanel(): HTMLElement {
   const p = document.createElement('div');
   p.id = 'voxel-paint-panel';
-  p.className = 'hidden absolute top-12 left-3 z-20 p-2 rounded-lg bg-zinc-900/95 backdrop-blur border border-zinc-700 shadow-xl text-xs text-zinc-200 flex flex-col gap-2 max-h-[80vh] overflow-y-auto';
-  p.style.minWidth = '210px';
+  // Match the Paint panel's shell: draggable header + scrollable body, clamped
+  // to the viewport, single rounded card.
+  p.className = 'hidden z-20 flex flex-col overflow-hidden bg-zinc-800/95 backdrop-blur border border-zinc-600/60 shadow-xl absolute rounded-lg w-56 max-h-[calc(100%-3.5rem)] text-xs text-zinc-200';
 
-  const title = document.createElement('div');
-  title.className = 'text-[10px] uppercase tracking-wider text-zinc-500';
-  title.textContent = 'Voxel Studio';
-  p.appendChild(title);
+  // Header: drag handle + title + × close (matches paintUI).
+  const header = document.createElement('div');
+  header.className = 'shrink-0 flex items-center justify-between gap-2 px-2.5 py-2 border-b border-zinc-700/70';
+  const headerTitle = document.createElement('div');
+  headerTitle.className = 'text-[11px] text-zinc-300 font-medium';
+  headerTitle.textContent = '🧊 Voxel Studio';
+  header.appendChild(headerTitle);
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'shrink-0 -mr-1 w-7 h-7 flex items-center justify-center rounded text-base leading-none text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700/60 transition-colors';
+  closeBtn.title = 'Close Voxel Studio (discards edits)';
+  closeBtn.setAttribute('aria-label', 'Close Voxel Studio');
+  closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', () => { void doDeactivate(); });
+  header.appendChild(closeBtn);
+  p.appendChild(header);
+  attachViewportPanelDrag(header, p);
 
-  p.appendChild(buildToolRow());
-  p.appendChild(buildColorRow());
+  // Scrollable content.
+  const content = document.createElement('div');
+  content.className = 'flex-1 min-h-0 overflow-y-auto px-2.5 py-2.5 flex flex-col gap-2';
+  content.appendChild(buildToolRow());
+  content.appendChild(buildColorRow());
   brushSection = buildBrushSection();
-  p.appendChild(brushSection);
+  content.appendChild(brushSection);
   levelSection = buildLevelSection();
-  p.appendChild(levelSection);
-  p.appendChild(buildHistoryRow());
-  p.appendChild(buildActions());
+  content.appendChild(levelSection);
+  content.appendChild(buildHistoryRow());
+  content.appendChild(buildActions());
+  p.appendChild(content);
   return p;
 }
 
@@ -382,30 +438,25 @@ function buildHistoryRow(): HTMLElement {
 
 function buildActions(): HTMLElement {
   const actions = document.createElement('div');
-  actions.className = 'flex gap-1 pt-1 border-t border-zinc-700/60';
-  const bakeBtn = document.createElement('button');
-  bakeBtn.type = 'button';
-  bakeBtn.className = 'flex-1 px-2 py-1 rounded text-xs bg-emerald-700 hover:bg-emerald-600 text-white transition-colors';
-  bakeBtn.textContent = 'Bake → code';
-  bakeBtn.title = 'Replace the editor with voxels.decode(...) and save a new version';
-  bakeBtn.addEventListener('click', async () => { if (onBake) await onBake(); syncActiveState(); });
-  actions.appendChild(bakeBtn);
-  const cancelBtn = document.createElement('button');
-  cancelBtn.type = 'button';
-  cancelBtn.className = 'px-2 py-1 rounded text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors';
-  cancelBtn.textContent = 'Cancel';
-  cancelBtn.title = 'Discard edits and unlock the editor';
-  cancelBtn.addEventListener('click', () => { void doDeactivate(); });
-  actions.appendChild(cancelBtn);
-  return actions;
-}
+  actions.className = 'flex flex-col gap-1 pt-1 border-t border-zinc-700/60';
 
-function findPositionedAncestor(el: HTMLElement | null): HTMLElement | null {
-  let cur: HTMLElement | null = el;
-  while (cur) {
-    const pos = getComputedStyle(cur).position;
-    if (pos === 'relative' || pos === 'absolute' || pos === 'fixed') return cur;
-    cur = cur.parentElement;
-  }
-  return null;
+  // Primary: keep the procedural code, append the edits as readable ops.
+  const updateBtn = document.createElement('button');
+  updateBtn.type = 'button';
+  updateBtn.className = 'w-full px-2 py-1 rounded text-xs bg-emerald-700 hover:bg-emerald-600 text-white transition-colors';
+  updateBtn.textContent = 'Update code';
+  updateBtn.title = 'Keep your code and append these edits as v.set/v.remove statements, then save a version';
+  updateBtn.addEventListener('click', async () => { if (onUpdateCode) await onUpdateCode(); syncActiveState(); });
+  actions.appendChild(updateBtn);
+
+  // Secondary: replace the editor with the raw decoded grid (confirms first).
+  const saveRawBtn = document.createElement('button');
+  saveRawBtn.type = 'button';
+  saveRawBtn.className = 'w-full px-2 py-1 rounded text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors';
+  saveRawBtn.textContent = 'Save as raw voxel data';
+  saveRawBtn.title = 'Replace the code with voxels.decode(...) of the whole grid (warns before overwriting)';
+  saveRawBtn.addEventListener('click', async () => { if (onSaveRaw) await onSaveRaw(); syncActiveState(); });
+  actions.appendChild(saveRawBtn);
+
+  return actions;
 }

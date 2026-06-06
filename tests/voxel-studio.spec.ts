@@ -187,6 +187,56 @@ test.describe('voxel studio', () => {
     expect(r.panelText).toContain('opposite corner');
   });
 
+  test('Update code keeps the procedural source and appends edit ops', async ({ page }) => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`const { voxels } = api;\nconst v = voxels();\nv.fillBox([0,0,0],[2,2,2], '#ffffff');\nreturn v;`);
+      pw.activateVoxelPaint();
+      pw.setVoxelTool('add');
+      const added = pw.voxelStudioApply({ faceIndex: 0, color: [255, 0, 0] });
+      const updated = await pw.updateVoxelCode({ label: 'tweaked' });
+      const code = pw.getCode();
+      const geo = pw.getGeometryData();
+      return { added, updated, code, geo };
+    });
+    expect(r.added.changed).toBe(true);
+    expect('error' in r.updated).toBe(false);
+    // Procedural source preserved, edits appended — NOT a wholesale decode replace.
+    expect(r.code).toContain('fillBox(');
+    expect(r.code).toContain('Voxel Studio edits');
+    expect(r.code).toMatch(/\.set\(/);
+    expect(r.code).not.toContain('voxels.decode(');
+    expect(r.geo.isManifold).toBe(true);
+  });
+
+  test('keyboard Ctrl/Cmd+Z undoes and Shift+Z redoes while the studio is active', async ({ page }) => {
+    const r = await page.evaluate(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pw = (window as any).partwright;
+      await pw.setActiveLanguage('voxel');
+      await pw.run(`return api.voxels().set(0,0,0,'#ffffff');`);
+      pw.activateVoxelPaint();
+      pw.setVoxelTool('add');
+      pw.voxelStudioApply({ faceIndex: 0, color: [255, 0, 0] }); // -> 2
+      pw.voxelStudioApply({ faceIndex: 0 });                     // -> 3
+      const vp: any = await import('/src/color/voxelPaint.ts');
+      const start = vp.voxelCount();
+      const key = (shift: boolean) => document.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'z', ctrlKey: true, metaKey: true, shiftKey: shift, bubbles: true, cancelable: true,
+      }));
+      key(false); const afterUndo1 = vp.voxelCount();
+      key(false); const afterUndo2 = vp.voxelCount();
+      key(true);  const afterRedo = vp.voxelCount();
+      return { start, afterUndo1, afterUndo2, afterRedo };
+    });
+    expect(r.start).toBe(3);
+    expect(r.afterUndo1).toBe(2);
+    expect(r.afterUndo2).toBe(1);
+    expect(r.afterRedo).toBe(2);
+  });
+
   test('image-import voxel blob is editable: import → add → bake', async ({ page }) => {
     const r = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
