@@ -174,6 +174,13 @@ export interface AppConfig {
     /** Live-refresh interval (ms) for the worker health panel — how often it
      *  re-polls in-flight counts and liveness while open. */
     workerPanelRefreshMs: number;
+    /** Whether the "Did you know?" rolling hints strip shows at the top of the
+     *  editor. Users can turn it off permanently here; the strip's ✕ only hides
+     *  it for the current tab/session. */
+    editorHintsEnabled: boolean;
+    /** How long each "Did you know?" hint stays before the strip rotates to the
+     *  next one (ms). */
+    hintRotationMs: number;
   };
 }
 
@@ -252,6 +259,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     paletteHistoryMax: 48,
     workerRunHistorySize: 50,
     workerPanelRefreshMs: 1000,
+    editorHintsEnabled: true,
+    hintRotationMs: 12_000,
   },
 };
 
@@ -316,6 +325,13 @@ export function loadAppConfig(): AppConfig {
 /** Return the current config (cached after first load). */
 export function getConfig(): AppConfig {
   return loadAppConfig();
+}
+
+/** Subscribe to config changes (saved overrides or a reset). Returns an
+ *  unsubscribe function. Fires with the new config after every persist. */
+export function onConfigChange(fn: (cfg: AppConfig) => void): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
 }
 
 /** Persist the given config snapshot and notify listeners. */
