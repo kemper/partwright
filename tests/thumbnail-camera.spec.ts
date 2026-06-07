@@ -97,16 +97,16 @@ test.describe('thumbnail camera pin', () => {
       const pw = (window as any).partwright;
       await pw.createSession('current-capture-spec');
       await pw.runAndSave('return api.Manifold.cube([20,20,20], true);', 'box', {});
-      // Freshly-run framing is the iso 3/4 view; capturing it should resolve to
-      // the iso default (azimuth 135, elevation ~35) after the convention
-      // conversion from the viewport's mirrored azimuth.
+      // Freshly-run framing is the iso 3/4 view from the +X/−Y corner; capturing
+      // it maps straight through to the iso default (azimuth 45, elevation ~35)
+      // now that the viewport and thumbnail cameras share the −Y convention.
       const res = await pw.setThumbnailCamera('current');
       const got = pw.getThumbnailCamera();
       return { res, got };
     });
 
     expect(out.got).not.toBeNull();
-    expect(Math.abs(out.got.azimuth - 135)).toBeLessThan(1);
+    expect(Math.abs(out.got.azimuth - 45)).toBeLessThan(1);
     expect(Math.abs(out.got.elevation - 35.26)).toBeLessThan(1);
   });
 });

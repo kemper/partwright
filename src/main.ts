@@ -8181,12 +8181,12 @@ async function main() {
     /** Pin the thumbnail camera angle for the active session so captured
      *  thumbnails (catalog tile, gallery, version snapshots) render from this
      *  azimuth / elevation (degrees) instead of the default iso 3/4 view (the
-     *  default is azimuth 135°, elevation 35°). The pin persists on the session
+     *  default is azimuth 45°, elevation 35°). The pin persists on the session
      *  and survives reload / export, so a faced model can present its front in
      *  the tile without baking orientation into the geometry.
      *
      *  - `setThumbnailCamera({ azimuth, elevation })` — pin an explicit angle.
-     *    Azimuth: 0 = front (+Y), 90 = right (+X), 180 = back (−Y), 270 = left.
+     *    Azimuth: 0 = front (-Y), 90 = right (+X), 180 = back (+Y), 270 = left.
      *    Elevation: 0 = horizon, 90 = top-down.
      *  - `setThumbnailCamera('current')` — pin the angle you're currently
      *    looking at in the viewport (orbit to a nice 3/4 view, then call this —
@@ -8198,11 +8198,12 @@ async function main() {
     async setThumbnailCamera(camera: { azimuth: number; elevation: number } | 'current' | null) {
       let resolved: { azimuth: number; elevation: number } | null;
       if (camera === 'current') {
-        // Viewport azimuth is measured as atan2(dx, −dy); the thumbnail camera
-        // (buildViewCamera) uses atan2(dx, dy). They differ by a 180° mirror,
-        // so convert: thumbAz = 180 − viewportAz.
+        // Viewport azimuth (getCameraState) and the thumbnail camera
+        // (buildViewCamera) now use the same convention — atan2(dx, −dy), with
+        // azimuth 0 = front (−Y) — so the live viewport angle maps straight
+        // through to the pinned thumbnail camera with no mirror.
         const cs = getCameraState();
-        resolved = { azimuth: ((180 - cs.azimuth) % 360 + 360) % 360, elevation: cs.elevation };
+        resolved = { azimuth: ((cs.azimuth % 360) + 360) % 360, elevation: cs.elevation };
       } else if (camera === null) {
         resolved = null;
       } else {
