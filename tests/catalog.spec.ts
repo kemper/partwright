@@ -20,11 +20,11 @@ test.describe('Catalog page (static)', () => {
     expect(await page.evaluate(() => 'partwright' in window)).toBe(false);
 
     const sections = page.locator('main section[data-category]');
-    await expect(sections).toHaveCount(7);
+    await expect(sections).toHaveCount(8);
 
-    // The curated 'fidget-toys' group leads; engine-derived categories follow.
+    // Curated groups lead (fidget-toys, then print-fit); engine-derived categories follow.
     const ids = await sections.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.category));
-    expect(ids).toEqual(['fidget-toys', 'customizable', 'manifold', 'sdf', 'voxel', 'scad', 'brep']);
+    expect(ids).toEqual(['fidget-toys', 'print-fit', 'customizable', 'manifold', 'sdf', 'voxel', 'scad', 'brep']);
 
     const count = await sections.count();
     for (let i = 0; i < count; i++) {
@@ -46,12 +46,14 @@ test.describe('Catalog page (static)', () => {
 
     await expect(customizable.locator('span:has-text("Parametric")')).toHaveCount(tileCount);
     // Every customizable tile is parametric. Parametric badges may also appear in
-    // a curated group (e.g. the parametric fidget toys), but nowhere else — so the
+    // curated groups (fidget-toys, print-fit), but nowhere else — so the
     // page-wide badge total equals the customizable + curated-group badge counts.
     const fidget = page.locator('main section[data-category="fidget-toys"]');
     const fidgetBadges = await fidget.locator('span:has-text("Parametric")').count();
+    const printFit = page.locator('main section[data-category="print-fit"]');
+    const printFitBadges = await printFit.locator('span:has-text("Parametric")').count();
     const totalBadges = await page.locator('main span:has-text("Parametric")').count();
-    expect(totalBadges).toBe(tileCount + fidgetBadges);
+    expect(totalBadges).toBe(tileCount + fidgetBadges + printFitBadges);
 
     await expect(customizable).toContainText('Layer Cake');
   });
@@ -68,6 +70,29 @@ test.describe('Catalog page (static)', () => {
     // remaining fidgets are being rebuilt as mechanisms in follow-up work.
     expect(await fidget.locator('div.grid > a').count()).toBe(1);
     await expect(fidget).toContainText('Spiral Fidget Cone');
+  });
+
+  test('every tile carries a print-tested status chip (default: Untested)', async ({ page }) => {
+    await gotoCatalog(page);
+
+    const tiles = page.locator('main a[data-catalog-tile]');
+    const tileCount = await tiles.count();
+    expect(tileCount).toBeGreaterThan(0);
+
+    // Each tile shows exactly one print-status chip — verified or untested.
+    for (const tile of await tiles.all()) {
+      const chips = tile.locator('span:has-text("Print-tested"), span:has-text("Untested")');
+      await expect(chips).toHaveCount(1);
+    }
+
+    // With nothing marked print-tested yet, every chip reads "Untested".
+    await expect(page.locator('main a[data-catalog-tile] span:has-text("Untested")')).toHaveCount(tileCount);
+
+    // The status is searchable: filtering on "untested" keeps the untested tiles.
+    const search = page.locator('[data-catalog-search]');
+    await search.fill('untested');
+    expect(await page.locator('main a[data-catalog-tile]:not(.hidden)').count()).toBeGreaterThan(0);
+    await search.fill('');
   });
 
   test('search narrows tiles, updates section counts, and hides empty sections', async ({ page }) => {

@@ -105,6 +105,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     // belongs in the same "off to minimize spend" bucket as vision/thinking.
     autoResume: false,
     planFirst: false,
+    printOptimized: true,
     anthropicModel: 'claude-haiku-4-5',
   },
   standard: {
@@ -123,6 +124,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     thinking: 'high',
     autoResume: true,
     planFirst: false,
+    printOptimized: true,
     anthropicModel: 'claude-sonnet-4-6',
   },
   full: {
@@ -134,6 +136,7 @@ const DEFAULT_TOGGLES_BY_PRESET: Record<Exclude<Preset, 'custom'>, Omit<ChatTogg
     thinking: 'high',
     autoResume: true,
     planFirst: false,
+    printOptimized: true,
     anthropicModel: 'claude-opus-4-7',
   },
 };
@@ -196,6 +199,7 @@ function cloneToggles(t: ChatToggles): ChatToggles {
     thinking: t.thinking,
     autoResume: t.autoResume,
     planFirst: t.planFirst,
+    printOptimized: t.printOptimized,
     provider: t.provider,
     anthropicModel: t.anthropicModel,
     localModel: t.localModel,
@@ -286,6 +290,7 @@ export function applyPreset(settings: AiSettings, preset: Preset): AiSettings {
       thinking: p.thinking,
       autoResume: p.autoResume,
       planFirst: p.planFirst,
+      printOptimized: p.printOptimized,
       // Presets target Anthropic, but if the user is currently on a
       // different provider, keep them on it — the preset only adjusts
       // cost/scope/views.
@@ -443,6 +448,7 @@ export function setToggles(settings: AiSettings, partial: DeepPartial<ChatToggle
     thinking: partial.thinking ?? settings.toggles.thinking,
     autoResume: partial.autoResume ?? settings.toggles.autoResume,
     planFirst: partial.planFirst ?? settings.toggles.planFirst,
+    printOptimized: partial.printOptimized ?? settings.toggles.printOptimized,
     provider: partial.provider ?? settings.toggles.provider,
     anthropicModel: partial.anthropicModel ?? settings.toggles.anthropicModel,
     localModel: partial.localModel ?? settings.toggles.localModel,
@@ -526,6 +532,7 @@ function mergeWithDefaults(partial: LegacyAiSettings): AiSettings {
       thinking: tgls.thinking ?? DEFAULT_SETTINGS.toggles.thinking,
       autoResume: tgls.autoResume ?? DEFAULT_SETTINGS.toggles.autoResume,
       planFirst: tgls.planFirst ?? DEFAULT_SETTINGS.toggles.planFirst,
+      printOptimized: tgls.printOptimized ?? DEFAULT_SETTINGS.toggles.printOptimized,
       provider,
       anthropicModel: tgls.anthropicModel ?? legacyAnthropic ?? DEFAULT_SETTINGS.toggles.anthropicModel,
       localModel: validLocalModel,

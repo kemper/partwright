@@ -4,6 +4,7 @@
 import { resolve, dirname, basename, join } from 'node:path';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { runPreview, composePng } from './preview.mjs';
+import { runPhoto, meshToPng, loadPalette } from './photo.mjs';
 import { runDaemon } from './daemon.mjs';
 import { startDaemon, stopDaemon, statusDaemon, rpc, evalInPage, resetPage } from './client.mjs';
 
@@ -33,9 +34,9 @@ const json = (v) => JSON.stringify(v, (_k, val) => (ArrayBuffer.isView(val) ? un
 async function cmdPreview(argv, { pngDefault }) {
   const a = parse(argv, ['json']);
   const file = a._[0];
-  if (!file) { console.error('usage: partwright preview <file.js> [--png out] [--json] [--size N] [-p k=v]'); process.exit(2); }
+  if (!file) { console.error('usage: partwright preview <file.js> [--lang manifold-js|voxel] [--png out] [--json] [--size N] [-p k=v]'); process.exit(2); }
   const abs = resolve(file);
-  const result = await runPreview(abs, { params: a.params });
+  const result = await runPreview(abs, { params: a.params, lang: a.lang || 'manifold-js' });
   if (!result.ok) { console.log(json({ ok: false, error: result.error, diagnostics: result.diagnostics })); process.exit(1); }
 
   let pngPath = null;
@@ -45,6 +46,44 @@ async function cmdPreview(argv, { pngDefault }) {
     await img.toFile(pngPath);
   }
   console.log(json({ ok: true, png: pngPath, stats: result.stats }));
+}
+
+// Photo → palette-constrained voxel model. Stateless (no daemon): decode +
+// snap + emit `voxels.decode(…)` code, write a 4-view preview PNG, print stats.
+async function cmdPhoto(argv) {
+  const a = parse(argv, ['bg', 'invert', 'json', 'calls']);
+  const file = a._[0];
+  if (!file) { console.error('usage: partwright photo <image> [--out model.js] [--png out.png] [--palette p.json] [--max N] [--mode billboard|heightmap] [--depth N] [--bg] [--crop x,y,w,h] [--brightness n] [--contrast n] [--saturation n] [--size N] [--calls] [--json]'); process.exit(2); }
+  const abs = resolve(file);
+  const stem = basename(abs).replace(/\.[^.]+$/, '');
+  const crop = a.crop ? a.crop.split(',').map((n) => parseInt(n, 10)) : null;
+  const palette = a.palette ? loadPalette(resolve(a.palette)) : undefined;
+  const num = (v, d) => (v === undefined ? d : Number(v));
+
+  const r = await runPhoto(abs, {
+    palette,
+    max: num(a.max, 64),
+    mode: a.mode || 'billboard',
+    depth: num(a.depth, 1),
+    maxHeight: num(a['max-height'], 16),
+    baseThickness: num(a['base'], 1),
+    invert: !!a.invert,
+    removeBackground: !!a.bg,
+    brightness: num(a.brightness, 0),
+    contrast: num(a.contrast, 0),
+    saturation: num(a.saturation, 0),
+    crop,
+    codeStyle: a.calls ? 'calls' : 'decode',
+  });
+
+  const outJs = resolve(a.out || stem + '.voxel.js');
+  writeFileSync(outJs, r.code);
+  let png = null;
+  if (!a.json) {
+    png = resolve(a.png || stem + '.voxel.png');
+    await meshToPng(r.mesh, Number(a.size) || 480).toFile(png);
+  }
+  console.log(json({ ok: true, model: outJs, png, stats: r.stats }));
 }
 
 async function cmdDaemon(argv) {
@@ -179,8 +218,11 @@ async function cmdMethods(argv) {
 const USAGE = `partwright — headless Partwright CLI for driving model creation + feedback
 
 Phase 1 (stateless, no browser — fast inner loop):
-  partwright preview <file.js> [--png out] [--json] [--size N] [-p k=v]
-  partwright run     <file.js> [-p k=v]                  stats JSON only
+  partwright preview <file.js> [--lang manifold-js|voxel] [--png out] [--json] [--size N] [-p k=v]
+  partwright run     <file.js> [--lang …] [-p k=v]       stats JSON only
+  partwright photo   <image>   [--palette p.json] [--max N] [--mode billboard|heightmap]
+                               [--depth N] [--bg] [--crop x,y,w,h] [--out model.js] [--png out]
+                               photo → palette-snapped voxel model + preview
 
 Phase 2 (headless-browser daemon — full fidelity + state):
   partwright iterate <file.js> [--out png] [--views all] [-p k=v]
@@ -198,6 +240,7 @@ export async function main(argv) {
   switch (cmd) {
     case 'preview': return cmdPreview(rest, { pngDefault: true });
     case 'run': return cmdPreview(rest, { pngDefault: false });
+    case 'photo': return cmdPhoto(rest);
     case 'iterate': return cmdIterate(rest);
     case 'daemon': return cmdDaemon(rest);
     case 'call': return cmdCall(rest);

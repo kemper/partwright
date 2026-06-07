@@ -67,7 +67,9 @@ test.describe('filament palette + slot painting', () => {
     expect(regions[1].color[0]).toBeLessThan(0.3);
 
     // Drop the printer capacity to 1 via the palette manager → 2 slots used now
-    // exceeds it, so the over-budget badge appears in the paint panel.
+    // exceeds it, so the over-budget badge appears in the paint panel. Opening
+    // the palette panel closes Paint (one tool panel at a time), so reopen Paint
+    // afterwards to see the badge.
     await page.locator('#palette-manager-toggle').dispatchEvent('click');
     const dialog = page.locator('[role="dialog"]');
     const capInput = dialog.locator('input[type="number"]');
@@ -75,6 +77,8 @@ test.describe('filament palette + slot painting', () => {
     await capInput.dispatchEvent('change');
     await dialog.locator('button:has-text("Done")').dispatchEvent('click');
 
+    await page.locator('#paint-toggle').dispatchEvent('click');
+    await page.waitForSelector('#paint-picker-panel:not(.hidden)');
     const badge = page.locator('#paint-picker-panel').getByText(/\/1 slots/);
     await expect(badge).toBeVisible();
   });
@@ -158,8 +162,8 @@ test.describe('filament palette + slot painting', () => {
     await cap.dispatchEvent('change');
     await page.locator('[role="dialog"] button:has-text("Done")').dispatchEvent('click');
     await page.waitForSelector('[role="dialog"]', { state: 'detached' });
-    // Close the paint panel so it can't intercept the toolbar click.
-    await page.locator('#paint-toggle').dispatchEvent('click');
+    // Opening the palette panel already closed the paint panel (one tool panel
+    // at a time), so nothing overlaps the toolbar Export menu below.
 
     // Trigger 3MF export from the toolbar Export menu (the 3MF item is unique by
     // its Bambu description).

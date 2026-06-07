@@ -23,6 +23,7 @@ import { loadSettings } from './settings';
 import { turnCostUsd } from './cost';
 import { activeModel, ITERATION_CAP, SPEND_CAP_USD, type ChatBlock, type ChatMessage, type ChatToggles, type PersistedToolCall, type PersistedToolResult, type Provider, type TurnOutcomeReason } from './types';
 import { getConfig } from '../config/appConfig';
+import { isTransientError } from './transientError';
 
 /** Look up the stored API key for a hosted provider. Returns null when
  *  no key is stored; chatLoop turns that into an "open AI Settings to
@@ -91,6 +92,24 @@ const AUTO_RESUME_PROMPT =
  *  tools). Hitting it just falls through to the normal end_turn outcome (a
  *  resumable Keep-going notice), never an infinite loop. */
 function getMaxConsecutiveAutoResumes(): number { return getConfig().ai.maxConsecutiveAutoResumes; }
+
+/** Exponential backoff with full jitter, capped. attempt is 1-based. */
+function transientBackoffMs(attempt: number): number {
+  const cfg = getConfig().ai;
+  const ceiling = Math.min(cfg.transientRetryBaseMs * 2 ** (attempt - 1), cfg.transientRetryMaxMs);
+  return Math.round(Math.random() * ceiling);
+}
+
+/** Sleep that resolves early if the abort signal fires, so a queued backoff
+ *  doesn't keep a stopped turn alive. */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise(resolve => {
+    if (signal?.aborted) { resolve(); return; }
+    const t = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
+    const onAbort = () => { clearTimeout(t); resolve(); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 export interface RunTurnInput {
   /** Hosted-provider API key. Required only when toggles.provider === 'anthropic'. */
@@ -180,6 +199,29 @@ export interface RunTurnCallbacks {
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<boolean>;
 }
 
+/** Resolve the base system prompt for the active provider + model, honoring
+ *  any per-provider override and the slim/medium local variants. This is the
+ *  "prompt" half sent to the model; the per-turn toggle suffix (toggleSuffix)
+ *  rides alongside it. Extracted from runTurn so the panel can reproduce
+ *  exactly what's sent (the "System prompt" disclosure in the transcript). */
+export async function buildActiveSystemPrompt(toggles: ChatToggles): Promise<string> {
+  const settings = loadSettings();
+  const override = settings.systemPromptOverrides?.[toggles.provider] ?? null;
+  if (override !== null) return override;
+  if (toggles.provider === 'local' && toggles.localModel) {
+    try {
+      const info = resolveLocalModel(toggles.localModel);
+      return info.promptTier === 'medium'
+        ? buildMediumLocalSystemPrompt()
+        : buildLocalSystemPrompt();
+    } catch {
+      return buildLocalSystemPrompt();
+    }
+  }
+  if (toggles.provider === 'local') return buildLocalSystemPrompt();
+  return buildSystemPrompt(await loadAiMd());
+}
+
 /** Run one user turn through the agent loop. Returns the final history. */
 export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks = {}): Promise<ChatMessage[]> {
   const { apiKey, toggles, sessionId, history, userBlocks, signal } = input;
@@ -192,25 +234,7 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
   // conversation + the reply) and call readDoc to pull subdocs on demand.
   // Either path honors the per-provider user override if one is set in
   // AI settings.
-  const settings = loadSettings();
-  const override = settings.systemPromptOverrides?.[toggles.provider] ?? null;
-  let systemPrompt: string;
-  if (override !== null) {
-    systemPrompt = override;
-  } else if (toggles.provider === 'local' && toggles.localModel) {
-    try {
-      const info = resolveLocalModel(toggles.localModel);
-      systemPrompt = info.promptTier === 'medium'
-        ? buildMediumLocalSystemPrompt()
-        : buildLocalSystemPrompt();
-    } catch {
-      systemPrompt = buildLocalSystemPrompt();
-    }
-  } else if (toggles.provider === 'local') {
-    systemPrompt = buildLocalSystemPrompt();
-  } else {
-    systemPrompt = buildSystemPrompt(await loadAiMd());
-  }
+  const systemPrompt = await buildActiveSystemPrompt(toggles);
 
   const seqStart = nextSeq(history);
 
@@ -291,9 +315,19 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
       },
     };
 
-    const apiCallStart = Date.now();
     const requestSummary = `${workingHistory.length} msg(s), ${tools.length} tool def(s), vision=${toggles.vision.views ? 'on' : 'off'}, thinking=${toggles.thinking}`;
+    // Transient provider failures (HTTP 429/5xx, dropped stream, network blip)
+    // are retried in place with exponential backoff so an auto-continue run
+    // survives a flaky server. These retries do NOT consume the agent's
+    // per-turn iteration budget — only a *fatal* error (auth, bad request,
+    // user abort) or exhausting maxTransientRetries surfaces onError and ends
+    // the turn.
+    const maxTransientRetries = getConfig().ai.maxTransientRetries;
+    let transientAttempt = 0;
+    let apiCallStart = Date.now();
     let result;
+    for (;;) { // transient-retry loop — see maxTransientRetries below
+    apiCallStart = Date.now();
     try {
       if (toggles.provider === 'anthropic') {
         if (!apiKey) throw new Error('Anthropic API key is required.');
@@ -365,26 +399,45 @@ export async function runTurn(input: RunTurnInput, callbacks: RunTurnCallbacks =
           tools,
         }, streamCallbacks, signal);
       }
+      break; // streamTurn succeeded — leave the transient-retry loop
     } catch (err) {
-      // Surface the error to the caller; runTurn returns normally and the
-      // caller's awaited post-cleanup runs the history reload. The
-      // in-memory "Thinking…" placeholder gets wiped there. The per-call
-      // diagnostics buffer records the full message (the panel's onError
-      // also routes it into the app-wide errorLog with source='ai').
       const message = err instanceof Error ? err.message : String(err);
+      // Retryable hiccup? Back off and re-issue the same request without
+      // burning an agent iteration. Keeps auto-continue alive through 5xx /
+      // rate-limit / dropped-stream blips instead of tearing the loop down.
+      if (!signal?.aborted && transientAttempt < maxTransientRetries && isTransientError(err)) {
+        transientAttempt++;
+        const waitMs = transientBackoffMs(transientAttempt);
+        recordEvent({
+          provider: toggles.provider,
+          model: model ?? '(no model)',
+          kind: 'streamTurn',
+          durationMs: Date.now() - apiCallStart,
+          status: 'error',
+          errorMessage: `${message} — transient, retrying ${transientAttempt}/${maxTransientRetries} after ${waitMs}ms`,
+          requestSummary,
+        });
+        callbacks.onProgress?.({ phase: 'thinking', detail: `Server error — retrying (${transientAttempt}/${maxTransientRetries})…` });
+        await abortableSleep(waitMs, signal);
+        continue; // re-run streamTurn
+      }
+      // Fatal, or retries exhausted: surface the error and end the turn. The
+      // per-call diagnostics buffer records the full message (the panel's
+      // onError also routes it into the app-wide errorLog with source='ai').
       recordEvent({
         provider: toggles.provider,
         model: model ?? '(no model)',
         kind: 'streamTurn',
         durationMs: Date.now() - apiCallStart,
         status: 'error',
-        errorMessage: message,
+        errorMessage: transientAttempt > 0 ? `${message} (gave up after ${transientAttempt} transient retr${transientAttempt === 1 ? 'y' : 'ies'})` : message,
         requestSummary,
       });
       callbacks.onError?.(err instanceof Error ? err : new Error(message));
       callbacks.onTurnComplete?.({ totalCostUsd, toolCalls: totalToolCalls, reason: 'error', iterations: iter + 1 });
       return workingHistory;
     }
+    } // end transient-retry loop
 
     const durationMs = Date.now() - apiCallStart;
     turnApiTimeMs += durationMs;

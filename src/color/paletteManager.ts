@@ -5,7 +5,7 @@
 // Studio. Kept separate from the paint panel so the palette can be curated
 // without entering paint mode.
 
-import { createModalShell } from '../ui/modalShell';
+import { createToolPanelShell } from '../ui/toolPanel';
 import { BUTTON_PRIMARY } from '../ui/styleConstants';
 import { showToast } from '../ui/toast';
 import { promptDialog, confirmDialog } from '../ui/dialogs';
@@ -46,15 +46,14 @@ import { openPhotoColorPicker } from './photoColorPicker';
 
 let open = false;
 
-/** Open the palette manager modal. Idempotent — a second call is a no-op while
- *  one is showing. */
+/** Open the palette manager — a docked, draggable tool panel (like Paint).
+ *  Idempotent — a second call is a no-op while one is showing. */
 export function openPaletteManager(): void {
   if (open) return;
   open = true;
-  const shell = createModalShell({
+  const shell = createToolPanelShell({
     title: '🎨 Filament palette',
-    maxWidth: 'sm',
-    scrollable: true,
+    width: 'w-[22rem]',
     onClose: () => { open = false; },
   });
 
@@ -217,8 +216,9 @@ export function openPaletteManager(): void {
   importBtn.className = 'px-2.5 py-1 rounded text-xs bg-zinc-700/60 text-zinc-200 hover:bg-zinc-600/60 transition-colors';
   importBtn.textContent = '🖼️ Import from photo…';
   importBtn.addEventListener('click', () => {
-    // Opening the picker auto-closes this manager (modalShell allows one shell);
-    // its onClose reopens the manager so the imported slots + history show.
+    // Close this panel while the centered photo picker is up (so the two don't
+    // stack); the picker's onClose reopens the manager with the imported slots.
+    shell.close();
     openPhotoColorPicker(
       (hexes) => {
         for (const hex of hexes) {
