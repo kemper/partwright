@@ -179,10 +179,9 @@ test.describe('extended paint controls', () => {
     expect(result.bad.error).toBeTruthy();
   });
 
-  test('mesh-edge toggle sits above the grid toggle in the View popover and defaults off', async ({ page }) => {
+  test('mesh-edge toggle sits above the grid toggle on the bar and defaults off', async ({ page }) => {
     await openEditor(page);
-    // Edges/Grid now live inside the View popover — open it to reveal them.
-    await page.locator('#viewport-view-group-btn').dispatchEvent('click');
+    // Edges/Grid are direct pills on the viewport bar — visible without a menu.
     const wireBtn = page.locator('#wireframe-toggle');
     await expect(wireBtn).toBeVisible();
     await expect(page.locator('#grid-toggle')).toBeVisible();

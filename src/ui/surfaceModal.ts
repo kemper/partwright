@@ -14,6 +14,7 @@ import { registerCommands } from './commandPalette';
 import { getConfig } from '../config/appConfig';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
+import { TOOL_PANEL_CLASS, TOOL_PANEL_HEADER, TOOL_PANEL_TITLE, TOOL_PANEL_CLOSE } from './toolPanel';
 import { pickFace } from '../color/facePicker';
 import { addPointerSuppressor } from '../renderer/viewport';
 import { buildAdjacency, findConnectedFromSeed } from '../color/adjacency';
@@ -82,7 +83,7 @@ function slider(label: string, min: number, max: number, value: number, step: nu
   head.append(el('span', '', label));
   const readout = el('span', 'text-zinc-400 tabular-nums', fmt(value));
   head.append(readout);
-  const input = el('input', 'w-full accent-sky-500');
+  const input = el('input', 'w-full accent-blue-500');
   input.type = 'range';
   input.min = String(min); input.max = String(max); input.step = String(step); input.value = String(value);
   input.addEventListener('input', () => { readout.textContent = fmt(input.valueAsNumber); onChange(); });
@@ -92,7 +93,7 @@ function slider(label: string, min: number, max: number, value: number, step: nu
 
 function checkbox(label: string, checked: boolean, onChange: () => void) {
   const wrap = el('label', 'flex items-center gap-2 mb-3 text-xs text-zinc-300 cursor-pointer');
-  const input = el('input', 'accent-sky-500');
+  const input = el('input', 'accent-blue-500');
   input.type = 'checkbox'; input.checked = checked;
   input.addEventListener('change', onChange);
   wrap.append(input, el('span', '', label));
@@ -133,12 +134,12 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   const container = getViewportContainer();
 
   // Floating panel — absolutely positioned inside the viewport container.
-  const panel = el('div', 'absolute z-[60] bg-zinc-900 text-zinc-100 rounded-lg border border-zinc-700 shadow-xl w-[min(94vw,400px)] select-none flex flex-col') as HTMLDivElement;
+  const panel = el('div', `${TOOL_PANEL_CLASS} text-zinc-100 w-[min(94vw,400px)] max-h-[calc(100%-3.5rem)] select-none`) as HTMLDivElement;
 
-  // Header — drag handle + title + × button.
-  const header = el('div', 'flex items-center justify-between px-4 py-3 border-b border-zinc-700 shrink-0');
-  header.append(el('h2', 'text-sm font-semibold', 'Surface modifiers'));
-  const closeBtn = el('button', 'text-zinc-400 hover:text-zinc-100 text-lg leading-none', '×');
+  // Header — drag handle + title + × button (shared tool-panel chrome).
+  const header = el('div', TOOL_PANEL_HEADER);
+  header.append(el('h2', TOOL_PANEL_TITLE, 'Surface modifiers'));
+  const closeBtn = el('button', TOOL_PANEL_CLOSE, '×');
   closeBtn.setAttribute('aria-label', 'Close surface panel');
   header.append(closeBtn);
   panel.append(header);
@@ -183,7 +184,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   // --- Region selector UI (created once, moved above tabs) ---
 
   // Mode toggle: Region | Whole model
-  const MODE_ACTIVE = 'px-2.5 py-1 rounded text-xs bg-sky-600 text-white';
+  const MODE_ACTIVE = 'px-2.5 py-1 rounded text-xs bg-blue-600 text-white';
   const MODE_IDLE   = 'px-2.5 py-1 rounded text-xs bg-zinc-800 text-zinc-300 hover:bg-zinc-700';
   const modeRegionBtn = el('button', MODE_ACTIVE, 'Region');
   const modeWholeBtn  = el('button', MODE_IDLE, 'Whole model');
@@ -193,7 +194,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   // Cursor-arrow icon for the pick-regions toggle
   const PICK_ICON_SVG = `<svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.917-3.286-.672Zm-7.518-.267A8.25 8.25 0 1 1 20.25 10.5M8.288 14.212A5.25 5.25 0 1 1 17.25 10.5"/></svg>`;
   const SEL_IDLE   = BTN_BASE + ' flex items-center gap-1.5';
-  const SEL_ACTIVE = 'flex items-center gap-1.5 px-2.5 py-1 rounded text-xs bg-sky-700 text-white border border-sky-500 ring-2 ring-sky-500 ring-offset-1 ring-offset-zinc-900';
+  const SEL_ACTIVE = 'flex items-center gap-1.5 px-2.5 py-1 rounded text-xs bg-blue-700 text-white border border-blue-500 ring-2 ring-blue-500 ring-offset-1 ring-offset-zinc-800';
   const selectingBtn = el('button', SEL_IDLE);
   selectingBtn.innerHTML = PICK_ICON_SVG + '<span>Pick regions</span>';
   selectingBtn.title = 'Click faces on the model to flood-fill select regions';
@@ -234,8 +235,8 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     const blocked = regionBlocked();
     applyBtn.disabled = blocked;
     applyBtn.className = blocked
-      ? 'px-3 py-1.5 rounded bg-sky-900/40 text-sky-300/40 text-xs font-medium cursor-not-allowed'
-      : 'px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium';
+      ? 'px-3 py-1.5 rounded bg-blue-900/40 text-blue-300/40 text-xs font-medium cursor-not-allowed'
+      : 'px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium';
     previewBtn.disabled = blocked;
     previewBtn.className = blocked
       ? 'px-3 py-1.5 rounded bg-zinc-800/40 text-zinc-400/40 text-xs cursor-not-allowed'
@@ -264,7 +265,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     const seeds = seedTriangles.length;
     if (count === 0) {
       regionStatus.textContent = 'Pick at least one region to preview.';
-      regionStatus.className = 'text-[11px] text-sky-400/80 min-h-[1rem] mt-1 mb-1';
+      regionStatus.className = 'text-[11px] text-blue-400/80 min-h-[1rem] mt-1 mb-1';
     } else {
       const regionWord = seeds === 1 ? 'region' : 'regions';
       const suffix = inSelectionMode ? ' — click to add more' : '';
@@ -344,7 +345,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     selectingBtn.innerHTML = PICK_ICON_SVG + '<span>Stop picking</span>';
     if (seedTriangles.length === 0) {
       regionStatus.textContent = 'Click the model to add regions…';
-      regionStatus.className = 'text-[11px] text-sky-400/80 min-h-[1rem] mt-1 mb-1';
+      regionStatus.className = 'text-[11px] text-blue-400/80 min-h-[1rem] mt-1 mb-1';
     } else {
       updateRegionStatus();
     }
@@ -533,7 +534,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
     // Region mode with nothing selected: don't fire a preview at all
     if (regionBlocked()) {
       clearPreviewIfDirty();
-      updateRegionStatus(); // ensures the sky-400 nudge text is shown
+      updateRegionStatus(); // ensures the blue-400 nudge text is shown
       return;
     }
     status.textContent = 'Updating preview…';
@@ -553,7 +554,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   function styleTabs() {
     for (const [id, b] of tabBtns) {
       b.className = id === active
-        ? 'px-2.5 py-1 rounded text-xs bg-sky-600 text-white'
+        ? 'px-2.5 py-1 rounded text-xs bg-blue-600 text-white'
         : 'px-2.5 py-1 rounded text-xs bg-zinc-800 text-zinc-300 hover:bg-zinc-700';
     }
   }
@@ -572,7 +573,7 @@ export function openSurfaceModal(api: SurfaceApi, initialTab: Tab = 'fuzzy'): vo
   const footer = el('div', 'flex justify-end gap-2 mt-2');
   const cancelBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs', 'Cancel');
   const previewBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-200 text-xs', 'Preview');
-  const applyBtn = el('button', 'px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium', 'Apply');
+  const applyBtn = el('button', 'px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium', 'Apply');
   footer.append(cancelBtn, previewBtn, applyBtn);
   scrollBody.append(footer);
 

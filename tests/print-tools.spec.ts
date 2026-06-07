@@ -70,10 +70,10 @@ test.describe('Print tools', () => {
     await page.locator('#print-tools-toggle').dispatchEvent('click');
     await page.waitForSelector('#print-tools-panel:not(.hidden)');
 
-    // Header has a × close button with the standard aria-label.
-    const closeBtn = page.locator('#print-tools-close');
+    // Standard close-button selector: panel scope + descriptive aria-label
+    // (same pattern quality-settings.spec.ts uses for the Quality panel).
+    const closeBtn = page.locator('#print-tools-panel button[aria-label="Close print panel"]');
     await expect(closeBtn).toBeVisible();
-    await expect(closeBtn).toHaveAttribute('aria-label', /close/i);
 
     // Clicking × closes the panel.
     await closeBtn.dispatchEvent('click');

@@ -16,6 +16,7 @@ import type { PrintabilityReport } from '../geometry/printability';
 import { viewportInspectMount } from './popoverMenu';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { attachViewportPanelDrag, setInitialPanelPosition } from './viewportPanelDrag';
+import { createToolPanelHeader, TOOL_TOGGLE_IDLE, TOOL_TOGGLE_ACTIVE } from './toolPanel';
 
 export interface PrintToolsHandlers {
   /** Snapshot state + close sibling overlays when the user opens the panel. */
@@ -25,8 +26,8 @@ export interface PrintToolsHandlers {
   check(): PrintabilityReport | { error: string };
 }
 
-const BTN_INACTIVE = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-zinc-800/80 backdrop-blur text-zinc-400 [@media(hover:hover)]:hover:text-zinc-200 [@media(hover:hover)]:hover:bg-zinc-700/80 transition-colors border border-zinc-600/50';
-const BTN_ACTIVE = 'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-blue-500/20 backdrop-blur text-blue-400 [@media(hover:hover)]:hover:bg-blue-500/30 transition-colors border border-blue-500/30';
+const BTN_INACTIVE = TOOL_TOGGLE_IDLE;
+const BTN_ACTIVE = TOOL_TOGGLE_ACTIVE;
 const ACTION_BTN = 'w-full px-2 py-1.5 rounded text-xs font-medium bg-blue-500/30 text-blue-200 [@media(hover:hover)]:hover:bg-blue-500/40 transition-colors border border-blue-500/50 disabled:opacity-40 disabled:cursor-not-allowed';
 const SECTION_LABEL = 'block text-[10px] text-zinc-500 uppercase tracking-wider mb-1 font-medium';
 const NUM_INPUT = 'w-full px-1.5 py-1 text-xs text-right rounded bg-zinc-900/80 border border-zinc-600/60 text-zinc-200 focus:outline-none focus:border-blue-500/60';
@@ -188,20 +189,8 @@ function buildPanel(): HTMLElement {
   p.style.minWidth = '250px';
   p.style.maxWidth = '290px';
 
-  // ── Header (drag handle) ───────────────────────────────────────────────
-  const header = document.createElement('div');
-  header.className = 'flex items-center justify-between px-2.5 py-2 border-b border-zinc-700/70 select-none cursor-grab';
-  const titleEl = document.createElement('div');
-  titleEl.className = 'text-[10px] text-zinc-500 uppercase tracking-wider font-medium';
-  titleEl.textContent = 'Print tools';
-  const closeBtn = document.createElement('button');
-  closeBtn.id = 'print-tools-close';
-  closeBtn.className = 'text-zinc-400 hover:text-zinc-200 transition-colors leading-none w-6 h-6 flex items-center justify-center rounded hover:bg-zinc-700/60';
-  closeBtn.textContent = '×';
-  closeBtn.title = 'Close';
-  closeBtn.setAttribute('aria-label', 'Close print panel');
-  closeBtn.addEventListener('click', closePanel);
-  header.append(titleEl, closeBtn);
+  // Shared tool-panel header (title + × close, common across every tool panel).
+  const header = createToolPanelHeader('Print tools', closePanel, 'Close print panel');
   p.appendChild(header);
 
   // ── Scrollable content area ────────────────────────────────────────────

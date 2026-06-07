@@ -28,7 +28,7 @@ import { onQualitySettingsChange } from './geometry/qualitySettings';
 import { resolveParamValues, pruneParamValues, type ParamSpec, type ParamValue } from './geometry/params';
 import { createParamsPanel, type ParamsPanelController } from './ui/paramsPanel';
 import { sliceAtZ, getBoundingBox } from './geometry/crossSection';
-import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, resetView } from './renderer/viewport';
+import { initViewport, updateMesh, clearMesh, setOnMeshUpdate, setOnContextLost, setOnContextRestored, setClipping, setClipZ, getClipState, getCameraState, getCameraPose, setCameraPose, getCanvas, getMeshGroup, getCamera, setMeasureLock, setUserOrbitLock, isUserOrbitLocked, onUserOrbitLockChange, setDimensionsVisible, isDimensionsVisible, setGridVisible, isGridVisible, setWireframeVisible, isWireframeVisible, onWireframeChange, resetView, onOrbitEnd } from './renderer/viewport';
 // Side-effect import: registers the phantom/annotation/session-plane viewport
 // hooks. Must load before initViewport runs (below). See viewportSubsystems.ts.
 import './renderer/viewportSubsystems';
@@ -41,6 +41,7 @@ import { createLayout, type TabName } from './ui/layout';
 import { createToolbar, isAutoRun, setAutoRun, setToolbarLanguage, setAiToolbarState, setRunState } from './ui/toolbar';
 import { installKeyboardShortcuts } from './ui/keyboardShortcuts';
 import { registerCommands } from './ui/commandPalette';
+import { mountHintsTicker, showHintsTicker } from './ui/hints/hintsTicker';
 import { showAdvancedSettingsModal } from './ui/advancedSettingsModal';
 import { combo, MOD_LABEL, SHIFT_LABEL, ALT_LABEL } from './ui/shortcutDefs';
 import { showToast } from './ui/toast';
@@ -112,6 +113,7 @@ import { generateImportCode } from './import/codegen';
 import { imageDataToVoxelGrid, generateVoxelImportCode, type ImageToVoxelOptions } from './import/imageToVoxel';
 import { runVoxelForPaint } from './geometry/engines/voxel';
 import type { VoxelGrid } from './geometry/voxel/grid';
+import { appendVoxelEditsToCode, editOpCount } from './geometry/voxel/editCodegen';
 import * as voxelPaint from './color/voxelPaint';
 import { setActiveImports, getActiveImports, type ImportedMesh } from './import/importedMesh';
 import { getCompanionFiles, setCompanionFiles, addCompanionFile as addCompanionFileToRegistry, removeCompanionFile as removeCompanionFileFromRegistry, updateCompanionFile, detectMissingIncludes, normalizeCompanionPath, companionFilesEqual } from './import/companionFiles';
@@ -218,6 +220,8 @@ import {
   deleteParts,
   reorderParts,
   getState,
+  setSessionThumbCamera,
+  setSessionWorkCamera,
   getSessionUrl,
   getGalleryUrl,
   exportSession,
@@ -268,7 +272,7 @@ import {
   checkAssertions,
   type GeometryAssertions,
 } from './geometry/statsComputation';
-import { getConfig } from './config/appConfig';
+import { getConfig, saveAppConfig } from './config/appConfig';
 import { extractPositions, maxEdgeLength, minEdgeLength, estimateRefineTriangles } from './surface/meshSubdivide';
 
 // Load examples as raw text — JS and SCAD
@@ -414,11 +418,39 @@ function syncParamsPanel(schema: ParamSpec[] | undefined): void {
 }
 
 let currentMeshData: MeshData | null = null;
+/** Session id whose geometry the viewport last framed. Lets the render paths
+ *  tell a *re-render within the active session* (version switch or re-run —
+ *  preserve the user's current interactive camera angle) apart from the first
+ *  render of a freshly-opened session (let the camera auto-frame the new model). */
+let lastFramedSessionId: string | null = null;
+type CameraPose = { position: [number, number, number]; target: [number, number, number] };
+/** Pose to apply after a render so the camera lands where the user expects
+ *  rather than at the default 3/4 framing. Two cases:
+ *   • Re-render within an already-framed session (version switch, re-run, AI
+ *     edit) → keep the live angle (snapshot it now).
+ *   • First framing of a session that has a persisted working-view camera →
+ *     restore that saved pose, so the angle survives reload / reopen.
+ *  Returns null for the first framing of a session with no saved view (let it
+ *  auto-frame). Restore with `if (pose) setCameraPose(pose)` after the render. */
+function captureCameraToPreserve(): CameraPose | null {
+  const sid = getState().session?.id ?? null;
+  if (sid === null) return null;
+  if (currentMeshData !== null && sid === lastFramedSessionId) {
+    return getCameraPose();
+  }
+  const saved = getState().session?.workCamera;
+  return saved ? { position: [...saved.position], target: [...saved.target] } : null;
+}
 /** WASM heap high-water (bytes) reported by the geometry Worker for the most
  *  recent manifold-js run. Surfaced in the geometry-data stats and engine-error
  *  log so users can see how close a run came to the ~4 GB ceiling. Undefined
  *  for non-manifold-js engines (separate heaps) or before the first run. */
 let lastEngineHeapBytes: number | undefined;
+/** Occupied-voxel count reported by the voxel engine for the most recent run.
+ *  Surfaced in the geometry-data stats (so `runAndSave().geometry.voxelCount`
+ *  and the Data panel show it) without re-decoding the grid. Undefined for the
+ *  non-voxel engines or before the first run. */
+let lastVoxelCount: number | undefined;
 /** The pristine mesh produced by the authored code, before any smooth brush
  *  subdivision. `currentMeshData` equals this until a `brushStroke` region
  *  exists, at which point it becomes the refined (subdivided) mesh rebuilt by
@@ -689,6 +721,11 @@ function withSessionContext(data: Record<string, unknown>): Record<string, unkno
   if (lastEngineHeapBytes !== undefined) {
     data.engineMemory = formatEngineMemory(lastEngineHeapBytes);
   }
+  // Voxel models report their occupied-voxel count so the stats double as a
+  // size readout for direct (non-mesh) modeling.
+  if (lastVoxelCount !== undefined) {
+    data.voxelCount = lastVoxelCount;
+  }
   return data;
 }
 
@@ -733,10 +770,14 @@ function updateGeometryData(executionTimeMs?: number, sourceCode?: string) {
 function captureThumbnail(mesh: MeshData | null = currentMeshData): Promise<Blob | null> {
   if (!mesh) return Promise.resolve(null);
   let canvas: HTMLCanvasElement;
+  // Honour a session-pinned thumbnail camera (partwright.setThumbnailCamera);
+  // fall back to the default iso 3/4 view. The pin keeps the perspective ortho
+  // flag of the iso view so a custom angle still reads as a 3/4 tile.
+  const pin = getState().session?.thumbCamera;
   try {
     canvas = renderSingleViewCanvas(applyTriColorsIfVisible(mesh), {
-      elevation: STANDARD_VIEWS.iso.elevation,
-      azimuth: STANDARD_VIEWS.iso.azimuth,
+      elevation: pin ? pin.elevation : STANDARD_VIEWS.iso.elevation,
+      azimuth: pin ? pin.azimuth : STANDARD_VIEWS.iso.azimuth,
       ortho: STANDARD_VIEWS.iso.ortho,
     });
   } catch {
@@ -788,6 +829,23 @@ function getGeometryDataObj(): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+/** Per-region paint summary for the runAndSave / saveVersion response: each user
+ *  paint region's name, descriptor `kind` (so an agent can confirm it used
+ *  `byLabel` rather than coordinate paint — which bloats saved catalog files),
+ *  the resolved label for byLabel regions, and the triangle count it resolved to
+ *  on the current mesh (0 ⇒ the region matched nothing; see the zero-triangle
+ *  warning in `geometryWarnings`). Returns [] when nothing is painted.
+ *  Model-declared label colors are excluded — this reflects the serialized
+ *  paint, which is what determines file size. */
+function colorRegionStats(): { name: string; kind: RegionDescriptor['kind']; label?: string; triangleCount: number }[] {
+  return getRegions().map((r) => ({
+    name: r.name,
+    kind: r.descriptor.kind,
+    ...(r.descriptor.kind === 'byLabel' ? { label: r.descriptor.label } : {}),
+    triangleCount: r.triangles.size,
+  }));
 }
 
 /** Swap the in-memory annotation store to the version's snapshot.
@@ -1683,7 +1741,7 @@ function enrichGeometryDataWithColors(geoData: Record<string, unknown> | null): 
  *  active, or `{ skipped }` when nothing changed since the current version. */
 async function saveCurrentVersion(label?: string): Promise<
   | { error: string }
-  | { id: string; index: number; label: string }
+  | { id: string; index: number; label: string; colorRegions?: ReturnType<typeof colorRegionStats> }
   | { skipped: true; reason: string }
 > {
   if (isSharedPreview()) {
@@ -1721,7 +1779,11 @@ async function saveCurrentVersion(label?: string): Promise<
         if (oldest) partMeshCache.delete(oldest);
       }
     }
-    return { id: version.id, index: version.index, label: version.label };
+    const colorRegions = colorRegionStats();
+    return {
+      id: version.id, index: version.index, label: version.label,
+      ...(colorRegions.length > 0 ? { colorRegions } : {}),
+    };
   }
   return {
     skipped: true as const,
@@ -2643,7 +2705,7 @@ async function main() {
         // shows the active version's code. Re-render the active version so the
         // editor text and viewport agree again.
         const st = getState();
-        if (st.currentVersion) await runCodeSync(st.currentVersion.code);
+        if (st.currentVersion) await runCodeSync(st.currentVersion.code, { preserveCamera: true });
         const partWord = result.addedParts.length === 1 ? 'part' : 'parts';
         showToast(`Merged ${result.addedParts.length} ${partWord} into this session.`, { variant: 'success' });
         return true;
@@ -4102,6 +4164,15 @@ async function main() {
     },
   });
 
+  // "Did you know?" hints ticker — mounts into the toolbar's middle host
+  // (#editor-hints-host, created by createToolbar between the language "?" and
+  // the "Use AI" button). The ticker mounts/unmounts inside it as it's toggled.
+  // Shown by default; hidden per-session via its ✕ or permanently in Advanced
+  // Settings (config.ui.editorHintsEnabled).
+  // Query within editorUI (not document) — it isn't attached to the page yet.
+  const hintsHost = editorUI.querySelector<HTMLElement>('#editor-hints-host');
+  if (hintsHost) mountHintsTicker(hintsHost);
+
   // Init diagnostic panel — attaches to document.body, registers badge subscriber.
   initDiagnosticsPanel();
 
@@ -4336,6 +4407,16 @@ async function main() {
   // Viewport tools need the editor active and a model on screen to act on.
   const viewportToolEnabled = () => isEditorActive() && currentMeshData !== null;
 
+  // Flip the permanent on/off for the hints ticker (also exposed in Advanced
+  // Settings). Turning it on clears any per-session ✕-dismiss so it reappears.
+  function toggleEditorHints(): void {
+    const cfg = getConfig();
+    const next = !cfg.ui.editorHintsEnabled;
+    saveAppConfig({ ...cfg, ui: { ...cfg.ui, editorHintsEnabled: next } });
+    if (next) showHintsTicker();
+    showToast(next ? 'Editor hints shown' : 'Editor hints hidden', { variant: 'neutral' });
+  }
+
   // Register command-palette actions (⌘K). Reuses the same handlers the
   // toolbar/session bar/layout already wire up so behavior can't drift.
   registerCommands([
@@ -4384,6 +4465,7 @@ async function main() {
     { id: 'open-whats-new', title: "Open what's new", hint: 'Navigate', keywords: 'changelog recent features updates release notes', run: () => showWhatsNewPage() },
     { id: 'open-quality', title: 'Settings', hint: 'Settings', keywords: 'resolution curve segments smoothness advanced', run: () => showAdvancedSettingsModal() },
     { id: 'retake-tour', title: 'Take the guided tour', hint: 'Help', keywords: 'onboarding walkthrough intro tutorial', run: () => { resetTour(); startTour(); }, enabled: isEditorActive },
+    { id: 'toggle-hints', title: 'Toggle "Did you know?" hints', hint: 'View', keywords: 'did you know tips ticker discovery hints banner strip', run: () => toggleEditorHints() },
   ]);
 
   // Init gallery — `loadVersion` (in gallery.ts) has already updated state to
@@ -4551,6 +4633,15 @@ async function main() {
     // after navigation would write the wrong session's voxels into the new
     // editor. Also unlocks the editor and clears the floating panel.
     cancelVoxelPaintIfActive();
+    // Preserve the user's interactive camera angle across version switches
+    // *within* a session. Loading a version re-renders the geometry, whose
+    // updateMesh auto-frames the camera back to the default 3/4 view — undoing
+    // any orbit/zoom the user set. We snapshot the live pose here and restore it
+    // after the new geometry is in (frameModel still runs, so clip range / grid /
+    // near-far adapt to the new model's bounds — only the camera is put back).
+    // runCodeSync applies the same preserve on the cache-miss compile and on the
+    // debounced auto-run that re-renders ~300ms after a version load.
+    const preservedCameraPose = captureCameraToPreserve();
     // Each version remembers the language it was authored in (per-version
     // since schema 1.8); fall back to the session-level hint, then to the
     // engine default. Lets a single session hold mixed JS + SCAD versions
@@ -4627,8 +4718,11 @@ async function main() {
       setStatus(statusBar, 'ready', 'Ready');
     } else {
       // Cache miss: compile the code and, on success, populate the cache.
+      // preserveCamera keeps the user's interactive angle across the switch
+      // (see captureCameraToPreserve); the cache-hit branch above relies on the
+      // preservedCameraPose restore at the end of this function instead.
       const meshBeforeRun = currentMeshData;
-      const applied = await runCodeSync(version.code);
+      const applied = await runCodeSync(version.code, { preserveCamera: true });
       // If a newer version-switch arrived while we were compiling, our result
       // was discarded — don't rehydrate colours or annotations for the wrong version.
       if (!applied) return;
@@ -4652,6 +4746,13 @@ async function main() {
         }
       }
     }
+
+    // Restore the pre-switch camera angle (see capture above), or record this
+    // session as framed so the *next* switch within it preserves the angle.
+    if (preservedCameraPose) {
+      setCameraPose(preservedCameraPose);
+    }
+    lastFramedSessionId = getState().session?.id ?? null;
 
     await rehydrateColorRegions(version.geometryData);
     applyVersionAnnotations(version);
@@ -5373,6 +5474,25 @@ async function main() {
   // Init viewport
   initViewport(viewportPane);
 
+  // Persist the interactive working-view camera per session so the angle/zoom
+  // survives reload and reopening (restored on open via captureCameraToPreserve).
+  // Debounced on the orbit-end gesture; only when a model is shown for the active
+  // session. Programmatic camera moves don't fire 'end', so auto-frames and
+  // restores never write back.
+  let _workCameraSaveTimer: number | undefined;
+  onOrbitEnd(() => {
+    if (_workCameraSaveTimer !== undefined) clearTimeout(_workCameraSaveTimer);
+    // Snapshot inside the debounced callback, not here: 'end' fires at gesture
+    // release while OrbitControls damping is still gliding, so reading the pose
+    // now would persist a pre-settle angle. By the time the debounce elapses the
+    // camera has come to rest, so the saved view matches what the user sees.
+    _workCameraSaveTimer = window.setTimeout(() => {
+      _workCameraSaveTimer = undefined;
+      if (currentMeshData === null || !getState().session) return;
+      void setSessionWorkCamera(getCameraPose());
+    }, getConfig().ui.workCameraSaveDebounceMs);
+  });
+
   // Indeterminate progress bar shown over the viewport while WASM loads on
   // first editor open. Hidden by ensureEngineStarted's finally block.
   {
@@ -5444,9 +5564,9 @@ async function main() {
   });
   viewportPane.appendChild(paramsPanel.element);
   // Customize is a contextual primary: hidden until a model declares params,
-  // then surfaced top-level (just before the View group) as a strong "this model
-  // is tweakable" signal — not buried inside the Tools popover.
-  const customizeAnchor = clipControls.querySelector('#viewport-view-group');
+  // then surfaced top-level (just before the Inspect popover) as a strong "this
+  // model is tweakable" signal — not buried inside the Tools popover.
+  const customizeAnchor = clipControls.querySelector('#viewport-inspect-group');
   if (customizeAnchor) clipControls.insertBefore(customizeBtn, customizeAnchor);
   else clipControls.appendChild(customizeBtn);
 
@@ -6319,8 +6439,9 @@ async function main() {
       const err = voxelPaint.activate(code, {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
+        onStateChange: () => { syncVoxelPaintUI(); },
       }, currentParamValues);
-      if (err) showToast(`Voxel paint: ${err}`, { variant: 'warn' });
+      if (err) showToast(`Voxel Studio: ${err}`, { variant: 'warn' });
       syncVoxelPaintUI();
     },
     deactivate: async () => {
@@ -6328,29 +6449,60 @@ async function main() {
       runCode(getValue());
       syncVoxelPaintUI();
     },
-    bake: async () => {
-      const result = await bakePaintedVoxelsAsVersion('painted');
-      if ('error' in result) showToast(`Voxel paint: ${result.error}`, { variant: 'warn' });
+    updateCode: async () => {
+      const result = await commitVoxelEdits('update', 'voxel edits');
+      if ('error' in result) showToast(`Voxel Studio: ${result.error}`, { variant: 'warn' });
+      else showToast('Voxel edits applied to your code', { variant: 'success' });
+      syncVoxelPaintUI();
+    },
+    saveRaw: async () => {
+      // Replacing destroys the current source; confirm when there's code to lose.
+      if (getValue().trim().length > 0) {
+        const ok = await confirmDialog(
+          'Save as raw voxel data? This replaces the code in the editor with voxels.decode(...) of the current grid.',
+          { title: 'Replace code', confirmLabel: 'Replace', danger: true },
+        );
+        if (!ok) return;
+      }
+      const result = await commitVoxelEdits('replace', 'painted');
+      if ('error' in result) showToast(`Voxel Studio: ${result.error}`, { variant: 'warn' });
       syncVoxelPaintUI();
     },
   });
   setVoxelPaintAvailable(getActiveLanguage() === 'voxel');
 
-  // Single source of truth for "commit the painted voxel grid as a new
-  // version" — called both from the UI Bake button and the partwright API.
-  // Centralising avoids the bake-with-empty-grid / no-session bugs that two
-  // separate implementations introduced.
-  async function bakePaintedVoxelsAsVersion(label: string): Promise<{ versionIndex: number | null; voxelCount: number } | { error: string }> {
-    if (!voxelPaint.isActive()) return { error: 'voxel paint is not active.' };
+  // Single source of truth for committing Voxel Studio edits as a new version.
+  // `mode` picks how the edits land in the editor:
+  //   • 'replace' — overwrite the code with voxels.decode(<full grid>) ("Save
+  //     as raw voxel data"). The UI confirms before calling this; the
+  //     programmatic API (bakeVoxelsToCode) skips the dialog.
+  //   • 'update'  — keep the procedural code and append the edits as explicit
+  //     v.set/v.remove statements ("Update code").
+  async function commitVoxelEdits(
+    mode: 'replace' | 'update',
+    label: string,
+  ): Promise<{ versionIndex: number | null; voxelCount: number } | { error: string }> {
+    if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
     const count = voxelPaint.voxelCount();
-    if (count === 0) return { error: 'The painted grid is empty — paint or keep at least one voxel before baking.' };
-    const code = voxelPaint.bakeToCode('painted');
-    if (!code) return { error: 'voxel paint has no grid to bake.' };
+    if (count === 0) return { error: 'The grid is empty — keep at least one voxel before saving.' };
+
+    let code: string | null;
+    if (mode === 'update') {
+      const ops = voxelPaint.getEditOps();
+      if (editOpCount(ops) === 0) return { error: 'No edits to apply — paint, add, or remove some voxels first.' };
+      code = appendVoxelEditsToCode(getValue(), ops);
+      // No trailing `return …;` to hook onto — fall back to a clean replace.
+      if (code === null) code = voxelPaint.bakeToCode('painted');
+    } else {
+      code = voxelPaint.bakeToCode('painted');
+    }
+    if (!code) return { error: 'Voxel Studio has no grid to save.' };
+
     voxelPaint.deactivate();
     setValue(code);
     await runCodeSync(code);
     // Mirror the runAndSave auto-create pattern so callers don't have to wrap
-    // bake with a manual createSession.
+    // the commit with a manual createSession.
     if (!getState().session) {
       await createSession(label, getActiveLanguage());
     }
@@ -6379,7 +6531,7 @@ async function main() {
   reliefViewportBtn.addEventListener('click', () => toggleReliefStudio());
   // Relief edit is a contextual primary too (shown only in relief sessions), so
   // it sits top-level alongside Customize rather than inside the Tools popover.
-  const reliefAnchor = clipControls.querySelector('#viewport-view-group');
+  const reliefAnchor = clipControls.querySelector('#viewport-inspect-group');
   if (reliefAnchor) clipControls.insertBefore(reliefViewportBtn, reliefAnchor);
   else clipControls.appendChild(reliefViewportBtn);
 
@@ -6724,6 +6876,7 @@ async function main() {
     const manifold = result.manifold ?? (mod && result.mesh ? mod.Manifold.ofMesh(result.mesh) : null);
     const stats = computeGeometryStats(manifold, result.mesh!, elapsed, code);
     if (engineMemory !== undefined) stats.engineMemory = engineMemory;
+    if (result.voxelCount !== undefined) stats.voxelCount = result.voxelCount;
     return {
       geometryData: stats,
       meshData: result.mesh,
@@ -7353,11 +7506,14 @@ async function main() {
       } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
     },
     /** Run code string and update all views. Returns geometry data object. */
-    async run(code?: string): Promise<Record<string, unknown>> {
+    async run(code?: string, opts?: { preserveCamera?: boolean }): Promise<Record<string, unknown>> {
       assertString(code, 'run(code)', { optional: true, allowEmpty: false });
       const src = code ?? getValue();
       if (code !== undefined) setValue(code);
-      const applied = await runCodeSync(src);
+      // The in-app AI passes preserveCamera so iterating on a model doesn't snap
+      // the user's orbit back to default every turn; bare console callers omit it
+      // and keep auto-framing (the same-session gate still frames a fresh run).
+      const applied = await runCodeSync(src, { preserveCamera: opts?.preserveCamera === true });
       if (!applied) {
         return { status: 'error', error: 'Run was superseded by a concurrent execution — retry' };
       }
@@ -8058,6 +8214,56 @@ async function main() {
       return composite.toDataURL('image/png');
     },
 
+    /** Pin the thumbnail camera angle for the active session so captured
+     *  thumbnails (catalog tile, gallery, version snapshots) render from this
+     *  azimuth / elevation (degrees) instead of the default iso 3/4 view (the
+     *  default is azimuth 45°, elevation 35°). The pin persists on the session
+     *  and survives reload / export, so a faced model can present its front in
+     *  the tile without baking orientation into the geometry.
+     *
+     *  - `setThumbnailCamera({ azimuth, elevation })` — pin an explicit angle.
+     *    Azimuth: 0 = front (-Y), 90 = right (+X), 180 = back (+Y), 270 = left.
+     *    Elevation: 0 = horizon, 90 = top-down.
+     *  - `setThumbnailCamera('current')` — pin the angle you're currently
+     *    looking at in the viewport (orbit to a nice 3/4 view, then call this —
+     *    no guessing numbers). The live viewport's azimuth convention is
+     *    mirrored from the thumbnail camera's, so this converts it for you.
+     *  - `setThumbnailCamera(null)` — clear the pin, back to the default.
+     *
+     *  Returns the resolved camera (or null when cleared), or `{ error }`. */
+    async setThumbnailCamera(camera: { azimuth: number; elevation: number } | 'current' | null) {
+      let resolved: { azimuth: number; elevation: number } | null;
+      if (camera === 'current') {
+        // Viewport azimuth (getCameraState) and the thumbnail camera
+        // (buildViewCamera) now use the same convention — atan2(dx, −dy), with
+        // azimuth 0 = front (−Y) — so the live viewport angle maps straight
+        // through to the pinned thumbnail camera with no mirror.
+        const cs = getCameraState();
+        resolved = { azimuth: ((cs.azimuth % 360) + 360) % 360, elevation: cs.elevation };
+      } else if (camera === null) {
+        resolved = null;
+      } else {
+        const check = guard(() => {
+          const o = assertObject(camera, 'setThumbnailCamera(camera)')!;
+          assertNoUnknownKeys(o, ['azimuth', 'elevation'], 'setThumbnailCamera(camera)');
+          assertNumber(o.azimuth, 'setThumbnailCamera(camera).azimuth');
+          assertNumber(o.elevation, 'setThumbnailCamera(camera).elevation', { min: -90, max: 90 });
+          return true;
+        });
+        if (typeof check === 'object' && check !== null && 'error' in check) return check;
+        resolved = camera;
+      }
+      if (!getState().session) return { error: 'No active session. Call createSession() or openSession() first.' };
+      await setSessionThumbCamera(resolved);
+      return { thumbCamera: getState().session?.thumbCamera ?? null };
+    },
+
+    /** The active session's pinned thumbnail camera `{ azimuth, elevation }`, or
+     *  null when unpinned (the default iso view is used for thumbnails). */
+    getThumbnailCamera(): { azimuth: number; elevation: number } | null {
+      return getState().session?.thumbCamera ?? null;
+    },
+
     /** Render a cross-section at Z height as an SVG string for visual verification */
     sliceAtZVisual(z: number): { svg: string; area: number; contours: number } | null {
       assertNumber(z, 'sliceAtZVisual(z)');
@@ -8425,7 +8631,7 @@ async function main() {
           await switchLanguage(lang);
         }
         setValue(version.code);
-        await runCodeSync(version.code);
+        await runCodeSync(version.code, { preserveCamera: true });
       }
       // Restore images from session
       const sessionImages = await getImagesFromSession();
@@ -8440,6 +8646,10 @@ async function main() {
     /** Close the current session */
     async closeSession() {
       await closeSession();
+      // Forget the framed session so re-opening it (or any session) auto-frames
+      // its model rather than preserving the angle from before it was closed —
+      // matches the "opening a session always frames" contract.
+      lastFramedSessionId = null;
     },
 
     /** Delete a session and all its versions */
@@ -8600,7 +8810,7 @@ async function main() {
       // Restore this version's Customizer overrides before the re-run so it
       // renders with the values it was saved at (matches loadVersionIntoEditor).
       currentParamValues = { ...(version.paramValues ?? {}) };
-      await runCodeSync(version.code);
+      await runCodeSync(version.code, { preserveCamera: true });
       await rehydrateColorRegions(version.geometryData);
       applyVersionAnnotations(version);
       // Labels are runtime state from the just-executed code. Surface
@@ -8640,7 +8850,7 @@ async function main() {
         // Restore this version's Customizer overrides before the re-run so it
         // renders with the values it was saved at (matches loadVersion).
         currentParamValues = { ...(version.paramValues ?? {}) };
-        await runCodeSync(version.code);
+        await runCodeSync(version.code, { preserveCamera: true });
         await rehydrateColorRegions(version.geometryData);
         applyVersionAnnotations(version);
       }
@@ -8651,7 +8861,7 @@ async function main() {
      *  Optional assertions — if provided, validates after running. Saves only if assertions pass.
      *  The editor and viewport always update to reflect the new code (including on assertion failure),
      *  so the model can inspect the failing geometry. The version is NOT saved on failure. */
-    async runAndSave(code: string, label?: string, assertions?: GeometryAssertions) {
+    async runAndSave(code: string, label?: string, assertions?: GeometryAssertions, opts?: { preserveCamera?: boolean }) {
       const check = guard(() => {
         assertString(code, 'runAndSave(code)', { allowEmpty: false });
         assertString(label, 'runAndSave(label)', { optional: true });
@@ -8665,8 +8875,10 @@ async function main() {
       // Single execution — run the code, update editor + viewport, read geometry.
       // Assertions are checked against the live result rather than a separate
       // isolation run. This halves execution time for assertion-guarded saves.
+      // preserveCamera (set by the AI tool path) keeps the user's orbit across
+      // AI iterations; bare console callers omit it and auto-frame.
       setValue(code);
-      const applied = await runCodeSync(code);
+      const applied = await runCodeSync(code, { preserveCamera: opts?.preserveCamera === true });
       if (!applied) {
         return { passed: false, failures: ['Run was superseded by a concurrent execution — retry'], geometry: null, version: null, diff: null, galleryUrl: getGalleryUrl() };
       }
@@ -8701,6 +8913,7 @@ async function main() {
         ? [...currentLostLabels]
         : undefined;
       const printability = computePrintability(newGeoData);
+      const colorRegions = colorRegionStats();
       return {
         ...(assertions ? { passed: true } : {}),
         geometry: newGeoData,
@@ -8710,6 +8923,7 @@ async function main() {
         galleryUrl: getGalleryUrl(),
         ...(warnings.length > 0 ? { warnings } : {}),
         ...(lostLabels ? { lostLabels } : {}),
+        ...(colorRegions.length > 0 ? { colorRegions } : {}),
       };
     },
 
@@ -8783,7 +8997,7 @@ async function main() {
       const prevGeoData = getState().currentVersion?.geometryData as Record<string, unknown> | null;
       const parentColors = carryColors ? versionColorRegions(parent) : [];
       setValue(newCode);
-      const forkApplied = await runCodeSync(newCode);
+      const forkApplied = await runCodeSync(newCode, { preserveCamera: true });
       if (!forkApplied) {
         return { error: 'Run was superseded by a concurrent execution — retry' };
       }
@@ -9025,7 +9239,7 @@ async function main() {
       const version = await openSession(session.id);
       if (version) {
         setValue(version.code);
-        await runCodeSync(version.code);
+        await runCodeSync(version.code, { preserveCamera: true });
       }
       // Restore images from imported session
       const sessionImages = await getImagesFromSession();
@@ -9998,7 +10212,7 @@ async function main() {
       if (maxTriangleArea !== undefined && triangles.size > 0) {
         triangles = new Set([...triangles].filter(t => triangleArea(t, currentMeshData!) <= maxTriangleArea));
       }
-      if (triangles.size === 0) return { error: 'No triangles found inside the slab' };
+      if (triangles.size === 0) return { error: 'No triangles found inside the slab. Dry-run paintPreview({ slab: { axis|normal, offset, thickness } }) to check the offset/thickness against the model bbox first.' };
 
       const regionName = name ?? `Region ${getRegions().length + 1}`;
       const { smooth, maxEdge } = resolveShapeSmoothFields(opts);
@@ -10359,7 +10573,7 @@ async function main() {
         opts.maxTriangleArea,
       );
       if (triangles.size === 0) {
-        return { error: `paintInCylinder: no triangles in cylindrical shell (rMin=${opts.rMin}, rMax=${opts.rMax}, z=${opts.zMin}..${opts.zMax})${cone ? ' with normalCone filter' : ''}. Try widening the shell, checking the center, or calling paintPreview with a box first to locate the geometry.` };
+        return { error: `paintInCylinder: no triangles in cylindrical shell (rMin=${opts.rMin}, rMax=${opts.rMax}, z=${opts.zMin}..${opts.zMax})${cone ? ' with normalCone filter' : ''}. Try widening the shell, checking the center, or dry-running paintPreview({ cylinder: { rMin, rMax, zMin, zMax } }) to locate the geometry.` };
       }
 
       const regionName = opts.name ?? `Region ${getRegions().length + 1}`;
@@ -10392,21 +10606,29 @@ async function main() {
 
     /** Render a preview of the current model with a candidate region tinted
      *  bright yellow, *without* committing the paint to the regions list.
-     *  Accepts the same selectors as `paintInBox` / `paintNear` plus an
-     *  optional explicit `triangleIds` set. Returns
-     *  `{ thumbnail, triangleCount, bbox, centroid }` so an agent can verify
-     *  the shape of the would-be region in one call instead of paint → render → undo.
+     *  Accepts the same selectors as `paintInBox` / `paintNear` /
+     *  `paintInCylinder` / `paintSlab` plus an optional explicit `triangleIds`
+     *  set. Returns `{ thumbnail, triangleCount, bbox, centroid }` so an agent
+     *  can verify the shape of the would-be region in one call instead of
+     *  paint → render → undo. The `cylinder` / `slab` forms preview the
+     *  *unsmoothed* selection (preview never subdivides), which is the cheap
+     *  way to validate a radial-shell or slab selection before committing the
+     *  real smoothing paint.
      *
      *  ```
      *  const preview = partwright.paintPreview({
      *    box: { min: [...], max: [...] },
      *    normalCone: { axis: [...], angleDeg: 25 },
      *  })
+     *  // Or a radial shell — the inner wall of a mug:
+     *  partwright.paintPreview({ cylinder: { rMin: 18, rMax: 22, zMin: 2, zMax: 88 } })
      *  // Display preview.thumbnail (data URL) to confirm before committing.
      *  ```
      *  `view` is forwarded to `renderView` (elevation/azimuth/ortho/size). */
     paintPreview(opts: {
       box?: { min: [number, number, number]; max: [number, number, number] };
+      cylinder?: { center?: [number, number]; rMin: number; rMax: number; zMin: number; zMax: number };
+      slab?: { axis?: 'x' | 'y' | 'z'; normal?: [number, number, number]; offset: number; thickness: number };
       normalCone?: { axis: [number, number, number]; angleDeg: number };
       point?: [number, number, number];
       radius?: number;
@@ -10450,8 +10672,40 @@ async function main() {
         const err = validateBoxAndCone(opts.box, opts.normalCone);
         if (err) return { error: err };
         triangles = collectTrianglesByFilter(mesh, opts.box, opts.normalCone, null, opts.coverageMode, opts.maxTriangleArea);
+      } else if (opts.cylinder !== undefined) {
+        const c = opts.cylinder;
+        if (typeof c !== 'object' || c === null) return { error: 'cylinder must be { rMin, rMax, zMin, zMax, center? }' };
+        if (typeof c.rMin !== 'number' || typeof c.rMax !== 'number') return { error: 'cylinder.rMin and cylinder.rMax must be numbers' };
+        if (typeof c.zMin !== 'number' || typeof c.zMax !== 'number') return { error: 'cylinder.zMin and cylinder.zMax must be numbers' };
+        if (c.rMin < 0 || c.rMax <= c.rMin) return { error: 'cylinder requires rMin >= 0 and rMax > rMin' };
+        if (c.zMax <= c.zMin) return { error: 'cylinder requires zMax > zMin' };
+        if (c.center !== undefined && (!Array.isArray(c.center) || c.center.length !== 2)) return { error: 'cylinder.center must be [x, y]' };
+        const coneErr = validateNormalCone(opts.normalCone);
+        if (coneErr) return { error: coneErr };
+        triangles = collectTrianglesByCylinder(mesh, c.center ?? [0, 0], c.rMin, c.rMax, c.zMin, c.zMax, opts.normalCone, opts.coverageMode, opts.maxTriangleArea);
+      } else if (opts.slab !== undefined) {
+        const s = opts.slab;
+        if (typeof s !== 'object' || s === null) return { error: 'slab must be { axis|normal, offset, thickness }' };
+        let slabNormal: [number, number, number];
+        if (s.axis !== undefined) {
+          if (s.axis !== 'x' && s.axis !== 'y' && s.axis !== 'z') return { error: "slab.axis must be 'x', 'y', or 'z'" };
+          slabNormal = s.axis === 'x' ? [1, 0, 0] : s.axis === 'y' ? [0, 1, 0] : [0, 0, 1];
+        } else if (Array.isArray(s.normal) && s.normal.length === 3) {
+          const [nx, ny, nz] = s.normal;
+          const len = Math.hypot(nx, ny, nz);
+          if (!Number.isFinite(len) || len === 0) return { error: 'slab.normal must be a non-zero 3-vector' };
+          slabNormal = [nx / len, ny / len, nz / len];
+        } else {
+          return { error: 'slab requires either axis (x|y|z) or normal [nx,ny,nz]' };
+        }
+        if (typeof s.offset !== 'number' || !Number.isFinite(s.offset)) return { error: 'slab.offset must be a finite number' };
+        if (typeof s.thickness !== 'number' || !Number.isFinite(s.thickness) || s.thickness <= 0) return { error: 'slab.thickness must be a positive finite number' };
+        triangles = findSlabTriangles(mesh, slabNormal, s.offset, s.thickness, opts.coverageMode);
+        if (opts.maxTriangleArea !== undefined && triangles.size > 0) {
+          triangles = new Set([...triangles].filter(t => triangleArea(t, mesh) <= opts.maxTriangleArea!));
+        }
       } else {
-        return { error: 'paintPreview requires one of: { triangleIds }, { point, radius }, or { box }' };
+        return { error: 'paintPreview requires one of: { triangleIds }, { point, radius }, { box }, { cylinder }, or { slab }' };
       }
 
       const stats = regionTriangleStats(triangles, mesh);
@@ -11384,6 +11638,7 @@ async function main() {
       const err = voxelPaint.activate(code, {
         onMeshUpdate: (mesh) => { updateMesh(mesh, { skipAutoFrame: true }); },
         onLockChange: (locked) => { setReadOnlyReason('voxelPaint', locked); },
+        onStateChange: () => { syncVoxelPaintUI(); },
       }, currentParamValues);
       if (err) return { error: `activateVoxelPaint: ${err}` };
       syncVoxelPaintUI();
@@ -11417,13 +11672,124 @@ async function main() {
       return { changed, voxelCount: voxelPaint.voxelCount() };
     },
 
+    /** Select the active Voxel Studio tool: 'paint' | 'add' | 'remove' |
+     *  'bucket' | 'level' | 'boxAdd' | 'boxRemove'. Returns `{ tool }` or
+     *  `{ error }`. */
+    setVoxelTool(tool: import('./color/voxelPaint').VoxelTool) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      const tools = ['paint', 'add', 'remove', 'bucket', 'level', 'boxAdd', 'boxRemove'];
+      if (!tools.includes(tool as string)) return { error: `setVoxelTool: tool must be one of ${tools.join(', ')}` };
+      voxelPaint.setTool(tool);
+      syncVoxelPaintUI();
+      return { tool };
+    },
+
+    /** Apply the active tool at a clicked face (the triangle index a raycast
+     *  would return). Optionally sets the color and/or tool first. The box
+     *  tools take two calls (first banks a corner, second completes the box).
+     *  Returns `{ changed, voxelCount, tool, pendingBoxCorner }` or `{ error }`. */
+    voxelStudioApply(opts: { faceIndex: number; color?: [number, number, number] | string | number; tool?: import('./color/voxelPaint').VoxelTool }) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      if (!opts || typeof opts !== 'object') return { error: 'voxelStudioApply requires { faceIndex }' };
+      if (!Number.isInteger(opts.faceIndex) || opts.faceIndex < 0) return { error: 'voxelStudioApply.faceIndex must be a non-negative integer' };
+      if (opts.tool !== undefined) {
+        const tools = ['paint', 'add', 'remove', 'bucket', 'level', 'boxAdd', 'boxRemove'];
+        if (!tools.includes(opts.tool as string)) return { error: `voxelStudioApply: tool must be one of ${tools.join(', ')}` };
+        voxelPaint.setTool(opts.tool);
+      }
+      if (opts.color !== undefined) {
+        try { voxelPaint.setColor(opts.color); }
+        catch (e) { return { error: (e as Error).message }; }
+      }
+      const changed = voxelPaint.applyAtTriangle(opts.faceIndex);
+      syncVoxelPaintUI();
+      return { changed, voxelCount: voxelPaint.voxelCount(), tool: voxelPaint.getTool(), pendingBoxCorner: voxelPaint.pendingBoxCorner() };
+    },
+
+    /** Undo the last Voxel Studio edit. Returns `{ undone, voxelCount }`. */
+    voxelStudioUndo() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      const undone = voxelPaint.undo();
+      syncVoxelPaintUI();
+      return { undone, voxelCount: voxelPaint.voxelCount() };
+    },
+
+    /** Redo the last undone Voxel Studio edit. Returns `{ redone, voxelCount }`. */
+    voxelStudioRedo() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      const redone = voxelPaint.redo();
+      syncVoxelPaintUI();
+      return { redone, voxelCount: voxelPaint.voxelCount() };
+    },
+
+    /** Configure the brush used by the paint/add/remove tools. `radius` is in
+     *  voxels (0 = a single voxel, max 16); `shape` is 'sphere' | 'cube' |
+     *  'diamond'; `spray` scatters a random subset; `sprayDensity` is 0.05..1.
+     *  Returns the resolved brush settings or `{ error }`. */
+    setVoxelBrush(opts: { radius?: number; shape?: import('./color/voxelPaint').BrushShape; spray?: boolean; sprayDensity?: number } = {}) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active — call activateVoxelPaint() first.' };
+      if (opts.radius !== undefined) {
+        if (typeof opts.radius !== 'number' || opts.radius < 0) return { error: 'setVoxelBrush.radius must be a non-negative number' };
+        voxelPaint.setBrushRadius(opts.radius);
+      }
+      if (opts.shape !== undefined) {
+        const shapes = ['sphere', 'cube', 'diamond'];
+        if (!shapes.includes(opts.shape as string)) return { error: `setVoxelBrush.shape must be one of ${shapes.join(', ')}` };
+        voxelPaint.setBrushShape(opts.shape);
+      }
+      if (opts.spray !== undefined) voxelPaint.setSpray(!!opts.spray);
+      if (opts.sprayDensity !== undefined) {
+        if (typeof opts.sprayDensity !== 'number') return { error: 'setVoxelBrush.sprayDensity must be a number 0.05..1' };
+        voxelPaint.setSprayDensity(opts.sprayDensity);
+      }
+      syncVoxelPaintUI();
+      return { radius: voxelPaint.getBrushRadius(), shape: voxelPaint.getBrushShape(), spray: voxelPaint.isSpray(), sprayDensity: voxelPaint.getSprayDensity() };
+    },
+
+    /** Set the axis (0=x, 1=y, 2=z) the 'level' tool recolors. Returns `{ axis }`. */
+    setVoxelLevelAxis(axis: 0 | 1 | 2) {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      if (axis !== 0 && axis !== 1 && axis !== 2) return { error: 'setVoxelLevelAxis.axis must be 0, 1, or 2' };
+      voxelPaint.setLevelAxis(axis);
+      syncVoxelPaintUI();
+      return { axis };
+    },
+
+    /** Begin a brush stroke: subsequent `voxelStudioApply` calls collapse into a
+     *  single undo step until `voxelStudioEndStroke()`. This is the programmatic
+     *  equivalent of a click-drag. Returns `{ ok }` or `{ error }`. */
+    voxelStudioBeginStroke() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      voxelPaint.beginStroke();
+      return { ok: true };
+    },
+
+    /** Finish the current brush stroke, committing it as one undo step.
+     *  Returns `{ ok, voxelCount }`. */
+    voxelStudioEndStroke() {
+      if (!voxelPaint.isActive()) return { error: 'Voxel Studio is not active.' };
+      voxelPaint.endStroke();
+      syncVoxelPaintUI();
+      return { ok: true, voxelCount: voxelPaint.voxelCount() };
+    },
+
     /** Bake the painted grid into `voxels.decode(...)` editor code, run it,
      *  and save as a new version. Deactivates voxel paint mode after baking.
      *  Auto-creates a session if none exists. Returns `{ versionIndex,
      *  voxelCount }` or `{ error }`. */
     async bakeVoxelsToCode(opts: { label?: string } = {}) {
       const label = typeof opts.label === 'string' && opts.label ? opts.label : 'painted';
-      const result = await bakePaintedVoxelsAsVersion(label);
+      const result = await commitVoxelEdits('replace', label);
+      syncVoxelPaintUI();
+      return result;
+    },
+
+    /** "Update code": keep the current procedural voxel source and append the
+     *  Studio's edits as explicit v.set/v.remove statements, then save a new
+     *  version. Returns `{ versionIndex, voxelCount }` or `{ error }`. */
+    async updateVoxelCode(opts: { label?: string } = {}) {
+      const label = typeof opts.label === 'string' && opts.label ? opts.label : 'voxel edits';
+      const result = await commitVoxelEdits('update', label);
       syncVoxelPaintUI();
       return result;
     },
@@ -12574,7 +12940,7 @@ async function main() {
     });
   }
 
-  function runCode(code?: string, opts: { surfaceErrors?: boolean } = {}) {
+  function runCode(code?: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean } = {}) {
     // Never execute the sharer's untrusted code in a read-only preview. Fork first.
     if (isSharedPreview()) return;
     const src = code ?? getValue();
@@ -12599,7 +12965,15 @@ async function main() {
       // cancel only this specific run (not an explicit run that superseded it).
       const myRafGen = _runGeneration + 1;
       _rafOwnedGeneration = myRafGen;
-      await runCodeSync(src, opts);
+      // runCode is the interactive entry point (editor auto-run, Run button,
+      // command palette, quality/param changes), so it preserves the user's
+      // current camera angle by default — re-rendering edited code shouldn't
+      // snap the view back to the default 3/4 framing. The same-session gate in
+      // captureCameraToPreserve still auto-frames the first render of a session
+      // (e.g. runCode(defaultCode) on a freshly-created session). Programmatic
+      // runs (partwright.run/runAndSave) call runCodeSync directly and keep
+      // auto-framing. A caller can opt out with preserveCamera: false.
+      await runCodeSync(src, { preserveCamera: true, ...opts });
       // If we still own the generation slot and the run is done, clear it.
       if (_rafOwnedGeneration === myRafGen) _rafOwnedGeneration = -1;
     });
@@ -12634,7 +13008,7 @@ async function main() {
     cancelInlineBtn.classList.add('hidden');
   }
 
-  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean } = {}): Promise<boolean> {
+  async function runCodeSync(src: string, opts: { surfaceErrors?: boolean; preserveCamera?: boolean } = {}): Promise<boolean> {
     // Hard refusal in shared-preview mode: this is the single execution
     // chokepoint that the console API (partwright.run / runAndSave) also routes
     // through, so guarding it here keeps the sharer's untrusted code from ever
@@ -12694,6 +13068,9 @@ async function main() {
     // manifold-js engines, which own separate heaps). Surfaced in the Data panel
     // and engine-error log so users can see how close a run came to the ceiling.
     lastEngineHeapBytes = result.engineHeapBytes;
+    // Occupied-voxel count for voxel runs (undefined for other engines, which
+    // resets the readout so a prior voxel session's count doesn't linger).
+    lastVoxelCount = result.voxelCount;
 
     // Reconcile the Customizer with what the model declared this run. The
     // schema rides on the result for both success and error, so the panel
@@ -12816,6 +13193,13 @@ async function main() {
       // "shattered shards" bug. Gate on hasRefineDescriptors() (not just brush
       // strokes) so slab/box smooth regions rebuild too, exactly as the
       // visibility-toggle path does via reconcilePaintedGeometry.
+      //
+      // Snapshot the camera before the auto-framing updateMesh runs when this
+      // run is a version switch (opts.preserveCamera) within an already-framed
+      // session: keep the user's interactive angle instead of snapping to the
+      // default 3/4 view. Genuine new-code runs (pw.run, live edits) leave this
+      // null so the new model auto-frames as before.
+      const preservedCameraPose = opts.preserveCamera ? captureCameraToPreserve() : null;
       if (hasColorRegions() && hasRefineDescriptors()) {
         rebuildPaintedGeometry();
         lastStrokeList = strokeDescriptors();
@@ -12845,6 +13229,9 @@ async function main() {
         updateMesh(result.mesh);
         updatePaintMesh(result.mesh); // always pass uncolored mesh for adjacency
       }
+      // Put the camera back where the user had it (no-op on a session's first
+      // render, where captureCameraToPreserve returned null and we auto-frame).
+      if (preservedCameraPose) setCameraPose(preservedCameraPose);
 
       updateGeometryData(elapsed, src);
       syncClipSliderBounds();
@@ -12856,6 +13243,11 @@ async function main() {
       simplifyBaselineModelRegions = null;
       refreshSimplifyIfOpen();
       setStatus(statusBar, 'ready', 'Ready');
+      // Record the session this freshly-framed geometry belongs to, so the next
+      // version switch within it preserves the user's camera angle (see
+      // loadVersionIntoEditor). A fresh compile auto-frames, which is the
+      // baseline we want each new session to start from.
+      lastFramedSessionId = getState().session?.id ?? null;
     }
     return true;
   }

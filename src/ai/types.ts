@@ -116,6 +116,13 @@ export interface ChatToggles {
    *  proceeds with full tools) or reject it (planning messages are removed from
    *  history and the original input is restored). OFF by default. */
   planFirst: boolean;
+  /** 3D-printing optimization. When ON, a block of FDM-printing design
+   *  guidance is appended to the per-turn system suffix so the model designs
+   *  print-friendly geometry from the start (flat base on the build plate,
+   *  the 45° overhang rule, no floating islands, minimum feature sizes, …).
+   *  Injects prompt text only — it does not gate any tool, so it composes
+   *  with every other toggle. ON by default. */
+  printOptimized: boolean;
   /** Which backend the chat is talking to right now. */
   provider: Provider;
   /** Anthropic model for cloud chats. Plain string so dated snapshots

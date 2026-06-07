@@ -16,6 +16,17 @@ export interface AppConfig {
     /** Max consecutive auto-resume nudges with no tool call before the loop
      *  falls through to a normal end_turn outcome. Resets on any tool call. */
     maxConsecutiveAutoResumes: number;
+    /** Max times a single provider API call is retried after a *transient*
+     *  failure (HTTP 429/5xx, network/stream drop) before the turn surfaces a
+     *  hard error. These retries don't consume the agent's per-turn iteration
+     *  budget — they keep an auto-continue run alive through server blips. */
+    maxTransientRetries: number;
+    /** Base backoff (ms) between transient provider-error retries. The actual
+     *  wait grows exponentially (base · 2^(attempt-1)) with jitter, capped at
+     *  transientRetryMaxMs. */
+    transientRetryBaseMs: number;
+    /** Ceiling (ms) on a single transient-error backoff wait. */
+    transientRetryMaxMs: number;
     /** Tool execution wall-clock time (ms) above which a console warning fires. */
     slowToolMs: number;
     /** In-memory ring buffer size for the AI diagnostics log. */
@@ -145,6 +156,10 @@ export interface AppConfig {
      *  draft is autosaved, so companion edits survive a reload without writing
      *  to IndexedDB on every keystroke. */
     companionDraftDebounceMs: number;
+    /** Debounce delay (ms) after the user finishes an orbit/zoom before the
+     *  interactive working-view camera is persisted to the session row, so a
+     *  burst of small adjustments coalesces into one IndexedDB write. */
+    workCameraSaveDebounceMs: number;
     /** Debounce delay (ms) for the surface-modifier live preview. */
     surfacePreviewDebounceMs: number;
     /** Debounce delay (ms) for the relief import 2D preview. */
@@ -174,12 +189,22 @@ export interface AppConfig {
     /** Live-refresh interval (ms) for the worker health panel — how often it
      *  re-polls in-flight counts and liveness while open. */
     workerPanelRefreshMs: number;
+    /** Whether the "Did you know?" rolling hints strip shows at the top of the
+     *  editor. Users can turn it off permanently here; the strip's ✕ only hides
+     *  it for the current tab/session. */
+    editorHintsEnabled: boolean;
+    /** How long each "Did you know?" hint stays before the strip rotates to the
+     *  next one (ms). */
+    hintRotationMs: number;
   };
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
   ai: {
     maxConsecutiveAutoResumes: 8,
+    maxTransientRetries: 4,
+    transientRetryBaseMs: 1000,
+    transientRetryMaxMs: 16_000,
     slowToolMs: 250,
     diagnosticsRingSize: 50,
     maxAttachments: 20,
@@ -240,6 +265,7 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     tooltipDelayMs: 150,
     codeEditorErrorIdleMs: 800,
     companionDraftDebounceMs: 600,
+    workCameraSaveDebounceMs: 500,
     surfacePreviewDebounceMs: 250,
     reliefPreviewDebounceMs: 120,
     reliefPreview3dDebounceMs: 250,
@@ -252,6 +278,8 @@ export const APP_CONFIG_DEFAULTS: AppConfig = {
     paletteHistoryMax: 48,
     workerRunHistorySize: 50,
     workerPanelRefreshMs: 1000,
+    editorHintsEnabled: true,
+    hintRotationMs: 12_000,
   },
 };
 
@@ -316,6 +344,13 @@ export function loadAppConfig(): AppConfig {
 /** Return the current config (cached after first load). */
 export function getConfig(): AppConfig {
   return loadAppConfig();
+}
+
+/** Subscribe to config changes (saved overrides or a reset). Returns an
+ *  unsubscribe function. Fires with the new config after every persist. */
+export function onConfigChange(fn: (cfg: AppConfig) => void): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
 }
 
 /** Persist the given config snapshot and notify listeners. */

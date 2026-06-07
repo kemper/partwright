@@ -719,11 +719,13 @@ function makeViewportPill(id: string, text: string, title: string, className = V
 }
 
 // The viewport overlay bar. Historically a flat row of ~16 buttons that grew with
-// every feature; now collapsed into a couple of always-visible primaries plus
-// three labelled popover groups so the strip stays short while everything is one
+// every feature. Now: the always-visible primaries plus the display toggles
+// (edges/grid/dims/lock — frequent one-click view-state flips) sit directly on
+// the bar, and the tool-launching buttons collapse into two labelled popover
+// groups (Inspect / Tools) so the strip stays short while everything is one
 // click (and one ⌘K search) away. Button ids are unchanged — the toggle-wiring
-// in main.ts finds them by id regardless of which popover they now live in, and
-// the injected tool buttons mount into the Tools popover via `viewportToolsMount`.
+// in main.ts finds them by id wherever they live, and the injected tool buttons
+// mount into the Tools popover via `viewportToolsMount`.
 function createClipControls(): HTMLElement {
   const container = document.createElement('div');
   container.id = 'clip-controls';
@@ -742,30 +744,35 @@ function createClipControls(): HTMLElement {
   const resetBtn = makeViewportPill('reset-view', '↻ Reset View', 'Reset camera to the default view');
   container.appendChild(resetBtn);
 
-  // View popover — display preferences set once and forgotten. closeOnSelect is
-  // left off so users can flip several toggles without the menu dismissing.
-  const viewGroup = createPopoverGroup({ id: 'viewport-view', label: 'View', title: 'Display options: edges, grid, dimensions, camera lock' });
-  viewGroup.menu.appendChild(makeViewportPill('wireframe-toggle', '△ Edges', 'Show mesh edges'));
-  viewGroup.menu.appendChild(makeViewportPill('grid-toggle', '▦ Grid', 'Show grid plane'));
+  // Display toggles — the buttons that only change how the model is *shown*
+  // (edges, grid, dimensions, camera lock). These live directly on the bar as
+  // one-click pills (not collapsed into a menu): they're frequent, mutually
+  // independent flips, and a menu round-trip per toggle was pure friction.
+  container.appendChild(makeViewportPill('wireframe-toggle', '△ Edges', 'Show mesh edges'));
+  container.appendChild(makeViewportPill('grid-toggle', '▦ Grid', 'Show grid plane'));
   // Dimensions defaults on — give it the active blue styling to match its state.
-  viewGroup.menu.appendChild(makeViewportPill(
+  container.appendChild(makeViewportPill(
     'dimensions-toggle', '⬚ Dims', 'Toggle bounding box dimensions',
     'px-3 py-2 md:px-2 md:py-1 rounded text-sm md:text-xs bg-blue-500/20 backdrop-blur text-blue-400 [@media(hover:hover)]:hover:bg-blue-500/30 transition-colors border border-blue-500/30 text-left',
   ));
-  viewGroup.menu.appendChild(makeViewportPill('orbit-lock-toggle', '\uD83D\uDD13 Lock', 'Lock camera rotation'));
-  container.appendChild(viewGroup.wrapper);
+  container.appendChild(makeViewportPill('orbit-lock-toggle', '\uD83D\uDD13 Lock', 'Lock camera rotation'));
 
-  // Inspect popover — read-only analysis tools that never mutate the model.
-  const inspectGroup = createPopoverGroup({ id: 'viewport-inspect', label: 'Inspect', title: 'Measure distances and cross-section the model', closeOnSelect: true });
+  // Inspect popover — read-only analysis tools that never mutate the model. The
+  // menu is sticky: clicking an item activates the tool but leaves the list open
+  // so you can flip between Measure and Cross Section without re-opening it. It
+  // closes on the group button, a sibling popover, click-outside, or Escape.
+  const inspectGroup = createPopoverGroup({ id: 'viewport-inspect', label: 'Inspect', title: 'Measure distances and cross-section the model' });
   inspectGroup.menu.appendChild(makeViewportPill('measure-toggle', '\uD83D\uDCCF Measure', 'Measure distance between two points on your model'));
   inspectGroup.menu.appendChild(makeViewportPill('clip-toggle', '✂ Cross Section', 'Toggle cross-section clipping plane'));
   container.appendChild(inspectGroup.wrapper);
 
   // Tools popover — the mutate/decorate tools (Paint, Annotate, Surface, Resize,
   // Quality, ...). Starts empty; each tool module appends its button here at init
-  // via `viewportToolsMount`. closeOnSelect on so picking a tool reveals its
-  // floating panel. Stable id `viewport-tools-menu` is the injection contract.
-  const toolsGroup = createPopoverGroup({ id: 'viewport-tools', label: 'Tools', title: 'Editing tools: paint, annotate, surface modifiers, resize, quality', closeOnSelect: true });
+  // via `viewportToolsMount`. The menu is sticky: picking a tool reveals its
+  // floating panel but keeps the list open, so switching between tools is one
+  // click each instead of re-opening Tools every time. Stable id
+  // `viewport-tools-menu` is the injection contract.
+  const toolsGroup = createPopoverGroup({ id: 'viewport-tools', label: 'Tools', title: 'Editing tools: paint, annotate, surface modifiers, resize, quality' });
   container.appendChild(toolsGroup.wrapper);
 
   return container;

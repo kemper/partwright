@@ -9,6 +9,7 @@ import { registerCommands } from './commandPalette';
 import { getConfig } from '../config/appConfig';
 import { openViewportPanel, closeViewportPanel } from './viewportPanelRegistry';
 import { setInitialPanelPosition, attachViewportPanelDrag } from './viewportPanelDrag';
+import { TOOL_PANEL_CLASS, TOOL_PANEL_HEADER, TOOL_PANEL_TITLE, TOOL_PANEL_CLOSE } from './toolPanel';
 
 type ApplyResult = { error?: string; label?: string } | Record<string, unknown>;
 
@@ -88,12 +89,12 @@ export function openResizeModal(api: ResizeApi): void {
   const container = getViewportContainer();
 
   // Absolutely positioned inside the viewport container, below the toolbar.
-  const panel = el('div', 'absolute z-[60] bg-zinc-900 text-zinc-100 rounded-lg border border-zinc-700 shadow-xl w-[min(94vw,360px)] select-none flex flex-col');
+  const panel = el('div', `${TOOL_PANEL_CLASS} text-zinc-100 w-[min(94vw,360px)] max-h-[calc(100%-3.5rem)] select-none`);
 
-  // Header — drag handle + title + × button.
-  const header = el('div', 'flex items-center justify-between px-4 py-3 border-b border-zinc-700 shrink-0');
-  header.append(el('h2', 'text-sm font-semibold', 'Resize model'));
-  const closeBtn = el('button', 'text-zinc-400 hover:text-zinc-100 text-lg leading-none cursor-pointer', '×');
+  // Header — drag handle + title + × button (shared tool-panel chrome).
+  const header = el('div', TOOL_PANEL_HEADER);
+  header.append(el('h2', TOOL_PANEL_TITLE, 'Resize model'));
+  const closeBtn = el('button', TOOL_PANEL_CLOSE, '×');
   closeBtn.setAttribute('aria-label', 'Close resize panel');
   header.append(closeBtn);
   panel.append(header);
@@ -109,7 +110,7 @@ export function openResizeModal(api: ResizeApi): void {
   modeRow.append(el('span', 'text-xs text-zinc-400', 'Scale by'));
   const btnPct = el('button', '', '%');
   const btnUnits = el('button', '', 'Raw units');
-  const ACTIVE_TAB = 'px-2.5 py-1 rounded text-xs bg-sky-600 text-white';
+  const ACTIVE_TAB = 'px-2.5 py-1 rounded text-xs bg-blue-600 text-white';
   const IDLE_TAB = 'px-2.5 py-1 rounded text-xs bg-zinc-800 text-zinc-300 hover:bg-zinc-700';
   function syncModeBtns() {
     btnPct.className = mode === 'percent' ? ACTIVE_TAB : IDLE_TAB;
@@ -123,7 +124,7 @@ export function openResizeModal(api: ResizeApi): void {
 
   // ---- Uniform toggle ----
   const uniformRow = el('label', 'flex items-center gap-2 mb-4 text-xs text-zinc-300 cursor-pointer');
-  const uniformCheck = el('input', 'accent-sky-500');
+  const uniformCheck = el('input', 'accent-blue-500');
   uniformCheck.type = 'checkbox';
   uniformCheck.checked = uniform;
   uniformCheck.addEventListener('change', () => {
@@ -172,7 +173,7 @@ export function openResizeModal(api: ResizeApi): void {
   // ---- Preserve colors checkbox (only when the model has paint) ----
   if (hasColor) {
     const colorRow = el('label', 'flex items-center gap-2 mb-3 text-xs text-zinc-300 cursor-pointer');
-    const colorCheck = el('input', 'accent-sky-500');
+    const colorCheck = el('input', 'accent-blue-500');
     colorCheck.type = 'checkbox';
     colorCheck.checked = preserveColor;
     colorCheck.addEventListener('change', () => {
@@ -196,7 +197,7 @@ export function openResizeModal(api: ResizeApi): void {
   const footer = el('div', 'flex justify-end gap-2 px-4 pb-4 shrink-0');
   const resetBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs', 'Reset');
   const cancelBtn = el('button', 'px-3 py-1.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs', 'Cancel');
-  const applyBtn = el('button', 'px-3 py-1.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium', 'Apply');
+  const applyBtn = el('button', 'px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium', 'Apply');
   footer.append(resetBtn, cancelBtn, applyBtn);
   panel.append(footer);
 
@@ -209,7 +210,7 @@ export function openResizeModal(api: ResizeApi): void {
     labelRow.append(label, readout);
 
     const controlRow = el('div', 'flex items-center gap-2');
-    const slider = el('input', 'flex-1 accent-sky-500');
+    const slider = el('input', 'flex-1 accent-blue-500');
     slider.type = 'range';
     const numInput = el('input', 'w-20 bg-zinc-800 border border-zinc-600 rounded px-1 py-0.5 text-right text-zinc-200 font-mono focus:border-blue-400 focus:outline-none text-xs');
     numInput.type = 'number';
